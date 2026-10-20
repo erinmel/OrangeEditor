@@ -108,6 +108,13 @@ pub struct ActivationPolicy {
 
 The spatial index, edge-path cache and widget state belong to `orange-editor`, not `orange-model` ([02](02-architecture.md)).
 
+Implementation note (WU-00/00b.3): `orange-model` provides `DocIndex` with node location, incoming/outgoing edges and node incidence.
+
+- **Kept beside the document:** the index lives next to the document, not inside it, so document equality, saving and undo never involve derived data.
+- **Updated from change sets:** each committed `ChangeSet` updates it, and an updated index always equals a fresh build (property-tested).
+- **`BTreeSet` edge sets:** used instead of `SmallVec` so equality does not depend on edit history. Performance is evaluated with NFR-15.
+- **Deferred rows:** the dense document index, data topological order, type components, region index and diagnostics arrive with their consumers (00c/00d).
+
 ### 3.3 Transactions and change sets
 
 ```rust
@@ -140,6 +147,9 @@ Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
 - The inverse is a list of primitive slot patches rather than `DocCommand`s. Each patch restores an entry together with its position, so undo is byte-exact despite removal compaction.
 - Undo and redo are transactions and advance `revision`. Inverses are bound to a per-session content-state ID that undo/redo restore, not to the revision. A loaded document starts with its revision as that ID.
 - `affected_roots` is derived by the compiler from the node, edge and declaration deltas once regions exist (00d/00e).
+- `PutSignature { key, snapshot }` (00b.3) adds a shared snapshot so that pasted nodes keep the snapshots I-4 requires. An identical snapshot under the same key is a no-op; different content under an existing key is rejected. Signatures are therefore transaction-owned. Package locks and exports still have no command.
+- Canonical JSON for `SignatureKey` (00b.3): object keys sorted by byte order, no whitespace, serde_json string escaping. This matches RFC 8785 for the ASCII keys and integers in snapshots. WU-03 publishes the cross-language digest vectors. Semantic projection removes `label`, `description`, `group` and `editor` and substitutes `$T` parameters from `type_args`.
+- Paste (00b.3) gives every pasted node, edge and declaration a new ID. A config string exactly equal to a remapped source ID is rewritten. Referenced declarations travel with the copy and are reused when the target already has them. Signatures are re-keyed to their `sha256:` key.
 
 ## 4. Definition schema
 

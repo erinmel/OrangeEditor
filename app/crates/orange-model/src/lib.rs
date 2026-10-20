@@ -8,13 +8,17 @@ pub mod codec;
 pub mod document;
 pub mod error;
 pub mod id;
+pub mod index;
 pub mod keyed;
 pub mod literal;
+pub mod paste;
 mod patch;
+pub mod signature;
 pub mod transaction;
 
 pub use change_set::{ChangeSet, DeclId, Delta};
 pub use codec::{from_json, to_json};
 pub use document::{BodyRef, GraphDocument};
-pub use error::{CodecError, IdError, LiteralError, TxError};
+pub use error::{CodecError, IdError, LiteralError, PasteError, TxError};
+pub use index::DocIndex;
 pub use transaction::{Committed, DocCommand, Inverse, LayoutCommand};

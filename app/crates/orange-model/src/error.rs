@@ -2,7 +2,9 @@
 
 use thiserror::Error;
 
-use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, VariableId};
+use crate::id::{
+    EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, VariableId,
+};
 
 /// A textual identifier that violates its syntax rule (12 §2).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -47,6 +49,15 @@ pub enum CodecError {
     DuplicateId { kind: &'static str, id: String },
 }
 
+/// A copy that cannot be made.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PasteError {
+    #[error("node `{0}` does not exist")]
+    NodeNotFound(NodeId),
+    #[error("a copied selection must come from a single body")]
+    SelectionSpansBodies,
+}
+
 /// A document transaction that was rejected. The document is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TxError {
@@ -81,6 +92,8 @@ pub enum TxError {
     VariadicExhausted { node: NodeId, port: PortId },
     #[error("node `{node}` has no variadic instance port `{port}`")]
     VariadicPortNotFound { node: NodeId, port: PortKey },
+    #[error("signature `{0}` already exists with different content")]
+    SignatureConflict(SignatureKey),
     #[error("a layout path needs at least one key")]
     EmptyLayoutPath,
     #[error("layout path `{path}` passes through a value that is not an object")]

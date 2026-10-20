@@ -27,6 +27,7 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 - Superseded planning observation: the environment originally reported `rustc`/`cargo` 1.96.1 from a standalone MSI install (`C:\Program Files\Rust stable MSVC 1.96`) that shadowed rustup on PATH, plus rustup toolchains `stable` and `nightly-2026-09-07`. That MSI, the previous rustup install and its toolchains were removed on 2026-10-20 before the reinstall above.
 - 00b.1 local evidence (Windows 11, Rust 1.99.1, 2026-10-20): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` passed (22 tests: 8 unit, 13 codec integration, 1 property test at proptest's default 256 cases). Remote `rust` CI evidence is recorded when it first runs.
 - 00b.2 local evidence (same environment, 2026-10-20): the same three commands passed with 46 tests in total. The 24 new tests are 4 for G-36 layout, 2 for G-30 literals, 5 for G-31 variadic ports, 12 for transaction structure and 1 property test of undo-all/redo-all over random edit sequences. No new dependency.
+- 00b.3 local evidence (same environment, 2026-10-20): the same three commands passed with 63 tests in total. New tests: 3 signature unit tests, including a sha256 vector computed independently with coreutils `sha256sum`; 5 G-29/G-39 and implicit-port vector tests; 2 index tests, including a property that the incremental index equals a full build; 6 paste tests, including a property of no aliasing, preserved internal edges and undo; 1 `PutSignature` test. New dependency: `sha2` (ledger above).
 - Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working Bevy build toolchain.
 
 ## Additional AI development integrations
@@ -92,6 +93,7 @@ Serde-family candidate adopted for the graph document codec only. Versions are e
 | indexmap (+ hashbrown, foldhash, equivalent) | 2.14.2, `serde` | Apache-2.0 OR MIT (foldhash: Zlib) | 1.85 | Creation-ordered maps |
 | uuid | 1.28.0, `serde` | Apache-2.0 OR MIT | 1.89.0 | v4/v7 document IDs |
 | thiserror | 2.0.21 | MIT OR Apache-2.0 | 1.77 | Error enums |
+| sha2 (+ digest, block-buffer, crypto-common, hybrid-array, typenum, const-oid, cpufeatures, cfg-if, libc) | 0.11.1, default features | MIT OR Apache-2.0 (all) | 1.88 (others 1.32–1.85) | `sha256:` signature keys (added in 00b.3) |
 | proptest (dev only) | 1.12.0 | MIT OR Apache-2.0 | 1.88 | Round-trip property tests |
 
 Transitive normal dependencies also include itoa 1.0.18, memchr 2.8.3 (Unlicense OR MIT), zmij 1.0.23 (MIT), proc-macro2 1.0.107, quote 1.0.47, syn 3.0.9 and unicode-ident 1.0.27 ((MIT OR Apache-2.0) AND Unicode-3.0). Security advisory review (for example `cargo audit`) has not been run. Malformed-input size bounds and migrations remain open for later 00b slices.

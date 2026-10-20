@@ -13,10 +13,12 @@ use serde_json::Value as Json;
 use crate::change_set::{ChangeSet, Tracker};
 use crate::document::{
     BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument, NodeInstance, PortRef,
-    ProviderBinding, TypeParamName, VariableDecl, VariadicState,
+    ProviderBinding, SignatureSnapshot, TypeParamName, VariableDecl, VariadicState,
 };
 use crate::error::TxError;
-use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, TypeExpr, VariableId};
+use crate::id::{
+    EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, TypeExpr, VariableId,
+};
 use crate::literal::Literal;
 use crate::patch::{Patch, Placed, editor_placement, placement};
 
@@ -78,6 +80,12 @@ pub enum DocCommand {
     Rebind {
         nodes: Vec<NodeId>,
         provider: ProviderBinding,
+    },
+    /// Adds a shared signature snapshot. Putting an identical one again changes nothing;
+    /// different content under an existing key is rejected.
+    PutSignature {
+        key: SignatureKey,
+        snapshot: SignatureSnapshot,
     },
     Layout(LayoutCommand),
 }
@@ -365,6 +373,20 @@ impl Journal {
                     Ok(())
                 })
             }),
+            DocCommand::PutSignature { key, snapshot } => match document.signatures.get(&key) {
+                Some(existing) if *existing == snapshot => Ok(()),
+                Some(_) => Err(TxError::SignatureConflict(key)),
+                None => self.patch(
+                    document,
+                    Patch::Signature {
+                        key,
+                        entry: Some(Placed {
+                            index: 0,
+                            value: snapshot,
+                        }),
+                    },
+                ),
+            },
             DocCommand::Layout(LayoutCommand::Set { path, value }) => {
                 if path.is_empty() {
                     return Err(TxError::EmptyLayoutPath);

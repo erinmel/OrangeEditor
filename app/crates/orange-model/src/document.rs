@@ -6,8 +6,8 @@
 //! fields survive load→save (FR-05).
 //!
 //! State owned by transactions (revision, bodies, declarations, editor layout) is private
-//! and changes only through [`GraphDocument::apply`]. Locks, signatures and exports have no
-//! document command yet (12 §3.3) and stay public until their flows exist.
+//! and changes only through [`GraphDocument::apply`]. Locks and exports have no document
+//! command yet (12 §3.3) and stay public until their flows exist.
 
 use std::collections::BTreeMap;
 
@@ -47,7 +47,7 @@ pub struct GraphDocument {
     #[serde(default, with = "crate::keyed")]
     pub(crate) events: IndexMap<EventDeclId, EventDecl>,
     #[serde(default)]
-    pub signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
+    pub(crate) signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     /// Top-level body, persisted as the document's own `nodes` and `edges`.
     #[serde(flatten)]
     pub(crate) root: GraphBody,
@@ -116,6 +116,10 @@ impl GraphDocument {
 
     pub fn functions(&self) -> &IndexMap<FunctionId, FunctionDecl> {
         &self.functions
+    }
+
+    pub fn signatures(&self) -> &BTreeMap<SignatureKey, SignatureSnapshot> {
+        &self.signatures
     }
 
     pub fn editor(&self) -> &Map<String, Json> {

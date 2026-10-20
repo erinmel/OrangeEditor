@@ -2,16 +2,18 @@
 //! editor path) and applying it returns its exact inverse, position included, so undo
 //! restores the document byte for byte even though removal compacts order (12 §3.1).
 
+use std::collections::BTreeMap;
 use std::hash::Hash;
 
 use indexmap::IndexMap;
 use serde_json::{Map, Value as Json};
 
 use crate::document::{
-    BodyRef, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance, VariableDecl,
+    BodyRef, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
+    SignatureSnapshot, VariableDecl,
 };
 use crate::error::TxError;
-use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, VariableId};
+use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, VariableId};
 
 /// A value and its position in an ordered collection.
 #[derive(Debug, Clone, PartialEq)]
@@ -44,6 +46,11 @@ pub(crate) enum Patch {
     Function {
         id: FunctionId,
         entry: Option<Placed<Box<FunctionDecl>>>,
+    },
+    /// Signatures are keyed by content and sorted, so the position is ignored.
+    Signature {
+        key: SignatureKey,
+        entry: Option<Placed<SignatureSnapshot>>,
     },
     Editor {
         path: Vec<String>,
@@ -84,6 +91,10 @@ impl Patch {
                 id,
                 entry: set_boxed(&mut document.functions, id, entry),
             },
+            Patch::Signature { key, entry } => {
+                let old = set_slot(&mut document.signatures, key.clone(), entry);
+                Patch::Signature { key, entry: old }
+            }
             Patch::Editor { path, entry } => set_path(&mut document.editor, path, entry)?,
         })
     }
@@ -120,6 +131,16 @@ impl<K: Hash + Eq, V> Slots<K, V> for IndexMap<K, V> {
     fn put(&mut self, key: K, entry: Placed<V>) {
         let index = entry.index.min(self.len());
         self.shift_insert(index, key, entry.value);
+    }
+}
+
+impl<K: Ord, V> Slots<K, V> for BTreeMap<K, V> {
+    fn take(&mut self, key: &K) -> Option<Placed<V>> {
+        self.remove(key).map(|value| Placed { index: 0, value })
+    }
+
+    fn put(&mut self, key: K, entry: Placed<V>) {
+        self.insert(key, entry.value);
     }
 }
 

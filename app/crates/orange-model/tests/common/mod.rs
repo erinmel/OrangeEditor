@@ -1,6 +1,7 @@
 //! Shared helpers for the integration tests.
 #![allow(dead_code)] // each test binary uses a different subset
 
+pub mod edits;
 pub mod strategies;
 
 use std::path::PathBuf;
@@ -124,4 +125,15 @@ pub fn content(document: &GraphDocument) -> Json {
     let mut value = parse_json(&saved(document));
     value.as_object_mut().unwrap().shift_remove("revision");
     value
+}
+
+/// Deterministic v4 UUID source for paste tests; `seed` keeps sources disjoint.
+pub fn id_source(seed: u8) -> impl FnMut() -> uuid::Uuid {
+    let mut counter: u64 = 0;
+    move || {
+        counter += 1;
+        let mut bytes = [seed; 16];
+        bytes[..8].copy_from_slice(&counter.to_be_bytes());
+        uuid::Builder::from_random_bytes(bytes).into_uuid()
+    }
 }

@@ -323,3 +323,34 @@ fn rebind_changes_only_the_provider() {
     assert_eq!(committed.change_set.nodes.changed.len(), 2);
     assert!(committed.change_set.edges.is_empty());
 }
+
+#[test]
+fn put_signature_is_idempotent_rejects_conflicts_and_undoes() {
+    use orange_model::document::SignatureSnapshot;
+    let snapshot = |ty: &str| -> SignatureSnapshot {
+        serde_json::from_value(serde_json::json!({"kind": "pure", "ports": [
+            {"port_id": "a", "direction": "input", "kind": "data", "type": ty}
+        ]}))
+        .unwrap()
+    };
+    let key: orange_model::id::SignatureKey = "s-a".parse().unwrap();
+    let put = |ty: &str| DocCommand::PutSignature {
+        key: key.clone(),
+        snapshot: snapshot(ty),
+    };
+
+    let mut document = empty_document();
+    let before = content(&document);
+    let first = document.apply([put("core/i64@1")]).unwrap();
+    let again = document.apply([put("core/i64@1")]).unwrap();
+    assert!(again.change_set.nodes.is_empty() && document.signatures().len() == 1);
+    assert_rejected(
+        &mut document,
+        vec![put("core/f64@1")],
+        TxError::SignatureConflict(key.clone()),
+    );
+
+    let _ = document.revert(again.inverse).unwrap();
+    let _ = document.revert(first.inverse).unwrap();
+    assert_eq!(content(&document), before);
+}

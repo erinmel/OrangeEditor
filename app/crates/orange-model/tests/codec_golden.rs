@@ -92,7 +92,7 @@ fn fields_are_reachable_through_the_model() {
         LiteralPayload::Value(json!("0"))
     );
 
-    assert_eq!(document.signatures.len(), 3);
+    assert_eq!(document.signatures().len(), 3);
     assert_eq!(document.exports[0].id, "total");
     assert!(document.functions().is_empty());
 }
