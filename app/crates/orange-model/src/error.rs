@@ -21,17 +21,51 @@ pub enum IdError {
     InvalidPortKey { text: String },
     #[error("`{text}` is not a definition id (expected `namespace/name`)")]
     InvalidDefinitionId { text: String },
+    #[error("`{text}` is not a canonical type expression (11 §5.1)")]
+    InvalidTypeExpr { text: String },
     #[error("{what} must not be empty or padded with whitespace")]
     Blank { what: &'static str },
 }
 
-/// A literal whose wire shape violates 12 §6.1.
+/// A literal that violates 12 §6.1, in its wire shape or for its type. `ty` names the type
+/// at the failing position. The validator maps these to `E-LITERAL-TYPE`, except
+/// `NoLiteralForm` (`E-HANDLE-LITERAL`).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum LiteralError {
     #[error("literal needs exactly one of `value` or `bits`")]
     PayloadCount,
     #[error("literal `bits` must be 8 or 16 lowercase hex digits")]
     InvalidBits,
+    #[error(transparent)]
+    InvalidType(#[from] IdError),
+    #[error("type `{ty}` has an unresolved type parameter")]
+    UnresolvedParameter { ty: String },
+    #[error("type `{ty}` has no literal form")]
+    NoLiteralForm { ty: String },
+    #[error("type `{ty}` is neither a core type nor a known record or enum")]
+    UnknownType { ty: String },
+    #[error("literal does not have the shape of `{ty}`")]
+    TypeMismatch { ty: String },
+    #[error("value does not match type `{ty}`")]
+    ValueMismatch { ty: String },
+    #[error("literal is out of range for `{ty}`")]
+    OutOfRange { ty: String },
+    #[error("literal for `{ty}` is not in canonical form")]
+    NonCanonical { ty: String },
+    #[error("`core/secret-ref@1` literals must be `credential://` references")]
+    InvalidSecretRef,
+    #[error("map key type `{ty}` is a float")]
+    FloatMapKey { ty: String },
+    #[error("map literal repeats a key")]
+    DuplicateMapKey,
+    #[error("record literal lacks required field `{field}`")]
+    MissingField { field: String },
+    #[error("record literal has unknown field `{field}`")]
+    UnknownField { field: String },
+    #[error("enum literal has unknown variant `{variant}`")]
+    UnknownVariant { variant: String },
+    #[error("literal nests deeper than the codec budget")]
+    TooDeep,
 }
 
 /// Failure to load or save a graph document.

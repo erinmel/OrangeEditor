@@ -440,6 +440,15 @@ Only the top-level literal carries `type`. Nested values are untagged, and their
 | secret-ref | Reference string (`credential://…`); never secret material |
 | handle, stream, result, error | No literal form (`E-HANDLE-LITERAL`) |
 
+Implementation notes (WU-00/00b.4, `orange-model::literal_codec`):
+
+- **Nested floats** use the same lowercase-hex bit-pattern strings as a top-level `bits` field.
+- **Canonical form required:** decimal strings, bit patterns and base64 must already be canonical (no `+`, no leading zeros, lowercase hex, zero padding bits), so load→save stays byte-stable.
+- **`json` literals** must parse and are kept verbatim, preserving exact number text and JSON null.
+- **Unknown record fields and enum variants** stay in the stored literal; only decoding them to a `Value` fails.
+- **Schemas:** record and enum layouts come from a `Schemas` provider (the registry later).
+- **Nesting budget:** 64 levels for types and literals (proposed).
+
 ### 6.2 Presentation message wire contract
 
 TextRef and MessageRef policy is owned by [13](13-internationalization.md). `MessageRef` has required `origin`, `key`, `args`, `fallback`. `MessageOrigin` is one of:
@@ -482,6 +491,16 @@ pub enum JsonRepr { Null, Bool(bool), Number(NumberText), String(ArcStr), Array(
 - Clone is an `Arc` increment. Mutation-style nodes consume a uniquely owned value or copy on write ([03](03-data-and-execution.md)).
 - Records are addressed by compiled field index, never by name at run time.
 - Secrets are never `Value`s. Brokers hold them ([05](05-services-and-platforms.md)).
+
+Implementation notes (WU-00/00b.4; Rust spelling only):
+
+- **Size:** a compile-time assertion keeps `Value` ≤16 bytes. `ArcStr`/`ArcBytes` are thin `Arc<String>`/`Arc<Vec<u8>>`, because a fat `Arc<str>` would make it 24 bytes.
+- **List storage:** `ListRepr::Bool` is `Box<[bool]>`.
+- **Record type:** `RecordRepr::ty` holds the canonical `TypeExpr` until 00c adds `TypeKey` interning.
+- **Enum tag:** the variant's index in schema order.
+- **JSON:** `Json` holds verbatim JSON text; the structured `JsonRepr` arrives with the JSON node family (05d).
+- **`NodeError`:** carries only its stable code until the WU-03 message contract.
+- **Equality** is structural, with floats compared by bit pattern; it is not the language `eq` constraint.
 
 ## 8. Registry snapshot
 
