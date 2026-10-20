@@ -4,7 +4,7 @@ Proposed members from [02 Architecture](../../docs/02-architecture.md), created 
 
 | Future directory | Owns |
 |---|---|
-| `orange-model/` | Documents, stable IDs, types and transactions |
+| [`orange-model/`](orange-model/Cargo.toml) | Documents, stable IDs, types and transactions. **Created** (00b.1: IDs, document structs, JSON codec) |
 | `orange-contracts/` | Internal host/wire contracts and structured errors |
 | `orange-compiler/` | Validation and immutable execution plans |
 | `orange-runtime/` | Run actors, state and scheduling |
@@ -15,4 +15,4 @@ Proposed members from [02 Architecture](../../docs/02-architecture.md), created 
 | `orange-editor/` | Document commands/history and accessible view model |
 | `orange-scene-bevy/` | Optional scene/render adapter |
 
-These are reserved directories, not created Cargo packages. Core graph crates remain independent of Bevy. External plugin SDK artifacts are published under [sdk/](../../sdk/README.md); installing a plugin does not import private application crates. The bundled-native privilege exception is separate from the installable packages under [plugins/](../../plugins/README.md).
+Apart from `orange-model`, these are reserved directories, not created Cargo packages. Core graph crates remain independent of Bevy. External plugin SDK artifacts are published under [sdk/](../../sdk/README.md); installing a plugin does not import private application crates. The bundled-native privilege exception is separate from the installable packages under [plugins/](../../plugins/README.md).

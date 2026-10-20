@@ -37,3 +37,16 @@ jobs:
         with:
           node-version: 24.18.0
       - run: node tools/check-repo-policy.mjs
+
+  rust:
+    name: rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # The runner's preinstalled rustup installs the toolchain pinned in rust-toolchain.toml.
+      - run: rustup show active-toolchain
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      - run: cargo test --workspace --locked

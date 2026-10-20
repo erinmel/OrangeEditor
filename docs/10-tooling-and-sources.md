@@ -22,9 +22,11 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
   rustup default 1.99.1
   ```
 
-- Bevy's v0.20.0 manifest requires Rust 1.97.1 (S-B02). The installed 1.99.1 satisfies that minimum. This is the selected local toolchain only: no `rust-toolchain.toml`, Cargo manifest or lockfile exists yet, and B-P01 has not compiled Bevy with it. MSRV (1.97.1) CI coverage remains a WU-01 decision.
+- Bevy's v0.20.0 manifest requires Rust 1.97.1 (S-B02). The installed 1.99.1 satisfies that minimum. B-P01 has not compiled Bevy with it. MSRV (1.97.1) CI coverage remains a WU-01 decision.
+- WU-00/00b.1 (2026-10-20) added `rust-toolchain.toml` (channel `1.99.1`, components rustfmt/clippy, profile minimal), the root Cargo workspace (`resolver = "3"`, edition 2024, `rust-version = "1.97.1"`, member `app/crates/orange-model`, `plugins` excluded) and a tracked `Cargo.lock`. Cargo resolved dependencies to the highest versions compatible with Rust 1.97.1; see the 00b.1 row in the dependency ledger.
 - Superseded planning observation: the environment originally reported `rustc`/`cargo` 1.96.1 from a standalone MSI install (`C:\Program Files\Rust stable MSVC 1.96`) that shadowed rustup on PATH, plus rustup toolchains `stable` and `nightly-2026-09-07`. That MSI, the previous rustup install and its toolchains were removed on 2026-10-20 before the reinstall above.
-- No application implementation, dependency resolution, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working Bevy build toolchain.
+- 00b.1 local evidence (Windows 11, Rust 1.99.1, 2026-10-20): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` passed (22 tests: 8 unit, 13 codec integration, 1 property test at proptest's default 256 cases). Remote `rust` CI evidence is recorded when it first runs.
+- Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working Bevy build toolchain.
 
 ## Additional AI development integrations
 
@@ -77,6 +79,21 @@ Bevy is the sole requested framework pin. All other implementation dependencies 
 | Linux virtual source | PipeWire adapter | Versioned API/permissions/session policy and app-owned cleanup on a real Linux session |
 | Credentials | OS-specific secure stores behind one host interface | Windows/macOS/Linux availability and locked/headless behavior; no plaintext fallback |
 | Localization | Fluent FTL parser/formatter candidate, Unicode/CLDR data and host font fallback | Exact versions/features/MSRV/licenses, bounded reference/argument handling and locale/plural capabilities; L-suite, G-39 and B-P02 platform evidence before adoption; sources in [13](13-internationalization.md) |
+
+### Adopted: `orange-model` (WU-00/00b.1, 2026-10-20)
+
+Serde-family candidate adopted for the graph document codec only. Versions are exact `Cargo.lock` entries; licenses and MSRV are from `cargo metadata --locked`. All declared MSRVs are at or below the workspace's 1.97.1.
+
+| Crate | Version / features | License | Declared MSRV | Role |
+|---|---|---|---|---|
+| serde (+ serde_core, serde_derive) | 1.0.229, `derive` | MIT OR Apache-2.0 | 1.56 / 1.71 | Codec derives |
+| serde_json | 1.0.154, `preserve_order` | MIT OR Apache-2.0 | 1.71 | JSON load/save, ordered opaque objects |
+| indexmap (+ hashbrown, foldhash, equivalent) | 2.14.2, `serde` | Apache-2.0 OR MIT (foldhash: Zlib) | 1.85 | Creation-ordered maps |
+| uuid | 1.28.0, `serde` | Apache-2.0 OR MIT | 1.89.0 | v4/v7 document IDs |
+| thiserror | 2.0.21 | MIT OR Apache-2.0 | 1.77 | Error enums |
+| proptest (dev only) | 1.12.0 | MIT OR Apache-2.0 | 1.88 | Round-trip property tests |
+
+Transitive normal dependencies also include itoa 1.0.18, memchr 2.8.3 (Unlicense OR MIT), zmij 1.0.23 (MIT), proc-macro2 1.0.107, quote 1.0.47, syn 3.0.9 and unicode-ident 1.0.27 ((MIT OR Apache-2.0) AND Unicode-3.0). Security advisory review (for example `cargo audit`) has not been run. Malformed-input size bounds and migrations remain open for later 00b slices.
 
 Do not select a crate solely because a Bevy ecosystem page lists it. Independently versioned service crates need not depend on Bevy; UI/render integrations must explicitly support 0.20.0. Record implementation results and the final lockfile in the work unit rather than retroactively presenting candidates as verified.
 

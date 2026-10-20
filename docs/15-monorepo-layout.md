@@ -31,7 +31,7 @@ The tradeoff is shared repository access/history and a larger CI change surface.
 | `examples` | Small version-locked workflows and SDK usage with expected results |
 | `tools`, `.github` | Repository checks and automation; no product runtime responsibilities |
 
-No Cargo manifest/toolchain is added by this repository bootstrap. WU-01 selects compatible pins before compilation, and WU-00 creates the host core incrementally. Once manifests exist, commit the root application lockfile and each independently built plugin lockfile. Code location does not turn an installable Wasm/worker expansion into an in-process Bevy developer plugin. Privileged statically linked base kernels remain `app/crates/orange-bundled`, under the exception in 04.
+The repository bootstrap added no Cargo manifest. WU-00/00b.1 added the root workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`) with its first member `app/crates/orange-model`; `plugins` is excluded. WU-01 still verifies the Bevy pins before any Bevy member is added, and WU-00 grows the host core incrementally. Once manifests exist, commit the root application lockfile and each independently built plugin lockfile. Code location does not turn an installable Wasm/worker expansion into an in-process Bevy developer plugin. Privileged statically linked base kernels remain `app/crates/orange-bundled`, under the exception in 04.
 
 ## Change and release rules
 

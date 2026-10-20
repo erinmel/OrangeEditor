@@ -1,6 +1,6 @@
 # Plan: WU-00/00b.1 — workspace setup and first testable document model
 
-Status: **plan, not started**, 2026-10-20. Branch `feat/wu-00b-document-model`. Nothing below has been built or run.
+Status: **implemented locally**, 2026-10-20, on branch `feat/wu-00b-document-model`. Local fmt/clippy/test evidence is recorded in [10](../../docs/10-tooling-and-sources.md). Remote CI has not run. See §9 for where the implementation differs from this plan.
 
 Contracts: [12 §2–3, §6](../../docs/12-graph-data-structures.md) (normative layout and JSON), [11](../../docs/11-graph-language.md) (semantics), [02](../../docs/02-architecture.md) (crate boundaries), [07](../../docs/07-delivery-plan.md) (00b acceptance), [14](../../docs/14-git-workflow.md) (branch/commit/check rules).
 
@@ -114,3 +114,13 @@ Done when all five pass locally and the remote `docs`, `policy` and `rust` jobs 
 2. `chore(repo): add .artifacts AI context folder and ignore rules`.
 3. `docs(plan): plan WU-00b.1 document model slice` — this file.
 4. Implementation commits per §3–§6, then PR per the template with `Work: WU-00/00b.1`.
+
+## 9. Implementation notes and deviations
+
+- **`TypeExpr` location.** `TypeExpr` and `SignatureKey` live in `id.rs` and share one `opaque_text!` macro (DRY). There is no `type_expr.rs` yet. 00c can move `TypeExpr` without changing callers.
+- **Public fields.** All document fields are `pub`, including `revision` and the maps. Private fields would have needed a builder API just for tests. 00b.2 narrows this surface when transactions become the only mutation path. Until then, the map key always equalling the item's `id` is a convention (`keyed::collect` keeps it).
+- **Unknown keys.** Every extensible object (document, node, edge, provider, lock entries, declarations, signature and port descriptors, activation, export, type parameter) has a flattened `extensions` map. `Literal` rejects unknown keys: it is a closed value encoding, so an unknown key is an error rather than silent loss.
+- **Error granularity.** Format, version and cross-body duplicates are their own `CodecError` variants. Errors raised during parsing (ID syntax, duplicates within one body, literal shape, unknown enum tokens) arrive as `CodecError::Json`; the tests match on their message text.
+- **Saved form.** Every top-level collection is always written, even when empty, and loading accepts documents that omit them. `persistent` and `conflict` are always written (defaults `false` and `reject`).
+- **Golden file.** `tests/fixtures/threshold-v1.canonical.json` is generated output, created with `ORANGE_BLESS=1` and then reviewed. The independent check is value equality with the hand-derived source fixture.
+- **Open questions.** There is no numeric bound on extension maps or input size, and `max_parallel` presence is not checked (validator work).

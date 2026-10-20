@@ -1,0 +1,20 @@
+[package]
+name = "orange-model"
+description = "OrangeEditor graph document model: stable IDs, document structures and the v1 JSON codec"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+indexmap.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true
+
+[lints]
+workspace = true
