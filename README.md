@@ -4,6 +4,8 @@ Status: architecture proposal, 2026-10-20. No product implementation, compilatio
 
 OrangeEditor is a Rust desktop and headless visual programming platform for typed calculations, state, events, files, connections and media. Its expansion plugins are installable product packages that add functionality or replace explicitly supported base providers while the application remains open. Bevy **=0.20.0** is the application/graphics pin; it does not define the graph language or external package ABI.
 
+Public source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). The repository has `main` protection and passing documentation/policy CI; application and plugin implementation remains future work.
+
 ## Document map
 
 | Document | Decision/output |
@@ -23,7 +25,7 @@ OrangeEditor is a Rust desktop and headless visual programming platform for type
 | [11 Graph language](docs/11-graph-language.md) | **Normative** node kinds, ports, types, conversions, regions, cycles, ordering, events, state, streams, diagnostics and G-suite |
 | [12 Graph data structures](docs/12-graph-data-structures.md) | **Normative** document, registry, plan IR and run-state layouts; JSON formats and invariants |
 | [13 Internationalization](docs/13-internationalization.md) | **Normative** translatable text, package catalogues, locale/fallback, diagnostics and localization acceptance |
-| [14 Git workflow](docs/14-git-workflow.md) | Branches, commits, scoped checks, solo/team reviews, merge/release rules and pending repository setup |
+| [14 Git workflow](docs/14-git-workflow.md) | Branches, commits, scoped checks, solo/team reviews, merge/release rules and verified bootstrap status |
 | [15 Monorepo layout](docs/15-monorepo-layout.md) | Application/plugin source areas, SDK boundary and independent package builds/releases |
 | [Contributing](CONTRIBUTING.md) | Short contributor entrypoint and PR template |
 
