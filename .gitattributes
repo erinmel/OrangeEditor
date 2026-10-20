@@ -1,0 +1,15 @@
+* text=auto eol=lf
+*.md text eol=lf
+*.mjs text eol=lf
+*.json text eol=lf
+*.toml text eol=lf
+*.yml text eol=lf
+*.yaml text eol=lf
+*.rs text eol=lf
+*.wit text eol=lf
+*.ftl text eol=lf
+*.ps1 text eol=crlf
+*.png binary
+*.jpg binary
+*.wasm binary
+*.orangeplug binary

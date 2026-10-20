@@ -1,0 +1,25 @@
+# Local editor state
+.idea/
+.vscode/
+
+# Build products and caches (including independent plugin workspaces)
+target/
+node_modules/
+.cache/
+dist/
+*.log
+
+# Local configuration and credentials
+.env
+.env.*
+!.env.example
+*.key
+*.p12
+*.pfx
+
+# OS files
+.DS_Store
+Thumbs.db
+Desktop.ini
+
+# Keep Cargo.lock tracked for the host and each plugin workspace.

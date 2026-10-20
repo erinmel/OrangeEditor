@@ -1,0 +1,112 @@
+# Architecture and ownership
+
+All module names below are proposed crate boundaries, not created Cargo packages. Separate a crate when dependency/lifetime/testing boundaries justify it; internal modules may start together to avoid unnecessary build overhead. Dependency arrows mean compile-time use. Bevy **=0.20.0** is confined to application/scene adapters and bundled renderer infrastructure.
+
+Physical source placement follows [15](15-monorepo-layout.md): application libraries under `app/crates`, desktop/CLI under `app/apps`, installable expansions under `plugins`, and exported public SDK artifacts under `sdk`. These folders share one repository while preserving the dependency/runtime boundaries below. No Cargo members are created by the source-layout decision.
+
+```mermaid
+flowchart TD
+  desktop[orange-desktop / Bevy adapter] --> editor[orange-editor]
+  desktop --> scene[orange-scene-bevy optional]
+  desktop --> host[orange-host]
+  headless[orange-cli] --> host
+  editor --> model[orange-model]
+  editor --> api[orange-contracts]
+  model --> api
+  host --> runtime[orange-runtime]
+  host --> packages[orange-packages]
+  host --> services[orange-services]
+  runtime --> compiler[orange-compiler]
+  compiler --> model
+  runtime --> api
+  packages --> api
+  packages --> model
+  services --> api
+  scene --> api
+  bundled[orange-bundled] --> api
+  bundled --> model
+```
+
+## Boundaries
+
+| Crate | Owns | Must not own |
+|---|---|---|
+| orange-model | GraphDocument, stable IDs, type schemas, package locks, migrations and document edits | Bevy entities, sockets, credentials, runtime futures |
+| orange-contracts | Versioned wire/component contracts, errors, handles, permission vocabulary, declarative editor schema, TextRef/MessageRef | Concrete UI widgets or Rust trait objects crossing package boundaries |
+| orange-compiler | Validation, monomorphized type resolution, control/effect regions, compact immutable ExecutionPlan | Network/audio actions, editor state |
+| orange-runtime | Run/activation state, scheduler, variables, continuations, child task/resource ownership, inspection stream | Bevy schedule/frame dependence |
+| orange-services | File, connection, vault, protocol and audio control services; platform adapter modules | Graph edits or arbitrary plugin UI |
+| orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
+| orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Domain-specific OBS/Twitch request logic |
+| orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |
+| orange-editor | Document commands/history, workspace/panels, view model, accessible interaction model, diagnostics projection | Engine mutation during drawing |
+| orange-desktop | Main thread/window/input, pinned Bevy app, editor rendering/input adapter | Graph execution scheduler |
+| orange-cli | Headless loading, run/stop, structured output and exit status | GPU/window initialization |
+| orange-scene-bevy | Resource handle ↔ local entity mapping, validated scene commands and events | Serializing Bevy Entity IDs into graphs |
+
+Ownership: one composition root owns service lifetimes. Each run owns an immutable `RegistrySnapshot`, compiled plan, variable store, cancellation tree, resource table and subscription leases. Shared connections are host resources leased to runs; dropping one run cannot close another run's lease. Registry generations own installed package instances; package files are immutable and content-addressed. Removal hides new contributions immediately and deletes code only after all generation references are released.
+
+## Rust relationships (conceptual, not compiled API)
+
+```mermaid
+classDiagram
+  GraphDocument "1" *-- "many" NodeInstance
+  GraphDocument "1" *-- "1" PackageLock
+  NodeInstance --> DefinitionId
+  NodeInstance --> ProviderBinding
+  RegistrySnapshot "1" *-- "many" NodeDefinition
+  RegistrySnapshot "1" *-- "many" ProviderDescriptor
+  Compiler --> GraphDocument
+  Compiler --> RegistrySnapshot
+  Compiler ..> ExecutionPlan
+  Run "1" *-- "1" ExecutionPlan
+  Run "1" *-- "1" VariableStore
+  Run "1" *-- "many" ActivationFrame
+  Run "1" *-- "1" ResourceTable
+  Run --> HostServices
+  Kernel : run(cx) -> ActionOutcome
+  NativeKernel ..|> Kernel
+  ComponentKernel ..|> Kernel
+  WorkerKernel ..|> Kernel
+  ExecutionPlan --> Kernel
+  HostServices --> ConnectionManager
+  HostServices --> CredentialBroker
+  HostServices --> AudioEngine
+```
+
+`Kernel`, `FileService`, `CredentialBroker`, `ConnectionManager`, `AudioControl`, `SceneBridge`, `PackageStore` and `Clock` are internal Rust traits for substitution/tests. External components use versioned serialized/component interfaces, not these Rust traits. Kernels come in three shapes ([12 §10](12-graph-data-structures.md)): a pure kernel returns `Result<(), NodeError>`; an action kernel returns `Outcome(OutcomeIx) | Suspend(PendingOp) | Fail(NodeError)`, so it selects exactly one declared outcome; an iterator kernel provides `open/next/close`. Control intrinsics (Branch, Switch, Sequence, Fork, loops) are compiled control instructions, not kernels. Resources are non-forgeable table handles with owner/run/generation checks. Document, registry, plan and run-state layouts are defined in [12](12-graph-data-structures.md), and their semantics in [11](11-graph-language.md). `Value` is immutable or uniquely owned; `VariableStore` is mutated only through runtime commands. `Arc` shares immutable plans/large values; no shared mutable graph behind a lock on the execution path.
+
+## Thread and runtime model
+
+- Main OS thread: Bevy window/input/render integration, accessible editor adapter. It consumes bounded view changes and sends document/runtime commands. Never waits synchronously for graph, file, network, vault or decoder work.
+- Dedicated **Tokio** host runtime: I/O reactors, timers, authenticated sessions and async continuations. Feature/version/MSRV pin must be verified in WU-01; network dependencies are not assumed to run on Bevy task pools. Tokio explicitly provides its own I/O/timer/scheduler runtime services ([runtime documentation](https://docs.rs/tokio/latest/tokio/runtime/), resolved 1.54.0 on 2026-10-20; version pin pending).
+- Run actors on the bounded compute executor: each run is one logical actor that executes one strand segment at a time and owns its plan, run state, activations and queues ([11 §9](11-graph-language.md), ADR-14). Different runs execute in parallel. Run state is never locked.
+- Bounded compute executor: run actors, offloaded heavy pure programs, component calls and decoding, with cooperative yielding, or process termination for uncooperative trusted workers. Blocking OS calls use bounded blocking workers; cancellation can abandon their results but may not interrupt an OS syscall.
+- Audio callback threads: preallocated sample buffers and bounded nonblocking commands only. Decoder/control resampling preparation occurs off callback threads. No general guest invocation, vault call, mutex wait, file read or ECS query in callbacks.
+- Optional external package workers: versioned IPC with heartbeats and bounded frames. Worker exit faults only affected package activations; host handles and child operations are revoked.
+
+Bridge messages carry `RunId`, `Generation`, `ActivationId`, sequence and a bounded payload/reference. UI inspection updates may coalesce by node; effect completions and errors use lossless bounded paths with producer backpressure. Sender shutdown wakes pending receivers. Scene messages are applied at documented Bevy schedule boundaries; headless runs see `CapabilityUnavailable` if they explicitly request rendering.
+
+## Editor foundation decision
+
+Provisional choice: **native Bevy 0.20 UI/Feathers for shell controls, custom graph canvas, a host-owned declarative extension UI model**. This minimizes cross-framework texture/input bridging and lets scene previews share the renderer. It is conditional on exact-version evidence and P1 tests in [09](09-bevy-0.20.md). No Bevy API is claimed compiled here.
+
+Alternatives: a Bevy-compatible egui integration requires an explicitly verified 0.20 compatible release, text/IME/accessibility results and license/MSRV review; a native desktop shell with embedded Bevy viewport adds event-loop and rendering integration cost but is the fallback if required accessibility/text behavior cannot pass. Do not lock the document/runtime/package APIs to widget entities, so a failed UI experiment does not invalidate the engine.
+
+Canvas uses stable document IDs and persistent view state; spatial index for node/port hit-testing; visible region + margin culling; cached edge paths invalidated only when endpoints/viewport change; virtualized palette/inspectors; batch drawing; independent text editing sessions with focus/caret/IME ownership. Pan updates transforms/culling, not graph definitions. A document transaction emits changed IDs and revisions; the adapter patches affected elements. Nonselected offscreen node controls are not instantiated. Selection and validation never rely solely on orange/red colors.
+
+Native dialogs, clipboard, DPI, screen-reader traversal/action names, keyboard-only workflows and cross-platform composition are **required capability tests**, not presumed features of a game engine. A screen reader must reach nodes, ports, errors and logical connections using a structured accessibility representation even if the canvas is custom rendered. WU-02 stop/go precedes committing the large editor UI.
+
+All product-owned visible and accessible text follows [13](13-internationalization.md). Host modules validate and resolve immutable package catalogues; the editor keeps locale/search/text metrics in view state. Core errors/diagnostics emit stable keys and typed redacted arguments. Locale switching patches text/accessibility without graph transactions, recompilation, preview evaluation or changing provider pins. B-P02 includes expansion, CJK/RTL, plural/fallback and language switching during IME; UTF-8 input alone cannot pass the i18n gate.
+
+## Architecture invariants
+
+1. Core crates build/test without Bevy, GPU or network access.
+2. Each side effect has one owning activation and one cancellable lifetime.
+3. Graph/package IDs outlive processes; runtime/entity IDs do not.
+4. Editors, workers and components request service operations through checked handles.
+5. Package install and provider choice are registry transactions; running snapshots do not mutate.
+6. Native host privileges are explicit; guest permission policy never claims to sandbox native code.
+7. `orange-model` and `orange-compiler` own the graph language in [11](11-graph-language.md). Packages extend it only through the surface in [11 §16](11-graph-language.md), never by adding port kinds, control intrinsics or scheduling rules.
+
+Associated requirements: FR-01–07, FR-34–41, FR-44–51. Validation and consequences: [03](03-data-and-execution.md), [04](04-expansion-plugins.md), [06](06-quality-and-validation.md), [11](11-graph-language.md), [12](12-graph-data-structures.md), [13](13-internationalization.md), ADR-01/02/03/08/13–17 in [08](08-decisions.md).
