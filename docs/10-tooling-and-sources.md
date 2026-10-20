@@ -6,10 +6,24 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 
 - User-selected destination: `C:\Users\eriar\OneDrive\Documentos\Projects\Programming\rust\OraneEditor`. Exact directory spelling is intentional; product name is OrangeEditor. The directory existed and was empty at inspection.
 - Planning is staged separately from the existing C# source and then copied into the destination. Existing C# changes are unrelated and must be preserved.
-- `rustc --version`: `rustc 1.96.1 (31fca3adb 2026-06-26)`.
-- `cargo --version`: `cargo 1.96.1 (356927216 2026-06-26)`.
-- `rustup toolchain list` reports `stable-x86_64-pc-windows-msvc` (active/default) and `nightly-2026-09-07-x86_64-pc-windows-msvc`. No assumption is made that the nightly toolchain is an approved substitute for a tested stable pin.
-- Bevy's v0.20.0 manifest requires Rust 1.97.1 (S-B02). The observed compiler does not meet that requirement. A supported toolchain must be selected before any build feasibility gate; no upgrade was performed.
+- Toolchain as of 2026-10-20 (reinstalled after the planning observations below): rustup **1.29.1** (`d95a37b6a 2026-08-13`), installed from winget package `Rustlang.Rustup` (installer hash verified by winget). The only installed toolchain is `1.99.1-x86_64-pc-windows-msvc` (active/default), profile `default`.
+- Observed on a fresh PATH, all resolving from `%USERPROFILE%\.cargo\bin`:
+  - `rustc 1.99.1 (58cf8f9c3 2026-10-13)`
+  - `cargo 1.99.1 (5f94df478 2026-08-27)`
+  - `clippy 0.1.99 (58cf8f9c35 2026-10-13)`
+  - `rustfmt 1.10.0-stable (58cf8f9c35 2026-10-13)`
+  - `rust-analyzer 1.99.1 (58cf8f9c 2026-10-13)`
+  - Installed components: cargo, clippy, rust-analyzer, rust-docs, rust-std, rustc, rustfmt.
+- Install commands used:
+
+  ```powershell
+  winget install --id Rustlang.Rustup --exact --source winget --override "-y --default-toolchain none --profile default"
+  rustup toolchain install 1.99.1 --profile default --component rust-analyzer,clippy,rustfmt
+  rustup default 1.99.1
+  ```
+
+- Bevy's v0.20.0 manifest requires Rust 1.97.1 (S-B02). The installed 1.99.1 satisfies that minimum. This is the selected local toolchain only: no `rust-toolchain.toml`, Cargo manifest or lockfile exists yet, and B-P01 has not compiled Bevy with it. MSRV (1.97.1) CI coverage remains a WU-01 decision.
+- Superseded planning observation: the environment originally reported `rustc`/`cargo` 1.96.1 from a standalone MSI install (`C:\Program Files\Rust stable MSVC 1.96`) that shadowed rustup on PATH, plus rustup toolchains `stable` and `nightly-2026-09-07`. That MSI, the previous rustup install and its toolchains were removed on 2026-10-20 before the reinstall above.
 - No application implementation, dependency resolution, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working Bevy build toolchain.
 
 ## Additional AI development integrations
