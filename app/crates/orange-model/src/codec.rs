@@ -48,7 +48,8 @@ pub fn from_json(text: &str) -> Result<GraphDocument, CodecError> {
             found: header.format_version,
         });
     }
-    let document = serde_json::from_str::<EnvelopeIn>(text)?.document;
+    let mut document = serde_json::from_str::<EnvelopeIn>(text)?.document;
+    document.state_id = document.revision;
     check_unique_across_bodies(&document)?;
     Ok(document)
 }

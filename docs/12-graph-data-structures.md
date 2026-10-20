@@ -134,6 +134,13 @@ pub struct ChangeSet {
 
 A transaction applies a list of commands atomically, produces one `ChangeSet` and one inverse transaction for undo, and increments `revision` once. Converter auto-insert ([11 §6](11-graph-language.md)) is one transaction: AddNode + Disconnect + two Connects. Runtime effects are never recorded in history ([01](01-product-requirements.md) FR-03).
 
+Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
+
+- `AddNode` also names its target body (root or a function), because nodes are stored per body.
+- The inverse is a list of primitive slot patches rather than `DocCommand`s. Each patch restores an entry together with its position, so undo is byte-exact despite removal compaction.
+- Undo and redo are transactions and advance `revision`. Inverses are bound to a per-session content-state ID that undo/redo restore, not to the revision. A loaded document starts with its revision as that ID.
+- `affected_roots` is derived by the compiler from the node, edge and declaration deltas once regions exist (00d/00e).
+
 ## 4. Definition schema
 
 `NodeDefinition` fields: `definition_id`, `definition_version`, `config_version`, `kind`, `suspends` (`never`/`maybe`/`always`; async and iterator), `cleanup_safe`, `volatility` (volatile only), `type_params`, `ports`, `iterator` (iterator only), `event_source` (entry only), `port_template` (optional declarative dynamic ports), `config_schema`, `errors`, `capabilities`, `determinism` (`deterministic`/`seeded`/`external`/`nondeterministic`), `cost` (optional hint: `scalar`/`linear`/`heavy`), `implementation_slot`, `label`, optional `description`, `editor`. All human-facing label/help/category/alias fields use TextRef from [13 §2](13-internationalization.md), including port labels/descriptions and declarative configuration-option captions. Implicit kind ports ([11 §4.1](11-graph-language.md)) are never listed; their text comes from host catalogues.

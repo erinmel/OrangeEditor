@@ -2,6 +2,8 @@
 
 use thiserror::Error;
 
+use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, VariableId};
+
 /// A textual identifier that violates its syntax rule (12 §2).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IdError {
@@ -43,4 +45,46 @@ pub enum CodecError {
     UnsupportedVersion { found: u32 },
     #[error("duplicate {kind} id `{id}` across graph bodies")]
     DuplicateId { kind: &'static str, id: String },
+}
+
+/// A document transaction that was rejected. The document is unchanged.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum TxError {
+    #[error("a transaction needs at least one command")]
+    Empty,
+    #[error("node `{0}` already exists")]
+    NodeExists(NodeId),
+    #[error("node `{0}` does not exist")]
+    NodeNotFound(NodeId),
+    #[error("edge `{0}` already exists")]
+    EdgeExists(EdgeId),
+    #[error("edge `{0}` does not exist")]
+    EdgeNotFound(EdgeId),
+    #[error("edge `{edge}` endpoint node `{node}` does not exist in the edge's body")]
+    EdgeEndpointMissing { edge: EdgeId, node: NodeId },
+    #[error("edge `{0}` would connect nodes in different bodies")]
+    CrossBodyEdge(EdgeId),
+    #[error("variable `{0}` does not exist")]
+    VariableNotFound(VariableId),
+    #[error("event `{0}` does not exist")]
+    EventNotFound(EventDeclId),
+    #[error("function `{0}` does not exist")]
+    FunctionNotFound(FunctionId),
+    #[error("variadic position {at} is past the {len} instances of `{port}` on node `{node}`")]
+    VariadicPositionOutOfRange {
+        node: NodeId,
+        port: PortId,
+        at: usize,
+        len: usize,
+    },
+    #[error("variadic port `{port}` on node `{node}` has no unused instance counter left")]
+    VariadicExhausted { node: NodeId, port: PortId },
+    #[error("node `{node}` has no variadic instance port `{port}`")]
+    VariadicPortNotFound { node: NodeId, port: PortKey },
+    #[error("a layout path needs at least one key")]
+    EmptyLayoutPath,
+    #[error("layout path `{path}` passes through a value that is not an object")]
+    LayoutPathConflict { path: String },
+    #[error("inverse applies to content state {expected}, but the document is in state {actual}")]
+    StaleInverse { expected: u64, actual: u64 },
 }

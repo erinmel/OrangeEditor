@@ -39,21 +39,21 @@ fn save_matches_canonical_bytes_and_is_idempotent() {
 #[test]
 fn fields_are_reachable_through_the_model() {
     let document = from_json(&read_fixture(SOURCE)).unwrap();
-    assert_eq!((document.format_version, document.revision), (1, 7));
+    assert_eq!((document.format_version, document.revision()), (1, 7));
     assert_eq!(document.package_lock.len(), 2);
-    assert_eq!(document.root.nodes.len(), 9);
-    assert_eq!(document.root.edges.len(), 11);
+    assert_eq!(document.root().nodes.len(), 9);
+    assert_eq!(document.root().edges.len(), 11);
 
     // Creation order is the persisted array order.
     let order: Vec<String> = document
-        .root
+        .root()
         .nodes
         .keys()
         .map(ToString::to_string)
         .collect();
     assert_eq!(order, (1..=9).map(node_id).collect::<Vec<_>>());
 
-    let add = &document.root.nodes[&node_id(3).parse::<NodeId>().unwrap()];
+    let add = &document.root().nodes[&node_id(3).parse::<NodeId>().unwrap()];
     assert_eq!(add.definition.id.as_str(), "org.orange.math/add");
     assert!(!add.definition.id.is_core());
     assert_eq!(add.provider.as_ref().unwrap().id, "native-checked");
@@ -61,11 +61,11 @@ fn fields_are_reachable_through_the_model() {
     assert_eq!(add.config["int_overflow"], json!("checked"));
     assert_eq!(add.signature.as_ref().unwrap().as_str(), "s-add-i64");
 
-    let greater = &document.root.nodes[&node_id(5).parse::<NodeId>().unwrap()];
+    let greater = &document.root().nodes[&node_id(5).parse::<NodeId>().unwrap()];
     let b = &greater.inputs[&"b".parse::<PortKey>().unwrap()];
     assert_eq!(b.payload, LiteralPayload::Value(json!("100")));
 
-    let manual = &document.root.nodes[&node_id(1).parse::<NodeId>().unwrap()];
+    let manual = &document.root().nodes[&node_id(1).parse::<NodeId>().unwrap()];
     let activation = manual.activation.as_ref().unwrap();
     assert_eq!(
         (
@@ -82,10 +82,10 @@ fn fields_are_reachable_through_the_model() {
         )
     );
 
-    let condition = &document.root.edges[&edge_id(7).parse::<EdgeId>().unwrap()];
+    let condition = &document.root().edges[&edge_id(7).parse::<EdgeId>().unwrap()];
     assert_eq!(condition.to.port.to_string(), "condition");
 
-    let total = document.variables.values().next().unwrap();
+    let total = document.variables().values().next().unwrap();
     assert_eq!((total.name.as_str(), total.scope), ("total", VarScope::Run));
     assert_eq!(
         total.init.as_ref().unwrap().payload,
@@ -94,5 +94,5 @@ fn fields_are_reachable_through_the_model() {
 
     assert_eq!(document.signatures.len(), 3);
     assert_eq!(document.exports[0].id, "total");
-    assert!(document.functions.is_empty());
+    assert!(document.functions().is_empty());
 }

@@ -1,12 +1,13 @@
 //! Graph document structures (12 §3.1), serialized exactly as format v1 (12 §6).
 //!
-//! These are plain data. The codec checks structure only; whether nodes, ports and types
-//! make sense is the validator's job (00d), so unknown definitions and orphan edges load
-//! fine (12 I-4). Every extensible object keeps unknown keys in `extensions` so that a
-//! newer writer's fields survive load→save (FR-05).
+//! The codec checks structure only; whether nodes, ports and types make sense is the
+//! validator's job (00d), so unknown definitions and orphan edges load fine (12 I-4).
+//! Every extensible object keeps unknown keys in `extensions` so that a newer writer's
+//! fields survive load→save (FR-05).
 //!
-//! Fields are public while this crate has no mutation API. 00b.2 makes transactions the
-//! only way to change a document and narrows this surface.
+//! State owned by transactions (revision, bodies, declarations, editor layout) is private
+//! and changes only through [`GraphDocument::apply`]. Locks, signatures and exports have no
+//! document command yet (12 §3.3) and stay public until their flows exist.
 
 use std::collections::BTreeMap;
 
@@ -33,30 +34,39 @@ pub type TypeParamName = String;
 pub struct GraphDocument {
     pub format_version: u32,
     pub graph_id: GraphId,
-    /// +1 per committed transaction.
-    pub revision: u64,
+    pub(crate) revision: u64,
+    /// Identifies the content within this session; see [`GraphDocument::state_id`].
+    #[serde(skip)]
+    pub(crate) state_id: u64,
     #[serde(default)]
     pub package_lock: Vec<PackageLockEntry>,
     #[serde(default)]
     pub type_lock: Vec<TypeLockEntry>,
     #[serde(default, with = "crate::keyed")]
-    pub variables: IndexMap<VariableId, VariableDecl>,
+    pub(crate) variables: IndexMap<VariableId, VariableDecl>,
     #[serde(default, with = "crate::keyed")]
-    pub events: IndexMap<EventDeclId, EventDecl>,
+    pub(crate) events: IndexMap<EventDeclId, EventDecl>,
     #[serde(default)]
     pub signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     /// Top-level body, persisted as the document's own `nodes` and `edges`.
     #[serde(flatten)]
-    pub root: GraphBody,
+    pub(crate) root: GraphBody,
     #[serde(default, with = "crate::keyed")]
-    pub functions: IndexMap<FunctionId, FunctionDecl>,
+    pub(crate) functions: IndexMap<FunctionId, FunctionDecl>,
     #[serde(default)]
     pub exports: Vec<GraphExport>,
     /// Layout only; never read by the compiler. Typed by the editor work, opaque here.
     #[serde(default)]
-    pub editor: Map<String, Json>,
+    pub(crate) editor: Map<String, Json>,
     #[serde(flatten)]
     pub extensions: Extensions,
+}
+
+/// Which body of a document holds a node or edge.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum BodyRef {
+    Root,
+    Function(FunctionId),
 }
 
 impl GraphDocument {
@@ -66,6 +76,7 @@ impl GraphDocument {
             format_version: 1,
             graph_id,
             revision: 0,
+            state_id: 0,
             package_lock: Vec::new(),
             type_lock: Vec::new(),
             variables: IndexMap::new(),
@@ -79,9 +90,87 @@ impl GraphDocument {
         }
     }
 
+    /// +1 per committed transaction, undo and redo included.
+    pub fn revision(&self) -> u64 {
+        self.revision
+    }
+
+    /// Identity of the current content within this session, used to bind undo/redo
+    /// inverses. A new edit sets it to the new revision; undo/redo restore an earlier one.
+    /// Not persisted: a loaded document starts with its revision.
+    pub fn state_id(&self) -> u64 {
+        self.state_id
+    }
+
+    pub fn root(&self) -> &GraphBody {
+        &self.root
+    }
+
+    pub fn variables(&self) -> &IndexMap<VariableId, VariableDecl> {
+        &self.variables
+    }
+
+    pub fn events(&self) -> &IndexMap<EventDeclId, EventDecl> {
+        &self.events
+    }
+
+    pub fn functions(&self) -> &IndexMap<FunctionId, FunctionDecl> {
+        &self.functions
+    }
+
+    pub fn editor(&self) -> &Map<String, Json> {
+        &self.editor
+    }
+
     /// The root body followed by every function body.
     pub fn bodies(&self) -> impl Iterator<Item = &GraphBody> {
-        std::iter::once(&self.root).chain(self.functions.values().map(|function| &function.body))
+        self.bodies_with_refs().map(|(_, body)| body)
+    }
+
+    /// Bodies with their references, root first.
+    pub fn bodies_with_refs(&self) -> impl Iterator<Item = (BodyRef, &GraphBody)> {
+        let functions = self
+            .functions
+            .iter()
+            .map(|(id, function)| (BodyRef::Function(*id), &function.body));
+        std::iter::once((BodyRef::Root, &self.root)).chain(functions)
+    }
+
+    pub fn body(&self, body: BodyRef) -> Option<&GraphBody> {
+        match body {
+            BodyRef::Root => Some(&self.root),
+            BodyRef::Function(id) => self.functions.get(&id).map(|function| &function.body),
+        }
+    }
+
+    /// The body holding `node`. Linear in the number of bodies until 00b.3 adds indexes.
+    pub fn locate_node(&self, node: NodeId) -> Option<BodyRef> {
+        self.bodies_with_refs()
+            .find(|(_, body)| body.nodes.contains_key(&node))
+            .map(|(body, _)| body)
+    }
+
+    pub fn locate_edge(&self, edge: EdgeId) -> Option<BodyRef> {
+        self.bodies_with_refs()
+            .find(|(_, body)| body.edges.contains_key(&edge))
+            .map(|(body, _)| body)
+    }
+
+    pub fn node(&self, node: NodeId) -> Option<&NodeInstance> {
+        self.bodies().find_map(|body| body.nodes.get(&node))
+    }
+
+    pub fn edge(&self, edge: EdgeId) -> Option<&Edge> {
+        self.bodies().find_map(|body| body.edges.get(&edge))
+    }
+
+    /// The instance literal the compiler would use for `port`: `None` when there is none or
+    /// when a connected edge shadows it (11 §4.4). A shadowed literal stays in the document.
+    pub fn active_literal(&self, port: &PortRef) -> Option<&Literal> {
+        let body = self.body(self.locate_node(port.node)?)?;
+        let literal = body.nodes.get(&port.node)?.inputs.get(&port.port)?;
+        let shadowed = body.edges.values().any(|edge| edge.to == *port);
+        (!shadowed).then_some(literal)
     }
 }
 
