@@ -1,6 +1,6 @@
 # Graph language and execution semantics
 
-Status: **normative proposal for graph format v1**, 2026-10-20. Nothing here has been implemented, compiled or tested; every rule is a contract that WU-00 must prove with the conformance suite in §18. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
+Status: **normative proposal for graph format v1**. The document model exists; validator, compiler and runtime behavior remain to be implemented and tested. Section 18 supplies reference scenarios for focused implementation tests. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
 
 Prior art such as Unreal Blueprints, Blender geometry-node zones, LabVIEW shift registers, Simulink unit delays and RxJS concurrency operators informed the problem list. It is not evidence that these rules perform or are usable. Known pitfalls this design rejects on purpose: pure nodes evaluated again for every consumer (different random values per pin); stale outputs read from nodes that did not execute; "sequence" that moves on while a latent step is still running; glitches in reactive diamonds; recursion with no bound.
 
@@ -183,6 +183,7 @@ A package type declares which constraints it implements by supplying a **constra
 - Resolved type arguments are **persisted** on the instance (`type_args`). Loading never depends on re-running the solver. An edit re-infers only the affected component.
 - Unresolved parameter → `E-TYPE-AMBIGUOUS`; the user pins it in the inspector. Conflict → `E-TYPE-MISMATCH` with converter suggestions. Inference never inserts conversions.
 - A generic provider MUST list its supported specializations, or delegate to constraint implementations. A missing specialization is `E-NO-SPECIALIZATION` at compile time, never a run-time lookup.
+- Numeric authoring presents Float with Single (`core/f32@1`) and Double (`core/f64@1`) precision, alongside integer math (ADR-20). New untyped numbers default to Double; a resolved port or explicit type selection takes precedence. Integer text parses directly as the selected integer type, without a floating intermediate. Saved type identities and visible precision conversions remain governed by §5–6.
 
 ### 5.6 Numeric additions to [03](03-data-and-execution.md)
 
@@ -498,9 +499,9 @@ Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_
 | State and concurrency | `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `W-CONST-ERROR` |
 | Functions and entries | `E-FUNCTION-KIND`, `E-MISSING-RETURN`, `E-ENTRY-IN-FUNCTION`, `E-SUBSCRIPTION-IN-FUNCTION`, `W-DETACH-IN-FUNCTION` |
 
-## 18. Conformance suite (WU-00; all NOT RUN)
+## 18. Reference test scenarios (WU-00)
 
-Each case is a golden graph fixture with expected diagnostics or an expected deterministic trace. It must pass on the reference interpreter (WU-00e) and later on the optimized executor (WU-04).
+These scenarios explain intended behavior and guide focused Rust tests as the validator, interpreter and executor are implemented. They do not require separate JSON fixtures, exhaustive case coverage or a second test framework. Test foundational invariants, representative valid/invalid behavior and actual regressions; compare reference and optimized execution on representative graphs. A scenario listed here is not evidence that it ran (ADR-20).
 
 | ID | Fixture → expected |
 |---|---|
