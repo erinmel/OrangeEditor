@@ -342,6 +342,23 @@ Converter registry entry (semantic identity and provider implementation are vali
 
 The example's `org.orange.math` provider implements the host-owned entry; it does not acquire authority to declare new semantics between two foreign types. The host registers core-owned semantic entries. Package-owned entries must belong to their namespace and own at least one endpoint. A frozen converter view contains canonical endpoints, class, finite policy choices, declared errors, exact provider alternatives (including package digest) and explicit new-binding defaults per entry contract. Conflicting content for one entry identity or conflicting digests for the same implementation binding are rejected. Lossy entries additionally declare the fixed JSON loss output from [11 §6](11-graph-language.md); provider alternatives must preserve that contract.
 
+Persisted `core/convert` node (00c.6a). It binds one entry, one provider and validated policy choices; the instance stores no behavior:
+
+```json
+{
+  "id": "…", "definition_id": "core/convert", "definition_version": 1, "config_version": 1,
+  "config": {"converter": "core/i64-to-i32", "contract_version": 1, "options": {}},
+  "provider": {"package": "org.orange.math", "version": "0.1.0", "id": "native-checked",
+               "content_digest": "sha256:…", "contract_version": 1},
+  "signature": "sha256:…"
+}
+```
+
+- `config.converter` and `config.contract_version` are the entry key; `config.options` holds every declared policy with its resolved choice (defaults filled in, so a later default change never alters the node).
+- `provider` is absent for the language-owned `Core` implementation (a core intrinsic); a package provider is the exact binding, with its digest and contract version as extension fields. It changes only by explicit rebind (ADR-07).
+- The node is a `pure` node whose ports follow the entry: input `value: from`, output `result: to` (`source: computed`) and, for `lossy` entries only, output `loss: core/json@1`. A checked-partial failure is the pure-node error of [11 §13](11-graph-language.md). Unlike other core intrinsics, it stores this snapshot, because its ports depend on the entry named in `config`; inference and drift detection read concrete types from it.
+- A connection plan is an edit (the three commands `PutSignature`, `AddNode`, two `Connect`s, plus a `Disconnect` when it replaces a wire) and is applied as one transaction. Its identities are generated once per plan.
+
 ## 6. Saved graph example
 
 Manual trigger adds an amount to run variable `total`. If the new total exceeds 100, it emits `threshold-reached`; a handler logs it. Get node `n2` has three consumption sites in different epochs. The Set (`n4`) reads the old total. The Branch condition (`n5` → `n6`) and the Emit payload (`n7`) read the committed new total ([11 §7.3](11-graph-language.md)). Export `total` is legal because it uses only a volatile cone. An export of `n3.sum` would be `E-CROSS-ACTIVATION`.

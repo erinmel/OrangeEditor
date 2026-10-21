@@ -70,11 +70,51 @@ pub fn data_edge(n: u8, from: (u8, &str), to: (u8, &str)) -> Json {
 
 pub fn document(nodes: Vec<Json>, edges: Vec<Json>) -> GraphDocument {
     from_json(&minimal_document(json!({
-        "signatures": {"s-source": {"kind": "pure", "ports": [
-            {"port_id": "value", "direction": "output", "kind": "data", "type": "core/i64@1"}
-        ]}},
+        "signatures": signatures(),
         "nodes": nodes,
         "edges": edges,
     })))
     .unwrap()
+}
+
+/// A non-generic node with a single data port `value` of type `core/<ty>@1`: an output
+/// (`typed_source`) or an input (`typed_sink`). Types must be one of `TYPED`.
+pub const TYPED: [&str; 3] = ["i32", "i64", "f64"];
+
+pub fn typed_source(n: u8, ty: &str) -> Json {
+    json!({"id": node_id(n), "definition_id": format!("org.test/out-{ty}"), "definition_version": 1,
+        "config_version": 1, "config": {}, "signature": format!("s-out-{ty}")})
+}
+
+pub fn typed_sink(n: u8, ty: &str, extra: Json) -> Json {
+    let mut node = json!({"id": node_id(n), "definition_id": format!("org.test/in-{ty}"),
+        "definition_version": 1, "config_version": 1, "config": {}, "signature": format!("s-in-{ty}")});
+    node.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    node
+}
+
+fn typed_signatures() -> Json {
+    let mut signatures = serde_json::Map::new();
+    for ty in TYPED {
+        for (key, direction) in [("out", "output"), ("in", "input")] {
+            signatures.insert(
+                format!("s-{key}-{ty}"),
+                json!({"kind": "pure", "ports": [
+                    {"port_id": "value", "direction": direction, "kind": "data",
+                     "type": format!("core/{ty}@1")}
+                ]}),
+            );
+        }
+    }
+    Json::Object(signatures)
+}
+
+fn signatures() -> Json {
+    let mut signatures = typed_signatures();
+    signatures["s-source"] = json!({"kind": "pure", "ports": [
+        {"port_id": "value", "direction": "output", "kind": "data", "type": "core/i64@1"}
+    ]});
+    signatures
 }

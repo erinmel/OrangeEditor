@@ -23,7 +23,7 @@ use crate::document::{
 };
 use crate::id::{DefinitionId, EdgeId, NodeId, TypeExpr};
 use crate::index::DocIndex;
-use crate::type_term::{NamedTerm, TypeTerm};
+use crate::type_term::TypeTerm;
 use crate::types::{
     CapabilityError, CapabilityRequest, Constraint, PackageConstraintId, TypeRegistry,
     TypeResolveError,
@@ -242,22 +242,8 @@ impl Graph<'_> {
             .is_some_and(|declared| declared.kind == PortKind::Data)
     }
 
-    /// The declared port of a node: its generic template, else its signature snapshot.
     fn declared_port(&self, port: &PortRef) -> Option<&ResolvedPort> {
-        let (_, node) = self.node(port.node)?;
-        let ports = match self.templates.generic(node) {
-            Some(template) => &template.ports,
-            None => {
-                &self
-                    .document
-                    .signatures()
-                    .get(node.signature.as_ref()?)?
-                    .ports
-            }
-        };
-        ports
-            .iter()
-            .find(|declared| declared.port_id == *port.port.port())
+        declared_port(self.document, self.templates, port)
     }
 
     fn edge_links_variables(&self, from: &PortRef, to: &PortRef) -> bool {
@@ -275,7 +261,7 @@ impl Graph<'_> {
         };
         let term = parse(port.node, ty)?;
         let generic = self.generic(port.node).is_some();
-        if !generic && contains_param(&term) {
+        if !generic && term.contains_param() {
             // An unresolved non-generic snapshot carries no usable evidence.
             return Ok(None);
         }
@@ -427,6 +413,23 @@ impl Graph<'_> {
     }
 }
 
+/// The declared port of a node: its generic template, else its signature snapshot. A
+/// generic port's type may still mention `$name` parameters.
+pub(crate) fn declared_port<'a>(
+    document: &'a GraphDocument,
+    templates: &'a TemplateCatalog,
+    port: &PortRef,
+) -> Option<&'a ResolvedPort> {
+    let node = document.node(port.node)?;
+    let ports = match templates.generic(node) {
+        Some(template) => &template.ports,
+        None => &document.signatures().get(node.signature.as_ref()?)?.ports,
+    };
+    ports
+        .iter()
+        .find(|declared| declared.port_id == *port.port.port())
+}
+
 fn evidence(evidence: EquationEvidence) -> EquationContext {
     EquationContext {
         evidence: Some(evidence),
@@ -443,7 +446,7 @@ fn parse(node: NodeId, ty: &TypeExpr) -> Result<TypeTerm, InferenceIssue> {
 /// A pin or literal type: concrete syntax, scoped to `node` only for error context.
 fn concrete(node: NodeId, ty: &TypeExpr) -> Result<ScopedTypeTerm, InferenceIssue> {
     let term = parse(node, ty)?;
-    if contains_param(&term) {
+    if term.contains_param() {
         return Err(InferenceIssue::InvalidTerm {
             node,
             ty: ty.clone(),
@@ -461,13 +464,6 @@ fn budget_exceeded(error: TypeScopeError) -> InferenceIssue {
             context: None,
         },
     })
-}
-
-fn contains_param(term: &TypeTerm) -> bool {
-    match term {
-        TypeTerm::Param(_) => true,
-        TypeTerm::Named(NamedTerm { args, .. }) => args.iter().any(contains_param),
-    }
 }
 
 /// Validates a solved argument against the registry and the parameter's constraints.

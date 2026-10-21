@@ -1,5 +1,6 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use crate::id::TypeExpr;
 use crate::type_term::TypeTerm;
@@ -9,6 +10,8 @@ use super::{
     ConversionClass, ConverterDefinition, ConverterErrorCode, ConverterKey, ConverterProvider,
     ConverterRegistrationError, NamedPolicy, PackageProvider,
 };
+
+static NEXT_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct EntryState {
@@ -190,6 +193,7 @@ impl ConverterRegistryBuilder {
                 .push(key.clone());
         }
         Arc::new(ConverterRegistry {
+            generation: NEXT_GENERATION.fetch_add(1, Ordering::Relaxed),
             types: self.types,
             entries: self.entries,
             pairs,
@@ -357,12 +361,19 @@ fn core_definition(
 /// Immutable converter registry snapshot bound to one frozen type registry.
 #[derive(Debug)]
 pub struct ConverterRegistry {
+    generation: u64,
     types: Arc<TypeRegistry>,
     entries: BTreeMap<ConverterKey, EntryState>,
     pairs: BTreeMap<(TypeExpr, TypeExpr), Vec<ConverterKey>>,
 }
 
 impl ConverterRegistry {
+    /// Process-unique identity of this published snapshot. Plans record it so that one made
+    /// against a replaced registry (and its frozen type registry) is recognized as stale.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     pub fn type_registry(&self) -> &Arc<TypeRegistry> {
         &self.types
     }

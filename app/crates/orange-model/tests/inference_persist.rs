@@ -75,7 +75,7 @@ fn resolved_bindings_and_signature_survive_save_and_load() {
 #[test]
 fn one_undo_restores_the_prior_state_and_redo_the_accepted_result() {
     let mut doc = unconnected();
-    let (before, revision) = (content(&doc), doc.revision());
+    let (before, revision, snapshots) = (content(&doc), doc.revision(), doc.signatures().len());
     let done = apply_inferred(
         &mut doc,
         vec![connect(data_edge(1, (1, "value"), (2, "a")))],
@@ -90,7 +90,11 @@ fn one_undo_restores_the_prior_state_and_redo_the_accepted_result() {
     assert_eq!(content(&doc), before);
     assert_eq!(type_arg(&doc, 2), None);
     assert_eq!(doc.node(nid(2)).unwrap().signature, None);
-    assert!(doc.signatures().len() == 1, "only the source snapshot");
+    assert_eq!(
+        doc.signatures().len(),
+        snapshots,
+        "the inferred snapshot is undone"
+    );
 
     let _ = doc.revert(redo).unwrap();
     assert_eq!(content(&doc), after);
