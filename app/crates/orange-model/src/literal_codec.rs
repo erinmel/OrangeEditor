@@ -103,7 +103,7 @@ pub fn encode(
     let term = TypeTerm::parse(ty)?;
     let payload = match (float_width(&term), value) {
         (Some(32), Value::F32(x)) => LiteralPayload::Bits(format!("{:08x}", x.to_bits())),
-        (Some(_), Value::F64(x)) => LiteralPayload::Bits(format!("{:016x}", x.to_bits())),
+        (Some(64), Value::F64(x)) => LiteralPayload::Bits(format!("{:016x}", x.to_bits())),
         (Some(_), _) => return Err(value_mismatch(&term)),
         (None, _) => LiteralPayload::Value(Codec { schemas }.encode(value, &term, 0)?),
     };
@@ -426,7 +426,17 @@ impl<S: Schemas> Codec<'_, S> {
             }
             ("map", items, Value::Map(map)) => {
                 let [key, value] = args(term, items)?;
+                if float_width(&key).is_some() {
+                    return Err(LiteralError::FloatMapKey {
+                        ty: key.to_string(),
+                    });
+                }
+                let mut seen = Vec::with_capacity(map.entries.len());
                 let pairs = map.entries.iter().map(|(k, v)| {
+                    if seen.contains(&k) {
+                        return Err(LiteralError::DuplicateMapKey);
+                    }
+                    seen.push(k);
                     Ok(json!([
                         self.encode(k, &key, depth + 1)?,
                         self.encode(v, &value, depth + 1)?

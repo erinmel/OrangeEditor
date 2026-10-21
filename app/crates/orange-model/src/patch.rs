@@ -120,6 +120,8 @@ fn body_mut(document: &mut GraphDocument, body: BodyRef) -> Result<&mut GraphBod
 trait Slots<K, V> {
     fn take(&mut self, key: &K) -> Option<Placed<V>>;
     fn put(&mut self, key: K, entry: Placed<V>);
+    fn position(&self, key: &K) -> Option<usize>;
+    fn replace(&mut self, key: &K, value: V) -> Option<V>;
 }
 
 impl<K: Hash + Eq, V> Slots<K, V> for IndexMap<K, V> {
@@ -132,6 +134,14 @@ impl<K: Hash + Eq, V> Slots<K, V> for IndexMap<K, V> {
         let index = entry.index.min(self.len());
         self.shift_insert(index, key, entry.value);
     }
+
+    fn position(&self, key: &K) -> Option<usize> {
+        self.get_index_of(key)
+    }
+
+    fn replace(&mut self, key: &K, value: V) -> Option<V> {
+        self.get_mut(key).map(|slot| std::mem::replace(slot, value))
+    }
 }
 
 impl<K: Ord, V> Slots<K, V> for BTreeMap<K, V> {
@@ -141,6 +151,14 @@ impl<K: Ord, V> Slots<K, V> for BTreeMap<K, V> {
 
     fn put(&mut self, key: K, entry: Placed<V>) {
         self.insert(key, entry.value);
+    }
+
+    fn position(&self, key: &K) -> Option<usize> {
+        self.contains_key(key).then_some(0)
+    }
+
+    fn replace(&mut self, key: &K, value: V) -> Option<V> {
+        self.get_mut(key).map(|slot| std::mem::replace(slot, value))
     }
 }
 
@@ -153,6 +171,14 @@ impl Slots<String, Json> for Map<String, Json> {
     fn put(&mut self, key: String, entry: Placed<Json>) {
         let index = entry.index.min(self.len());
         self.shift_insert(index, key, entry.value);
+    }
+
+    fn position(&self, key: &String) -> Option<usize> {
+        self.keys().position(|existing| existing == key)
+    }
+
+    fn replace(&mut self, key: &String, value: Json) -> Option<Json> {
+        self.get_mut(key).map(|slot| std::mem::replace(slot, value))
     }
 }
 
@@ -178,11 +204,21 @@ fn set_slot<K, V>(
     key: K,
     entry: Option<Placed<V>>,
 ) -> Option<Placed<V>> {
-    let old = slots.take(&key);
     if let Some(entry) = entry {
+        if slots.position(&key) == Some(entry.index) {
+            let old = slots
+                .replace(&key, entry.value)
+                .expect("position implies key exists");
+            return Some(Placed {
+                index: entry.index,
+                value: old,
+            });
+        }
+        let old = slots.take(&key);
         slots.put(key, entry);
+        return old;
     }
-    old
+    slots.take(&key)
 }
 
 /// Position an entry should take: its current one when replacing, else the end.
@@ -250,4 +286,117 @@ fn set_path(
     }
     let old = set_slot(current, leaf.clone(), entry);
     Ok(Patch::Editor { path, entry: old })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn assert_ordered_eq(
+        actual: &IndexMap<&'static str, i32>,
+        expected: &IndexMap<&'static str, i32>,
+    ) {
+        assert_eq!(
+            actual.iter().collect::<Vec<_>>(),
+            expected.iter().collect::<Vec<_>>()
+        );
+    }
+
+    #[derive(Default)]
+    struct CountingSlots {
+        values: IndexMap<&'static str, i32>,
+        takes: usize,
+        puts: usize,
+        replacements: usize,
+    }
+
+    impl Slots<&'static str, i32> for CountingSlots {
+        fn take(&mut self, key: &&'static str) -> Option<Placed<i32>> {
+            self.takes += 1;
+            self.values
+                .shift_remove_full(key)
+                .map(|(index, _, value)| Placed { index, value })
+        }
+
+        fn put(&mut self, key: &'static str, entry: Placed<i32>) {
+            self.puts += 1;
+            self.values
+                .shift_insert(entry.index.min(self.values.len()), key, entry.value);
+        }
+
+        fn position(&self, key: &&'static str) -> Option<usize> {
+            self.values.get_index_of(key)
+        }
+
+        fn replace(&mut self, key: &&'static str, value: i32) -> Option<i32> {
+            self.replacements += 1;
+            self.values
+                .get_mut(key)
+                .map(|slot| std::mem::replace(slot, value))
+        }
+    }
+
+    #[test]
+    fn same_position_replacement_does_not_remove_or_reinsert() {
+        let mut slots = CountingSlots::default();
+        slots.values.extend([("a", 1), ("b", 2), ("c", 3)]);
+
+        let old = set_slot(
+            &mut slots,
+            "b",
+            Some(Placed {
+                index: 1,
+                value: 20,
+            }),
+        );
+
+        assert_eq!(old, Some(Placed { index: 1, value: 2 }));
+        let expected = IndexMap::from([("a", 1), ("b", 20), ("c", 3)]);
+        assert_ordered_eq(&slots.values, &expected);
+        assert_eq!((slots.takes, slots.puts, slots.replacements), (0, 0, 1));
+    }
+
+    #[test]
+    fn positional_move_and_inverse_restore_exact_order() {
+        let mut slots = IndexMap::from([("a", 1), ("b", 2), ("c", 3), ("d", 4)]);
+        let original = slots.clone();
+
+        let inverse = set_slot(
+            &mut slots,
+            "b",
+            Some(Placed {
+                index: 3,
+                value: 20,
+            }),
+        )
+        .unwrap();
+        assert_eq!(
+            slots.keys().copied().collect::<Vec<_>>(),
+            ["a", "c", "d", "b"]
+        );
+        let redo = set_slot(&mut slots, "b", Some(inverse)).unwrap();
+        assert_ordered_eq(&slots, &original);
+
+        // A rollback applies the inverse of a later edit before the earlier inverse.
+        let earlier = set_slot(
+            &mut slots,
+            "a",
+            Some(Placed {
+                index: 2,
+                value: 10,
+            }),
+        )
+        .unwrap();
+        let later = set_slot(&mut slots, "c", None).unwrap();
+        set_slot(&mut slots, "c", Some(later));
+        set_slot(&mut slots, "a", Some(earlier));
+        assert_ordered_eq(&slots, &original);
+        assert_eq!(
+            redo,
+            Placed {
+                index: 3,
+                value: 20
+            }
+        );
+    }
 }

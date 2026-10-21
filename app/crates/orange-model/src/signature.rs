@@ -30,6 +30,11 @@ pub fn project(
         .map(|mut port| {
             strip_presentation(&mut port.extensions);
             port.ty = port.ty.map(|ty| substitute_params(&ty, type_args));
+            if let Some(default) = &mut port.default {
+                // Float display text is a non-authoritative rendering hint (12 §6.1).
+                // Keep the literal's type and encoded value in semantic identity.
+                default.display = None;
+            }
             port
         })
         .collect();

@@ -115,6 +115,10 @@ pub enum TxError {
     EventNotFound(EventDeclId),
     #[error("function `{0}` does not exist")]
     FunctionNotFound(FunctionId),
+    #[error("function body node map key `{key}` does not match item id `{item}`")]
+    FunctionNodeKeyMismatch { key: NodeId, item: NodeId },
+    #[error("function body edge map key `{key}` does not match item id `{item}`")]
+    FunctionEdgeKeyMismatch { key: EdgeId, item: EdgeId },
     #[error("variadic position {at} is past the {len} instances of `{port}` on node `{node}`")]
     VariadicPositionOutOfRange {
         node: NodeId,

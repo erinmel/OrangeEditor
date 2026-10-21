@@ -10,6 +10,7 @@
 //! command yet (12 §3.3) and stay public until their flows exist.
 
 use std::collections::BTreeMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -22,6 +23,20 @@ use crate::id::{
 use crate::keyed::Keyed;
 use crate::literal::Literal;
 
+static NEXT_STATE_ID: AtomicU64 = AtomicU64::new(1);
+
+/// A process-unique content-state identity. `fetch_add` works on every supported toolchain
+/// (`fetch_update` is deprecated on 1.99, and `try_update` may postdate the 1.97.1 minimum).
+pub(crate) fn fresh_state_id() -> u64 {
+    let id = NEXT_STATE_ID.fetch_add(1, Ordering::Relaxed);
+    assert_ne!(
+        id,
+        u64::MAX,
+        "document content-state identity space exhausted"
+    );
+    id
+}
+
 /// Unknown keys of an object, preserved in their original order.
 pub type Extensions = Map<String, Json>;
 /// Node configuration, validated later against the definition's `config_schema`.
@@ -30,13 +45,13 @@ pub type ConfigValue = Map<String, Json>;
 pub type TypeParamName = String;
 
 /// The format v1 document, without the `"format"` envelope tag, which the codec owns.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphDocument {
     pub format_version: u32,
     pub graph_id: GraphId,
     pub(crate) revision: u64,
     /// Identifies the content within this session; see [`GraphDocument::state_id`].
-    #[serde(skip)]
+    #[serde(skip, default = "fresh_state_id")]
     pub(crate) state_id: u64,
     #[serde(default)]
     pub package_lock: Vec<PackageLockEntry>,
@@ -62,6 +77,24 @@ pub struct GraphDocument {
     pub extensions: Extensions,
 }
 
+impl PartialEq for GraphDocument {
+    fn eq(&self, other: &Self) -> bool {
+        self.format_version == other.format_version
+            && self.graph_id == other.graph_id
+            && self.revision == other.revision
+            && self.package_lock == other.package_lock
+            && self.type_lock == other.type_lock
+            && self.variables == other.variables
+            && self.events == other.events
+            && self.signatures == other.signatures
+            && self.root == other.root
+            && self.functions == other.functions
+            && self.exports == other.exports
+            && self.editor == other.editor
+            && self.extensions == other.extensions
+    }
+}
+
 /// Which body of a document holds a node or edge.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BodyRef {
@@ -76,7 +109,7 @@ impl GraphDocument {
             format_version: 1,
             graph_id,
             revision: 0,
-            state_id: 0,
+            state_id: fresh_state_id(),
             package_lock: Vec::new(),
             type_lock: Vec::new(),
             variables: IndexMap::new(),
@@ -95,9 +128,9 @@ impl GraphDocument {
         self.revision
     }
 
-    /// Identity of the current content within this session, used to bind undo/redo
-    /// inverses. A new edit sets it to the new revision; undo/redo restore an earlier one.
-    /// Not persisted: a loaded document starts with its revision.
+    /// Opaque identity of the current content state, used to bind undo/redo inverses.
+    /// Clones preserve it; each new edit gets a unique identity, while undo/redo restore
+    /// the identity of the content they return to. Not persisted: each load gets a new one.
     pub fn state_id(&self) -> u64 {
         self.state_id
     }

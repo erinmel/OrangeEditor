@@ -92,7 +92,9 @@ pub struct ActivationPolicy {
 
 `SignatureKey` is a document-local key. The implementation uses `sha256:` over the canonical JSON of the snapshot, so identical signatures share one entry; examples use short keys. Core intrinsic signatures are defined by `format_version` and config, so they are not stored. Serialization order is `IndexMap` order (creation order, compacted on removal), which makes output deterministic for the same command history.
 
-`ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
+Implementation correction (00b review): replacing an existing entry at its current position updates that slot in place. Insertions, removals and actual reordering retain positional patches so undo restores the exact order. The replacement path avoids shifting unrelated entries; order-preserving removal and reordering can still be linear. NFR-15 timing targets remain unmeasured.
+
+`ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
 
 ### 3.2 Derived indexes (not persisted)
 
@@ -145,7 +147,8 @@ Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
 
 - `AddNode` also names its target body (root or a function), because nodes are stored per body.
 - The inverse is a list of primitive slot patches rather than `DocCommand`s. Each patch restores an entry together with its position, so undo is byte-exact despite removal compaction.
-- Undo and redo are transactions and advance `revision`. Inverses are bound to a per-session content-state ID that undo/redo restore, not to the revision. A loaded document starts with its revision as that ID.
+- Undo and redo are transactions and advance `revision`. Inverses bind to an opaque process-unique content-state ID, not to the revision. A clone preserves the ID while it represents the same transaction-owned state; each new edit allocates a fresh ID, undo/redo restore the earlier ID, and every load allocates a fresh ID. This prevents divergent clones, unrelated documents and reloads from accepting each other's inverses. The transient ID is excluded from serialization and document equality.
+- Function insertion checks that every node/edge map key equals the entry's own ID before applying a patch. A mismatch returns a typed transaction error and rolls back the entire transaction. This enforces the existing keyed-map representation without changing graph JSON or graph diagnostics.
 - `affected_roots` is derived by the compiler from the node, edge and declaration deltas once regions exist (00d/00e).
 - `PutSignature { key, snapshot }` (00b.3) adds a shared snapshot so that pasted nodes keep the snapshots I-4 requires. An identical snapshot under the same key is a no-op; different content under an existing key is rejected. Signatures are therefore transaction-owned. Package locks and exports still have no command.
 - Canonical JSON for `SignatureKey` (00b.3): object keys sorted by byte order, no whitespace, serde_json string escaping. This matches RFC 8785 for the ASCII keys and integers in snapshots. WU-03 publishes the cross-language digest vectors. Semantic projection removes `label`, `description`, `group` and `editor` and substitutes `$T` parameters from `type_args`.
@@ -439,6 +442,8 @@ Only the top-level literal carries `type`. Nested values are untagged, and their
 | json | Canonical JSON text as a string (keeps exact number text) |
 | secret-ref | Reference string (`credential://…`); never secret material |
 | handle, stream, result, error | No literal form (`E-HANDLE-LITERAL`) |
+
+Implementation correction (00b.4 review): encoding requires the exact f32/f64 runtime variant; it performs no implicit narrowing or widening. Map encoding rejects floating-point key types and duplicate runtime keys, just as decoding does. Constraint registration and general key eligibility remain 00c work under [11 §5](11-graph-language.md).
 
 Implementation notes (WU-00/00b.4, `orange-model::literal_codec`):
 

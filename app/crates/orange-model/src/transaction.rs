@@ -13,7 +13,7 @@ use serde_json::Value as Json;
 use crate::change_set::{ChangeSet, Tracker};
 use crate::document::{
     BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument, NodeInstance, PortRef,
-    ProviderBinding, SignatureSnapshot, TypeParamName, VariableDecl, VariadicState,
+    ProviderBinding, SignatureSnapshot, TypeParamName, VariableDecl, VariadicState, fresh_state_id,
 };
 use crate::error::TxError;
 use crate::id::{
@@ -195,12 +195,12 @@ impl Journal {
         }
     }
 
-    /// Bumps the revision. A new edit gets a fresh content state (its new revision, unique
-    /// within the document); an undo or redo returns to the state it `restores`.
+    /// Bumps the revision. A new edit gets a fresh content-state identity; an undo or redo
+    /// returns to the identity it `restores`.
     fn commit(mut self, document: &mut GraphDocument, restores: Option<u64>) -> Committed {
         let (from_revision, from_state) = (document.revision, document.state_id);
         document.revision += 1;
-        document.state_id = restores.unwrap_or(document.revision);
+        document.state_id = restores.unwrap_or_else(fresh_state_id);
         self.inverses.reverse();
         Committed {
             change_set: self.tracker.finish(document, from_revision),
@@ -530,6 +530,22 @@ fn edge_body(edge: &Edge, locate: impl Fn(NodeId) -> Option<BodyRef>) -> Result<
 /// body and its edges stay inside it.
 fn check_function_body(document: &GraphDocument, decl: &FunctionDecl) -> Result<(), TxError> {
     let this = BodyRef::Function(decl.id);
+    for (key, node) in &decl.body.nodes {
+        if *key != node.id {
+            return Err(TxError::FunctionNodeKeyMismatch {
+                key: *key,
+                item: node.id,
+            });
+        }
+    }
+    for (key, edge) in &decl.body.edges {
+        if *key != edge.id {
+            return Err(TxError::FunctionEdgeKeyMismatch {
+                key: *key,
+                item: edge.id,
+            });
+        }
+    }
     let foreign = |found: Option<BodyRef>| found.is_some_and(|body| body != this);
     if let Some(id) = decl
         .body

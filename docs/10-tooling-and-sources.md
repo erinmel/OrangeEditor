@@ -31,6 +31,27 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 - 00b.4 local evidence (same environment, 2026-10-20): the same three commands passed with 87 tests in total. New tests: 9 unit tests (Value size and equality, type terms, RFC 4648 base64 vectors); 6 scalar literal tests; 8 aggregate/FR-08 literal tests, including decoding every literal in the 12 §6 example; 1 encode/decode round-trip property. A compile-time assertion keeps `Value` at 16 bytes or less. The codec nesting budget `MAX_NESTING = 64` is a proposed value and an open budget. No new dependency (base64 is implemented locally).
 - Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working Bevy build toolchain.
 
+## Model review fixes and slice 4 analysis (2026-10-20)
+
+The user authorized Luna subagents to fix the first-four-plan review findings. Three `gpt-6-luna` subagents used isolated detached worktrees based on `8c1f42f`, with explicit source/test ownership. The parent reviewed and integrated their changes into the existing feature checkout; no commit, push, merge or remote CI was performed by this review.
+
+Corrections: unique transient undo state identities across divergent clones/reloads; atomic function-body node/edge map key validation; default-literal display excluded from semantic projection; same-position ordered-slot replacement without remove/reinsert; exact float-width checks in literal encoding; and map encoding rejecting duplicate/float keys. Contracts and implementation notes are updated in [12](12-graph-data-structures.md), with the identity clarification in ADR-06. FR-03, FR-08 and G-39 regressions cover the affected behavior. The edit-path operation-count test supports NFR-15 investigation but does not measure its timing targets.
+
+Selected toolchain: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`, `x86_64-pc-windows-msvc`; `rust-toolchain.toml`, workspace manifests, dependency features and `Cargo.lock` are unchanged. Lockfile SHA-256: `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+Executed in the parent checkout after integration (document checks use Node.js v24.18.0):
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `cargo test --workspace --locked --offline` | PASS: 100 tests, 0 failures; 0 doctests |
+| `node tools/check-docs.mjs` | PASS: 33 Markdown files, 13 JSON blocks, 287 local links |
+| `node tools/check-repo-policy.mjs` | PASS: tracked-path, credential-pattern and Git-whitespace checks; limited scan, not a security audit |
+| `git diff --check` | PASS |
+
+The 13 added regressions are two internal patch/operation-order tests, four undo/function-invariant tests, three signature tests and four literal-encoding tests. Windows emitted incremental-cache hard-link warnings with a copy fallback. The temporary pre-fix slice-4 probe reproduced encoder failures and observed that JSON text containing 84 nested arrays is accepted despite the typed-container budget of 64; it is not part of the permanent suite. [The review note](../.artifacts/notes/wu-00b-4-review.md) records remaining JSON bounds, quadratic map checks and coverage limits. No MSRV 1.97.1 build, Bevy build, cross-OS run, NFR measurement or gate passage is asserted.
+
 ## Additional AI development integrations
 
 **No new MCP/plugin is required to finish this plan.** Web research, filesystem tools and an architecture subagent are available. These development integrations are unrelated to OrangeEditor expansion packages.
