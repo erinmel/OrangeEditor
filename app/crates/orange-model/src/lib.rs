@@ -13,6 +13,7 @@ pub mod edit;
 pub mod error;
 pub mod id;
 pub mod index;
+pub mod inference;
 pub mod paste;
 pub mod signature;
 pub mod type_term;

@@ -186,6 +186,7 @@ The initial host supports explicit package structural derives for `eq`, `hash`, 
 - Inference unifies type expressions over the **connected component** of generic nodes touched by an edit. It visits nodes in stable `NodeId` order, so the result is deterministic. Literals carry explicit types.
 - Resolved type arguments are **persisted** on the instance (`type_args`). Loading never depends on re-running the solver. An edit re-infers only the affected component.
 - Unresolved parameter → `E-TYPE-AMBIGUOUS`; the user pins it in the inspector. Conflict → `E-TYPE-MISMATCH` with converter suggestions. Inference never inserts conversions.
+- Exhausting an analysis resource budget produces `E-TYPE-COMPLEXITY`, with the relevant node/parameter context and limit. It does not fall back to a numeric type or report a semantic mismatch. Provisional implementation budgets are recorded in [10](10-tooling-and-sources.md); a resource failure does not redefine the valid type grammar.
 - A generic provider MUST list its supported specializations, or delegate to constraint implementations. A missing specialization is `E-NO-SPECIALIZATION` at compile time, never a run-time lookup.
 - Numeric authoring presents Float with Single (`core/f32@1`) and Double (`core/f64@1`) precision, alongside integer math (ADR-20). New untyped numbers default to Double; a resolved port or explicit type selection takes precedence. Integer text parses directly as the selected integer type, without a floating intermediate. Saved type identities and visible precision conversions remain governed by §5–6.
 
@@ -497,7 +498,7 @@ Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_
 | Group | Codes |
 |---|---|
 | Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
-| Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
+| Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-TYPE-COMPLEXITY`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
 | Regions and availability | `E-REGION-AMBIGUOUS`, `E-REGION-ESCAPE`, `E-UNAVAILABLE-VALUE`, `E-CROSS-ACTIVATION`, `E-BREAK-OUTSIDE-LOOP`, `E-ZONE-STRUCTURE`, `W-UNREACHABLE` |
 | Cycles | `E-CYCLE-DATA`, `E-CYCLE-SYNC-CONTROL`, `E-RECURSION`, `E-LOOP-UNBOUNDED`, `W-BUSY-LOOP` |
 | State and concurrency | `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `W-CONST-ERROR` |
