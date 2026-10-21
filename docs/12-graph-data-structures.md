@@ -503,7 +503,7 @@ Implementation notes (WU-00/00b.4; Rust spelling only):
 
 - **Size:** a compile-time assertion keeps `Value` ≤16 bytes. `ArcStr`/`ArcBytes` are thin `Arc<String>`/`Arc<Vec<u8>>`, because a fat `Arc<str>` would make it 24 bytes.
 - **List storage:** `ListRepr::Bool` is `Box<[bool]>`.
-- **Record type:** `RecordRepr::ty` holds the canonical `TypeExpr` until 00c adds `TypeKey` interning.
+- **Record type:** `RecordRepr::ty` retains canonical `TypeExpr` even with 00c interning. The standalone codec returns freely owned values without retaining a registry snapshot. Migration to a transient key waits for a runtime consumer that owns the matching snapshot for every key use; a detached key must not replace persisted type identity.
 - **Enum tag:** the variant's index in schema order.
 - **JSON:** `Json` holds verbatim JSON text; the structured `JsonRepr` arrives with the JSON node family (05d).
 - **`NodeError`:** carries only its stable code until the WU-03 message contract.
@@ -526,7 +526,9 @@ pub struct RegistrySnapshot {
 
 Hash lookups here are compile-time only. Publication validates namespace ownership, constraint coherence and converter ownership before the snapshot is visible ([04](04-expansion-plugins.md)).
 
-Implementation (00c.1a): `orange_model::types::TypeRegistry` resolves concrete `TypeTerm`s against the core constructor table and interns their canonical identity. The public host-side `TypeKey` wraps a dense `u32` slot with an opaque registry owner token; lookup rejects a key from another registry even when its numeric slot exists there. Registries are not cloned into independently mutable identity spaces. This checked host wrapper is not a wire representation or a change to future dense execution-plan indexes; keys are never persisted. Resolution rejects unresolved parameters, unknown names/majors, wrong arity and nesting beyond the existing parser budget.
+Implementation (00c.1): `orange_model::types::TypeRegistryBuilder` registers type metadata and interns concrete `TypeTerm`s; `build` validates schema references/member IDs and publishes an immutable `TypeRegistry`. The registry supplies the existing literal `Schemas` interface directly, preserving one record/enum layout model. Package registrations cannot replace core types or claim another package namespace. Handle constructors require registered handle-kind arguments. Recursive nominal schema references do not expand during registration; literal decoding/encoding retains its depth budget.
+
+The public host-side `TypeKey` wraps a dense `u32` slot with an opaque registry owner token; lookup rejects a key from another registry even when its numeric slot exists there. Registries are not cloned into independently mutable identity spaces. This checked host wrapper is not a wire representation or a change to future dense execution-plan indexes; keys are never persisted. Resolution rejects unresolved parameters, unknown names/majors, wrong arity and nesting beyond the existing parser budget. Read-only validation and owner/kind queries also accept uninterned terms, so inference need not mutate a published snapshot.
 
 ## 9. Execution plan IR
 

@@ -39,7 +39,7 @@ WU-10's B-P04 probe intentionally happens early alongside UI/plugin feasibility;
 
 ## Executable subunits
 
-Subunits within a package run in listed order unless their inputs explicitly permit parallel work. An output is accepted only with its listed evidence; do not combine an entire broad package into one opaque editor rewrite. These are future tasks, all **NOT RUN**.
+Subunits within a package run in listed order unless their inputs explicitly permit parallel work. An output is accepted only with its listed evidence; do not combine an entire broad package into one opaque editor rewrite. Implementation status/evidence is noted per row or in its linked task packet; unmarked future work is **NOT RUN**.
 
 | Subunit | Output | Acceptance |
 |---|---|---|
