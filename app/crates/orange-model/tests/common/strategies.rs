@@ -91,6 +91,7 @@ pub fn node() -> impl Strategy<Value = NodeInstance> {
                     config_version,
                     config: json!({"level": "info"}).as_object().unwrap().clone(),
                     type_args,
+                    type_pins: BTreeMap::new(),
                     provider: provider.map(|id| ProviderBinding {
                         package: "org.orange.math".into(),
                         version: "0.1.0".into(),

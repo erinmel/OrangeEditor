@@ -243,7 +243,7 @@ impl TypeRegistryBuilder {
             {
                 return Err(TypeRegistrationError::DuplicateConstraintImplementation {
                     ty: target.to_string(),
-                    constraint: format!("{core_constraint:?}").to_ascii_lowercase(),
+                    constraint: core_constraint.id_name().to_owned(),
                 });
             }
         }

@@ -20,6 +20,10 @@ pub struct NodeInstance {
     /// Persisted inference result.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub type_args: BTreeMap<TypeParamName, TypeExpr>,
+    /// Explicit user type choices. Missing on older documents means no pins; `type_args`
+    /// remains an inferred cache and is never migrated into this map.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub type_pins: BTreeMap<TypeParamName, TypeExpr>,
     /// `None` only for `core/` intrinsics.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub provider: Option<ProviderBinding>,
@@ -110,4 +114,32 @@ pub enum OverflowPolicy {
 pub enum FaultPolicy {
     Continue,
     StopRun,
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::NodeInstance;
+
+    #[test]
+    fn legacy_node_without_type_pins_loads_with_no_pins() {
+        let mut value = json!({
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "org.example/math",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"}
+        });
+        let node: NodeInstance = serde_json::from_value(value.clone()).unwrap();
+        assert!(node.type_pins.is_empty());
+        assert_eq!(node.type_args["T"].as_str(), "core/i64@1");
+
+        value["type_pins"] = json!({"T": "core/f64@1"});
+        let pinned: NodeInstance = serde_json::from_value(value).unwrap();
+        assert_eq!(pinned.type_pins["T"].as_str(), "core/f64@1");
+        let encoded = serde_json::to_value(pinned).unwrap();
+        assert_eq!(encoded["type_pins"]["T"], "core/f64@1");
+    }
 }

@@ -31,6 +31,25 @@ pub enum Constraint {
 }
 
 impl Constraint {
+    const ALL: [Self; 9] = [
+        Self::Eq,
+        Self::Ord,
+        Self::Hash,
+        Self::Num,
+        Self::Int,
+        Self::Float,
+        Self::Display,
+        Self::Serialize,
+        Self::Default,
+    ];
+
+    /// Parses a constraint name as written in a definition type parameter (11 §5.4).
+    pub fn from_id_name(name: &str) -> Option<Self> {
+        Self::ALL
+            .into_iter()
+            .find(|constraint| constraint.id_name() == name)
+    }
+
     pub(crate) fn id_name(self) -> &'static str {
         match self {
             Self::Eq => "eq",
@@ -120,7 +139,7 @@ impl TypeRegistryBuilder {
         ) {
             return Err(TypeRegistrationError::UnsupportedDerivation {
                 ty: ty.to_string(),
-                constraint: format!("{constraint:?}").to_ascii_lowercase(),
+                constraint: constraint.id_name().to_owned(),
             });
         }
         let term = TypeTerm::parse(ty).map_err(TypeRegistrationError::InvalidTypeExpr)?;
@@ -153,7 +172,7 @@ impl TypeRegistryBuilder {
         {
             return Err(TypeRegistrationError::DuplicateConstraintImplementation {
                 ty: id.to_string(),
-                constraint: format!("{constraint:?}").to_ascii_lowercase(),
+                constraint: constraint.id_name().to_owned(),
             });
         }
         let Some(definition) = self.definitions.get_mut(&id) else {
@@ -215,13 +234,13 @@ impl TypeRegistry {
                     Ok(None) => {
                         return Err(TypeRegistrationError::InvalidDerivedConstraint {
                             ty: id.to_string(),
-                            constraint: format!("{constraint:?}").to_ascii_lowercase(),
+                            constraint: constraint.id_name().to_owned(),
                         });
                     }
                     Err(CapabilityError::RecursiveDerivation { ty, constraint }) => {
                         return Err(TypeRegistrationError::RecursiveDerivation {
                             ty,
-                            constraint: format!("{constraint:?}").to_ascii_lowercase(),
+                            constraint: constraint.id_name().to_owned(),
                         });
                     }
                     Err(CapabilityError::DerivationTooDeep { max }) => {
@@ -230,7 +249,7 @@ impl TypeRegistry {
                     Err(CapabilityError::Type(_)) => {
                         return Err(TypeRegistrationError::InvalidDerivedConstraint {
                             ty: id.to_string(),
-                            constraint: format!("{constraint:?}").to_ascii_lowercase(),
+                            constraint: constraint.id_name().to_owned(),
                         });
                     }
                 }
@@ -272,7 +291,7 @@ fn validate_map_constraints(
                 Err(CapabilityError::RecursiveDerivation { ty, constraint }) => {
                     return Err(TypeResolveError::RecursiveDerivation {
                         ty,
-                        constraint: format!("{constraint:?}").to_ascii_lowercase(),
+                        constraint: constraint.id_name().to_owned(),
                     });
                 }
                 Err(CapabilityError::DerivationTooDeep { max }) => {

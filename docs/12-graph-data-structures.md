@@ -60,7 +60,8 @@ pub struct NodeInstance {
     pub provider: Option<ProviderBinding>,   // None only for core/ intrinsics
     pub config_version: u32,
     pub config: ConfigValue,                 // validated by definition config_schema
-    pub type_args: BTreeMap<TypeParamName, TypeExpr>,  // persisted inference result
+    pub type_args: BTreeMap<TypeParamName, TypeExpr>,  // resolved parameters (cache)
+    pub type_pins: BTreeMap<TypeParamName, TypeExpr>,  // explicit user choices (11 §5.5)
     pub inputs: BTreeMap<PortKey, Literal>,  // includes shadowed literals
     pub variadic: BTreeMap<PortId, VariadicState>,     // order + next counter
     pub signature: Option<SignatureKey>,     // required for every non-intrinsic node

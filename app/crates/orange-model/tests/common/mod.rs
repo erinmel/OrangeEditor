@@ -90,6 +90,7 @@ pub fn node(n: u8) -> NodeInstance {
         config_version: 1,
         config: Default::default(),
         type_args: Default::default(),
+        type_pins: Default::default(),
         provider: None,
         signature: None,
         inputs: Default::default(),

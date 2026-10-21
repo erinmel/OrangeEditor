@@ -1,6 +1,6 @@
 # WU-00c implementation tasks
 
-Status: 00c.1, 2, 3 and 5a are accepted locally on `feat/wu-00c-types-conversions`; 5b is in progress, with graph integration next. This is the task packet for the seven slices in [07](07-delivery-plan.md). Keep it as the working handoff; do not create a README, fixture inventory or separate report for every task. The existing development branch retains its cleanup commits and receives small implementation commits.
+Status: 00c.1, 2, 3, 4a and 5 are accepted locally on `feat/wu-00c-types-conversions`; 4b (persisting inference) is next, then 6a/6b. This is the task packet for the seven slices in [07](07-delivery-plan.md). Keep it as the working handoff; do not create a README, fixture inventory or separate report for every task.
 
 ## Ownership and context
 
@@ -18,8 +18,8 @@ Current agents: F = `/root/type_foundations`, S = `/root/inference`, C = `/root/
 Current handoffs:
 
 - F: 1a/1b in `cd6cb73` supply `TypeRegistryBuilder` and frozen `TypeRegistry` using the existing literal schemas. Term-based `validate`/`owner_of`/`kind_of` work without interning; key queries enforce registry ownership. `RecordRepr::ty` stays canonical text. 2a in `cb513e1` adds bounded capability/derive proofs and authoritative map constraints. Accepted 2b adds versioned `ConstraintId`, exact `ConstraintImplementationRef` using `ProviderBinding` plus digest/implementation ID, core/custom constraint registration and operation-specific proofs; derive slots cannot be overwritten. Eleven constraint tests, workspace tests (144 at this stage), formatting, Clippy and warning-denied docs passed; focused checks reran after canonical-ID validation was tightened. No kernels or package authentication are implemented.
-- S: 3a in `0059ae0` provides checked simultaneous structural signature substitution and an opaque legacy fallback; existing signature vectors pass. 3b in `43b2029` provides node-scoped unification, iterative/path-compressed aliases and a provisional 16,384-node expanded-term budget; eight focused tests and Clippy pass. No graph inference or pins implemented yet.
-- C: 5a in `59ea3aa` separates semantic converter entries from exact provider alternatives, with explicit new-binding defaults, finite policy choices and core integer/float precision declarations. Eleven focused registry tests pass. Selection is in progress; planning/insertion await S's graph integration. Package insertion will require an existing exact lock.
+- S: 3a (`0059ae0`) substitutes signature parameters structurally; 3b (`43b2029`) unifies node-scoped terms with a provisional 16,384-node budget. 4a adds `inference::infer_components`: read-only analysis of the generic components touched by an edit, seeded from `type_pins`, active typed literals, edges and concrete neighbour snapshots, never from persisted `type_args`; host templates come from `TemplateCatalog` (`GenericDefinition`). Outcomes map to E-TYPE-MISMATCH, E-TYPE-AMBIGUOUS, E-TYPE-COMPLEXITY, E-CONSTRAINT-UNSATISFIED and E-NO-SPECIALIZATION. Pins are specified in 11 §5.5, 12 §3.1 and ADR-16. Core intrinsics without a snapshot contribute no evidence yet. Next consumer: 4b.
+- C: 5a (`59ea3aa`) separates semantic converter entries from exact provider alternatives with explicit new-binding defaults; 5b (`4b5c865`) adds `select_for_connection` and `resolve_explicit_choice` with Compatible/Automatic/ChoiceRequired/Rejected outcomes. Planning and insertion (6a/6b) wait for 4b.
 
 Checks above use Windows x64, Rust/Cargo 1.99.1, default features and unchanged `Cargo.lock`. Accepted commit bodies record exact commands and lockfile identity; no performance, remote CI or runtime gate is claimed.
 
@@ -55,7 +55,7 @@ These are reading boundaries, not copies of the contracts. Dependency handoffs a
 
 ## Ready order
 
-Tasks 1a/1b, 2a/2b, 3a/3b and 5a are accepted locally; 5b is in progress, and later tasks are pending. Dependencies mean reviewed, working outputs, not only a proposed interface. The principal path is 1→2→3→4→6→7. Converter work 5 may proceed after its listed prerequisites, alongside inference work if file ownership allows it.
+Tasks 1a/1b, 2a/2b, 3a/3b, 4a and 5a/5b are accepted locally; 4b and later tasks are pending. Dependencies mean reviewed, working outputs, not only a proposed interface. The principal path is 1→2→3→4→6→7.
 
 | Task | Owner | Depends on | Result |
 |---|---|---|---|
