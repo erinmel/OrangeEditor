@@ -96,6 +96,8 @@ Replaceable slots include `node:<definition>@<contract>`, `convert:<from>-><to>`
 
 When providers compete: no automatic last-installed-wins. User selects workspace/app defaults for **new bindings**; existing graph locks retain provider ID, package version/digest and contract. Explicit rebind previews affected nodes/types/config/resource changes, runs migration on a copy and validates the graph before commit. Missing selected provider blocks affected execution and preserves placeholders. Uninstall may propose a compatible bundled fallback, but executing it requires explicit rebind; there is no silent substitution. Diagnostics expose selected provider/registry generation and override provenance.
 
+Converter pair slots may contain distinct semantic entry contracts. An override implements the same converter ID/contract, preserving its endpoints, class, policies, errors and loss output. New-binding provider defaults are scoped to that entry contract; implementing an existing entry does not grant authority to register new foreign-to-foreign conversion semantics. Multiple providers for one entry do not increase the semantic conversion count used for auto-insertion ([11 §6](11-graph-language.md)).
+
 ## Hot update/removal semantics
 
 Hot addition immediately publishes new contributions. **Hot replacement of running code is separate:** existing runs retain old snapshots/component instances; new graphs or explicitly rebound graphs select the new package version. A graph edit normally prepares a new run; live swapping an executing continuation is not supported in 1.0. Existing pending external side effects are never replayed to imitate migration.

@@ -204,6 +204,10 @@ Integer arithmetic config: `int_overflow` = `checked` (default) / `wrapping` / `
 3. **Editor auto-insert:** when an incompatible wire is dropped and exactly one `lossless-total` entry exists for the pair, the editor inserts a visible converter node in the same undoable transaction. If only partial or lossy entries exist, the editor shows a choice and never picks one. Chained conversions are never auto-inserted. With no entry, the connection is rejected with a diagnostic.
 4. Ownership: a package may register converters only when it owns `from` or `to`. A competing provider for an existing pair uses override slot `convert:<from>-><to>` ([04](04-expansion-plugins.md)) with the same explicit-rebind rule as other providers.
 
+Entry identity is a stable converter ID plus contract version. Multiple implementations of that same entry are provider alternatives, not additional semantic conversions. Count distinct semantic entries when applying rule 3: a unique lossless-total entry is eligible even when partial/lossy entries also exist, but its exact provider must resolve unambiguously from an explicit new-binding default, sole implementation or user choice. No default is inferred from installation order. Defaults are scoped to the entry contract within the pair slot; existing bindings remain pinned.
+
+The initial host policy form is a named finite set of string choices, with an optional default; missing required choices, unknown policy names/values and unsupported forms are rejected. Packages may declare their own finite choices. Lossy entries expose a separate `loss: core/json@1` output for converter-defined loss details. Core precision entries declare f32→f64 lossless and f64→f32 lossy; the latter declares nearest-even rounding and rejection of out-of-range values. These are conversion contracts; arithmetic kernels and runtime loss-detail production are later work.
+
 ## 7. Regions, availability, ordering and determinism
 
 ### 7.1 Regions

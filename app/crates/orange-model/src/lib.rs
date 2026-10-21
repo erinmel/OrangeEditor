@@ -8,6 +8,7 @@
 //! literal codec); `edit` (transactions and undo); `index`, `signature` and `paste`
 //! (derived lookups, semantic signatures and copy/paste).
 
+pub mod conversion;
 pub mod document;
 pub mod edit;
 pub mod error;

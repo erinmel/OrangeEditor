@@ -318,10 +318,12 @@ Package entry (event source acquired in the run's Starting phase):
 - Constraint values: `derive` (host derives it structurally; valid only if every field or payload implements the constraint) or an implementation reference into the owning package. Field and variant IDs never change. `name` is source display metadata, not identity; `label: TextRef` supplies translatable captions for types, fields and variants. Names/labels may change without changing identity. Derived graph `display` renders the canonical TypeExpr and field/variant IDs plus recursively invariant payload formatting; it never uses mutable names or translations. User-declared variable/event/function names remain content ([13](13-internationalization.md)).
 - Minor version bumps may add optional fields or variants only ([11 §5.3](11-graph-language.md)).
 
-Converter registry entry:
+Converter registry entry (semantic identity and provider implementation are validated separately by 00c.5a):
 
 ```json
 {
+  "converter_id": "core/i64-to-i32",
+  "contract_version": 1,
   "from": "core/i64@1",
   "to": "core/i32@1",
   "class": "checked-partial",
@@ -331,6 +333,8 @@ Converter registry entry:
   "provider": {"package": "org.orange.math", "version": "0.1.0", "id": "native-checked"}
 }
 ```
+
+The example's `org.orange.math` provider implements the host-owned entry; it does not acquire authority to declare new semantics between two foreign types. The host registers core-owned semantic entries. Package-owned entries must belong to their namespace and own at least one endpoint. A frozen converter view contains canonical endpoints, class, finite policy choices, declared errors, exact provider alternatives (including package digest) and explicit new-binding defaults per entry contract. Conflicting content for one entry identity or conflicting digests for the same implementation binding are rejected. Lossy entries additionally declare the fixed JSON loss output from [11 §6](11-graph-language.md); provider alternatives must preserve that contract.
 
 ## 6. Saved graph example
 
