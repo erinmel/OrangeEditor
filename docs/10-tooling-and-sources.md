@@ -117,6 +117,8 @@ Parent integration validation on Windows x64: `cargo fmt --all --check`, `cargo 
 
 During implementation, a concurrent repository update introduced the `dev` integration / `main` promotion policy (`26cdfe4`, PR #3). These pipeline changes were integrated in a separate checkout while preserving that policy and leaving the shared checkout clean. PR validation includes dev/main pushes; application releases still require promoted main ancestry. The CI/CD PR tracks its integration dependency and final remote head/results separately.
 
+Remote implementation evidence: [run 39534720986](https://github.com/erinmel/OrangeEditor/actions/runs/39534720986) on `805e16b` passed all 11 jobs. Step readback confirms Linux executed tests, Windows/macOS used native compile/link without execution, and MSRV used all-target compilation. Workflow lint, eight release-helper tests/configuration, architecture, format/Clippy/rustdoc, security and the aggregate passed. This documentation-only follow-up leaves both workflows/tooling unchanged and exercises cache reuse; the PR records the final head/run and observed cache outcome. CD's real build/sign/install/publish path remains unexecuted because release readiness is intentionally false.
+
 ## Additional AI development integrations
 
 **No new MCP/plugin is required to finish this plan.** Web research, filesystem tools and an architecture subagent are available. These development integrations are unrelated to OrangeEditor expansion packages.
