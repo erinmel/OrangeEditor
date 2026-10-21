@@ -1,0 +1,185 @@
+name: Release CD
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  preflight:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    outputs:
+      package: ${{ steps.plan.outputs.package }}
+      binary: ${{ steps.plan.outputs.binary }}
+      version: ${{ steps.plan.outputs.version }}
+      commit: ${{ steps.plan.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+      - id: plan
+        name: Require a qualified executable and immutable release identity
+        env:
+          RELEASE_TAG: ${{ github.ref_name }}
+        run: node tools/release.mjs plan
+
+  validate:
+    needs: preflight
+    uses: ./.github/workflows/checks.yml
+    with:
+      full-platform-tests: true
+
+  build:
+    needs: [preflight, validate]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            suffix: ''
+          - platform: windows
+            os: windows-2022
+            target: x86_64-pc-windows-msvc
+            suffix: .exe
+          - platform: macos
+            os: macos-15
+            target: aarch64-apple-darwin
+            suffix: ''
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: release-${{ matrix.target }}
+          cache-bin: false
+      - name: Build the selected executable with locked release inputs
+        shell: bash
+        env:
+          RELEASE_PACKAGE: ${{ needs.preflight.outputs.package }}
+          RELEASE_BINARY: ${{ needs.preflight.outputs.binary }}
+          BUILD_TARGET: ${{ matrix.target }}
+        run: cargo build --release --locked --target "$BUILD_TARGET" --package "$RELEASE_PACKAGE" --bin "$RELEASE_BINARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: native-${{ matrix.platform }}
+          path: target/${{ matrix.target }}/release/${{ needs.preflight.outputs.binary }}${{ matrix.suffix }}
+          if-no-files-found: error
+          retention-days: 7
+
+  package:
+    needs: [preflight, build]
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux
+            os: ubuntu-24.04
+          - platform: windows
+            os: windows-2022
+          - platform: macos
+            os: macos-15
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
+    environment: release-${{ matrix.platform }}
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: native-${{ matrix.platform }}
+          path: ${{ runner.temp }}/native
+      - name: Package, sign and verify installation and launch
+        shell: pwsh
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+          RELEASE_BINARY: ${{ needs.preflight.outputs.binary }}
+          RELEASE_CREDENTIALS: ${{ secrets.RELEASE_CREDENTIALS }}
+        run: |
+          $suffix = if ($IsWindows) { '.exe' } else { '' }
+          $binaryPath = Join-Path $env:RUNNER_TEMP "native/$($env:RELEASE_BINARY)$suffix"
+          if (-not $IsWindows) { chmod +x $binaryPath }
+          & "./tools/release/$($env:RELEASE_PLATFORM).ps1" -BinaryPath $binaryPath -OutputDirectory "$env:RUNNER_TEMP/package" -Version $env:RELEASE_VERSION -Commit $env:RELEASE_COMMIT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Require native verification evidence and checksum packages
+        env:
+          RELEASE_PLATFORM: ${{ matrix.platform }}
+        shell: bash
+        run: node tools/release.mjs verify "$RUNNER_TEMP/package" "$RELEASE_PLATFORM"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: release-${{ matrix.platform }}
+          path: ${{ runner.temp }}/package/
+          if-no-files-found: error
+          retention-days: 14
+
+  publish:
+    needs: [preflight, package]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    environment: release-publish
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      RELEASE_TAG: ${{ github.ref_name }}
+      RELEASE_VERSION: ${{ needs.preflight.outputs.version }}
+      RELEASE_COMMIT: ${{ needs.preflight.outputs.commit }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: release-*
+          path: ${{ runner.temp }}/release
+      - name: Verify the complete artifact set from this workflow run
+        shell: bash
+        run: node tools/release.mjs collect "$RUNNER_TEMP/release"
+      - uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
+        with:
+          subject-path: ${{ runner.temp }}/release/release-*/*
+      - name: Publish the verified packages without rebuilding
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          test "$(gh api "repos/$GITHUB_REPOSITORY/commits/$RELEASE_TAG" --jq .sha)" = "$RELEASE_COMMIT"
+          mapfile -t packages < "$RUNNER_TEMP/release/publish-files.txt"
+          flags=()
+          if [[ "$RELEASE_TAG" == *-* ]]; then flags+=(--prerelease); fi
+          gh release create "$RELEASE_TAG" "${packages[@]}" "$RUNNER_TEMP/release/SHA256SUMS" --verify-tag --title "$RELEASE_TAG" --generate-notes "${flags[@]}"

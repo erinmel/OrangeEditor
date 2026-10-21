@@ -1,10 +1,16 @@
-name: Rust checks
+name: PR validation
 
 on:
   push:
     branches: [dev, main]
   pull_request:
   workflow_dispatch:
+  workflow_call:
+    inputs:
+      full-platform-tests:
+        description: Execute tests on every native OS during release qualification.
+        type: boolean
+        default: false
   schedule:
     - cron: '0 8 * * 1'
 
@@ -12,7 +18,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: checks-${{ github.event.pull_request.number || github.ref }}
+  group: checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:
@@ -38,6 +44,12 @@ jobs:
           persist-credentials: false
       # The runner's preinstalled rustup installs the toolchain pinned in rust-toolchain.toml.
       - run: rustup show active-toolchain
+      - name: Cache compiled dependencies
+        if: matrix.check != 'rust-format'
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: ${{ matrix.check }}
+          cache-bin: false
       - name: ${{ matrix.check }}
         run: ${{ matrix.command }}
 
@@ -63,26 +75,27 @@ jobs:
         run: node tools/check-cargo-metadata.mjs --msrv >> "$GITHUB_OUTPUT"
 
   rust_msrv:
-    name: rust-msrv
+    name: msrv-compatibility
     needs: rust_architecture
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: ${{ needs.rust_architecture.outputs.msrv }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - name: Install declared MSRV
-        env:
-          MSRV: ${{ needs.rust_architecture.outputs.msrv }}
-        run: rustup toolchain install "$MSRV" --profile minimal
+        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
       - name: Record declared MSRV compiler
-        env:
-          MSRV: ${{ needs.rust_architecture.outputs.msrv }}
-        run: rustc +"$MSRV" --version --verbose
-      - name: Test on declared MSRV
-        env:
-          MSRV: ${{ needs.rust_architecture.outputs.msrv }}
-        run: cargo +"$MSRV" test --workspace --locked
+        run: rustc --version --verbose
+      - name: Cache MSRV dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: msrv
+          cache-bin: false
+      - name: Check every target on declared MSRV
+        run: cargo check --workspace --all-targets --locked
 
   dependency_security:
     name: dependency-security
@@ -117,8 +130,33 @@ jobs:
       - name: Check advisories and sources with current databases
         run: cargo deny --locked check advisories sources
 
+  release_contract:
+    name: workflow-contracts
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
+      - name: Validate CI/CD workflow syntax and expressions
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          gh release download v1.7.12 --repo rhysd/actionlint --pattern actionlint_1.7.12_linux_amd64.tar.gz --dir "$RUNNER_TEMP/actionlint"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint/actionlint_1.7.12_linux_amd64.tar.gz" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/actionlint/actionlint_1.7.12_linux_amd64.tar.gz" -C "$RUNNER_TEMP/actionlint"
+          "$RUNNER_TEMP/actionlint/actionlint" -shellcheck= -pyflakes= .github/workflows/*.yml
+      - run: node --test tools/release.test.mjs
+      - run: node tools/release.mjs check
+
   rust_tests:
-    name: rust-tests (${{ matrix.os }})
+    name: native-compatibility (${{ matrix.os }})
     strategy:
       fail-fast: false
       matrix:
@@ -132,12 +170,22 @@ jobs:
       # rustup reads the shared pin on Linux x64, Windows x64 and macOS arm64.
       - run: rustup show active-toolchain
       - run: rustc --version --verbose
-      - run: cargo test --workspace --locked
+      - name: Cache native dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: native-${{ matrix.os }}
+          cache-bin: false
+      - name: Run workspace tests
+        if: matrix.os == 'ubuntu-24.04' || inputs.full-platform-tests || github.event_name == 'schedule'
+        run: cargo test --workspace --locked
+      - name: Compile and link test targets without duplicate execution
+        if: matrix.os != 'ubuntu-24.04' && !inputs.full-platform-tests && github.event_name != 'schedule'
+        run: cargo test --workspace --all-targets --locked --no-run
 
   rust:
     name: rust
     if: ${{ always() }}
-    needs: [rust_checks, rust_architecture, rust_msrv, dependency_security, rust_tests]
+    needs: [rust_checks, rust_architecture, rust_msrv, dependency_security, release_contract, rust_tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -148,9 +196,10 @@ jobs:
           ARCHITECTURE_RESULT: ${{ needs.rust_architecture.result }}
           MSRV_RESULT: ${{ needs.rust_msrv.result }}
           SECURITY_RESULT: ${{ needs.dependency_security.result }}
+          RELEASE_CONTRACT_RESULT: ${{ needs.release_contract.result }}
           TESTS_RESULT: ${{ needs.rust_tests.result }}
         run: |
-          if [[ "$CHECKS_RESULT" != "success" || "$ARCHITECTURE_RESULT" != "success" || "$MSRV_RESULT" != "success" || "$SECURITY_RESULT" != "success" || "$TESTS_RESULT" != "success" ]]; then
-            echo "Rust format, Clippy, rustdoc, architecture, MSRV, dependency security, or platform tests failed, were cancelled, or were skipped." >&2
+          if [[ "$CHECKS_RESULT" != "success" || "$ARCHITECTURE_RESULT" != "success" || "$MSRV_RESULT" != "success" || "$SECURITY_RESULT" != "success" || "$RELEASE_CONTRACT_RESULT" != "success" || "$TESTS_RESULT" != "success" ]]; then
+            echo "A required code, dependency, release-contract, or native compatibility check did not succeed." >&2
             exit 1
           fi
