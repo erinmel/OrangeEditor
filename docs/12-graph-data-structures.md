@@ -50,6 +50,7 @@ pub struct GraphDocument {
     pub extensions: OpaqueExtensionMap,      // unknown fields, bounded, preserved
 }
 pub struct GraphBody {
+    pub domain: Option<DomainId>,            // absent = `control` (ADR-21)
     pub nodes: IndexMap<NodeId, NodeInstance>,
     pub edges: IndexMap<EdgeId, Edge>,
 }
@@ -91,6 +92,8 @@ pub struct ActivationPolicy {
 ```
 
 `SignatureKey` is a document-local key. The implementation uses `sha256:` over the canonical JSON of the snapshot, so identical signatures share one entry; examples use short keys. Core intrinsic signatures are defined by `format_version` and config, so they are not stored. Serialization order is `IndexMap` order (creation order, compacted on removal), which makes output deterministic for the same command history.
+
+`domain` names the execution domain of a body (ADR-21): the root graph's key sits beside its `nodes`/`edges`, and each function body carries its own. It is a namespaced ID such as `org.example.music/signal`; absent means the built-in `control` domain (11 §2–§15), so existing format v1 documents are unchanged. A domain the host does not provide makes the body load and round-trip but not compile, like an unresolved provider. Domains come from crates linked by the embedding product, never from installed packages. The typed field is added to `orange-model` when a host first registers a second domain; until then a `domain` key is preserved as an unknown field.
 
 Implementation correction (00b review): replacing an existing entry at its current position updates that slot in place. Insertions, removals and actual reordering retain positional patches so undo restores the exact order. The replacement path avoids shifting unrelated entries; order-preserving removal and reordering can still be linear. NFR-15 timing targets remain unmeasured.
 
@@ -669,7 +672,7 @@ pub trait IteratorKernel {
 | I-4 | Every non-intrinsic node has a signature snapshot, a provider binding and a lock entry. Edges to unknown ports are retained as orphan edges. |
 | I-5 | `type_args` fully resolve every type parameter of a compiled node. |
 | I-6 | Plans and snapshots are immutable. Run state is mutated only by its actor. Workspace state only by the host actor. |
-| I-7 | No Bevy `Entity`, Rust `TypeId`, pointer, live handle or secret is ever persisted. |
+| I-7 | No engine or UI entity ID, Rust `TypeId`, pointer, live handle or secret is ever persisted. |
 | I-8 | The warm pure path for scalar types performs no hashing and no heap allocation. |
 
 | Operation | Complexity | Proposed budget |

@@ -20,11 +20,6 @@ export function inspectConfig(config, metadata) {
   if (!member) throw new Error('Release package is not a workspace member.');
   if (!member.targets.some(target => target.kind.includes('bin') && target.name === config.binary)) throw new Error('Release target is not a workspace executable.');
   if (!member.license && !member.license_file) throw new Error('The release package needs a reviewed license declaration.');
-  const forbidden = metadata.packages.filter(pkg => pkg.name === 'bevy').some(pkg => {
-    const node = metadata.resolve.nodes.find(node => node.id === pkg.id);
-    return node?.features.some(feature => ['dynamic_linking', 'dev'].includes(feature));
-  });
-  if (forbidden) throw new Error('Release resolution includes Bevy development/dynamic-linking features.');
   return member;
 }
 

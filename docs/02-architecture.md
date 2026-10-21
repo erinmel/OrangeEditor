@@ -1,13 +1,12 @@
 # Architecture and ownership
 
-All module names below are proposed crate boundaries, not created Cargo packages. Separate a crate when dependency/lifetime/testing boundaries justify it; internal modules may start together to avoid unnecessary build overhead. Dependency arrows mean compile-time use. Bevy **=0.20.0** is confined to application/scene adapters and bundled renderer infrastructure.
+All module names below are proposed crate boundaries, not created Cargo packages. Separate a crate when dependency/lifetime/testing boundaries justify it; internal modules may start together to avoid unnecessary build overhead. Dependency arrows mean compile-time use. The project uses no game engine (ADR-02): the editor UI is egui, hosted by eframe in the desktop app, and core crates have no UI, window or engine dependency. Downstream products add engines, scenes and other domains in their own crates (ADR-21).
 
 Physical source placement follows [15](15-monorepo-layout.md): application libraries under `app/crates`, desktop/CLI under `app/apps`, installable expansions under `plugins`, and exported public SDK artifacts under `sdk`. These folders share one repository while preserving the dependency/runtime boundaries below. No Cargo members are created by the source-layout decision.
 
 ```mermaid
 flowchart TD
-  desktop[orange-desktop / Bevy adapter] --> editor[orange-editor]
-  desktop --> scene[orange-scene-bevy optional]
+  desktop[orange-desktop / eframe app] --> editor[orange-editor-ui egui]
   desktop --> host[orange-host]
   headless[orange-cli] --> host
   editor --> model[orange-model]
@@ -22,7 +21,6 @@ flowchart TD
   packages --> api
   packages --> model
   services --> api
-  scene --> api
   bundled[orange-bundled] --> api
   bundled --> model
 ```
@@ -31,18 +29,17 @@ flowchart TD
 
 | Crate | Owns | Must not own |
 |---|---|---|
-| orange-model | GraphDocument, stable IDs, type schemas, package locks, migrations and document edits | Bevy entities, sockets, credentials, runtime futures |
+| orange-model | GraphDocument, stable IDs, type schemas, package locks, migrations and document edits | Engine or UI entities, sockets, credentials, runtime futures |
 | orange-contracts | Versioned wire/component contracts, errors, handles, permission vocabulary, declarative editor schema, TextRef/MessageRef | Concrete UI widgets or Rust trait objects crossing package boundaries |
 | orange-compiler | Validation, monomorphized type resolution, control/effect regions, compact immutable ExecutionPlan | Network/audio actions, editor state |
-| orange-runtime | Run/activation state, scheduler, variables, continuations, child task/resource ownership, inspection stream | Bevy schedule/frame dependence |
+| orange-runtime | Run/activation state, scheduler, variables, continuations, child task/resource ownership, inspection stream | UI or frame dependence |
 | orange-services | File, connection, vault, protocol and audio control services; platform adapter modules | Graph edits or arbitrary plugin UI |
 | orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
 | orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Domain-specific OBS/Twitch request logic |
 | orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |
-| orange-editor | Document commands/history, workspace/panels, view model, accessible interaction model, diagnostics projection | Engine mutation during drawing |
-| orange-desktop | Main thread/window/input, pinned Bevy app, editor rendering/input adapter | Graph execution scheduler |
+| orange-editor-ui | egui editor: document commands/history, workspace/panels, view model, accessible interaction model, diagnostics projection | Engine mutation during drawing |
+| orange-desktop | Main thread/window/input, eframe app hosting `orange-editor-ui` | Graph execution scheduler |
 | orange-cli | Headless loading, run/stop, structured output and exit status | GPU/window initialization |
-| orange-scene-bevy | Resource handle ↔ local entity mapping, validated scene commands and events | Serializing Bevy Entity IDs into graphs |
 
 Ownership: one composition root owns service lifetimes. Each run owns an immutable `RegistrySnapshot`, compiled plan, variable store, cancellation tree, resource table and subscription leases. Shared connections are host resources leased to runs; dropping one run cannot close another run's lease. Registry generations own installed package instances; package files are immutable and content-addressed. Removal hides new contributions immediately and deletes code only after all generation references are released.
 
@@ -78,30 +75,30 @@ classDiagram
 
 ## Thread and runtime model
 
-- Main OS thread: Bevy window/input/render integration, accessible editor adapter. It consumes bounded view changes and sends document/runtime commands. Never waits synchronously for graph, file, network, vault or decoder work.
-- Dedicated **Tokio** host runtime: I/O reactors, timers, authenticated sessions and async continuations. Feature/version/MSRV pin must be verified in WU-01; network dependencies are not assumed to run on Bevy task pools. Tokio explicitly provides its own I/O/timer/scheduler runtime services ([runtime documentation](https://docs.rs/tokio/latest/tokio/runtime/), resolved 1.54.0 on 2026-10-20; version pin pending).
+- Main OS thread: eframe window/input/render integration and the egui editor with AccessKit. It consumes bounded view changes and sends document/runtime commands. Never waits synchronously for graph, file, network, vault or decoder work.
+- Dedicated **Tokio** host runtime: I/O reactors, timers, authenticated sessions and async continuations. Feature/version/MSRV pin must be verified in WU-01; network dependencies never run on the UI thread. Tokio explicitly provides its own I/O/timer/scheduler runtime services ([runtime documentation](https://docs.rs/tokio/latest/tokio/runtime/), resolved 1.54.0 on 2026-10-20; version pin pending).
 - Run actors on the bounded compute executor: each run is one logical actor that executes one strand segment at a time and owns its plan, run state, activations and queues ([11 §9](11-graph-language.md), ADR-14). Different runs execute in parallel. Run state is never locked.
 - Bounded compute executor: run actors, offloaded heavy pure programs, component calls and decoding, with cooperative yielding, or process termination for uncooperative trusted workers. Blocking OS calls use bounded blocking workers; cancellation can abandon their results but may not interrupt an OS syscall.
 - Audio callback threads: preallocated sample buffers and bounded nonblocking commands only. Decoder/control resampling preparation occurs off callback threads. No general guest invocation, vault call, mutex wait, file read or ECS query in callbacks.
 - Optional external package workers: versioned IPC with heartbeats and bounded frames. Worker exit faults only affected package activations; host handles and child operations are revoked.
 
-Bridge messages carry `RunId`, `Generation`, `ActivationId`, sequence and a bounded payload/reference. UI inspection updates may coalesce by node; effect completions and errors use lossless bounded paths with producer backpressure. Sender shutdown wakes pending receivers. Scene messages are applied at documented Bevy schedule boundaries; headless runs see `CapabilityUnavailable` if they explicitly request rendering.
+Bridge messages carry `RunId`, `Generation`, `ActivationId`, sequence and a bounded payload/reference. UI inspection updates may coalesce by node; effect completions and errors use lossless bounded paths with producer backpressure. Sender shutdown wakes pending receivers. Host adapter messages are applied at documented host boundaries; headless runs see `CapabilityUnavailable` if they explicitly request rendering.
 
 ## Editor foundation decision
 
-Provisional choice: **native Bevy 0.20 UI/Feathers for shell controls, custom graph canvas, a host-owned declarative extension UI model**. This minimizes cross-framework texture/input bridging and lets scene previews share the renderer. It is conditional on exact-version evidence and P1 tests in [09](09-bevy-0.20.md). No Bevy API is claimed compiled here.
+Selected, conditional on probe P-02 ([09](09-feasibility-probes.md)): **egui for the editor UI and custom graph canvas, hosted by eframe, with a host-owned declarative extension UI model** (ADR-02). The `orange-editor-ui` crate depends on egui only, so downstream products can embed the same editor in their own window or engine. No egui API is claimed compiled here.
 
-Alternatives: a Bevy-compatible egui integration requires an explicitly verified 0.20 compatible release, text/IME/accessibility results and license/MSRV review; a native desktop shell with embedded Bevy viewport adds event-loop and rendering integration cost but is the fallback if required accessibility/text behavior cannot pass. Do not lock the document/runtime/package APIs to widget entities, so a failed UI experiment does not invalidate the engine.
+Alternatives and fallback order are in ADR-02 (Slint first). Do not lock the document/runtime/package APIs to widget entities, so a failed UI experiment does not invalidate the engine.
 
 Canvas uses stable document IDs and persistent view state; spatial index for node/port hit-testing; visible region + margin culling; cached edge paths invalidated only when endpoints/viewport change; virtualized palette/inspectors; batch drawing; independent text editing sessions with focus/caret/IME ownership. Pan updates transforms/culling, not graph definitions. A document transaction emits changed IDs and revisions; the adapter patches affected elements. Nonselected offscreen node controls are not instantiated. Selection and validation never rely solely on orange/red colors.
 
-Native dialogs, clipboard, DPI, screen-reader traversal/action names, keyboard-only workflows and cross-platform composition are **required capability tests**, not presumed features of a game engine. A screen reader must reach nodes, ports, errors and logical connections using a structured accessibility representation even if the canvas is custom rendered. WU-02 stop/go precedes committing the large editor UI.
+Native dialogs, clipboard, DPI, screen-reader traversal/action names, keyboard-only workflows and cross-platform composition are **required capability tests**, not presumed features of a UI toolkit. A screen reader must reach nodes, ports, errors and logical connections using a structured accessibility representation even if the canvas is custom rendered. WU-02 stop/go precedes committing the large editor UI.
 
-All product-owned visible and accessible text follows [13](13-internationalization.md). Host modules validate and resolve immutable package catalogues; the editor keeps locale/search/text metrics in view state. Core errors/diagnostics emit stable keys and typed redacted arguments. Locale switching patches text/accessibility without graph transactions, recompilation, preview evaluation or changing provider pins. B-P02 includes expansion, CJK/RTL, plural/fallback and language switching during IME; UTF-8 input alone cannot pass the i18n gate.
+All product-owned visible and accessible text follows [13](13-internationalization.md). Host modules validate and resolve immutable package catalogues; the editor keeps locale/search/text metrics in view state. Core errors/diagnostics emit stable keys and typed redacted arguments. Locale switching patches text/accessibility without graph transactions, recompilation, preview evaluation or changing provider pins. P-02 includes expansion, CJK/RTL, plural/fallback and language switching during IME; UTF-8 input alone cannot pass the i18n gate.
 
 ## Architecture invariants
 
-1. Core crates build/test without Bevy, GPU or network access.
+1. Core crates build/test without UI, GPU or network access.
 2. Each side effect has one owning activation and one cancellable lifetime.
 3. Graph/package IDs outlive processes; runtime/entity IDs do not.
 4. Editors, workers and components request service operations through checked handles.

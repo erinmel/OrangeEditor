@@ -22,7 +22,7 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
   rustup default 1.99.1
   ```
 
-- Bevy's v0.20.0 manifest requires Rust 1.97.1 (S-B02). The installed 1.99.1 satisfies that minimum. B-P01 has not compiled Bevy with it. MSRV (1.97.1) CI coverage remains a WU-01 decision.
+- The workspace MSRV is Rust 1.97.1; the installed 1.99.1 satisfies it. MSRV CI coverage is recorded in the CI sections below.
 - WU-00/00b.1 (2026-10-20) added `rust-toolchain.toml` (channel `1.99.1`, components rustfmt/clippy, profile minimal), the root Cargo workspace (`resolver = "3"`, edition 2024, `rust-version = "1.97.1"`, member `app/crates/orange-model`, `plugins` excluded) and a tracked `Cargo.lock`. Cargo resolved dependencies to the highest versions compatible with Rust 1.97.1; see the 00b.1 row in the dependency ledger.
 - Superseded planning observation: the environment originally reported `rustc`/`cargo` 1.96.1 from a standalone MSI install (`C:\Program Files\Rust stable MSVC 1.96`) that shadowed rustup on PATH, plus rustup toolchains `stable` and `nightly-2026-09-07`. That MSI, the previous rustup install and its toolchains were removed on 2026-10-20 before the reinstall above.
 - 00b.1 local evidence (Windows 11, Rust 1.99.1, 2026-10-20): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` passed (22 tests: 8 unit, 13 codec integration, 1 property test at proptest's default 256 cases). Remote `rust` CI evidence is recorded when it first runs.
@@ -31,7 +31,7 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 - 00b.4 local evidence (same environment, 2026-10-20): the same three commands passed with 87 tests in total. New tests: 9 unit tests (Value size and equality, type terms, RFC 4648 base64 vectors); 6 scalar literal tests; 8 aggregate/FR-08 literal tests, including decoding every literal in the 12 §6 example; 1 encode/decode round-trip property. A compile-time assertion keeps `Value` at 16 bytes or less. The codec nesting budget `MAX_NESTING = 64` is a proposed value and an open budget. No new dependency (base64 is implemented locally).
 - 00b gaps follow-up (Windows x64, Rust 1.99.1, 2026-10-21): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked` and `cargo test --workspace --locked` passed with 102 tests. New tests cover JSON text depth (64 accepted, 65 and 84 rejected, brackets inside strings ignored), the size budget, hash/equality agreement, and decode/encode of a 20 000-key map with duplicate detection. `MAX_JSON_TEXT_BYTES = 1 MiB` is a proposed value and an open budget, like `MAX_NESTING = 64`.
 - 00c.3b analysis guard (2026-10-21): expanded scoped/concrete type terms are limited to a provisional `MAX_EXPANDED_TYPE_NODES = 16_384` nodes per term; nesting keeps `MAX_NESTING = 64`. Limits return typed analysis failures before constructing an oversized output. Alias traversal is iterative; a 10,000-variable alias regression passes without consuming type nesting depth. These are open resource budgets, not a new language type exclusion, measured NFR-15 timing or production memory qualification.
-- Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working Bevy build toolchain.
+- Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working UI build toolchain.
 
 ## Model review fixes and slice 4 analysis (2026-10-20)
 
@@ -109,7 +109,7 @@ On baseline `c9fc8e5`, the user requested removing duplicate test execution whil
 
 Compiled jobs use Rust-cache v2.9.3, SHA `d1527c8f67ef9af357290475d4af4b0fab8f12e0`; the official release/tag API and tagged action.yml were checked (Node 24). Compiler/host/environment/manifests/lock/config participate in cache keys, with explicit job, native OS, MSRV and release-target separation. The MSRV environment selects its own actual compiler before caching. Installed binaries are excluded and incremental compilation is disabled by the action. The existing exact cargo-deny cache and fresh online advisory scan remain. No advisory/credential data is added to caches.
 
-Release CD requires an annotated version-matching tag from main ancestry, a qualified executable/license and three real native packagers. It reuses full validation, builds release binaries read-only, then separates credential-bearing packaging/signing/install/launch verification and final checksum/provenance/publication jobs. Live tag identity is rechecked at publication. New full-SHA Actions were resolved from official release APIs: upload-artifact v7.0.2 `cf430e030ddbb5b0abf93d22962f4752f3646cd9`, download-artifact v8.0.2 `9000827ccba6bdab643e8b6fd33ac0654aef8333` (both Node 24), attest v4.2.2 `1e69f48acb82d1966a394da916b4c1698aa569d6`. No release environment, credentials, tag or public release was created. `.github/release.json` is intentionally unconfigured/unqualified because no desktop executable, reviewed distribution setup, packagers or signing evidence exists. The workflow therefore blocks at preflight; the [release contract](../tools/release/README.md) documents remaining activation work. This is no WU-12/G5 or Bevy runtime pass.
+Release CD requires an annotated version-matching tag from main ancestry, a qualified executable/license and three real native packagers. It reuses full validation, builds release binaries read-only, then separates credential-bearing packaging/signing/install/launch verification and final checksum/provenance/publication jobs. Live tag identity is rechecked at publication. New full-SHA Actions were resolved from official release APIs: upload-artifact v7.0.2 `cf430e030ddbb5b0abf93d22962f4752f3646cd9`, download-artifact v8.0.2 `9000827ccba6bdab643e8b6fd33ac0654aef8333` (both Node 24), attest v4.2.2 `1e69f48acb82d1966a394da916b4c1698aa569d6`. No release environment, credentials, tag or public release was created. `.github/release.json` is intentionally unconfigured/unqualified because no desktop executable, reviewed distribution setup, packagers or signing evidence exists. The workflow therefore blocks at preflight; the [release contract](../tools/release/README.md) documents remaining activation work. This is no WU-12/G5 runtime pass.
 
 Local checks at preparation: actionlint 1.7.12 (official Windows amd64 archive checked against the published SHA-256 file) accepted both workflows with shellcheck/pyflakes integrations disabled; this validates YAML/expressions, not native signing scripts. `node --test tools/release.test.mjs` passed eight cases, including actual package checksum/collection, tampering, missing native outputs and failed signing/install evidence. `node tools/release.mjs check` accepted disabled configuration; `RELEASE_TAG=v0.0.0 node tools/release.mjs plan` correctly exited nonzero with missing-executable/qualification diagnostics. Workflow execution, cache performance and native compilation results are recorded on the PR's final head; no actual release build/sign/publish is claimed.
 
@@ -131,38 +131,17 @@ OBS/Twitch account connectors are not required to design Orange's SDK. Actual in
 
 For implementation, verify the Rust toolchain, target linker/native SDKs, language server, formatting/lint tools and platform libraries. These are development prerequisites, not claims that they are installed. Any broker/container, audio diagnostic or security tool is added only for a work unit that uses it.
 
-## Bevy source register
+## UI framework change (2026-10-21)
 
-All rows retrieved 2026-10-20. Mutable `latest` URLs below were opened and their visible version recorded; replace them with immutable/local evidence before implementation. Source evidence does not establish that Orange's proposed design has been tested.
-
-| ID | Primary source | Resolved version | Evidence / use | Limitation |
-|---|---|---|---|---|
-| S-B01 | [Release announcement](https://bevy.org/news/bevy-0-20/) | 0.20 release, 2026-10-08 | Release existence; UI and graphics feature overview | Overview, not complete API contract |
-| S-B02 | [Release manifest](https://github.com/bevyengine/bevy/blob/v0.20.0/Cargo.toml) | v0.20.0 | Edition, MSRV, version, license, feature declarations | Transitive dependencies not audited |
-| S-B03 | [Plugin Rustdoc](https://docs.rs/bevy/latest/bevy/app/trait.Plugin.html), [tag source](https://github.com/bevyengine/bevy/blob/v0.20.0/crates/bevy_app/src/plugin.rs) | Header 0.20.0 / v0.20.0 | Developer-plugin startup lifecycle | Does not implement Orange hot package lifecycle |
-| S-B04 | [Schedule Rustdoc](https://docs.rs/bevy/latest/bevy/ecs/schedule/index.html) | Header 0.20.0 | System ordering/execution concepts | Graph semantics remain Orange's responsibility |
-| S-B05 | [Message Rustdoc](https://docs.rs/bevy/latest/bevy/ecs/message/index.html) | Header 0.20.0 | Buffered messages and update retention | Not persistent/durable queue evidence |
-| S-B06 | [Event module source](https://github.com/bevyengine/bevy/blob/v0.20.0/crates/bevy_ecs/src/event/mod.rs) | v0.20.0 | Event/observer infrastructure | No Orange delivery guarantee follows |
-| S-B07 | [Task-pool source](https://github.com/bevyengine/bevy/blob/v0.20.0/crates/bevy_tasks/src/usages.rs) | v0.20.0 | Compute/async-compute/I/O distinction | Network-client reactor integration untested |
-| S-B08 | [Feathers Rustdoc](https://docs.rs/bevy/latest/bevy/feathers/index.html) | Header 0.20.0 | Feature gate, editor widget role | Orange interaction/accessibility not verified |
-| S-B09 | [Release examples index](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/README.md) | v0.20.0 | Specific UI/input/rendering test leads | Example existence does not prove requirement coverage |
-| S-B10 | [Picking event source](https://github.com/bevyengine/bevy/blob/v0.20.0/crates/bevy_picking/src/events.rs) | v0.20.0 | Input event implementation reference | Large graph hit testing unmeasured |
-| S-B11 | [AudioPlugin Rustdoc](https://docs.rs/bevy/latest/bevy/audio/struct.AudioPlugin.html) | Header 0.20.0 | Public playback integration surface | No per-player device-routing proof |
-| S-B12 | [Audio output source](https://github.com/bevyengine/bevy/blob/v0.20.0/crates/bevy_audio/src/audio_output.rs) | v0.20.0 | Default sink opening and internal output ownership | Alternative routing requires separate validation |
-| S-B13 | [Headless example](https://github.com/bevyengine/bevy/blob/v0.20.0/examples/app/headless.rs) | v0.20.0 | Feature selection and runner reference | Orange core must work independently |
-| S-B14 | [Linux dependencies](https://github.com/bevyengine/bevy/blob/v0.20.0/docs/linux_dependencies.md) | v0.20.0 | Distribution build prerequisites | Selected features/package runtime still need checking |
-| S-B15 | [Migration guide](https://bevy.org/learn/migration-guides/0-19-to-0-20/) | 0.19 to 0.20 | Relevant incompatible API/behavior changes | Not a substitute for release API compilation |
-| S-B16 | [Published manifest](https://docs.rs/crate/bevy/latest/source/Cargo.toml) | Header/package 0.20.0 | Corroborates release metadata | Mutable URL; exact-version fetch failed through research tool |
-
-Excluded evidence: `https://docs.rs/bevy/latest/bevy/prelude/` opened as 0.19.1; conflicting search snippets were not accepted. Exact-version docs.rs requests failed through the research tool, so no claim is made that all versioned API pages were retrieved. Release-tag sources provide a verified alternative.
+Bevy was dropped from the project (ADR-02, ADR-21); the editor UI will use egui hosted by eframe, with versions pinned when P-01 runs. The former Bevy 0.20 source register and dossier are in Git history (doc 09 before this change). `tools/check-cargo-metadata.mjs` now rejects UI, window, renderer and engine frameworks (Bevy, egui, eframe, epaint, winit, wgpu, Slint, iced and their subcrates) under graph-core crates instead of pinning Bevy; the Bevy release-feature check left `tools/release.mjs`. Local results on Windows x64, Node 24: `node tools/check-cargo-metadata.mjs --self-test` PASS (8 cases), `node tools/check-cargo-metadata.mjs` PASS, `node --test tools/release.test.mjs` PASS (7 tests).
 
 ## Dependency selection ledger
 
-Bevy is the sole requested framework pin. All other implementation dependencies must acquire an exact version, minimum compiler, platform/feature matrix, license, maintenance/security review and contract test at their adopting work unit. A proposed family below is a research candidate, not a dependency approval or compatibility claim.
+No framework pin is fixed yet; egui/eframe are pinned in P-01. All implementation dependencies must acquire an exact version, minimum compiler, platform/feature matrix, license, maintenance/security review and contract test at their adopting work unit. A proposed family below is a research candidate, not a dependency approval or compatibility claim.
 
 | Capability | Candidate / decision boundary | Required evidence before adoption |
 |---|---|---|
-| Presentation/graphics | Bevy =0.20.0, Bevy UI/Feathers candidate | B-P01/B-P02; minimal feature graph, text/accessibility evidence |
+| Presentation | egui + eframe (ADR-02), Slint fallback | P-01/P-02; minimal feature graph, text/accessibility/RTL evidence |
 | Async services | Dedicated Tokio host as proposed in architecture | Exact crate/features/MSRV, shutdown/reactor contract, bounded worker bridge |
 | Hot expansion execution | Wasmtime/component-model candidate | Exact supported component interface/runtime version, fuel/epoch interruption, memory limit, host-call cancellation and boundary benchmarks |
 | Definitions and persistence | Serde-family serialization candidate | Versioned schema contract, malformed input bounds, deterministic output and migration tests |
@@ -171,7 +150,7 @@ Bevy is the sole requested framework pin. All other implementation dependencies 
 | Audio | Dedicated endpoint/decoder service plus OS adapters | Actual per-player routing, decoder format/license inventory, device identity, clock/rate behavior and callback audit |
 | Linux virtual source | PipeWire adapter | Versioned API/permissions/session policy and app-owned cleanup on a real Linux session |
 | Credentials | OS-specific secure stores behind one host interface | Windows/macOS/Linux availability and locked/headless behavior; no plaintext fallback |
-| Localization | Fluent FTL parser/formatter candidate, Unicode/CLDR data and host font fallback | Exact versions/features/MSRV/licenses, bounded reference/argument handling and locale/plural capabilities; L-suite, G-39 and B-P02 platform evidence before adoption; sources in [13](13-internationalization.md) |
+| Localization | Fluent FTL parser/formatter candidate, Unicode/CLDR data and host font fallback | Exact versions/features/MSRV/licenses, bounded reference/argument handling and locale/plural capabilities; L-suite, G-39 and P-02 platform evidence before adoption; sources in [13](13-internationalization.md) |
 
 ### Adopted: `orange-model` (WU-00/00b.1, 2026-10-20)
 
@@ -189,7 +168,7 @@ Serde-family candidate adopted for the graph document codec only. Versions are e
 
 Transitive normal dependencies also include itoa 1.0.18, memchr 2.8.3 (Unlicense OR MIT), zmij 1.0.23 (MIT), proc-macro2 1.0.107, quote 1.0.47, syn 3.0.9 and unicode-ident 1.0.27 ((MIT OR Apache-2.0) AND Unicode-3.0). Security advisory review (for example `cargo audit`) has not been run. Malformed-input size bounds and migrations remain open for later 00b slices.
 
-Do not select a crate solely because a Bevy ecosystem page lists it. Independently versioned service crates need not depend on Bevy; UI/render integrations must explicitly support 0.20.0. Record implementation results and the final lockfile in the work unit rather than retroactively presenting candidates as verified.
+Do not select a crate solely because an ecosystem page lists it; UI integrations must explicitly support the pinned egui version. Record implementation results and the final lockfile in the work unit rather than retroactively presenting candidates as verified.
 
 ## Planning review evidence
 
@@ -256,7 +235,7 @@ The architecture review found that Unicode/IME requirements and isolated referen
 
 Executed document audit: Node.js **v24.18.0**, `node - .` with the session checker piped on stdin, from the project root. The checker validates Markdown fences/table continuity, JSON syntax, local file links, ID/range references, FR/NFR roadmap coverage, TextRef/category example shapes, equality of repeated math definitions and graph diagnostic catalogue references. Result: **PASS** — 16 Markdown files, 13 JSON blocks, 183 local file links; 51 FR, 16 NFR, 17 ADR, 13 OPEN, 39 G and 8 L definitions; 40 graph diagnostic codes. Counts are structural checks, not proof of complete semantics or fixture execution. The audit script was supplied on stdin and is session-only tooling. A repeat attempt to load a temporary script by path was unavailable in a later command sandbox; rerunning the complete checker on stdin passed.
 
-Primary i18n sources and their limits are recorded in 13 §8. No Rust/Bevy compilation, package loading, Fluent parsing, translation review, renderer/accessibility/platform probe, benchmark or implementation fixture ran. Exact formatter/data pins and additional shipped languages remain open before their named gates. No gate is declared passed by this review; next work remains 00a and 01a under a later implementation instruction.
+Primary i18n sources and their limits are recorded in 13 §8. No UI compilation, package loading, Fluent parsing, translation review, renderer/accessibility/platform probe, benchmark or implementation fixture ran. Exact formatter/data pins and additional shipped languages remain open before their named gates. No gate is declared passed by this review; next work remains 00a and 01a under a later implementation instruction.
 
 ### Git workflow review (2026-10-20)
 
