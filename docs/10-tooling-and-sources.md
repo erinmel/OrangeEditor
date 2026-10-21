@@ -99,6 +99,8 @@ Measured [run 39525101049](https://github.com/erinmel/OrangeEditor/actions/runs/
 
 Recorded environment remains Rust/cargo 1.99.1, Node 24.18.0, Windows x64; MSRV 1.97.1; the only package is `orange-model`, without declared Cargo features. Manifests, features, `rust-toolchain.toml` and `Cargo.lock` are unchanged from `3af6ebd`; lockfile SHA-256 remains `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`. Local revised metadata checks and their 10 fixtures, MSRV derivation, documentation-helper check and whitespace check passed. Remote cache miss/hit verification is pending at commit preparation; final PR evidence distinguishes observed paths. No intentional failing-format run or new Bevy/platform/hardware gate passage is claimed.
 
+Implementation evidence: [run 39526751351](https://github.com/erinmel/OrangeEditor/actions/runs/39526751351), commit `9d8cbae`, passed all ten code jobs. Formatting, Clippy and rustdoc now appear independently; architecture, MSRV, all three OS tests, dependency security and the aggregate passed. The security log confirms an initial cache miss, installation/version verification of cargo-deny 0.20.2, `advisories ok, sources ok`, and successful cache save. GitHub protection readback now contains only strict `rust` bound to Actions app 15368; other inspected protection controls remain unchanged, as recorded in 14. This documentation-only evidence follow-up also exercises cache reuse; its final-head result and observed hit/miss are recorded in the PR.
+
 ## Additional AI development integrations
 
 **No new MCP/plugin is required to finish this plan.** Web research, filesystem tools and an architecture subagent are available. These development integrations are unrelated to OrangeEditor expansion packages.
