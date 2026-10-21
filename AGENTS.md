@@ -18,5 +18,6 @@ Read `README.md`, then `docs/07-delivery-plan.md`. Use `AGENT_PROMPT.md` for the
 - No generic plugin calls, blocking work or allocations in audio callbacks. Validate endpoint routing/virtual-source behavior per OS rather than inferring it from playback support.
 - Update FR/NFR traceability, schemas, contracts and ADRs in the same work unit when behavior changes. Preserve user edits and unrelated files.
 - Verify changed behavior with the work unit's acceptance checks. Record exact versions, commands, results and limitations; never claim planned tests were run.
+- Use the configured human Git author. Do not append AI co-author trailers or generated-with attribution footers to commits or pull requests.
 
 The initial assignment ends after documentation and review. Later implementation instructions determine which work unit to execute; its applicable prerequisite gates remain part of that work.

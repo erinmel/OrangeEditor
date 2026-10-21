@@ -16,7 +16,8 @@ concurrency:
 jobs:
   docs:
     name: docs
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4, verified during bootstrap
         with:
@@ -28,7 +29,8 @@ jobs:
 
   policy:
     name: policy
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -38,9 +40,10 @@ jobs:
           node-version: 24.18.0
       - run: node tools/check-repo-policy.mjs
 
-  rust:
-    name: rust
-    runs-on: ubuntu-latest
+  rust_quality:
+    name: rust-quality
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -49,4 +52,38 @@ jobs:
       - run: rustup show active-toolchain
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+  rust_tests:
+    name: rust-tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-2022, macos-15]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      # rustup reads the shared pin on Linux x64, Windows x64 and macOS arm64.
+      - run: rustup show active-toolchain
+      - run: rustc --version --verbose
       - run: cargo test --workspace --locked
+
+  rust:
+    name: rust
+    if: ${{ always() }}
+    needs: [rust_quality, rust_tests]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require quality and every platform test
+        shell: bash
+        env:
+          QUALITY_RESULT: ${{ needs.rust_quality.result }}
+          TESTS_RESULT: ${{ needs.rust_tests.result }}
+        run: |
+          if [[ "$QUALITY_RESULT" != "success" || "$TESTS_RESULT" != "success" ]]; then
+            echo "Rust quality or platform tests failed, were cancelled, or were skipped." >&2
+            exit 1
+          fi

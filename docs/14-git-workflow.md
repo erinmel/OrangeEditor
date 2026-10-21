@@ -51,6 +51,8 @@ Keep local commits coherent and reviewable. WIP commits are allowed on a topic b
 
 Commit source, tests/fixtures, schemas, source catalogues, migrations, documentation and reproducible build inputs. Once Rust scaffolding exists, track the workspace `Cargo.lock` and selected `rust-toolchain.toml`; dependency changes include the updated lock/features/MSRV/license evidence. Do not commit credentials, tokens, local vaults, personal profiles, machine IDE state, `target/`, caches, raw secret-bearing traces or generated binaries. Deliberate binary fixtures need documented size/license/provenance. `.gitignore` is convenience, not secret protection; review staged content and scan it. A leaked real credential is revoked/rotated immediately, with removal/history remediation coordinated separately.
 
+User-selected attribution policy: use the configured human author and omit AI co-author trailers and generated-with commit/PR footers. The user explicitly authorized removing these trailers from the eight unpublished-to-main commits on `feat/wu-00b-document-model`. That cleanup preserves each commit's content tree and human author metadata, updates only the feature branch with an exact force-with-lease, and does not rewrite `main`.
+
 ## 4. Review and merge rules
 
 Every change to `main` or a release branch uses a PR after repository bootstrap. Require the latest applicable checks, resolved review conversations, a conflict-free diff against the current target, and complete work-unit evidence. Update the branch or use a validated merge queue so the tested integration matches the merge candidate. New commits/conflict resolutions invalidate affected test evidence; rerun it. Local green tests do not substitute for required remote checks once those are enabled.
@@ -75,6 +77,8 @@ Local hooks may provide fast feedback; CI/remote rules enforce merge policy. Hoo
 | Release | WU-12/G5 evidence, signed/provenance-recorded artifacts, supported capability/locale matrix, recovery/security review and changelog; an early preview explicitly lists its incomplete scope. |
 
 Required status names are stable aggregate checks: `docs`, `policy` and `rust` (added by WU-00/00b.1; it becomes required only after its first successful remote run, per §7). Aggregate workflows run on every PR, dispatch applicable jobs and report why a job is inapplicable; do not require a status that path filtering never creates. A docs-only PR does not claim Rust tests ran when its aggregate correctly marks Rust as inapplicable. Changed public contracts and toolchain/CI changes trigger their full dependent tests. Slow hardware/soak/protocol checks run at their documented gates rather than on every prose edit. Never disable a failing required check just to merge.
+
+The current workflow runs Rust quality checks on Ubuntu and locked core tests on Ubuntu x64, Windows x64 and macOS arm64 for every PR. A stable `rust` aggregate requires both quality and all OS results; failure, cancellation or skipping cannot produce a green aggregate. These checks use read-only permissions and bounded job durations. Deployment waits for a packaged application and the applicable release gates; CI configuration alone is not release evidence.
 
 ## 6. Releases, hotfixes and compatibility
 
