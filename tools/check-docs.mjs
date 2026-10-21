@@ -6,6 +6,7 @@ function walk(dir) {
   return fs.readdirSync(dir, {withFileTypes: true}).flatMap(entry => {
     if (excluded.has(entry.name)) return [];
     const name = path.join(dir, entry.name);
+    if (path.relative('.', name).split(path.sep).join('/') === '.artifacts/local') return [];
     return entry.isDirectory() ? walk(name) : entry.isFile() && name.endsWith('.md') ? [name.replaceAll('\\', '/')] : [];
   });
 }

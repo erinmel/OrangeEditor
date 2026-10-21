@@ -26,5 +26,5 @@ try {
 } catch { errors.push('Git whitespace validation failed'); }
 console.log(JSON.stringify({status: errors.length ? 'FAIL' : 'PASS', trackedFiles: files.length,
   checks: ['tracked file policy', 'high-confidence credential patterns', 'Git whitespace'],
-  limitations: 'Pattern scanning is not a complete secret audit; Rust/product checks do not exist yet.', errors}, null, 2));
+  limitations: 'Pattern scanning is not a complete secret audit; this script does not run Rust or product tests, which CI reports separately.', errors}, null, 2));
 if (errors.length) process.exitCode = 1;

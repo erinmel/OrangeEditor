@@ -62,6 +62,31 @@ Local validation on Windows x64: `cargo fmt --all --check`, `cargo clippy --work
 
 Expanded remote evidence: [run 39522142007](https://github.com/erinmel/OrangeEditor/actions/runs/39522142007) passed all seven jobs on CI commit `72670cd`: `docs`, `policy`, `rust-quality`, the three OS test jobs and the stable `rust` aggregate. This evidence update changes only documentation; the tested workflow and Rust source are unchanged. The PR validation table records its latest head/run separately. There is no local macOS/Linux, MSRV 1.97.1, Bevy, packaging or deployment claim. Deployment/release automation waits for an application artifact and the applicable WU-12 gates. NFR-11/NFR-14 and ADR-18 retain their wider qualification requirements.
 
+## CI quality-gate expansion (2026-10-20; isolated implementation checkout)
+
+This change adds rustdoc warnings, a metadata policy guard, a workspace-derived MSRV test, pinned cargo-deny advisory/source checks, a weekly workflow schedule and weekly Dependabot update proposals. The workflow, Dependabot schedule and required-check configuration are not yet verified on GitHub from this checkout; scheduled Actions and Dependabot run only after these files reach the default branch. Read-only permissions, full-SHA Action pins and non-persisted checkout credentials are retained. No license allowlist was invented, and the advisory/source check is not a license audit.
+
+Recorded environment: Rust/cargo `1.99.1` (`rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`), host `x86_64-pc-windows-msvc`; Node.js `v24.18.0`; one workspace package, `orange-model`, with declared `rust-version = 1.97.1` and no declared Cargo features. The tracked `rust-toolchain.toml` remains `1.99.1`; workspace feature selections and `Cargo.lock` are unchanged. Lockfile SHA-256: `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+| Command / evidence | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `cargo test --workspace --locked --offline` | PASS: 100 tests; no doctests |
+| `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked` | PASS |
+| `node tools/check-cargo-metadata.mjs --self-test` | PASS: 10 fixture cases, including Bevy subsystem transitive leakage, optional core dependency, exact version pin, missing/empty graph and host-only Bevy allowance |
+| `node tools/check-cargo-metadata.mjs` / `--msrv` | PASS: current graph boundary accepted; Bevy pin check is inapplicable because Bevy is absent; derives `1.97.1` |
+| `node tools/check-docs.mjs` | PASS: 33 Markdown files, 13 JSON blocks, 287 local links; `.artifacts/local` scratch checkout excluded |
+| `node tools/check-repo-policy.mjs` / `git diff --check` | PASS: repository policy and whitespace |
+| `cargo deny --version` | PASS: `cargo-deny 0.20.2`, installed with `--locked` under ignored `target/cargo-deny/` |
+| `cargo deny --locked check advisories sources` | PASS: `advisories ok, sources ok`; RustSec database fetched/refreshed online |
+| `rustc +1.97.1 --version --verbose` | PASS: Rust `1.97.1 (8bab26f4f 2026-07-14)`, locally installed under ignored `target/rustup-home/` |
+| `cargo +1.97.1 test --workspace --locked --offline` | NOT PASS / environment blocked: Windows `link.exe` reported LNK1104 opening a Rust sysroot archive under the long isolated-checkout toolchain path; the archive exists. MSRV runtime test remains pending Linux CI. |
+
+The deny command keeps `--locked` (lockfile stability) while leaving network enabled to refresh the RustSec database; cargo-deny 0.20.2 exposes offline as a separate option. Its config treats vulnerability, unmaintained and unsound advisories as errors, yanked dependencies as warnings, and unknown registry/Git sources as errors. Current machine validation is Windows x64 only and does not pass NFR-11, Bevy feasibility, G0/G1/G2/G5, or remote CI gates.
+
+Parent integration repeated formatting, locked offline Clippy and all 100 tests, and locked offline rustdoc with warnings denied on the same Windows/toolchain configuration: PASS. The integrated metadata fixtures, boundary check and MSRV derivation passed; documentation passed for 36 Markdown files, 13 JSON blocks and 293 local links. The pinned scanner repeated its online advisory/source check successfully with access to Cargo's advisory cache. Lockfile hash and toolchain remain unchanged. Remote validation and enabling the protected `rust` status remain pending for this expansion.
+
 ## Additional AI development integrations
 
 **No new MCP/plugin is required to finish this plan.** Web research, filesystem tools and an architecture subagent are available. These development integrations are unrelated to OrangeEditor expansion packages.
