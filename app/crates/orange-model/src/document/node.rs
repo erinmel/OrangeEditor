@@ -55,7 +55,7 @@ pub struct DefinitionRef {
 }
 
 /// Exact provider selected for a node; changed only by an explicit rebind (ADR-07).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ProviderBinding {
     pub package: String,
     pub version: String,

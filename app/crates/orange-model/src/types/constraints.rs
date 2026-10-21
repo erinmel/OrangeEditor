@@ -9,6 +9,7 @@ use crate::type_term::{MAX_NESTING, NamedTerm, TypeTerm};
 
 use super::errors::{TypeRegistrationError, TypeResolveError};
 use super::identity::NamedTypeId;
+use super::implementations::{ConstraintId, ConstraintImplementationRef, PackageConstraintId};
 use super::registry::{RegisteredType, TypeData, TypeRegistry, TypeRegistryBuilder};
 
 #[cfg(test)]
@@ -29,6 +30,22 @@ pub enum Constraint {
     Default,
 }
 
+impl Constraint {
+    pub(crate) fn id_name(self) -> &'static str {
+        match self {
+            Self::Eq => "eq",
+            Self::Ord => "ord",
+            Self::Hash => "hash",
+            Self::Num => "num",
+            Self::Int => "int",
+            Self::Float => "float",
+            Self::Display => "display",
+            Self::Serialize => "serialize",
+            Self::Default => "default",
+        }
+    }
+}
+
 /// A bounded set of arithmetic operations used for operation-specific type proofs.
 ///
 /// This describes support only; it does not select or execute an arithmetic kernel.
@@ -44,20 +61,23 @@ pub enum NumericOperation {
 }
 
 /// A capability requested for a concrete type term.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum CapabilityRequest {
     Constraint(Constraint),
+    /// A package-owned constraint, requested by its stable versioned identity.
+    PackageConstraint(PackageConstraintId),
     NumericOperation(NumericOperation),
 }
 
-/// Evidence kind for a capability proof. Package implementation references are added by
-/// the later coherence slice; 2a can prove core rules and explicit structural derives only.
+/// Evidence kind for a capability proof.
 /// A `serialize` witness describes declared type capability only: it does not serialize a
 /// value or prove that value-sensitive `core/error` details have been redacted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CapabilityEvidence {
     CoreRule,
     StructuralDerive,
+    /// A stable package binding and implementation reference; no package code was called.
+    PackageImplementation(ConstraintImplementationRef),
 }
 
 /// Read-only evidence that a term satisfies a requested constraint or operation.
@@ -120,12 +140,25 @@ impl TypeRegistryBuilder {
                 package_namespace: package_namespace.to_owned(),
             });
         }
-        let Some(definition) = self.definitions.get_mut(&id) else {
+        let Some(definition) = self.definitions.get(&id) else {
             return Err(TypeRegistrationError::UnknownType { ty: id.to_string() });
         };
         if !matches!(definition.data, TypeData::Record(_) | TypeData::Enum(_)) {
             return Err(TypeRegistrationError::NotDerivableType { ty: id.to_string() });
         }
+        let target = TypeTerm::Named(named.clone());
+        if self
+            .implementations
+            .contains_key(&(target, ConstraintId::Core(constraint)))
+        {
+            return Err(TypeRegistrationError::DuplicateConstraintImplementation {
+                ty: id.to_string(),
+                constraint: format!("{constraint:?}").to_ascii_lowercase(),
+            });
+        }
+        let Some(definition) = self.definitions.get_mut(&id) else {
+            unreachable!("definition was checked above")
+        };
         definition.derives.insert(constraint);
         Ok(())
     }
@@ -141,12 +174,19 @@ impl TypeRegistry {
     ) -> Result<Option<CapabilityWitness>, CapabilityError> {
         self.validate(term)?;
         let mut visiting = HashSet::new();
-        let evidence = match request {
+        let evidence = match &request {
             CapabilityRequest::Constraint(constraint) => {
-                constraint_evidence(self, term, constraint, &mut visiting, 0)?
+                constraint_evidence(self, term, *constraint, &mut visiting, 0)?
             }
+            CapabilityRequest::PackageConstraint(constraint) => self
+                .explicit_constraint_implementation(
+                    term,
+                    &ConstraintId::Package(constraint.clone()),
+                )
+                .cloned()
+                .map(CapabilityEvidence::PackageImplementation),
             CapabilityRequest::NumericOperation(operation) => {
-                numeric_operation_evidence(term, operation)
+                numeric_operation_evidence(self, term, *operation)
             }
         };
         Ok(evidence.map(|evidence| CapabilityWitness {
@@ -263,6 +303,13 @@ fn constraint_evidence(
     };
     let id = NamedTypeId::from_term(named);
     let definition = registry.definitions.get(&id).expect("term was validated");
+    if let Some(implementation) =
+        registry.explicit_constraint_implementation(term, &ConstraintId::Core(constraint))
+    {
+        return Ok(Some(CapabilityEvidence::PackageImplementation(
+            implementation.clone(),
+        )));
+    }
     match &definition.data {
         TypeData::Core => core_constraint(registry, named, constraint, visiting, depth),
         TypeData::Record(schema) => derive_members(
@@ -423,9 +470,15 @@ fn core_serialize(
 }
 
 fn numeric_operation_evidence(
+    registry: &TypeRegistry,
     term: &TypeTerm,
     operation: NumericOperation,
 ) -> Option<CapabilityEvidence> {
+    if let Some(implementation) = registry.explicit_numeric_implementation(term, operation) {
+        return Some(CapabilityEvidence::PackageImplementation(
+            implementation.clone(),
+        ));
+    }
     let TypeTerm::Named(named) = term else {
         return None;
     };

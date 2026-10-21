@@ -10,6 +10,7 @@ use crate::value::literal_codec::{EnumSchema, RecordSchema, Schemas};
 
 use super::errors::{TypeRegistrationError, TypeResolveError, validate_member_ids};
 use super::identity::{NamedTypeId, RegistryIdentity, TypeKey, TypeKind, TypeOwner};
+use super::implementations::{ConstraintImplementations, NumericImplementations};
 
 #[derive(Debug, Clone)]
 pub(super) enum TypeData {
@@ -46,6 +47,8 @@ pub struct TypeRegistryBuilder {
     pub(super) definitions: HashMap<NamedTypeId, RegisteredType>,
     interned: HashMap<TypeTerm, TypeKey>,
     expressions: Vec<TypeTerm>,
+    pub(super) implementations: ConstraintImplementations,
+    pub(super) numeric_implementations: NumericImplementations,
 }
 
 impl Default for TypeRegistryBuilder {
@@ -78,6 +81,8 @@ impl TypeRegistryBuilder {
             definitions,
             interned: HashMap::new(),
             expressions: Vec::new(),
+            implementations: Default::default(),
+            numeric_implementations: Default::default(),
         }
     }
 
@@ -133,6 +138,8 @@ impl TypeRegistryBuilder {
             owner: self.owner,
             definitions: self.definitions,
             expressions: self.expressions,
+            implementations: self.implementations,
+            numeric_implementations: self.numeric_implementations,
         };
         for (id, definition) in &registry.definitions {
             // Validate referenced type expressions without expanding other schema bodies.
@@ -174,6 +181,22 @@ impl TypeRegistryBuilder {
                 }
                 TypeData::Core | TypeData::HandleKind => {}
             }
+        }
+        for (term, _) in registry.implementations.keys() {
+            registry.validate(term).map_err(|error| {
+                TypeRegistrationError::InvalidImplementationTargetType {
+                    ty: term.to_string(),
+                    error,
+                }
+            })?;
+        }
+        for (term, _) in registry.numeric_implementations.keys() {
+            registry.validate(term).map_err(|error| {
+                TypeRegistrationError::InvalidImplementationTargetType {
+                    ty: term.to_string(),
+                    error,
+                }
+            })?;
         }
         registry.validate_registered_derives()?;
         for (id, definition) in &registry.definitions {
@@ -263,6 +286,8 @@ pub struct TypeRegistry {
     owner: Arc<RegistryIdentity>,
     pub(super) definitions: HashMap<NamedTypeId, RegisteredType>,
     expressions: Vec<TypeTerm>,
+    pub(super) implementations: ConstraintImplementations,
+    pub(super) numeric_implementations: NumericImplementations,
 }
 
 impl Default for TypeRegistry {
@@ -343,7 +368,7 @@ impl TypeRegistry {
     }
 }
 
-fn validate_type(
+pub(super) fn validate_type(
     definitions: &HashMap<NamedTypeId, RegisteredType>,
     term: &TypeTerm,
     depth: usize,

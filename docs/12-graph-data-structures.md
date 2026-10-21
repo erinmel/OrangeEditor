@@ -521,7 +521,7 @@ pub struct RegistrySnapshot {
     pub interner: TypeInterner,                                       // TypeExpr ↔ TypeKey, frozen
     pub definitions: HashMap<DefinitionRef, Arc<NodeDefinition>>,
     pub types: HashMap<NamedType, Arc<TypeDefinition>>,
-    pub constraint_impls: HashMap<(TypeKey, Constraint), ImplRef>,    // coherence-checked at publication
+    pub constraint_impls: HashMap<(TypeKey, ConstraintId), ImplRef>,  // core or versioned package constraint
     pub converters: HashMap<(TypeKey, TypeKey), SmallVec<[ConverterRef; 1]>>,
     pub providers: HashMap<SlotId, Vec<ProviderDescriptor>>,
     pub new_binding_defaults: HashMap<SlotId, ProviderId>,           // never applied to existing locks
@@ -535,6 +535,8 @@ Implementation (00c.1): `orange_model::types::TypeRegistryBuilder` registers typ
 The public host-side `TypeKey` wraps a dense `u32` slot with an opaque registry owner token; lookup rejects a key from another registry even when its numeric slot exists there. Registries are not cloned into independently mutable identity spaces. This checked host wrapper is not a wire representation or a change to future dense execution-plan indexes; keys are never persisted. Resolution rejects unresolved parameters, unknown names/majors, wrong arity and nesting beyond the existing parser budget. Read-only validation and owner/kind queries also accept uninterned terms, so inference need not mutate a published snapshot.
 
 Constraint proofs (00c.2a) use the same depth budget for nested terms and nominal-schema traversal. Publication rejects unavailable/cyclic/over-budget declared structural derives and invalid map key constraints before exposing the snapshot. `supports_term` returns a capability witness rather than invoking a kernel; the current numeric-operation proof set is add/subtract/multiply/divide, with other math operations still requiring their own implemented support. This is an implementation surface, not an exclusion of later math node families or performance evidence.
+
+Explicit proof registrations (00c.2b) carry `ConstraintImplementationRef`: the existing `ProviderBinding`, exact content digest and stable implementation ID. `ConstraintId` distinguishes core constraints from canonical versioned package constraints. A package may implement a core constraint only for a type it owns, and its own constraint for foreign types. Duplicate implementation slots and derive/implementation conflicts fail before publication. Numeric operations have separate slots, so a `num` declaration does not manufacture an add/multiply implementation. The future host authenticates the supplied authority and resolves code; this model validates coherence and preserves exact references only.
 
 ## 9. Execution plan IR
 

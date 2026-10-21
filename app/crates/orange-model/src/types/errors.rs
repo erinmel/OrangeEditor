@@ -63,6 +63,49 @@ pub enum TypeRegistrationError {
     RecursiveDerivation { ty: String, constraint: String },
     #[error("structural derivation exceeds the nominal-schema depth limit of {max}")]
     DerivationTooDeep { max: usize },
+    #[error("invalid package constraint identity `{namespace}/{name}@{major}`")]
+    InvalidConstraintId {
+        namespace: String,
+        name: String,
+        major: u32,
+    },
+    #[error("package `{authority}` does not own constraint `{constraint}`")]
+    ConstraintAuthorityMismatch {
+        authority: String,
+        constraint: String,
+    },
+    #[error("package `{authority}` does not match implementation provider `{provider}`")]
+    ImplementationAuthorityMismatch { authority: String, provider: String },
+    #[error(
+        "constraint implementation reference contains an invalid provider or implementation ID"
+    )]
+    InvalidImplementationRef,
+    #[error(
+        "constraint implementation artifact digest `{digest}` is not a lowercase SHA-256 digest"
+    )]
+    InvalidImplementationDigest { digest: String },
+    #[error("type `{ty}` is core-owned and its built-in constraints cannot be overridden")]
+    CoreTypeImplementationDenied { ty: String },
+    #[error(
+        "package `{authority}` cannot implement a core constraint for `{ty}`, owned by `{owner}`"
+    )]
+    CoreConstraintOwnerMismatch {
+        ty: String,
+        owner: String,
+        authority: String,
+    },
+    #[error("type `{ty}` already has an implementation or derive for `{constraint}`")]
+    DuplicateConstraintImplementation { ty: String, constraint: String },
+    #[error("type `{ty}` already has an implementation for numeric operation `{operation}`")]
+    DuplicateNumericOperationImplementation { ty: String, operation: String },
+    #[error("constraint implementation target `{ty}` must be a registered concrete named type")]
+    InvalidImplementationTarget { ty: String },
+    #[error("constraint implementation target `{ty}` is invalid: {error}")]
+    InvalidImplementationTargetType {
+        ty: String,
+        #[source]
+        error: TypeResolveError,
+    },
     #[error("resolved type `{ty}` has invalid language constraints: {error}")]
     InvalidResolvedType {
         ty: String,

@@ -1,4 +1,5 @@
 use super::*;
+use crate::document::ProviderBinding;
 use crate::document::literal::Literal;
 use crate::id::TypeExpr;
 use crate::type_term::TypeTerm;
@@ -13,6 +14,19 @@ fn term(text: &str) -> TypeTerm {
 
 fn expr(text: &str) -> TypeExpr {
     text.parse().unwrap()
+}
+
+fn implementation(package: &str, id: &str) -> ConstraintImplementationRef {
+    ConstraintImplementationRef {
+        provider: ProviderBinding {
+            package: package.to_owned(),
+            version: "1.2.3".to_owned(),
+            id: "host".to_owned(),
+            extensions: Default::default(),
+        },
+        content_digest: format!("sha256:{}", "0".repeat(64)),
+        implementation_id: id.to_owned(),
+    }
 }
 
 fn has(registry: &TypeRegistry, text: &str, constraint: Constraint) -> bool {
@@ -336,4 +350,232 @@ fn registry_codec_checks_language_map_key_constraints_and_legacy_codec_path_is_e
             ..
         })
     ));
+}
+
+#[test]
+fn explicit_constraint_proofs_enforce_owner_coherence_and_exact_provider_identity() {
+    assert!(PackageConstraintId::new("org.example@2", "portable", 1).is_err());
+    let target = term("org.example/opaque@1");
+    let mut builder = TypeRegistryBuilder::core();
+    builder
+        .register_record(
+            "org.example",
+            &expr("org.example/opaque@1"),
+            RecordSchema { fields: vec![] },
+        )
+        .unwrap();
+
+    builder
+        .register_constraint_implementation(
+            "org.example",
+            &target,
+            ConstraintId::Core(Constraint::Eq),
+            implementation("org.example", "eq_v1"),
+        )
+        .unwrap();
+    builder
+        .register_constraint_implementation(
+            "org.example",
+            &target,
+            ConstraintId::Core(Constraint::Hash),
+            implementation("org.example", "hash_v1"),
+        )
+        .unwrap();
+    let custom = PackageConstraintId::new("org.example", "portable", 2).unwrap();
+    builder
+        .register_constraint_implementation(
+            "org.example",
+            &term("core/i64@1"),
+            ConstraintId::Package(custom.clone()),
+            implementation("org.example", "portable_i64"),
+        )
+        .unwrap();
+    let registry = builder.build().unwrap();
+
+    let eq = registry
+        .supports_term(&target, CapabilityRequest::Constraint(Constraint::Eq))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        eq.evidence,
+        CapabilityEvidence::PackageImplementation(implementation("org.example", "eq_v1"))
+    );
+    let portable = registry
+        .supports_term(
+            &term("core/i64@1"),
+            CapabilityRequest::PackageConstraint(custom),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        portable.evidence,
+        CapabilityEvidence::PackageImplementation(implementation("org.example", "portable_i64"))
+    );
+    registry
+        .validate(&term("core/map@1<org.example/opaque@1,core/string@1>"))
+        .unwrap();
+}
+
+#[test]
+fn implementation_registration_rejects_ownership_conflicts_and_derive_overwrite() {
+    let target = term("org.example/opaque@1");
+    let mut builder = TypeRegistryBuilder::core();
+    builder
+        .register_record(
+            "org.example",
+            &expr("org.example/opaque@1"),
+            RecordSchema { fields: vec![] },
+        )
+        .unwrap();
+    assert!(matches!(
+        builder.register_constraint_implementation(
+            "org.other",
+            &target,
+            ConstraintId::Core(Constraint::Eq),
+            implementation("org.other", "eq"),
+        ),
+        Err(TypeRegistrationError::CoreConstraintOwnerMismatch { .. })
+    ));
+    assert!(matches!(
+        builder.register_constraint_implementation(
+            "org.other",
+            &term("core/i64@1"),
+            ConstraintId::Core(Constraint::Eq),
+            implementation("org.other", "eq"),
+        ),
+        Err(TypeRegistrationError::CoreTypeImplementationDenied { .. })
+    ));
+    let custom = PackageConstraintId::new("org.example", "portable", 1).unwrap();
+    assert!(matches!(
+        builder.register_constraint_implementation(
+            "org.other",
+            &term("core/i64@1"),
+            ConstraintId::Package(custom),
+            implementation("org.other", "portable"),
+        ),
+        Err(TypeRegistrationError::ConstraintAuthorityMismatch { .. })
+    ));
+    let mut invalid_digest = implementation("org.example", "bad_digest");
+    invalid_digest.content_digest = "sha256:NOT-A-DIGEST".to_owned();
+    assert!(matches!(
+        builder.register_constraint_implementation(
+            "org.example",
+            &target,
+            ConstraintId::Core(Constraint::Ord),
+            invalid_digest,
+        ),
+        Err(TypeRegistrationError::InvalidImplementationDigest { .. })
+    ));
+
+    builder
+        .derive_constraint("org.example", &expr("org.example/opaque@1"), Constraint::Eq)
+        .unwrap();
+    assert!(matches!(
+        builder.register_constraint_implementation(
+            "org.example",
+            &target,
+            ConstraintId::Core(Constraint::Eq),
+            implementation("org.example", "replacement"),
+        ),
+        Err(TypeRegistrationError::DuplicateConstraintImplementation { .. })
+    ));
+}
+
+#[test]
+fn numeric_operation_delegation_requires_its_exact_registered_operation() {
+    let target = term("org.example/number@1");
+    let mut builder = TypeRegistryBuilder::core();
+    builder
+        .register_record(
+            "org.example",
+            &expr("org.example/number@1"),
+            RecordSchema { fields: vec![] },
+        )
+        .unwrap();
+    builder
+        .register_constraint_implementation(
+            "org.example",
+            &target,
+            ConstraintId::Core(Constraint::Num),
+            implementation("org.example", "num"),
+        )
+        .unwrap();
+    builder
+        .register_numeric_operation_implementation(
+            "org.example",
+            &target,
+            NumericOperation::Add,
+            implementation("org.example", "add"),
+        )
+        .unwrap();
+    let registry = builder.build().unwrap();
+
+    assert!(
+        registry
+            .supports_term(&target, CapabilityRequest::Constraint(Constraint::Num))
+            .unwrap()
+            .is_some()
+    );
+    let add = registry
+        .supports_term(
+            &target,
+            CapabilityRequest::NumericOperation(NumericOperation::Add),
+        )
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        add.evidence,
+        CapabilityEvidence::PackageImplementation(implementation("org.example", "add"))
+    );
+    assert!(
+        registry
+            .supports_term(
+                &target,
+                CapabilityRequest::NumericOperation(NumericOperation::Subtract)
+            )
+            .unwrap()
+            .is_none()
+    );
+}
+
+#[test]
+fn explicit_member_implementation_can_satisfy_a_declared_structural_derive() {
+    let mut builder = TypeRegistryBuilder::core();
+    builder
+        .register_record(
+            "org.example",
+            &expr("org.example/component@1"),
+            RecordSchema { fields: vec![] },
+        )
+        .unwrap();
+    builder
+        .register_record(
+            "org.example",
+            &expr("org.example/aggregate@1"),
+            RecordSchema {
+                fields: vec![FieldSchema {
+                    field_id: "component".to_owned(),
+                    ty: term("org.example/component@1"),
+                    optional: false,
+                }],
+            },
+        )
+        .unwrap();
+    builder
+        .register_constraint_implementation(
+            "org.example",
+            &term("org.example/component@1"),
+            ConstraintId::Core(Constraint::Eq),
+            implementation("org.example", "component_eq"),
+        )
+        .unwrap();
+    builder
+        .derive_constraint(
+            "org.example",
+            &expr("org.example/aggregate@1"),
+            Constraint::Eq,
+        )
+        .unwrap();
+    let registry = builder.build().unwrap();
+    assert!(has(&registry, "org.example/aggregate@1", Constraint::Eq));
 }

@@ -7,6 +7,7 @@
 mod constraints;
 mod errors;
 mod identity;
+mod implementations;
 mod registry;
 #[cfg(test)]
 mod tests;
@@ -17,4 +18,5 @@ pub use constraints::{
 };
 pub use errors::{TypeRegistrationError, TypeResolveError};
 pub use identity::{TypeKey, TypeKind, TypeOwner};
+pub use implementations::{ConstraintId, ConstraintImplementationRef, PackageConstraintId};
 pub use registry::{TypeRegistry, TypeRegistryBuilder};
