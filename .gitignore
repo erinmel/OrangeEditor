@@ -23,9 +23,9 @@ dist/
 lcov.info
 **/*.rs.bk
 
-# AI tooling: per-user settings and scratch notes (shared context in .artifacts/ is tracked)
+# Local tool settings and working notes (never committed)
 .claude/settings.local.json
-.artifacts/local/
+.artifacts/
 
 # OS files
 .DS_Store

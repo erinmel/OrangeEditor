@@ -11,7 +11,7 @@ const patterns = [
   /\bAKIA[0-9A-Z]{16}\b/,
 ];
 for (const file of files) {
-  if (/(^|\/)(\.idea|\.vscode|target|node_modules|dist)\//.test(file)) errors.push(file + ': local/generated content');
+  if (/(^|\/)(\.idea|\.vscode|\.artifacts|target|node_modules|dist)\//.test(file)) errors.push(file + ': local/generated content');
   if (/(^|\/)\.env(?:\..+)?$/.test(file) && !/(^|\/)\.env\.example$/.test(file)) errors.push(file + ': local environment file');
   if (/\.(key|p12|pfx)$/i.test(file)) errors.push(file + ': credential/key file');
   const bytes = fs.readFileSync(file);

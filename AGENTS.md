@@ -2,7 +2,7 @@
 
 Product and current workspace: OrangeEditor. Earlier planning evidence may mention `OraneEditor`; do not rename directories implicitly.
 
-Read `README.md`, then `docs/07-delivery-plan.md`. Use `AGENT_PROMPT.md` for the complete planning assignment. Slice plans and other AI working context live in `.artifacts/` (non-normative; see `.artifacts/README.md`). Read the contract/ADR documents relevant to the current work unit before changing a public interface.
+Read `README.md`, then `docs/07-delivery-plan.md`. Use `AGENT_PROMPT.md` for the complete planning assignment. Read the contract/ADR documents relevant to the current work unit before changing a public interface.
 
 ## Implementation rules
 

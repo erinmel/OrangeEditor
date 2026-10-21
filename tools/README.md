@@ -24,4 +24,4 @@ The security job caches only the pinned cargo-deny installation using actions/ca
 
 Permissions remain read-only, checkout credentials are not persisted, and action references remain pinned to full commits. There is no deployment workflow yet: an application executable, packaging contract and release qualification belong to later delivery work. Passing these core tests establishes no Bevy, SDK, plugin-host or hardware capability.
 
-The documentation traversal skips only ignored `.artifacts/local/` scratch worktrees; other tracked `.artifacts/` planning context remains in scope. This prevents temporary checkout documentation from being mistaken for repository documentation.
+The documentation traversal skips the ignored local `.artifacts/` working-notes folder, so local notes are never treated as repository documentation.
