@@ -2,6 +2,7 @@
 #![allow(dead_code)] // each test binary uses a different subset
 
 pub mod edits;
+pub mod generic;
 pub mod strategies;
 
 use std::path::PathBuf;

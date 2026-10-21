@@ -87,6 +87,11 @@ pub enum DocCommand {
         key: SignatureKey,
         snapshot: SignatureSnapshot,
     },
+    /// Points a node at an existing shared snapshot; add it first with `PutSignature`.
+    SetSignature {
+        node: NodeId,
+        key: SignatureKey,
+    },
     Layout(LayoutCommand),
 }
 
@@ -387,6 +392,15 @@ impl Journal {
                     },
                 ),
             },
+            DocCommand::SetSignature { node, key } => {
+                if !document.signatures.contains_key(&key) {
+                    return Err(TxError::SignatureNotFound(key));
+                }
+                self.modify_node(document, node, |node| {
+                    node.signature = Some(key);
+                    Ok(())
+                })
+            }
             DocCommand::Layout(LayoutCommand::Set { path, value }) => {
                 if path.is_empty() {
                     return Err(TxError::EmptyLayoutPath);

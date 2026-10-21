@@ -136,6 +136,8 @@ pub enum TxError {
     VariadicPortNotFound { node: NodeId, port: PortKey },
     #[error("signature `{0}` already exists with different content")]
     SignatureConflict(SignatureKey),
+    #[error("signature `{0}` does not exist")]
+    SignatureNotFound(SignatureKey),
     #[error("a layout path needs at least one key")]
     EmptyLayoutPath,
     #[error("layout path `{path}` passes through a value that is not an object")]

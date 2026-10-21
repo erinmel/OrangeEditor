@@ -5,8 +5,8 @@
 //! generic component of each, builds equations from pins, active typed literals, edges and
 //! the concrete port types of non-generic neighbours, solves them, then checks constraints
 //! and listed specializations. Persisted `type_args` are never an input, so a stale
-//! inferred binding cannot act as a pin. The document is never modified; persisting the
-//! result is 00c.4b.
+//! inferred binding cannot act as a pin. The document is never modified; `persist` turns
+//! the result into commands.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -18,7 +18,7 @@ use super::unify::{
 };
 use crate::GraphDocument;
 use crate::document::{
-    DefinitionRef, GraphBody, NodeInstance, PortKind, PortRef, ResolvedPort, TypeParam,
+    DefinitionRef, GraphBody, NodeInstance, NodeKind, PortKind, PortRef, ResolvedPort, TypeParam,
     TypeParamName,
 };
 use crate::id::{DefinitionId, EdgeId, NodeId, TypeExpr};
@@ -33,6 +33,8 @@ use crate::types::{
 /// type substitution. Persisted signature snapshots are resolved results, never templates.
 #[derive(Debug, Clone, PartialEq)]
 pub struct GenericDefinition {
+    /// Kind of the projected signature snapshots of this definition's instances.
+    pub kind: NodeKind,
     pub type_params: Vec<TypeParam>,
     /// Declared ports; data port types may mention `$name` parameters.
     pub ports: Vec<ResolvedPort>,

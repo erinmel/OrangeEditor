@@ -2,90 +2,21 @@
 
 mod common;
 
-use common::{edge_id, minimal_document, node_id};
-use orange_model::document::{DefinitionRef, ResolvedPort, TypeParam};
+use common::generic::{add, catalog, data_edge, document, source};
+use common::node_id;
+use orange_model::DocIndex;
+use orange_model::GraphDocument;
 use orange_model::id::NodeId;
 use orange_model::inference::{
-    ComponentInference, EquationEvidence, GenericDefinition, InferenceIssue, TemplateCatalog,
-    UnificationError, infer_components,
+    ComponentInference, EquationEvidence, InferenceIssue, TemplateCatalog, UnificationError,
+    infer_components,
 };
 use orange_model::types::TypeRegistry;
-use orange_model::{DocIndex, GraphDocument, from_json};
 use proptest::prelude::*;
-use serde_json::{Value as Json, json};
-
-const ADD: &str = "org.test/add";
-const SOURCE: &str = "org.test/source";
+use serde_json::json;
 
 fn id(n: u8) -> NodeId {
     node_id(n).parse().unwrap()
-}
-
-fn port(port_id: &str, direction: &str, ty: &str) -> ResolvedPort {
-    serde_json::from_value(
-        json!({"port_id": port_id, "direction": direction, "kind": "data", "type": ty}),
-    )
-    .unwrap()
-}
-
-/// `org.test/add<T: num>(a: T, b: T) -> sum: T`, optionally limited to listed specializations.
-fn catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
-    let mut catalog = TemplateCatalog::default();
-    catalog.insert(
-        DefinitionRef {
-            id: ADD.parse().unwrap(),
-            version: 1,
-        },
-        GenericDefinition {
-            type_params: vec![
-                serde_json::from_value::<TypeParam>(json!({"name": "T", "constraints": ["num"]}))
-                    .unwrap(),
-            ],
-            ports: vec![
-                port("a", "input", "$T"),
-                port("b", "input", "$T"),
-                port("sum", "output", "$T"),
-            ],
-            specializations: specializations.map(|types| {
-                types
-                    .into_iter()
-                    .map(|ty| [("T".to_owned(), ty.parse().unwrap())].into())
-                    .collect()
-            }),
-        },
-    );
-    catalog
-}
-
-fn add(n: u8, extra: Json) -> Json {
-    let mut node = json!({"id": node_id(n), "definition_id": ADD, "definition_version": 1,
-        "config_version": 1, "config": {}});
-    node.as_object_mut()
-        .unwrap()
-        .extend(extra.as_object().unwrap().clone());
-    node
-}
-
-/// A non-generic node whose snapshot declares an `i64` output `value`.
-fn source(n: u8) -> Json {
-    json!({"id": node_id(n), "definition_id": SOURCE, "definition_version": 1,
-        "config_version": 1, "config": {}, "signature": "s-source"})
-}
-
-fn data_edge(n: u8, from: (u8, &str), to: (u8, &str)) -> Json {
-    json!({"id": edge_id(n), "from": {"node": node_id(from.0), "port": from.1},
-        "to": {"node": node_id(to.0), "port": to.1}})
-}
-
-fn document(nodes: Vec<Json>, edges: Vec<Json>) -> GraphDocument {
-    from_json(&minimal_document(json!({
-        "signatures": {"s-source": {"kind": "pure", "ports": [
-            {"port_id": "value", "direction": "output", "kind": "data", "type": "core/i64@1"}
-        ]}},
-        "nodes": nodes,
-        "edges": edges,
-    })))
-    .unwrap()
 }
 
 fn infer(
