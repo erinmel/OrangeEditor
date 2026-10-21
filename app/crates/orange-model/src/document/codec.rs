@@ -21,8 +21,9 @@ struct Header {
 
 #[derive(Deserialize)]
 struct EnvelopeIn {
-    #[allow(dead_code)] // checked through `Header` before the full parse
-    format: String,
+    // Header already validated the tag; consume it without storing a second String.
+    #[serde(rename = "format")]
+    _format: serde::de::IgnoredAny,
     #[serde(flatten)]
     document: GraphDocument,
 }
