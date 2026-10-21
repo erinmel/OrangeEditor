@@ -9,11 +9,13 @@ mod definitions;
 mod errors;
 mod provider;
 mod registry;
+mod selection;
 
 pub use definitions::*;
 pub use errors::*;
 pub use provider::*;
 pub use registry::*;
+pub use selection::*;
 
 #[cfg(test)]
 mod tests;

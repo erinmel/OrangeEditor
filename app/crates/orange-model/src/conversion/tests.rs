@@ -22,6 +22,13 @@ fn type_registry() -> Arc<TypeRegistry> {
         .unwrap();
     builder
         .register_record(
+            "org.example",
+            &ty("org.example/label@1"),
+            RecordSchema { fields: Vec::new() },
+        )
+        .unwrap();
+    builder
+        .register_record(
             "org.other",
             &ty("org.other/point@1"),
             RecordSchema { fields: Vec::new() },
@@ -233,6 +240,24 @@ fn duplicate_entry_identity_rejects_conflicting_semantics() {
         builder.register_package_entry("org.example", conflicting),
         Err(ConverterRegistrationError::ConflictingEntry { .. })
     ));
+}
+
+#[test]
+fn converter_definition_uses_normative_converter_id_wire_field() {
+    let definition = definition(
+        "org.example/point-to-string",
+        "org.example/point@1",
+        "core/string@1",
+        ConversionClass::LosslessTotal,
+        Vec::new(),
+        &[],
+    );
+    let wire = serde_json::to_value(definition).unwrap();
+    assert_eq!(
+        wire.get("converter_id").and_then(serde_json::Value::as_str),
+        Some("org.example/point-to-string")
+    );
+    assert!(wire.get("id").is_none());
 }
 
 #[test]
@@ -539,4 +564,534 @@ fn provider_identity_rejects_padding() {
         ),
         Err(ConverterRegistrationError::InvalidProviderIdentity)
     ));
+}
+
+#[test]
+fn unique_lossless_entry_is_automatic_alongside_partial_entry() {
+    let types = type_registry();
+    let mut builder = ConverterRegistryBuilder::new(types);
+    let lossless = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text-exact",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::LosslessTotal,
+                Vec::new(),
+                &[],
+            ),
+        )
+        .unwrap();
+    let partial = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text-checked",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::CheckedPartial,
+                Vec::new(),
+                &["org.example/Format"],
+            ),
+        )
+        .unwrap();
+    let lossless_provider = package_provider("org.example", "exact-formatter");
+    let partial_provider = package_provider("org.example", "checked-formatter");
+    builder
+        .register_package_provider("org.example", &lossless, lossless_provider.clone())
+        .unwrap();
+    builder
+        .register_package_provider("org.example", &partial, partial_provider)
+        .unwrap();
+    let registry = builder.build();
+
+    let outcome = registry.select_for_connection(
+        &ty("org.example/point@1"),
+        &ty("core/string@1"),
+        &BTreeMap::new(),
+    );
+    assert_eq!(
+        outcome,
+        SelectionOutcome::Automatic(ResolvedConverter {
+            entry: lossless,
+            provider: ConverterProvider::Package(lossless_provider),
+            options: BTreeMap::new(),
+        })
+    );
+}
+
+#[test]
+fn ambiguous_entries_and_provider_alternatives_are_stable_choices() {
+    let mut builder = ConverterRegistryBuilder::new(type_registry());
+    let first = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text-a",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::LosslessTotal,
+                Vec::new(),
+                &[],
+            ),
+        )
+        .unwrap();
+    let second = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text-b",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::LosslessTotal,
+                Vec::new(),
+                &[],
+            ),
+        )
+        .unwrap();
+    for (key, provider_id) in [(&first, "formatter-a"), (&second, "formatter-b")] {
+        builder
+            .register_package_provider(
+                "org.example",
+                key,
+                package_provider("org.example", provider_id),
+            )
+            .unwrap();
+    }
+    let registry = builder.build();
+    let outcome = registry.select_for_connection(
+        &ty("org.example/point@1"),
+        &ty("core/string@1"),
+        &BTreeMap::new(),
+    );
+    let SelectionOutcome::ChoiceRequired { candidates, reason } = outcome else {
+        panic!("expected a semantic-entry choice");
+    };
+    assert_eq!(reason, ChoiceReason::MultipleLosslessEntries);
+    assert_eq!(candidates.len(), 2);
+    assert_eq!(candidates[0].entry, first);
+    assert_eq!(candidates[1].entry, second);
+
+    let mut builder = ConverterRegistryBuilder::new(type_registry());
+    let one_entry = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::LosslessTotal,
+                Vec::new(),
+                &[],
+            ),
+        )
+        .unwrap();
+    builder
+        .register_package_provider(
+            "org.example",
+            &one_entry,
+            package_provider("org.example", "formatter-a"),
+        )
+        .unwrap();
+    builder
+        .register_package_provider(
+            "org.example",
+            &one_entry,
+            package_provider("org.example", "formatter-b"),
+        )
+        .unwrap();
+    let registry = builder.build();
+    let outcome = registry.select_for_connection(
+        &ty("org.example/point@1"),
+        &ty("core/string@1"),
+        &BTreeMap::new(),
+    );
+    let SelectionOutcome::ChoiceRequired { candidates, reason } = outcome else {
+        panic!("expected a provider choice");
+    };
+    assert_eq!(reason, ChoiceReason::ProviderAmbiguity);
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().all(|candidate| {
+        candidate
+            .reasons
+            .contains(&CandidateReason::MultipleProviders)
+    }));
+
+    let mut builder = ConverterRegistryBuilder::new(type_registry());
+    let one_entry = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::LosslessTotal,
+                Vec::new(),
+                &[],
+            ),
+        )
+        .unwrap();
+    let default_provider = package_provider("org.example", "formatter-b");
+    builder
+        .register_package_provider(
+            "org.example",
+            &one_entry,
+            package_provider("org.example", "formatter-a"),
+        )
+        .unwrap();
+    builder
+        .register_package_provider("org.example", &one_entry, default_provider.clone())
+        .unwrap();
+    builder
+        .set_new_binding_default(
+            &one_entry,
+            ConverterProvider::Package(default_provider.clone()),
+        )
+        .unwrap();
+    let registry = builder.build();
+    assert_eq!(
+        registry.select_for_connection(
+            &ty("org.example/point@1"),
+            &ty("core/string@1"),
+            &BTreeMap::new(),
+        ),
+        SelectionOutcome::Automatic(ResolvedConverter {
+            entry: one_entry,
+            provider: ConverterProvider::Package(default_provider),
+            options: BTreeMap::new(),
+        })
+    );
+}
+
+#[test]
+fn required_policy_and_checked_or_lossy_candidates_require_explicit_exact_choice() {
+    let mut builder = ConverterRegistryBuilder::new(type_registry());
+    let lossless = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::LosslessTotal,
+                vec![NamedPolicy {
+                    name: "format".to_owned(),
+                    choices: vec!["compact".to_owned(), "verbose".to_owned()],
+                    default: None,
+                }],
+                &[],
+            ),
+        )
+        .unwrap();
+    let provider = package_provider("org.example", "formatter");
+    let partial = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text-checked",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::CheckedPartial,
+                vec![NamedPolicy {
+                    name: "failure_mode".to_owned(),
+                    choices: vec!["stop".to_owned(), "fallback".to_owned()],
+                    default: None,
+                }],
+                &["org.example/Format"],
+            ),
+        )
+        .unwrap();
+    let partial_provider = package_provider("org.example", "checked-formatter");
+    builder
+        .register_package_provider("org.example", &lossless, provider.clone())
+        .unwrap();
+    builder
+        .register_package_provider("org.example", &partial, partial_provider)
+        .unwrap();
+    let registry = builder.build();
+    let outcome = registry.select_for_connection(
+        &ty("org.example/point@1"),
+        &ty("core/string@1"),
+        &BTreeMap::new(),
+    );
+    let SelectionOutcome::ChoiceRequired { candidates, reason } = outcome else {
+        panic!("missing required policy must request a choice");
+    };
+    assert_eq!(reason, ChoiceReason::MissingRequiredPolicies);
+    assert_eq!(candidates.len(), 2);
+    assert!(candidates.iter().any(|candidate| {
+        candidate.entry == lossless
+            && candidate
+                .reasons
+                .contains(&CandidateReason::RequiredPolicy("format".to_owned()))
+    }));
+    assert!(candidates.iter().any(|candidate| {
+        candidate.entry == partial
+            && candidate
+                .reasons
+                .contains(&CandidateReason::RequiredPolicy("failure_mode".to_owned()))
+    }));
+
+    let explicit = |value: &str| ExplicitConverterChoice {
+        entry: lossless.clone(),
+        provider: ConverterProvider::Package(provider.clone()),
+        options: BTreeMap::from([("format".to_owned(), value.to_owned())]),
+    };
+    let selected = registry
+        .resolve_explicit_choice(
+            &ty("org.example/point@1"),
+            &ty("core/string@1"),
+            explicit("verbose"),
+        )
+        .unwrap();
+    assert_eq!(selected.entry, lossless);
+    assert_eq!(
+        selected.provider,
+        ConverterProvider::Package(provider.clone())
+    );
+    assert_eq!(selected.options["format"], "verbose");
+    assert!(matches!(
+        registry.resolve_explicit_choice(
+            &ty("org.example/point@1"),
+            &ty("core/string@1"),
+            explicit("unknown"),
+        ),
+        Err(SelectionRejection::InvalidOptions(
+            ConverterRegistrationError::UnknownPolicyChoice { .. }
+        ))
+    ));
+    assert!(matches!(
+        registry.resolve_explicit_choice(
+            &ty("org.other/point@1"),
+            &ty("core/string@1"),
+            explicit("verbose"),
+        ),
+        Err(SelectionRejection::StaleChoice)
+    ));
+}
+
+#[test]
+fn checked_and_lossy_entries_offer_exact_candidates_and_validate_policy_values() {
+    let mut builder = ConverterRegistryBuilder::new(type_registry());
+    let checked = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text-checked",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::CheckedPartial,
+                vec![NamedPolicy {
+                    name: "format".to_owned(),
+                    choices: vec!["compact".to_owned(), "verbose".to_owned()],
+                    default: None,
+                }],
+                &["org.example/Format"],
+            ),
+        )
+        .unwrap();
+    let lossy = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text-lossy",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::Lossy,
+                vec![NamedPolicy {
+                    name: "loss_mode".to_owned(),
+                    choices: vec!["replace".to_owned(), "drop".to_owned()],
+                    default: Some("replace".to_owned()),
+                }],
+                &[],
+            ),
+        )
+        .unwrap();
+    let checked_provider = package_provider("org.example", "checked-formatter");
+    let lossy_provider = package_provider("org.example", "lossy-formatter");
+    builder
+        .register_package_provider("org.example", &checked, checked_provider.clone())
+        .unwrap();
+    builder
+        .register_package_provider("org.example", &lossy, lossy_provider.clone())
+        .unwrap();
+    let registry = builder.build();
+    let outcome = registry.select_for_connection(
+        &ty("org.example/point@1"),
+        &ty("core/string@1"),
+        &BTreeMap::new(),
+    );
+    let SelectionOutcome::ChoiceRequired { candidates, reason } = outcome else {
+        panic!("partial and lossy candidates require an explicit selection");
+    };
+    assert_eq!(reason, ChoiceReason::OnlyPartialOrLossyEntries);
+    assert!(candidates.iter().any(|candidate| {
+        candidate.entry == checked && candidate.class == ConversionClass::CheckedPartial
+    }));
+    assert!(candidates.iter().any(|candidate| {
+        candidate.entry == lossy && candidate.class == ConversionClass::Lossy
+    }));
+
+    let selected_checked = registry
+        .resolve_explicit_choice(
+            &ty("org.example/point@1"),
+            &ty("core/string@1"),
+            ExplicitConverterChoice {
+                entry: checked.clone(),
+                provider: ConverterProvider::Package(checked_provider.clone()),
+                options: BTreeMap::from([("format".to_owned(), "verbose".to_owned())]),
+            },
+        )
+        .unwrap();
+    assert_eq!(selected_checked.entry, checked);
+    assert_eq!(
+        selected_checked.provider,
+        ConverterProvider::Package(checked_provider.clone())
+    );
+    assert_eq!(selected_checked.options["format"], "verbose");
+
+    let selected_lossy = registry
+        .resolve_explicit_choice(
+            &ty("org.example/point@1"),
+            &ty("core/string@1"),
+            ExplicitConverterChoice {
+                entry: lossy.clone(),
+                provider: ConverterProvider::Package(lossy_provider.clone()),
+                options: BTreeMap::new(),
+            },
+        )
+        .unwrap();
+    assert_eq!(selected_lossy.entry, lossy);
+    assert_eq!(
+        selected_lossy.provider,
+        ConverterProvider::Package(lossy_provider)
+    );
+    assert_eq!(selected_lossy.options["loss_mode"], "replace");
+
+    assert!(matches!(
+        registry.resolve_explicit_choice(
+            &ty("org.example/point@1"),
+            &ty("core/string@1"),
+            ExplicitConverterChoice {
+                entry: checked,
+                provider: ConverterProvider::Package(checked_provider),
+                options: BTreeMap::from([("format".to_owned(), "unknown".to_owned())]),
+            },
+        ),
+        Err(SelectionRejection::InvalidOptions(
+            ConverterRegistrationError::UnknownPolicyChoice { .. }
+        ))
+    ));
+}
+
+#[test]
+fn selection_is_direct_only_and_equal_types_return_compatible_first() {
+    let mut builder = ConverterRegistryBuilder::new(type_registry());
+    for (id, from, to) in [
+        (
+            "org.example/point-to-label",
+            "org.example/point@1",
+            "org.example/label@1",
+        ),
+        (
+            "org.example/label-to-string",
+            "org.example/label@1",
+            "core/string@1",
+        ),
+    ] {
+        let key = builder
+            .register_package_entry(
+                "org.example",
+                definition(
+                    id,
+                    from,
+                    to,
+                    ConversionClass::LosslessTotal,
+                    Vec::new(),
+                    &[],
+                ),
+            )
+            .unwrap();
+        builder
+            .register_package_provider(
+                "org.example",
+                &key,
+                package_provider("org.example", id.rsplit('/').next().unwrap()),
+            )
+            .unwrap();
+    }
+    let registry = builder.build();
+    assert_eq!(
+        registry.select_for_connection(
+            &ty("org.example/point@1"),
+            &ty("core/string@1"),
+            &BTreeMap::new(),
+        ),
+        SelectionOutcome::Rejected(SelectionRejection::NoDirectConverter {
+            from: ty("org.example/point@1"),
+            to: ty("core/string@1"),
+        })
+    );
+    assert_eq!(
+        registry.select_for_connection(
+            &ty("org.example/point@1"),
+            &ty("org.example/point@1"),
+            &BTreeMap::new(),
+        ),
+        SelectionOutcome::Compatible
+    );
+}
+
+#[test]
+fn available_partial_choice_survives_an_unavailable_unique_lossless_entry() {
+    let mut builder = ConverterRegistryBuilder::new(type_registry());
+    builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text-unavailable",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::LosslessTotal,
+                Vec::new(),
+                &[],
+            ),
+        )
+        .unwrap();
+    let partial = builder
+        .register_package_entry(
+            "org.example",
+            definition(
+                "org.example/point-to-text-checked",
+                "org.example/point@1",
+                "core/string@1",
+                ConversionClass::CheckedPartial,
+                Vec::new(),
+                &["org.example/Format"],
+            ),
+        )
+        .unwrap();
+    let provider = package_provider("org.example", "checked-formatter");
+    builder
+        .register_package_provider("org.example", &partial, provider.clone())
+        .unwrap();
+    let registry = builder.build();
+    let outcome = registry.select_for_connection(
+        &ty("org.example/point@1"),
+        &ty("core/string@1"),
+        &BTreeMap::new(),
+    );
+    let SelectionOutcome::ChoiceRequired { candidates, reason } = outcome else {
+        panic!("available partial converter must remain selectable");
+    };
+    assert_eq!(reason, ChoiceReason::UniqueLosslessProviderUnavailable);
+    assert_eq!(candidates.len(), 1);
+    assert_eq!(candidates[0].entry, partial);
+    assert_eq!(candidates[0].provider, ConverterProvider::Package(provider));
+    assert!(
+        candidates[0]
+            .reasons
+            .contains(&CandidateReason::CheckedPartial)
+    );
 }

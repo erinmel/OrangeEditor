@@ -141,6 +141,7 @@ pub struct NamedPolicy {
 /// Metadata for one direct converter semantic contract.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConverterDefinition {
+    #[serde(rename = "converter_id")]
     pub id: ConverterId,
     pub contract_version: u32,
     pub from: TypeExpr,
