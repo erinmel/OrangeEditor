@@ -1,6 +1,6 @@
 # WU-00c implementation tasks
 
-Status: implementation started on `feat/wu-00c-types-conversions`; 00c.1a is in progress. This is the task packet for the seven slices in [07](07-delivery-plan.md). Keep it as the working handoff; do not create a README, fixture inventory or separate report for every task. The existing development branch retains its cleanup commits and receives small implementation commits.
+Status: implementation started on `feat/wu-00c-types-conversions`; 00c.1a is accepted locally. This is the task packet for the seven slices in [07](07-delivery-plan.md). Keep it as the working handoff; do not create a README, fixture inventory or separate report for every task. The existing development branch retains its cleanup commits and receives small implementation commits.
 
 ## Ownership and context
 
@@ -13,7 +13,7 @@ Assign a continuing developer/agent to each role. A role can complete several ta
 | C — connections | 5a, 5b, 6a, 6b | Converter entries/provider selection, connection plans and insertion |
 | Coordinator | 7a, 7b and integration | Contract decisions, shared files, cross-owner APIs, review and task acceptance |
 
-Current agents: F = `/root/type_foundations`, S = `/root/inference`, C = `/root/graph_authoring`, coordinator = `/root`. F is implementing 1a; S and C are preparing their contract/interface decisions without editing until prerequisites are accepted. Consult these owners for follow-up work in this conversation; reconstruct from their handoffs if a later session no longer has those live agents.
+Current agents: F = `/root/type_foundations`, S = `/root/inference`, C = `/root/graph_authoring`, coordinator = `/root`. F owns the accepted 1a implementation; S and C have prepared their contract/interface decisions without editing until prerequisites are accepted. Consult these owners for follow-up work in this conversation; reconstruct from their handoffs if a later session no longer has those live agents.
 
 Use a cheaper available coding agent for a bounded task with settled inputs. Keep the same owner for its next task. The coordinator handles cross-owner design decisions; a cheaper model is not a reason to omit necessary context or acceptance checks. Do not give an agent all seven slices as one implementation request.
 
@@ -47,7 +47,7 @@ These are reading boundaries, not copies of the contracts. Dependency handoffs a
 
 ## Ready order
 
-Task 1a is in progress; remaining tasks are pending. Dependencies mean reviewed, working outputs, not only a proposed interface. The principal path is 1→2→3→4→6→7. Converter work 5 may proceed after its listed prerequisites, alongside inference work if file ownership allows it.
+Task 1a is accepted locally; remaining tasks are pending. Dependencies mean reviewed, working outputs, not only a proposed interface. The principal path is 1→2→3→4→6→7. Converter work 5 may proceed after its listed prerequisites, alongside inference work if file ownership allows it.
 
 | Task | Owner | Depends on | Result |
 |---|---|---|---|

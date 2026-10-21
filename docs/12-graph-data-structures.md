@@ -526,6 +526,8 @@ pub struct RegistrySnapshot {
 
 Hash lookups here are compile-time only. Publication validates namespace ownership, constraint coherence and converter ownership before the snapshot is visible ([04](04-expansion-plugins.md)).
 
+Implementation (00c.1a): `orange_model::types::TypeRegistry` resolves concrete `TypeTerm`s against the core constructor table and interns their canonical identity. The public host-side `TypeKey` wraps a dense `u32` slot with an opaque registry owner token; lookup rejects a key from another registry even when its numeric slot exists there. Registries are not cloned into independently mutable identity spaces. This checked host wrapper is not a wire representation or a change to future dense execution-plan indexes; keys are never persisted. Resolution rejects unresolved parameters, unknown names/majors, wrong arity and nesting beyond the existing parser budget.
+
 ## 9. Execution plan IR
 
 Illustrative IR. The exact encoding is fixed in WU-00e, while the separation into pull programs, control blocks and dense slots is a contract.
