@@ -1,6 +1,6 @@
 # WU-00c implementation tasks
 
-Status: implementation started on `feat/wu-00c-types-conversions`; 00c.1a/1b and 3a are accepted locally. This is the task packet for the seven slices in [07](07-delivery-plan.md). Keep it as the working handoff; do not create a README, fixture inventory or separate report for every task. The existing development branch retains its cleanup commits and receives small implementation commits.
+Status: implementation started on `feat/wu-00c-types-conversions`; 00c.1a/1b, 2a and 3a are accepted locally; 3b and 5a are under review. This is the task packet for the seven slices in [07](07-delivery-plan.md). Keep it as the working handoff; do not create a README, fixture inventory or separate report for every task. The existing development branch retains its cleanup commits and receives small implementation commits.
 
 ## Ownership and context
 
@@ -15,7 +15,13 @@ Assign a continuing developer/agent to each role. A role can complete several ta
 
 Current agents: F = `/root/type_foundations`, S = `/root/inference`, C = `/root/graph_authoring`, coordinator = `/root`. Consult these owners for follow-up work in this conversation; reconstruct from their handoffs if a later session no longer has those live agents.
 
-Current handoffs: F delivered 1a/1b on base `0059ae0`: `types::TypeRegistryBuilder` registers existing record/enum schemas and handle kinds, resolves keys, then builds frozen `TypeRegistry`; consumers use read-only `validate`, `expression`, `owner`/`kind` or term-based `owner_of`/`kind_of`. Production responsibilities are separated into registry, identity and errors modules. Workspace tests, nine focused type tests, formatting, Clippy, warning-denied rustdoc and architecture metadata checks passed with Rust/Cargo 1.99.1, default features and unchanged lockfile. `RecordRepr::ty` stays canonical text; general map-key constraints remain 2a. S delivered 3a in `0059ae0`: signature substitution uses `TypeTerm` with simultaneous replacements and a depth bound; `try_substitute_params` reports errors, the compatibility wrapper returns invalid opaque input unchanged. Six signature and three parser tests passed; workspace checks include existing signature vectors. C has settled entry/provider identity and prelocked-package planning with the coordinator; no C implementation yet.
+Current handoffs:
+
+- F: 1a/1b in `cd6cb73` supply `TypeRegistryBuilder` and frozen `TypeRegistry` using the existing literal schemas. Term-based `validate`/`owner_of`/`kind_of` work without interning; key queries enforce registry ownership. `RecordRepr::ty` stays canonical text. Accepted 2a adds `supports_term(CapabilityRequest)` proofs, explicit derives checked at publication, numeric-operation support and map-key validation in both registry and codec paths. Seven constraint tests, existing literal/codec suites and formatting pass. The combined work tree passed 140 workspace tests; integrated Clippy is waiting on an inference diagnostic-size fix, not waived. Package explicit implementation/coherence remains 2b.
+- S: 3a in `0059ae0` provides checked, bounded simultaneous structural signature substitution and an opaque legacy fallback; existing signature vectors pass. 3b is under review: node-scoped unification, iterative aliases and a provisional expanded-term resource bound; no graph inference or pins implemented yet.
+- C: 5a is under review: semantic converter entries are separate from exact provider alternatives, with explicit new-binding defaults, finite policy choices and core integer/float precision declarations. Eleven focused registry tests pass. Selection/planning/insertion remain pending; package insertion will require an existing exact lock.
+
+Checks above use Windows x64, Rust/Cargo 1.99.1, default features and unchanged `Cargo.lock`. Accepted commit bodies record exact commands and lockfile identity; no performance, remote CI or runtime gate is claimed.
 
 Use a cheaper available coding agent for a bounded task with settled inputs. Keep the same owner for its next task. The coordinator handles cross-owner design decisions; a cheaper model is not a reason to omit necessary context or acceptance checks. Do not give an agent all seven slices as one implementation request.
 
@@ -49,7 +55,7 @@ These are reading boundaries, not copies of the contracts. Dependency handoffs a
 
 ## Ready order
 
-Tasks 1a/1b and 3a are accepted locally; remaining tasks are pending. Dependencies mean reviewed, working outputs, not only a proposed interface. The principal path is 1→2→3→4→6→7. Converter work 5 may proceed after its listed prerequisites, alongside inference work if file ownership allows it.
+Tasks 1a/1b, 2a and 3a are accepted locally; 3b/5a are under review, and later tasks are pending. Dependencies mean reviewed, working outputs, not only a proposed interface. The principal path is 1→2→3→4→6→7. Converter work 5 may proceed after its listed prerequisites, alongside inference work if file ownership allows it.
 
 | Task | Owner | Depends on | Result |
 |---|---|---|---|
@@ -58,10 +64,10 @@ Tasks 1a/1b and 3a are accepted locally; remaining tasks are pending. Dependenci
 | 00c.2a | F | 1b | Constraint evaluation and map key eligibility |
 | 00c.2b | F | 2a | Coherence-checked constraint registration |
 | 00c.3a | S | 1a | Structural substitution in signatures; parser-only work is independent of package registration |
-| 00c.3b | S | 3a, 2a | Node-scoped structural unification |
-| 00c.4a | S | 3b | Read-only affected-component inference |
+| 00c.3b | S | 3a, 1b | Node-scoped structural unification; graph inference consumes constraint proofs in 4a |
+| 00c.4a | S | 3b, 2b | Read-only affected-component inference |
 | 00c.4b | S | 4a | Atomic persistence of inference results |
-| 00c.5a | C | 1b, 2b | Validated direct converter entries |
+| 00c.5a | C | 1b | Validated direct converter entries; ownership uses the published type registry |
 | 00c.5b | C | 5a | Deterministic selection/choice outcomes |
 | 00c.6a | C | 4b, 5b | Read-only connection plan |
 | 00c.6b | C | 6a | Atomic converter insertion and undo/redo |

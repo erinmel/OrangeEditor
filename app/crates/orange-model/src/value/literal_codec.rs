@@ -26,6 +26,19 @@ use crate::type_term::{MAX_NESTING, NamedTerm, TypeTerm};
 pub trait Schemas {
     fn record(&self, ty: &NamedTerm) -> Option<&RecordSchema>;
     fn enumeration(&self, ty: &NamedTerm) -> Option<&EnumSchema>;
+
+    /// Validate a map key before codec duplicate detection. The default preserves the
+    /// codec-only `SchemaSet` compatibility behavior (float exclusion); registries should
+    /// override this to enforce language `hash` and `eq` constraints.
+    fn validate_map_key(&self, term: &TypeTerm) -> Result<(), LiteralError> {
+        if float_width(term).is_some() {
+            Err(LiteralError::FloatMapKey {
+                ty: term.to_string(),
+            })
+        } else {
+            Ok(())
+        }
+    }
 }
 
 /// Field IDs in schema order (12 §5).
@@ -264,11 +277,7 @@ impl<S: Schemas> Codec<'_, S> {
             }
             ("map", items) => {
                 let [key, value] = args(term, items)?;
-                if float_width(&key).is_some() {
-                    return Err(LiteralError::FloatMapKey {
-                        ty: key.to_string(),
-                    });
-                }
+                self.schemas.validate_map_key(&key)?;
                 let pairs = json.as_array().ok_or_else(|| mismatch(term))?;
                 let mut entries: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
                 let mut keys = HashSet::with_capacity(pairs.len());
@@ -434,11 +443,7 @@ impl<S: Schemas> Codec<'_, S> {
             }
             ("map", items, Value::Map(map)) => {
                 let [key, value] = args(term, items)?;
-                if float_width(&key).is_some() {
-                    return Err(LiteralError::FloatMapKey {
-                        ty: key.to_string(),
-                    });
-                }
+                self.schemas.validate_map_key(&key)?;
                 let mut seen = HashSet::with_capacity(map.entries.len());
                 let pairs = map.entries.iter().map(|(k, v)| {
                     if !seen.insert(k) {

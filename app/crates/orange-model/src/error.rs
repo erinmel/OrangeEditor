@@ -56,6 +56,8 @@ pub enum LiteralError {
     InvalidSecretRef,
     #[error("map key type `{ty}` is a float")]
     FloatMapKey { ty: String },
+    #[error("map key type `{ty}` does not implement language `hash` and `eq`")]
+    IneligibleMapKey { ty: String },
     #[error("map literal repeats a key")]
     DuplicateMapKey,
     #[error("record literal lacks required field `{field}`")]

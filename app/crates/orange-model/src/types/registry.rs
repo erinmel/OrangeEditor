@@ -1,8 +1,9 @@
 //! Registry construction, type validation and the literal-schema adapter.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+use crate::error::LiteralError;
 use crate::id::TypeExpr;
 use crate::type_term::{MAX_NESTING, NamedTerm, TypeTerm};
 use crate::value::literal_codec::{EnumSchema, RecordSchema, Schemas};
@@ -11,7 +12,7 @@ use super::errors::{TypeRegistrationError, TypeResolveError, validate_member_ids
 use super::identity::{NamedTypeId, RegistryIdentity, TypeKey, TypeKind, TypeOwner};
 
 #[derive(Debug, Clone)]
-enum TypeData {
+pub(super) enum TypeData {
     Core,
     Record(RecordSchema),
     Enum(EnumSchema),
@@ -30,10 +31,11 @@ impl TypeData {
 }
 
 #[derive(Debug, Clone)]
-struct RegisteredType {
-    owner: TypeOwner,
-    arity: usize,
-    data: TypeData,
+pub(super) struct RegisteredType {
+    pub(super) owner: TypeOwner,
+    pub(super) arity: usize,
+    pub(super) data: TypeData,
+    pub(super) derives: HashSet<super::constraints::Constraint>,
 }
 
 /// Builder for one type snapshot. Package metadata and resolved keys are assembled
@@ -41,7 +43,7 @@ struct RegisteredType {
 #[derive(Debug)]
 pub struct TypeRegistryBuilder {
     owner: Arc<RegistryIdentity>,
-    definitions: HashMap<NamedTypeId, RegisteredType>,
+    pub(super) definitions: HashMap<NamedTypeId, RegisteredType>,
     interned: HashMap<TypeTerm, TypeKey>,
     expressions: Vec<TypeTerm>,
 }
@@ -67,6 +69,7 @@ impl TypeRegistryBuilder {
                     owner: TypeOwner::Core,
                     arity: *arity,
                     data: TypeData::Core,
+                    derives: HashSet::new(),
                 },
             );
         }
@@ -172,6 +175,42 @@ impl TypeRegistryBuilder {
                 TypeData::Core | TypeData::HandleKind => {}
             }
         }
+        registry.validate_registered_derives()?;
+        for (id, definition) in &registry.definitions {
+            match &definition.data {
+                TypeData::Record(schema) => {
+                    for field in &schema.fields {
+                        registry.validate(&field.ty).map_err(|error| {
+                            TypeRegistrationError::InvalidSchemaType {
+                                owner: id.to_string(),
+                                error,
+                            }
+                        })?;
+                    }
+                }
+                TypeData::Enum(schema) => {
+                    for variant in &schema.variants {
+                        if let Some(payload) = &variant.payload {
+                            registry.validate(payload).map_err(|error| {
+                                TypeRegistrationError::InvalidSchemaType {
+                                    owner: id.to_string(),
+                                    error,
+                                }
+                            })?;
+                        }
+                    }
+                }
+                TypeData::Core | TypeData::HandleKind => {}
+            }
+        }
+        for term in &registry.expressions {
+            registry.validate(term).map_err(|error| {
+                TypeRegistrationError::InvalidResolvedType {
+                    ty: term.to_string(),
+                    error,
+                }
+            })?;
+        }
         Ok(registry)
     }
 
@@ -207,6 +246,7 @@ impl TypeRegistryBuilder {
                 owner: TypeOwner::Package(package_namespace.to_owned()),
                 arity: 0,
                 data,
+                derives: HashSet::new(),
             },
         );
         Ok(())
@@ -221,7 +261,7 @@ impl TypeRegistryBuilder {
 #[derive(Debug)]
 pub struct TypeRegistry {
     owner: Arc<RegistryIdentity>,
-    definitions: HashMap<NamedTypeId, RegisteredType>,
+    pub(super) definitions: HashMap<NamedTypeId, RegisteredType>,
     expressions: Vec<TypeTerm>,
 }
 
@@ -241,7 +281,8 @@ impl TypeRegistry {
 
     /// Validates a concrete type expression without interning or mutating the registry.
     pub fn validate(&self, term: &TypeTerm) -> Result<(), TypeResolveError> {
-        validate_type(&self.definitions, term, 0)
+        validate_type(&self.definitions, term, 0)?;
+        self.validate_map_constraints(term)
     }
 
     /// Returns the structural expression for a key, rejecting keys from other registries.
@@ -367,6 +408,29 @@ impl Schemas for TypeRegistry {
         match &self.definition(ty)?.data {
             TypeData::Enum(schema) => Some(schema),
             TypeData::Core | TypeData::Record(_) | TypeData::HandleKind => None,
+        }
+    }
+
+    fn validate_map_key(&self, term: &TypeTerm) -> Result<(), LiteralError> {
+        if term.core("f32").is_some() || term.core("f64").is_some() {
+            return Err(LiteralError::FloatMapKey {
+                ty: term.to_string(),
+            });
+        }
+        let hash = self.supports_term(
+            term,
+            super::constraints::CapabilityRequest::Constraint(super::constraints::Constraint::Hash),
+        );
+        let eq = self.supports_term(
+            term,
+            super::constraints::CapabilityRequest::Constraint(super::constraints::Constraint::Eq),
+        );
+        if matches!(hash, Ok(Some(_))) && matches!(eq, Ok(Some(_))) {
+            Ok(())
+        } else {
+            Err(LiteralError::IneligibleMapKey {
+                ty: term.to_string(),
+            })
         }
     }
 }

@@ -21,6 +21,12 @@ pub enum TypeResolveError {
     TooDeep { max: usize },
     #[error("`core/handle@1` requires a registered handle-kind type argument")]
     InvalidHandleKind,
+    #[error("map key type `{ty}` must implement language `hash` and `eq` and cannot be a float")]
+    InvalidMapKey { ty: String },
+    #[error("type `{ty}` has an unsupported recursive `{constraint}` derivation")]
+    RecursiveDerivation { ty: String, constraint: String },
+    #[error("structural derivation exceeds the nominal-schema depth limit of {max}")]
+    DerivationTooDeep { max: usize },
     #[error("this key does not belong to the registry being queried")]
     ForeignKey,
     #[error("registry contains more types than can be represented by a type key")]
@@ -45,6 +51,24 @@ pub enum TypeRegistrationError {
     },
     #[error("type `{ty}` is already registered")]
     DuplicateType { ty: String },
+    #[error("type `{ty}` is not registered in this builder")]
+    UnknownType { ty: String },
+    #[error("type `{ty}` is not a record or enum and cannot declare a structural derive")]
+    NotDerivableType { ty: String },
+    #[error("structural derive `{constraint}` is not supported for `{ty}`")]
+    UnsupportedDerivation { ty: String, constraint: String },
+    #[error("structural derive `{constraint}` is invalid for `{ty}` or one of its members")]
+    InvalidDerivedConstraint { ty: String, constraint: String },
+    #[error("structural derive `{constraint}` for `{ty}` has a recursive proof cycle")]
+    RecursiveDerivation { ty: String, constraint: String },
+    #[error("structural derivation exceeds the nominal-schema depth limit of {max}")]
+    DerivationTooDeep { max: usize },
+    #[error("resolved type `{ty}` has invalid language constraints: {error}")]
+    InvalidResolvedType {
+        ty: String,
+        #[source]
+        error: TypeResolveError,
+    },
     #[error("schema for `{owner}` references an invalid type: {error}")]
     InvalidSchemaType {
         owner: String,
