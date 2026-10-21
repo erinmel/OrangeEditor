@@ -55,7 +55,7 @@ Task 1a is accepted locally; remaining tasks are pending. Dependencies mean revi
 | 00c.1b | F | 1a | Nominal package schemas through the same resolver |
 | 00c.2a | F | 1b | Constraint evaluation and map key eligibility |
 | 00c.2b | F | 2a | Coherence-checked constraint registration |
-| 00c.3a | S | 1b | Structural substitution in signatures |
+| 00c.3a | S | 1a | Structural substitution in signatures; parser-only work is independent of package registration |
 | 00c.3b | S | 3a, 2a | Node-scoped structural unification |
 | 00c.4a | S | 3b | Read-only affected-component inference |
 | 00c.4b | S | 4a | Atomic persistence of inference results |

@@ -9,11 +9,14 @@ use std::collections::BTreeMap;
 
 use serde_json::{Map, Value as Json};
 use sha2::{Digest, Sha256};
+use thiserror::Error;
 
 use crate::document::{
     Extensions, NodeKind, PortDirection, PortKind, ResolvedPort, SignatureSnapshot, TypeParamName,
 };
+use crate::error::IdError;
 use crate::id::{PortId, SignatureKey, TypeExpr};
+use crate::type_term::{MAX_NESTING, NamedTerm, TypeTerm};
 
 /// Presentation-only fields of a port or snapshot (11 §4.1, 12 §3.1).
 const PRESENTATION_KEYS: [&str; 4] = ["label", "description", "group", "editor"];
@@ -52,30 +55,109 @@ fn strip_presentation(extensions: &mut Extensions) {
 }
 
 /// Replaces each `$name` parameter (11 §5.1) that `args` resolves. Unresolved parameters
-/// stay for the validator to report. The 00c type parser will replace this token scan.
+/// stay for the validator to report. Substitution is simultaneous: parameters inside a
+/// replacement are preserved rather than looked up again in `args`.
+///
+/// The checked form reports malformed source/replacement expressions and results that
+/// exceed [`MAX_NESTING`].
+pub fn try_substitute_params(
+    ty: &TypeExpr,
+    args: &BTreeMap<TypeParamName, TypeExpr>,
+) -> Result<TypeExpr, SignatureSubstitutionError> {
+    let term = TypeTerm::parse(ty).map_err(|source| SignatureSubstitutionError::InvalidSource {
+        text: ty.to_string(),
+        source,
+    })?;
+    let substituted = substitute_term_at_depth(&term, args, 0)?;
+    let text = substituted.to_string();
+    text.parse()
+        .map_err(|source| SignatureSubstitutionError::InvalidResult { text, source })
+}
+
+/// Replaces parameters structurally. If either expression is malformed or the replacement
+/// would exceed the type nesting budget, this compatibility wrapper returns `ty` unchanged.
+/// Call [`try_substitute_params`] when the caller needs to distinguish a failed
+/// substitution from an unchanged expression.
 pub fn substitute_params(ty: &TypeExpr, args: &BTreeMap<TypeParamName, TypeExpr>) -> TypeExpr {
-    let text = ty.as_str();
-    let mut out = String::with_capacity(text.len());
-    let mut rest = text;
-    while let Some(start) = rest.find('$') {
-        out.push_str(&rest[..start]);
-        let after = &rest[start + 1..];
-        let end = after
-            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
-            .unwrap_or(after.len());
-        let name = &after[..end];
-        match args.get(name) {
-            Some(arg) => out.push_str(arg.as_str()),
-            None => {
-                out.push('$');
-                out.push_str(name);
-            }
-        }
-        rest = &after[end..];
+    try_substitute_params(ty, args).unwrap_or_else(|_| ty.clone())
+}
+
+/// Failure to substitute an opaque [`TypeExpr`] through the structural type grammar.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum SignatureSubstitutionError {
+    #[error("signature type `{text}` is not a canonical type expression")]
+    InvalidSource {
+        text: String,
+        #[source]
+        source: IdError,
+    },
+    #[error("type argument `{parameter}` (`{text}`) is not a canonical type expression")]
+    InvalidReplacement {
+        parameter: TypeParamName,
+        text: String,
+        #[source]
+        source: IdError,
+    },
+    #[error("substituted type expression `{text}` is invalid")]
+    InvalidResult {
+        text: String,
+        #[source]
+        source: IdError,
+    },
+    #[error("substituted type expression exceeds the type nesting limit")]
+    TooDeep,
+}
+
+fn substitute_term_at_depth(
+    term: &TypeTerm,
+    args: &BTreeMap<TypeParamName, TypeExpr>,
+    depth: usize,
+) -> Result<TypeTerm, SignatureSubstitutionError> {
+    if depth > MAX_NESTING {
+        return Err(SignatureSubstitutionError::TooDeep);
     }
-    out.push_str(rest);
-    out.parse()
-        .expect("substituting non-blank type expressions yields a non-blank one")
+    match term {
+        TypeTerm::Param(name) => match args.get(name) {
+            Some(replacement) => {
+                let replacement_term = TypeTerm::parse(replacement).map_err(|source| {
+                    SignatureSubstitutionError::InvalidReplacement {
+                        parameter: name.clone(),
+                        text: replacement.to_string(),
+                        source,
+                    }
+                })?;
+                check_term_depth(&replacement_term, depth)?;
+                Ok(replacement_term)
+            }
+            None => Ok(term.clone()),
+        },
+        TypeTerm::Named(named) => {
+            let args = named
+                .args
+                .iter()
+                .map(|arg| substitute_term_at_depth(arg, args, depth + 1))
+                .collect::<Result<_, _>>()?;
+            Ok(TypeTerm::Named(NamedTerm {
+                namespace: named.namespace.clone(),
+                name: named.name.clone(),
+                major: named.major,
+                args,
+            }))
+        }
+    }
+}
+
+/// Checks a replacement at its insertion depth without recursively substituting its params.
+fn check_term_depth(term: &TypeTerm, depth: usize) -> Result<(), SignatureSubstitutionError> {
+    if depth > MAX_NESTING {
+        return Err(SignatureSubstitutionError::TooDeep);
+    }
+    if let TypeTerm::Named(named) = term {
+        for arg in &named.args {
+            check_term_depth(arg, depth + 1)?;
+        }
+    }
+    Ok(())
 }
 
 /// Canonical JSON of a snapshot: object keys sorted by byte order, compact, serde_json
@@ -219,6 +301,60 @@ mod tests {
             substitute_params(&ty("core/bool@1"), &args),
             ty("core/bool@1")
         );
+    }
+
+    #[test]
+    fn substitution_is_simultaneous_and_parameter_names_are_structural() {
+        let substitutions = args(&[("T", "$U"), ("U", "core/i64@1"), ("Type", "core/string@1")]);
+        assert_eq!(substitute_params(&ty("$T"), &substitutions), ty("$U"));
+        assert_eq!(
+            substitute_params(&ty("core/map@1<$T,$Type>"), &substitutions),
+            ty("core/map@1<$U,core/string@1>")
+        );
+        // A cyclic replacement map is harmless because replacement terms are not
+        // recursively substituted in the same pass.
+        let cyclic = args(&[("T", "$U"), ("U", "$T")]);
+        assert_eq!(substitute_params(&ty("$T"), &cyclic), ty("$U"));
+    }
+
+    #[test]
+    fn checked_substitution_reports_malformed_terms_and_legacy_api_is_opaque() {
+        let malformed_source = ty("not a type");
+        assert!(matches!(
+            try_substitute_params(&malformed_source, &args(&[("T", "core/i64@1")])),
+            Err(SignatureSubstitutionError::InvalidSource { .. })
+        ));
+        assert_eq!(
+            substitute_params(&malformed_source, &args(&[("T", "core/i64@1")])),
+            malformed_source
+        );
+
+        let malformed_replacement = ty("$T");
+        let replacements = args(&[("T", "not a type")]);
+        assert!(matches!(
+            try_substitute_params(&malformed_replacement, &replacements),
+            Err(SignatureSubstitutionError::InvalidReplacement { .. })
+        ));
+        assert_eq!(
+            substitute_params(&malformed_replacement, &replacements),
+            malformed_replacement
+        );
+    }
+
+    #[test]
+    fn replacement_cannot_expand_past_parser_nesting_budget() {
+        let input = ty("core/list@1<$T>");
+        let replacement = format!(
+            "{}core/i64@1{}",
+            "core/list@1<".repeat(MAX_NESTING),
+            ">".repeat(MAX_NESTING)
+        );
+        let replacements = args(&[("T", &replacement)]);
+        assert!(matches!(
+            try_substitute_params(&input, &replacements),
+            Err(SignatureSubstitutionError::TooDeep)
+        ));
+        assert_eq!(substitute_params(&input, &replacements), input);
     }
 
     fn snapshot(value: Json) -> SignatureSnapshot {
