@@ -58,6 +58,11 @@ pub enum DocCommand {
         node: NodeId,
         args: BTreeMap<TypeParamName, TypeExpr>,
     },
+    /// Replaces the node's explicit type choices (pins, 11 §5.5).
+    SetTypePins {
+        node: NodeId,
+        pins: BTreeMap<TypeParamName, TypeExpr>,
+    },
     /// Allocates the next never-reused counter `k` and places `port#k` at `at` (11 §4.5).
     InsertVariadic {
         node: NodeId,
@@ -297,6 +302,10 @@ impl Journal {
             }),
             DocCommand::SetTypeArgs { node, args } => self.modify_node(document, node, |node| {
                 node.type_args = args;
+                Ok(())
+            }),
+            DocCommand::SetTypePins { node, pins } => self.modify_node(document, node, |node| {
+                node.type_pins = pins;
                 Ok(())
             }),
             DocCommand::InsertVariadic { node: id, port, at } => {

@@ -200,3 +200,55 @@ fn adding_a_generic_node_with_a_pin_resolves_it_in_the_same_transaction() {
     assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/u32@1"));
     assert_eq!(signature_types(&doc, 2), ["core/u32@1"; 3]);
 }
+
+fn pins(ty: Option<&str>) -> DocCommand {
+    DocCommand::SetTypePins {
+        node: nid(2),
+        pins: ty
+            .map(|ty| [("T".to_owned(), ty.parse().unwrap())].into())
+            .unwrap_or_default(),
+    }
+}
+
+#[test]
+fn pinning_resolves_unpinning_makes_ambiguous_and_one_undo_reverts_each() {
+    let mut doc = document(vec![add(2, json!({}))], vec![]);
+    let issues = commit(&mut doc, vec![pins(Some("core/f32@1"))]).unwrap();
+    assert!(issues.is_empty());
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/f32@1"));
+    let pinned = content(&doc);
+
+    let done = apply_inferred(
+        &mut doc,
+        vec![pins(None)],
+        &catalog(None),
+        &TypeRegistry::core(),
+    )
+    .unwrap();
+    assert_eq!(codes(&done.issues), ["E-TYPE-AMBIGUOUS"]);
+    assert_eq!(type_arg(&doc, 2), None);
+    assert_eq!(signature_types(&doc, 2), ["$T"; 3]);
+
+    let _ = doc.revert(done.committed.inverse).unwrap();
+    assert_eq!(content(&doc), pinned);
+}
+
+#[test]
+fn removing_the_typed_source_clears_the_neighbours_binding() {
+    let mut doc = unconnected();
+    let _ = commit(
+        &mut doc,
+        vec![connect(data_edge(1, (1, "value"), (2, "a")))],
+    )
+    .unwrap();
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
+
+    let issues = commit(
+        &mut doc,
+        vec![DocCommand::RemoveNodes { ids: vec![nid(1)] }],
+    )
+    .unwrap();
+    assert_eq!(codes(&issues), ["E-TYPE-AMBIGUOUS"]);
+    assert_eq!(type_arg(&doc, 2), None);
+    assert_eq!(signature_types(&doc, 2), ["$T"; 3]);
+}
