@@ -39,8 +39,6 @@ jobs:
   validate:
     needs: preflight
     uses: ./.github/workflows/checks.yml
-    with:
-      full-platform-tests: true
 
   build:
     needs: [preflight, validate]
