@@ -9,7 +9,7 @@
 //! Unknown record fields and enum variants survive storage because the document keeps the
 //! raw literal; only decoding them to a `Value` fails (03).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -18,10 +18,9 @@ use serde_json::{Map, Value as Json, json};
 use super::base64;
 use super::{JsonText, ListRepr, MapRepr, RecordRepr, Value};
 use crate::document::literal::{Literal, LiteralPayload};
-use crate::error::LiteralError;
+use crate::error::{JsonTextError, LiteralError};
 use crate::id::TypeExpr;
-use crate::type_term::MAX_NESTING;
-use crate::type_term::{NamedTerm, TypeTerm};
+use crate::type_term::{MAX_NESTING, NamedTerm, TypeTerm};
 
 /// Record and enum layouts by nominal type, supplied by the registry (12 §5).
 pub trait Schemas {
@@ -239,7 +238,13 @@ impl<S: Schemas> Codec<'_, S> {
                 Value::Bytes(Arc::new(bytes))
             }
             ("json", []) => {
-                let text = JsonText::new(string()?.to_owned()).map_err(|_| mismatch(term))?;
+                let text = JsonText::new(string()?.to_owned()).map_err(|error| match error {
+                    JsonTextError::TooDeep => LiteralError::TooDeep,
+                    JsonTextError::TooLarge { .. } => LiteralError::TooLarge {
+                        ty: term.to_string(),
+                    },
+                    JsonTextError::Invalid(_) => mismatch(term),
+                })?;
                 Value::Json(Arc::new(text))
             }
             ("secret-ref", []) => {
@@ -264,8 +269,10 @@ impl<S: Schemas> Codec<'_, S> {
                         ty: key.to_string(),
                     });
                 }
-                let mut entries: Vec<(Value, Value)> = Vec::new();
-                for pair in json.as_array().ok_or_else(|| mismatch(term))? {
+                let pairs = json.as_array().ok_or_else(|| mismatch(term))?;
+                let mut entries: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
+                let mut keys = HashSet::with_capacity(pairs.len());
+                for pair in pairs {
                     let [k, v] = pair
                         .as_array()
                         .map(Vec::as_slice)
@@ -274,7 +281,7 @@ impl<S: Schemas> Codec<'_, S> {
                         return Err(mismatch(term));
                     };
                     let k = self.decode(k, &key, depth + 1)?;
-                    if entries.iter().any(|(existing, _)| *existing == k) {
+                    if !keys.insert(k.clone()) {
                         return Err(LiteralError::DuplicateMapKey);
                     }
                     entries.push((k, self.decode(v, &value, depth + 1)?));
@@ -432,12 +439,11 @@ impl<S: Schemas> Codec<'_, S> {
                         ty: key.to_string(),
                     });
                 }
-                let mut seen = Vec::with_capacity(map.entries.len());
+                let mut seen = HashSet::with_capacity(map.entries.len());
                 let pairs = map.entries.iter().map(|(k, v)| {
-                    if seen.contains(&k) {
+                    if !seen.insert(k) {
                         return Err(LiteralError::DuplicateMapKey);
                     }
-                    seen.push(k);
                     Ok(json!([
                         self.encode(k, &key, depth + 1)?,
                         self.encode(v, &value, depth + 1)?

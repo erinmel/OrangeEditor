@@ -66,6 +66,8 @@ pub enum LiteralError {
     UnknownVariant { variant: String },
     #[error("literal nests deeper than the codec budget")]
     TooDeep,
+    #[error("literal for `{ty}` exceeds the codec size budget")]
+    TooLarge { ty: String },
 }
 
 /// Failure to load or save a graph document.
@@ -138,4 +140,15 @@ pub enum TxError {
     LayoutPathConflict { path: String },
     #[error("inverse applies to content state {expected}, but the document is in state {actual}")]
     StaleInverse { expected: u64, actual: u64 },
+}
+
+/// JSON text rejected for `core/json@1` (03 codec budgets).
+#[derive(Debug, Error)]
+pub enum JsonTextError {
+    #[error("JSON text of {len} bytes exceeds the {max}-byte budget")]
+    TooLarge { len: usize, max: usize },
+    #[error("JSON text nests deeper than the codec budget")]
+    TooDeep,
+    #[error("invalid JSON text: {0}")]
+    Invalid(#[from] serde_json::Error),
 }

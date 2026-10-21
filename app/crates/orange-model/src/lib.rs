@@ -21,6 +21,6 @@ pub mod value;
 pub use document::codec::{from_json, to_json};
 pub use document::{BodyRef, GraphDocument};
 pub use edit::{ChangeSet, Committed, DeclId, Delta, DocCommand, Inverse, LayoutCommand};
-pub use error::{CodecError, IdError, LiteralError, PasteError, TxError};
+pub use error::{CodecError, IdError, JsonTextError, LiteralError, PasteError, TxError};
 pub use index::DocIndex;
 pub use value::Value;

@@ -9,12 +9,17 @@
 mod base64;
 pub mod literal_codec;
 
+use std::hash::{Hash, Hasher};
+use std::mem::discriminant;
 use std::sync::Arc;
 
+use crate::error::JsonTextError;
 use crate::id::TypeExpr;
+use crate::type_term::MAX_NESTING;
 
-/// A runtime value. Equality is structural identity (floats compare by bit pattern), not
-/// the language's `eq` constraint, which belongs to the runtime.
+/// A runtime value. Equality and hashing are structural identity (floats compare by bit
+/// pattern, lists by elements whatever their storage), not the language's `eq`/`hash`
+/// constraints, which belong to the runtime.
 #[derive(Debug, Clone)]
 pub enum Value {
     Unit,
@@ -108,13 +113,13 @@ impl ListRepr {
 }
 
 /// Insertion-ordered entries with unique, non-float keys (11 §5.2).
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MapRepr {
     pub entries: Box<[(Value, Value)]>,
 }
 
 /// Fields in schema order; `None` is an absent (missing) optional field.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct RecordRepr {
     pub ty: TypeExpr,
     pub fields: Box<[Option<Value>]>,
@@ -122,12 +127,26 @@ pub struct RecordRepr {
 
 /// Valid JSON text kept verbatim, so exact number text and JSON null survive (03). The
 /// structured tree for JSON nodes arrives with them (05d).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct JsonText(String);
 
+/// Size budget for one JSON text value (03 requires codec size budgets). Proposed value,
+/// recorded as an open budget in 10.
+pub const MAX_JSON_TEXT_BYTES: usize = 1 << 20;
+
 impl JsonText {
-    /// Accepts any valid JSON text.
-    pub fn new(text: String) -> Result<Self, serde_json::Error> {
+    /// Accepts valid JSON text of at most [`MAX_JSON_TEXT_BYTES`] bytes whose arrays and
+    /// objects nest at most [`MAX_NESTING`] deep. Size and depth are checked before parsing.
+    pub fn new(text: String) -> Result<Self, JsonTextError> {
+        if text.len() > MAX_JSON_TEXT_BYTES {
+            return Err(JsonTextError::TooLarge {
+                len: text.len(),
+                max: MAX_JSON_TEXT_BYTES,
+            });
+        }
+        if nests_deeper_than(&text, MAX_NESTING) {
+            return Err(JsonTextError::TooDeep);
+        }
         serde_json::from_str::<serde::de::IgnoredAny>(&text)?;
         Ok(Self(text))
     }
@@ -135,6 +154,35 @@ impl JsonText {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+}
+
+/// True if arrays and objects in `text` nest deeper than `max`, counting only brackets
+/// outside strings. One pass, no allocation; malformed text is left to the parser.
+fn nests_deeper_than(text: &str, max: usize) -> bool {
+    let (mut depth, mut in_string, mut escaped) = (0usize, false, false);
+    for byte in text.bytes() {
+        if in_string {
+            match byte {
+                _ if escaped => escaped = false,
+                b'\\' => escaped = true,
+                b'"' => in_string = false,
+                _ => {}
+            }
+            continue;
+        }
+        match byte {
+            b'"' => in_string = true,
+            b'[' | b'{' => {
+                depth += 1;
+                if depth > max {
+                    return true;
+                }
+            }
+            b']' | b'}' => depth = depth.saturating_sub(1),
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Generation-checked resource handle (12 §2); never persisted.
@@ -148,7 +196,7 @@ pub struct HandleId {
 
 /// Structured node error (`core/error@1`). The message fields of 12 §6.2 arrive with the
 /// WU-03 contracts; a value only needs the stable code.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeError {
     /// Stable namespaced code, such as `core/NumericOverflow`.
     pub code: String,
@@ -190,10 +238,51 @@ impl PartialEq for Value {
     }
 }
 
+/// Bit-pattern float equality is reflexive, so structural equality is a full equivalence.
+impl Eq for Value {}
+
+/// Consistent with `PartialEq`: the variant, then its content (floats by bit pattern).
+impl Hash for Value {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        use Value::*;
+        discriminant(self).hash(state);
+        match self {
+            Unit | None => {}
+            Bool(v) => v.hash(state),
+            I32(v) => v.hash(state),
+            U32(v) => v.hash(state),
+            I64(v) | Duration(v) | Timestamp(v) => v.hash(state),
+            U64(v) => v.hash(state),
+            F32(v) => v.to_bits().hash(state),
+            F64(v) => v.to_bits().hash(state),
+            Str(v) => v.hash(state),
+            Bytes(v) => v.hash(state),
+            List(v) => v.hash(state),
+            Map(v) => v.hash(state),
+            Record(v) => v.hash(state),
+            Enum { tag, payload } => (tag, payload).hash(state),
+            Some(v) => v.hash(state),
+            Err(v) => v.hash(state),
+            Json(v) => v.hash(state),
+            Handle(v) => v.hash(state),
+        }
+    }
+}
+
 /// Lists are equal when their elements are, whatever the storage.
 impl PartialEq for ListRepr {
     fn eq(&self, other: &Self) -> bool {
         self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a == b)
+    }
+}
+
+impl Eq for ListRepr {}
+
+/// Hashes elements, not storage, so a typed array and an equal `Values` list agree.
+impl Hash for ListRepr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.len().hash(state);
+        self.iter().for_each(|item| item.hash(state));
     }
 }
 
@@ -229,5 +318,60 @@ mod tests {
         assert!(JsonText::new("{\"n\": 1.50}".into()).is_ok());
         assert!(JsonText::new("null".into()).is_ok());
         assert!(JsonText::new("{".into()).is_err());
+    }
+
+    fn nested_arrays(levels: usize) -> String {
+        format!("{}{}", "[".repeat(levels), "]".repeat(levels))
+    }
+
+    #[test]
+    fn json_text_nesting_is_bounded() {
+        assert!(JsonText::new(nested_arrays(MAX_NESTING)).is_ok());
+        for levels in [MAX_NESTING + 1, 84] {
+            assert!(
+                matches!(
+                    JsonText::new(nested_arrays(levels)),
+                    Err(JsonTextError::TooDeep)
+                ),
+                "{levels}"
+            );
+        }
+        // Brackets inside strings, including after escaped quotes, do not count.
+        let quoted = format!(r#"["\"{}"]"#, "[".repeat(200));
+        assert!(JsonText::new(quoted).is_ok());
+    }
+
+    #[test]
+    fn json_text_size_is_bounded() {
+        let at_limit = format!("\"{}\"", "a".repeat(MAX_JSON_TEXT_BYTES - 2));
+        assert!(JsonText::new(at_limit).is_ok());
+        let over = format!("\"{}\"", "a".repeat(MAX_JSON_TEXT_BYTES - 1));
+        assert!(matches!(
+            JsonText::new(over),
+            Err(JsonTextError::TooLarge { .. })
+        ));
+    }
+
+    fn hash_of(value: &Value) -> u64 {
+        use std::collections::hash_map::DefaultHasher;
+        let mut hasher = DefaultHasher::new();
+        value.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn equal_values_hash_equally() {
+        let typed = Value::List(Arc::new(ListRepr::I64(vec![1, 2].into())));
+        let boxed = Value::List(Arc::new(ListRepr::Values(
+            vec![Value::I64(1), Value::I64(2)].into(),
+        )));
+        assert_eq!(typed, boxed);
+        assert_eq!(hash_of(&typed), hash_of(&boxed));
+        assert_eq!(
+            hash_of(&Value::F64(f64::NAN)),
+            hash_of(&Value::F64(f64::NAN))
+        );
+        assert_ne!(hash_of(&Value::F64(0.0)), hash_of(&Value::F64(-0.0)));
+        assert_ne!(hash_of(&Value::I64(1)), hash_of(&Value::Duration(1)));
     }
 }
