@@ -65,10 +65,7 @@ jobs:
         with:
           persist-credentials: false
       - run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: release-${{ matrix.target }}
-          cache-bin: false
+      # No dependency cache: release binaries build from clean inputs so a poisoned cache cannot reach signed output.
       - name: Build the selected executable with locked release inputs
         shell: bash
         env:
