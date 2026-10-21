@@ -17,6 +17,16 @@ dist/
 *.p12
 *.pfx
 
+# Rust test/coverage output (proptest-regressions/ stays tracked)
+*.profraw
+*.profdata
+lcov.info
+**/*.rs.bk
+
+# Local tool settings and working notes (never committed)
+.claude/settings.local.json
+.artifacts/
+
 # OS files
 .DS_Store
 Thumbs.db

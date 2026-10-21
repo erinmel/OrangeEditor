@@ -92,7 +92,9 @@ pub struct ActivationPolicy {
 
 `SignatureKey` is a document-local key. The implementation uses `sha256:` over the canonical JSON of the snapshot, so identical signatures share one entry; examples use short keys. Core intrinsic signatures are defined by `format_version` and config, so they are not stored. Serialization order is `IndexMap` order (creation order, compacted on removal), which makes output deterministic for the same command history.
 
-`ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
+Implementation correction (00b review): replacing an existing entry at its current position updates that slot in place. Insertions, removals and actual reordering retain positional patches so undo restores the exact order. The replacement path avoids shifting unrelated entries; order-preserving removal and reordering can still be linear. NFR-15 timing targets remain unmeasured.
+
+`ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
 
 ### 3.2 Derived indexes (not persisted)
 
@@ -107,6 +109,13 @@ pub struct ActivationPolicy {
 | Diagnostics | `Subject (node / edge / port / decl) → Vec<Diagnostic>` | Editor projection | Replaced per validated subject |
 
 The spatial index, edge-path cache and widget state belong to `orange-editor`, not `orange-model` ([02](02-architecture.md)).
+
+Implementation note (WU-00/00b.3): `orange-model` provides `DocIndex` with node location, incoming/outgoing edges and node incidence.
+
+- **Kept beside the document:** the index lives next to the document, not inside it, so document equality, saving and undo never involve derived data.
+- **Updated from change sets:** each committed `ChangeSet` updates it, and an updated index always equals a fresh build (property-tested).
+- **`BTreeSet` edge sets:** used instead of `SmallVec` so equality does not depend on edit history. Performance is evaluated with NFR-15.
+- **Deferred rows:** the dense document index, data topological order, type components, region index and diagnostics arrive with their consumers (00c/00d).
 
 ### 3.3 Transactions and change sets
 
@@ -133,6 +142,17 @@ pub struct ChangeSet {
 ```
 
 A transaction applies a list of commands atomically, produces one `ChangeSet` and one inverse transaction for undo, and increments `revision` once. Converter auto-insert ([11 §6](11-graph-language.md)) is one transaction: AddNode + Disconnect + two Connects. Runtime effects are never recorded in history ([01](01-product-requirements.md) FR-03).
+
+Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
+
+- `AddNode` also names its target body (root or a function), because nodes are stored per body.
+- The inverse is a list of primitive slot patches rather than `DocCommand`s. Each patch restores an entry together with its position, so undo is byte-exact despite removal compaction.
+- Undo and redo are transactions and advance `revision`. Inverses bind to an opaque process-unique content-state ID, not to the revision. A clone preserves the ID while it represents the same transaction-owned state; each new edit allocates a fresh ID, undo/redo restore the earlier ID, and every load allocates a fresh ID. This prevents divergent clones, unrelated documents and reloads from accepting each other's inverses. The transient ID is excluded from serialization and document equality.
+- Function insertion checks that every node/edge map key equals the entry's own ID before applying a patch. A mismatch returns a typed transaction error and rolls back the entire transaction. This enforces the existing keyed-map representation without changing graph JSON or graph diagnostics.
+- `affected_roots` is derived by the compiler from the node, edge and declaration deltas once regions exist (00d/00e).
+- `PutSignature { key, snapshot }` (00b.3) adds a shared snapshot so that pasted nodes keep the snapshots I-4 requires. An identical snapshot under the same key is a no-op; different content under an existing key is rejected. Signatures are therefore transaction-owned. Package locks and exports still have no command.
+- Canonical JSON for `SignatureKey` (00b.3): object keys sorted by byte order, no whitespace, serde_json string escaping. This matches RFC 8785 for the ASCII keys and integers in snapshots. WU-03 publishes the cross-language digest vectors. Semantic projection removes `label`, `description`, `group` and `editor` and substitutes `$T` parameters from `type_args`.
+- Paste (00b.3) gives every pasted node, edge and declaration a new ID. A config string exactly equal to a remapped source ID is rewritten. Referenced declarations travel with the copy and are reused when the target already has them. Signatures are re-keyed to their `sha256:` key.
 
 ## 4. Definition schema
 
@@ -423,6 +443,17 @@ Only the top-level literal carries `type`. Nested values are untagged, and their
 | secret-ref | Reference string (`credential://…`); never secret material |
 | handle, stream, result, error | No literal form (`E-HANDLE-LITERAL`) |
 
+Implementation correction (00b.4 review): encoding requires the exact f32/f64 runtime variant; it performs no implicit narrowing or widening. Map encoding rejects floating-point key types and duplicate runtime keys, just as decoding does. Constraint registration and general key eligibility remain 00c work under [11 §5](11-graph-language.md).
+
+Implementation notes (WU-00/00b.4, `orange_model::value::literal_codec`):
+
+- **Nested floats** use the same lowercase-hex bit-pattern strings as a top-level `bits` field.
+- **Canonical form required:** decimal strings, bit patterns and base64 must already be canonical (no `+`, no leading zeros, lowercase hex, zero padding bits), so load→save stays byte-stable.
+- **`json` literals** must parse and are kept verbatim, preserving exact number text and JSON null.
+- **Unknown record fields and enum variants** stay in the stored literal; only decoding them to a `Value` fails.
+- **Schemas:** record and enum layouts come from a `Schemas` provider (the registry later).
+- **Nesting budget:** 64 levels for types and literals (proposed).
+
 ### 6.2 Presentation message wire contract
 
 TextRef and MessageRef policy is owned by [13](13-internationalization.md). `MessageRef` has required `origin`, `key`, `args`, `fallback`. `MessageOrigin` is one of:
@@ -465,6 +496,16 @@ pub enum JsonRepr { Null, Bool(bool), Number(NumberText), String(ArcStr), Array(
 - Clone is an `Arc` increment. Mutation-style nodes consume a uniquely owned value or copy on write ([03](03-data-and-execution.md)).
 - Records are addressed by compiled field index, never by name at run time.
 - Secrets are never `Value`s. Brokers hold them ([05](05-services-and-platforms.md)).
+
+Implementation notes (WU-00/00b.4; Rust spelling only):
+
+- **Size:** a compile-time assertion keeps `Value` ≤16 bytes. `ArcStr`/`ArcBytes` are thin `Arc<String>`/`Arc<Vec<u8>>`, because a fat `Arc<str>` would make it 24 bytes.
+- **List storage:** `ListRepr::Bool` is `Box<[bool]>`.
+- **Record type:** `RecordRepr::ty` holds the canonical `TypeExpr` until 00c adds `TypeKey` interning.
+- **Enum tag:** the variant's index in schema order.
+- **JSON:** `Json` holds verbatim JSON text; the structured `JsonRepr` arrives with the JSON node family (05d).
+- **`NodeError`:** carries only its stable code until the WU-03 message contract.
+- **Equality** is structural, with floats compared by bit pattern; it is not the language `eq` constraint.
 
 ## 8. Registry snapshot
 

@@ -6,11 +6,100 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 
 - User-selected destination: `C:\Users\eriar\OneDrive\Documentos\Projects\Programming\rust\OraneEditor`. Exact directory spelling is intentional; product name is OrangeEditor. The directory existed and was empty at inspection.
 - Planning is staged separately from the existing C# source and then copied into the destination. Existing C# changes are unrelated and must be preserved.
-- `rustc --version`: `rustc 1.96.1 (31fca3adb 2026-06-26)`.
-- `cargo --version`: `cargo 1.96.1 (356927216 2026-06-26)`.
-- `rustup toolchain list` reports `stable-x86_64-pc-windows-msvc` (active/default) and `nightly-2026-09-07-x86_64-pc-windows-msvc`. No assumption is made that the nightly toolchain is an approved substitute for a tested stable pin.
-- Bevy's v0.20.0 manifest requires Rust 1.97.1 (S-B02). The observed compiler does not meet that requirement. A supported toolchain must be selected before any build feasibility gate; no upgrade was performed.
-- No application implementation, dependency resolution, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working Bevy build toolchain.
+- Toolchain as of 2026-10-20 (reinstalled after the planning observations below): rustup **1.29.1** (`d95a37b6a 2026-08-13`), installed from winget package `Rustlang.Rustup` (installer hash verified by winget). The only installed toolchain is `1.99.1-x86_64-pc-windows-msvc` (active/default), profile `default`.
+- Observed on a fresh PATH, all resolving from `%USERPROFILE%\.cargo\bin`:
+  - `rustc 1.99.1 (58cf8f9c3 2026-10-13)`
+  - `cargo 1.99.1 (5f94df478 2026-08-27)`
+  - `clippy 0.1.99 (58cf8f9c35 2026-10-13)`
+  - `rustfmt 1.10.0-stable (58cf8f9c35 2026-10-13)`
+  - `rust-analyzer 1.99.1 (58cf8f9c 2026-10-13)`
+  - Installed components: cargo, clippy, rust-analyzer, rust-docs, rust-std, rustc, rustfmt.
+- Install commands used:
+
+  ```powershell
+  winget install --id Rustlang.Rustup --exact --source winget --override "-y --default-toolchain none --profile default"
+  rustup toolchain install 1.99.1 --profile default --component rust-analyzer,clippy,rustfmt
+  rustup default 1.99.1
+  ```
+
+- Bevy's v0.20.0 manifest requires Rust 1.97.1 (S-B02). The installed 1.99.1 satisfies that minimum. B-P01 has not compiled Bevy with it. MSRV (1.97.1) CI coverage remains a WU-01 decision.
+- WU-00/00b.1 (2026-10-20) added `rust-toolchain.toml` (channel `1.99.1`, components rustfmt/clippy, profile minimal), the root Cargo workspace (`resolver = "3"`, edition 2024, `rust-version = "1.97.1"`, member `app/crates/orange-model`, `plugins` excluded) and a tracked `Cargo.lock`. Cargo resolved dependencies to the highest versions compatible with Rust 1.97.1; see the 00b.1 row in the dependency ledger.
+- Superseded planning observation: the environment originally reported `rustc`/`cargo` 1.96.1 from a standalone MSI install (`C:\Program Files\Rust stable MSVC 1.96`) that shadowed rustup on PATH, plus rustup toolchains `stable` and `nightly-2026-09-07`. That MSI, the previous rustup install and its toolchains were removed on 2026-10-20 before the reinstall above.
+- 00b.1 local evidence (Windows 11, Rust 1.99.1, 2026-10-20): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings` and `cargo test --workspace --locked` passed (22 tests: 8 unit, 13 codec integration, 1 property test at proptest's default 256 cases). Remote `rust` CI evidence is recorded when it first runs.
+- 00b.2 local evidence (same environment, 2026-10-20): the same three commands passed with 46 tests in total. The 24 new tests are 4 for G-36 layout, 2 for G-30 literals, 5 for G-31 variadic ports, 12 for transaction structure and 1 property test of undo-all/redo-all over random edit sequences. No new dependency.
+- 00b.3 local evidence (same environment, 2026-10-20): the same three commands passed with 63 tests in total. New tests: 3 signature unit tests, including a sha256 vector computed independently with coreutils `sha256sum`; 5 G-29/G-39 and implicit-port vector tests; 2 index tests, including a property that the incremental index equals a full build; 6 paste tests, including a property of no aliasing, preserved internal edges and undo; 1 `PutSignature` test. New dependency: `sha2` (ledger above).
+- 00b.4 local evidence (same environment, 2026-10-20): the same three commands passed with 87 tests in total. New tests: 9 unit tests (Value size and equality, type terms, RFC 4648 base64 vectors); 6 scalar literal tests; 8 aggregate/FR-08 literal tests, including decoding every literal in the 12 §6 example; 1 encode/decode round-trip property. A compile-time assertion keeps `Value` at 16 bytes or less. The codec nesting budget `MAX_NESTING = 64` is a proposed value and an open budget. No new dependency (base64 is implemented locally).
+- Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working Bevy build toolchain.
+
+## Model review fixes and slice 4 analysis (2026-10-20)
+
+Review findings on the first four slices were fixed in isolated worktrees based on `8c1f42f`, with explicit source/test ownership, and integrated into the feature checkout. No commit, push, merge or remote CI was part of the fixes.
+
+Corrections: unique transient undo state identities across divergent clones/reloads; atomic function-body node/edge map key validation; default-literal display excluded from semantic projection; same-position ordered-slot replacement without remove/reinsert; exact float-width checks in literal encoding; and map encoding rejecting duplicate/float keys. Contracts and implementation notes are updated in [12](12-graph-data-structures.md), with the identity clarification in ADR-06. FR-03, FR-08 and G-39 regressions cover the affected behavior. The edit-path operation-count test supports NFR-15 investigation but does not measure its timing targets.
+
+Selected toolchain: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`, `x86_64-pc-windows-msvc`; `rust-toolchain.toml`, workspace manifests, dependency features and `Cargo.lock` are unchanged. Lockfile SHA-256: `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+Executed in the feature checkout after integration (document checks use Node.js v24.18.0):
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `cargo test --workspace --locked --offline` | PASS: 100 tests, 0 failures; 0 doctests |
+| `node tools/check-docs.mjs` | PASS: 33 Markdown files, 13 JSON blocks, 287 local links |
+| `node tools/check-repo-policy.mjs` | PASS: tracked-path, credential-pattern and Git-whitespace checks; limited scan, not a security audit |
+| `git diff --check` | PASS |
+
+The 13 added regressions are two internal patch/operation-order tests, four undo/function-invariant tests, three signature tests and four literal-encoding tests. Windows emitted incremental-cache hard-link warnings with a copy fallback. The temporary pre-fix slice-4 probe reproduced encoder failures and observed that JSON text containing 84 nested arrays is accepted despite the typed-container budget of 64; it is not part of the permanent suite. Remaining open items: JSON text nesting/size bounds, quadratic map duplicate-key checks and narrower property coverage of records, enums and JSON. No MSRV 1.97.1 build, Bevy build, cross-OS run, NFR measurement or gate passage is asserted.
+
+## CI matrix and history cleanup (2026-10-20)
+
+The eight feature-branch commits after `fa90e6c` were recreated with commit-message trailers removed. Every content tree, human author/committer identity and timestamp was verified unchanged; `main` remains at `fa90e6c`. A local ignored recovery bundle preserves the original objects. Only the feature branch is eligible for the exact force-with-lease update; protected-main history is unchanged. CONTRIBUTING.md and 14 §3 record the commit and PR attribution policy.
+
+The previous pipeline passed `docs`, `policy` and Ubuntu `rust` on original head `913806b`: [run 39520354817](https://github.com/erinmel/OrangeEditor/actions/runs/39520354817). That result applies to the old head and pipeline. The new workflow separates formatting/Clippy from locked core tests on `ubuntu-24.04` (x64), `windows-2022` (x64) and `macos-15` (arm64). It preserves `docs`, `policy` and the stable `rust` aggregate, which requires both quality and all test jobs to succeed, including failure/cancellation/skip handling. Action pins, the shared Rust 1.99.1 toolchain, dependency features and lockfile remain unchanged. Jobs have explicit timeouts, read-only permissions and no persisted checkout credentials. Runner labels/architectures were checked against the [GitHub runner reference](https://docs.github.com/en/actions/reference/runners/github-hosted-runners); matrix behavior follows [GitHub's matrix documentation](https://docs.github.com/en/actions/how-tos/write-workflows/choose-what-workflows-do/run-job-variations).
+
+Local validation on Windows x64: `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`, `cargo test --workspace --locked --offline` (100 tests), `node tools/check-docs.mjs`, `node tools/check-repo-policy.mjs` and `git diff --check` passed with the existing Rust/cargo 1.99.1 and Node.js v24.18.0. Windows incremental-cache hard-link warnings used the copy fallback.
+
+Expanded remote evidence: [run 39522142007](https://github.com/erinmel/OrangeEditor/actions/runs/39522142007) passed all seven jobs on CI commit `72670cd`: `docs`, `policy`, `rust-quality`, the three OS test jobs and the stable `rust` aggregate. This evidence update changes only documentation; the tested workflow and Rust source are unchanged. The PR validation table records its latest head/run separately. There is no local macOS/Linux, MSRV 1.97.1, Bevy, packaging or deployment claim. Deployment/release automation waits for an application artifact and the applicable WU-12 gates. NFR-11/NFR-14 and ADR-18 retain their wider qualification requirements.
+
+## CI quality-gate expansion (2026-10-20; isolated implementation checkout)
+
+This change adds rustdoc warnings, a metadata policy guard, a workspace-derived MSRV test, pinned cargo-deny advisory/source checks, a weekly workflow schedule and weekly Dependabot update proposals. The workflow, Dependabot schedule and required-check configuration are not yet verified on GitHub from this checkout; scheduled Actions and Dependabot run only after these files reach the default branch. Read-only permissions, full-SHA Action pins and non-persisted checkout credentials are retained. No license allowlist was invented, and the advisory/source check is not a license audit.
+
+Recorded environment: Rust/cargo `1.99.1` (`rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`), host `x86_64-pc-windows-msvc`; Node.js `v24.18.0`; one workspace package, `orange-model`, with declared `rust-version = 1.97.1` and no declared Cargo features. The tracked `rust-toolchain.toml` remains `1.99.1`; workspace feature selections and `Cargo.lock` are unchanged. Lockfile SHA-256: `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+| Command / evidence | Result |
+|---|---|
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `cargo test --workspace --locked --offline` | PASS: 100 tests; no doctests |
+| `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked` | PASS |
+| `node tools/check-cargo-metadata.mjs --self-test` | PASS: 10 fixture cases, including Bevy subsystem transitive leakage, optional core dependency, exact version pin, missing/empty graph and host-only Bevy allowance |
+| `node tools/check-cargo-metadata.mjs` / `--msrv` | PASS: current graph boundary accepted; Bevy pin check is inapplicable because Bevy is absent; derives `1.97.1` |
+| `node tools/check-docs.mjs` | PASS: 33 Markdown files, 13 JSON blocks, 287 local links |
+| `node tools/check-repo-policy.mjs` / `git diff --check` | PASS: repository policy and whitespace |
+| `cargo deny --version` | PASS: `cargo-deny 0.20.2`, installed with `--locked` under ignored `target/cargo-deny/` |
+| `cargo deny --locked check advisories sources` | PASS: `advisories ok, sources ok`; RustSec database fetched/refreshed online |
+| `rustc +1.97.1 --version --verbose` | PASS: Rust `1.97.1 (8bab26f4f 2026-07-14)`, locally installed under ignored `target/rustup-home/` |
+| `cargo +1.97.1 test --workspace --locked --offline` | NOT PASS / environment blocked: Windows `link.exe` reported LNK1104 opening a Rust sysroot archive under the long isolated-checkout toolchain path; the archive exists. MSRV runtime test remains pending Linux CI. |
+
+The deny command keeps `--locked` (lockfile stability) while leaving network enabled to refresh the RustSec database; cargo-deny 0.20.2 exposes offline as a separate option. Its config treats vulnerability, unmaintained and unsound advisories as errors, yanked dependencies as warnings, and unknown registry/Git sources as errors. Current machine validation is Windows x64 only and does not pass NFR-11, Bevy feasibility, G0/G1/G2/G5, or remote CI gates.
+
+Integration repeated formatting, locked offline Clippy and all 100 tests, and locked offline rustdoc with warnings denied on the same Windows/toolchain configuration: PASS. The integrated metadata fixtures, boundary check and MSRV derivation passed; documentation passed for 36 Markdown files, 13 JSON blocks and 293 local links. The pinned scanner repeated its online advisory/source check successfully with access to Cargo's advisory cache. Lockfile hash and toolchain remain unchanged.
+
+Remote evidence: [run 39524649391](https://github.com/erinmel/OrangeEditor/actions/runs/39524649391) on implementation commit `1eb5721` passed all ten jobs: docs, policy, Rust quality, metadata policy, MSRV, dependency security, three native OS tests and the `rust` aggregate. The MSRV log records `rustc 1.97.1 (8bab26f4f 2026-07-14)` on `x86_64-unknown-linux-gnu` with all 100 tests passing; this resolves the remote MSRV evidence gap while preserving the local Windows limitation above. Security logs record cargo-deny 0.20.2 and `advisories ok, sources ok`. After this success, GitHub API readback confirms strict required `docs`, `policy`, `rust` checks bound to Actions app 15368; admin enforcement, solo-mode zero independent approvals, resolved conversations, linear history and disabled force pushes/deletion remain enabled as configured. Negative-path protection tests remain unexecuted.
+
+That run exposed Node 20 deprecation warnings in the inherited Action pins. The follow-up uses official release commit SHAs for [checkout v7.0.1](https://github.com/actions/checkout/releases/tag/v7.0.1) (`3d3c42e5aac5ba805825da76410c181273ba90b1`) and [setup-node v7.1.0](https://github.com/actions/setup-node/releases/tag/v7.1.0) (`949feb2413d6458794dcd2491c4babbbce0c15c1`), resolved using GitHub's commit API and checked against each tag's README/action.yml. Both declare Node 24; hosted runners satisfy their minimum runner requirement. Setup-node's automatic package-manager cache is explicitly disabled. Persisted credentials remain disabled and no elevated-event checkout is introduced. The PR validation table records the final follow-up head/run separately; the successful implementation run above precedes this Action refresh.
+
+## Code-focused CI revision (2026-10-20)
+
+Checks unrelated to code were removed, and formatting failures no longer hide other results. Standalone Markdown/generic repository-policy jobs are removed; their scripts remain optional local helpers. Formatting, Clippy and rustdoc become separate matrix jobs with fail-fast disabled. `rust-architecture` retains the specific Cargo dependency-boundary, exact Bevy pin and MSRV metadata checks. The stable `rust` aggregate still requires all Rust jobs. After remote success, the intended required-status set is `rust` only; the PR records final-head validation and actual protection readback. Earlier docs/policy protection records above are historical.
+
+Measured [run 39525101049](https://github.com/erinmel/OrangeEditor/actions/runs/39525101049) spent 135 seconds compiling cargo-deny and one second scanning; native compile/test steps took 18–34 seconds. Cache only cargo-deny's installed root, with an exact key containing OS, architecture, toolchain-file hash and CLI version. [actions/cache v6.1.0](https://github.com/actions/cache/releases/tag/v6.1.0), SHA `55cc8345863c7cc4c66a329aec7e433d2d1c52a9`, was verified through the official release/commit API and tagged action.yml (Node 24). Both cache hits and misses verify cargo-deny 0.20.2 and execute the online advisory/source scan. No advisory database, credential or Cargo build cache is introduced. Normal GitHub PR cache isolation applies; a CLI version assertion does not authenticate a cached executable cryptographically.
+
+Recorded environment remains Rust/cargo 1.99.1, Node 24.18.0, Windows x64; MSRV 1.97.1; the only package is `orange-model`, without declared Cargo features. Manifests, features, `rust-toolchain.toml` and `Cargo.lock` are unchanged from `3af6ebd`; lockfile SHA-256 remains `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`. Local revised metadata checks and their 10 fixtures, MSRV derivation, documentation-helper check and whitespace check passed. Remote cache miss/hit verification is pending at commit preparation; final PR evidence distinguishes observed paths. No intentional failing-format run or new Bevy/platform/hardware gate passage is claimed.
+
+Implementation evidence: [run 39526751351](https://github.com/erinmel/OrangeEditor/actions/runs/39526751351), commit `9d8cbae`, passed all ten code jobs. Formatting, Clippy and rustdoc now appear independently; architecture, MSRV, all three OS tests, dependency security and the aggregate passed. The security log confirms an initial cache miss, installation/version verification of cargo-deny 0.20.2, `advisories ok, sources ok`, and successful cache save. GitHub protection readback now contains only strict `rust` bound to Actions app 15368; other inspected protection controls remain unchanged, as recorded in 14. This documentation-only evidence follow-up also exercises cache reuse; its final-head result and observed hit/miss are recorded in the PR.
 
 ## Additional AI development integrations
 
@@ -63,6 +152,22 @@ Bevy is the sole requested framework pin. All other implementation dependencies 
 | Linux virtual source | PipeWire adapter | Versioned API/permissions/session policy and app-owned cleanup on a real Linux session |
 | Credentials | OS-specific secure stores behind one host interface | Windows/macOS/Linux availability and locked/headless behavior; no plaintext fallback |
 | Localization | Fluent FTL parser/formatter candidate, Unicode/CLDR data and host font fallback | Exact versions/features/MSRV/licenses, bounded reference/argument handling and locale/plural capabilities; L-suite, G-39 and B-P02 platform evidence before adoption; sources in [13](13-internationalization.md) |
+
+### Adopted: `orange-model` (WU-00/00b.1, 2026-10-20)
+
+Serde-family candidate adopted for the graph document codec only. Versions are exact `Cargo.lock` entries; licenses and MSRV are from `cargo metadata --locked`. All declared MSRVs are at or below the workspace's 1.97.1.
+
+| Crate | Version / features | License | Declared MSRV | Role |
+|---|---|---|---|---|
+| serde (+ serde_core, serde_derive) | 1.0.229, `derive` | MIT OR Apache-2.0 | 1.56 / 1.71 | Codec derives |
+| serde_json | 1.0.154, `preserve_order` | MIT OR Apache-2.0 | 1.71 | JSON load/save, ordered opaque objects |
+| indexmap (+ hashbrown, foldhash, equivalent) | 2.14.2, `serde` | Apache-2.0 OR MIT (foldhash: Zlib) | 1.85 | Creation-ordered maps |
+| uuid | 1.28.0, `serde` | Apache-2.0 OR MIT | 1.89.0 | v4/v7 document IDs |
+| thiserror | 2.0.21 | MIT OR Apache-2.0 | 1.77 | Error enums |
+| sha2 (+ digest, block-buffer, crypto-common, hybrid-array, typenum, const-oid, cpufeatures, cfg-if, libc) | 0.11.1, default features | MIT OR Apache-2.0 (all) | 1.88 (others 1.32–1.85) | `sha256:` signature keys (added in 00b.3) |
+| proptest (dev only) | 1.12.0 | MIT OR Apache-2.0 | 1.88 | Round-trip property tests |
+
+Transitive normal dependencies also include itoa 1.0.18, memchr 2.8.3 (Unlicense OR MIT), zmij 1.0.23 (MIT), proc-macro2 1.0.107, quote 1.0.47, syn 3.0.9 and unicode-ident 1.0.27 ((MIT OR Apache-2.0) AND Unicode-3.0). Security advisory review (for example `cargo audit`) has not been run. Malformed-input size bounds and migrations remain open for later 00b slices.
 
 Do not select a crate solely because a Bevy ecosystem page lists it. Independently versioned service crates need not depend on Bevy; UI/render integrations must explicitly support 0.20.0. Record implementation results and the final lockfile in the work unit rather than retroactively presenting candidates as verified.
 

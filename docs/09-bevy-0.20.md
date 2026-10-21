@@ -8,11 +8,13 @@ Research date: 2026-10-20. Status: source-backed planning; no Bevy program has b
 |---|---|---|
 | Release | 0.20.0, released 2026-10-08 ([S-B01](https://bevy.org/news/bevy-0-20/)) | Plan for exactly `=0.20.0`; no automatic minor update. |
 | Source | Tag `v0.20.0` exists; manifest identifies version 0.20.0 ([S-B02](https://github.com/bevyengine/bevy/blob/v0.20.0/Cargo.toml)) | Release-tag source wins over main-branch examples. Record commit and package checksum when dependencies are actually fetched. |
-| Rust | Release manifest declares Rust 1.97.1 and edition 2024 (S-B02) | Pin a tested toolchain at least 1.97.1 in the implementation phase. Installed 1.96.1 is insufficient for the declared minimum. |
+| Rust | Release manifest declares Rust 1.97.1 and edition 2024 (S-B02) | Pin a tested toolchain at least 1.97.1 in the implementation phase. The selected local toolchain, Rust 1.99.1, meets the minimum; see [10](10-tooling-and-sources.md#workspace-and-environment). No Bevy build has used it yet (B-P01). |
 | License | Release manifest declares MIT OR Apache-2.0 (S-B02) | Audit transitive and optional dependencies separately. |
 | Features | Release manifest includes `bevy_feathers` depending on UI widgets (S-B02) | Select explicit app features; keep graph-core crates free of renderer/window dependencies. Resolve the complete feature set in B-P01. |
 
-No Cargo manifest or toolchain file has been generated. The pin above is a requirement for future implementation, not an installed dependency.
+The current repository has a Cargo workspace and selected toolchain but no Bevy dependency. The pin above is a requirement for future implementation, not an installed dependency.
+
+The repository's Cargo metadata CI guard now enforces exact engine-version metadata when a package named `bevy` appears and rejects `bevy` or `bevy_*` dependencies beneath known graph-core crates, including optional direct declarations. It does not ban Bevy from host adapters or require Bevy utility crates to share the engine version. With no Bevy member in the current workspace, the guard passes only the absence/boundary check; exact-version compilation, selected features, native platform prerequisites and B-P01/B-P06 remain unverified.
 
 ## Evidence integrity
 

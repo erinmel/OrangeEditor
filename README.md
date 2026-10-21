@@ -4,13 +4,12 @@ Status: architecture proposal, 2026-10-20. No product implementation, compilatio
 
 OrangeEditor is a Rust desktop and headless visual programming platform for typed calculations, state, events, files, connections and media. Its expansion plugins are installable product packages that add functionality or replace explicitly supported base providers while the application remains open. Bevy **=0.20.0** is the application/graphics pin; it does not define the graph language or external package ABI.
 
-Public source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). The repository has `main` protection and passing documentation/policy CI; application and plugin implementation remains future work.
+Public source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). The repository has a protected `main` branch and a Rust code pipeline for the graph-model workspace. Desktop application and expansion-package implementation remain future work.
 
 ## Document map
 
 | Document | Decision/output |
 |---|---|
-| [Assignment](AGENT_PROMPT.md) | Reusable, bounded architecture-agent prompt |
 | [Agent instructions](AGENTS.md) | Persistent project version, contract and evidence rules |
 | [01 Requirements](docs/01-product-requirements.md) | Product perspective, FR IDs, acceptance criteria, priorities and scope |
 | [02 Architecture](docs/02-architecture.md) | Crates, ownership, dependency direction and editor decision |
@@ -35,9 +34,9 @@ Development follows [14](docs/14-git-workflow.md): protected `main`, short-lived
 
 ## Monorepo
 
-One repository contains two main source areas: [app/](app/README.md) for the editor/engine and [plugins/](plugins/README.md) for installable expansion packages you create. The [sdk/](sdk/README.md) defines their public boundary; [examples/](examples/README.md) and [tools/](tools/README.md) hold shared examples and repository checks.
+One repository holds the editor/engine under `app/` (today the `app/crates/orange-model` crate) and, later, installable expansion packages under `plugins/`, their public `sdk/` boundary and `examples/`. [tools/](tools/README.md) holds the CI support script.
 
-This lets a host/SDK/plugin contract change be reviewed and validated together. Each plugin still builds, versions and installs independently. Source sharing never changes hot installation into an application rebuild. These folders currently contain layout documentation; implementation follows the existing delivery gates. See [15](docs/15-monorepo-layout.md) for ownership and future Cargo workspace rules.
+This lets a host/SDK/plugin contract change be reviewed and validated together. Each plugin still builds, versions and installs independently. Source sharing never changes hot installation into an application rebuild. A folder is created when its first content lands; implementation follows the delivery gates. See [15](docs/15-monorepo-layout.md) for ownership and Cargo workspace rules.
 
 ## Selected defaults
 

@@ -1,0 +1,26 @@
+# Host application workspace (docs/15-monorepo-layout.md). Installable plugins build independently.
+[workspace]
+resolver = "3"
+members = ["app/crates/orange-model"]
+exclude = ["plugins"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[workspace.dependencies]
+indexmap = { version = "2.14.2", features = ["serde"] }
+proptest = "1.12.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = { version = "1.0.154", features = ["preserve_order"] }
+sha2 = "0.11.1"
+thiserror = "2.0.21"
+uuid = { version = "1.28.0", features = ["serde"] }
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
