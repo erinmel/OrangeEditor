@@ -34,7 +34,7 @@ Development follows [14](docs/14-git-workflow.md): short-lived branches per work
 
 ## Monorepo
 
-One repository holds the editor/engine under `app/` (today the `app/crates/orange-model` crate) and, later, installable expansion packages under `plugins/`, their public `sdk/` boundary and `examples/`. [tools/](tools/README.md) holds the CI support script.
+One repository holds the editor/engine under `app/` (today the `app/crates/orange-model` crate) and, later, installable expansion packages under `plugins/`, their public `sdk/` boundary and `examples/`. [tools/](tools/README.md) holds code-validation and release support. PRs run core tests once plus native Windows/macOS compatibility checks; separate [release CD](.github/workflows/release.yml) remains blocked until the executable and qualified packaging exist.
 
 This lets a host/SDK/plugin contract change be reviewed and validated together. Each plugin still builds, versions and installs independently. Source sharing never changes hot installation into an application rebuild. A folder is created when its first content lands; implementation follows the delivery gates. See [15](docs/15-monorepo-layout.md) for ownership and Cargo workspace rules.
 

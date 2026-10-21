@@ -1,11 +1,13 @@
 # Repository tooling
 
-`check-cargo-metadata.mjs` supports the code pipeline. Run it from the repository root with Node.js 24.18.0:
+The metadata and release helpers support code validation and release CD. Run them from the repository root with Node.js 24.18.0:
 
 ```sh
 node tools/check-cargo-metadata.mjs --self-test
 node tools/check-cargo-metadata.mjs
 node tools/check-cargo-metadata.mjs --msrv
+node --test tools/release.test.mjs
+node tools/release.mjs check
 cargo deny --locked check advisories sources
 ```
 
@@ -13,8 +15,8 @@ The Cargo metadata policy check validates Cargo's locked resolved graph, derives
 
 `cargo-deny` is pinned at 0.20.2 and checks advisories and dependency sources only. The advisory database is fetched or refreshed on each run; a database or registry/network failure fails the job. Vulnerability, unmaintained and unsound advisories are errors under cargo-deny's defaults; yanked versions are warnings in this configuration. The source check rejects unrecognized registries and Git sources while allowing crates.io. This is not a license compatibility audit; the project license and allowed third-party SPDX expressions remain unselected.
 
-The [Rust CI workflow](../.github/workflows/checks.yml) runs on pushes to `main`, every PR, manual dispatch and a weekly schedule; scheduled runs start once the workflow is on the default branch. The single required status is `rust`. Independent matrix jobs report `rust-format`, `rust-clippy` and `rustdoc`, with fail-fast disabled so a formatting error does not hide lint or API-documentation results. `rust-architecture` runs the metadata check and derives the MSRV; `rust-msrv` tests on that compiler. Locked workspace tests run on Linux x64 (`ubuntu-24.04`), Windows x64 (`windows-2022`) and macOS arm64 (`macos-15`), also without fail-fast. `dependency-security` runs cargo-deny. The `rust` aggregate fails on any failure, cancellation or unexpected skip. Every job has a timeout. Dependabot proposes weekly Cargo and GitHub Actions updates after merge.
+The [PR validation workflow](../.github/workflows/checks.yml) runs on PRs, dev/main pushes and manual dispatch. Tests execute once on Linux. Native Windows/macOS jobs compile/link all test targets with `--no-run`; MSRV checks every target with `cargo check` on the declared compiler. Format/Clippy/rustdoc remain independent, as do Cargo architecture, workflow-contract and security checks. `workflow-contracts` checks CI/CD YAML with pinned/checksummed actionlint and tests the release helper/configuration. The required `rust` aggregate rejects any non-success job. The weekly schedule and release caller enable full test execution on every native OS. The schedule and Dependabot activate after merge; every job has a timeout.
 
-The security job caches only the pinned cargo-deny installation (actions/cache v6.1.0, full commit SHA), keyed by runner OS/architecture, `rust-toolchain.toml` hash and cargo-deny version, with no fallback restore keys. Both cache hits and misses verify the installed version and scan current online advisory data; the advisory database is never cached. Cargo registry/build caches remain deferred until they bring a material benefit.
+The security job caches the pinned cargo-deny installation (actions/cache v6.1.0, full SHA), keyed by runner OS/architecture, toolchain-file hash and CLI version. Hits and misses verify its version and scan current online advisory data; the database is not cached. Compiled jobs use full-SHA Rust-cache v2.9.3, with separate job/platform/MSRV/release keys and its compiler/environment/lock/config invalidation. Installed binaries are excluded; formatting does not restore compiled dependencies. Cache hits never skip validation.
 
-Permissions are read-only, checkout credentials are not persisted, and actions are pinned to full commits. There is no deployment workflow yet; an application executable, packaging contract and release qualification belong to later delivery work. Passing the core tests establishes no Bevy, SDK, plugin-host or hardware capability.
+PR/build permissions are read-only, checkout credentials are not persisted and Actions use full-SHA pins. [Release CD](../.github/workflows/release.yml) reuses full native validation, builds optimized binaries, then separates credential-bearing packaging/verification and final provenance/publication jobs. Its preflight deliberately fails while the release executable, native packagers and qualification are absent. The [release contract](release/README.md) defines activation and output requirements. Passing helper or core tests establishes no Bevy, signing, installer or hardware capability.
