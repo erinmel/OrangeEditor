@@ -21,7 +21,7 @@ use crate::document::{
     DefinitionRef, Edge, Extensions, GraphDocument, NodeInstance, NodeKind, OutputSource,
     PortDirection, PortKind, PortRef, ProviderBinding, ResolvedPort, SignatureSnapshot,
 };
-use crate::edit::DocCommand;
+use crate::edit::{Committed, DocCommand};
 use crate::error::{IdError, TxError};
 use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 use crate::index::DocIndex;
@@ -372,4 +372,44 @@ fn data_port(id: &str, direction: PortDirection, ty: &TypeExpr) -> ResolvedPort 
         sensitivity: None,
         extensions: Extensions::new(),
     }
+}
+
+/// Why a plan could not be applied.
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
+pub enum PlanApplyError {
+    #[error("the document changed since the plan was made (state {expected}, now {actual})")]
+    StaleDocument { expected: u64, actual: u64 },
+    #[error("the converter registry was replaced since the plan was made")]
+    StaleRegistry,
+    #[error(transparent)]
+    Edit(#[from] TxError),
+}
+
+/// Applies `plan` as one transaction: one revision bump and one undo step covering the
+/// replaced wire, the converter, its edges and the inferred updates.
+///
+/// The document content state and the registry snapshot must still be the ones the plan was
+/// made against; a stale plan is rejected without changing the document, because its
+/// selection and inference results may no longer hold. A registry snapshot is immutable,
+/// so a matching generation also means the selected provider is still available. If a
+/// command fails, nothing changes, revision included.
+pub fn apply_connection(
+    document: &mut GraphDocument,
+    converters: &ConverterRegistry,
+    plan: ConnectionPlan,
+) -> Result<Committed, PlanApplyError> {
+    let Preconditions {
+        document_state,
+        registry_generation,
+    } = plan.preconditions;
+    if document.state_id() != document_state {
+        return Err(PlanApplyError::StaleDocument {
+            expected: document_state,
+            actual: document.state_id(),
+        });
+    }
+    if converters.generation() != registry_generation {
+        return Err(PlanApplyError::StaleRegistry);
+    }
+    Ok(document.apply(plan.commands)?)
 }
