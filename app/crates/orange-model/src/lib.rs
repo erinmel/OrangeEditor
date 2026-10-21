@@ -8,14 +8,17 @@
 //! literal codec); `edit` (transactions and undo); `index`, `signature` and `paste`
 //! (derived lookups, semantic signatures and copy/paste).
 
+pub mod conversion;
 pub mod document;
 pub mod edit;
 pub mod error;
 pub mod id;
 pub mod index;
+pub mod inference;
 pub mod paste;
 pub mod signature;
 pub mod type_term;
+pub mod types;
 pub mod value;
 
 pub use document::codec::{from_json, to_json};

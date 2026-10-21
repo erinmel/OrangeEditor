@@ -56,6 +56,8 @@ pub enum LiteralError {
     InvalidSecretRef,
     #[error("map key type `{ty}` is a float")]
     FloatMapKey { ty: String },
+    #[error("map key type `{ty}` does not implement language `hash` and `eq`")]
+    IneligibleMapKey { ty: String },
     #[error("map literal repeats a key")]
     DuplicateMapKey,
     #[error("record literal lacks required field `{field}`")]
@@ -134,6 +136,10 @@ pub enum TxError {
     VariadicPortNotFound { node: NodeId, port: PortKey },
     #[error("signature `{0}` already exists with different content")]
     SignatureConflict(SignatureKey),
+    #[error("signature `{0}` does not exist")]
+    SignatureNotFound(SignatureKey),
+    #[error("package `{package}` {version} is already locked to a different content digest")]
+    PackageLockConflict { package: String, version: String },
     #[error("a layout path needs at least one key")]
     EmptyLayoutPath,
     #[error("layout path `{path}` passes through a value that is not an object")]

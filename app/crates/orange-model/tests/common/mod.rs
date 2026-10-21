@@ -2,6 +2,7 @@
 #![allow(dead_code)] // each test binary uses a different subset
 
 pub mod edits;
+pub mod generic;
 pub mod strategies;
 
 use std::path::PathBuf;
@@ -90,6 +91,7 @@ pub fn node(n: u8) -> NodeInstance {
         config_version: 1,
         config: Default::default(),
         type_args: Default::default(),
+        type_pins: Default::default(),
         provider: None,
         signature: None,
         inputs: Default::default(),

@@ -89,7 +89,7 @@ impl Tracker {
                     .entry(DeclId::Function(*id))
                     .or_insert(entry.is_some());
             }
-            Patch::Signature { .. } | Patch::Editor { .. } => {}
+            Patch::Signature { .. } | Patch::PackageLock { .. } | Patch::Editor { .. } => {}
         }
     }
 

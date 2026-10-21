@@ -8,8 +8,11 @@ const corePackages = new Set([
   'orange-runtime',
   'orange-contracts',
 ]);
-const bevyVersion = '0.20.0';
-const isBevyFrameworkPackage = name => name === 'bevy' || name.startsWith('bevy_');
+// UI, window, renderer and engine frameworks that graph-core crates must never depend on
+// (ADR-01, ADR-02, ADR-21). Host applications may use them.
+const frameworkRoots = ['bevy', 'egui', 'eframe', 'epaint', 'winit', 'wgpu', 'slint', 'i-slint', 'iced'];
+const isFrameworkPackage = name => frameworkRoots.some(root =>
+  name === root || name.startsWith(`${root}_`) || name.startsWith(`${root}-`));
 
 function loadMetadata() {
   try {
@@ -41,17 +44,11 @@ function inspectMetadata(metadata) {
   if (!members.some(pkg => pkg.name === 'orange-model')) {
     throw new Error('Cargo metadata is missing the expected orange-model core root.');
   }
-  for (const pkg of metadata.packages.filter(pkg => pkg.name === 'bevy')) {
-    if (pkg.version !== bevyVersion) errors.push(`resolved Bevy ${pkg.version}; required ${bevyVersion}`);
-  }
   for (const pkg of members) {
     for (const dependency of pkg.dependencies ?? []) {
       const dependencyName = dependency.package ?? dependency.name;
-      if (dependencyName === 'bevy' && dependency.req !== `=${bevyVersion}`) {
-        errors.push(`${pkg.name} requires Bevy as '${dependency.req}'; use '=${bevyVersion}'`);
-      }
-      if (corePackages.has(pkg.name) && isBevyFrameworkPackage(dependencyName)) {
-        errors.push(`${pkg.name} declares ${dependencyName}; graph core must remain Bevy-free, including optional dependencies`);
+      if (corePackages.has(pkg.name) && isFrameworkPackage(dependencyName)) {
+        errors.push(`${pkg.name} declares ${dependencyName}; graph core must stay free of UI and engine frameworks, including optional dependencies`);
       }
     }
   }
@@ -69,7 +66,7 @@ function inspectMetadata(metadata) {
       const pkg = packages.get(id);
       const node = nodes.get(id);
       if (!pkg || !node) throw new Error(`Cargo resolve graph is incomplete at ${id}; refusing to pass.`);
-      if (isBevyFrameworkPackage(pkg.name)) errors.push(`${name} has a transitive Bevy dependency (${pkg.name} ${pkg.version})`);
+      if (isFrameworkPackage(pkg.name)) errors.push(`${name} has a transitive UI or engine dependency (${pkg.name} ${pkg.version})`);
       if (!Array.isArray(node.deps)) throw new Error(`Cargo resolve graph is missing dependencies for ${id}; refusing to pass.`);
       for (const dependency of node.deps) {
         if (!packages.has(dependency.pkg)) throw new Error(`Cargo resolve graph references unknown package ${dependency.pkg}.`);
@@ -97,20 +94,19 @@ function fixtureMetadata(packages, members, edges) {
 
 function selfTest() {
   const core = makePackage('model 0.0.0', 'orange-model', '0.0.0');
-  const app = makePackage('orange-app 0.0.0', 'orange-app', '0.0.0', [{name: 'bevy', req: '=0.20.0'}]);
-  const bevy = makePackage('bevy 0.20.0', 'bevy', '0.20.0');
+  const app = makePackage('orange-app 0.0.0', 'orange-app', '0.0.0', [{name: 'eframe', req: '=1.0.0'}]);
+  const eframe = makePackage('eframe 1.0.0', 'eframe', '1.0.0');
   const transitive = makePackage('graphics-helper 1.0.0', 'graphics-helper', '1.0.0');
-  const bevyEcs = makePackage('bevy_ecs 0.20.0', 'bevy_ecs', '0.20.0');
+  const winit = makePackage('winit 1.0.0', 'winit', '1.0.0');
+  const eguiExtras = makePackage('egui_extras 1.0.0', 'egui_extras', '1.0.0');
   const check = (label, metadata, expectedErrors) => {
     const actual = inspectMetadata(metadata);
     if (actual.length !== expectedErrors) throw new Error(`${label}: expected ${expectedErrors} errors, received ${actual.length}: ${actual.join('; ')}`);
   };
-  check('host-only Bevy is allowed', fixtureMetadata([core, app, bevy], [core.id, app.id], {[app.id]: [bevy.id]}), 0);
-  check('transitive core leak is rejected', fixtureMetadata([core, transitive, bevy], [core.id], {[core.id]: [transitive.id], [transitive.id]: [bevy.id]}), 1);
-  check('transitive Bevy subsystem leak is rejected', fixtureMetadata([core, bevyEcs], [core.id], {[core.id]: [bevyEcs.id]}), 1);
-  check('optional core declaration is rejected', fixtureMetadata([makePackage('model 0.0.0', 'orange-model', '0.0.0', [{name: 'bevy', req: '=0.20.0', optional: true}]), bevy], ['model 0.0.0'], {}), 1);
-  check('invalid Bevy version is rejected', fixtureMetadata([core, app, makePackage('bevy 0.21.0', 'bevy', '0.21.0')], [core.id, app.id], {}), 1);
-  check('non-exact member pin is rejected', fixtureMetadata([core, makePackage('app 0.0.0', 'orange-app', '0.0.0', [{name: 'bevy', req: '^0.20'}]), bevy], [core.id, 'app 0.0.0'], {}), 1);
+  check('host-only UI framework is allowed', fixtureMetadata([core, app, eframe], [core.id, app.id], {[app.id]: [eframe.id]}), 0);
+  check('transitive core leak is rejected', fixtureMetadata([core, transitive, winit], [core.id], {[core.id]: [transitive.id], [transitive.id]: [winit.id]}), 1);
+  check('framework subcrate leak is rejected', fixtureMetadata([core, eguiExtras], [core.id], {[core.id]: [eguiExtras.id]}), 1);
+  check('optional core declaration is rejected', fixtureMetadata([makePackage('model 0.0.0', 'orange-model', '0.0.0', [{name: 'egui', req: '=1.0.0', optional: true}]), eframe], ['model 0.0.0'], {}), 1);
   const mustFail = (label, metadata) => {
     let failed = false;
     try { inspectMetadata(metadata); } catch { failed = true; }
@@ -120,7 +116,7 @@ function selfTest() {
   mustFail('empty workspace', {packages: [], workspace_members: [], resolve: {nodes: []}});
   mustFail('missing orange-model root', fixtureMetadata([app], [app.id], {}));
   mustFail('missing resolve deps', {...fixtureMetadata([core], [core.id], {}), resolve: {nodes: [{id: core.id}]}});
-  console.log('Cargo metadata policy fixtures passed (10 cases).');
+  console.log('Cargo metadata policy fixtures passed (8 cases).');
 }
 
 if (process.argv.includes('--self-test')) {
@@ -151,8 +147,5 @@ if (process.argv.includes('--self-test')) {
     for (const error of errors) console.error(`FAIL: ${error}`);
     process.exit(1);
   }
-  const bevyPresent = metadata.packages.some(pkg => pkg.name === 'bevy');
-  console.log(bevyPresent
-    ? 'Cargo metadata policy passed; core dependency boundary and exact Bevy 0.20.0 pin verified.'
-    : 'Cargo metadata policy passed; core dependency boundary holds; Bevy pin check is inapplicable because Bevy is absent.');
+  console.log('Cargo metadata policy passed; graph core is free of UI and engine frameworks.');
 }

@@ -1,6 +1,6 @@
 # OrangeEditor expansion system
 
-An expansion is installed into the running OrangeEditor application. It is not a Rust crate added by the user to OrangeEditor's Bevy build and not a development MCP/plugin. Bevy application plugins are internal composition; their startup lifecycle is not an unload protocol. This design owns install, compatibility, permissions, contribution registration, lifetime barriers and removal.
+An expansion is installed into the running OrangeEditor application. It is not a Rust crate compiled into OrangeEditor and not a development MCP/plugin. Crates that a downstream product links against the core are a separate, build-time extension path (ADR-21). This design owns install, compatibility, permissions, contribution registration, lifetime barriers and removal.
 
 Maintained expansion source lives under `plugins/<name>` in the [monorepo](15-monorepo-layout.md), with the versioned public SDK under `sdk`. Package versions/builds and application releases stay independent. Sharing a Git commit does not grant a package private host imports or bypass installation/permissions/provider locks.
 
@@ -10,7 +10,7 @@ Maintained expansion source lives under `plugins/<name>` in the [monorepo](15-mo
 |---|---|---|---|---|
 | Native Rust dylib/trait objects | Platform/compiler/build sensitive | Host memory/credentials/process privileges; native fault can terminate host | Broad raw UI/ECS access; low call cost; no stable external Rust ABI | Rejected public format |
 | Stable C ABI library | Possible per-target bundles; explicit ABI structs required | Same in-process crash/authority limits; unload needs every pointer/thread/callback barrier | Broad native access, ownership hazards, per-platform release testing | Not initial public format |
-| Wasm Component Model | Portable validated component with versioned WIT-style host imports | Guest linear-memory isolation and checked imports; fuel/epoch/resource limits; host bug remains risk | Serialization/copy/call costs; no raw Bevy pointers or native callback code | **Primary installable format** |
+| Wasm Component Model | Portable validated component with versioned WIT-style host imports | Guest linear-memory isolation and checked imports; fuel/epoch/resource limits; host bug remains risk | Serialization/copy/call costs; no raw host pointers or native callback code | **Primary installable format** |
 | External worker | Native runtime/language flexibility; bundle per target | Crash boundary and killable process; OS access remains user authority unless actual OS sandbox is implemented | IPC cost, versioned bounded frames, declarative UI/scene bridge only | **Explicit-trust secondary tier** |
 | Statically linked bundled kernels/services | Shipped with app; cannot replace/unload code at runtime | Privileged host code; host crash not isolated | Cheap native kernels, audio callback/backend access | Documented bundled exception |
 
@@ -30,7 +30,7 @@ Guest permissions are **enforced host-service authority**: profiles/destinations
 | Panels, settings, inspectors, value editors | Declarative widget tree, commands/actions, owned state | Same declarative contract | Same schema; host adapter privileged |
 | Translation catalogues and translatable UI text | Data-only FTL resources and namespaced TextRef/MessageRef | Same contract; no executable formatter injection | Same public contract for bundled text |
 | Scene objects/material parameters/behavior | Validated scene command batches/resource handles, P6 | Same bridge | Can implement renderer adapter, app release required |
-| Raw Bevy ECS access, custom render graph/shader pipeline/native widget code | No direct memory/system injection | No direct host ECS; can supply validated assets or own external service | Host-reviewed release feature only |
+| Raw host memory, custom render graph/shader pipeline/native widget code | No direct memory/system injection | No direct host internals; can supply validated assets or own external service | Host-reviewed release feature only |
 | Credential provider | Can contribute broker workflow for its granted namespace; raw secret export absent by default | Trusted worker provider possible, explicitly discloses native authority | OS vault adapters privileged |
 
 This supports extending or changing application behavior through stable contracts, including math node behavior, HTTP/connection policy providers, audio control/mixing provider choice and type editors. A custom renderer/backend that requires new host primitives first requires a compatible host release. "Expandable" does not mean arbitrary internal machine-code replacement.
@@ -95,6 +95,8 @@ Approval is product UX for new package authority; it is not a request to stop th
 Replaceable slots include `node:<definition>@<contract>`, `convert:<from>-><to>` (contract version in the slot descriptor; [11 §6](11-graph-language.md)), `connection:<adapter>@<contract>`, `audio:playback-control@1`, `audio:device-backend@1` (native worker/bundled restrictions above), `editor:value-editor/<type>@1`, `editor:file-picker@1`, and approved credential namespaces. Slot contract includes capabilities, errors, concurrency, real-time restrictions, host API range and conformance tests. A replacement node provider must keep the definition's kind, ports, `suspends`, `cleanup_safe`, determinism class and outcome set. Changing any of them is a new definition version, not a provider swap. Core type rules, package signature verification, permission enforcement and graph effect ordering are not override slots. Publication also rejects namespace, constraint-coherence and converter-ownership violations ([12 §8](12-graph-data-structures.md)).
 
 When providers compete: no automatic last-installed-wins. User selects workspace/app defaults for **new bindings**; existing graph locks retain provider ID, package version/digest and contract. Explicit rebind previews affected nodes/types/config/resource changes, runs migration on a copy and validates the graph before commit. Missing selected provider blocks affected execution and preserves placeholders. Uninstall may propose a compatible bundled fallback, but executing it requires explicit rebind; there is no silent substitution. Diagnostics expose selected provider/registry generation and override provenance.
+
+Converter pair slots may contain distinct semantic entry contracts. An override implements the same converter ID/contract, preserving its endpoints, class, policies, errors and loss output. New-binding provider defaults are scoped to that entry contract; implementing an existing entry does not grant authority to register new foreign-to-foreign conversion semantics. Multiple providers for one entry do not increase the semantic conversion count used for auto-insertion ([11 §6](11-graph-language.md)).
 
 ## Hot update/removal semantics
 

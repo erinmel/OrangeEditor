@@ -14,8 +14,9 @@ use super::change_set::{ChangeSet, Tracker};
 use super::patch::{Patch, Placed, editor_placement, placement};
 use crate::document::literal::Literal;
 use crate::document::{
-    BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument, NodeInstance, PortRef,
-    ProviderBinding, SignatureSnapshot, TypeParamName, VariableDecl, VariadicState, fresh_state_id,
+    BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument, NodeInstance,
+    PackageLockEntry, PortRef, ProviderBinding, SignatureSnapshot, TypeParamName, VariableDecl,
+    VariadicState, fresh_state_id,
 };
 use crate::error::TxError;
 use crate::id::{
@@ -58,6 +59,11 @@ pub enum DocCommand {
         node: NodeId,
         args: BTreeMap<TypeParamName, TypeExpr>,
     },
+    /// Replaces the node's explicit type choices (pins, 11 §5.5).
+    SetTypePins {
+        node: NodeId,
+        pins: BTreeMap<TypeParamName, TypeExpr>,
+    },
     /// Allocates the next never-reused counter `k` and places `port#k` at `at` (11 §4.5).
     InsertVariadic {
         node: NodeId,
@@ -87,6 +93,15 @@ pub enum DocCommand {
         key: SignatureKey,
         snapshot: SignatureSnapshot,
     },
+    /// Points a node at an existing shared snapshot; add it first with `PutSignature`.
+    SetSignature {
+        node: NodeId,
+        key: SignatureKey,
+    },
+    /// Locks a package version to its content digest, appended to `package_lock`. Putting
+    /// the same digest again changes nothing; a different digest for a locked package
+    /// version is rejected. Pair it with any `AddNode` or `Rebind` naming that version.
+    PutPackageLock(PackageLockEntry),
     Layout(LayoutCommand),
 }
 
@@ -294,6 +309,10 @@ impl Journal {
                 node.type_args = args;
                 Ok(())
             }),
+            DocCommand::SetTypePins { node, pins } => self.modify_node(document, node, |node| {
+                node.type_pins = pins;
+                Ok(())
+            }),
             DocCommand::InsertVariadic { node: id, port, at } => {
                 self.modify_node(document, id, |node| {
                     let state = node.variadic.entry(port.clone()).or_insert(VariadicState {
@@ -387,6 +406,42 @@ impl Journal {
                     },
                 ),
             },
+            DocCommand::PutPackageLock(entry) => {
+                let key = (entry.id.clone(), entry.version.clone());
+                let locked = document
+                    .package_lock
+                    .iter()
+                    .find(|locked| (&locked.id, &locked.version) == (&key.0, &key.1));
+                match locked {
+                    Some(locked) if locked.content_digest == entry.content_digest => Ok(()),
+                    Some(_) => Err(TxError::PackageLockConflict {
+                        package: key.0,
+                        version: key.1,
+                    }),
+                    None => {
+                        let index = document.package_lock.len();
+                        self.patch(
+                            document,
+                            Patch::PackageLock {
+                                key,
+                                entry: Some(Placed {
+                                    index,
+                                    value: entry,
+                                }),
+                            },
+                        )
+                    }
+                }
+            }
+            DocCommand::SetSignature { node, key } => {
+                if !document.signatures.contains_key(&key) {
+                    return Err(TxError::SignatureNotFound(key));
+                }
+                self.modify_node(document, node, |node| {
+                    node.signature = Some(key);
+                    Ok(())
+                })
+            }
             DocCommand::Layout(LayoutCommand::Set { path, value }) => {
                 if path.is_empty() {
                     return Err(TxError::EmptyLayoutPath);

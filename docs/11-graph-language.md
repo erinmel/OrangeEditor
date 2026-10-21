@@ -1,6 +1,8 @@
 # Graph language and execution semantics
 
-Status: **normative proposal for graph format v1**, 2026-10-20. Nothing here has been implemented, compiled or tested; every rule is a contract that WU-00 must prove with the conformance suite in §18. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
+Status: **normative proposal for graph format v1**. The document model exists; validator, compiler and runtime behavior remain to be implemented and tested. Section 18 supplies reference scenarios for focused implementation tests. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
+
+**Layering (ADR-21).** §4–§6, §16 and §17 are the shared **substrate** that every execution domain uses: ports, types, conversions, extension surface and diagnostics. §1–§3 and §7–§15 define the built-in **`control` domain** (event activations, exec/data wires, async, structured loops), which a body uses when it declares no `domain` ([12 §3.1](12-graph-data-structures.md)). The core ships no other domain; crates that depend on the core may add domains, bridges and object models, each with its own semantics document.
 
 Prior art such as Unreal Blueprints, Blender geometry-node zones, LabVIEW shift registers, Simulink unit delays and RxJS concurrency operators informed the problem list. It is not evidence that these rules perform or are usable. Known pitfalls this design rejects on purpose: pure nodes evaluated again for every consumer (different random values per pin); stale outputs read from nodes that did not execute; "sequence" that moves on while a latent step is still running; glitches in reactive diamonds; recursion with no bound.
 
@@ -176,13 +178,23 @@ Types are **nominal**: two packages' `point` records are different types even wi
 
 A package type declares which constraints it implements by supplying a **constraint implementation** (kernels for the constraint's operations). Coherence rule: only the package that owns the type may implement a core constraint for it. A package may implement its own constraint for a foreign type. Conflicts are therefore impossible, not resolved at run time.
 
+Package constraints have a canonical `namespace/name@major` identity distinct from the core constraint names. Registration records an exact provider binding, package content digest and implementation ID for one concrete type/constraint (or numeric-operation) slot. A declared structural derive occupies that same constraint slot; neither registration order nor an explicit implementation may overwrite it. Core type implementations remain language-owned. Capability queries return the selected reference as proof metadata, without loading package code; package identity/authentication and executable conformance are host/SDK work.
+
+Aggregate `eq` requires the contained types to implement `eq`; wrapping a float in a list/option/result/map does not supply total equality. `display` requires a literal codec for every contained value. `serialize` is separate from literal availability: a type-level capability permits a checked serializer, and never proves that a particular error value's sensitive details have been redacted. Empty list/map and `None` defaults do not require a default for their contained types. Rust's structural `Value::Eq/Hash` is not evidence of these language constraints.
+
+The initial host supports explicit package structural derives for `eq`, `hash`, `display` and `serialize`, checking every field/payload before registry publication. Other derives report unsupported capability; packages may supply explicit implementations instead. The host does not invent a default enum variant or ordering rule. Recursive nominal schemas remain legal, but a cyclic or over-budget automatic derivation has no supported proof and requires an explicit implementation. Constraint-family membership is separate from operation support: `duration: num` supplies add/subtract, not multiply/divide. Current capability queries prove declarations only; execution kernels and value-level serialization checks are later work.
+
 ### 5.5 Generics and inference
 
 - Type parameters are declared per definition with constraints (`{"name": "T", "constraints": ["num"]}`). There are no higher-kinded parameters, no subtyping and no variance.
 - Inference unifies type expressions over the **connected component** of generic nodes touched by an edit. It visits nodes in stable `NodeId` order, so the result is deterministic. Literals carry explicit types.
-- Resolved type arguments are **persisted** on the instance (`type_args`). Loading never depends on re-running the solver. An edit re-infers only the affected component.
-- Unresolved parameter → `E-TYPE-AMBIGUOUS`; the user pins it in the inspector. Conflict → `E-TYPE-MISMATCH` with converter suggestions. Inference never inserts conversions.
+- Resolved type arguments are **persisted** on the instance (`type_args`). Loading never depends on re-running the solver. An edit re-infers only the affected component, and the inferred `type_args` and the signature projected from them are committed in the same transaction as the edit. An ambiguous or conflicting component is still saved, with no `type_args` for the affected parameters and `$name` kept in its signature.
+- An explicit choice is a **pin**, persisted in `type_pins` and kept until the user removes it. `type_args` holds the resolved value of every parameter, pinned or inferred, and is a cache: inference seeds from pins, typed literals on generic ports, edges and the concrete port types of non-generic neighbours, never from persisted `type_args`, so disconnecting and reconnecting cannot reuse a stale binding. Constraints and listed specializations are checked after solving.
+- Unresolved parameter → `E-TYPE-AMBIGUOUS`, and it gets no `type_args` entry; the signature snapshot keeps `$name` for it. The user pins it in the inspector. Conflict → `E-TYPE-MISMATCH` with converter suggestions. Inference never inserts conversions. A new connection whose inference reports a conflict (`E-TYPE-MISMATCH`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION` or `E-TYPE-COMPLEXITY`) is refused, unless the components it joins already reported one: a conflicting document, for example an imported one, can still be edited and repaired. Other edits, such as a disconnect or unpin, are never refused for their inference result.
+- Function bodies are inferred like the root: an edit inside a body, or a replaced body, re-infers the touched components there.
+- Exhausting an analysis resource budget produces `E-TYPE-COMPLEXITY`, with the relevant node/parameter context and limit. It does not fall back to a numeric type or report a semantic mismatch. Provisional implementation budgets are recorded in [10](10-tooling-and-sources.md); a resource failure does not redefine the valid type grammar.
 - A generic provider MUST list its supported specializations, or delegate to constraint implementations. A missing specialization is `E-NO-SPECIALIZATION` at compile time, never a run-time lookup.
+- Numeric authoring presents Float with Single (`core/f32@1`) and Double (`core/f64@1`) precision, alongside integer math (ADR-20). New untyped numbers default to Double; a resolved port or explicit type selection takes precedence. Integer text parses directly as the selected integer type, without a floating intermediate. Saved type identities and visible precision conversions remain governed by §5–6.
 
 ### 5.6 Numeric additions to [03](03-data-and-execution.md)
 
@@ -197,6 +209,12 @@ Integer arithmetic config: `int_overflow` = `checked` (default) / `wrapping` / `
    - `lossy`: may lose information under a declared policy and returns loss metadata. Examples: f64→f32, i64→f64 above 2^53, string→bytes with replacement.
 3. **Editor auto-insert:** when an incompatible wire is dropped and exactly one `lossless-total` entry exists for the pair, the editor inserts a visible converter node in the same undoable transaction. If only partial or lossy entries exist, the editor shows a choice and never picks one. Chained conversions are never auto-inserted. With no entry, the connection is rejected with a diagnostic.
 4. Ownership: a package may register converters only when it owns `from` or `to`. A competing provider for an existing pair uses override slot `convert:<from>-><to>` ([04](04-expansion-plugins.md)) with the same explicit-rebind rule as other providers.
+
+Entry identity is a stable converter ID plus contract version. Multiple implementations of that same entry are provider alternatives, not additional semantic conversions. Count distinct semantic entries when applying rule 3: a unique lossless-total entry is eligible even when partial/lossy entries also exist, but its exact provider must resolve unambiguously from an explicit new-binding default, sole implementation or user choice. No default is inferred from installation order. Defaults are scoped to the entry contract within the pair slot; existing bindings remain pinned.
+
+The converter node itself is persisted as specified in [12 §5](12-graph-data-structures.md): it names the entry key, the exact provider and the resolved policy choices, and its ports are `value` in, `result` out and, for lossy entries, `loss`. A connection plan fixes the node and edge identities once, and records the document content state, the immutable registry snapshot (which fixes the available providers) and the generic template catalog it was made against; applying it rechecks all three, so a stale plan is rejected instead of re-resolved. Inserting a converter reuses the wire's existing data-input replacement rule (§4.3): the old edge is removed in the same transaction. Shadowed literals stay in the document.
+
+The initial host policy form is a named finite set of string choices, with an optional default; missing required choices, unknown policy names/values and unsupported forms are rejected. Packages may declare their own finite choices. Lossy entries expose a separate `loss: core/json@1` output for converter-defined loss details. Core precision entries declare f32→f64 lossless and f64→f32 lossy; the latter declares nearest-even rounding and rejection of out-of-range values. These are conversion contracts; arithmetic kernels and runtime loss-detail production are later work.
 
 ## 7. Regions, availability, ordering and determinism
 
@@ -481,7 +499,7 @@ Runtime codes defined by the core: `NumericOverflow`, `DivideByZero`, `Domain`, 
 | Graph-implemented definitions | §14 |
 | Value editors and inspectors | [04](04-expansion-plugins.md) declarative UI |
 
-A package may **not** add port kinds, control or zone intrinsics, scheduling or reentrancy modes, new cycle-legality rules (except by contributing `suspends: always` async nodes) or availability exceptions. New control shapes use iterators (`open/next/close` lowered to a structured loop), async outcome groups, or functions. Further intrinsics need a host language release (OPEN-12).
+A package may **not** add port kinds, control or zone intrinsics, scheduling or reentrancy modes, new cycle-legality rules (except by contributing `suspends: always` async nodes) or availability exceptions. New control shapes use iterators (`open/next/close` lowered to a structured loop), async outcome groups, or functions. Further intrinsics need a host language release (OPEN-12). New execution domains are not package contributions: crates linked by the embedding product add them through the core's public interfaces (ADR-21).
 
 ## 17. Diagnostics catalog
 
@@ -492,15 +510,15 @@ Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_
 | Group | Codes |
 |---|---|
 | Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
-| Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
+| Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-TYPE-COMPLEXITY`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
 | Regions and availability | `E-REGION-AMBIGUOUS`, `E-REGION-ESCAPE`, `E-UNAVAILABLE-VALUE`, `E-CROSS-ACTIVATION`, `E-BREAK-OUTSIDE-LOOP`, `E-ZONE-STRUCTURE`, `W-UNREACHABLE` |
 | Cycles | `E-CYCLE-DATA`, `E-CYCLE-SYNC-CONTROL`, `E-RECURSION`, `E-LOOP-UNBOUNDED`, `W-BUSY-LOOP` |
 | State and concurrency | `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `W-CONST-ERROR` |
 | Functions and entries | `E-FUNCTION-KIND`, `E-MISSING-RETURN`, `E-ENTRY-IN-FUNCTION`, `E-SUBSCRIPTION-IN-FUNCTION`, `W-DETACH-IN-FUNCTION` |
 
-## 18. Conformance suite (WU-00; all NOT RUN)
+## 18. Reference test scenarios (WU-00)
 
-Each case is a golden graph fixture with expected diagnostics or an expected deterministic trace. It must pass on the reference interpreter (WU-00e) and later on the optimized executor (WU-04).
+These scenarios explain intended behavior and guide focused Rust tests as the validator, interpreter and executor are implemented. They do not require separate JSON fixtures, exhaustive case coverage or a second test framework. Test foundational invariants, representative valid/invalid behavior and actual regressions; compare reference and optimized execution on representative graphs. A scenario listed here is not evidence that it ran (ADR-20).
 
 | ID | Fixture → expected |
 |---|---|

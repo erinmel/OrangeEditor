@@ -28,10 +28,6 @@ test('qualification, exact version and every native packager are required', () =
   assert.throws(() => releasePlan(config, metadata, 'v1.2.3', file => !file.includes('macos')), /macos/);
   assert.equal(releasePlan(config, metadata, 'v1.2.3', () => true).version, '1.2.3');
 });
-test('Bevy development linking cannot enter a release', () => {
-  const graph = {...metadata, packages: [...metadata.packages, {id: 'bevy', name: 'bevy'}], resolve: {nodes: [{id: 'bevy', features: ['dynamic_linking']}]}};
-  assert.throws(() => inspectConfig(config, graph), /development/);
-});
 test('receipts must identify the exact target, version and commit', () => {
   assert.throws(() => inspectReceipt(receipt, 'linux', '1.2.3', 'abc'), /match/);
   assert.throws(() => inspectReceipt(receipt, 'windows', '1.2.4', 'abc'), /match/);

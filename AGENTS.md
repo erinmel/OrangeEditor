@@ -6,13 +6,13 @@ Read `README.md`, then `docs/07-delivery-plan.md`. Read the contract/ADR documen
 
 ## Implementation rules
 
-- Rust; Bevy exactly `=0.20.0` until an explicit upgrade ADR. Verify APIs from versioned Rustdoc or `v0.20.0` release source. Reject main-branch or stale `latest` examples as version evidence. See `docs/09-bevy-0.20.md`.
-- Release source requires Rust >=1.97.1. Record the selected toolchain, features and lockfile before build claims. The selected local toolchain is Rust 1.99.1 via rustup, recorded in `docs/10-tooling-and-sources.md`; it has not yet compiled Bevy.
+- Rust only; no game engine (ADR-02). OrangeEditor is a foundation: an embeddable core plus a separate egui editor UI (ADR-21). Pin exact versions of UI and other dependencies when adopted, and verify APIs from versioned Rustdoc or release-tag source; reject main-branch or stale `latest` examples as version evidence. Feasibility probes are in `docs/09-feasibility-probes.md`.
+- MSRV is Rust 1.97.1. Record the selected toolchain, features and lockfile before build claims. The selected local toolchain is Rust 1.99.1 via rustup, recorded in `docs/10-tooling-and-sources.md`.
 - Current artifacts are specifications, not an implemented application. Feasibility probes and NFR numbers are unexecuted/proposed until evidence is recorded. Do not mark a gate passed from documentation alone.
-- OrangeEditor expansion plugins are installed product packages. Bevy developer plugins and AI development MCP tools are separate concepts.
-- Graph semantics are normative in `docs/11-graph-language.md` and layouts in `docs/12-graph-data-structures.md`. Change a rule only together with its diagnostics, G-suite fixture, FR trace and ADR. Packages extend the language only through 11 §16.
+- OrangeEditor expansion plugins are installed product packages. Crates that downstream products build on the core and AI development MCP tools are separate concepts.
+- Graph semantics are normative in `docs/11-graph-language.md` and layouts in `docs/12-graph-data-structures.md`. Keep changed rules, diagnostics, focused Rust behavior/property tests, FR trace and ADR consistent. G IDs are reference scenarios, not a mandatory fixture inventory. Do not build exhaustive JSON suites or target 100% coverage; test foundational invariants and actual regressions as behavior is implemented. Packages extend the language only through 11 §16.
 - Product text follows `docs/13-internationalization.md`: namespaced translatable messages, typed redacted arguments and host-owned presentation. UI language never changes graph semantics, values, IDs or provider locks.
-- Keep graph/type/runtime contracts independent of Bevy, rendering and window updates. Resolve node/type/provider identities before execution. Preserve pinned running providers during package updates.
+- Keep graph/type/runtime contracts independent of UI, rendering, windows and engines; public core APIs are a product surface for downstream crates. Resolve node/type/provider identities before execution. Preserve pinned running providers during package updates.
 - Product extension changes use documented registry/override contracts. Never replace hot installation with application rebuild/restart without an explicit requirement change.
 - Keep credentials in host-owned OS stores; graphs, package examples, traces and exports contain references and redacted data. Native workers are not OS-sandboxed merely because IPC is used.
 - No generic plugin calls, blocking work or allocations in audio callbacks. Validate endpoint routing/virtual-source behavior per OS rather than inferring it from playback support.

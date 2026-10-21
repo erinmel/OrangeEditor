@@ -25,13 +25,13 @@ The tradeoff is shared repository access/history and a larger CI change surface.
 
 | Area | Boundary |
 |---|---|
-| `app/apps`, `app/crates` | Root Cargo workspace members for the host application; graph core remains independent of Bevy. `orange-model` groups its source by layer: `id` and `type_term`, `document/`, `value/`, `edit/`, then `index`, `signature` and `paste` |
+| `app/apps`, `app/crates` | Root Cargo workspace members for the host application; graph core remains independent of UI and engines. `orange-model` groups its source by layer: `id` and `type_term`, `document/`, `value/`, `edit/`, then `index`, `signature` and `paste` |
 | `plugins/<name>` | Independently built/package-versioned expansion; Rust guest/worker workspaces are excluded from root host defaults and use their own lock/toolchain as needed |
 | `sdk` | Public versioned WIT/wire/schema/packaging contract, exported deliberately from the host design; not a second private runtime API |
 | `examples` | Small version-locked workflows and SDK usage with expected results |
 | `tools`, `.github` | Repository checks and automation; no product runtime responsibilities |
 
-The repository bootstrap added no Cargo manifest. WU-00/00b.1 added the root workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`) with its first member `app/crates/orange-model`; `plugins` is excluded. WU-01 still verifies the Bevy pins before any Bevy member is added, and WU-00 grows the host core incrementally. Once manifests exist, commit the root application lockfile and each independently built plugin lockfile. Code location does not turn an installable Wasm/worker expansion into an in-process Bevy developer plugin. Privileged statically linked base kernels remain `app/crates/orange-bundled`, under the exception in 04.
+The repository bootstrap added no Cargo manifest. WU-00/00b.1 added the root workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`) with its first member `app/crates/orange-model`; `plugins` is excluded. WU-01 verifies the UI pins before any UI member is added, and WU-00 grows the host core incrementally. Once manifests exist, commit the root application lockfile and each independently built plugin lockfile. Code location does not turn an installable Wasm/worker expansion into a build-time crate dependency. Privileged statically linked base kernels remain `app/crates/orange-bundled`, under the exception in 04.
 
 ## Change and release rules
 

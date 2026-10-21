@@ -64,6 +64,14 @@ impl TypeTerm {
         }
     }
 
+    /// True if a type parameter occurs anywhere in the term.
+    pub fn contains_param(&self) -> bool {
+        match self {
+            TypeTerm::Param(_) => true,
+            TypeTerm::Named(named) => named.args.iter().any(TypeTerm::contains_param),
+        }
+    }
+
     /// The named type without arguments, as the canonical text used to look up schemas.
     pub fn named(&self) -> Option<&NamedTerm> {
         match self {

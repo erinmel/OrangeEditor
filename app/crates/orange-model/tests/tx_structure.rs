@@ -416,3 +416,45 @@ fn mismatched_function_edge_key_is_typed_and_atomic() {
         },
     );
 }
+
+#[test]
+fn put_package_lock_appends_is_idempotent_rejects_another_digest_and_undoes() {
+    use orange_model::document::PackageLockEntry;
+    let lock = |package: &str, digest: &str| PackageLockEntry {
+        id: package.to_owned(),
+        version: "1.0.0".to_owned(),
+        content_digest: format!("sha256:{}", digest.repeat(64)),
+        extensions: Default::default(),
+    };
+
+    let mut document = empty_document();
+    let before = content(&document);
+    let first = document
+        .apply([
+            DocCommand::PutPackageLock(lock("org.b", "b")),
+            DocCommand::PutPackageLock(lock("org.a", "a")),
+        ])
+        .unwrap();
+    let ids: Vec<&str> = document
+        .package_lock()
+        .iter()
+        .map(|e| e.id.as_str())
+        .collect();
+    assert_eq!(ids, ["org.b", "org.a"], "appended in command order");
+    let again = document
+        .apply([DocCommand::PutPackageLock(lock("org.a", "a"))])
+        .unwrap();
+    assert_eq!(document.package_lock().len(), 2);
+    assert_rejected(
+        &mut document,
+        vec![DocCommand::PutPackageLock(lock("org.a", "c"))],
+        TxError::PackageLockConflict {
+            package: "org.a".to_owned(),
+            version: "1.0.0".to_owned(),
+        },
+    );
+
+    let _ = document.revert(again.inverse).unwrap();
+    let _ = document.revert(first.inverse).unwrap();
+    assert_eq!(content(&document), before);
+}

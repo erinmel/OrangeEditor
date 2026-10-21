@@ -50,6 +50,7 @@ pub struct GraphDocument {
     pub extensions: OpaqueExtensionMap,      // unknown fields, bounded, preserved
 }
 pub struct GraphBody {
+    pub domain: Option<DomainId>,            // absent = `control` (ADR-21)
     pub nodes: IndexMap<NodeId, NodeInstance>,
     pub edges: IndexMap<EdgeId, Edge>,
 }
@@ -59,7 +60,8 @@ pub struct NodeInstance {
     pub provider: Option<ProviderBinding>,   // None only for core/ intrinsics
     pub config_version: u32,
     pub config: ConfigValue,                 // validated by definition config_schema
-    pub type_args: BTreeMap<TypeParamName, TypeExpr>,  // persisted inference result
+    pub type_args: BTreeMap<TypeParamName, TypeExpr>,  // resolved parameters (cache)
+    pub type_pins: BTreeMap<TypeParamName, TypeExpr>,  // explicit user choices (11 §5.5)
     pub inputs: BTreeMap<PortKey, Literal>,  // includes shadowed literals
     pub variadic: BTreeMap<PortId, VariadicState>,     // order + next counter
     pub signature: Option<SignatureKey>,     // required for every non-intrinsic node
@@ -91,6 +93,8 @@ pub struct ActivationPolicy {
 ```
 
 `SignatureKey` is a document-local key. The implementation uses `sha256:` over the canonical JSON of the snapshot, so identical signatures share one entry; examples use short keys. Core intrinsic signatures are defined by `format_version` and config, so they are not stored. Serialization order is `IndexMap` order (creation order, compacted on removal), which makes output deterministic for the same command history.
+
+`domain` names the execution domain of a body (ADR-21): the root graph's key sits beside its `nodes`/`edges`, and each function body carries its own. It is a namespaced ID such as `org.example.music/signal`; absent means the built-in `control` domain (11 §2–§15), so existing format v1 documents are unchanged. A domain the host does not provide makes the body load and round-trip but not compile, like an unresolved provider. Domains come from crates linked by the embedding product, never from installed packages. The typed field is added to `orange-model` when a host first registers a second domain; until then a `domain` key is preserved as an unknown field.
 
 Implementation correction (00b review): replacing an existing entry at its current position updates that slot in place. Insertions, removals and actual reordering retain positional patches so undo restores the exact order. The replacement path avoids shifting unrelated entries; order-preserving removal and reordering can still be linear. NFR-15 timing targets remain unmeasured.
 
@@ -131,6 +135,7 @@ pub enum DocCommand {
     UpsertEvent(EventDecl), RemoveEvent(EventDeclId),
     UpsertFunction(FunctionDecl), RemoveFunction(FunctionId),
     Rebind { nodes: Vec<NodeId>, provider: ProviderBinding },          // explicit only (ADR-07)
+    PutPackageLock(PackageLockEntry),                                  // one entry per package version
     Layout(LayoutCommand),                                             // move, waypoints, frames, comments, viewport
 }
 pub struct ChangeSet {
@@ -150,9 +155,13 @@ Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
 - Undo and redo are transactions and advance `revision`. Inverses bind to an opaque process-unique content-state ID, not to the revision. A clone preserves the ID while it represents the same transaction-owned state; each new edit allocates a fresh ID, undo/redo restore the earlier ID, and every load allocates a fresh ID. This prevents divergent clones, unrelated documents and reloads from accepting each other's inverses. The transient ID is excluded from serialization and document equality.
 - Function insertion checks that every node/edge map key equals the entry's own ID before applying a patch. A mismatch returns a typed transaction error and rolls back the entire transaction. This enforces the existing keyed-map representation without changing graph JSON or graph diagnostics.
 - `affected_roots` is derived by the compiler from the node, edge and declaration deltas once regions exist (00d/00e).
-- `PutSignature { key, snapshot }` (00b.3) adds a shared snapshot so that pasted nodes keep the snapshots I-4 requires. An identical snapshot under the same key is a no-op; different content under an existing key is rejected. Signatures are therefore transaction-owned. Package locks and exports still have no command.
+- `PutSignature { key, snapshot }` (00b.3) adds a shared snapshot so that pasted nodes keep the snapshots I-4 requires. An identical snapshot under the same key is a no-op; different content under an existing key is rejected. Signatures are therefore transaction-owned. Exports still have no command.
+- `PutPackageLock(entry)` (00c) makes `package_lock` transaction-owned too. A provider binding names only `package`, `version` and implementation `id`; the content digest lives once per package version in `package_lock`, so an exported graph lists exactly the package contents it needs and an importer can check them before loading. The command appends a new `(id, version)` entry, is a no-op for the same digest and rejects a different digest (`PackageLockConflict`). Callers pair it with an `AddNode` or `Rebind` naming a package version; the connection planner and paste do. Like superseded snapshots, entries no longer referenced are not pruned here.
+- Superseded snapshots are not pruned (00c.7a). A re-inference moves a node to another content-addressed snapshot and leaves the old one in `signatures`. Pruning inside the transaction would need a reference scan over every body (and function) on each commit and a remove-signature command, and it would churn the two snapshots that pin/unpin and undo/redo alternate between. The unreferenced entries are bounded by the distinct type combinations used, are inert (nothing resolves a snapshot that no node names), and are removed by the same undo that added them. Garbage collection belongs to an explicit compaction on save, together with the codec round-trip rules for unknown data; it is not part of this slice.
+- `SetTypePins { node, pins }` (00c) replaces a node's explicit type choices; like every node edit it marks the node changed, so `inference::plan_edit` re-infers its component. An `UpsertFunction` reports only its function in the change set, so `plan_edit` treats every node of the added or replaced body as touched.
+- `SetSignature { node, key }` (00c.4b) points a node at an existing snapshot (`PutSignature` first); a missing key is rejected. `inference::apply_inferred` commits an edit together with the `SetTypeArgs`, `PutSignature` and `SetSignature` commands its inference implies, so one undo restores the edit, `type_args` and signature references. `apply` itself never infers, and loading never runs inference.
 - Canonical JSON for `SignatureKey` (00b.3): object keys sorted by byte order, no whitespace, serde_json string escaping. This matches RFC 8785 for the ASCII keys and integers in snapshots. WU-03 publishes the cross-language digest vectors. Semantic projection removes `label`, `description`, `group` and `editor` and substitutes `$T` parameters from `type_args`.
-- Paste (00b.3) gives every pasted node, edge and declaration a new ID. A config string exactly equal to a remapped source ID is rewritten. Referenced declarations travel with the copy and are reused when the target already has them. Signatures are re-keyed to their `sha256:` key.
+- Paste (00b.3) gives every pasted node, edge and declaration a new ID. A config string exactly equal to a remapped source ID is rewritten. Referenced declarations travel with the copy and are reused when the target already has them. Signatures are re-keyed to their `sha256:` key. Lock entries of copied provider bindings are put into the target; a target that locks the same package version to another digest rejects the paste.
 
 ## 4. Definition schema
 
@@ -318,10 +327,12 @@ Package entry (event source acquired in the run's Starting phase):
 - Constraint values: `derive` (host derives it structurally; valid only if every field or payload implements the constraint) or an implementation reference into the owning package. Field and variant IDs never change. `name` is source display metadata, not identity; `label: TextRef` supplies translatable captions for types, fields and variants. Names/labels may change without changing identity. Derived graph `display` renders the canonical TypeExpr and field/variant IDs plus recursively invariant payload formatting; it never uses mutable names or translations. User-declared variable/event/function names remain content ([13](13-internationalization.md)).
 - Minor version bumps may add optional fields or variants only ([11 §5.3](11-graph-language.md)).
 
-Converter registry entry:
+Converter registry entry (semantic identity and provider implementation are validated separately by 00c.5a):
 
 ```json
 {
+  "converter_id": "core/i64-to-i32",
+  "contract_version": 1,
   "from": "core/i64@1",
   "to": "core/i32@1",
   "class": "checked-partial",
@@ -331,6 +342,24 @@ Converter registry entry:
   "provider": {"package": "org.orange.math", "version": "0.1.0", "id": "native-checked"}
 }
 ```
+
+The example's `org.orange.math` provider implements the host-owned entry; it does not acquire authority to declare new semantics between two foreign types. The host registers core-owned semantic entries. Package-owned entries must belong to their namespace and own at least one endpoint. A frozen converter view contains canonical endpoints, class, finite policy choices, declared errors, exact provider alternatives (including package digest) and explicit new-binding defaults per entry contract. Conflicting content for one entry identity or conflicting digests for the same implementation binding are rejected. Lossy entries additionally declare the fixed JSON loss output from [11 §6](11-graph-language.md); provider alternatives must preserve that contract.
+
+Persisted `core/convert` node (00c.6a). It binds one entry, one provider and validated policy choices; the instance stores no behavior:
+
+```json
+{
+  "id": "…", "definition_id": "core/convert", "definition_version": 1, "config_version": 1,
+  "config": {"converter": "core/i64-to-i32", "contract_version": 1, "options": {}},
+  "provider": {"package": "org.orange.math", "version": "0.1.0", "id": "native-checked"},
+  "signature": "sha256:…"
+}
+```
+
+- `config.converter` and `config.contract_version` are the entry key; `config.options` holds every declared policy with its resolved choice (defaults filled in, so a later default change never alters the node).
+- `provider` is absent for the language-owned `Core` implementation (a core intrinsic); a package provider is the exact binding, and its content digest is the document's `package_lock` entry for that package version (the planner puts it in the same transaction). The provider implements the entry's `config.contract_version`, so no separate provider contract version is stored. It changes only by explicit rebind (ADR-07).
+- The node is a `pure` node whose ports follow the entry: input `value: from`, output `result: to` (`source: computed`) and, for `lossy` entries only, output `loss: core/json@1`. A checked-partial failure is the pure-node error of [11 §13](11-graph-language.md). Unlike other core intrinsics, it stores this snapshot, because its ports depend on the entry named in `config`; inference and drift detection read concrete types from it.
+- A connection plan is an edit (`PutPackageLock` for a package provider, `PutSignature`, `AddNode`, two `Connect`s, plus a `Disconnect` when it replaces a wire) and is applied as one transaction. Its identities are generated once per plan, and its commands are read-only (`ConnectionPlan::commands`). `plan_connection` returns `ConnectionError::TypeConflict` for a wire that introduces a conflict (11 §5.5); `apply_connection(document, converters, templates, plan)` rejects a plan whose document state, registry generation or `TemplateCatalog::generation` changed (`PlanApplyError::{StaleDocument, StaleRegistry, StaleTemplates}`).
 
 ## 6. Saved graph example
 
@@ -443,7 +472,7 @@ Only the top-level literal carries `type`. Nested values are untagged, and their
 | secret-ref | Reference string (`credential://…`); never secret material |
 | handle, stream, result, error | No literal form (`E-HANDLE-LITERAL`) |
 
-Implementation correction (00b.4 review): encoding requires the exact f32/f64 runtime variant; it performs no implicit narrowing or widening. Map encoding rejects floating-point key types and duplicate runtime keys, just as decoding does. Constraint registration and general key eligibility remain 00c work under [11 §5](11-graph-language.md).
+Implementation correction (00b.4 review): encoding requires the exact f32/f64 runtime variant; it performs no implicit narrowing or widening. Map encoding rejects floating-point key types and duplicate runtime keys, just as decoding does. The registry-aware codec (00c.2a) additionally checks language `hash` + `eq` eligibility on encode/decode, and registry validation rejects invalid map types even without a literal. The standalone codec-only `SchemaSet` retains its historical float exclusion; it is not a substitute for registry/type validation.
 
 Implementation notes (WU-00/00b.4, `orange_model::value::literal_codec`):
 
@@ -503,7 +532,7 @@ Implementation notes (WU-00/00b.4; Rust spelling only):
 
 - **Size:** a compile-time assertion keeps `Value` ≤16 bytes. `ArcStr`/`ArcBytes` are thin `Arc<String>`/`Arc<Vec<u8>>`, because a fat `Arc<str>` would make it 24 bytes.
 - **List storage:** `ListRepr::Bool` is `Box<[bool]>`.
-- **Record type:** `RecordRepr::ty` holds the canonical `TypeExpr` until 00c adds `TypeKey` interning.
+- **Record type:** `RecordRepr::ty` retains canonical `TypeExpr` even with 00c interning. The standalone codec returns freely owned values without retaining a registry snapshot. Migration to a transient key waits for a runtime consumer that owns the matching snapshot for every key use; a detached key must not replace persisted type identity.
 - **Enum tag:** the variant's index in schema order.
 - **JSON:** `Json` holds verbatim JSON text; the structured `JsonRepr` arrives with the JSON node family (05d).
 - **`NodeError`:** carries only its stable code until the WU-03 message contract.
@@ -517,7 +546,7 @@ pub struct RegistrySnapshot {
     pub interner: TypeInterner,                                       // TypeExpr ↔ TypeKey, frozen
     pub definitions: HashMap<DefinitionRef, Arc<NodeDefinition>>,
     pub types: HashMap<NamedType, Arc<TypeDefinition>>,
-    pub constraint_impls: HashMap<(TypeKey, Constraint), ImplRef>,    // coherence-checked at publication
+    pub constraint_impls: HashMap<(TypeKey, ConstraintId), ImplRef>,  // core or versioned package constraint
     pub converters: HashMap<(TypeKey, TypeKey), SmallVec<[ConverterRef; 1]>>,
     pub providers: HashMap<SlotId, Vec<ProviderDescriptor>>,
     pub new_binding_defaults: HashMap<SlotId, ProviderId>,           // never applied to existing locks
@@ -525,6 +554,14 @@ pub struct RegistrySnapshot {
 ```
 
 Hash lookups here are compile-time only. Publication validates namespace ownership, constraint coherence and converter ownership before the snapshot is visible ([04](04-expansion-plugins.md)).
+
+Implementation (00c.1): `orange_model::types::TypeRegistryBuilder` registers type metadata and interns concrete `TypeTerm`s; `build` validates schema references/member IDs and publishes an immutable `TypeRegistry`. The registry supplies the existing literal `Schemas` interface directly, preserving one record/enum layout model. Package registrations cannot replace core types or claim another package namespace. Handle constructors require registered handle-kind arguments. Recursive nominal schema references do not expand during registration; literal decoding/encoding retains its depth budget.
+
+The public host-side `TypeKey` wraps a dense `u32` slot with an opaque registry owner token; lookup rejects a key from another registry even when its numeric slot exists there. Registries are not cloned into independently mutable identity spaces. This checked host wrapper is not a wire representation or a change to future dense execution-plan indexes; keys are never persisted. Resolution rejects unresolved parameters, unknown names/majors, wrong arity and nesting beyond the existing parser budget. Read-only validation and owner/kind queries also accept uninterned terms, so inference need not mutate a published snapshot.
+
+Constraint proofs (00c.2a) use the same depth budget for nested terms and nominal-schema traversal. Publication rejects unavailable/cyclic/over-budget declared structural derives and invalid map key constraints before exposing the snapshot. `supports_term` returns a capability witness rather than invoking a kernel; the current numeric-operation proof set is add/subtract/multiply/divide, with other math operations still requiring their own implemented support. This is an implementation surface, not an exclusion of later math node families or performance evidence.
+
+Explicit proof registrations (00c.2b) carry `ConstraintImplementationRef`: the existing `ProviderBinding`, exact content digest and stable implementation ID. `ConstraintId` distinguishes core constraints from canonical versioned package constraints. A package may implement a core constraint only for a type it owns, and its own constraint for foreign types. Duplicate implementation slots and derive/implementation conflicts fail before publication. Numeric operations have separate slots, so a `num` declaration does not manufacture an add/multiply implementation. The future host authenticates the supplied authority and resolves code; this model validates coherence and preserves exact references only.
 
 ## 9. Execution plan IR
 
@@ -657,7 +694,7 @@ pub trait IteratorKernel {
 | I-4 | Every non-intrinsic node has a signature snapshot, a provider binding and a lock entry. Edges to unknown ports are retained as orphan edges. |
 | I-5 | `type_args` fully resolve every type parameter of a compiled node. |
 | I-6 | Plans and snapshots are immutable. Run state is mutated only by its actor. Workspace state only by the host actor. |
-| I-7 | No Bevy `Entity`, Rust `TypeId`, pointer, live handle or secret is ever persisted. |
+| I-7 | No engine or UI entity ID, Rust `TypeId`, pointer, live handle or secret is ever persisted. |
 | I-8 | The warm pure path for scalar types performs no hashing and no heap allocation. |
 
 | Operation | Complexity | Proposed budget |

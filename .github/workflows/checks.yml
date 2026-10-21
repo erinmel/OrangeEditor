@@ -1,16 +1,15 @@
 name: PR validation
 
+# Stage 1 (fast, Linux): lint, repository policy, supply chain.
+# Stage 2 (after lint/policy pass): native tests on every OS and MSRV compilation.
+# Stage 3: the single required `rust` status with a results table in the run summary.
+
 on:
   push:
     branches: [dev, main]
   pull_request:
   workflow_dispatch:
   workflow_call:
-    inputs:
-      full-platform-tests:
-        description: Execute tests on every native OS during release qualification.
-        type: boolean
-        default: false
   schedule:
     - cron: '0 8 * * 1'
 
@@ -21,16 +20,21 @@ concurrency:
   group: checks-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+
 jobs:
-  rust_checks:
-    name: ${{ matrix.check }}
+  lint:
+    name: lint / ${{ matrix.check }}
     strategy:
       fail-fast: false
       matrix:
         include:
-          - check: rust-format
+          - check: format
             command: cargo fmt --all --check
-          - check: rust-clippy
+          - check: clippy
             command: cargo clippy --workspace --all-targets --locked -- -D warnings
           - check: rustdoc
             command: cargo doc --workspace --no-deps --locked
@@ -45,16 +49,17 @@ jobs:
       # The runner's preinstalled rustup installs the toolchain pinned in rust-toolchain.toml.
       - run: rustup show active-toolchain
       - name: Cache compiled dependencies
-        if: matrix.check != 'rust-format'
+        if: matrix.check != 'format'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ matrix.check }}
           cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
       - name: ${{ matrix.check }}
         run: ${{ matrix.command }}
 
-  rust_architecture:
-    name: rust-architecture
+  policy:
+    name: policy / architecture + workflows
     outputs:
       msrv: ${{ steps.msrv.outputs.version }}
     runs-on: ubuntu-24.04
@@ -67,38 +72,41 @@ jobs:
         with:
           node-version: 24.18.0
           package-manager-cache: false
-      - run: node tools/check-cargo-metadata.mjs --self-test
-      - run: node tools/check-cargo-metadata.mjs
+      - name: Core crates stay free of UI and engine frameworks
+        run: |
+          node tools/check-cargo-metadata.mjs --self-test
+          node tools/check-cargo-metadata.mjs
       - id: msrv
         name: Derive workspace MSRV from Cargo metadata
         shell: bash
         run: node tools/check-cargo-metadata.mjs --msrv >> "$GITHUB_OUTPUT"
+      - name: Validate CI/CD workflow syntax, expressions and shell steps
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/actionlint"
+          gh release download v1.7.12 --repo rhysd/actionlint --pattern actionlint_1.7.12_linux_amd64.tar.gz --dir "$RUNNER_TEMP/actionlint"
+          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint/actionlint_1.7.12_linux_amd64.tar.gz" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/actionlint/actionlint_1.7.12_linux_amd64.tar.gz" -C "$RUNNER_TEMP/actionlint"
+          "$RUNNER_TEMP/actionlint/actionlint" -pyflakes= .github/workflows/*.yml
+      - name: Audit workflow security
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p "$RUNNER_TEMP/zizmor"
+          gh release download v1.30.1 --repo zizmorcore/zizmor --pattern zizmor-x86_64-unknown-linux-gnu.tar.gz --dir "$RUNNER_TEMP/zizmor"
+          echo "e65324f4430c2717591937edcec90ccbefaf14c174f8ec9415e03ca875b46e1a  $RUNNER_TEMP/zizmor/zizmor-x86_64-unknown-linux-gnu.tar.gz" | sha256sum --check -
+          tar -xzf "$RUNNER_TEMP/zizmor/zizmor-x86_64-unknown-linux-gnu.tar.gz" -C "$RUNNER_TEMP/zizmor"
+          "$RUNNER_TEMP/zizmor/zizmor" --offline --format=github .github/workflows
+      - name: Release contract
+        run: |
+          node --test tools/release.test.mjs
+          node tools/release.mjs check
 
-  rust_msrv:
-    name: msrv-compatibility
-    needs: rust_architecture
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    env:
-      RUSTUP_TOOLCHAIN: ${{ needs.rust_architecture.outputs.msrv }}
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - name: Install declared MSRV
-        run: rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
-      - name: Record declared MSRV compiler
-        run: rustc --version --verbose
-      - name: Cache MSRV dependencies
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          key: msrv
-          cache-bin: false
-      - name: Check every target on declared MSRV
-        run: cargo check --workspace --all-targets --locked
-
-  dependency_security:
-    name: dependency-security
+  supply_chain:
+    name: supply-chain / cargo-deny
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -117,46 +125,19 @@ jobs:
       - name: Install pinned cargo-deny on cache miss
         if: steps.deny_cache.outputs.cache-hit != 'true'
         shell: bash
-        run: |
-          cargo install --locked --root "$RUNNER_TEMP/cargo-deny" cargo-deny --version "$CARGO_DENY_VERSION"
+        run: cargo install --locked --root "$RUNNER_TEMP/cargo-deny" cargo-deny --version "$CARGO_DENY_VERSION"
       - name: Add pinned cargo-deny to PATH
         shell: bash
-        run: echo "$RUNNER_TEMP/cargo-deny/bin" >> "$GITHUB_PATH"
-      - name: Verify cargo-deny version
-        shell: bash
         run: |
-          cargo deny --version
-          test "$(cargo deny --version)" = "cargo-deny $CARGO_DENY_VERSION"
-      - name: Check advisories and sources with current databases
-        run: cargo deny --locked check advisories sources
+          echo "$RUNNER_TEMP/cargo-deny/bin" >> "$GITHUB_PATH"
+          test "$("$RUNNER_TEMP/cargo-deny/bin/cargo-deny" --version)" = "cargo-deny $CARGO_DENY_VERSION"
+      # Advisory data always refreshes; licenses, bans and sources follow deny.toml.
+      - name: Check advisories, bans, licenses and sources
+        run: cargo deny --locked check advisories bans licenses sources
 
-  release_contract:
-    name: workflow-contracts
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.18.0
-          package-manager-cache: false
-      - name: Validate CI/CD workflow syntax and expressions
-        shell: bash
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          mkdir -p "$RUNNER_TEMP/actionlint"
-          gh release download v1.7.12 --repo rhysd/actionlint --pattern actionlint_1.7.12_linux_amd64.tar.gz --dir "$RUNNER_TEMP/actionlint"
-          echo "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  $RUNNER_TEMP/actionlint/actionlint_1.7.12_linux_amd64.tar.gz" | sha256sum --check -
-          tar -xzf "$RUNNER_TEMP/actionlint/actionlint_1.7.12_linux_amd64.tar.gz" -C "$RUNNER_TEMP/actionlint"
-          "$RUNNER_TEMP/actionlint/actionlint" -shellcheck= -pyflakes= .github/workflows/*.yml
-      - run: node --test tools/release.test.mjs
-      - run: node tools/release.mjs check
-
-  rust_tests:
-    name: native-compatibility (${{ matrix.os }})
+  test:
+    name: test / ${{ matrix.os }}
+    needs: [lint, policy]
     strategy:
       fail-fast: false
       matrix:
@@ -168,38 +149,80 @@ jobs:
         with:
           persist-credentials: false
       # rustup reads the shared pin on Linux x64, Windows x64 and macOS arm64.
-      - run: rustup show active-toolchain
       - run: rustc --version --verbose
       - name: Cache native dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: native-${{ matrix.os }}
           cache-bin: false
-      - name: Run workspace tests
-        if: matrix.os == 'ubuntu-24.04' || inputs.full-platform-tests || github.event_name == 'schedule'
-        run: cargo test --workspace --locked
-      - name: Compile and link test targets without duplicate execution
-        if: matrix.os != 'ubuntu-24.04' && !inputs.full-platform-tests && github.event_name != 'schedule'
-        run: cargo test --workspace --all-targets --locked --no-run
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      - name: Run workspace tests, including doctests
+        shell: bash
+        run: cargo test --workspace --locked 2>&1 | tee "$RUNNER_TEMP/test.log"
+      - name: Summarize test results
+        if: ${{ !cancelled() }}
+        shell: bash
+        env:
+          OS: ${{ matrix.os }}
+        run: |
+          grep -E '^test result:' "$RUNNER_TEMP/test.log" | awk -v os="$OS" '
+            { passed += $4; failed += $6; ignored += $8 }
+            END { printf "| %s | %d | %d | %d |\n", os, passed, failed, ignored }' > "$RUNNER_TEMP/row.md" || true
+          {
+            echo "### Tests on $OS"
+            echo "| OS | Passed | Failed | Ignored |"
+            echo "|---|---|---|---|"
+            cat "$RUNNER_TEMP/row.md"
+            grep -E '^test .* FAILED$' "$RUNNER_TEMP/test.log" | sed 's/^/- /' || true
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  msrv:
+    name: msrv / ${{ needs.policy.outputs.msrv }}
+    needs: [lint, policy]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RUSTUP_TOOLCHAIN: ${{ needs.policy.outputs.msrv }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install declared MSRV
+        run: |
+          rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal
+          rustc --version --verbose
+      - name: Cache MSRV dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: msrv
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      - name: Check every target on declared MSRV
+        run: cargo check --workspace --all-targets --locked
 
   rust:
     name: rust
     if: ${{ always() }}
-    needs: [rust_checks, rust_architecture, rust_msrv, dependency_security, release_contract, rust_tests]
+    needs: [lint, policy, supply_chain, test, msrv]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require all Rust checks
+      - name: Require every stage and publish a results table
         shell: bash
         env:
-          CHECKS_RESULT: ${{ needs.rust_checks.result }}
-          ARCHITECTURE_RESULT: ${{ needs.rust_architecture.result }}
-          MSRV_RESULT: ${{ needs.rust_msrv.result }}
-          SECURITY_RESULT: ${{ needs.dependency_security.result }}
-          RELEASE_CONTRACT_RESULT: ${{ needs.release_contract.result }}
-          TESTS_RESULT: ${{ needs.rust_tests.result }}
+          NEEDS: ${{ toJSON(needs) }}
         run: |
-          if [[ "$CHECKS_RESULT" != "success" || "$ARCHITECTURE_RESULT" != "success" || "$MSRV_RESULT" != "success" || "$SECURITY_RESULT" != "success" || "$RELEASE_CONTRACT_RESULT" != "success" || "$TESTS_RESULT" != "success" ]]; then
-            echo "A required code, dependency, release-contract, or native compatibility check did not succeed." >&2
+          {
+            echo "## Rust pipeline"
+            echo "| Stage | Job | Result |"
+            echo "|---|---|---|"
+            jq -r '
+              {lint: "1 lint", policy: "1 lint", supply_chain: "1 lint", test: "2 test", msrv: "2 test"} as $stage
+              | to_entries[]
+              | "| \($stage[.key]) | \(.key) | \(if .value.result == "success" then "✅" else "❌" end) \(.value.result) |"' <<< "$NEEDS"
+          } >> "$GITHUB_STEP_SUMMARY"
+          failed=$(jq -r '[to_entries[] | select(.value.result != "success") | .key] | join(", ")' <<< "$NEEDS")
+          if [[ -n "$failed" ]]; then
+            echo "::error title=Rust pipeline::Did not succeed: $failed"
             exit 1
           fi
