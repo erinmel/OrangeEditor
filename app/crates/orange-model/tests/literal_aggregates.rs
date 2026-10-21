@@ -349,3 +349,37 @@ fn map_encoding_rejects_what_decoding_rejects() {
         "float key types are rejected even for an empty map"
     );
 }
+
+#[test]
+fn json_literals_respect_the_codec_budgets() {
+    let deep = format!("{}{}", "[".repeat(84), "]".repeat(84));
+    assert_eq!(
+        decode_err("core/json@1", json!(deep)),
+        LiteralError::TooDeep
+    );
+    let large = format!(
+        "\"{}\"",
+        "a".repeat(orange_model::value::MAX_JSON_TEXT_BYTES)
+    );
+    assert!(matches!(
+        decode_err("core/json@1", json!(large)),
+        LiteralError::TooLarge { .. }
+    ));
+}
+
+#[test]
+fn large_maps_decode_and_encode_with_hashed_key_checks() {
+    // 20 000 keys: linear duplicate checks would need about 200 million comparisons.
+    let pairs: Vec<Json> = (0..20_000).map(|i| json!([format!("k{i}"), i])).collect();
+    let ty = "core/map@1<core/string@1,core/i32@1>";
+    let literal = literal(ty, Json::Array(pairs));
+    let value = decode(&literal, &schemas()).unwrap();
+    assert_eq!(encode(&literal.ty, &value, &schemas()).unwrap(), literal);
+
+    let mut duplicated: Vec<Json> = (0..20_000).map(|i| json!([format!("k{i}"), i])).collect();
+    duplicated.push(json!(["k19999", 0]));
+    assert_eq!(
+        decode_err(ty, Json::Array(duplicated)),
+        LiteralError::DuplicateMapKey
+    );
+}

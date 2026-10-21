@@ -453,6 +453,8 @@ Implementation notes (WU-00/00b.4, `orange_model::value::literal_codec`):
 - **Unknown record fields and enum variants** stay in the stored literal; only decoding them to a `Value` fails.
 - **Schemas:** record and enum layouts come from a `Schemas` provider (the registry later).
 - **Nesting budget:** 64 levels for types and literals (proposed).
+- **JSON text budget:** `core/json@1` text may nest arrays and objects at most 64 levels and hold at most 1 MiB (`MAX_JSON_TEXT_BYTES`, proposed). Both are checked before parsing, and failures report `TooDeep` and `TooLarge`.
+- **Map keys:** duplicate keys are detected with a hash set. `Value` implements `Eq` and `Hash` consistently with its structural equality, so the check takes expected linear time.
 
 ### 6.2 Presentation message wire contract
 
@@ -505,7 +507,7 @@ Implementation notes (WU-00/00b.4; Rust spelling only):
 - **Enum tag:** the variant's index in schema order.
 - **JSON:** `Json` holds verbatim JSON text; the structured `JsonRepr` arrives with the JSON node family (05d).
 - **`NodeError`:** carries only its stable code until the WU-03 message contract.
-- **Equality** is structural, with floats compared by bit pattern; it is not the language `eq` constraint.
+- **Equality and hashing** are structural, with floats compared by bit pattern and lists by elements whatever their storage; they are not the language `eq`/`hash` constraints.
 
 ## 8. Registry snapshot
 
