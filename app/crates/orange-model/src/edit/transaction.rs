@@ -14,8 +14,9 @@ use super::change_set::{ChangeSet, Tracker};
 use super::patch::{Patch, Placed, editor_placement, placement};
 use crate::document::literal::Literal;
 use crate::document::{
-    BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument, NodeInstance, PortRef,
-    ProviderBinding, SignatureSnapshot, TypeParamName, VariableDecl, VariadicState, fresh_state_id,
+    BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument, NodeInstance,
+    PackageLockEntry, PortRef, ProviderBinding, SignatureSnapshot, TypeParamName, VariableDecl,
+    VariadicState, fresh_state_id,
 };
 use crate::error::TxError;
 use crate::id::{
@@ -97,6 +98,10 @@ pub enum DocCommand {
         node: NodeId,
         key: SignatureKey,
     },
+    /// Locks a package version to its content digest, appended to `package_lock`. Putting
+    /// the same digest again changes nothing; a different digest for a locked package
+    /// version is rejected. Pair it with any `AddNode` or `Rebind` naming that version.
+    PutPackageLock(PackageLockEntry),
     Layout(LayoutCommand),
 }
 
@@ -401,6 +406,33 @@ impl Journal {
                     },
                 ),
             },
+            DocCommand::PutPackageLock(entry) => {
+                let key = (entry.id.clone(), entry.version.clone());
+                let locked = document
+                    .package_lock
+                    .iter()
+                    .find(|locked| (&locked.id, &locked.version) == (&key.0, &key.1));
+                match locked {
+                    Some(locked) if locked.content_digest == entry.content_digest => Ok(()),
+                    Some(_) => Err(TxError::PackageLockConflict {
+                        package: key.0,
+                        version: key.1,
+                    }),
+                    None => {
+                        let index = document.package_lock.len();
+                        self.patch(
+                            document,
+                            Patch::PackageLock {
+                                key,
+                                entry: Some(Placed {
+                                    index,
+                                    value: entry,
+                                }),
+                            },
+                        )
+                    }
+                }
+            }
             DocCommand::SetSignature { node, key } => {
                 if !document.signatures.contains_key(&key) {
                     return Err(TxError::SignatureNotFound(key));

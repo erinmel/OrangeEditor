@@ -10,7 +10,7 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Map, Value as Json, json};
+use serde_json::{Map, json};
 use thiserror::Error;
 use uuid::Uuid;
 
@@ -20,7 +20,8 @@ use super::{
 };
 use crate::document::{
     DefinitionRef, Edge, Extensions, GraphDocument, NodeInstance, NodeKind, OutputSource,
-    PortDirection, PortKind, PortRef, ProviderBinding, ResolvedPort, SignatureSnapshot,
+    PackageLockEntry, PortDirection, PortKind, PortRef, ProviderBinding, ResolvedPort,
+    SignatureSnapshot,
 };
 use crate::edit::{Committed, DocCommand};
 use crate::error::{IdError, TxError};
@@ -187,6 +188,14 @@ pub fn plan_connection(
             let node = NodeId::from_uuid(new_id())?;
             let (instance, snapshot) = convert_node(node, &resolved, definition);
             let key = semantic_key(&snapshot);
+            if let ConverterProvider::Package(package) = &resolved.provider {
+                edit.push(DocCommand::PutPackageLock(PackageLockEntry {
+                    id: package.package.clone(),
+                    version: package.version.clone(),
+                    content_digest: package.content_digest.clone(),
+                    extensions: Extensions::new(),
+                }));
+            }
             edit.push(DocCommand::PutSignature {
                 key: key.clone(),
                 snapshot,
@@ -350,16 +359,7 @@ fn convert_node(
             package: package.package.clone(),
             version: package.version.clone(),
             id: package.id.clone(),
-            extensions: Map::from_iter([
-                (
-                    "content_digest".to_owned(),
-                    Json::from(package.content_digest.clone()),
-                ),
-                (
-                    "contract_version".to_owned(),
-                    json!(package.contract_version),
-                ),
-            ]),
+            extensions: Extensions::new(),
         }),
     };
     let instance = NodeInstance {

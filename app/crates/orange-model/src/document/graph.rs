@@ -30,7 +30,7 @@ pub struct GraphDocument {
     #[serde(skip, default = "fresh_state_id")]
     pub(crate) state_id: u64,
     #[serde(default)]
-    pub package_lock: Vec<PackageLockEntry>,
+    pub(crate) package_lock: Vec<PackageLockEntry>,
     #[serde(default)]
     pub type_lock: Vec<TypeLockEntry>,
     #[serde(default, with = "crate::document::keyed")]
@@ -129,6 +129,12 @@ impl GraphDocument {
 
     pub fn signatures(&self) -> &BTreeMap<SignatureKey, SignatureSnapshot> {
         &self.signatures
+    }
+
+    /// Exact package versions and content digests the document's provider bindings use,
+    /// one entry per package version. Changed only by `PutPackageLock`.
+    pub fn package_lock(&self) -> &[PackageLockEntry] {
+        &self.package_lock
     }
 
     pub fn editor(&self) -> &Map<String, Json> {

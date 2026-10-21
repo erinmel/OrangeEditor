@@ -254,3 +254,29 @@ proptest! {
         prop_assert_eq!(content(&document), before);
     }
 }
+
+#[test]
+fn paste_carries_the_lock_entries_of_copied_provider_bindings() {
+    // Node 3 is bound to org.orange.math 0.1.0; org.orange.diagnostics is not copied.
+    let source = fixture();
+    let fragment = Fragment::copy(&source, &[nid(3)]).unwrap();
+    let mut target = empty_document();
+    let paste = fragment
+        .paste(&target, BodyRef::Root, id_source(2))
+        .unwrap();
+    let _ = target.apply(paste.commands).unwrap();
+    assert_eq!(target.package_lock(), &source.package_lock()[..1]);
+
+    // A target locking that version to another digest rejects the whole paste.
+    let mut other = empty_document();
+    let mut entry = source.package_lock()[0].clone();
+    entry.content_digest = format!("sha256:{}", "2".repeat(64));
+    let _ = other.apply([DocCommand::PutPackageLock(entry)]).unwrap();
+    let before = content(&other);
+    let paste = fragment.paste(&other, BodyRef::Root, id_source(3)).unwrap();
+    assert!(matches!(
+        other.apply(paste.commands),
+        Err(orange_model::TxError::PackageLockConflict { .. })
+    ));
+    assert_eq!(content(&other), before);
+}

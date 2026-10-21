@@ -135,6 +135,7 @@ pub enum DocCommand {
     UpsertEvent(EventDecl), RemoveEvent(EventDeclId),
     UpsertFunction(FunctionDecl), RemoveFunction(FunctionId),
     Rebind { nodes: Vec<NodeId>, provider: ProviderBinding },          // explicit only (ADR-07)
+    PutPackageLock(PackageLockEntry),                                  // one entry per package version
     Layout(LayoutCommand),                                             // move, waypoints, frames, comments, viewport
 }
 pub struct ChangeSet {
@@ -154,12 +155,13 @@ Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
 - Undo and redo are transactions and advance `revision`. Inverses bind to an opaque process-unique content-state ID, not to the revision. A clone preserves the ID while it represents the same transaction-owned state; each new edit allocates a fresh ID, undo/redo restore the earlier ID, and every load allocates a fresh ID. This prevents divergent clones, unrelated documents and reloads from accepting each other's inverses. The transient ID is excluded from serialization and document equality.
 - Function insertion checks that every node/edge map key equals the entry's own ID before applying a patch. A mismatch returns a typed transaction error and rolls back the entire transaction. This enforces the existing keyed-map representation without changing graph JSON or graph diagnostics.
 - `affected_roots` is derived by the compiler from the node, edge and declaration deltas once regions exist (00d/00e).
-- `PutSignature { key, snapshot }` (00b.3) adds a shared snapshot so that pasted nodes keep the snapshots I-4 requires. An identical snapshot under the same key is a no-op; different content under an existing key is rejected. Signatures are therefore transaction-owned. Package locks and exports still have no command.
+- `PutSignature { key, snapshot }` (00b.3) adds a shared snapshot so that pasted nodes keep the snapshots I-4 requires. An identical snapshot under the same key is a no-op; different content under an existing key is rejected. Signatures are therefore transaction-owned. Exports still have no command.
+- `PutPackageLock(entry)` (00c) makes `package_lock` transaction-owned too. A provider binding names only `package`, `version` and implementation `id`; the content digest lives once per package version in `package_lock`, so an exported graph lists exactly the package contents it needs and an importer can check them before loading. The command appends a new `(id, version)` entry, is a no-op for the same digest and rejects a different digest (`PackageLockConflict`). Callers pair it with an `AddNode` or `Rebind` naming a package version; the connection planner and paste do. Like superseded snapshots, entries no longer referenced are not pruned here.
 - Superseded snapshots are not pruned (00c.7a). A re-inference moves a node to another content-addressed snapshot and leaves the old one in `signatures`. Pruning inside the transaction would need a reference scan over every body (and function) on each commit and a remove-signature command, and it would churn the two snapshots that pin/unpin and undo/redo alternate between. The unreferenced entries are bounded by the distinct type combinations used, are inert (nothing resolves a snapshot that no node names), and are removed by the same undo that added them. Garbage collection belongs to an explicit compaction on save, together with the codec round-trip rules for unknown data; it is not part of this slice.
 - `SetTypePins { node, pins }` (00c) replaces a node's explicit type choices; like every node edit it marks the node changed, so `inference::plan_edit` re-infers its component. An `UpsertFunction` reports only its function in the change set, so `plan_edit` treats every node of the added or replaced body as touched.
 - `SetSignature { node, key }` (00c.4b) points a node at an existing snapshot (`PutSignature` first); a missing key is rejected. `inference::apply_inferred` commits an edit together with the `SetTypeArgs`, `PutSignature` and `SetSignature` commands its inference implies, so one undo restores the edit, `type_args` and signature references. `apply` itself never infers, and loading never runs inference.
 - Canonical JSON for `SignatureKey` (00b.3): object keys sorted by byte order, no whitespace, serde_json string escaping. This matches RFC 8785 for the ASCII keys and integers in snapshots. WU-03 publishes the cross-language digest vectors. Semantic projection removes `label`, `description`, `group` and `editor` and substitutes `$T` parameters from `type_args`.
-- Paste (00b.3) gives every pasted node, edge and declaration a new ID. A config string exactly equal to a remapped source ID is rewritten. Referenced declarations travel with the copy and are reused when the target already has them. Signatures are re-keyed to their `sha256:` key.
+- Paste (00b.3) gives every pasted node, edge and declaration a new ID. A config string exactly equal to a remapped source ID is rewritten. Referenced declarations travel with the copy and are reused when the target already has them. Signatures are re-keyed to their `sha256:` key. Lock entries of copied provider bindings are put into the target; a target that locks the same package version to another digest rejects the paste.
 
 ## 4. Definition schema
 
@@ -349,16 +351,15 @@ Persisted `core/convert` node (00c.6a). It binds one entry, one provider and val
 {
   "id": "…", "definition_id": "core/convert", "definition_version": 1, "config_version": 1,
   "config": {"converter": "core/i64-to-i32", "contract_version": 1, "options": {}},
-  "provider": {"package": "org.orange.math", "version": "0.1.0", "id": "native-checked",
-               "content_digest": "sha256:…", "contract_version": 1},
+  "provider": {"package": "org.orange.math", "version": "0.1.0", "id": "native-checked"},
   "signature": "sha256:…"
 }
 ```
 
 - `config.converter` and `config.contract_version` are the entry key; `config.options` holds every declared policy with its resolved choice (defaults filled in, so a later default change never alters the node).
-- `provider` is absent for the language-owned `Core` implementation (a core intrinsic); a package provider is the exact binding, with its digest and contract version as extension fields. It changes only by explicit rebind (ADR-07).
+- `provider` is absent for the language-owned `Core` implementation (a core intrinsic); a package provider is the exact binding, and its content digest is the document's `package_lock` entry for that package version (the planner puts it in the same transaction). The provider implements the entry's `config.contract_version`, so no separate provider contract version is stored. It changes only by explicit rebind (ADR-07).
 - The node is a `pure` node whose ports follow the entry: input `value: from`, output `result: to` (`source: computed`) and, for `lossy` entries only, output `loss: core/json@1`. A checked-partial failure is the pure-node error of [11 §13](11-graph-language.md). Unlike other core intrinsics, it stores this snapshot, because its ports depend on the entry named in `config`; inference and drift detection read concrete types from it.
-- A connection plan is an edit (the three commands `PutSignature`, `AddNode`, two `Connect`s, plus a `Disconnect` when it replaces a wire) and is applied as one transaction. Its identities are generated once per plan, and its commands are read-only (`ConnectionPlan::commands`). `plan_connection` returns `ConnectionError::TypeConflict` for a wire that introduces a conflict (11 §5.5); `apply_connection(document, converters, templates, plan)` rejects a plan whose document state, registry generation or `TemplateCatalog::generation` changed (`PlanApplyError::{StaleDocument, StaleRegistry, StaleTemplates}`).
+- A connection plan is an edit (`PutPackageLock` for a package provider, `PutSignature`, `AddNode`, two `Connect`s, plus a `Disconnect` when it replaces a wire) and is applied as one transaction. Its identities are generated once per plan, and its commands are read-only (`ConnectionPlan::commands`). `plan_connection` returns `ConnectionError::TypeConflict` for a wire that introduces a conflict (11 §5.5); `apply_connection(document, converters, templates, plan)` rejects a plan whose document state, registry generation or `TemplateCatalog::generation` changed (`PlanApplyError::{StaleDocument, StaleRegistry, StaleTemplates}`).
 
 ## 6. Saved graph example
 

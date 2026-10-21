@@ -6,10 +6,13 @@ use common::generic::{
     add, catalog, data_edge, document, package_converters, package_digest, ready_plan, typed_sink,
     typed_source,
 };
-use common::{body, content, eid, function, function_id, nid, port, saved, typed_edge};
-use orange_model::conversion::{PlanApplyError, apply_connection};
+use common::{body, content, eid, function, function_id, id_source, nid, port, saved, typed_edge};
+use orange_model::conversion::{
+    ConnectionError, ConnectionRequest, PlanApplyError, apply_connection, plan_connection,
+};
+use orange_model::document::PackageLockEntry;
 use orange_model::inference::TemplateCatalog;
-use orange_model::{BodyRef, DocCommand, GraphDocument, from_json};
+use orange_model::{BodyRef, DocCommand, GraphDocument, TxError, from_json};
 use serde_json::json;
 
 /// i32 source 1 → i64 sink 3, whose literal is shadowed once connected.
@@ -32,10 +35,17 @@ fn insertion_is_one_undo_step_and_redo_restores_identities_and_provider() {
     assert_eq!(doc.revision(), revision + 1);
     let provider = doc.node(node).unwrap().provider.clone().unwrap();
     assert_eq!(provider.package, "org.test");
-    assert_eq!(
-        provider.extensions["content_digest"],
-        json!(package_digest())
+    assert!(
+        provider.extensions.is_empty(),
+        "the digest lives in the lock"
     );
+    let lock = doc.package_lock();
+    assert_eq!(lock.len(), 1);
+    assert_eq!(
+        (lock[0].id.as_str(), lock[0].version.as_str()),
+        ("org.test", "1.0.0")
+    );
+    assert_eq!(lock[0].content_digest, package_digest());
     assert!(edges.iter().all(|&edge| doc.edge(edge).is_some()));
     assert_eq!(doc.node(nid(3)).unwrap().inputs.len(), 1, "literal stays");
     let after = content(&doc);
@@ -142,4 +152,27 @@ fn a_converter_planned_inside_a_function_body_is_inserted_there() {
     let inside = Some(BodyRef::Function(function_id()));
     assert_eq!(doc.locate_node(node), inside);
     assert!(doc.root().nodes.is_empty() && doc.root().edges.is_empty());
+}
+
+#[test]
+fn a_document_locking_the_provider_to_another_digest_cannot_plan_it() {
+    let registry = package_converters();
+    let mut doc = convertible();
+    let other = PackageLockEntry {
+        id: "org.test".to_owned(),
+        version: "1.0.0".to_owned(),
+        content_digest: format!("sha256:{}", "cd".repeat(32)),
+        extensions: Default::default(),
+    };
+    let _ = doc.apply([DocCommand::PutPackageLock(other)]).unwrap();
+    let request = ConnectionRequest {
+        from: port(1, "value"),
+        to: port(3, "value"),
+        choice: None,
+    };
+    let result = plan_connection(&doc, &registry, &catalog(None), request, id_source(5));
+    assert!(matches!(
+        result,
+        Err(ConnectionError::Edit(TxError::PackageLockConflict { .. }))
+    ));
 }

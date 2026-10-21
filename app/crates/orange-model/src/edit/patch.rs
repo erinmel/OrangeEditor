@@ -10,7 +10,7 @@ use serde_json::{Map, Value as Json};
 
 use crate::document::{
     BodyRef, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
-    SignatureSnapshot, VariableDecl,
+    PackageLockEntry, SignatureSnapshot, VariableDecl,
 };
 use crate::error::TxError;
 use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, VariableId};
@@ -51,6 +51,11 @@ pub(crate) enum Patch {
     Signature {
         key: SignatureKey,
         entry: Option<Placed<SignatureSnapshot>>,
+    },
+    /// A `package_lock` entry, keyed by package ID and version.
+    PackageLock {
+        key: (String, String),
+        entry: Option<Placed<PackageLockEntry>>,
     },
     Editor {
         path: Vec<String>,
@@ -94,6 +99,10 @@ impl Patch {
             Patch::Signature { key, entry } => {
                 let old = set_slot(&mut document.signatures, key.clone(), entry);
                 Patch::Signature { key, entry: old }
+            }
+            Patch::PackageLock { key, entry } => {
+                let old = set_slot(&mut document.package_lock, key.clone(), entry);
+                Patch::PackageLock { key, entry: old }
             }
             Patch::Editor { path, entry } => set_path(&mut document.editor, path, entry)?,
         })
@@ -159,6 +168,37 @@ impl<K: Ord, V> Slots<K, V> for BTreeMap<K, V> {
 
     fn replace(&mut self, key: &K, value: V) -> Option<V> {
         self.get_mut(key).map(|slot| std::mem::replace(slot, value))
+    }
+}
+
+/// Lock entries are an ordered list; `put` places the entry, whose own ID and version are
+/// the key.
+impl Slots<(String, String), PackageLockEntry> for Vec<PackageLockEntry> {
+    fn take(&mut self, key: &(String, String)) -> Option<Placed<PackageLockEntry>> {
+        let index = self.position(key)?;
+        Some(Placed {
+            index,
+            value: self.remove(index),
+        })
+    }
+
+    fn put(&mut self, _key: (String, String), entry: Placed<PackageLockEntry>) {
+        let index = entry.index.min(self.len());
+        self.insert(index, entry.value);
+    }
+
+    fn position(&self, key: &(String, String)) -> Option<usize> {
+        self.iter()
+            .position(|entry| entry.id == key.0 && entry.version == key.1)
+    }
+
+    fn replace(
+        &mut self,
+        key: &(String, String),
+        value: PackageLockEntry,
+    ) -> Option<PackageLockEntry> {
+        let index = self.position(key)?;
+        Some(std::mem::replace(&mut self[index], value))
     }
 }
 

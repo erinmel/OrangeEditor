@@ -62,10 +62,12 @@ fn pinned_generic_fed_by_a_narrower_source_gets_a_persisted_converter() {
     assert_eq!(content(&loaded), complete);
     let node = loaded.node(converter.node).unwrap();
     assert_eq!(node.config["converter"], "core/i32-to-i64");
-    assert_eq!(
-        node.provider.as_ref().unwrap().extensions["content_digest"],
-        package_digest()
-    );
+    let provider = node.provider.as_ref().unwrap();
+    let locked = loaded
+        .package_lock()
+        .iter()
+        .find(|entry| entry.id == provider.package && entry.version == provider.version);
+    assert_eq!(locked.unwrap().content_digest, package_digest());
     for snapshot in loaded.signatures().values() {
         for ty in snapshot.ports.iter().filter_map(|port| port.ty.as_ref()) {
             let term = TypeTerm::parse(ty).unwrap();

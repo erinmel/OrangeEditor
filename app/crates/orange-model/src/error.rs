@@ -138,6 +138,8 @@ pub enum TxError {
     SignatureConflict(SignatureKey),
     #[error("signature `{0}` does not exist")]
     SignatureNotFound(SignatureKey),
+    #[error("package `{package}` {version} is already locked to a different content digest")]
+    PackageLockConflict { package: String, version: String },
     #[error("a layout path needs at least one key")]
     EmptyLayoutPath,
     #[error("layout path `{path}` passes through a value that is not an object")]

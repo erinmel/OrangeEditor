@@ -11,8 +11,10 @@
 //! a copied Get Variable pasted into the same document reads the same variable. Otherwise
 //! the declaration is pasted under a new ID.
 //!
-//! Layout of pasted nodes is the editor's concern; package-lock merging for package nodes
-//! pasted across documents belongs to the package flow (ADR-07).
+//! The `package_lock` entries of copied provider bindings travel too and are put into the
+//! target, so a paste across documents keeps every binding locked. A target that locks the
+//! same package version to another digest rejects the paste (`PackageLockConflict`).
+//! Layout of pasted nodes is the editor's concern.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
 
@@ -21,7 +23,7 @@ use uuid::Uuid;
 
 use crate::document::{
     BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
-    SignatureSnapshot, VariableDecl,
+    PackageLockEntry, SignatureSnapshot, VariableDecl,
 };
 use crate::edit::DocCommand;
 use crate::error::{IdError, PasteError};
@@ -40,6 +42,8 @@ pub struct Fragment {
     pub functions: Vec<FunctionDecl>,
     /// Snapshots referenced by `nodes` and by nodes in `functions`.
     pub signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
+    /// Source lock entries of the package versions those nodes are bound to, in source order.
+    pub package_lock: Vec<PackageLockEntry>,
 }
 
 /// Commands for one paste transaction, plus where each copied node went.
@@ -93,15 +97,19 @@ impl Fragment {
         Ok(fragment)
     }
 
-    /// Adds every declaration and signature reachable from the fragment's nodes.
+    /// Adds every declaration, signature and lock entry reachable from the fragment's nodes.
     fn capture_references(&mut self, document: &GraphDocument) {
         let mut pending: Vec<NodeInstance> = self.nodes.clone();
         let mut seen = HashSet::new();
+        let mut bound = HashSet::new();
         while let Some(node) = pending.pop() {
             if let Some(key) = &node.signature
                 && let Some(snapshot) = document.signatures().get(key)
             {
                 self.signatures.insert(key.clone(), snapshot.clone());
+            }
+            if let Some(provider) = &node.provider {
+                bound.insert((provider.package.clone(), provider.version.clone()));
             }
             for text in config_strings(&node.config) {
                 if !seen.insert(text.to_owned()) {
@@ -129,6 +137,12 @@ impl Fragment {
                 }
             }
         }
+        self.package_lock = document
+            .package_lock()
+            .iter()
+            .filter(|entry| bound.contains(&(entry.id.clone(), entry.version.clone())))
+            .cloned()
+            .collect();
     }
 
     /// Commands that paste the fragment into `body` of `target` as one transaction. New IDs
@@ -211,13 +225,20 @@ impl Fragment {
             .iter()
             .map(|(key, snapshot)| (&signature_keys[key], snapshot))
             .collect();
-        let mut commands: Vec<DocCommand> = rekeyed
-            .into_iter()
-            .map(|(key, snapshot)| DocCommand::PutSignature {
-                key: key.clone(),
-                snapshot: snapshot.clone(),
-            })
+        let mut commands: Vec<DocCommand> = self
+            .package_lock
+            .iter()
+            .cloned()
+            .map(DocCommand::PutPackageLock)
             .collect();
+        commands.extend(
+            rekeyed
+                .into_iter()
+                .map(|(key, snapshot)| DocCommand::PutSignature {
+                    key: key.clone(),
+                    snapshot: snapshot.clone(),
+                }),
+        );
         commands.extend(variables.into_iter().map(DocCommand::UpsertVariable));
         commands.extend(events.into_iter().map(DocCommand::UpsertEvent));
         commands.extend(functions.into_iter().map(DocCommand::UpsertFunction));
