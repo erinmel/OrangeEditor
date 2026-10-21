@@ -2,63 +2,14 @@
 
 mod common;
 
-use std::sync::Arc;
-
-use common::generic::{add, catalog, data_edge, document, typed_sink, typed_source};
-use common::{content, eid, id_source, nid, port, saved, typed_edge};
-use orange_model::conversion::{
-    ConnectionOutcome, ConnectionPlan, ConnectionRequest, ConverterKey, ConverterProvider,
-    ConverterRegistry, ConverterRegistryBuilder, PackageProvider, PlanApplyError, apply_connection,
-    plan_connection,
+use common::generic::{
+    add, data_edge, document, package_converters, package_digest, ready_plan, typed_sink,
+    typed_source,
 };
-use orange_model::types::TypeRegistry;
+use common::{content, eid, nid, port, saved, typed_edge};
+use orange_model::conversion::{PlanApplyError, apply_connection};
 use orange_model::{DocCommand, GraphDocument, TxError, from_json};
 use serde_json::json;
-
-fn digest() -> String {
-    format!("sha256:{}", "ab".repeat(32))
-}
-
-/// Core conversions, with a package implementation of `i32 → i64` as the new-binding default.
-fn converters() -> Arc<ConverterRegistry> {
-    let mut builder =
-        ConverterRegistryBuilder::with_core_conversions(Arc::new(TypeRegistry::core())).unwrap();
-    let key = ConverterKey {
-        id: "core/i32-to-i64".parse().unwrap(),
-        contract_version: 1,
-    };
-    let provider = PackageProvider {
-        package: "org.test".to_owned(),
-        version: "1.0.0".to_owned(),
-        content_digest: digest(),
-        id: "native".to_owned(),
-        contract_version: 1,
-    };
-    builder
-        .register_package_provider("org.test", &key, provider.clone())
-        .unwrap();
-    builder
-        .set_new_binding_default(&key, ConverterProvider::Package(provider))
-        .unwrap();
-    builder.build()
-}
-
-fn plan(
-    doc: &GraphDocument,
-    converters: &ConverterRegistry,
-    from: (u8, &str),
-    to: (u8, &str),
-) -> ConnectionPlan {
-    let request = ConnectionRequest {
-        from: port(from.0, from.1),
-        to: port(to.0, to.1),
-        choice: None,
-    };
-    match plan_connection(doc, converters, &catalog(None), request, id_source(5)).unwrap() {
-        ConnectionOutcome::Ready(plan) => *plan,
-        other => panic!("expected a plan, got {other:?}"),
-    }
-}
 
 /// i32 source 1 → i64 sink 3, whose literal is shadowed once connected.
 fn convertible() -> GraphDocument {
@@ -71,16 +22,19 @@ fn convertible() -> GraphDocument {
 
 #[test]
 fn insertion_is_one_undo_step_and_redo_restores_identities_and_provider() {
-    let (registry, mut doc) = (converters(), convertible());
+    let (registry, mut doc) = (package_converters(), convertible());
     let (before, revision) = (content(&doc), doc.revision());
-    let plan = plan(&doc, &registry, (1, "value"), (3, "value"));
+    let plan = ready_plan(&doc, &registry, (1, "value"), (3, "value"));
     let (node, edges) = (plan.converter.as_ref().unwrap().node, plan.edges.clone());
 
     let done = apply_connection(&mut doc, &registry, plan).unwrap();
     assert_eq!(doc.revision(), revision + 1);
     let provider = doc.node(node).unwrap().provider.clone().unwrap();
     assert_eq!(provider.package, "org.test");
-    assert_eq!(provider.extensions["content_digest"], json!(digest()));
+    assert_eq!(
+        provider.extensions["content_digest"],
+        json!(package_digest())
+    );
     assert!(edges.iter().all(|&edge| doc.edge(edge).is_some()));
     assert_eq!(doc.node(nid(3)).unwrap().inputs.len(), 1, "literal stays");
     let after = content(&doc);
@@ -97,7 +51,7 @@ fn insertion_is_one_undo_step_and_redo_restores_identities_and_provider() {
 
 #[test]
 fn replacement_removes_the_old_edge_in_the_same_step() {
-    let registry = converters();
+    let registry = package_converters();
     let mut doc = document(
         vec![
             typed_source(1, "i32"),
@@ -107,7 +61,7 @@ fn replacement_removes_the_old_edge_in_the_same_step() {
         vec![data_edge(1, (2, "value"), (3, "value"))],
     );
     let (before, revision) = (content(&doc), doc.revision());
-    let plan = plan(&doc, &registry, (1, "value"), (3, "value"));
+    let plan = ready_plan(&doc, &registry, (1, "value"), (3, "value"));
     let done = apply_connection(&mut doc, &registry, plan).unwrap();
     assert!(doc.edge(eid(1)).is_none());
     assert_eq!(doc.revision(), revision + 1);
@@ -118,9 +72,9 @@ fn replacement_removes_the_old_edge_in_the_same_step() {
 
 #[test]
 fn a_direct_plan_applies_its_inferred_updates_and_plain_connect_still_works() {
-    let registry = converters();
+    let registry = package_converters();
     let mut doc = document(vec![typed_source(1, "i32"), add(2, json!({}))], vec![]);
-    let plan = plan(&doc, &registry, (1, "value"), (2, "a"));
+    let plan = ready_plan(&doc, &registry, (1, "value"), (2, "a"));
     let _ = apply_connection(&mut doc, &registry, plan).unwrap();
     assert_eq!(
         doc.node(nid(2)).unwrap().type_args["T"].as_str(),
@@ -134,9 +88,9 @@ fn a_direct_plan_applies_its_inferred_updates_and_plain_connect_still_works() {
 
 #[test]
 fn stale_plans_are_rejected_without_changing_content_or_revision() {
-    let registry = converters();
+    let registry = package_converters();
     let mut doc = convertible();
-    let stale = plan(&doc, &registry, (1, "value"), (3, "value"));
+    let stale = ready_plan(&doc, &registry, (1, "value"), (3, "value"));
 
     // A changed document and a reloaded copy both differ in content state.
     let mut changed = doc.clone();
@@ -156,16 +110,16 @@ fn stale_plans_are_rejected_without_changing_content_or_revision() {
 
     // A replaced registry snapshot invalidates it too.
     let (before, revision) = (content(&doc), doc.revision());
-    let result = apply_connection(&mut doc, &converters(), stale);
+    let result = apply_connection(&mut doc, &package_converters(), stale);
     assert_eq!(result, Err(PlanApplyError::StaleRegistry));
     assert_eq!((content(&doc), doc.revision()), (before, revision));
 }
 
 #[test]
 fn an_injected_failure_rolls_back_every_command() {
-    let registry = converters();
+    let registry = package_converters();
     let mut doc = convertible();
-    let mut plan = plan(&doc, &registry, (1, "value"), (3, "value"));
+    let mut plan = ready_plan(&doc, &registry, (1, "value"), (3, "value"));
     plan.commands.push(DocCommand::Disconnect { edge: eid(99) });
     let (before, revision, state) = (content(&doc), doc.revision(), doc.state_id());
 

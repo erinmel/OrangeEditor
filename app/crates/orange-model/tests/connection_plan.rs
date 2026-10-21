@@ -2,24 +2,16 @@
 
 mod common;
 
-use std::sync::Arc;
-
-use common::generic::{add, catalog, document, typed_sink, typed_source};
+use common::generic::{add, catalog, core_converters, document, typed_sink, typed_source};
 use common::{content, eid, id_source, nid, port};
 use orange_model::conversion::{
-    ConnectionError, ConnectionOutcome, ConnectionPlan, ConnectionRequest, ConverterRegistry,
-    ConverterRegistryBuilder, ExplicitConverterChoice, SelectionRejection,
+    ConnectionError, ConnectionOutcome, ConnectionPlan, ConnectionRequest, ExplicitConverterChoice,
+    SelectionRejection,
 };
 use orange_model::inference::plan_edit;
 use orange_model::types::TypeRegistry;
 use orange_model::{DocCommand, GraphDocument};
 use serde_json::json;
-
-fn converters() -> Arc<ConverterRegistry> {
-    ConverterRegistryBuilder::with_core_conversions(Arc::new(TypeRegistry::core()))
-        .unwrap()
-        .build()
-}
 
 fn request(from: (u8, &str), to: (u8, &str)) -> ConnectionRequest {
     ConnectionRequest {
@@ -34,7 +26,13 @@ fn plan(
     request: ConnectionRequest,
 ) -> Result<ConnectionOutcome, ConnectionError> {
     let mut ids = id_source(3);
-    orange_model::conversion::plan_connection(doc, &converters(), &catalog(None), request, &mut ids)
+    orange_model::conversion::plan_connection(
+        doc,
+        &core_converters(),
+        &catalog(None),
+        request,
+        &mut ids,
+    )
 }
 
 fn ready(outcome: Result<ConnectionOutcome, ConnectionError>) -> ConnectionPlan {
@@ -73,7 +71,7 @@ fn a_unique_lossless_entry_plans_a_visible_converter_with_fresh_identities() {
     let mut source = id_source(3);
     let outcome = orange_model::conversion::plan_connection(
         &doc,
-        &converters(),
+        &core_converters(),
         &catalog(None),
         request((1, "value"), (3, "value")),
         || {
