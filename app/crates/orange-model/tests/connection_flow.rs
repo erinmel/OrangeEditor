@@ -48,13 +48,13 @@ fn pinned_generic_fed_by_a_narrower_source_gets_a_persisted_converter() {
         .expect("a converter node is inserted");
     assert_eq!(converter.resolved.entry.to_string(), "core/i32-to-i64@1");
     let before_insert = content(&doc);
-    let inserted = apply_connection(&mut doc, &registry, plan).unwrap();
+    let inserted = apply_connection(&mut doc, &registry, &catalog(None), plan).unwrap();
     let after_insert = content(&doc);
 
     // A matching wire out of the generic node needs no converter.
     let plan = ready_plan(&doc, &registry, (2, "sum"), (3, "value"));
     assert!(plan.converter.is_none());
-    let wired = apply_connection(&mut doc, &registry, plan).unwrap();
+    let wired = apply_connection(&mut doc, &registry, &catalog(None), plan).unwrap();
     let complete = content(&doc);
 
     // Save/load keeps canonical types, the converter binding and the inferred arguments.

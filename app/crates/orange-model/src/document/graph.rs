@@ -1,7 +1,6 @@
 //! Graph storage, body lookup and content identity. Editing is owned by crate::edit.
 
 use std::collections::BTreeMap;
-use std::sync::atomic::{AtomicU64, Ordering};
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -16,18 +15,9 @@ use crate::id::{
     EdgeId, EventDeclId, FunctionId, GraphId, NodeId, PortKey, SignatureKey, TypeExpr, VariableId,
 };
 
-static NEXT_STATE_ID: AtomicU64 = AtomicU64::new(1);
-
-/// A process-unique content-state identity. `fetch_add` works on every supported toolchain
-/// (`fetch_update` is deprecated on 1.99, and `try_update` may postdate the 1.97.1 minimum).
+/// A fresh content-state identity; see [`GraphDocument::state_id`].
 pub(crate) fn fresh_state_id() -> u64 {
-    let id = NEXT_STATE_ID.fetch_add(1, Ordering::Relaxed);
-    assert_ne!(
-        id,
-        u64::MAX,
-        "document content-state identity space exhausted"
-    );
-    id
+    crate::id::process_unique()
 }
 
 /// The format v1 document, without the `"format"` envelope tag, which the codec owns.

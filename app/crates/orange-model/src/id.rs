@@ -3,11 +3,23 @@
 
 use std::fmt;
 use std::str::FromStr;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::error::IdError;
+
+static NEXT_PROCESS_UNIQUE: AtomicU64 = AtomicU64::new(1);
+
+/// A process-unique, nonzero identity for document content states, converter registry
+/// snapshots and template catalog contents. `fetch_add` works on every supported toolchain
+/// (`fetch_update` is deprecated on 1.99, and `try_update` may postdate the 1.97.1 minimum).
+pub(crate) fn process_unique() -> u64 {
+    let id = NEXT_PROCESS_UNIQUE.fetch_add(1, Ordering::Relaxed);
+    assert_ne!(id, u64::MAX, "process-unique identity space exhausted");
+    id
+}
 
 /// Implements string-based serde for a type with `FromStr<Err = IdError>` and `Display`.
 macro_rules! serde_via_str {

@@ -4,8 +4,9 @@
 //! [`plan_connection`] resolves both endpoint types, selects a converter when they differ,
 //! and builds the edit as ordinary [`DocCommand`]s. It then reuses
 //! [`plan_edit`](crate::inference::plan_edit) so the inferred `type_args` and signature
-//! updates travel with the edit. Identities are generated once, here, and the plan records
-//! the document content state and registry snapshot it was made against.
+//! updates travel with the edit. A wire that would make the touched types invalid is
+//! refused. Identities are generated once, here, and the plan records the document content
+//! state, registry snapshot and template catalog it was made against.
 
 use std::collections::BTreeMap;
 
@@ -26,7 +27,7 @@ use crate::error::{IdError, TxError};
 use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 use crate::index::DocIndex;
 use crate::inference::component::declared_port;
-use crate::inference::{InferenceIssue, TemplateCatalog, plan_edit};
+use crate::inference::{InferenceIssue, TemplateCatalog, infer_components, plan_edit};
 use crate::signature::{SignatureSubstitutionError, semantic_key, try_substitute_params};
 use crate::type_term::TypeTerm;
 
@@ -58,26 +59,36 @@ pub struct InsertedConverter {
 }
 
 /// An applicable edit: the commands, the issues inference found, and the identities the
-/// commands create. Valid only for the document state and registry snapshot it records.
+/// commands create. Valid only for the document state, registry snapshot and template
+/// catalog it records; its commands are read-only so they stay consistent with those.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionPlan {
-    /// Wire replacement, converter and edges, then the inferred updates (one transaction).
-    pub commands: Vec<DocCommand>,
+    commands: Vec<DocCommand>,
+    /// Outcomes after the edit: unresolved parameters, and conflicts only when the
+    /// endpoints' components already had them (new conflicts are refused).
     pub issues: Vec<InferenceIssue>,
     /// Existing edges into the target port that the plan removes (11 §4.3).
     pub replaced: Vec<EdgeId>,
     /// One edge for a direct wire; `from → converter` and `converter → to` otherwise.
     pub edges: Vec<EdgeId>,
     pub converter: Option<InsertedConverter>,
-    pub(super) preconditions: Preconditions,
+    preconditions: Preconditions,
+}
+
+impl ConnectionPlan {
+    /// Wire replacement, converter and edges, then the inferred updates (one transaction).
+    pub fn commands(&self) -> &[DocCommand] {
+        &self.commands
+    }
 }
 
 /// What a plan was made against. Revision alone is insufficient across clones and reloads,
 /// so the document side is its content-state identity.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct Preconditions {
-    pub document_state: u64,
-    pub registry_generation: u64,
+struct Preconditions {
+    document_state: u64,
+    registry_generation: u64,
+    template_generation: u64,
 }
 
 /// A request that cannot be planned at all, as opposed to one that needs a choice.
@@ -97,6 +108,10 @@ pub enum ConnectionError {
     CrossBody { from: NodeId, to: NodeId },
     #[error("edge `{0}` already connects these ports")]
     AlreadyConnected(EdgeId),
+    /// The wire would make the touched generic components invalid (`E-TYPE-MISMATCH`,
+    /// `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION` or `E-TYPE-COMPLEXITY`).
+    #[error("the connection would make the connected types invalid")]
+    TypeConflict(Vec<InferenceIssue>),
     #[error(transparent)]
     Type(#[from] SignatureSubstitutionError),
     #[error(transparent)]
@@ -112,6 +127,10 @@ pub enum ConnectionError {
 /// decides; otherwise equal types connect directly and differing types go through
 /// [`ConverterRegistry::select_for_connection`] (or the explicit choice). An existing edge
 /// into `to` is replaced. Literals on the target port are untouched and stay shadowed.
+///
+/// A wire whose inference reports a conflict is refused with
+/// [`ConnectionError::TypeConflict`], unless the endpoints' components already reported
+/// one before the edit: a broken document (for example an imported one) stays editable.
 ///
 /// `new_id` must produce v4 or v7 UUIDs and is called once per created node or edge. The
 /// document is never modified, and `ChoiceRequired`/`Rejected` carry no commands.
@@ -193,7 +212,21 @@ pub fn plan_connection(
         }
     };
 
-    let inferred = plan_edit(document, edit, templates, converters.type_registry())?;
+    let types = converters.type_registry();
+    let inferred = plan_edit(document, edit, templates, types)?;
+    if inferred.issues.iter().any(InferenceIssue::is_conflict) {
+        let already_broken =
+            infer_components(document, &index, [from.node, to.node], templates, types)
+                .iter()
+                .any(|component| component.issues.iter().any(InferenceIssue::is_conflict));
+        if !already_broken {
+            let conflicts = inferred
+                .issues
+                .into_iter()
+                .filter(InferenceIssue::is_conflict);
+            return Err(ConnectionError::TypeConflict(conflicts.collect()));
+        }
+    }
     Ok(ConnectionOutcome::Ready(Box::new(ConnectionPlan {
         commands: inferred.commands,
         issues: inferred.issues,
@@ -203,6 +236,7 @@ pub fn plan_connection(
         preconditions: Preconditions {
             document_state: document.state_id(),
             registry_generation: converters.generation(),
+            template_generation: templates.generation(),
         },
     })))
 }
@@ -381,6 +415,8 @@ pub enum PlanApplyError {
     StaleDocument { expected: u64, actual: u64 },
     #[error("the converter registry was replaced since the plan was made")]
     StaleRegistry,
+    #[error("the generic template catalog changed since the plan was made")]
+    StaleTemplates,
     #[error(transparent)]
     Edit(#[from] TxError),
 }
@@ -388,19 +424,21 @@ pub enum PlanApplyError {
 /// Applies `plan` as one transaction: one revision bump and one undo step covering the
 /// replaced wire, the converter, its edges and the inferred updates.
 ///
-/// The document content state and the registry snapshot must still be the ones the plan was
-/// made against; a stale plan is rejected without changing the document, because its
-/// selection and inference results may no longer hold. A registry snapshot is immutable,
-/// so a matching generation also means the selected provider is still available. If a
-/// command fails, nothing changes, revision included.
+/// The document content state, the registry snapshot and the template catalog must still
+/// be the ones the plan was made against; a stale plan is rejected without changing the
+/// document, because its selection and inference results may no longer hold. A registry
+/// snapshot is immutable, so a matching generation also means the selected provider is
+/// still available. If a command fails, nothing changes, revision included.
 pub fn apply_connection(
     document: &mut GraphDocument,
     converters: &ConverterRegistry,
+    templates: &TemplateCatalog,
     plan: ConnectionPlan,
 ) -> Result<Committed, PlanApplyError> {
     let Preconditions {
         document_state,
         registry_generation,
+        template_generation,
     } = plan.preconditions;
     if document.state_id() != document_state {
         return Err(PlanApplyError::StaleDocument {
@@ -411,5 +449,67 @@ pub fn apply_connection(
     if converters.generation() != registry_generation {
         return Err(PlanApplyError::StaleRegistry);
     }
+    if templates.generation() != template_generation {
+        return Err(PlanApplyError::StaleTemplates);
+    }
     Ok(document.apply(plan.commands)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+    use crate::conversion::ConverterRegistryBuilder;
+    use crate::types::TypeRegistry;
+
+    /// Commands are read-only outside this module, so a command failure inside a fresh plan
+    /// can only be injected here.
+    #[test]
+    fn an_injected_failure_rolls_back_every_command() {
+        let converters =
+            ConverterRegistryBuilder::with_core_conversions(Arc::new(TypeRegistry::core()))
+                .unwrap()
+                .build();
+        let templates = TemplateCatalog::default();
+        let mut document =
+            GraphDocument::new("a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6".parse().unwrap());
+        let snapshot = SignatureSnapshot {
+            kind: NodeKind::Pure,
+            ports: vec![],
+            extensions: Extensions::new(),
+        };
+        let missing =
+            EdgeId::from_uuid(uuid::Builder::from_random_bytes([7; 16]).into_uuid()).unwrap();
+        let plan = ConnectionPlan {
+            commands: vec![
+                DocCommand::PutSignature {
+                    key: semantic_key(&snapshot),
+                    snapshot,
+                },
+                DocCommand::Disconnect { edge: missing },
+            ],
+            issues: vec![],
+            replaced: vec![],
+            edges: vec![],
+            converter: None,
+            preconditions: Preconditions {
+                document_state: document.state_id(),
+                registry_generation: converters.generation(),
+                template_generation: templates.generation(),
+            },
+        };
+        let (revision, state) = (document.revision(), document.state_id());
+
+        let result = apply_connection(&mut document, &converters, &templates, plan);
+        assert_eq!(
+            result,
+            Err(PlanApplyError::Edit(TxError::EdgeNotFound(missing)))
+        );
+        assert!(document.signatures().is_empty());
+        assert_eq!(
+            (document.revision(), document.state_id()),
+            (revision, state)
+        );
+    }
 }

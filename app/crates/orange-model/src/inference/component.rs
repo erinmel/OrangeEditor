@@ -46,12 +46,21 @@ pub struct GenericDefinition {
 #[derive(Debug, Clone, Default)]
 pub struct TemplateCatalog {
     templates: BTreeMap<(DefinitionId, u32), GenericDefinition>,
+    generation: u64,
 }
 
 impl TemplateCatalog {
     pub fn insert(&mut self, definition: DefinitionRef, template: GenericDefinition) {
         self.templates
             .insert((definition.id, definition.version), template);
+        self.generation = crate::id::process_unique();
+    }
+
+    /// Identity of the current contents: zero while empty, process-unique after every
+    /// insert and kept by clones. Connection plans record it, so a plan made against
+    /// other templates is stale.
+    pub fn generation(&self) -> u64 {
+        self.generation
     }
 
     pub fn get(&self, definition: &DefinitionRef) -> Option<&GenericDefinition> {
@@ -121,6 +130,12 @@ impl InferenceIssue {
             Self::ConstraintUnsatisfied { .. } => "E-CONSTRAINT-UNSATISFIED",
             Self::NoSpecialization { .. } => "E-NO-SPECIALIZATION",
         }
+    }
+
+    /// True for every outcome except an unresolved parameter: the types are invalid, not
+    /// merely incomplete.
+    pub fn is_conflict(&self) -> bool {
+        !matches!(self, Self::Ambiguous { .. })
     }
 }
 

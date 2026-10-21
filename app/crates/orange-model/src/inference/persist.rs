@@ -15,7 +15,7 @@ use std::collections::BTreeSet;
 
 use super::component::{ComponentInference, InferenceIssue, TemplateCatalog, infer_components};
 use crate::document::GraphDocument;
-use crate::edit::{ChangeSet, Committed, DocCommand};
+use crate::edit::{ChangeSet, Committed, DeclId, DocCommand};
 use crate::error::TxError;
 use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
@@ -44,11 +44,10 @@ pub struct InferredCommit {
 /// Plans `edit` and the inference updates it implies, without modifying `document`.
 ///
 /// Only the generic components the edit touched are inspected (nodes it added or changed,
-/// and both ends of every edge it added or removed). Their nodes are updated to the solved
-/// `type_args`, removing entries that are now ambiguous or invalid, and to the signature
-/// projected from them. `type_pins`, provider bindings and nodes outside those components
-/// are never written. Edits inside function bodies replaced by `UpsertFunction` are not
-/// analyzed.
+/// both ends of every edge it added or removed, and every node of a function body it added
+/// or replaced). Their nodes are updated to the solved `type_args`, removing entries that
+/// are now ambiguous or invalid, and to the signature projected from them. `type_pins`,
+/// provider bindings and nodes outside those components are never written.
 ///
 /// Fails with the transaction error `edit` itself would produce.
 pub fn plan_edit(
@@ -88,7 +87,8 @@ pub fn apply_inferred(
 }
 
 /// Surviving nodes whose inference inputs the transaction changed. Removed edges are looked
-/// up in `before`, because their endpoints are gone from `after`.
+/// up in `before`, because their endpoints are gone from `after`. A replaced function body
+/// reports only its function, so all of its nodes count as touched.
 fn touched_nodes(
     before: &GraphDocument,
     after: &GraphDocument,
@@ -110,6 +110,13 @@ fn touched_nodes(
         .collect();
     touched.extend(endpoints(after, &change.edges.added));
     touched.extend(endpoints(before, &change.edges.removed));
+    for decl in change.decls.added.iter().chain(&change.decls.changed) {
+        if let DeclId::Function(function) = decl
+            && let Some(function) = after.functions().get(function)
+        {
+            touched.extend(function.body.nodes.keys().copied());
+        }
+    }
     touched.retain(|id| after.node(*id).is_some());
     touched
 }

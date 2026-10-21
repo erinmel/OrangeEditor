@@ -3,7 +3,7 @@
 mod common;
 
 use common::generic::{add, catalog, data_edge, document, source};
-use common::{content, eid, nid, saved};
+use common::{body, content, eid, function, function_id, nid, saved};
 use orange_model::document::{Edge, NodeInstance};
 use orange_model::inference::{InferenceIssue, apply_inferred, plan_edit};
 use orange_model::types::TypeRegistry;
@@ -255,4 +255,61 @@ fn removing_the_typed_source_clears_the_neighbours_binding() {
     assert_eq!(codes(&issues), ["E-TYPE-AMBIGUOUS"]);
     assert_eq!(type_arg(&doc, 2), None);
     assert_eq!(signature_types(&doc, 2), ["$T"; 3]);
+}
+
+/// Function `f` whose body holds the given nodes and edges.
+fn function_with(nodes: Vec<Json>, edges: Vec<Json>) -> DocCommand {
+    let nodes = nodes
+        .into_iter()
+        .map(|node| serde_json::from_value(node).unwrap());
+    let edges = edges
+        .into_iter()
+        .map(|edge| serde_json::from_value(edge).unwrap());
+    DocCommand::UpsertFunction(function(body(nodes, edges)))
+}
+
+#[test]
+fn a_replaced_function_body_is_inferred_and_one_undo_removes_it() {
+    let mut doc = document(vec![], vec![]);
+    let before = content(&doc);
+    let upsert = function_with(
+        vec![source(1), add(2, json!({}))],
+        vec![data_edge(1, (1, "value"), (2, "a"))],
+    );
+    let done = apply_inferred(&mut doc, [upsert], &catalog(None), &TypeRegistry::core()).unwrap();
+    assert!(done.issues.is_empty());
+    assert_eq!(
+        doc.locate_node(nid(2)),
+        Some(BodyRef::Function(function_id()))
+    );
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
+    assert_eq!(signature_types(&doc, 2), ["core/i64@1"; 3]);
+
+    let redo = doc.revert(done.committed.inverse).unwrap().inverse;
+    assert_eq!(content(&doc), before);
+    let _ = doc.revert(redo).unwrap();
+
+    // Replacing the body again without the edge leaves the generic node ambiguous.
+    let issues = commit(
+        &mut doc,
+        vec![function_with(vec![source(1), add(2, json!({}))], vec![])],
+    );
+    assert_eq!(codes(&issues.unwrap()), ["E-TYPE-AMBIGUOUS"]);
+    assert_eq!(type_arg(&doc, 2), None);
+}
+
+#[test]
+fn edits_inside_a_function_body_are_inferred_like_root_edits() {
+    let mut doc = document(vec![], vec![]);
+    let _ = commit(
+        &mut doc,
+        vec![function_with(vec![source(1), add(2, json!({}))], vec![])],
+    );
+    let issues = commit(
+        &mut doc,
+        vec![connect(data_edge(1, (1, "value"), (2, "a")))],
+    )
+    .unwrap();
+    assert!(issues.is_empty());
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
 }

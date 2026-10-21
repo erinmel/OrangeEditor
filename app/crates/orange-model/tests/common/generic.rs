@@ -1,7 +1,7 @@
 //! Generic-node fixtures for the inference tests: `org.test/add<T: num>(a, b) -> sum` and a
 //! non-generic `org.test/source` with an `i64` output `value`.
 
-use std::sync::Arc;
+use std::sync::{Arc, LazyLock};
 
 use orange_model::conversion::{
     ConnectionOutcome, ConnectionPlan, ConnectionRequest, ConverterKey, ConverterProvider,
@@ -26,7 +26,16 @@ pub fn port(port_id: &str, direction: &str, ty: &str) -> ResolvedPort {
 }
 
 /// `org.test/add<T: num>(a: T, b: T) -> sum: T`, optionally limited to listed specializations.
+/// The unrestricted catalog is one shared host catalog, so plans made with it stay current.
 pub fn catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
+    static HOST: LazyLock<TemplateCatalog> = LazyLock::new(|| build_catalog(None));
+    match specializations {
+        None => HOST.clone(),
+        Some(_) => build_catalog(specializations),
+    }
+}
+
+fn build_catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
     let mut catalog = TemplateCatalog::default();
     catalog.insert(
         DefinitionRef {

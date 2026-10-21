@@ -2,13 +2,15 @@
 
 mod common;
 
-use common::generic::{add, catalog, core_converters, document, typed_sink, typed_source};
+use common::generic::{
+    add, catalog, core_converters, data_edge, document, source, typed_sink, typed_source,
+};
 use common::{content, eid, id_source, nid, port};
 use orange_model::conversion::{
     ConnectionError, ConnectionOutcome, ConnectionPlan, ConnectionRequest, ExplicitConverterChoice,
     SelectionRejection,
 };
-use orange_model::inference::plan_edit;
+use orange_model::inference::{InferenceIssue, plan_edit};
 use orange_model::types::TypeRegistry;
 use orange_model::{DocCommand, GraphDocument};
 use serde_json::json;
@@ -57,10 +59,7 @@ fn equal_types_plan_a_direct_wire_without_touching_the_document() {
     let plan = ready(plan(&doc, request((1, "value"), (3, "value"))));
     assert!(plan.converter.is_none() && plan.replaced.is_empty());
     assert_eq!(plan.edges.len(), 1);
-    assert!(matches!(
-        plan.commands.as_slice(),
-        [DocCommand::Connect { .. }]
-    ));
+    assert!(matches!(plan.commands(), [DocCommand::Connect { .. }]));
     assert_eq!(content(&doc), before);
 }
 
@@ -89,9 +88,9 @@ fn a_unique_lossless_entry_plans_a_visible_converter_with_fresh_identities() {
         DocCommand::AddNode { node, .. },
         DocCommand::Connect { edge: into },
         DocCommand::Connect { edge: out_of },
-    ] = plan.commands.as_slice()
+    ] = plan.commands()
     else {
-        panic!("{:?}", plan.commands);
+        panic!("{:?}", plan.commands());
     };
     assert_eq!(node.id, inserted.node);
     assert_eq!(node.definition.id.as_str(), "core/convert");
@@ -126,10 +125,13 @@ fn replacing_a_wire_removes_the_old_edge_first_and_keeps_literals() {
     );
     let planned = ready(plan(&doc, request((1, "value"), (3, "value"))));
     assert_eq!(planned.replaced, [eid(1)]);
-    assert_eq!(planned.commands[0], DocCommand::Disconnect { edge: eid(1) });
+    assert_eq!(
+        planned.commands()[0],
+        DocCommand::Disconnect { edge: eid(1) }
+    );
     assert!(
         planned
-            .commands
+            .commands()
             .iter()
             .all(|command| !matches!(command, DocCommand::SetLiteral { .. }))
     );
@@ -207,7 +209,7 @@ fn generic_endpoints_connect_directly_and_carry_their_inferred_updates() {
     let doc = document(vec![typed_source(1, "i32"), add(2, json!({}))], vec![]);
     let plan = ready(plan(&doc, request((1, "value"), (2, "a"))));
     assert!(plan.converter.is_none() && plan.issues.is_empty());
-    let [first, rest @ ..] = plan.commands.as_slice() else {
+    let [first, rest @ ..] = plan.commands() else {
         panic!()
     };
     assert!(matches!(first, DocCommand::Connect { .. }));
@@ -219,5 +221,57 @@ fn generic_endpoints_connect_directly_and_carry_their_inferred_updates() {
     // The plan is the edit plus `plan_edit`'s updates, nothing else.
     let edit = vec![first.clone()];
     let expected = plan_edit(&doc, edit, &catalog(None), &TypeRegistry::core()).unwrap();
-    assert_eq!(plan.commands, expected.commands);
+    assert_eq!(plan.commands(), expected.commands.as_slice());
+}
+
+#[test]
+fn a_wire_that_makes_the_types_invalid_is_refused_with_its_conflicts() {
+    // Generic add 2 is fed i64 by 1 but not yet inferred; an f64 into `b` conflicts.
+    let doc = document(
+        vec![source(1), add(2, json!({})), typed_source(4, "f64")],
+        vec![data_edge(1, (1, "value"), (2, "a"))],
+    );
+    let Err(ConnectionError::TypeConflict(issues)) = plan(&doc, request((4, "value"), (2, "b")))
+    else {
+        panic!("expected a type conflict");
+    };
+    assert_eq!(codes(&issues), ["E-TYPE-MISMATCH"]);
+
+    // A constraint or specialization failure is a conflict too.
+    let doc = document(vec![typed_source(4, "f64"), add(2, json!({}))], vec![]);
+    let only_i64 = catalog(Some(vec!["core/i64@1"]));
+    let refused = orange_model::conversion::plan_connection(
+        &doc,
+        &core_converters(),
+        &only_i64,
+        request((4, "value"), (2, "a")),
+        id_source(3),
+    );
+    let Err(ConnectionError::TypeConflict(issues)) = refused else {
+        panic!("expected a type conflict, got {refused:?}");
+    };
+    assert_eq!(codes(&issues), ["E-NO-SPECIALIZATION"]);
+}
+
+#[test]
+fn a_component_that_was_already_broken_stays_editable() {
+    // Add 2 is fed i64 and f64 (an imported, conflicting graph); wiring it on is allowed.
+    let doc = document(
+        vec![
+            source(1),
+            add(2, json!({})),
+            add(3, json!({})),
+            typed_source(4, "f64"),
+        ],
+        vec![
+            data_edge(1, (1, "value"), (2, "a")),
+            data_edge(2, (4, "value"), (2, "b")),
+        ],
+    );
+    let plan = ready(plan(&doc, request((2, "sum"), (3, "a"))));
+    assert_eq!(codes(&plan.issues), ["E-TYPE-MISMATCH"]);
+}
+
+fn codes(issues: &[InferenceIssue]) -> Vec<&'static str> {
+    issues.iter().map(InferenceIssue::code).collect()
 }
