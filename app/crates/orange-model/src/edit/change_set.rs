@@ -2,9 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use super::patch::Patch;
 use crate::document::GraphDocument;
 use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, VariableId};
-use crate::patch::Patch;
 
 /// A graph-level declaration.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

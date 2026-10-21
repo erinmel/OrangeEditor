@@ -1,5 +1,5 @@
 //! Serde adapter: an `IndexMap` keyed by each item's own `id`, persisted as a JSON array in
-//! map (creation) order. Use with `#[serde(with = "crate::keyed")]`.
+//! map (creation) order. Use with `#[serde(with = "crate::document::keyed")]`.
 
 use std::fmt::Display;
 use std::hash::Hash;

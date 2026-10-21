@@ -3,48 +3,24 @@
 
 mod common;
 
-use common::{content, eid, empty_document, nid, node, port, saved, typed_edge};
-use orange_model::document::{
-    Edge, FunctionDecl, GraphBody, NodeKind, ProviderBinding, VarScope, VariableDecl,
+use common::{
+    add, body, chain, connect, content, eid, empty_document, function, function_id, nid, node,
+    port, saved, typed_edge,
 };
-use orange_model::id::{FunctionId, VariableId};
-use orange_model::{BodyRef, DeclId, DocCommand, GraphDocument, TxError, keyed};
-
-fn fid() -> FunctionId {
-    "50000000-0000-4000-8000-000000000001".parse().unwrap()
-}
+use indexmap::IndexMap;
+use orange_model::document::{
+    Edge, FunctionDecl, GraphBody, ProviderBinding, VarScope, VariableDecl,
+};
+use orange_model::id::VariableId;
+use orange_model::{BodyRef, DeclId, DocCommand, GraphDocument, TxError, from_json};
 
 fn vid() -> VariableId {
     "30000000-0000-4000-8000-000000000001".parse().unwrap()
 }
 
-fn add(n: u8) -> DocCommand {
-    DocCommand::AddNode {
-        body: BodyRef::Root,
-        node: node(n),
-    }
-}
-
-fn connect(n: u8, from: u8, to: u8) -> DocCommand {
-    DocCommand::Connect {
-        edge: typed_edge(n, port(from, "then"), port(to, "in")),
-    }
-}
-
-fn function(nodes: Vec<u8>, edges: Vec<Edge>) -> FunctionDecl {
-    FunctionDecl {
-        id: fid(),
-        name: "f".into(),
-        kind: NodeKind::Pure,
-        type_params: vec![],
-        inputs: vec![],
-        outputs: vec![],
-        body: GraphBody {
-            nodes: keyed::collect(nodes.into_iter().map(node)).unwrap(),
-            edges: keyed::collect(edges).unwrap(),
-        },
-        extensions: Default::default(),
-    }
+/// Function `f` whose body holds test nodes `nodes` and the given edges.
+fn function_with(nodes: &[u8], edges: Vec<Edge>) -> FunctionDecl {
+    function(body(nodes.iter().map(|n| node(*n)), edges))
 }
 
 fn variable(name: &str) -> VariableDecl {
@@ -58,15 +34,6 @@ fn variable(name: &str) -> VariableDecl {
         conflict: Default::default(),
         extensions: Default::default(),
     }
-}
-
-/// Root nodes 1–3 chained by edges 1 (1→2) and 2 (2→3).
-fn chain() -> GraphDocument {
-    let mut document = empty_document();
-    let _ = document
-        .apply([add(1), add(2), add(3), connect(1, 1, 2), connect(2, 2, 3)])
-        .unwrap();
-    document
 }
 
 /// Asserts the command fails with `expected` and leaves the document byte-identical.
@@ -121,16 +88,16 @@ fn ids_must_be_unique_and_targets_must_exist() {
     );
     assert_rejected(
         &mut document,
-        vec![DocCommand::RemoveFunction(fid())],
-        TxError::FunctionNotFound(fid()),
+        vec![DocCommand::RemoveFunction(function_id())],
+        TxError::FunctionNotFound(function_id()),
     );
     assert_rejected(
         &mut document,
         vec![DocCommand::AddNode {
-            body: BodyRef::Function(fid()),
+            body: BodyRef::Function(function_id()),
             node: node(7),
         }],
-        TxError::FunctionNotFound(fid()),
+        TxError::FunctionNotFound(function_id()),
     );
 }
 
@@ -138,9 +105,12 @@ fn ids_must_be_unique_and_targets_must_exist() {
 fn edges_stay_inside_one_body() {
     let mut document = chain();
     let _ = document
-        .apply([DocCommand::UpsertFunction(function(vec![5, 6], vec![]))])
+        .apply([DocCommand::UpsertFunction(function_with(&[5, 6], vec![]))])
         .unwrap();
-    assert_eq!(document.locate_node(nid(5)), Some(BodyRef::Function(fid())));
+    assert_eq!(
+        document.locate_node(nid(5)),
+        Some(BodyRef::Function(function_id()))
+    );
     assert_rejected(
         &mut document,
         vec![connect(3, 1, 5)],
@@ -148,7 +118,10 @@ fn edges_stay_inside_one_body() {
     );
 
     let _ = document.apply([connect(3, 5, 6)]).unwrap();
-    assert_eq!(document.locate_edge(eid(3)), Some(BodyRef::Function(fid())));
+    assert_eq!(
+        document.locate_edge(eid(3)),
+        Some(BodyRef::Function(function_id()))
+    );
 }
 
 #[test]
@@ -156,13 +129,16 @@ fn function_bodies_obey_the_same_rules() {
     let mut document = chain();
     assert_rejected(
         &mut document,
-        vec![DocCommand::UpsertFunction(function(vec![1], vec![]))],
+        vec![DocCommand::UpsertFunction(function_with(&[1], vec![]))],
         TxError::NodeExists(nid(1)),
     );
     let outward = typed_edge(9, port(5, "then"), port(1, "in"));
     assert_rejected(
         &mut document,
-        vec![DocCommand::UpsertFunction(function(vec![5], vec![outward]))],
+        vec![DocCommand::UpsertFunction(function_with(
+            &[5],
+            vec![outward],
+        ))],
         TxError::EdgeEndpointMissing {
             edge: eid(9),
             node: nid(1),
@@ -353,4 +329,90 @@ fn put_signature_is_idempotent_rejects_conflicts_and_undoes() {
     let _ = document.revert(again.inverse).unwrap();
     let _ = document.revert(first.inverse).unwrap();
     assert_eq!(content(&document), before);
+}
+
+#[test]
+fn divergent_clones_and_reloads_reject_each_others_inverses() {
+    let original = chain();
+    let mut left = original.clone();
+    let mut right = original;
+    let left_edit = left
+        .apply([DocCommand::Disconnect { edge: eid(1) }])
+        .unwrap();
+    let _right_edit = right
+        .apply([DocCommand::Disconnect { edge: eid(2) }])
+        .unwrap();
+    let before = saved(&right);
+    assert!(matches!(
+        right.revert(left_edit.inverse.clone()),
+        Err(TxError::StaleInverse { .. })
+    ));
+    assert_eq!(saved(&right), before);
+
+    let mut reloaded = from_json(&saved(&left)).unwrap();
+    let before = saved(&reloaded);
+    assert!(matches!(
+        reloaded.revert(left_edit.inverse),
+        Err(TxError::StaleInverse { .. })
+    ));
+    assert_eq!(saved(&reloaded), before);
+}
+
+#[test]
+fn equal_state_clones_can_share_undo() {
+    let mut document = chain();
+    let baseline = content(&document);
+    let first = document
+        .apply([DocCommand::Disconnect { edge: eid(1) }])
+        .unwrap();
+    let mut identical_clone = document.clone();
+    let _ = identical_clone.revert(first.inverse.clone()).unwrap();
+    assert_eq!(content(&identical_clone), baseline);
+    let second = document
+        .apply([DocCommand::Disconnect { edge: eid(2) }])
+        .unwrap();
+    let edited = content(&document);
+
+    let redo_second = document.revert(second.inverse).unwrap().inverse;
+    let redo_first = document.revert(first.inverse).unwrap().inverse;
+    assert_eq!(content(&document), baseline);
+    let _ = document.revert(redo_first).unwrap();
+    let _ = document.revert(redo_second).unwrap();
+    assert_eq!(content(&document), edited);
+}
+
+#[test]
+fn mismatched_function_node_key_is_typed_and_atomic() {
+    let mut nodes = IndexMap::new();
+    nodes.insert(nid(9), node(1));
+    let malformed = function(GraphBody {
+        nodes,
+        edges: IndexMap::new(),
+    });
+    assert_rejected(
+        &mut empty_document(),
+        vec![add(2), DocCommand::UpsertFunction(malformed)],
+        TxError::FunctionNodeKeyMismatch {
+            key: nid(9),
+            item: nid(1),
+        },
+    );
+}
+
+#[test]
+fn mismatched_function_edge_key_is_typed_and_atomic() {
+    let mut edges = IndexMap::new();
+    edges.insert(eid(9), typed_edge(1, port(1, "then"), port(2, "in")));
+    let malformed = function(GraphBody {
+        nodes: body([node(1), node(2)], []).nodes,
+        edges,
+    });
+    assert_rejected(
+        &mut empty_document(),
+        vec![add(3), DocCommand::UpsertFunction(malformed)],
+        TxError::FunctionEdgeKeyMismatch {
+            key: eid(9),
+            item: eid(1),
+        },
+    );
 }

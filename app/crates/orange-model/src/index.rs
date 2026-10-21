@@ -10,8 +10,8 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::change_set::{ChangeSet, DeclId};
 use crate::document::{BodyRef, Edge, GraphBody, GraphDocument, PortRef, SignatureSnapshot};
+use crate::edit::{ChangeSet, DeclId};
 use crate::id::{EdgeId, NodeId};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]

@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 use serde_json::Value as Json;
 
-use crate::change_set::{ChangeSet, Tracker};
+use super::change_set::{ChangeSet, Tracker};
+use super::patch::{Patch, Placed, editor_placement, placement};
+use crate::document::literal::Literal;
 use crate::document::{
     BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument, NodeInstance, PortRef,
     ProviderBinding, SignatureSnapshot, TypeParamName, VariableDecl, VariadicState, fresh_state_id,
@@ -19,8 +21,6 @@ use crate::error::TxError;
 use crate::id::{
     EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, TypeExpr, VariableId,
 };
-use crate::literal::Literal;
-use crate::patch::{Patch, Placed, editor_placement, placement};
 
 /// One edit intent. Replacing an item keeps its position; a new item is appended.
 ///

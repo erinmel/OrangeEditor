@@ -25,7 +25,7 @@ The tradeoff is shared repository access/history and a larger CI change surface.
 
 | Area | Boundary |
 |---|---|
-| `app/apps`, `app/crates` | Future root Cargo workspace for host application members; graph core remains independent of Bevy |
+| `app/apps`, `app/crates` | Root Cargo workspace members for the host application; graph core remains independent of Bevy. `orange-model` groups its source by layer: `id` and `type_term`, `document/`, `value/`, `edit/`, then `index`, `signature` and `paste` |
 | `plugins/<name>` | Independently built/package-versioned expansion; Rust guest/worker workspaces are excluded from root host defaults and use their own lock/toolchain as needed |
 | `sdk` | Public versioned WIT/wire/schema/packaging contract, exported deliberately from the host design; not a second private runtime API |
 | `examples` | Small version-locked workflows and SDK usage with expected results |

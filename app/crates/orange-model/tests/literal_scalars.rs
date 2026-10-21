@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use orange_model::literal::{Literal, LiteralPayload};
-use orange_model::literal_codec::{SchemaSet, decode, encode};
+use orange_model::document::literal::{Literal, LiteralPayload};
+use orange_model::value::literal_codec::{SchemaSet, decode, encode};
 use orange_model::{LiteralError, Value};
 use serde_json::{Value as Json, json};
 
@@ -198,4 +198,31 @@ fn encoding_checks_the_value_against_the_type() {
         encode(&f64_ty, &Value::F32(1.0), &schemas),
         Err(LiteralError::ValueMismatch { .. })
     ));
+}
+
+#[test]
+fn float_encoding_requires_the_exact_width_and_keeps_bits() {
+    let schemas = SchemaSet::default();
+    let f32_ty = "core/f32@1".parse().unwrap();
+    let f64_ty = "core/f64@1".parse().unwrap();
+    assert_eq!(
+        encode(&f32_ty, &Value::F64(1.0), &schemas),
+        Err(LiteralError::ValueMismatch {
+            ty: "core/f32@1".into()
+        })
+    );
+    assert_eq!(
+        encode(&f64_ty, &Value::F32(1.0), &schemas),
+        Err(LiteralError::ValueMismatch {
+            ty: "core/f64@1".into()
+        })
+    );
+    round_trip(
+        bits("core/f32@1", "80000000"),
+        Value::F32(f32::from_bits(0x8000_0000)),
+    );
+    round_trip(
+        bits("core/f64@1", "7ff8000000000042"),
+        Value::F64(f64::from_bits(0x7ff8_0000_0000_0042)),
+    );
 }

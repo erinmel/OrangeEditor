@@ -6,13 +6,12 @@
 //! field. JSON null exists only inside `Json`. Together these keep None, missing, JSON null
 //! and Error distinct by construction (FR-08). Secrets are never values.
 
+mod base64;
+pub mod literal_codec;
+
 use std::sync::Arc;
 
 use crate::id::TypeExpr;
-
-/// Nesting budget for parsing type expressions and decoding literals (03 requires codec
-/// depth budgets). Proposed value, recorded as an open budget in 10.
-pub const MAX_NESTING: usize = 64;
 
 /// A runtime value. Equality is structural identity (floats compare by bit pattern), not
 /// the language's `eq` constraint, which belongs to the runtime.

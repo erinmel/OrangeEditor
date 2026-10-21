@@ -5,9 +5,9 @@ mod common;
 
 use std::collections::BTreeMap;
 
-use common::{edge_id, node_id, read_fixture, saved};
+use common::{eid, nid, read_fixture, saved};
 use orange_model::document::{NodeKind, ResolvedPort, SignatureSnapshot};
-use orange_model::id::{EdgeId, NodeId, PortId, TypeExpr};
+use orange_model::id::{EdgeId, PortId, TypeExpr};
 use orange_model::signature::{SignatureDrift, compare, project, semantic_key};
 use orange_model::{DocIndex, from_json};
 use serde_json::{Value as Json, json};
@@ -95,14 +95,6 @@ fn g39_projection_equals_the_stored_snapshot_and_writes_nothing() {
         "no drift from presentation"
     );
     assert_eq!((saved(&document), document.revision()), before);
-}
-
-fn nid(n: u8) -> NodeId {
-    node_id(n).parse().unwrap()
-}
-
-fn eid(n: u8) -> EdgeId {
-    edge_id(n).parse().unwrap()
 }
 
 fn snapshot(value: Json) -> SignatureSnapshot {
@@ -196,4 +188,41 @@ fn implicit_ports_follow_the_kind_table() {
         ["error", "failed", "in"],
         "declared outcomes replace `then`"
     );
+}
+
+/// A projected one-port snapshot whose port has the given default literal.
+fn with_default(default: Json) -> SignatureSnapshot {
+    let port: ResolvedPort = serde_json::from_value(json!({
+        "port_id": "value",
+        "direction": "input",
+        "kind": "data",
+        "type": "core/f64@1",
+        "default": default,
+    }))
+    .unwrap();
+    project(NodeKind::Pure, [port], &BTreeMap::new())
+}
+
+#[test]
+fn default_display_text_does_not_change_the_key() {
+    let short =
+        with_default(json!({"type": "core/f64@1", "bits": "3ff0000000000000", "display": "1.0"}));
+    let long =
+        with_default(json!({"type": "core/f64@1", "bits": "3ff0000000000000", "display": "1.000"}));
+    let absent = with_default(json!({"type": "core/f64@1", "bits": "3ff0000000000000"}));
+    assert_eq!(short, long);
+    assert_eq!(short, absent);
+    assert_eq!(semantic_key(&short), semantic_key(&long));
+    assert_eq!(semantic_key(&short), semantic_key(&absent));
+}
+
+#[test]
+fn default_value_and_type_stay_in_the_key() {
+    let one =
+        with_default(json!({"type": "core/f64@1", "bits": "3ff0000000000000", "display": "1.0"}));
+    let two =
+        with_default(json!({"type": "core/f64@1", "bits": "4000000000000000", "display": "2.0"}));
+    let narrow = with_default(json!({"type": "core/f32@1", "bits": "3f800000"}));
+    assert_ne!(semantic_key(&one), semantic_key(&two));
+    assert_ne!(semantic_key(&one), semantic_key(&narrow));
 }

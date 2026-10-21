@@ -4,7 +4,7 @@
 use std::sync::Arc;
 
 use orange_model::Value;
-use orange_model::literal_codec::{SchemaSet, decode, encode};
+use orange_model::value::literal_codec::{SchemaSet, decode, encode};
 use orange_model::value::{ListRepr, MapRepr};
 use proptest::prelude::*;
 

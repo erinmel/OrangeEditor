@@ -2,12 +2,12 @@
 
 use std::collections::BTreeMap;
 
+use orange_model::document::literal::{Literal, LiteralPayload};
 use orange_model::document::{
     ActivationPolicy, DefinitionRef, Edge, FaultPolicy, GraphDocument, NodeInstance,
     OverflowPolicy, PortRef, ProviderBinding, ReentrancyMode,
 };
 use orange_model::id::{EdgeId, GraphId, NodeId, PortId, PortKey, TypeExpr};
-use orange_model::literal::{Literal, LiteralPayload};
 use orange_model::{BodyRef, DocCommand};
 use proptest::prelude::*;
 use serde_json::{Value as Json, json};

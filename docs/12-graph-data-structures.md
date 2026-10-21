@@ -445,7 +445,7 @@ Only the top-level literal carries `type`. Nested values are untagged, and their
 
 Implementation correction (00b.4 review): encoding requires the exact f32/f64 runtime variant; it performs no implicit narrowing or widening. Map encoding rejects floating-point key types and duplicate runtime keys, just as decoding does. Constraint registration and general key eligibility remain 00c work under [11 §5](11-graph-language.md).
 
-Implementation notes (WU-00/00b.4, `orange-model::literal_codec`):
+Implementation notes (WU-00/00b.4, `orange_model::value::literal_codec`):
 
 - **Nested floats** use the same lowercase-hex bit-pattern strings as a top-level `bits` field.
 - **Canonical form required:** decimal strings, bit patterns and base64 must already be canonical (no `+`, no leading zeros, lowercase hex, zero padding bits), so load→save stays byte-stable.

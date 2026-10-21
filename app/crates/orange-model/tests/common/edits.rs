@@ -1,19 +1,15 @@
 //! Random edit sequences for property tests: each `Op` is resolved against the current
 //! document, so generated edits mostly succeed and occasionally exercise rollback.
 
-use orange_model::document::{FunctionDecl, GraphBody, NodeInstance, NodeKind, PortRef};
-use orange_model::id::{FunctionId, NodeId, PortKey};
-use orange_model::literal::Literal;
+use orange_model::document::literal::Literal;
+use orange_model::document::{NodeInstance, PortRef};
+use orange_model::id::{NodeId, PortKey};
 use orange_model::{BodyRef, DocCommand, GraphDocument, LayoutCommand};
 use proptest::prelude::*;
 use serde_json::json;
 
 use super::strategies::{edge_between, literal, node, port_key, uuid_v4};
-
-/// The one function ID random edits create, replace and remove.
-pub fn function_id() -> FunctionId {
-    "50000000-0000-4000-8000-000000000001".parse().unwrap()
-}
+use super::{body, function, function_id};
 
 #[derive(Debug, Clone)]
 pub enum Op {
@@ -109,19 +105,7 @@ pub fn command(document: &GraphDocument, op: Op) -> Option<DocCommand> {
                     "in".parse().unwrap(),
                 )
             });
-            DocCommand::UpsertFunction(FunctionDecl {
-                id: function_id(),
-                name: "f".into(),
-                kind: NodeKind::Action,
-                type_params: vec![],
-                inputs: vec![],
-                outputs: vec![],
-                body: GraphBody {
-                    nodes: body_nodes.into_iter().map(|node| (node.id, node)).collect(),
-                    edges: edges.into_iter().map(|edge| (edge.id, edge)).collect(),
-                },
-                extensions: Default::default(),
-            })
+            DocCommand::UpsertFunction(function(body(body_nodes, edges)))
         }
         Op::RemoveFunction => DocCommand::RemoveFunction(function_id()),
         Op::RemoveMissing(id) => DocCommand::RemoveNodes {

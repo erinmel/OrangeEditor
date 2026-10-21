@@ -15,7 +15,10 @@ use std::fmt;
 
 use crate::error::IdError;
 use crate::id::TypeExpr;
-use crate::value::MAX_NESTING;
+
+/// Nesting budget for parsing type expressions and decoding literals (03 requires codec
+/// depth budgets). Proposed value, recorded as an open budget in 10.
+pub const MAX_NESTING: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum TypeTerm {

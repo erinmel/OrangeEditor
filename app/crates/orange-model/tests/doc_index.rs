@@ -6,14 +6,10 @@ mod common;
 use std::collections::BTreeSet;
 
 use common::edits::{command, op};
-use common::{edge_id, empty_document, node_id, port, read_fixture};
-use orange_model::id::{EdgeId, NodeId};
+use common::{edge_id, empty_document, nid, port, read_fixture};
+use orange_model::id::EdgeId;
 use orange_model::{BodyRef, DocIndex, from_json};
 use proptest::prelude::*;
-
-fn nid(n: u8) -> NodeId {
-    node_id(n).parse().unwrap()
-}
 
 fn eids(ns: &[u8]) -> BTreeSet<EdgeId> {
     ns.iter().map(|n| edge_id(*n).parse().unwrap()).collect()

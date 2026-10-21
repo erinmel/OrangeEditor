@@ -23,10 +23,10 @@ use crate::document::{
     BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
     SignatureSnapshot, VariableDecl,
 };
+use crate::edit::DocCommand;
 use crate::error::{IdError, PasteError};
 use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, VariableId};
 use crate::signature::semantic_key;
-use crate::transaction::DocCommand;
 
 /// Copied content, independent of the source document.
 #[derive(Debug, Clone, Default, PartialEq)]

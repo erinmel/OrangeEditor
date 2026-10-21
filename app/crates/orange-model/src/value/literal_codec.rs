@@ -15,12 +15,13 @@ use std::sync::Arc;
 
 use serde_json::{Map, Value as Json, json};
 
-use crate::base64;
+use super::base64;
+use super::{JsonText, ListRepr, MapRepr, RecordRepr, Value};
+use crate::document::literal::{Literal, LiteralPayload};
 use crate::error::LiteralError;
 use crate::id::TypeExpr;
-use crate::literal::{Literal, LiteralPayload};
+use crate::type_term::MAX_NESTING;
 use crate::type_term::{NamedTerm, TypeTerm};
-use crate::value::{JsonText, ListRepr, MAX_NESTING, MapRepr, RecordRepr, Value};
 
 /// Record and enum layouts by nominal type, supplied by the registry (12 §5).
 pub trait Schemas {

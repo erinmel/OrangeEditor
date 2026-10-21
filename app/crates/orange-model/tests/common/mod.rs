@@ -6,10 +6,13 @@ pub mod strategies;
 
 use std::path::PathBuf;
 
-use orange_model::document::{DefinitionRef, Edge, NodeInstance, PortRef};
-use orange_model::id::{EdgeId, NodeId};
-use orange_model::literal::Literal;
-use orange_model::{GraphDocument, to_json};
+use orange_model::document::keyed;
+use orange_model::document::literal::Literal;
+use orange_model::document::{
+    DefinitionRef, Edge, FunctionDecl, GraphBody, NodeInstance, NodeKind, PortRef,
+};
+use orange_model::id::{EdgeId, FunctionId, NodeId};
+use orange_model::{BodyRef, DocCommand, GraphDocument, to_json};
 use serde_json::{Value as Json, json};
 
 pub const GRAPH_ID: &str = "a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6";
@@ -136,4 +139,59 @@ pub fn id_source(seed: u8) -> impl FnMut() -> uuid::Uuid {
         bytes[..8].copy_from_slice(&counter.to_be_bytes());
         uuid::Builder::from_random_bytes(bytes).into_uuid()
     }
+}
+
+// Graph and function builders shared by the transaction, paste and index tests.
+
+/// The one function ID the tests create, replace and remove.
+pub fn function_id() -> FunctionId {
+    "50000000-0000-4000-8000-000000000001".parse().unwrap()
+}
+
+/// A body from nodes and edges keyed by their own IDs.
+pub fn body(
+    nodes: impl IntoIterator<Item = NodeInstance>,
+    edges: impl IntoIterator<Item = Edge>,
+) -> GraphBody {
+    GraphBody {
+        nodes: keyed::collect(nodes).unwrap(),
+        edges: keyed::collect(edges).unwrap(),
+    }
+}
+
+/// Function `f` (`function_id`) with the given body; its kind does not matter to the model.
+pub fn function(body: GraphBody) -> FunctionDecl {
+    FunctionDecl {
+        id: function_id(),
+        name: "f".into(),
+        kind: NodeKind::Action,
+        type_params: vec![],
+        inputs: vec![],
+        outputs: vec![],
+        body,
+        extensions: Default::default(),
+    }
+}
+
+pub fn add(n: u8) -> DocCommand {
+    DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: node(n),
+    }
+}
+
+/// Edge `n` from node `from`'s `then` to node `to`'s `in`.
+pub fn connect(n: u8, from: u8, to: u8) -> DocCommand {
+    DocCommand::Connect {
+        edge: typed_edge(n, port(from, "then"), port(to, "in")),
+    }
+}
+
+/// Root nodes 1–3 chained by edges 1 (1→2) and 2 (2→3).
+pub fn chain() -> GraphDocument {
+    let mut document = empty_document();
+    let _ = document
+        .apply([add(1), add(2), add(3), connect(1, 1, 2), connect(2, 2, 3)])
+        .unwrap();
+    document
 }

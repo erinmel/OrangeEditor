@@ -5,9 +5,9 @@
 mod common;
 
 use common::{edge_id, node_id, parse_json, read_fixture};
+use orange_model::document::literal::LiteralPayload;
 use orange_model::document::{FaultPolicy, OverflowPolicy, ReentrancyMode, VarScope};
 use orange_model::id::{EdgeId, NodeId, PortKey};
-use orange_model::literal::LiteralPayload;
 use orange_model::{from_json, to_json};
 use serde_json::json;
 

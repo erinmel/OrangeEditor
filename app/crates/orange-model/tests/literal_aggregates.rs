@@ -3,11 +3,11 @@
 
 use std::sync::Arc;
 
-use orange_model::literal::Literal;
-use orange_model::literal_codec::{
+use orange_model::document::literal::Literal;
+use orange_model::type_term::TypeTerm;
+use orange_model::value::literal_codec::{
     EnumSchema, FieldSchema, RecordSchema, SchemaSet, VariantSchema, decode, encode,
 };
-use orange_model::type_term::TypeTerm;
 use orange_model::value::{JsonText, ListRepr, MapRepr, RecordRepr};
 use orange_model::{LiteralError, Value};
 use serde_json::{Value as Json, json};
@@ -321,4 +321,31 @@ fn every_literal_in_the_saved_graph_example_decodes() {
         }
     }
     assert_eq!(count, 2, "n5.b and the `total` initializer");
+}
+
+#[test]
+fn map_encoding_rejects_what_decoding_rejects() {
+    let encode_map = |ty: &str, entries: Vec<(Value, Value)>| {
+        let value = Value::Map(Arc::new(MapRepr {
+            entries: entries.into(),
+        }));
+        encode(&ty.parse().unwrap(), &value, &schemas())
+    };
+    assert_eq!(
+        encode_map(
+            "core/map@1<core/string@1,core/i32@1>",
+            vec![
+                (str_value("repeat"), Value::I32(1)),
+                (str_value("repeat"), Value::I32(2))
+            ]
+        ),
+        Err(LiteralError::DuplicateMapKey)
+    );
+    assert_eq!(
+        encode_map("core/map@1<core/f64@1,core/i32@1>", vec![]),
+        Err(LiteralError::FloatMapKey {
+            ty: "core/f64@1".into()
+        }),
+        "float key types are rejected even for an empty map"
+    );
 }

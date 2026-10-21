@@ -9,6 +9,10 @@
 //! and changes only through [`GraphDocument::apply`]. Locks and exports have no document
 //! command yet (12 §3.3) and stay public until their flows exist.
 
+pub mod codec;
+pub mod keyed;
+pub mod literal;
+
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -16,12 +20,12 @@ use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value as Json};
 
+use crate::document::keyed::Keyed;
+use crate::document::literal::Literal;
 use crate::id::{
     DefinitionId, EdgeId, EventDeclId, FunctionId, GraphId, NodeId, PortId, PortKey, SignatureKey,
     TypeExpr, VariableId,
 };
-use crate::keyed::Keyed;
-use crate::literal::Literal;
 
 static NEXT_STATE_ID: AtomicU64 = AtomicU64::new(1);
 
@@ -57,16 +61,16 @@ pub struct GraphDocument {
     pub package_lock: Vec<PackageLockEntry>,
     #[serde(default)]
     pub type_lock: Vec<TypeLockEntry>,
-    #[serde(default, with = "crate::keyed")]
+    #[serde(default, with = "crate::document::keyed")]
     pub(crate) variables: IndexMap<VariableId, VariableDecl>,
-    #[serde(default, with = "crate::keyed")]
+    #[serde(default, with = "crate::document::keyed")]
     pub(crate) events: IndexMap<EventDeclId, EventDecl>,
     #[serde(default)]
     pub(crate) signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     /// Top-level body, persisted as the document's own `nodes` and `edges`.
     #[serde(flatten)]
     pub(crate) root: GraphBody,
-    #[serde(default, with = "crate::keyed")]
+    #[serde(default, with = "crate::document::keyed")]
     pub(crate) functions: IndexMap<FunctionId, FunctionDecl>,
     #[serde(default)]
     pub exports: Vec<GraphExport>,
@@ -214,9 +218,9 @@ impl GraphDocument {
 /// Nodes and edges of one body. Edges never cross bodies.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct GraphBody {
-    #[serde(default, with = "crate::keyed")]
+    #[serde(default, with = "crate::document::keyed")]
     pub nodes: IndexMap<NodeId, NodeInstance>,
-    #[serde(default, with = "crate::keyed")]
+    #[serde(default, with = "crate::document::keyed")]
     pub edges: IndexMap<EdgeId, Edge>,
 }
 

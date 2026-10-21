@@ -6,17 +6,15 @@ mod common;
 use std::collections::{BTreeSet, HashSet};
 
 use common::strategies::document;
-use common::{content, empty_document, id_source, node, port, read_fixture, typed_edge};
-use orange_model::document::{FunctionDecl, GraphBody, NodeKind};
-use orange_model::id::{EdgeId, FunctionId, NodeId, VariableId};
+use common::{
+    body, content, empty_document, function, function_id, id_source, nid, node, port, read_fixture,
+    typed_edge,
+};
+use orange_model::id::{EdgeId, NodeId, VariableId};
 use orange_model::paste::Fragment;
 use orange_model::{BodyRef, DocCommand, GraphDocument, PasteError, from_json};
 use proptest::prelude::*;
 use serde_json::json;
-
-fn nid(n: u8) -> NodeId {
-    common::nid(n)
-}
 
 fn fixture() -> GraphDocument {
     from_json(&read_fixture("threshold-v1.json")).unwrap()
@@ -147,10 +145,6 @@ fn paste_into_another_document_copies_declarations_under_new_ids() {
     }
 }
 
-fn function_id() -> FunctionId {
-    "50000000-0000-4000-8000-000000000001".parse().unwrap()
-}
-
 /// Root node 1 calls function f, whose body is nodes 5 → 6.
 fn with_function() -> GraphDocument {
     let mut document = empty_document();
@@ -158,22 +152,7 @@ fn with_function() -> GraphDocument {
     call.config
         .insert("function".into(), json!(function_id().to_string()));
     let edge = typed_edge(5, port(5, "then"), port(6, "in"));
-    let function = FunctionDecl {
-        id: function_id(),
-        name: "f".into(),
-        kind: NodeKind::Action,
-        type_params: vec![],
-        inputs: vec![],
-        outputs: vec![],
-        body: GraphBody {
-            nodes: [node(5), node(6)]
-                .into_iter()
-                .map(|node| (node.id, node))
-                .collect(),
-            edges: [(edge.id, edge)].into_iter().collect(),
-        },
-        extensions: Default::default(),
-    };
+    let function = function(body([node(5), node(6)], [edge]));
     let _ = document
         .apply([
             DocCommand::UpsertFunction(function),
