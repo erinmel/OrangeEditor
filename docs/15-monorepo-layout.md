@@ -1,6 +1,6 @@
 # Monorepo layout and ownership
 
-Status: **selected source layout**, 2026-10-20. The user selected one public GitHub repository, `erinmel/OrangeEditor`, containing the application and authored expansion plugins. The directories below initially contain documentation and repository tooling; no application, SDK or plugin implementation is implied. Repository bootstrap evidence is recorded separately in 10 and 14.
+Status: **selected source layout**, 2026-10-20. The user selected one public GitHub repository, `erinmel/OrangeEditor`, containing the application and authored expansion plugins. A directory exists only once it has content: today that is `app/crates/orange-model`, `tools/` and `.github/`. The other directories are reserved names; no SDK or plugin implementation is implied. Repository bootstrap evidence is recorded separately in 10 and 14.
 
 ```text
 OrangeEditor/
@@ -11,7 +11,7 @@ OrangeEditor/
   sdk/             versioned public plugin interfaces/schemas/bindings
   examples/        validated workflow and SDK examples
   docs/            requirements, architecture, decisions and evidence
-  tools/           repository validation scripts
+  tools/           CI support scripts
   .github/         PR template and CI workflows
 ```
 

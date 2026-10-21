@@ -69,7 +69,7 @@ Local hooks may provide fast feedback; CI/remote rules enforce merge policy. Hoo
 
 | Change / phase | Required evidence before merge |
 |---|---|
-| Documentation maintenance | Review consistency for changed contracts and the staged diff. Markdown/link/fence/JSON and repository-hygiene scripts remain optional local helpers, outside required CI. |
+| Documentation maintenance | Review consistency for changed contracts and the staged diff. No documentation or repository-hygiene scripts exist; this review is manual, outside required CI. |
 | Rust implementation, after WU-01 toolchain/lock setup | Formatting/lints, applicable model/runtime/property/contract tests and headless build on the declared Windows/Linux/macOS CI matrix from [06](06-quality-and-validation.md), using the pinned toolchain/features and `--locked` where supported. |
 | Graph/SDK/persistence contract | Relevant G-suite/schema/cross-language/migration/recovery fixtures; diagnostics and requirements updated in the same PR; G2 freeze evidence where applicable. |
 | UI/text/catalogues | Text references/key and argument validation, relevant L-suite/IME/accessibility interaction checks; manual platform evidence at the named gate. |
