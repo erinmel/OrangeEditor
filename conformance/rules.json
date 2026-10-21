@@ -1,0 +1,2950 @@
+{
+  "source": "docs/11-graph-language.md §4–§15",
+  "rules": [
+    {
+      "id": "R-4.1-port-id-format",
+      "section": "11 §4.1",
+      "rule": "`port_id` is `[a-z][a-z0-9_]{0,63}`, unique per definition across all kinds.",
+      "expect": "behaviour",
+      "cases": [
+        "G-41"
+      ]
+    },
+    {
+      "id": "R-4.1-reserved-ids",
+      "section": "11 §4.1",
+      "rule": "The implicit IDs `in`, `then`, `failed`, `error`, `cancelled`, `body` and `completed` are reserved.",
+      "expect": "behaviour",
+      "cases": [
+        "G-41"
+      ]
+    },
+    {
+      "id": "R-4.1-event-output-only",
+      "section": "11 §4.1",
+      "rule": "`event` ports are output-only.",
+      "expect": "E-PORT-DIRECTION",
+      "cases": [
+        "G-41"
+      ]
+    },
+    {
+      "id": "R-4.1-exec-port-untyped",
+      "section": "11 §4.1",
+      "rule": "Exec ports have no type.",
+      "expect": "behaviour",
+      "cases": [
+        "G-41"
+      ]
+    },
+    {
+      "id": "R-4.1-available-on-default",
+      "section": "11 §4.1",
+      "rule": "`available_on` lists the exec outcome outs after which an `execution` output is defined; the default is `[\"then\"]`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-42"
+      ]
+    },
+    {
+      "id": "R-4.1-error-on-failed",
+      "section": "11 §4.1",
+      "rule": "The implicit `error: core/error@1` is available on `failed`.",
+      "expect": "E-UNAVAILABLE-VALUE",
+      "cases": [
+        "G-53"
+      ]
+    },
+    {
+      "id": "R-4.1-default-not-handle-stream",
+      "section": "11 §4.1",
+      "rule": "A port `default` is not allowed for handle or stream types.",
+      "expect": "E-HANDLE-LITERAL",
+      "cases": [
+        "G-41"
+      ]
+    },
+    {
+      "id": "R-4.1-secret-ref-literal-is-reference",
+      "section": "11 §4.1",
+      "rule": "A `secret-ref` literal is only a reference, never secret material.",
+      "expect": "behaviour",
+      "cases": [
+        "G-41"
+      ]
+    },
+    {
+      "id": "R-4.1-optional-only-option",
+      "section": "11 §4.1",
+      "rule": "`optional` is allowed only if the type is `core/option@1<…>`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-41"
+      ]
+    },
+    {
+      "id": "R-4.1-lazy-intrinsics-only",
+      "section": "11 §4.1",
+      "rule": "`lazy` ports exist only on intrinsics in v1 (`select`, `and`, `or`, `coalesce`, `try`).",
+      "expect": "behaviour",
+      "cases": [
+        "G-41"
+      ]
+    },
+    {
+      "id": "R-4.1-presentation-never-semantic",
+      "section": "11 §4.1",
+      "rule": "`group`, `label`, `description` and `editor` are presentation only and never semantic.",
+      "expect": "behaviour",
+      "cases": [
+        "G-39"
+      ]
+    },
+    {
+      "id": "R-4.1-sensitivity-redaction",
+      "section": "11 §4.1",
+      "rule": "`sensitivity: sensitive` drives redaction in traces.",
+      "expect": "behaviour",
+      "cases": [
+        "G-78"
+      ]
+    },
+    {
+      "id": "R-4.1-implicit-ports-by-kind",
+      "section": "11 §4.1",
+      "rule": "Action/async/iterator/control get `in` (unless the intrinsic names its inputs), `failed` and `error`; action/async/entry with no declared outcome outs get `then`; async and iterator get `cancelled`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-42"
+      ]
+    },
+    {
+      "id": "R-4.1-declared-outcomes-replace-then",
+      "section": "11 §4.1",
+      "rule": "A definition with declared outcome outs replaces `then`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-42"
+      ]
+    },
+    {
+      "id": "R-4.1-one-outcome-per-execution",
+      "section": "11 §4.1",
+      "rule": "Exactly one outcome out fires per execution; `failed` and `cancelled` are outcomes too.",
+      "expect": "behaviour",
+      "cases": [
+        "G-42"
+      ]
+    },
+    {
+      "id": "R-4.2-data-to-data-identical-types",
+      "section": "11 §4.2",
+      "rule": "A data out connects to a data in only if the types are identical after generic resolution.",
+      "expect": "E-TYPE-MISMATCH",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.2-data-to-exec",
+      "section": "11 §4.2",
+      "rule": "A data out connected to an exec in is rejected.",
+      "expect": "E-KIND-MISMATCH",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.2-exec-to-data",
+      "section": "11 §4.2",
+      "rule": "An exec out connected to a data in is rejected.",
+      "expect": "E-KIND-MISMATCH",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.2-exec-to-exec-same-region",
+      "section": "11 §4.2",
+      "rule": "An exec out connects to an exec in within the same region.",
+      "expect": "behaviour",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.2-event-to-exec",
+      "section": "11 §4.2",
+      "rule": "An event out connected to an exec in is OK and the target starts a new event region.",
+      "expect": "behaviour",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.2-event-to-data",
+      "section": "11 §4.2",
+      "rule": "An event out connected to a data in is rejected.",
+      "expect": "E-KIND-MISMATCH",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.3-data-input-fan-in",
+      "section": "11 §4.3",
+      "rule": "A data input has at most one incoming edge.",
+      "expect": "E-FANIN-DATA",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.3-data-output-fan-out",
+      "section": "11 §4.3",
+      "rule": "A data output has unlimited edges (fan-out shares an immutable value).",
+      "expect": "behaviour",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.3-stream-output-fan-out",
+      "section": "11 §4.3",
+      "rule": "A data output has at most one edge if its type is a stream.",
+      "expect": "E-STREAM-FANOUT",
+      "cases": [
+        "G-22"
+      ]
+    },
+    {
+      "id": "R-4.3-exec-output-fan-out",
+      "section": "11 §4.3",
+      "rule": "An exec output has at most one edge.",
+      "expect": "E-FANOUT-EXEC",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.3-exec-input-fan-in",
+      "section": "11 §4.3",
+      "rule": "An exec input accepts unlimited edges from the same region; merge is OR and each arriving token executes the node once.",
+      "expect": "behaviour",
+      "cases": [
+        "G-52"
+      ]
+    },
+    {
+      "id": "R-4.3-event-output-fan-out",
+      "section": "11 §4.3",
+      "rule": "An event output has at most one edge.",
+      "expect": "E-FANOUT-EVENT",
+      "cases": [
+        "G-40"
+      ]
+    },
+    {
+      "id": "R-4.3-self-edge-data",
+      "section": "11 §4.3",
+      "rule": "A data self edge is rejected unless §8 permits it.",
+      "expect": "E-CYCLE-DATA",
+      "cases": [
+        "G-06"
+      ]
+    },
+    {
+      "id": "R-4.3-self-edge-exec",
+      "section": "11 §4.3",
+      "rule": "An exec self edge is an ordinary control cycle (§8).",
+      "expect": "E-CYCLE-SYNC-CONTROL",
+      "cases": [
+        "G-07"
+      ]
+    },
+    {
+      "id": "R-4.4-resolution-order",
+      "section": "11 §4.4",
+      "rule": "An input value resolves in order: connected edge, instance literal, definition default, `None` for an optional port, otherwise `E-INPUT-REQUIRED`.",
+      "expect": "E-INPUT-REQUIRED",
+      "cases": [
+        "G-43"
+      ]
+    },
+    {
+      "id": "R-4.4-shadowed-literal",
+      "section": "11 §4.4",
+      "rule": "When an edge is connected the instance literal stays in the document as shadowed and is ignored by the compiler; disconnecting restores it.",
+      "expect": "W-LITERAL-SHADOWED",
+      "cases": [
+        "G-30"
+      ]
+    },
+    {
+      "id": "R-4.4-literal-codec-only",
+      "section": "11 §4.4",
+      "rule": "Literals exist only for types with a literal codec; handles, streams, results and errors have none.",
+      "expect": "behaviour",
+      "cases": [
+        "G-43"
+      ]
+    },
+    {
+      "id": "R-4.5-variadic-stable-keys",
+      "section": "11 §4.5",
+      "rule": "Variadic instance ports use stable keys `item#k`, so inserting an item in the middle does not rewrite edges.",
+      "expect": "behaviour",
+      "cases": [
+        "G-31"
+      ]
+    },
+    {
+      "id": "R-4.5-variadic-key-never-reused",
+      "section": "11 §4.5",
+      "rule": "`k` is a per-node counter that is never reused.",
+      "expect": "behaviour",
+      "cases": [
+        "G-44"
+      ]
+    },
+    {
+      "id": "R-4.5-variadic-instance-order",
+      "section": "11 §4.5",
+      "rule": "Variadic order is the persisted instance order, not `k`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-44"
+      ]
+    },
+    {
+      "id": "R-4.5-declarative-port-templates",
+      "section": "11 §4.5",
+      "rule": "Ports that depend on config or type arguments come from a declarative port template that the host evaluates; no guest code runs to compute ports.",
+      "expect": "behaviour",
+      "cases": [
+        "G-45"
+      ]
+    },
+    {
+      "id": "R-4.5-signature-snapshot",
+      "section": "11 §4.5",
+      "rule": "Every non-intrinsic node persists a resolved signature snapshot; a missing package still shows ports and edges.",
+      "expect": "behaviour",
+      "cases": [
+        "G-29"
+      ]
+    },
+    {
+      "id": "R-4.5-signature-drift",
+      "section": "11 §4.5",
+      "rule": "If re-resolution differs from the snapshot it produces a diagnostic.",
+      "expect": "E-SIGNATURE-DRIFT",
+      "cases": [
+        "G-29"
+      ]
+    },
+    {
+      "id": "R-4.5-orphan-edges",
+      "section": "11 §4.5",
+      "rule": "Edges to vanished ports become orphan edges: preserved, displayed and not compiled.",
+      "expect": "E-PORT-UNKNOWN",
+      "cases": [
+        "G-29"
+      ]
+    },
+    {
+      "id": "R-5.1-canonical-persisted",
+      "section": "11 §5.1",
+      "rule": "Persisted documents and wire contracts use only the canonical type form; the editor short forms are display only.",
+      "expect": "behaviour",
+      "cases": [
+        "G-46"
+      ]
+    },
+    {
+      "id": "R-5.1-param-in-definitions-only",
+      "section": "11 §5.1",
+      "rule": "A type parameter `$ident` appears only inside definitions.",
+      "expect": "behaviour",
+      "cases": [
+        "G-46"
+      ]
+    },
+    {
+      "id": "R-5.1-type-lock-contents",
+      "section": "11 §5.1",
+      "rule": "A type lock records `named` without parameters, plus codec version.",
+      "expect": "behaviour",
+      "cases": [
+        "G-46"
+      ]
+    },
+    {
+      "id": "R-5.2-map-insertion-order",
+      "section": "11 §5.2",
+      "rule": "`core/map@1<K,V>` is insertion-ordered.",
+      "expect": "behaviour",
+      "cases": [
+        "G-46"
+      ]
+    },
+    {
+      "id": "R-5.2-map-key-constraint",
+      "section": "11 §5.2",
+      "rule": "A map key `K` must implement `hash` + `eq` and must not be a float.",
+      "expect": "E-CONSTRAINT-UNSATISFIED",
+      "cases": [
+        "G-48"
+      ]
+    },
+    {
+      "id": "R-5.2-result-origin",
+      "section": "11 §5.2",
+      "rule": "`core/result@1<T>` is produced only by `core/try` and by nodes that explicitly return it.",
+      "expect": "behaviour",
+      "cases": [
+        "G-18"
+      ]
+    },
+    {
+      "id": "R-5.2-secret-ref-no-string",
+      "section": "11 §5.2",
+      "rule": "`core/secret-ref@1` has no conversion to string and is never a literal secret.",
+      "expect": "behaviour",
+      "cases": [
+        "G-46"
+      ]
+    },
+    {
+      "id": "R-5.2-excluded-types-no-any",
+      "section": "11 §5.2",
+      "rule": "i8/i16/u8/u16, decimals and tuples are excluded from v1, and there is no `any` type.",
+      "expect": "behaviour",
+      "cases": [
+        "G-46"
+      ]
+    },
+    {
+      "id": "R-5.3-nominal-types",
+      "section": "11 §5.3",
+      "rule": "Types are nominal: two packages' `point` records are different types even with identical fields.",
+      "expect": "E-TYPE-MISMATCH",
+      "cases": [
+        "G-47"
+      ]
+    },
+    {
+      "id": "R-5.3-major-version-identity",
+      "section": "11 §5.3",
+      "rule": "The major version is part of a type's identity.",
+      "expect": "E-TYPE-MISMATCH",
+      "cases": [
+        "G-47"
+      ]
+    },
+    {
+      "id": "R-5.4-eq-excludes-float-handle-stream",
+      "section": "11 §5.4",
+      "rule": "`eq` is implemented by all core types except f32/f64, handles and streams.",
+      "expect": "E-CONSTRAINT-UNSATISFIED",
+      "cases": [
+        "G-48"
+      ]
+    },
+    {
+      "id": "R-5.4-ord-floats-explicit",
+      "section": "11 §5.4",
+      "rule": "`ord` on floats is available only through explicit `total-order` nodes.",
+      "expect": "E-CONSTRAINT-UNSATISFIED",
+      "cases": [
+        "G-48"
+      ]
+    },
+    {
+      "id": "R-5.4-constraint-coherence-owner",
+      "section": "11 §5.4",
+      "rule": "Only the package that owns a type may implement a core constraint for it.",
+      "expect": "behaviour",
+      "cases": [
+        "G-48"
+      ]
+    },
+    {
+      "id": "R-5.4-constraint-own-for-foreign",
+      "section": "11 §5.4",
+      "rule": "A package may implement its own constraint for a foreign type.",
+      "expect": "behaviour",
+      "cases": [
+        "G-48"
+      ]
+    },
+    {
+      "id": "R-5.5-inference-deterministic",
+      "section": "11 §5.5",
+      "rule": "Inference visits the connected component of generic nodes in stable `NodeId` order, so the result is deterministic.",
+      "expect": "behaviour",
+      "cases": [
+        "G-49"
+      ]
+    },
+    {
+      "id": "R-5.5-type-args-persisted",
+      "section": "11 §5.5",
+      "rule": "Resolved type arguments are persisted on the instance (`type_args`); loading never depends on re-running the solver.",
+      "expect": "behaviour",
+      "cases": [
+        "G-19"
+      ]
+    },
+    {
+      "id": "R-5.5-reinfer-component-only",
+      "section": "11 §5.5",
+      "rule": "An edit re-infers only the affected connected component.",
+      "expect": "behaviour",
+      "cases": [
+        "G-49"
+      ]
+    },
+    {
+      "id": "R-5.5-type-ambiguous",
+      "section": "11 §5.5",
+      "rule": "An unresolved type parameter is `E-TYPE-AMBIGUOUS`; the user pins it in the inspector.",
+      "expect": "E-TYPE-AMBIGUOUS",
+      "cases": [
+        "G-19"
+      ]
+    },
+    {
+      "id": "R-5.5-type-conflict",
+      "section": "11 §5.5",
+      "rule": "A conflicting type argument is `E-TYPE-MISMATCH` with converter suggestions.",
+      "expect": "E-TYPE-MISMATCH",
+      "cases": [
+        "G-49"
+      ]
+    },
+    {
+      "id": "R-5.5-inference-no-conversions",
+      "section": "11 §5.5",
+      "rule": "Inference never inserts conversions.",
+      "expect": "behaviour",
+      "cases": [
+        "G-49"
+      ]
+    },
+    {
+      "id": "R-5.5-no-specialization",
+      "section": "11 §5.5",
+      "rule": "A missing specialization of a generic provider is `E-NO-SPECIALIZATION` at compile time, never a run-time lookup.",
+      "expect": "E-NO-SPECIALIZATION",
+      "cases": [
+        "G-49"
+      ]
+    },
+    {
+      "id": "R-5.6-int-overflow-modes",
+      "section": "11 §5.6",
+      "rule": "`int_overflow` is `checked` (default), `wrapping` or `saturating`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-50"
+      ]
+    },
+    {
+      "id": "R-5.6-int-division-truncates",
+      "section": "11 §5.6",
+      "rule": "Integer division truncates toward zero.",
+      "expect": "behaviour",
+      "cases": [
+        "G-50"
+      ]
+    },
+    {
+      "id": "R-5.6-rem-dividend-sign",
+      "section": "11 §5.6",
+      "rule": "`rem` takes the dividend's sign; Euclidean `mod` is a separate node.",
+      "expect": "behaviour",
+      "cases": [
+        "G-50"
+      ]
+    },
+    {
+      "id": "R-5.6-shift-checked",
+      "section": "11 §5.6",
+      "rule": "Shifts by ≥ the bit width fail in checked mode.",
+      "expect": "core/OutOfRange",
+      "cases": [
+        "G-50"
+      ]
+    },
+    {
+      "id": "R-5.6-narrow-int-follow-i64",
+      "section": "11 §5.6",
+      "rule": "i32/u32 follow the i64 rules and f32 follows the f64 rules.",
+      "expect": "behaviour",
+      "cases": [
+        "G-50"
+      ]
+    },
+    {
+      "id": "R-5.6-f32-bits-persist",
+      "section": "11 §5.6",
+      "rule": "f32 persists as 8-hex-digit `bits`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-50"
+      ]
+    },
+    {
+      "id": "R-5.6-mixed-width-explicit",
+      "section": "11 §5.6",
+      "rule": "Mixed-width arithmetic is never implicit.",
+      "expect": "E-TYPE-MISMATCH",
+      "cases": [
+        "G-50"
+      ]
+    },
+    {
+      "id": "R-6-compiler-never-converts",
+      "section": "11 §6",
+      "rule": "The compiler never converts; every conversion is a `core/convert` node that names a converter registry entry.",
+      "expect": "behaviour",
+      "cases": [
+        "G-20"
+      ]
+    },
+    {
+      "id": "R-6-partial-out-of-range",
+      "section": "11 §6",
+      "rule": "A checked-partial conversion i64→i32 fails with `core/OutOfRange` when out of range.",
+      "expect": "core/OutOfRange",
+      "cases": [
+        "G-51"
+      ]
+    },
+    {
+      "id": "R-6-partial-parse",
+      "section": "11 §6",
+      "rule": "A checked-partial conversion string→i64 fails with `core/Parse`.",
+      "expect": "core/Parse",
+      "cases": [
+        "G-51"
+      ]
+    },
+    {
+      "id": "R-6-partial-none-value",
+      "section": "11 §6",
+      "rule": "A checked-partial conversion `option<T>`→T fails with `core/NoneValue` on None.",
+      "expect": "core/NoneValue",
+      "cases": [
+        "G-51"
+      ]
+    },
+    {
+      "id": "R-6-lossy-metadata",
+      "section": "11 §6",
+      "rule": "A `lossy` conversion may lose information under a declared policy and returns loss metadata.",
+      "expect": "behaviour",
+      "cases": [
+        "G-51"
+      ]
+    },
+    {
+      "id": "R-6-auto-insert-single-lossless",
+      "section": "11 §6",
+      "rule": "When an incompatible wire is dropped and exactly one `lossless-total` entry exists for the pair, the editor inserts a visible converter node in the same undoable transaction.",
+      "expect": "behaviour",
+      "cases": [
+        "G-20"
+      ]
+    },
+    {
+      "id": "R-6-partial-lossy-choice",
+      "section": "11 §6",
+      "rule": "If only partial or lossy entries exist, the editor shows a choice and never picks one.",
+      "expect": "behaviour",
+      "cases": [
+        "G-20"
+      ]
+    },
+    {
+      "id": "R-6-no-chained-conversions",
+      "section": "11 §6",
+      "rule": "Chained conversions are never auto-inserted.",
+      "expect": "behaviour",
+      "cases": [
+        "G-20"
+      ]
+    },
+    {
+      "id": "R-6-no-entry-rejected",
+      "section": "11 §6",
+      "rule": "With no registry entry the connection is rejected with a diagnostic.",
+      "expect": "E-TYPE-MISMATCH",
+      "cases": [
+        "G-51"
+      ]
+    },
+    {
+      "id": "R-6-converter-ownership",
+      "section": "11 §6",
+      "rule": "A package may register converters only when it owns `from` or `to`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-21"
+      ]
+    },
+    {
+      "id": "R-6-converter-override-slot",
+      "section": "11 §6",
+      "rule": "A competing provider for an existing pair uses override slot `convert:<from>-><to>` with the same explicit-rebind rule as other providers.",
+      "expect": "behaviour",
+      "cases": [
+        "G-51"
+      ]
+    },
+    {
+      "id": "R-7.1-region-roots",
+      "section": "11 §7.1",
+      "rule": "Region roots are each entry's `then`, each event output, each function entry, each Sequence `then#k`, each Fork `branch#k` and each loop or iterator `body`; a node's region is found by walking exec edges from roots without entering child-region roots.",
+      "expect": "behaviour",
+      "cases": [
+        "G-52"
+      ]
+    },
+    {
+      "id": "R-7.1-region-ambiguous",
+      "section": "11 §7.1",
+      "rule": "An exec node reachable from two sibling regions is `E-REGION-AMBIGUOUS` (every exec node belongs to exactly one region).",
+      "expect": "E-REGION-AMBIGUOUS",
+      "cases": [
+        "G-10"
+      ]
+    },
+    {
+      "id": "R-7.1-region-escape",
+      "section": "11 §7.1",
+      "rule": "An exec edge leaving its region is `E-REGION-ESCAPE`.",
+      "expect": "E-REGION-ESCAPE",
+      "cases": [
+        "G-52"
+      ]
+    },
+    {
+      "id": "R-7.1-region-terminators",
+      "section": "11 §7.1",
+      "rule": "Leaving a region is possible only through its terminators: end of strand, Break/Continue (loop bodies), Return (functions).",
+      "expect": "E-REGION-ESCAPE",
+      "cases": [
+        "G-52"
+      ]
+    },
+    {
+      "id": "R-7.1-outcomes-no-region",
+      "section": "11 §7.1",
+      "rule": "Branch, Switch, Gate and async outcomes do not create regions; their outs stay in the parent region and may merge again.",
+      "expect": "behaviour",
+      "cases": [
+        "G-52"
+      ]
+    },
+    {
+      "id": "R-7.1-region-completion",
+      "section": "11 §7.1",
+      "rule": "A region instance completes when every strand inside it has ended, including nested Fork strands.",
+      "expect": "behaviour",
+      "cases": [
+        "G-52"
+      ]
+    },
+    {
+      "id": "R-7.1-structured-concurrency",
+      "section": "11 §7.1",
+      "rule": "Nothing outlives its region instance, except subscriptions owned by the run (§10.4).",
+      "expect": "behaviour",
+      "cases": [
+        "G-73"
+      ]
+    },
+    {
+      "id": "R-7.1-unreachable",
+      "section": "11 §7.1",
+      "rule": "Unreachable exec nodes are `W-UNREACHABLE` and are not compiled.",
+      "expect": "W-UNREACHABLE",
+      "cases": [
+        "G-52"
+      ]
+    },
+    {
+      "id": "R-7.2-same-activation-tree",
+      "section": "11 §7.2",
+      "rule": "A consumed execution output must come from the same activation tree (same entry or event root, or same function body).",
+      "expect": "E-CROSS-ACTIVATION",
+      "cases": [
+        "G-35"
+      ]
+    },
+    {
+      "id": "R-7.2-dominance",
+      "section": "11 §7.2",
+      "rule": "Every control-flow path from the root to the consumer must pass through an `S`-outcome edge of the producer.",
+      "expect": "E-UNAVAILABLE-VALUE",
+      "cases": [
+        "G-04"
+      ]
+    },
+    {
+      "id": "R-7.2-back-edge-latest",
+      "section": "11 §7.2",
+      "rule": "With back edges the consumer reads the most recent execution of the producer on that path.",
+      "expect": "behaviour",
+      "cases": [
+        "G-53"
+      ]
+    },
+    {
+      "id": "R-7.2-branch-merge-read",
+      "section": "11 §7.2",
+      "rule": "The output of an action in a Branch's `true` path read after the branches merge is rejected.",
+      "expect": "E-UNAVAILABLE-VALUE",
+      "cases": [
+        "G-04"
+      ]
+    },
+    {
+      "id": "R-7.2-loop-value-at-completed",
+      "section": "11 §7.2",
+      "rule": "Loop `element`/`index`, or a value computed in the body, read at `completed` is rejected (zero iterations).",
+      "expect": "E-UNAVAILABLE-VALUE",
+      "cases": [
+        "G-05"
+      ]
+    },
+    {
+      "id": "R-7.2-fork-sibling-read",
+      "section": "11 §7.2",
+      "rule": "A value from Fork branch A read in sibling branch B is rejected.",
+      "expect": "E-UNAVAILABLE-VALUE",
+      "cases": [
+        "G-53"
+      ]
+    },
+    {
+      "id": "R-7.2-fork-join-availability",
+      "section": "11 §7.2",
+      "rule": "A Fork branch value read after `completed` is allowed with `join: all` and rejected with `any`, `race` or `detach`.",
+      "expect": "E-UNAVAILABLE-VALUE",
+      "cases": [
+        "G-09"
+      ]
+    },
+    {
+      "id": "R-7.2-async-then-on-failed",
+      "section": "11 §7.2",
+      "rule": "An async `then` output read on the `failed` path is rejected.",
+      "expect": "E-UNAVAILABLE-VALUE",
+      "cases": [
+        "G-53"
+      ]
+    },
+    {
+      "id": "R-7.2-entry-payload-allowed",
+      "section": "11 §7.2",
+      "rule": "An entry `payload` is allowed anywhere in its activation.",
+      "expect": "behaviour",
+      "cases": [
+        "G-53"
+      ]
+    },
+    {
+      "id": "R-7.2-const-volatile-cone-allowed",
+      "section": "11 §7.2",
+      "rule": "A constant, literal or volatile cone is allowed everywhere, including exports, Watch and preview.",
+      "expect": "behaviour",
+      "cases": [
+        "G-35",
+        "G-83"
+      ]
+    },
+    {
+      "id": "R-7.2-event-region-reads-then",
+      "section": "11 §7.2",
+      "rule": "An event-region node reading the subscribing node's `then` outputs is rejected; share through a run variable.",
+      "expect": "E-CROSS-ACTIVATION",
+      "cases": [
+        "G-53"
+      ]
+    },
+    {
+      "id": "R-7.2-unconnected-failed-faults",
+      "section": "11 §7.2",
+      "rule": "An unconnected `failed` means unhandled: the strand faults.",
+      "expect": "behaviour",
+      "cases": [
+        "G-17"
+      ]
+    },
+    {
+      "id": "R-7.3-diamond-pure",
+      "section": "11 §7.3",
+      "rule": "In a pure diamond A is evaluated once per memo scope and D sees one consistent A.",
+      "expect": "behaviour",
+      "cases": [
+        "G-01"
+      ]
+    },
+    {
+      "id": "R-7.3-diamond-volatile-one-action",
+      "section": "11 §7.3",
+      "rule": "Get V feeding two consumers of one action is one prologue read per epoch, so both see the same V.",
+      "expect": "behaviour",
+      "cases": [
+        "G-54"
+      ]
+    },
+    {
+      "id": "R-7.3-diamond-volatile-two-actions",
+      "section": "11 §7.3",
+      "rule": "Across two actions in one strand each action opens its own epoch and sees already committed writes (Set → Get observes the new value).",
+      "expect": "behaviour",
+      "cases": [
+        "G-03"
+      ]
+    },
+    {
+      "id": "R-7.3-diamond-control-merge",
+      "section": "11 §7.3",
+      "rule": "A control split merging into the same node (Branch true/false → same node) is legal and exactly one token arrives.",
+      "expect": "behaviour",
+      "cases": [
+        "G-52"
+      ]
+    },
+    {
+      "id": "R-7.3-diamond-fork-same-node",
+      "section": "11 §7.3",
+      "rule": "Fork → two branches → same node is impossible (`E-REGION-AMBIGUOUS`); use `completed`.",
+      "expect": "E-REGION-AMBIGUOUS",
+      "cases": [
+        "G-10"
+      ]
+    },
+    {
+      "id": "R-7.3-diamond-reactive",
+      "section": "11 §7.3",
+      "rule": "When V changes and Watch W1 and W2 depend on V and W3 on both, Watches evaluate once per segment boundary against one state snapshot with no observable intermediate mixed state.",
+      "expect": "behaviour",
+      "cases": [
+        "G-15"
+      ]
+    },
+    {
+      "id": "R-7.3-diamond-event",
+      "section": "11 §7.3",
+      "rule": "One emit with two `On Event` handlers enqueues two activations in handler `order`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-13"
+      ]
+    },
+    {
+      "id": "R-7.4-epoch-per-site",
+      "section": "11 §7.4",
+      "rule": "Each execution of a consumption site (input gathering, loop condition check, Watch evaluation, export or preview evaluation) opens a new epoch.",
+      "expect": "behaviour",
+      "cases": [
+        "G-54"
+      ]
+    },
+    {
+      "id": "R-7.4-epoch-prologue",
+      "section": "11 §7.4",
+      "rule": "At epoch start the program's `state-read` and `clock` volatile nodes are read in program order, giving a consistent snapshot even if the pull yields mid-way.",
+      "expect": "behaviour",
+      "cases": [
+        "G-54"
+      ]
+    },
+    {
+      "id": "R-7.4-class-const",
+      "section": "11 §7.4",
+      "rule": "A `const` output is folded once per plan.",
+      "expect": "behaviour",
+      "cases": [
+        "G-55"
+      ]
+    },
+    {
+      "id": "R-7.4-const-error-kept",
+      "section": "11 §7.4",
+      "rule": "A folded error stays a run-time error at each consumption and produces `W-CONST-ERROR`; it is never hidden.",
+      "expect": "W-CONST-ERROR",
+      "cases": [
+        "G-37"
+      ]
+    },
+    {
+      "id": "R-7.4-class-activation",
+      "section": "11 §7.4",
+      "rule": "An `activation` output (payloads, or `execution` outputs whose producer runs at most once per activation) is memoized once per activation.",
+      "expect": "behaviour",
+      "cases": [
+        "G-55"
+      ]
+    },
+    {
+      "id": "R-7.4-class-epoch",
+      "section": "11 §7.4",
+      "rule": "All other outputs are `epoch` class and memoized once per epoch.",
+      "expect": "behaviour",
+      "cases": [
+        "G-55"
+      ]
+    },
+    {
+      "id": "R-7.4-eval-order",
+      "section": "11 §7.4",
+      "rule": "Evaluation is depth-first in input port declaration order, with variadic ports in instance order.",
+      "expect": "behaviour",
+      "cases": [
+        "G-17",
+        "G-44"
+      ]
+    },
+    {
+      "id": "R-7.4-lazy-only-selected",
+      "section": "11 §7.4",
+      "rule": "Lazy intrinsics evaluate only the inputs they select.",
+      "expect": "behaviour",
+      "cases": [
+        "G-56"
+      ]
+    },
+    {
+      "id": "R-7.4-first-error-stops",
+      "section": "11 §7.4",
+      "rule": "The first error in evaluation order is reported and the pull stops.",
+      "expect": "behaviour",
+      "cases": [
+        "G-17"
+      ]
+    },
+    {
+      "id": "R-7.4-pull-no-actions",
+      "section": "11 §7.4",
+      "rule": "A pull never executes actions.",
+      "expect": "behaviour",
+      "cases": [
+        "G-54"
+      ]
+    },
+    {
+      "id": "R-7.4-heavy-offload",
+      "section": "11 §7.4",
+      "rule": "A pure program flagged `heavy` MAY be offloaded to the compute pool after the prologue; the strand suspends, which is semantically invisible because inputs are immutable.",
+      "expect": "behaviour",
+      "cases": [
+        "G-54"
+      ]
+    },
+    {
+      "id": "R-7.4-zone-slice-check",
+      "section": "11 §7.4",
+      "rule": "Zones check the slice budget at iteration boundaries; partial zone state lives in the frame.",
+      "expect": "behaviour",
+      "cases": [
+        "G-33"
+      ]
+    },
+    {
+      "id": "R-7.5-O1",
+      "section": "11 §7.5",
+      "rule": "Within a strand, exec nodes run in program order along exec edges.",
+      "expect": "behaviour",
+      "cases": [
+        "G-57"
+      ]
+    },
+    {
+      "id": "R-7.5-O2",
+      "section": "11 §7.5",
+      "rule": "Sequence: `then#k+1` starts only after the region instance of `then#k` completes, including its awaits.",
+      "expect": "behaviour",
+      "cases": [
+        "G-08"
+      ]
+    },
+    {
+      "id": "R-7.5-O3-start-order",
+      "section": "11 §7.5",
+      "rule": "Fork branches start in port order within one segment; after the first suspension interleaving follows completion order.",
+      "expect": "behaviour",
+      "cases": [
+        "G-09"
+      ]
+    },
+    {
+      "id": "R-7.5-O3-join-modes",
+      "section": "11 §7.5",
+      "rule": "Fork `completed` fires per join mode: `all` (all branch instances complete), `any` (first completes; others keep running), `race` (first completes; others cancelled), `detach` (fires immediately; branches still complete within the activation).",
+      "expect": "behaviour",
+      "cases": [
+        "G-09"
+      ]
+    },
+    {
+      "id": "R-7.5-O4",
+      "section": "11 §7.5",
+      "rule": "Pure evaluation order and error choice follow §7.4.",
+      "expect": "behaviour",
+      "cases": [
+        "G-17"
+      ]
+    },
+    {
+      "id": "R-7.5-O5",
+      "section": "11 §7.5",
+      "rule": "Events from one source are FIFO by `source_seq`; across sources order follows the host `ingestion_seq`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-57"
+      ]
+    },
+    {
+      "id": "R-7.5-O6",
+      "section": "11 §7.5",
+      "rule": "Completions enter the run inbox in arrival order; independent async operations have no order guarantee, and arrival order is recorded.",
+      "expect": "behaviour",
+      "cases": [
+        "G-57"
+      ]
+    },
+    {
+      "id": "R-7.5-O7",
+      "section": "11 §7.5",
+      "rule": "Emit only enqueues; a handler never runs inside the emitter's strand (no reentrant call, no stack growth).",
+      "expect": "behaviour",
+      "cases": [
+        "G-57"
+      ]
+    },
+    {
+      "id": "R-7.5-O8",
+      "section": "11 §7.5",
+      "rule": "Activations started by one envelope are enqueued in ascending handler `order`; `order` is persisted, initialized from a creation counter and editable.",
+      "expect": "behaviour",
+      "cases": [
+        "G-13"
+      ]
+    },
+    {
+      "id": "R-7.5-O9",
+      "section": "11 §7.5",
+      "rule": "A committed write is visible to every epoch that starts later in any strand of the run.",
+      "expect": "behaviour",
+      "cases": [
+        "G-58"
+      ]
+    },
+    {
+      "id": "R-7.5-O10",
+      "section": "11 §7.5",
+      "rule": "Change notifications and Watch firings from one segment are enqueued after that segment, in `order`, before the next ready strand runs.",
+      "expect": "behaviour",
+      "cases": [
+        "G-58"
+      ]
+    },
+    {
+      "id": "R-7.6-reproducible-inputs",
+      "section": "11 §7.6",
+      "rule": "A run is reproducible when its plan hash, seed, virtual clock, ingestion log and every provider declare `deterministic`; replay of a recorded ingestion log gives a byte-identical trace.",
+      "expect": "behaviour",
+      "cases": [
+        "G-32"
+      ]
+    },
+    {
+      "id": "R-7.6-entropy-stream",
+      "section": "11 §7.6",
+      "rule": "A seeded entropy node draws from `stream(seed, node_id, activation_seq, invocation_in_activation)`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-02"
+      ]
+    },
+    {
+      "id": "R-7.6-replay-metadata",
+      "section": "11 §7.6",
+      "rule": "The entropy algorithm and version are recorded in run metadata.",
+      "expect": "behaviour",
+      "cases": [
+        "G-59"
+      ]
+    },
+    {
+      "id": "R-7.6-replay-local-only",
+      "section": "11 §7.6",
+      "rule": "Replay re-executes local computation only; remote effects are simulated from the log and never re-sent.",
+      "expect": "behaviour",
+      "cases": [
+        "G-59"
+      ]
+    },
+    {
+      "id": "R-7.6-replay-partial",
+      "section": "11 §7.6",
+      "rule": "A non-deterministic provider marks the trace `replay: partial`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-32"
+      ]
+    },
+    {
+      "id": "R-8.1-data-cycle",
+      "section": "11 §8.1",
+      "rule": "A data cycle with no state boundary is `E-CYCLE-DATA` with the cycle path.",
+      "expect": "E-CYCLE-DATA",
+      "cases": [
+        "G-06"
+      ]
+    },
+    {
+      "id": "R-8.1-data-feedback-state",
+      "section": "11 §8.1",
+      "rule": "Data feedback through state (Register `current → add → next`; Get V → … → Set V) is legal.",
+      "expect": "behaviour",
+      "cases": [
+        "G-06"
+      ]
+    },
+    {
+      "id": "R-8.1-pure-iteration",
+      "section": "11 §8.1",
+      "rule": "Zones (Repeat, Map, Fold, Filter) are legal pure iteration, bounded by count or list length, yielding at iteration boundaries.",
+      "expect": "behaviour",
+      "cases": [
+        "G-33"
+      ]
+    },
+    {
+      "id": "R-8.1-structured-loop-yield",
+      "section": "11 §8.1",
+      "rule": "Every iteration of a structured control loop (Count, For Each, While, iterators) is a yield point.",
+      "expect": "behaviour",
+      "cases": [
+        "G-60"
+      ]
+    },
+    {
+      "id": "R-8.1-while-bounded",
+      "section": "11 §8.1",
+      "rule": "While requires finite `max_iterations`.",
+      "expect": "E-LOOP-UNBOUNDED",
+      "cases": [
+        "G-27"
+      ]
+    },
+    {
+      "id": "R-8.1-cycle-through-suspension",
+      "section": "11 §8.1",
+      "rule": "A control cycle through a `suspends: always` node (Wait → work → back to Wait) is legal and cancellable.",
+      "expect": "behaviour",
+      "cases": [
+        "G-07"
+      ]
+    },
+    {
+      "id": "R-8.1-busy-loop",
+      "section": "11 §8.1",
+      "rule": "A control cycle through only Yield is legal with `W-BUSY-LOOP`.",
+      "expect": "W-BUSY-LOOP",
+      "cases": [
+        "G-07"
+      ]
+    },
+    {
+      "id": "R-8.1-sync-control-cycle",
+      "section": "11 §8.1",
+      "rule": "A synchronous control cycle with no suspension is `E-CYCLE-SYNC-CONTROL`.",
+      "expect": "E-CYCLE-SYNC-CONTROL",
+      "cases": [
+        "G-07"
+      ]
+    },
+    {
+      "id": "R-8.1-event-cycle",
+      "section": "11 §8.1",
+      "rule": "An event cycle (handler of E emits E; A emits B, B emits A) is legal, bounded by causal depth and queue policy.",
+      "expect": "core/RunawayEventChain",
+      "cases": [
+        "G-12"
+      ]
+    },
+    {
+      "id": "R-8.1-reactive-cycle",
+      "section": "11 §8.1",
+      "rule": "A reactive cycle (On V changed → Set V) is legal, bounded by causal depth.",
+      "expect": "behaviour",
+      "cases": [
+        "G-72"
+      ]
+    },
+    {
+      "id": "R-8.1-recursion",
+      "section": "11 §8.1",
+      "rule": "Synchronous function recursion (f calls f, or f → g → f) is `E-RECURSION` in v1.",
+      "expect": "E-RECURSION",
+      "cases": [
+        "G-24"
+      ]
+    },
+    {
+      "id": "R-8.2-D-acyclic",
+      "section": "11 §8.2",
+      "rule": "The data dependency graph D (data edges plus `input → output` for `computed` outputs; `execution`, `state`, `payload` and `iteration` outputs depend on no input; zone back links omitted) MUST be acyclic.",
+      "expect": "E-CYCLE-DATA",
+      "cases": [
+        "G-06"
+      ]
+    },
+    {
+      "id": "R-8.2-C-suspends",
+      "section": "11 §8.2",
+      "rule": "In each control graph per region (implicit loop back edges excluded) every cycle MUST contain a node with `suspends: always`.",
+      "expect": "E-CYCLE-SYNC-CONTROL",
+      "cases": [
+        "G-07"
+      ]
+    },
+    {
+      "id": "R-8.2-call-graph-acyclic",
+      "section": "11 §8.2",
+      "rule": "The call graph over functions and graph-implemented definitions is acyclic.",
+      "expect": "E-RECURSION",
+      "cases": [
+        "G-24"
+      ]
+    },
+    {
+      "id": "R-8.2-own-output-through-cycle",
+      "section": "11 §8.2",
+      "rule": "An action reading its own previous output through a control cycle fails §7.2 (no dominance on the first pass); feedback MUST go through a register or variable.",
+      "expect": "E-UNAVAILABLE-VALUE",
+      "cases": [
+        "G-53"
+      ]
+    },
+    {
+      "id": "R-8.3-for-each-snapshot",
+      "section": "11 §8.3",
+      "rule": "The collection for `for-each` is the immutable value at loop entry.",
+      "expect": "behaviour",
+      "cases": [
+        "G-60"
+      ]
+    },
+    {
+      "id": "R-8.3-count-negative",
+      "section": "11 §8.3",
+      "rule": "`count < 0` fails with `core/OutOfRange`.",
+      "expect": "core/OutOfRange",
+      "cases": [
+        "G-60"
+      ]
+    },
+    {
+      "id": "R-8.3-while-condition-epoch",
+      "section": "11 §8.3",
+      "rule": "The While `condition` is pulled in a new epoch before each iteration.",
+      "expect": "behaviour",
+      "cases": [
+        "G-60"
+      ]
+    },
+    {
+      "id": "R-8.3-iteration-end",
+      "section": "11 §8.3",
+      "rule": "An iteration ends when the body region instance completes; async work in the body is awaited.",
+      "expect": "behaviour",
+      "cases": [
+        "G-61"
+      ]
+    },
+    {
+      "id": "R-8.3-break",
+      "section": "11 §8.3",
+      "rule": "Break cancels the remaining strands of the current body instance, including Fork branches, then fires `completed`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-26"
+      ]
+    },
+    {
+      "id": "R-8.3-continue",
+      "section": "11 §8.3",
+      "rule": "Continue cancels the remaining strands of the body instance and starts the next iteration.",
+      "expect": "behaviour",
+      "cases": [
+        "G-61"
+      ]
+    },
+    {
+      "id": "R-8.3-break-innermost",
+      "section": "11 §8.3",
+      "rule": "Break and Continue target the innermost enclosing loop and may sit inside nested Sequence/Fork/Branch regions.",
+      "expect": "behaviour",
+      "cases": [
+        "G-61"
+      ]
+    },
+    {
+      "id": "R-8.3-break-function-boundary",
+      "section": "11 §8.3",
+      "rule": "Break and Continue never cross a function boundary.",
+      "expect": "E-BREAK-OUTSIDE-LOOP",
+      "cases": [
+        "G-61"
+      ]
+    },
+    {
+      "id": "R-8.3-max-iterations",
+      "section": "11 §8.3",
+      "rule": "Exceeding `max_iterations` fires `failed` with `core/LoopBudgetExceeded`.",
+      "expect": "core/LoopBudgetExceeded",
+      "cases": [
+        "G-27"
+      ]
+    },
+    {
+      "id": "R-8.3-loop-carried",
+      "section": "11 §8.3",
+      "rule": "Loop-carried values use activation-local variables or registers (`scope: activation`); zones carry typed items explicitly.",
+      "expect": "behaviour",
+      "cases": [
+        "G-05"
+      ]
+    },
+    {
+      "id": "R-8.4-branch",
+      "section": "11 §8.4",
+      "rule": "`core/branch` pulls the condition and fires one out.",
+      "expect": "behaviour",
+      "cases": [
+        "G-03"
+      ]
+    },
+    {
+      "id": "R-8.4-switch-exhaustive",
+      "section": "11 §8.4",
+      "rule": "Enum switches must be exhaustive against the locked schema or have `default`.",
+      "expect": "E-SWITCH-NOT-EXHAUSTIVE",
+      "cases": [
+        "G-62"
+      ]
+    },
+    {
+      "id": "R-8.4-switch-unknown-variant",
+      "section": "11 §8.4",
+      "rule": "An unknown enum variant goes to `default`, else fails with `core/UnknownVariant`.",
+      "expect": "core/UnknownVariant",
+      "cases": [
+        "G-62"
+      ]
+    },
+    {
+      "id": "R-8.4-switch-key-eq",
+      "section": "11 §8.4",
+      "rule": "The `core/switch` key type must implement `eq` (int, string, enum).",
+      "expect": "E-CONSTRAINT-UNSATISFIED",
+      "cases": [
+        "G-48"
+      ]
+    },
+    {
+      "id": "R-8.4-node-state-intrinsics",
+      "section": "11 §8.4",
+      "rule": "Gate, Do Once, Flip Flop and Register keep run-scoped node state.",
+      "expect": "behaviour",
+      "cases": [
+        "G-63"
+      ]
+    },
+    {
+      "id": "R-8.4-yield-wait",
+      "section": "11 §8.4",
+      "rule": "`core/yield` is `suspends: always` with zero delay; `core/wait` is async on the monotonic clock, cancellable, `suspends: always`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-07"
+      ]
+    },
+    {
+      "id": "R-8.4-await-event",
+      "section": "11 §8.4",
+      "rule": "`core/await-event` resumes on the next matching emit after the wait starts, does not start an activation, and fires `timed_out` on timeout.",
+      "expect": "behaviour",
+      "cases": [
+        "G-64"
+      ]
+    },
+    {
+      "id": "R-8.4-register-scope",
+      "section": "11 §8.4",
+      "rule": "`core/register` is an anonymous typed state cell with config `initial` and `scope`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-63"
+      ]
+    },
+    {
+      "id": "R-8.4-select-lazy",
+      "section": "11 §8.4",
+      "rule": "`core/select`, `core/and`, `core/or`, `core/coalesce` are pure with lazy data inputs and evaluate only the selected inputs.",
+      "expect": "behaviour",
+      "cases": [
+        "G-56"
+      ]
+    },
+    {
+      "id": "R-8.4-try-cone",
+      "section": "11 §8.4",
+      "rule": "`core/try` captures evaluation errors of its input cone only.",
+      "expect": "behaviour",
+      "cases": [
+        "G-56"
+      ]
+    },
+    {
+      "id": "R-8.4-match-result",
+      "section": "11 §8.4",
+      "rule": "`core/match-result` branches on a result to `ok` (value) or `err` (error).",
+      "expect": "behaviour",
+      "cases": [
+        "G-18"
+      ]
+    },
+    {
+      "id": "R-8.4-zone-body",
+      "section": "11 §8.4",
+      "rule": "Zone bodies are pure or entropy-volatile only; edges into the body are loop-invariant captures; values leave only through the end node; otherwise `E-ZONE-STRUCTURE`.",
+      "expect": "E-ZONE-STRUCTURE",
+      "cases": [
+        "G-65"
+      ]
+    },
+    {
+      "id": "R-9.1-single-segment",
+      "section": "11 §9.1",
+      "rule": "Only one strand segment of a run executes at a time; strands interleave only at suspension, yield and slice boundaries.",
+      "expect": "behaviour",
+      "cases": [
+        "G-66"
+      ]
+    },
+    {
+      "id": "R-9.1-runs-parallel",
+      "section": "11 §9.1",
+      "rule": "Different runs execute in parallel on the compute executor.",
+      "expect": "behaviour",
+      "cases": [
+        "G-66"
+      ]
+    },
+    {
+      "id": "R-9.1-offload-returns-inbox",
+      "section": "11 §9.1",
+      "rule": "Heavy pure programs and async effects run off the actor and return as inbox messages.",
+      "expect": "behaviour",
+      "cases": [
+        "G-66"
+      ]
+    },
+    {
+      "id": "R-9.2-inbox-arrival-order",
+      "section": "11 §9.2",
+      "rule": "Inbox messages (completions, events, commands) move into the ready queue or entry queues in arrival order.",
+      "expect": "behaviour",
+      "cases": [
+        "G-66"
+      ]
+    },
+    {
+      "id": "R-9.2-dispatch-reentrancy",
+      "section": "11 §9.2",
+      "rule": "Entry queues are dispatched into new activations under their reentrancy mode.",
+      "expect": "behaviour",
+      "cases": [
+        "G-14"
+      ]
+    },
+    {
+      "id": "R-9.2-ready-fifo-slice",
+      "section": "11 §9.2",
+      "rule": "The head of the ready queue (FIFO by ready time) runs for one segment; a strand that exhausted its slice goes to the tail.",
+      "expect": "behaviour",
+      "cases": [
+        "G-66"
+      ]
+    },
+    {
+      "id": "R-9.2-slice-budget",
+      "section": "11 §9.2",
+      "rule": "A segment ends at a safe point on slice exhaustion (proposed 1 ms or 1,024 operations) so other strands progress.",
+      "expect": "behaviour",
+      "cases": [
+        "G-33"
+      ]
+    },
+    {
+      "id": "R-9.2-segment-end-coalesce",
+      "section": "11 §9.2",
+      "rule": "At segment end the change set is computed and On Variable Changed is enqueued coalesced per variable: final value, previous = value at segment start.",
+      "expect": "behaviour",
+      "cases": [
+        "G-58"
+      ]
+    },
+    {
+      "id": "R-9.2-segment-end-watches",
+      "section": "11 §9.2",
+      "rule": "Affected Watches are evaluated against the consistent post-segment state.",
+      "expect": "behaviour",
+      "cases": [
+        "G-15"
+      ]
+    },
+    {
+      "id": "R-9.2-actor-sleeps",
+      "section": "11 §9.2",
+      "rule": "With nothing ready the actor sleeps until the inbox wakes it and never polls.",
+      "expect": "behaviour",
+      "cases": [
+        "G-66"
+      ]
+    },
+    {
+      "id": "R-9.3-fault-fail-fast",
+      "section": "11 §9.3",
+      "rule": "A fault in one strand cancels its sibling strands in the activation (fail-fast).",
+      "expect": "behaviour",
+      "cases": [
+        "G-67"
+      ]
+    },
+    {
+      "id": "R-9.3-on-fault-continue",
+      "section": "11 §9.3",
+      "rule": "With `on_fault: continue` (default) the activation faults but the run stays subscribed.",
+      "expect": "behaviour",
+      "cases": [
+        "G-17"
+      ]
+    },
+    {
+      "id": "R-9.3-on-fault-stop-run",
+      "section": "11 §9.3",
+      "rule": "With `on_fault: stop-run` a faulted activation stops the run.",
+      "expect": "behaviour",
+      "cases": [
+        "G-67"
+      ]
+    },
+    {
+      "id": "R-9.3-activation-states",
+      "section": "11 §9.3",
+      "rule": "An activation moves through Queued, Running, Suspended, Completed, Faulted, Cancelling and Cancelled per the lifecycle diagram, and a cancel of a Running or Suspended activation enters Cancelling.",
+      "expect": "behaviour",
+      "cases": [
+        "G-67"
+      ]
+    },
+    {
+      "id": "R-9.4-cancel-propagation",
+      "section": "11 §9.4",
+      "rule": "Cancellation flows run → activation → strand → in-flight operation.",
+      "expect": "behaviour",
+      "cases": [
+        "G-67"
+      ]
+    },
+    {
+      "id": "R-9.4-cleanup-mode",
+      "section": "11 §9.4",
+      "rule": "A strand suspended at an async node with a connected `cancelled` resumes there in cleanup mode and may run pure, volatile and `cleanup_safe` actions or asyncs.",
+      "expect": "behaviour",
+      "cases": [
+        "G-28"
+      ]
+    },
+    {
+      "id": "R-9.4-cleanup-other-nodes",
+      "section": "11 §9.4",
+      "rule": "Any other node in cleanup mode fails with `core/Cancelled`.",
+      "expect": "core/Cancelled",
+      "cases": [
+        "G-28"
+      ]
+    },
+    {
+      "id": "R-9.4-cleanup-deadline",
+      "section": "11 §9.4",
+      "rule": "Cleanup is bounded by `cleanup_deadline` (the remaining drain deadline, or a proposed 500 ms).",
+      "expect": "behaviour",
+      "cases": [
+        "G-28"
+      ]
+    },
+    {
+      "id": "R-9.4-second-cancel",
+      "section": "11 §9.4",
+      "rule": "A second cancellation aborts cleanup.",
+      "expect": "behaviour",
+      "cases": [
+        "G-67"
+      ]
+    },
+    {
+      "id": "R-9.4-unconnected-cancelled",
+      "section": "11 §9.4",
+      "rule": "An unconnected `cancelled` ends the strand.",
+      "expect": "behaviour",
+      "cases": [
+        "G-67"
+      ]
+    },
+    {
+      "id": "R-10.1-mode-queue",
+      "section": "11 §10.1",
+      "rule": "`queue` (default) runs activations serially, FIFO.",
+      "expect": "behaviour",
+      "cases": [
+        "G-14"
+      ]
+    },
+    {
+      "id": "R-10.1-mode-drop",
+      "section": "11 §10.1",
+      "rule": "`drop` ignores triggers while busy and counts them.",
+      "expect": "behaviour",
+      "cases": [
+        "G-14"
+      ]
+    },
+    {
+      "id": "R-10.1-mode-replace",
+      "section": "11 §10.1",
+      "rule": "`replace` cancels the running activation and keeps only the latest pending.",
+      "expect": "behaviour",
+      "cases": [
+        "G-14"
+      ]
+    },
+    {
+      "id": "R-10.1-mode-parallel",
+      "section": "11 §10.1",
+      "rule": "`parallel` runs up to `max_parallel` activations.",
+      "expect": "behaviour",
+      "cases": [
+        "G-14"
+      ]
+    },
+    {
+      "id": "R-10.1-capacity-overflow",
+      "section": "11 §10.1",
+      "rule": "Entry queues have a `capacity` (proposed 256) and an `overflow` policy: `backpressure` where the protocol allows it, else `drop-oldest`, `drop-newest`, `coalesce-latest` or `fault`, with counters.",
+      "expect": "behaviour; fault rejects the envelope with core/QueueOverflow",
+      "cases": [
+        "G-68"
+      ]
+    },
+    {
+      "id": "R-10.1-on-fault-field",
+      "section": "11 §10.1",
+      "rule": "`on_fault` is `continue` or `stop-run`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-67"
+      ]
+    },
+    {
+      "id": "R-10.1-parallel-atomic-rmw",
+      "section": "11 §10.1",
+      "rule": "Under `parallel` activations interleave at suspension points; Get is re-pulled at every consumption so a read-modify-write is atomic unless a value was explicitly captured before a suspension.",
+      "expect": "behaviour",
+      "cases": [
+        "G-69"
+      ]
+    },
+    {
+      "id": "R-10.1-stale-capture",
+      "section": "11 §10.1",
+      "rule": "A value captured (in a local or action output) before a suspension in a read-modify-write warns `W-STALE-CAPTURE` and suggests `core/update-variable`.",
+      "expect": "W-STALE-CAPTURE",
+      "cases": [
+        "G-69"
+      ]
+    },
+    {
+      "id": "R-10.2-on-start",
+      "section": "11 §10.2",
+      "rule": "`core/on-start` fires once, when the run enters Running.",
+      "expect": "behaviour",
+      "cases": [
+        "G-70"
+      ]
+    },
+    {
+      "id": "R-10.2-on-stop",
+      "section": "11 §10.2",
+      "rule": "`core/on-stop` fires once when graceful Draining begins (not on cancel or fault); new triggers are rejected.",
+      "expect": "behaviour",
+      "cases": [
+        "G-70"
+      ]
+    },
+    {
+      "id": "R-10.2-emit-run-stopping",
+      "section": "11 §10.2",
+      "rule": "During Draining Emit fails with `core/RunStopping`.",
+      "expect": "core/RunStopping",
+      "cases": [
+        "G-70"
+      ]
+    },
+    {
+      "id": "R-10.2-on-manual",
+      "section": "11 §10.2",
+      "rule": "`core/on-manual` fires on `trigger(run, node, payload)` from editor, CLI or API with the declared payload type.",
+      "expect": "behaviour",
+      "cases": [
+        "G-70"
+      ]
+    },
+    {
+      "id": "R-10.2-on-timer-no-drift",
+      "section": "11 §10.2",
+      "rule": "`core/on-timer` is monotonic and scheduled against a base time, so there is no cumulative drift.",
+      "expect": "behaviour",
+      "cases": [
+        "G-71"
+      ]
+    },
+    {
+      "id": "R-10.2-on-timer-first",
+      "section": "11 §10.2",
+      "rule": "`core/on-timer` config `first` is `immediate` or `after-interval`; `core/on-timeout` fires once.",
+      "expect": "behaviour",
+      "cases": [
+        "G-71"
+      ]
+    },
+    {
+      "id": "R-10.2-on-timer-missed",
+      "section": "11 §10.2",
+      "rule": "Missed ticks follow `skip`, `coalesce` (default) or `catch-up(max)`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-38"
+      ]
+    },
+    {
+      "id": "R-10.2-on-timer-payload",
+      "section": "11 §10.2",
+      "rule": "`core/on-timer` payload is `scheduled_at` and `missed: u64`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-71"
+      ]
+    },
+    {
+      "id": "R-10.2-on-event",
+      "section": "11 §10.2",
+      "rule": "`core/on-event` fires on a matching custom emit with the event payload type.",
+      "expect": "behaviour",
+      "cases": [
+        "G-13"
+      ]
+    },
+    {
+      "id": "R-10.2-on-variable-changed",
+      "section": "11 §10.2",
+      "rule": "`core/on-variable-changed` fires at segment end, if the value changed (`eq`), with `value` and `previous`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-58"
+      ]
+    },
+    {
+      "id": "R-10.2-on-watch",
+      "section": "11 §10.2",
+      "rule": "`core/on-watch` fires at segment end when the watched cone's dependencies changed and the result changed (`changed`) or became true (`rising`).",
+      "expect": "behaviour",
+      "cases": [
+        "G-58"
+      ]
+    },
+    {
+      "id": "R-10.2-package-entry-starting",
+      "section": "11 §10.2",
+      "rule": "A package entry's subscription is acquired in the Starting phase.",
+      "expect": "behaviour",
+      "cases": [
+        "G-70"
+      ]
+    },
+    {
+      "id": "R-10.2-workspace-events",
+      "section": "11 §10.2",
+      "rule": "Workspace-scope custom events go through the host bus to other runs in the workspace, with the same envelope and causal-depth rules.",
+      "expect": "behaviour",
+      "cases": [
+        "G-72"
+      ]
+    },
+    {
+      "id": "R-10.3-envelope-depth-zero",
+      "section": "11 §10.3",
+      "rule": "Envelopes from external sources, timers and manual triggers have depth 0.",
+      "expect": "behaviour",
+      "cases": [
+        "G-72"
+      ]
+    },
+    {
+      "id": "R-10.3-depth-increment",
+      "section": "11 §10.3",
+      "rule": "Emits, variable changes and Watches from activation A get `A.depth + 1`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-72"
+      ]
+    },
+    {
+      "id": "R-10.3-emit-runaway",
+      "section": "11 §10.3",
+      "rule": "Above `max_cause_depth` (proposed 64) an Emit fails with `core/RunawayEventChain`.",
+      "expect": "core/RunawayEventChain",
+      "cases": [
+        "G-12"
+      ]
+    },
+    {
+      "id": "R-10.3-notification-suppressed",
+      "section": "11 §10.3",
+      "rule": "Above `max_cause_depth` a notification or Watch is suppressed with a counter and diagnostic.",
+      "expect": "behaviour",
+      "cases": [
+        "G-72"
+      ]
+    },
+    {
+      "id": "R-10.4-subscription-top-level-only",
+      "section": "11 §10.4",
+      "rule": "An action or async with `event` outputs (a subscription) is allowed only in the top-level graph, never in functions.",
+      "expect": "E-SUBSCRIPTION-IN-FUNCTION",
+      "cases": [
+        "G-81"
+      ]
+    },
+    {
+      "id": "R-10.4-subscription-lifetime",
+      "section": "11 §10.4",
+      "rule": "A subscription is owned by the run and ends when the run stops or through its `handle` output and a close node.",
+      "expect": "behaviour",
+      "cases": [
+        "G-73"
+      ]
+    },
+    {
+      "id": "R-10.4-event-starts-activation",
+      "section": "11 §10.4",
+      "rule": "Each event starts an activation of the region rooted at that event port.",
+      "expect": "behaviour",
+      "cases": [
+        "G-73"
+      ]
+    },
+    {
+      "id": "R-11.1-local-scope",
+      "section": "11 §11.1",
+      "rule": "A `local` variable is owned by an activation or call frame, initialized at activation or call start, and never persisted.",
+      "expect": "behaviour",
+      "cases": [
+        "G-74"
+      ]
+    },
+    {
+      "id": "R-11.1-run-scope",
+      "section": "11 §11.1",
+      "rule": "A `run` variable is owned by the run actor, initialized at Starting, and written atomically.",
+      "expect": "behaviour",
+      "cases": [
+        "G-74"
+      ]
+    },
+    {
+      "id": "R-11.1-workspace-write",
+      "section": "11 §11.1",
+      "rule": "`core/set-shared` and `core/update-shared` are async, serialized by the host, and publish the snapshot before `then`, so the writer reads its own write.",
+      "expect": "behaviour",
+      "cases": [
+        "G-34"
+      ]
+    },
+    {
+      "id": "R-11.1-workspace-no-lost-update",
+      "section": "11 §11.1",
+      "rule": "Two runs using `update-shared` `add` lose no update.",
+      "expect": "behaviour",
+      "cases": [
+        "G-34"
+      ]
+    },
+    {
+      "id": "R-11.1-uninitialized-read",
+      "section": "11 §11.1",
+      "rule": "An uninitialized read fails with `core/UninitializedVariable`.",
+      "expect": "core/UninitializedVariable",
+      "cases": [
+        "G-74"
+      ]
+    },
+    {
+      "id": "R-11.1-update-variable-ops",
+      "section": "11 §11.1",
+      "rule": "`update-variable` operations are `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `append`, `compare-and-set(expected)`; outputs `old` and `new` are available on `then`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-74"
+      ]
+    },
+    {
+      "id": "R-11.1-handle-persist",
+      "section": "11 §11.1",
+      "rule": "Handles may not be stored in persistent or workspace variables.",
+      "expect": "E-HANDLE-PERSIST",
+      "cases": [
+        "G-75"
+      ]
+    },
+    {
+      "id": "R-11.1-stream-store",
+      "section": "11 §11.1",
+      "rule": "Streams may be stored in no variable at all.",
+      "expect": "E-STREAM-STORE",
+      "cases": [
+        "G-75"
+      ]
+    },
+    {
+      "id": "R-11.2-write-conflict",
+      "section": "11 §11.2",
+      "rule": "Two branches of one Fork that write the same local or run variable or register are `E-WRITE-CONFLICT`.",
+      "expect": "E-WRITE-CONFLICT",
+      "cases": [
+        "G-11"
+      ]
+    },
+    {
+      "id": "R-11.2-write-conflict-register",
+      "section": "11 §11.2",
+      "rule": "The Fork write-conflict rule applies to registers as well as variables.",
+      "expect": "E-WRITE-CONFLICT",
+      "cases": [
+        "G-76"
+      ]
+    },
+    {
+      "id": "R-11.2-write-conflict-commutative",
+      "section": "11 §11.2",
+      "rule": "The conflict is lifted when every such write is an `update-variable` with the same commutative operation (`add`, `min`, `max`, `and`, `or`, `xor`).",
+      "expect": "behaviour",
+      "cases": [
+        "G-11"
+      ]
+    },
+    {
+      "id": "R-11.2-write-conflict-mixed-ops",
+      "section": "11 §11.2",
+      "rule": "Writes using different operations, or a non-commutative operation, still conflict.",
+      "expect": "E-WRITE-CONFLICT",
+      "cases": [
+        "G-76"
+      ]
+    },
+    {
+      "id": "R-11.2-write-conflict-lww",
+      "section": "11 §11.2",
+      "rule": "The conflict is lifted when the variable declares `conflict: last-writer-wins`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-76"
+      ]
+    },
+    {
+      "id": "R-11.2-cross-activation-writes",
+      "section": "11 §11.2",
+      "rule": "Writes from different activations are ordered by the actor and need no rule.",
+      "expect": "behaviour",
+      "cases": [
+        "G-76"
+      ]
+    },
+    {
+      "id": "R-11.2-equal-write-silent",
+      "section": "11 §11.2",
+      "rule": "Writing an `eq`-equal value produces no change notification.",
+      "expect": "behaviour",
+      "cases": [
+        "G-16"
+      ]
+    },
+    {
+      "id": "R-11.3-node-state-lifetime",
+      "section": "11 §11.3",
+      "rule": "Gate, Do Once, Flip Flop and Register hidden run-scoped slots reset at run start, are visible in inspection and are never persisted in v1.",
+      "expect": "behaviour",
+      "cases": [
+        "G-63"
+      ]
+    },
+    {
+      "id": "R-12-stream-fanout",
+      "section": "11 §12",
+      "rule": "A stream output may have one consumer edge.",
+      "expect": "E-STREAM-FANOUT",
+      "cases": [
+        "G-22"
+      ]
+    },
+    {
+      "id": "R-12-stream-no-store-literal-export",
+      "section": "11 §12",
+      "rule": "A stream cannot be stored in variables, used as a literal, or exported.",
+      "expect": "E-STREAM-STORE; literal case E-HANDLE-LITERAL",
+      "cases": [
+        "G-75"
+      ]
+    },
+    {
+      "id": "R-12-for-each-item-backpressure",
+      "section": "11 §12",
+      "rule": "`core/for-each-item` pulls the next item only after the body instance completes.",
+      "expect": "behaviour",
+      "cases": [
+        "G-23"
+      ]
+    },
+    {
+      "id": "R-12-for-each-item-end",
+      "section": "11 §12",
+      "rule": "End of stream fires `completed` on `core/for-each-item`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-77"
+      ]
+    },
+    {
+      "id": "R-12-for-each-item-error",
+      "section": "11 §12",
+      "rule": "An item error fires `failed` on `core/for-each-item` and closes the stream.",
+      "expect": "behaviour",
+      "cases": [
+        "G-77"
+      ]
+    },
+    {
+      "id": "R-12-next-item",
+      "section": "11 §12",
+      "rule": "`core/next-item` returns `item: option<T>` on `then`, `None` at end of stream.",
+      "expect": "behaviour",
+      "cases": [
+        "G-77"
+      ]
+    },
+    {
+      "id": "R-12-collect-limit",
+      "section": "11 §12",
+      "rule": "`core/collect` requires `max_items`; exceeding it fails with `core/LimitExceeded`.",
+      "expect": "core/LimitExceeded",
+      "cases": [
+        "G-77"
+      ]
+    },
+    {
+      "id": "R-12-close-stream",
+      "section": "11 §12",
+      "rule": "`core/close-stream` is a `cleanup_safe` action and is idempotent.",
+      "expect": "behaviour",
+      "cases": [
+        "G-77"
+      ]
+    },
+    {
+      "id": "R-12-tee",
+      "section": "11 §12",
+      "rule": "`core/tee` produces two streams with a bounded buffer and an overflow policy; it is the explicit way to fan out.",
+      "expect": "behaviour",
+      "cases": [
+        "G-22"
+      ]
+    },
+    {
+      "id": "R-12-push-source-streams",
+      "section": "11 §12",
+      "rule": "Push sources become streams only through a package node with declared capacity and overflow policy.",
+      "expect": "behaviour",
+      "cases": [
+        "G-77"
+      ]
+    },
+    {
+      "id": "R-12-consumer-cancel-closes",
+      "section": "11 §12",
+      "rule": "Cancelling the consumer closes the stream and notifies the producer.",
+      "expect": "behaviour",
+      "cases": [
+        "G-23"
+      ]
+    },
+    {
+      "id": "R-13-error-fields",
+      "section": "11 §13",
+      "rule": "`core/error@1` carries `code` (namespaced), `node`, optional `port`, `activation`, message origin/key/args, safe English `message`, typed redacted `details` and optional `cause` (depth ≤ 8).",
+      "expect": "behaviour",
+      "cases": [
+        "G-78"
+      ]
+    },
+    {
+      "id": "R-13-error-locale-independent",
+      "section": "11 §13",
+      "rule": "Canonical structured errors and replay records exclude locale rendering; language changes never affect error selection or graph string outputs.",
+      "expect": "behaviour",
+      "cases": [
+        "G-39"
+      ]
+    },
+    {
+      "id": "R-13-pure-error-propagation",
+      "section": "11 §13",
+      "rule": "A pure error propagates along data edges to the consumption site; the consuming exec node does not execute and its implicit `failed` fires with `error`; if `failed` is unconnected the strand faults.",
+      "expect": "behaviour",
+      "cases": [
+        "G-17"
+      ]
+    },
+    {
+      "id": "R-13-try-only-way",
+      "section": "11 §13",
+      "rule": "`core/try` turns errors in its input cone into `result<T>`, `core/match-result` branches on them, and this is the only way an error becomes ordinary data (None, missing, JSON null and Error stay distinct).",
+      "expect": "behaviour",
+      "cases": [
+        "G-18"
+      ]
+    },
+    {
+      "id": "R-13-preview-export-errors",
+      "section": "11 §13",
+      "rule": "Errors from a preview or export are shown on the node and in diagnostics and never fault a run.",
+      "expect": "behaviour",
+      "cases": [
+        "G-83"
+      ]
+    },
+    {
+      "id": "R-13-kernels-no-panic",
+      "section": "11 §13",
+      "rule": "Bundled native kernels MUST NOT panic on any input (property and fuzz tests).",
+      "expect": "behaviour",
+      "cases": [
+        "G-79"
+      ]
+    },
+    {
+      "id": "R-13-core-code-prefix",
+      "section": "11 §13",
+      "rule": "Runtime codes defined by the core (`NumericOverflow`, `DivideByZero`, `Domain`, `NonFinite`, `OutOfRange`, `Parse`, `IndexOutOfBounds`, `NoneValue`, `UnknownVariant`, `UninitializedVariable`, `LoopBudgetExceeded`, `LimitExceeded`, `QueueOverflow`, `RunawayEventChain`, `RunStopping`, `Cancelled`, `Timeout`, `OutcomeUnknown`, `StaleHandle`, `CapabilityUnavailable`, `InternalFault`) all carry the `core/` prefix.",
+      "expect": "behaviour",
+      "cases": [
+        "G-78"
+      ]
+    },
+    {
+      "id": "R-14-function-interface",
+      "section": "11 §14",
+      "rule": "A function has a typed interface: `core/function-entry` outputs the inputs; action functions return through `core/return`; pure functions use a single `core/function-outputs` node.",
+      "expect": "behaviour",
+      "cases": [
+        "G-80"
+      ]
+    },
+    {
+      "id": "R-14-function-kind-inferred",
+      "section": "11 §14",
+      "rule": "The kind is inferred from the body (only pure → `pure`; volatile → `volatile`; actions → `action`; any `suspends ≠ never` → `async`).",
+      "expect": "behaviour",
+      "cases": [
+        "G-80"
+      ]
+    },
+    {
+      "id": "R-14-function-kind-equal",
+      "section": "11 §14",
+      "rule": "The declared kind MUST equal the inferred kind.",
+      "expect": "E-FUNCTION-KIND",
+      "cases": [
+        "G-25"
+      ]
+    },
+    {
+      "id": "R-14-function-kind-editor",
+      "section": "11 §14",
+      "rule": "The editor updates the declaration and lists affected callers.",
+      "expect": "behaviour",
+      "cases": [
+        "G-80"
+      ]
+    },
+    {
+      "id": "R-14-function-frames",
+      "section": "11 §14",
+      "rule": "Each call has its own frame and locals; run variables are shared with the caller's run.",
+      "expect": "behaviour",
+      "cases": [
+        "G-80"
+      ]
+    },
+    {
+      "id": "R-14-function-no-entries",
+      "section": "11 §14",
+      "rule": "A function body has no entries, subscriptions or Watch nodes.",
+      "expect": "E-ENTRY-IN-FUNCTION",
+      "cases": [
+        "G-81"
+      ]
+    },
+    {
+      "id": "R-14-return-not-in-fork",
+      "section": "11 §14",
+      "rule": "`core/return` MUST NOT appear inside a Fork branch.",
+      "expect": "E-REGION-ESCAPE",
+      "cases": [
+        "G-81"
+      ]
+    },
+    {
+      "id": "R-14-missing-return",
+      "section": "11 §14",
+      "rule": "Every path in an action function with outputs reaches a Return.",
+      "expect": "E-MISSING-RETURN",
+      "cases": [
+        "G-81"
+      ]
+    },
+    {
+      "id": "R-14-return-cancels-detached",
+      "section": "11 §14",
+      "rule": "Return cancels any remaining detached strands of the body.",
+      "expect": "W-DETACH-IN-FUNCTION",
+      "cases": [
+        "G-81"
+      ]
+    },
+    {
+      "id": "R-14-package-function-pinned",
+      "section": "11 §14",
+      "rule": "A package-provided function is a definition whose implementation is a graph, pinned by the package lock like any provider.",
+      "expect": "behaviour",
+      "cases": [
+        "G-80"
+      ]
+    },
+    {
+      "id": "R-15-edits-do-not-mutate-plan",
+      "section": "11 §15",
+      "rule": "Document edits never mutate a running plan; a semantic edit compiles a new plan in the background (debounced) and runs started afterwards use it.",
+      "expect": "behaviour",
+      "cases": [
+        "G-82"
+      ]
+    },
+    {
+      "id": "R-15-stale-plan",
+      "section": "11 §15",
+      "rule": "A running run shows `stale plan (revision r)`.",
+      "expect": "behaviour",
+      "cases": [
+        "G-82"
+      ]
+    },
+    {
+      "id": "R-15-restart-semantics",
+      "section": "11 §15",
+      "rule": "Restart is a graceful stop followed by a new RunId; state carries over only through an opt-in persistent checkpoint.",
+      "expect": "behaviour",
+      "cases": [
+        "G-82"
+      ]
+    },
+    {
+      "id": "R-15-preview-volatile-sources",
+      "section": "11 §15",
+      "rule": "Preview volatile reads come from a selected live run's published snapshot (read-only) or from declared initial values.",
+      "expect": "behaviour",
+      "cases": [
+        "G-83"
+      ]
+    },
+    {
+      "id": "R-15-preview-execution-outputs",
+      "section": "11 §15",
+      "rule": "Preview of `execution` outputs shows the last inspected value of a selected run, labelled as such, or \"unavailable\".",
+      "expect": "behaviour",
+      "cases": [
+        "G-83"
+      ]
+    },
+    {
+      "id": "R-15-preview-entropy-seed",
+      "section": "11 §15",
+      "rule": "Entropy nodes in preview use a fixed preview seed.",
+      "expect": "behaviour",
+      "cases": [
+        "G-83"
+      ]
+    },
+    {
+      "id": "R-15-preview-no-effects",
+      "section": "11 §15",
+      "rule": "Preview never executes actions or async nodes.",
+      "expect": "behaviour",
+      "cases": [
+        "G-83"
+      ]
+    },
+    {
+      "id": "R-15-preview-invalidation",
+      "section": "11 §15",
+      "rule": "Preview re-evaluation invalidates only the downstream cone of the changed node, runs off the main thread and is budgeted.",
+      "expect": "behaviour",
+      "cases": [
+        "G-83"
+      ]
+    },
+    {
+      "id": "R-15-layout-edits-inert",
+      "section": "11 §15",
+      "rule": "Layout edits (move, waypoint, frame, comment) never invalidate a plan or a preview.",
+      "expect": "behaviour",
+      "cases": [
+        "G-36"
+      ]
+    },
+    {
+      "id": "R-5.5-numeric-editor-default",
+      "section": "11 §5.5",
+      "rule": "New untyped numeric editor input defaults to f64; resolved or explicitly selected integer input is parsed directly as that integer type, without a float intermediate. Existing literals and edges are never silently converted.",
+      "expect": "document",
+      "cases": [
+        "G-49"
+      ]
+    }
+  ],
+  "new_cases": [
+    {
+      "id": "G-40",
+      "title": "Structure: connection matrix and cardinality",
+      "fixture": "Data out to exec in -> `E-KIND-MISMATCH`; exec out to data in and event out to data in rejected; non-identical types without a converter -> `E-TYPE-MISMATCH`; second edge into one data input -> `E-FANIN-DATA`; two edges from one exec out -> `E-FANOUT-EXEC`; two edges from one event out -> `E-FANOUT-EVENT`; data out fanned out to many inputs -> legal and consumers share one immutable value; event out to an exec in -> legal and starts a new event region",
+      "rules": [
+        "R-4.2-data-to-data-identical-types",
+        "R-4.2-data-to-exec",
+        "R-4.2-exec-to-data",
+        "R-4.2-exec-to-exec-same-region",
+        "R-4.2-event-to-exec",
+        "R-4.2-event-to-data",
+        "R-4.3-data-input-fan-in",
+        "R-4.3-data-output-fan-out",
+        "R-4.3-exec-output-fan-out",
+        "R-4.3-event-output-fan-out"
+      ]
+    },
+    {
+      "id": "G-41",
+      "title": "Port descriptor validation",
+      "fixture": "Port id violating `[a-z][a-z0-9_]{0,63}`, duplicate across kinds, or reusing a reserved implicit id -> definition rejected; exec port with a type, event input -> `E-PORT-DIRECTION`; `optional` on a non-`option` port, `lazy` on a non-intrinsic, `default` on a handle/stream port (`E-HANDLE-LITERAL`) -> rejected; `secret-ref` literal stores only the reference",
+      "rules": [
+        "R-4.1-port-id-format",
+        "R-4.1-reserved-ids",
+        "R-4.1-event-output-only",
+        "R-4.1-exec-port-untyped",
+        "R-4.1-default-not-handle-stream",
+        "R-4.1-secret-ref-literal-is-reference",
+        "R-4.1-optional-only-option",
+        "R-4.1-lazy-intrinsics-only"
+      ]
+    },
+    {
+      "id": "G-42",
+      "title": "Implicit ports and outcome outs",
+      "fixture": "Action, async, iterator, control, entry definitions -> exactly the implicit ports of 11 §4.1 (`in`/`failed`/`error`/`then`/`cancelled`); declared outcome outs replace `then`; each execution fires exactly one outcome out (`failed` and `cancelled` included); `available_on` defaults to `[then]`",
+      "rules": [
+        "R-4.1-available-on-default",
+        "R-4.1-implicit-ports-by-kind",
+        "R-4.1-declared-outcomes-replace-then",
+        "R-4.1-one-outcome-per-execution"
+      ]
+    },
+    {
+      "id": "G-43",
+      "title": "Input value resolution order",
+      "fixture": "Same input with edge, instance literal, definition default and optional None in turn -> value taken in order edge, literal, default, `None`; none of them and not optional -> `E-INPUT-REQUIRED`; literal on a handle, stream, result or error input -> rejected",
+      "rules": [
+        "R-4.4-resolution-order",
+        "R-4.4-literal-codec-only"
+      ]
+    },
+    {
+      "id": "G-44",
+      "title": "Variadic ports: counter and order",
+      "fixture": "Insert, delete, re-add an item -> new `#k` never reuses a deleted key; evaluation and persisted order follow instance order, not `k`; pull order over variadic inputs follows instance order",
+      "rules": [
+        "R-4.5-variadic-key-never-reused",
+        "R-4.5-variadic-instance-order",
+        "R-7.4-eval-order"
+      ]
+    },
+    {
+      "id": "G-45",
+      "title": "Dynamic ports from declarative templates",
+      "fixture": "Open a document with a record-split node whose ports come from a template -> ports resolved by the host with zero guest code executed (probe counter 0); non-intrinsic node persists its resolved signature snapshot",
+      "rules": [
+        "R-4.5-declarative-port-templates"
+      ]
+    },
+    {
+      "id": "G-46",
+      "title": "Type expressions and core type rules",
+      "fixture": "Persisted document and wire contract -> only canonical type text (`list<string>` short form never stored); `$T` outside a definition -> rejected; type lock holds `named` without arguments plus codec version; `map` iterates in insertion order and rejects float keys; `u8`, `i16`, decimal, tuple and `any` -> unknown type; `secret-ref` to string -> no conversion; `core/result` only from `try` or nodes declaring it",
+      "rules": [
+        "R-5.1-canonical-persisted",
+        "R-5.1-param-in-definitions-only",
+        "R-5.1-type-lock-contents",
+        "R-5.2-map-insertion-order",
+        "R-5.2-secret-ref-no-string",
+        "R-5.2-excluded-types-no-any"
+      ]
+    },
+    {
+      "id": "G-47",
+      "title": "Type identity: nominal and major version",
+      "fixture": "Two packages each define a `point` record with identical fields, wired together -> `E-TYPE-MISMATCH`; `org.example/point@1` to `org.example/point@2` -> `E-TYPE-MISMATCH`",
+      "rules": [
+        "R-5.3-nominal-types",
+        "R-5.3-major-version-identity"
+      ]
+    },
+    {
+      "id": "G-48",
+      "title": "Constraints and coherence",
+      "fixture": "Switch key or map key of `f64`, handle or stream -> `E-CONSTRAINT-UNSATISFIED`; float ordering only through a `total-order` node; a package implementing a core constraint for a foreign type -> rejected; a package implementing its own constraint for a foreign type -> accepted",
+      "rules": [
+        "R-5.2-map-key-constraint",
+        "R-5.4-eq-excludes-float-handle-stream",
+        "R-5.4-ord-floats-explicit",
+        "R-5.4-constraint-coherence-owner",
+        "R-5.4-constraint-own-for-foreign",
+        "R-8.4-switch-key-eq"
+      ]
+    },
+    {
+      "id": "G-49",
+      "title": "Generic inference rules",
+      "fixture": "Generic nodes chained in a component -> same `type_args` regardless of edit order (stable `NodeId` order); an edit re-infers only its connected component; conflicting arguments -> `E-TYPE-MISMATCH` with converter suggestions and no conversion inserted; generic provider missing a specialization -> `E-NO-SPECIALIZATION` at compile time, no run-time lookup",
+      "rules": [
+        "R-5.5-inference-deterministic",
+        "R-5.5-reinfer-component-only",
+        "R-5.5-type-conflict",
+        "R-5.5-inference-no-conversions",
+        "R-5.5-no-specialization"
+      ]
+    },
+    {
+      "id": "G-50",
+      "title": "Integer and float arithmetic semantics",
+      "fixture": "`int_overflow` checked (default) fails, `wrapping` wraps, `saturating` clamps; integer division truncates toward zero; `rem` takes the dividend's sign; shift by >= bit width fails in checked mode; i32/u32 follow i64 rules; f32 persists as 8-hex-digit `bits`; mixed-width arithmetic -> `E-TYPE-MISMATCH`",
+      "rules": [
+        "R-5.6-int-overflow-modes",
+        "R-5.6-int-division-truncates",
+        "R-5.6-rem-dividend-sign",
+        "R-5.6-shift-checked",
+        "R-5.6-narrow-int-follow-i64",
+        "R-5.6-f32-bits-persist",
+        "R-5.6-mixed-width-explicit"
+      ]
+    },
+    {
+      "id": "G-51",
+      "title": "Converter classes, codes and override slot",
+      "fixture": "`i64`->`i32` out of range -> `core/OutOfRange`; `string`->`i64` bad text -> `core/Parse`; `option<T>`->`T` on None -> `core/NoneValue`; lossy `f64`->`f32` -> loss metadata returned; mismatched types with no registry entry -> rejected with a diagnostic and no implicit conversion; second provider for an owned pair -> only through override slot `convert:<from>-><to>` with explicit rebind",
+      "rules": [
+        "R-6-partial-out-of-range",
+        "R-6-partial-parse",
+        "R-6-partial-none-value",
+        "R-6-lossy-metadata",
+        "R-6-no-entry-rejected",
+        "R-6-converter-override-slot"
+      ]
+    },
+    {
+      "id": "G-52",
+      "title": "Region boundaries and completion",
+      "fixture": "Exec edge leaving its region -> `E-REGION-ESCAPE` (only end of strand, Break/Continue, Return exit a region); Branch/Switch/Gate/async outcomes stay in the parent region and may merge, exactly one token arrives; exec fan-in executes the node once per arriving token; region instance completes only after every strand incl. nested Fork strands ends; Fork -> two branches -> same node -> `E-REGION-AMBIGUOUS`; unreachable exec node -> `W-UNREACHABLE` and not compiled",
+      "rules": [
+        "R-4.3-exec-input-fan-in",
+        "R-7.1-region-roots",
+        "R-7.1-region-escape",
+        "R-7.1-region-terminators",
+        "R-7.1-outcomes-no-region",
+        "R-7.1-region-completion",
+        "R-7.1-unreachable",
+        "R-7.3-diamond-control-merge"
+      ]
+    },
+    {
+      "id": "G-53",
+      "title": "Availability: outcomes, payload, siblings, event regions",
+      "fixture": "Async `then` output read on `failed` path -> `E-UNAVAILABLE-VALUE` while `error` on `failed` is readable; Fork branch A value read in sibling B -> `E-UNAVAILABLE-VALUE`; entry `payload` anywhere in its activation -> accepted; action reading its own earlier output through a Wait cycle on the first pass -> `E-UNAVAILABLE-VALUE`; same value read after the back edge reads the most recent execution; event-region node reading the subscribing node's `then` output -> `E-CROSS-ACTIVATION`",
+      "rules": [
+        "R-4.1-error-on-failed",
+        "R-7.2-back-edge-latest",
+        "R-7.2-fork-sibling-read",
+        "R-7.2-async-then-on-failed",
+        "R-7.2-entry-payload-allowed",
+        "R-7.2-event-region-reads-then",
+        "R-8.2-own-output-through-cycle"
+      ]
+    },
+    {
+      "id": "G-54",
+      "title": "Epoch prologue and heavy offload",
+      "fixture": "Get V feeding two inputs of one action -> one prologue read, equal values, even when another strand writes V during an offloaded `heavy` pull; each input gathering, loop check, Watch, export and preview evaluation opens a new epoch; offloaded result identical to inline; action-effect counter stays 0 across pulls",
+      "rules": [
+        "R-7.3-diamond-volatile-one-action",
+        "R-7.4-epoch-per-site",
+        "R-7.4-epoch-prologue",
+        "R-7.4-pull-no-actions",
+        "R-7.4-heavy-offload"
+      ]
+    },
+    {
+      "id": "G-55",
+      "title": "Memoization stability classes",
+      "fixture": "Counting kernels on const, payload-dependent and loop-body-dependent cones -> const folded once per plan, activation class once per activation, epoch class once per epoch",
+      "rules": [
+        "R-7.4-class-const",
+        "R-7.4-class-activation",
+        "R-7.4-class-epoch"
+      ]
+    },
+    {
+      "id": "G-56",
+      "title": "Lazy intrinsics and try cone",
+      "fixture": "`select`/`and`/`or`/`coalesce` with an erroring unselected input -> unselected input never evaluated, no error; `try` wrapping an input cone -> captures only that cone's error, errors outside the cone still propagate",
+      "rules": [
+        "R-7.4-lazy-only-selected",
+        "R-8.4-select-lazy",
+        "R-8.4-try-cone"
+      ]
+    },
+    {
+      "id": "G-57",
+      "title": "Ordering guarantees O1, O5, O6, O7",
+      "fixture": "Linear strand -> trace order equals exec-edge order (O1); two sources -> FIFO by `source_seq`, cross-source by `ingestion_seq` (O5); two independent async completions -> inbox arrival order recorded (O6); Emit then Log in the emitter -> Log runs before the handler starts, stack depth constant over a long emit chain (O7)",
+      "rules": [
+        "R-7.5-O1",
+        "R-7.5-O5",
+        "R-7.5-O6",
+        "R-7.5-O7"
+      ]
+    },
+    {
+      "id": "G-58",
+      "title": "Write visibility and change notifications",
+      "fixture": "Strand A commits a write, strand B (another Fork branch) starts a later epoch -> sees it (O9); V set 1->2->3 in one segment -> one On Variable Changed (value 3, previous = value at segment start), enqueued after the segment in `order` and before the next ready strand (O10); On Watch `changed` vs `rising` fire per their definitions",
+      "rules": [
+        "R-7.5-O9",
+        "R-7.5-O10",
+        "R-9.2-segment-end-coalesce",
+        "R-10.2-on-variable-changed",
+        "R-10.2-on-watch"
+      ]
+    },
+    {
+      "id": "G-59",
+      "title": "Replay metadata and remote effects",
+      "fixture": "Replay of a run with a seeded entropy node and a remote effect -> algorithm and version in run metadata, entropy drawn from `stream(seed, node_id, activation_seq, invocation_in_activation)`, local computation re-executed, remote effect simulated from the log and never re-sent",
+      "rules": [
+        "R-7.6-replay-metadata",
+        "R-7.6-replay-local-only"
+      ]
+    },
+    {
+      "id": "G-60",
+      "title": "Loop entry semantics",
+      "fixture": "`count` of -1 -> `core/OutOfRange`; list variable mutated inside `for-each` body -> loop iterates the entry-time value; While condition reads a variable the body sets -> pulled in a new epoch each iteration; 10^6-iteration Count loop -> yields at every iteration, another strand progresses",
+      "rules": [
+        "R-8.1-structured-loop-yield",
+        "R-8.3-for-each-snapshot",
+        "R-8.3-count-negative",
+        "R-8.3-while-condition-epoch"
+      ]
+    },
+    {
+      "id": "G-61",
+      "title": "Break, Continue and iteration end",
+      "fixture": "Continue inside nested Sequence/Fork -> remaining body strands cancelled and next iteration starts; Break inside nested loops -> terminates only the innermost loop; body with an awaited async node -> next iteration starts only after the body region instance completes; Break in a function body -> `E-BREAK-OUTSIDE-LOOP`",
+      "rules": [
+        "R-8.3-iteration-end",
+        "R-8.3-continue",
+        "R-8.3-break-innermost",
+        "R-8.3-break-function-boundary"
+      ]
+    },
+    {
+      "id": "G-62",
+      "title": "Switch exhaustiveness and unknown variant",
+      "fixture": "Enum switch without `default` missing a variant -> rejected; enum value with a variant unknown to the locked schema -> routed to `default`, else fails with `core/UnknownVariant`",
+      "rules": [
+        "R-8.4-switch-exhaustive",
+        "R-8.4-switch-unknown-variant"
+      ]
+    },
+    {
+      "id": "G-63",
+      "title": "Node-state intrinsics",
+      "fixture": "Gate, Do Once, Flip Flop and Register (also `scope: activation`) -> state is run-scoped, visible in inspection, reset at run start, absent from a checkpoint",
+      "rules": [
+        "R-8.4-node-state-intrinsics",
+        "R-8.4-register-scope",
+        "R-11.3-node-state-lifetime"
+      ]
+    },
+    {
+      "id": "G-64",
+      "title": "Await Event",
+      "fixture": "Emit before the wait starts is ignored, the next matching emit resumes `core/await-event` without starting an activation; `timeout` elapses -> `timed_out` fires",
+      "rules": [
+        "R-8.4-await-event"
+      ]
+    },
+    {
+      "id": "G-65",
+      "title": "Zone body and capture rules",
+      "fixture": "Zone body containing an action, `state-read` volatile or async node -> `E-ZONE-STRUCTURE`; value leaving a zone other than through the end node -> `E-ZONE-STRUCTURE`; entropy-volatile body accepted; edge into body treated as a loop-invariant capture",
+      "rules": [
+        "R-8.4-zone-body"
+      ]
+    },
+    {
+      "id": "G-66",
+      "title": "Scheduler loop and actor model",
+      "fixture": "Two ready strands and a burst of inbox messages -> inbox drained in arrival order, ready queue FIFO, a slice-exhausted or yielding strand goes to the tail, no interleaving inside a segment; idle actor performs zero scheduler iterations; two runs overlap on the compute executor; heavy pure and async completions return as inbox messages",
+      "rules": [
+        "R-9.1-single-segment",
+        "R-9.1-runs-parallel",
+        "R-9.1-offload-returns-inbox",
+        "R-9.2-inbox-arrival-order",
+        "R-9.2-ready-fifo-slice",
+        "R-9.2-actor-sleeps"
+      ]
+    },
+    {
+      "id": "G-67",
+      "title": "Fault, cancellation propagation and cleanup edge cases",
+      "fixture": "Fork branch faults -> sibling strands cancelled (fail-fast), activation Faulted then Cancelled; `on_fault: stop-run` stops the run; stop/replace/race drives Cancelling then Cancelled and cancel reaches the in-flight operation; second cancel during cleanup aborts cleanup; unconnected `cancelled` ends the strand",
+      "rules": [
+        "R-9.3-fault-fail-fast",
+        "R-9.3-on-fault-stop-run",
+        "R-9.3-activation-states",
+        "R-9.4-cancel-propagation",
+        "R-9.4-second-cancel",
+        "R-9.4-unconnected-cancelled",
+        "R-10.1-on-fault-field"
+      ]
+    },
+    {
+      "id": "G-68",
+      "title": "Entry capacity and overflow policy",
+      "fixture": "Burst larger than `capacity` under each of `drop-oldest`, `drop-newest`, `coalesce-latest`, `fault` and `backpressure` -> surviving items and counters exact per policy",
+      "rules": [
+        "R-10.1-capacity-overflow"
+      ]
+    },
+    {
+      "id": "G-69",
+      "title": "Parallel read-modify-write and stale capture",
+      "fixture": "Under `parallel`, Get-then-Set separated by a suspension in two activations -> `W-STALE-CAPTURE` suggesting `core/update-variable`; same read-modify-write without a captured value -> no warning and atomic result",
+      "rules": [
+        "R-10.1-parallel-atomic-rmw",
+        "R-10.1-stale-capture"
+      ]
+    },
+    {
+      "id": "G-70",
+      "title": "Run lifecycle entries",
+      "fixture": "`core/on-start` fires once at Running; `core/on-stop` fires once on graceful Draining only (not on cancel or fault), new triggers rejected and Emit fails with `core/RunStopping`; `core/on-manual` `trigger(run, node, payload)` delivers the declared payload type; package entry subscription acquired in the Starting phase",
+      "rules": [
+        "R-10.2-on-start",
+        "R-10.2-on-stop",
+        "R-10.2-emit-run-stopping",
+        "R-10.2-on-manual",
+        "R-10.2-package-entry-starting"
+      ]
+    },
+    {
+      "id": "G-71",
+      "title": "Timer scheduling",
+      "fixture": "On Timer with stalled actor -> scheduled against base time (no cumulative drift); `first: immediate` vs `after-interval`; `core/on-timeout` fires once; payload carries `scheduled_at` and `missed: u64`",
+      "rules": [
+        "R-10.2-on-timer-no-drift",
+        "R-10.2-on-timer-first",
+        "R-10.2-on-timer-payload"
+      ]
+    },
+    {
+      "id": "G-72",
+      "title": "Causal depth and workspace events",
+      "fixture": "External, timer and manual envelopes -> depth 0; Emit, variable change and Watch from activation A -> `A.depth + 1`; On V changed -> Set V (new value) above `max_cause_depth` -> notification suppressed with counter and diagnostic; workspace-scope event reaches another run with the same envelope and depth rules",
+      "rules": [
+        "R-8.1-reactive-cycle",
+        "R-10.2-workspace-events",
+        "R-10.3-envelope-depth-zero",
+        "R-10.3-depth-increment",
+        "R-10.3-notification-suppressed"
+      ]
+    },
+    {
+      "id": "G-73",
+      "title": "Subscription ownership",
+      "fixture": "Subscription action in the top-level graph -> run-owned; ends on run stop or via `handle` plus close node; each event starts an activation of the region rooted at its event port; nothing else outlives its region instance",
+      "rules": [
+        "R-7.1-structured-concurrency",
+        "R-10.4-subscription-lifetime",
+        "R-10.4-event-starts-activation"
+      ]
+    },
+    {
+      "id": "G-74",
+      "title": "Variable scopes, update-variable and uninitialized reads",
+      "fixture": "`local` initialized at activation or call start and never persisted; `run` initialized at Starting; Get of an uninitialized variable -> `core/UninitializedVariable`; `update-variable` ops `add sub min max and or xor append compare-and-set` yield `old`/`new` on `then`",
+      "rules": [
+        "R-11.1-local-scope",
+        "R-11.1-run-scope",
+        "R-11.1-uninitialized-read",
+        "R-11.1-update-variable-ops"
+      ]
+    },
+    {
+      "id": "G-75",
+      "title": "Handle and stream storage restrictions",
+      "fixture": "Handle stored in a persistent or workspace variable -> `E-HANDLE-PERSIST`; stream stored in any variable -> `E-STREAM-STORE`; stream used as a literal or exported -> rejected",
+      "rules": [
+        "R-11.1-handle-persist",
+        "R-11.1-stream-store",
+        "R-12-stream-no-store-literal-export"
+      ]
+    },
+    {
+      "id": "G-76",
+      "title": "Write-conflict exceptions",
+      "fixture": "Fork branches writing one register -> `E-WRITE-CONFLICT`; mixed commutative ops (`add` vs `max`) or non-commutative same op (`sub`, `append`) -> `E-WRITE-CONFLICT`; variable with `conflict: last-writer-wins` -> legal; writes from two different activations -> no diagnostic, ordered by the actor",
+      "rules": [
+        "R-11.2-write-conflict-register",
+        "R-11.2-write-conflict-mixed-ops",
+        "R-11.2-write-conflict-lww",
+        "R-11.2-cross-activation-writes"
+      ]
+    },
+    {
+      "id": "G-77",
+      "title": "Stream consumers and sources",
+      "fixture": "`for-each-item` end of stream -> `completed`; item error -> `failed` and stream closed; `next-item` -> `Some` then `None` at end; `collect` without `max_items` rejected, over the limit -> `core/LimitExceeded`; `close-stream` twice -> idempotent and allowed in cleanup mode; push source stream without declared capacity and overflow policy -> rejected",
+      "rules": [
+        "R-12-for-each-item-end",
+        "R-12-for-each-item-error",
+        "R-12-next-item",
+        "R-12-collect-limit",
+        "R-12-close-stream",
+        "R-12-push-source-streams"
+      ]
+    },
+    {
+      "id": "G-78",
+      "title": "Error value shape and redaction",
+      "fixture": "Failing node -> `core/error@1` with namespaced `code`, `node`, `activation`, message fields and typed redacted `details`; `sensitive` port values redacted in traces; `cause` chain truncated at depth 8; all core runtime codes carry the `core/` prefix",
+      "rules": [
+        "R-4.1-sensitivity-redaction",
+        "R-13-error-fields",
+        "R-13-core-code-prefix"
+      ]
+    },
+    {
+      "id": "G-79",
+      "title": "Bundled kernels never panic",
+      "fixture": "Property and fuzz run over every bundled native kernel with arbitrary inputs -> no panic; failures only as `core/` error values",
+      "rules": [
+        "R-13-kernels-no-panic"
+      ]
+    },
+    {
+      "id": "G-80",
+      "title": "Function interface, frames and kind inference",
+      "fixture": "Function with `function-entry` and `return` (action) or `function-outputs` (pure) -> typed interface; body of only volatile, action or suspending nodes inferred `volatile`/`action`/`async` and a mismatched declaration -> `E-FUNCTION-KIND` while the editor updates the declaration and lists callers; two calls get separate frames and locals while run variables are shared; package function pinned by the package lock",
+      "rules": [
+        "R-14-function-interface",
+        "R-14-function-kind-inferred",
+        "R-14-function-kind-editor",
+        "R-14-function-frames",
+        "R-14-package-function-pinned"
+      ]
+    },
+    {
+      "id": "G-81",
+      "title": "Function body restrictions",
+      "fixture": "Entry or Watch node in a function -> `E-ENTRY-IN-FUNCTION`; subscription -> `E-SUBSCRIPTION-IN-FUNCTION`; `return` inside a Fork branch -> rejected; action function with a path missing Return -> `E-MISSING-RETURN`; Return with a detached strand left -> detached strand cancelled and `W-DETACH-IN-FUNCTION`",
+      "rules": [
+        "R-10.4-subscription-top-level-only",
+        "R-14-function-no-entries",
+        "R-14-return-not-in-fork",
+        "R-14-missing-return",
+        "R-14-return-cancels-detached"
+      ]
+    },
+    {
+      "id": "G-82",
+      "title": "Live editing and plan lifecycle",
+      "fixture": "Semantic edit while a run is active -> running plan unchanged, run shows stale plan (revision r), new plan compiled in the background (debounced), a run started afterwards uses it; restart = graceful stop plus new RunId, state carried only via an opt-in checkpoint",
+      "rules": [
+        "R-15-edits-do-not-mutate-plan",
+        "R-15-stale-plan",
+        "R-15-restart-semantics"
+      ]
+    },
+    {
+      "id": "G-83",
+      "title": "Preview evaluation",
+      "fixture": "Pinned pure/volatile outputs -> volatile read from selected live run snapshot (read-only) or declared initial values; `execution` output shows last inspected value labelled or unavailable; entropy uses a fixed preview seed; actions and async nodes never executed; edit re-evaluates only the downstream cone off the main thread within budget; erroring preview or export -> error on node, run not faulted",
+      "rules": [
+        "R-7.2-const-volatile-cone-allowed",
+        "R-13-preview-export-errors",
+        "R-15-preview-volatile-sources",
+        "R-15-preview-execution-outputs",
+        "R-15-preview-entropy-seed",
+        "R-15-preview-no-effects",
+        "R-15-preview-invalidation"
+      ]
+    }
+  ]
+}

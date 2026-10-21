@@ -1,0 +1,273 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-47",
+  "title": "Type identity: nominal and major version",
+  "rules": ["R-5.3-major-version-identity", "R-5.3-nominal-types"],
+  "cases": [
+    {
+      "name": "same-shape-records-of-two-packages-do-not-connect",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.other",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [],
+          "types": [
+            {
+              "format": "orange.type",
+              "format_version": 1,
+              "type_id": "org.orange.test.other/point",
+              "major": 1,
+              "minor": 0,
+              "kind": "record",
+              "fields": [
+                {"field_id": "f-x", "name": "x", "type": "core/i64@1", "optional": false},
+                {"field_id": "f-label", "name": "label", "type": "core/option@1<core/string@1>", "optional": true}
+              ],
+              "constraints": {"eq": "derive", "hash": "derive", "display": "derive", "serialize": "derive"},
+              "codec": {"id": "orange.value.v1", "version": 1},
+              "sensitivity": "normal",
+              "label": {"key": "org.orange.test.other/point-label", "fallback": "Point"}
+            }
+          ],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000047",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {"type": "org.orange.test/point@1", "codec": "orange.value.v1"},
+          {"type": "org.orange.test.other/point@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-identity-first": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "x", "direction": "input", "kind": "data", "type": "org.orange.test/point@1"},
+              {
+                "port_id": "y",
+                "direction": "output",
+                "kind": "data",
+                "type": "org.orange.test/point@1",
+                "source": "computed"
+              }
+            ]
+          },
+          "s-identity-second": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "x", "direction": "input", "kind": "data", "type": "org.orange.test.other/point@1"},
+              {
+                "port_id": "y",
+                "direction": "output",
+                "kind": "data",
+                "type": "org.orange.test.other/point@1",
+                "source": "computed"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "org.orange.test/identity",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "org.orange.test/point@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-identity-first",
+            "inputs": {"x": {"type": "org.orange.test/point@1", "value": {"f-x": "1"}}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/identity",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "org.orange.test.other/point@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-identity-second"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "y"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "x"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-TYPE-MISMATCH",
+            "subject": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "x",
+              "edge": "20000000-0000-4000-8000-000000000001"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "major-version-is-part-of-the-type",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.versioned",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [],
+          "types": [
+            {
+              "format": "orange.type",
+              "format_version": 1,
+              "type_id": "org.orange.test.versioned/point",
+              "major": 1,
+              "minor": 0,
+              "kind": "record",
+              "fields": [
+                {"field_id": "f-x", "name": "x", "type": "core/i64@1", "optional": false},
+                {"field_id": "f-label", "name": "label", "type": "core/option@1<core/string@1>", "optional": true}
+              ],
+              "constraints": {"eq": "derive", "hash": "derive", "display": "derive", "serialize": "derive"},
+              "codec": {"id": "orange.value.v1", "version": 1},
+              "sensitivity": "normal",
+              "label": {"key": "org.orange.test.versioned/point-label", "fallback": "Point"}
+            },
+            {
+              "format": "orange.type",
+              "format_version": 1,
+              "type_id": "org.orange.test.versioned/point",
+              "major": 2,
+              "minor": 0,
+              "kind": "record",
+              "fields": [
+                {"field_id": "f-x", "name": "x", "type": "core/i64@1", "optional": false},
+                {"field_id": "f-label", "name": "label", "type": "core/option@1<core/string@1>", "optional": true}
+              ],
+              "constraints": {"eq": "derive", "hash": "derive", "display": "derive", "serialize": "derive"},
+              "codec": {"id": "orange.value.v1", "version": 1},
+              "sensitivity": "normal",
+              "label": {"key": "org.orange.test.versioned/point-label", "fallback": "Point"}
+            }
+          ],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000047",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {"type": "org.orange.test.versioned/point@1", "codec": "orange.value.v1"},
+          {"type": "org.orange.test.versioned/point@2", "codec": "orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-identity-first": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "x", "direction": "input", "kind": "data", "type": "org.orange.test.versioned/point@1"},
+              {
+                "port_id": "y",
+                "direction": "output",
+                "kind": "data",
+                "type": "org.orange.test.versioned/point@1",
+                "source": "computed"
+              }
+            ]
+          },
+          "s-identity-second": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "x", "direction": "input", "kind": "data", "type": "org.orange.test.versioned/point@2"},
+              {
+                "port_id": "y",
+                "direction": "output",
+                "kind": "data",
+                "type": "org.orange.test.versioned/point@2",
+                "source": "computed"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "org.orange.test/identity",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "org.orange.test.versioned/point@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-identity-first",
+            "inputs": {"x": {"type": "org.orange.test.versioned/point@1", "value": {"f-x": "1"}}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/identity",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "org.orange.test.versioned/point@2"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-identity-second"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "y"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "x"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-TYPE-MISMATCH",
+            "subject": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "x",
+              "edge": "20000000-0000-4000-8000-000000000001"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

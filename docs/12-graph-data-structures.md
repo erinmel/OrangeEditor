@@ -84,7 +84,7 @@ pub struct FunctionDecl {
     pub body: GraphBody,                     // contains function-entry/return nodes
 }
 pub struct ActivationPolicy {
-    pub mode: ReentrancyMode,                // Queue | Drop | Replace | Parallel{max}
+    pub mode: ReentrancyMode,                // Queue | Drop | Replace | Parallel (+ max_parallel)
     pub capacity: u32, pub overflow: OverflowPolicy,
     pub on_fault: FaultPolicy, pub order: u32,
 }
@@ -94,7 +94,7 @@ pub struct ActivationPolicy {
 
 Implementation correction (00b review): replacing an existing entry at its current position updates that slot in place. Insertions, removals and actual reordering retain positional patches so undo restores the exact order. The replacement path avoids shifting unrelated entries; order-preserving removal and reordering can still be linear. NFR-15 timing targets remain unmeasured.
 
-`ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
+`ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39), and they leave document bytes identical ([13 §4](13-internationalization.md)).
 
 ### 3.2 Derived indexes (not persisted)
 
@@ -141,7 +141,7 @@ pub struct ChangeSet {
 }
 ```
 
-A transaction applies a list of commands atomically, produces one `ChangeSet` and one inverse transaction for undo, and increments `revision` once. Converter auto-insert ([11 §6](11-graph-language.md)) is one transaction: AddNode + Disconnect + two Connects. Runtime effects are never recorded in history ([01](01-product-requirements.md) FR-03).
+A transaction applies a list of commands atomically, produces one `ChangeSet` and one inverse transaction for undo, and increments `revision` once. Converter auto-insert ([11 §6](11-graph-language.md)) is one transaction: AddNode + Disconnect + two Connects. On a fresh drop there is no edge to replace, so it is AddNode plus two Connects, undone as one step. Runtime effects are never recorded in history ([01](01-product-requirements.md) FR-03).
 
 Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
 
@@ -334,7 +334,7 @@ Converter registry entry:
 
 ## 6. Saved graph example
 
-Manual trigger adds an amount to run variable `total`. If the new total exceeds 100, it emits `threshold-reached`; a handler logs it. Get node `n2` has three consumption sites in different epochs. The Set (`n4`) reads the old total. The Branch condition (`n5` → `n6`) and the Emit payload (`n7`) read the committed new total ([11 §7.3](11-graph-language.md)). Export `total` is legal because it uses only a volatile cone. An export of `n3.sum` would be `E-CROSS-ACTIVATION`.
+Manual trigger adds an amount to run variable `total`. If the new total exceeds 100, it emits `threshold-reached`; a handler logs it. Get node `n2` has three consumption sites in different epochs. The Set (`n4`) reads the old total. The Branch condition (`n5` → `n6`) and the Emit payload (`n7`) read the committed new total ([11 §7.3](11-graph-language.md)). Export `total` is legal because it uses only a volatile cone. An export of `n3.sum` would be `E-CROSS-ACTIVATION`. The executable copy of this example, with full UUIDs in place of the short IDs, is `app/crates/orange-model/tests/fixtures/threshold-v1.json`.
 
 ```json
 {

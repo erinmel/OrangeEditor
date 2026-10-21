@@ -1,0 +1,705 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-59",
+  "title": "Replay metadata, entropy streams and local-only re-execution",
+  "rules": [
+    "R-7.6-replay-local-only",
+    "R-7.6-replay-metadata"
+  ],
+  "cases": [
+    {
+      "name": "run-metadata-records-entropy-algorithm-and-version",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000059",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/u64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-log-u64": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/u64@1"
+              }
+            ]
+          },
+          "s-random": {
+            "kind": "volatile",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/u64@1",
+                "source": "computed"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/random",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-random"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-u64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "org.orange.test/random",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-random"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000005",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-u64"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "value"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "value"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "value"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [],
+        "behaviour": {
+          "rule": "R-7.6-replay-metadata",
+          "expect": "A run of this graph with seed 1 and one trigger of node 10000000-0000-4000-8000-000000000001 records, in its run metadata, the seed, the entropy algorithm identifier and the algorithm version. The metadata is sufficient to reproduce every entropy draw of the run."
+        }
+      },
+      "deferred": {
+        "owner": "00e, 00f",
+        "reason": "Entropy algorithm metadata and stream indexing need an inspectable harness representation (README question 17)."
+      }
+    },
+    {
+      "name": "entropy-draws-follow-the-keyed-stream",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000059",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/u64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-log-u64": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/u64@1"
+              }
+            ]
+          },
+          "s-random": {
+            "kind": "volatile",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/u64@1",
+                "source": "computed"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/random",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-random"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-u64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "org.orange.test/random",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-random"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000005",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-u64"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "value"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "value"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "value"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [],
+        "behaviour": {
+          "rule": "R-7.6-replay-metadata",
+          "expect": "With seed 1, the value logged for random node 10000000-0000-4000-8000-000000000002 in activation k is the first draw of stream(seed=1, node_id=that node, activation_seq=k, invocation_in_activation=0). The value logged for random node 10000000-0000-4000-8000-000000000004 comes from the stream keyed by its own node ID. Equal keys give equal values in every run; the activation number and node ID are part of the key."
+        }
+      },
+      "deferred": {
+        "owner": "00e, 00f",
+        "reason": "Entropy algorithm metadata and stream indexing need an inspectable harness representation (README question 17)."
+      }
+    },
+    {
+      "name": "replay-re-executes-local-computation-only",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000059",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/u64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-log-u64": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/u64@1"
+              }
+            ]
+          },
+          "s-send": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              }
+            ]
+          },
+          "s-random": {
+            "kind": "volatile",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/u64@1",
+                "source": "computed"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/random",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-random"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-u64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "org.orange.test/random",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-random"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000005",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-u64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000006",
+            "definition_id": "org.orange.test/send",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-send"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "value"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "value"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000005",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000006",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "value"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "5"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "exec",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000001",
+              "outcome": "then"
+            },
+            {
+              "t": "0",
+              "event": "kernel",
+              "node": "10000000-0000-4000-8000-000000000002"
+            },
+            {
+              "t": "0",
+              "event": "exec",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "outcome": "then"
+            },
+            {
+              "t": "0",
+              "event": "kernel",
+              "node": "10000000-0000-4000-8000-000000000004"
+            },
+            {
+              "t": "0",
+              "event": "exec",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000005",
+              "outcome": "then"
+            },
+            {
+              "t": "0",
+              "event": "exec",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000006",
+              "outcome": "then"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 1,
+              "outcome": "completed"
+            }
+          ]
+        },
+        "replay": "full",
+        "behaviour": {
+          "rule": "R-7.6-replay-local-only",
+          "expect": "Replaying the recorded ingestion log of this run with the same seed re-executes local computation: both entropy draws (nodes 2 and 4) and both log nodes (3 and 5) run again and reproduce the recorded log values. The send node (6, determinism external) is a remote effect: its recorded completion is taken from the log, it is simulated, and it is never sent again, so a replay performs zero sends of the value 5."
+        },
+        "replay_run": {
+          "trace": "identical",
+          "counters": {
+            "remote_sends": 0
+          }
+        },
+        "counters": {
+          "remote_sends": 1
+        }
+      },
+      "replay": {
+        "source": "recorded-run"
+      }
+    }
+  ]
+}

@@ -1,0 +1,820 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-41",
+  "title": "Port descriptor validation",
+  "rules": ["R-4.1-default-not-handle-stream", "R-4.1-event-output-only", "R-4.1-exec-port-untyped", "R-4.1-lazy-intrinsics-only", "R-4.1-optional-only-option", "R-4.1-port-id-format", "R-4.1-reserved-ids", "R-4.1-secret-ref-literal-is-reference"],
+  "cases": [
+    {
+      "name": "uppercase-port-id-is-rejected",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.portid",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [
+            {
+              "definition_id": "org.orange.test.portid/probe",
+              "definition_version": 1,
+              "config_version": 1,
+              "kind": "pure",
+              "label": {"key": "org.orange.test.portid/probe-label", "fallback": "probe"},
+              "ports": [
+                {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+                {"port_id": "Sum", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+              ],
+              "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+              "errors": [],
+              "determinism": "deterministic",
+              "implementation_slot": "node:org.orange.test.portid/probe@1"
+            }
+          ],
+          "types": [],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"registry": {"result": "rejected", "reason": "R-4.1-port-id-format"}, "diagnostics": []}
+    },
+    {
+      "name": "port-id-reused-across-kinds-is-rejected",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.dupport",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [
+            {
+              "definition_id": "org.orange.test.dupport/probe",
+              "definition_version": 1,
+              "config_version": 1,
+              "kind": "action",
+              "label": {"key": "org.orange.test.dupport/probe-label", "fallback": "probe"},
+              "ports": [
+                {"port_id": "ready", "direction": "input", "kind": "data", "type": "core/i64@1"},
+                {"port_id": "ready", "direction": "output", "kind": "exec"}
+              ],
+              "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+              "errors": [],
+              "determinism": "deterministic",
+              "implementation_slot": "node:org.orange.test.dupport/probe@1"
+            }
+          ],
+          "types": [],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"registry": {"result": "rejected", "reason": "R-4.1-port-id-format"}, "diagnostics": []}
+    },
+    {
+      "name": "reserved-implicit-port-id-is-rejected",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.reserved",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [
+            {
+              "definition_id": "org.orange.test.reserved/probe",
+              "definition_version": 1,
+              "config_version": 1,
+              "kind": "pure",
+              "label": {"key": "org.orange.test.reserved/probe-label", "fallback": "probe"},
+              "ports": [
+                {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+                {
+                  "port_id": "error",
+                  "direction": "output",
+                  "kind": "data",
+                  "type": "core/string@1",
+                  "source": "computed"
+                }
+              ],
+              "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+              "errors": [],
+              "determinism": "deterministic",
+              "implementation_slot": "node:org.orange.test.reserved/probe@1"
+            }
+          ],
+          "types": [],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"registry": {"result": "rejected", "reason": "R-4.1-reserved-ids"}, "diagnostics": []}
+    },
+    {
+      "name": "event-input-port-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [
+          {
+            "id": "50000000-0000-4000-8000-000000000041",
+            "name": "probe",
+            "kind": "pure",
+            "type_params": [],
+            "inputs": [
+              {
+                "port_id": "tick",
+                "direction": "input",
+                "kind": "event",
+                "type": "core/i64@1"
+              }
+            ],
+            "outputs": [],
+            "nodes": [
+              {
+                "id": "10000000-0000-4000-8000-000000000001",
+                "definition_id": "core/function-entry",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000002",
+                "definition_id": "core/function-outputs",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              }
+            ],
+            "edges": []
+          }
+        ],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-PORT-DIRECTION",
+            "subject": {
+              "decl": "50000000-0000-4000-8000-000000000041",
+              "port": "tick"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "typed-exec-port-is-rejected",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.typedexec",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [
+            {
+              "definition_id": "org.orange.test.typedexec/probe",
+              "definition_version": 1,
+              "config_version": 1,
+              "kind": "action",
+              "label": {"key": "org.orange.test.typedexec/probe-label", "fallback": "probe"},
+              "ports": [{"port_id": "acquired", "direction": "output", "kind": "exec", "type": "core/i64@1"}],
+              "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+              "errors": [],
+              "determinism": "deterministic",
+              "implementation_slot": "node:org.orange.test.typedexec/probe@1"
+            }
+          ],
+          "types": [],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"registry": {"result": "rejected", "reason": "R-4.1-exec-port-untyped"}, "diagnostics": []}
+    },
+    {
+      "name": "default-on-a-stream-port-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [
+          {
+            "type": "core/stream@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [
+          {
+            "id": "50000000-0000-4000-8000-000000000041",
+            "name": "probe",
+            "kind": "pure",
+            "type_params": [],
+            "inputs": [
+              {
+                "port_id": "items",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/stream@1<core/i64@1>",
+                "default": {
+                  "type": "core/stream@1<core/i64@1>",
+                  "value": "0"
+                }
+              }
+            ],
+            "outputs": [],
+            "nodes": [
+              {
+                "id": "10000000-0000-4000-8000-000000000001",
+                "definition_id": "core/function-entry",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000002",
+                "definition_id": "core/function-outputs",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              }
+            ],
+            "edges": []
+          }
+        ],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-HANDLE-LITERAL",
+            "subject": {
+              "decl": "50000000-0000-4000-8000-000000000041",
+              "port": "items"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "default-on-a-handle-port-is-rejected",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.handledef",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [],
+          "types": [
+            {
+              "format": "orange.type",
+              "format_version": 1,
+              "type_id": "org.orange.test.handledef/session",
+              "major": 1,
+              "minor": 0,
+              "kind": "handle-kind",
+              "sensitivity": "normal",
+              "label": {
+                "key": "org.orange.test.handledef/session-label",
+                "fallback": "Session"
+              }
+            }
+          ],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [
+          {
+            "type": "core/handle@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "org.orange.test.handledef/session@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [
+          {
+            "id": "50000000-0000-4000-8000-000000000041",
+            "name": "probe",
+            "kind": "pure",
+            "type_params": [],
+            "inputs": [
+              {
+                "port_id": "session",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/handle@1<org.orange.test.handledef/session@1>",
+                "default": {
+                  "type": "core/handle@1<org.orange.test.handledef/session@1>",
+                  "value": "0"
+                }
+              }
+            ],
+            "outputs": [],
+            "nodes": [
+              {
+                "id": "10000000-0000-4000-8000-000000000001",
+                "definition_id": "core/function-entry",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000002",
+                "definition_id": "core/function-outputs",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              }
+            ],
+            "edges": []
+          }
+        ],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-HANDLE-LITERAL",
+            "subject": {
+              "decl": "50000000-0000-4000-8000-000000000041",
+              "port": "session"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "optional-on-a-non-option-port-is-rejected",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.optint",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [
+            {
+              "definition_id": "org.orange.test.optint/probe",
+              "definition_version": 1,
+              "config_version": 1,
+              "kind": "action",
+              "label": {"key": "org.orange.test.optint/probe-label", "fallback": "probe"},
+              "ports": [{"port_id": "x", "direction": "input", "kind": "data", "type": "core/i64@1", "optional": true}],
+              "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+              "errors": [],
+              "determinism": "deterministic",
+              "implementation_slot": "node:org.orange.test.optint/probe@1"
+            }
+          ],
+          "types": [],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"registry": {"result": "rejected", "reason": "R-4.1-optional-only-option"}, "diagnostics": []}
+    },
+    {
+      "name": "optional-on-an-option-port-is-accepted",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.optopt",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [
+            {
+              "definition_id": "org.orange.test.optopt/probe",
+              "definition_version": 1,
+              "config_version": 1,
+              "kind": "action",
+              "label": {"key": "org.orange.test.optopt/probe-label", "fallback": "probe"},
+              "ports": [
+                {
+                  "port_id": "x",
+                  "direction": "input",
+                  "kind": "data",
+                  "type": "core/option@1<core/i64@1>",
+                  "optional": true
+                }
+              ],
+              "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+              "errors": [],
+              "determinism": "deterministic",
+              "implementation_slot": "node:org.orange.test.optopt/probe@1"
+            }
+          ],
+          "types": [],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"registry": {"result": "accepted", "reason": "R-4.1-optional-only-option"}, "diagnostics": []}
+    },
+    {
+      "name": "lazy-port-on-a-package-definition-is-rejected",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.lazyport",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [
+            {
+              "definition_id": "org.orange.test.lazyport/probe",
+              "definition_version": 1,
+              "config_version": 1,
+              "kind": "pure",
+              "label": {"key": "org.orange.test.lazyport/probe-label", "fallback": "probe"},
+              "ports": [
+                {"port_id": "x", "direction": "input", "kind": "data", "type": "core/i64@1", "lazy": true},
+                {"port_id": "y", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+              ],
+              "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+              "errors": [],
+              "determinism": "deterministic",
+              "implementation_slot": "node:org.orange.test.lazyport/probe@1"
+            }
+          ],
+          "types": [],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"registry": {"result": "rejected", "reason": "R-4.1-lazy-intrinsics-only"}, "diagnostics": []}
+    },
+    {
+      "name": "secret-ref-literal-keeps-only-the-reference",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/bool@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/secret-ref@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-log-secret-secret-ref": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/secret-ref@1",
+                "sensitivity": "sensitive"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/bool@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/log-secret",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/secret-ref@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-secret-secret-ref",
+            "inputs": {
+              "value": {
+                "type": "core/secret-ref@1",
+                "value": "credential://orange/obs-main"
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "in"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "payload": {
+                "type": "core/bool@1",
+                "value": true
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "document": {
+          "revision": 0,
+          "nodes": {
+            "10000000-0000-4000-8000-000000000002": {
+              "inputs": {
+                "value": {
+                  "type": "core/secret-ref@1",
+                  "value": "credential://orange/obs-main"
+                }
+              }
+            }
+          }
+        },
+        "trace": {
+          "match": "exact",
+          "events": [
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "exec",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000001",
+              "outcome": "then"
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "value": {
+                "redacted": true
+              }
+            },
+            {
+              "t": "0",
+              "event": "exec",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "outcome": "then"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 1,
+              "outcome": "completed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "secret-ref-literal-holding-material-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000041",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [{"type": "core/secret-ref@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-identity-secret-ref": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "x", "direction": "input", "kind": "data", "type": "core/secret-ref@1"},
+              {
+                "port_id": "y",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/secret-ref@1",
+                "source": "computed"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "org.orange.test/identity",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/secret-ref@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-identity-secret-ref",
+            "inputs": {"x": {"type": "core/secret-ref@1", "value": "hunter2"}}
+          }
+        ],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [{"code": "E-LITERAL-TYPE", "subject": {"node": "10000000-0000-4000-8000-000000000001", "port": "x"}}]
+      }
+    }
+  ]
+}

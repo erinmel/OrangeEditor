@@ -1,0 +1,2387 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-79",
+  "title": "Bundled kernels never panic",
+  "rules": [
+    "R-13-kernels-no-panic"
+  ],
+  "cases": [
+    {
+      "name": "add-i64-at-the-edges-of-the-range",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000079",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-add-i64": {
+            "kind": "pure",
+            "ports": [
+              {
+                "port_id": "a",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              },
+              {
+                "port_id": "b",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              },
+              {
+                "port_id": "sum",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/i64@1",
+                "source": "computed"
+              }
+            ]
+          },
+          "s-log-i64": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-add-i64",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "1"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 1
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000005",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-add-i64",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "-1"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000006",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000007",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 2
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000008",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-add-i64",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000009",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000010",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 3
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000011",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-add-i64",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "0"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000012",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i64"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "sum"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000005",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "sum"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000006",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000007",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000008",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000008",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000008",
+              "port": "sum"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000009",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000009",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000009",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000010",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000010",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000011",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000011",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000011",
+              "port": "sum"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000012",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000012",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000010",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000012",
+              "port": "in"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "9223372036854775807"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "9223372036854775807"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000010",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "fault",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "error": "core/NumericOverflow"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 1,
+              "outcome": "faulted"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 2,
+              "entry": "10000000-0000-4000-8000-000000000004",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "fault",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000006",
+              "error": "core/NumericOverflow"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 2,
+              "outcome": "faulted"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 3,
+              "entry": "10000000-0000-4000-8000-000000000007",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 3,
+              "node": "10000000-0000-4000-8000-000000000009",
+              "value": {
+                "type": "core/i64@1",
+                "value": "-1"
+              }
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 3,
+              "outcome": "completed"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 4,
+              "entry": "10000000-0000-4000-8000-000000000010",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 4,
+              "node": "10000000-0000-4000-8000-000000000012",
+              "value": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 4,
+              "outcome": "completed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "add-i32-and-u64-at-the-edges-of-the-range",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000079",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/i32@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/u64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-add-i32": {
+            "kind": "pure",
+            "ports": [
+              {
+                "port_id": "a",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i32@1"
+              },
+              {
+                "port_id": "b",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i32@1"
+              },
+              {
+                "port_id": "sum",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/i32@1",
+                "source": "computed"
+              }
+            ]
+          },
+          "s-log-i32": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i32@1"
+              }
+            ]
+          },
+          "s-add-u64": {
+            "kind": "pure",
+            "ports": [
+              {
+                "port_id": "a",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/u64@1"
+              },
+              {
+                "port_id": "b",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/u64@1"
+              },
+              {
+                "port_id": "sum",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/u64@1",
+                "source": "computed"
+              }
+            ]
+          },
+          "s-log-u64": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/u64@1"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i32@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i32@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-add-i32",
+            "inputs": {
+              "b": {
+                "type": "core/i32@1",
+                "value": 1
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i32@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i32"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i32@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 1
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000005",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i32@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-add-i32",
+            "inputs": {
+              "b": {
+                "type": "core/i32@1",
+                "value": -1
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000006",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i32@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i32"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000007",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i32@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 2
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000008",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i32@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-add-i32",
+            "inputs": {
+              "b": {
+                "type": "core/i32@1",
+                "value": 0
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000009",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i32@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i32"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000010",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/u64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 3
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000011",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-add-u64",
+            "inputs": {
+              "b": {
+                "type": "core/u64@1",
+                "value": "1"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000012",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-u64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000013",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/u64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 4
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000014",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-add-u64",
+            "inputs": {
+              "b": {
+                "type": "core/u64@1",
+                "value": "0"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000015",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-u64"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "sum"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000005",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "sum"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000006",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000007",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000008",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000008",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000008",
+              "port": "sum"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000009",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000009",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000009",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000010",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000010",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000011",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000011",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000011",
+              "port": "sum"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000012",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000012",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000010",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000012",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000013",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000013",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000014",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000014",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000014",
+              "port": "sum"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000015",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000015",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000013",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000015",
+              "port": "in"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "payload": {
+                "type": "core/i32@1",
+                "value": 2147483647
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "payload": {
+                "type": "core/i32@1",
+                "value": -2147483648
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "payload": {
+                "type": "core/i32@1",
+                "value": -2147483648
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000010",
+              "payload": {
+                "type": "core/u64@1",
+                "value": "18446744073709551615"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000013",
+              "payload": {
+                "type": "core/u64@1",
+                "value": "18446744073709551615"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "fault",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "error": "core/NumericOverflow"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 1,
+              "outcome": "faulted"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 2,
+              "entry": "10000000-0000-4000-8000-000000000004",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "fault",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000006",
+              "error": "core/NumericOverflow"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 2,
+              "outcome": "faulted"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 3,
+              "entry": "10000000-0000-4000-8000-000000000007",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 3,
+              "node": "10000000-0000-4000-8000-000000000009",
+              "value": {
+                "type": "core/i32@1",
+                "value": -2147483648
+              }
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 3,
+              "outcome": "completed"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 4,
+              "entry": "10000000-0000-4000-8000-000000000010",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "fault",
+              "activation": 4,
+              "node": "10000000-0000-4000-8000-000000000012",
+              "error": "core/NumericOverflow"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 4,
+              "outcome": "faulted"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 5,
+              "entry": "10000000-0000-4000-8000-000000000013",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 5,
+              "node": "10000000-0000-4000-8000-000000000015",
+              "value": {
+                "type": "core/u64@1",
+                "value": "18446744073709551615"
+              }
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 5,
+              "outcome": "completed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "divide-by-zero-and-minimum-by-minus-one",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000079",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-divide": {
+            "kind": "pure",
+            "ports": [
+              {
+                "port_id": "a",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              },
+              {
+                "port_id": "b",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              },
+              {
+                "port_id": "quotient",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/i64@1",
+                "source": "computed"
+              }
+            ]
+          },
+          "s-log-i64": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/divide",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-divide",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "0"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 1
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000005",
+            "definition_id": "org.orange.test/divide",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-divide",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "0"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000006",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000007",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 2
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000008",
+            "definition_id": "org.orange.test/divide",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-divide",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "-1"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000009",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000010",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 3
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000011",
+            "definition_id": "org.orange.test/divide",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-divide",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "-1"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000012",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000013",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 4
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000014",
+            "definition_id": "org.orange.test/divide",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-divide",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "1"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000015",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-i64"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "quotient"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000005",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "quotient"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000006",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000007",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000008",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000008",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000008",
+              "port": "quotient"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000009",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000009",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000009",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000010",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000010",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000011",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000011",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000011",
+              "port": "quotient"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000012",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000012",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000010",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000012",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000013",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000013",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000014",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000014",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000014",
+              "port": "quotient"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000015",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000015",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000013",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000015",
+              "port": "in"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "5"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000010",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "9223372036854775807"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000013",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "fault",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "error": "core/DivideByZero"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 1,
+              "outcome": "faulted"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 2,
+              "entry": "10000000-0000-4000-8000-000000000004",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "fault",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000006",
+              "error": "core/DivideByZero"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 2,
+              "outcome": "faulted"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 3,
+              "entry": "10000000-0000-4000-8000-000000000007",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "fault",
+              "activation": 3,
+              "node": "10000000-0000-4000-8000-000000000009",
+              "error": "core/NumericOverflow"
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 3,
+              "outcome": "faulted"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 4,
+              "entry": "10000000-0000-4000-8000-000000000010",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 4,
+              "node": "10000000-0000-4000-8000-000000000012",
+              "value": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775807"
+              }
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 4,
+              "outcome": "completed"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 5,
+              "entry": "10000000-0000-4000-8000-000000000013",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 5,
+              "node": "10000000-0000-4000-8000-000000000015",
+              "value": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 5,
+              "outcome": "completed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "greater-at-the-extremes",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000079",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/bool@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-greater": {
+            "kind": "pure",
+            "ports": [
+              {
+                "port_id": "a",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              },
+              {
+                "port_id": "b",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              },
+              {
+                "port_id": "result",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/bool@1",
+                "source": "computed"
+              }
+            ]
+          },
+          "s-log-bool": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/bool@1"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/greater",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-greater",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "9223372036854775807"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/bool@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-bool"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 1
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000005",
+            "definition_id": "org.orange.test/greater",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-greater",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000006",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/bool@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-bool"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000007",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/i64@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 2
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000008",
+            "definition_id": "org.orange.test/greater",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-greater",
+            "inputs": {
+              "b": {
+                "type": "core/i64@1",
+                "value": "9223372036854775807"
+              }
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000009",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/bool@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-bool"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "result"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000005",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000005",
+              "port": "result"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000006",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000006",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000007",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "port": "payload"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000008",
+              "port": "a"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000008",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000008",
+              "port": "result"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000009",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000009",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000009",
+              "port": "in"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "-9223372036854775808"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000004",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "9223372036854775807"
+              }
+            }
+          },
+          {
+            "trigger": {
+              "node": "10000000-0000-4000-8000-000000000007",
+              "payload": {
+                "type": "core/i64@1",
+                "value": "9223372036854775807"
+              }
+            }
+          }
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "value": {
+                "type": "core/bool@1",
+                "value": false
+              }
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 1,
+              "outcome": "completed"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 2,
+              "entry": "10000000-0000-4000-8000-000000000004",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000006",
+              "value": {
+                "type": "core/bool@1",
+                "value": true
+              }
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 2,
+              "outcome": "completed"
+            },
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 3,
+              "entry": "10000000-0000-4000-8000-000000000007",
+              "cause_depth": 0
+            },
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 3,
+              "node": "10000000-0000-4000-8000-000000000009",
+              "value": {
+                "type": "core/bool@1",
+                "value": false
+              }
+            },
+            {
+              "t": "0",
+              "event": "activation-end",
+              "activation": 3,
+              "outcome": "completed"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "property-and-fuzz-run-over-every-bundled-kernel",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000079",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [],
+        "behaviour": {
+          "rule": "R-13-kernels-no-panic",
+          "expect": "For every bundled native kernel and arbitrary inputs (integer extremes, zero, negative divisors, non-finite floats, empty and oversized text and bytes), evaluation never panics and never aborts; every failure is a structured core/ error value. The fixed vectors in the sibling cases are examples only; the property and fuzz test itself belongs to WU-04."
+        }
+      },
+      "deferred": {
+        "owner": "WU-04",
+        "reason": "Bundled kernels do not exist yet; property/fuzz qualification must enumerate the actual implementations."
+      }
+    }
+  ]
+}

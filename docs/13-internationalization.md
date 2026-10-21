@@ -13,7 +13,7 @@ The host owns catalogue loading/validation, message formatting, font fallback, d
 One `TextRef` identifies static presentation text:
 
 ```json
-{"key": "org.orange.math/node-add-label", "fallback": "Add"}
+{"key": "org.orange.math/add-label", "fallback": "Add"}
 ```
 
 The key is `<package_id>/<message-id>`; message IDs use `[a-z][a-z0-9-]*`. Only a package may publish its namespace; `org.orange.host` owns host UI, core diagnostics and implicit port names. `fallback` is required safe source-language plain text, never markup or a secret. The source language is English (`en`). IDs and keys are never translated. A key has one declared argument schema in its owning catalogue descriptor. Labels normally have none.
@@ -43,7 +43,7 @@ The optional package manifest `localization` field is required when a package co
 Map keys in `arguments` are local message IDs; messages without arguments omit that entry. The complete v1 type vocabulary is `string`, `i64`, `u64`, `f64`, `timestamp`, `duration`, encoded as in 12 §6.2. `default_locale` MUST be `en`; catalogue locale tags are matched case-insensitively and duplicate equivalent tags are rejected. Catalogue files use local IDs; the host adds the owning package prefix. Example source resource:
 
 ```ftl
-node-add-label = Add
+add-label = Add
 selection-count =
     { $count ->
         [one] One node selected
@@ -61,7 +61,7 @@ Locale tags use BCP 47. Desktop precedence: explicit saved per-user language set
 
 For each requested locale in preference order, try its exact catalogue then successively less-specific tags using RFC 4647 lookup; then the owning package's `en`, then the reference's safe fallback, finally its stable key/ID for damaged or unknown metadata. Do not guess a different regional dialect. Message resolution and argument errors use the same fallback path and bounded diagnostic, never a UI panic. A shipped locale requires full baseline host/bundled coverage; third-party coverage is reported separately and may fall back to English.
 
-Changing language while open updates visible text, palette search and accessibility together in a view transaction. Keep document IDs, graph bytes/revision, undo history, selection, viewport and running plans unchanged. Retain an active edit buffer, caret and IME composition; defer replacing its displayed value until composition/commit ends. Keyboard commands bind action IDs; translated mnemonics are checked for collisions. Rebuild only affected text metrics/search indexes off the main thread as needed; never rebuild the graph model. Search includes translated labels/aliases, source-language labels and stable IDs; locale-dependent search order has no execution meaning.
+Changing language while open updates visible text, palette search and accessibility together in a view transaction. The presentation cache (localized labels and similar) is host-side state; a language change never writes it into the document, so document bytes stay identical (G-39). Keep document IDs, graph bytes/revision, undo history, selection, viewport and running plans unchanged. Retain an active edit buffer, caret and IME composition; defer replacing its displayed value until composition/commit ends. Keyboard commands bind action IDs; translated mnemonics are checked for collisions. Rebuild only affected text metrics/search indexes off the main thread as needed; never rebuild the graph model. Search includes translated labels/aliases, source-language labels and stable IDs; locale-dependent search order has no execution meaning.
 
 ## 5. Locale and graph data
 

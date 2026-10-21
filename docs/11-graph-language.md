@@ -1,6 +1,6 @@
 # Graph language and execution semantics
 
-Status: **normative proposal for graph format v1**, 2026-10-20. Nothing here has been implemented, compiled or tested; every rule is a contract that WU-00 must prove with the conformance suite in §18. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
+Status: **normative proposal for graph format v1**, reviewed 2026-10-21. The document-model slices exist (00b); the validator, compiler and interpreter do not. The G-suite is defined and structurally checked, but its expected graph behavior remains NOT RUN. Every rule is a contract WU-00 must prove with §18. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
 
 Prior art such as Unreal Blueprints, Blender geometry-node zones, LabVIEW shift registers, Simulink unit delays and RxJS concurrency operators informed the problem list. It is not evidence that these rules perform or are usable. Known pitfalls this design rejects on purpose: pure nodes evaluated again for every consumer (different random values per pin); stale outputs read from nodes that did not execute; "sequence" that moves on while a latent step is still running; glitches in reactive diamonds; recursion with no bound.
 
@@ -79,11 +79,11 @@ A definition has exactly one `kind`. Ports inherited from a kind (§4.1) are imp
 | Field | Rule |
 |---|---|
 | `port_id` | `[a-z][a-z0-9_]{0,63}`, unique per definition across all kinds. Reserved implicit IDs: `in`, `then`, `failed`, `error`, `cancelled`, `body`, `completed`. |
-| `direction` / `kind` | `input`/`output` × `data`/`exec`/`event`. `event` is output-only. |
+| `direction` / `kind` | `input`/`output` × `data`/`exec`/`event`. `event` is output-only; an `event` input → `E-PORT-DIRECTION`. |
 | `type` | Canonical type expression (§5.1) for data and event payloads; may use the definition's type parameters (`$T`). Exec ports have no type. |
 | `source` (data outputs) | `computed` (pure function of inputs), `execution` (written when the node executes), `state` (volatile read of node state), `payload` (entry/event payload), `iteration` (current loop item). |
 | `available_on` | For `execution` outputs: the exec outcome outs after which the value is defined. Default `["then"]`. Implicit `error: core/error@1` is available on `failed`. |
-| `default` | Literal used when unconnected and the instance has no literal. Not allowed for handle or stream types. A `secret-ref` literal is only a reference, never secret material. |
+| `default` | Literal used when unconnected and the instance has no literal. Not allowed for handle or stream types (`E-HANDLE-LITERAL`). A `secret-ref` literal is only a reference, never secret material. |
 | `optional` | Only if the type is `core/option@1<…>`. An unconnected port with no literal or default receives `None`. |
 | `variadic` | `{min, max}`; instance ports are `port_id#k` (§4.5). |
 | `lazy` | Intrinsics only in v1 (`select`, `and`, `or`, `coalesce`, `try`). |
@@ -97,8 +97,8 @@ Implicit ports by kind: action/async/iterator/control get `in` (unless the intri
 | From → To | data in | exec in | Anything else |
 |---|---|---|---|
 | data out | OK if the types are identical after generic resolution (§5.5) | rejected `E-KIND-MISMATCH` | rejected |
-| exec out | rejected | OK within the same region (§7.1) | rejected |
-| event out | rejected | OK; the target starts a new event region | rejected |
+| exec out | rejected `E-KIND-MISMATCH` | OK within the same region (§7.1) | rejected `E-KIND-MISMATCH` |
+| event out | rejected `E-KIND-MISMATCH` | OK; the target starts a new event region | rejected `E-KIND-MISMATCH` |
 
 ### 4.3 Cardinality
 
@@ -113,13 +113,13 @@ Implicit ports by kind: action/async/iterator/control get `in` (unless the intri
 
 ### 4.4 Resolving input values
 
-Order: connected edge → instance literal → definition default → `None` for an optional port → `E-INPUT-REQUIRED`. When an edge is connected, the instance literal stays in the document as **shadowed** and is ignored by the compiler. Disconnecting restores it. Literals exist only for types with a literal codec. Handles, streams, results and errors have none ([12 §6.1](12-graph-data-structures.md)).
+Order: connected edge → instance literal → definition default → `None` for an optional port → `E-INPUT-REQUIRED`. When an edge is connected, the instance literal stays in the document as **shadowed** (`W-LITERAL-SHADOWED`) and is ignored by the compiler. Disconnecting restores it. Literals exist only for types with a literal codec. Handles, streams, results and errors have none ([12 §6.1](12-graph-data-structures.md)).
 
 ### 4.5 Variadic and dynamic ports
 
 - Variadic instance ports use stable keys `item#k`. `k` is a per-node counter that is never reused, so inserting an item in the middle does not rewrite edges. Order is the persisted instance order, not `k`.
 - Ports that depend on config or type arguments (record split, gRPC method fields) come from a **declarative port template** that the host evaluates. No guest code runs to compute ports, which keeps the "opening a document executes nothing" rule ([03](03-data-and-execution.md)).
-- Every non-intrinsic node persists a resolved **signature snapshot** ([12 §3](12-graph-data-structures.md)). A missing package still shows ports and edges. If re-resolution differs from the snapshot, it produces a diagnostic. Edges to vanished ports become **orphan edges**: preserved, displayed and not compiled.
+- Every non-intrinsic node persists a resolved **signature snapshot** ([12 §3](12-graph-data-structures.md)). A missing package still shows ports and edges. If re-resolution differs from the snapshot, it produces `E-SIGNATURE-DRIFT`. Edges to vanished ports become **orphan edges** (`E-PORT-UNKNOWN`): preserved, displayed and not compiled.
 
 ## 5. Types
 
@@ -167,7 +167,7 @@ Types are **nominal**: two packages' `point` records are different types even wi
 |---|---|---|
 | `eq` | Total equality used by Switch, map keys, change detection | all except f32/f64 (IEEE `==` is a separate node), handles, streams |
 | `ord` | Total order | integers, bool, string (code point order), duration, timestamp; floats only through explicit `total-order` nodes |
-| `hash` | Stable hash consistent with `eq` | integers, bool, string, bytes, enums with hashable payloads |
+| `hash` | Stable hash consistent with `eq` | integers, bool, string, bytes, duration, timestamp, enums with hashable payloads |
 | `num` | Arithmetic family | i32, i64, u32, u64, f32, f64, duration (add/sub only) |
 | `int` / `float` | Narrower `num` | integers / f32, f64 |
 | `display` | Invariant-locale text formatting | all literal-codec types |
@@ -183,10 +183,11 @@ A package type declares which constraints it implements by supplying a **constra
 - Resolved type arguments are **persisted** on the instance (`type_args`). Loading never depends on re-running the solver. An edit re-infers only the affected component.
 - Unresolved parameter → `E-TYPE-AMBIGUOUS`; the user pins it in the inspector. Conflict → `E-TYPE-MISMATCH` with converter suggestions. Inference never inserts conversions.
 - A generic provider MUST list its supported specializations, or delegate to constraint implementations. A missing specialization is `E-NO-SPECIALIZATION` at compile time, never a run-time lookup.
+- **Editor numeric entry (ADR-20, OPEN-11):** the editor presents a Float family with Single precision (`core/f32@1`) and Double precision (`core/f64@1`), alongside integer math. These remain distinct canonical types. A new numeric literal with no resolved numeric port type or explicit type selection defaults to Double, including whole-number text such as `3`. A resolved port or explicit selection determines the literal type instead. Integer input is parsed directly from text into that integer type, never through a floating intermediate. This chooses a type when creating a literal; existing literals, inferred components, connected edges and provider locks are never silently converted. Precision changes on a wire follow the visible converter rules in §6. Integers remain available for exact values, counters and protocol fields. Wider/arbitrary-precision types require a separate package type/codec under §16, not a reinterpretation of f64. G-49 defines the editor vectors; editor execution is future WU-05 work. Product labels use TextRef under [13](13-internationalization.md).
 
 ### 5.6 Numeric additions to [03](03-data-and-execution.md)
 
-Integer arithmetic config: `int_overflow` = `checked` (default) / `wrapping` / `saturating`. Integer division truncates toward zero. `rem` takes the dividend's sign, and Euclidean `mod` is a separate node. Shifts by ≥ the bit width fail in checked mode. i32/u32 follow the i64 rules. f32 follows the f64 rules and persists as 8-hex-digit `bits`. Mixed-width arithmetic is never implicit.
+Integer arithmetic config: `int_overflow` = `checked` (default) / `wrapping` / `saturating`. Integer division truncates toward zero. `rem` takes the dividend's sign, and Euclidean `mod` is a separate node. Checked overflow fails with `core/NumericOverflow`, and shifts by ≥ the bit width fail in checked mode with `core/OutOfRange`. i32/u32 follow the i64 rules. f32 follows the f64 rules and persists as 8-hex-digit `bits`. Mixed-width arithmetic is never implicit.
 
 ## 6. Conversions
 
@@ -195,8 +196,8 @@ Integer arithmetic config: `int_overflow` = `checked` (default) / `wrapping` / `
    - `lossless-total`: always succeeds without loss. Examples: i32→i64, u32→i64/u64, i32/u32→f64, f32→f64, T→`option<T>`, `display` T→string.
    - `checked-partial`: may fail. Examples: i64→i32 (`core/OutOfRange`), string→i64 (`core/Parse`), json→T, `option<T>`→T (`core/NoneValue`), f64→i64 with rounding mode.
    - `lossy`: may lose information under a declared policy and returns loss metadata. Examples: f64→f32, i64→f64 above 2^53, string→bytes with replacement.
-3. **Editor auto-insert:** when an incompatible wire is dropped and exactly one `lossless-total` entry exists for the pair, the editor inserts a visible converter node in the same undoable transaction. If only partial or lossy entries exist, the editor shows a choice and never picks one. Chained conversions are never auto-inserted. With no entry, the connection is rejected with a diagnostic.
-4. Ownership: a package may register converters only when it owns `from` or `to`. A competing provider for an existing pair uses override slot `convert:<from>-><to>` ([04](04-expansion-plugins.md)) with the same explicit-rebind rule as other providers.
+3. **Editor auto-insert:** when an incompatible wire is dropped and exactly one `lossless-total` entry exists for the pair, the editor inserts a visible converter node in the same undoable transaction. If only partial or lossy entries exist, the editor shows a choice and never picks one. Chained conversions are never auto-inserted. With no entry, the connection is rejected with `E-TYPE-MISMATCH`.
+4. Ownership: a package may register converters only when it owns `from` or `to`. Converters between core types are host-provided; the host may bind them to a bundled provider such as `org.orange.math` (the bundled-kernel exception in [04](04-expansion-plugins.md)). A converter bound to a bundled provider is locked in `package_lock` like any selected provider; an unbound host converter has no lock entry. A competing provider for an existing pair uses override slot `convert:<from>-><to>` ([04](04-expansion-plugins.md)) with the same explicit-rebind rule as other providers.
 
 ## 7. Regions, availability, ordering and determinism
 
@@ -304,7 +305,7 @@ A run is reproducible when its plan hash, seed, virtual clock, ingestion log (ev
 - The collection for `for-each` is the immutable value at loop entry. `count < 0` fails with `core/OutOfRange`. The While `condition` is pulled in a new epoch before each iteration.
 - An iteration ends when the body region instance completes. Async work in the body is awaited.
 - **Break** cancels the remaining strands of the current body instance, including Fork branches, then fires `completed`. **Continue** cancels them and starts the next iteration. Both target the innermost enclosing loop. They may sit inside nested Sequence/Fork/Branch regions, but never across a function boundary (`E-BREAK-OUTSIDE-LOOP`).
-- Exceeding `max_iterations` fires `failed` with `core/LoopBudgetExceeded`.
+- `max_iterations` N permits exactly N iterations; attempting iteration N+1 fires `failed` with `core/LoopBudgetExceeded`.
 - Loop-carried values use activation-local variables or registers (`scope: activation`). Zones carry typed items explicitly.
 
 ### 8.4 Control intrinsics
@@ -312,7 +313,7 @@ A run is reproducible when its plan hash, seed, virtual clock, ingestion log (ev
 | ID | Ports | Semantics |
 |---|---|---|
 | `core/branch` | in; `condition: bool`; `true`, `false` | Pulls the condition and fires one out |
-| `core/switch` | in; `key: $K` (`eq`: int, string, enum); `case#k`; `default` | Enum switches must be exhaustive against the locked schema or have `default`; an unknown variant goes to `default`, else fails with `core/UnknownVariant` |
+| `core/switch` | in; `key: $K` (`eq`: int, string, enum); `case#k`; `default` | Enum switches must be exhaustive against the locked schema or have `default` (`E-SWITCH-NOT-EXHAUSTIVE`); an unknown variant goes to `default`, else fails with `core/UnknownVariant` |
 | `core/sequence` | in; `then#k` (≥2 regions) | O2 |
 | `core/fork` | in; `branch#k` regions; `completed`; config `join` | O3 |
 | `core/for-each` | in; `items: list<$T>` or `map<$K,$V>`; `body`; `completed`; `element`/`key`/`value`, `index: i64` (iteration) | §8.3 |
@@ -369,7 +370,7 @@ A strand is `Ready`, `Running`, `Suspended(ContinuationId)` or `Ended`. A fault 
 
 ### 9.4 Cancellation and cleanup mode
 
-Cancellation flows run → activation → strand → in-flight operation ([03](03-data-and-execution.md)). A strand suspended at an async node with a connected `cancelled` resumes there in **cleanup mode**. It may run pure, volatile and actions or asyncs declared `cleanup_safe` (Set, Log, Close, Flush). Any other node fails with `core/Cancelled`. Cleanup is bounded by `cleanup_deadline` (the remaining drain deadline, or a proposed 500 ms). A second cancellation aborts cleanup. An unconnected `cancelled` ends the strand.
+Cancellation flows run → activation → strand → in-flight operation ([03](03-data-and-execution.md)). A strand suspended at an async node with a connected `cancelled` resumes there in **cleanup mode**. It may run pure, volatile and actions or asyncs declared `cleanup_safe` (Set, Log, Close, Flush). Any other node fails with `core/Cancelled`. Cleanup is bounded by `cleanup_deadline` (the remaining drain deadline, or a proposed 500 ms). A second cancellation aborts cleanup. An unconnected `cancelled` ends the strand. A fault inside cleanup ends the activation with outcome `cancelled` (the original cancellation wins); cleanup on other strands still runs to completion or deadline.
 
 ## 10. Events and triggers
 
@@ -380,8 +381,9 @@ Every entry has an `activation` policy ([12 §6](12-graph-data-structures.md)):
 | Field | Values |
 |---|---|
 | `mode` | `queue` (default: serial, FIFO), `drop` (ignore while busy, counted), `replace` (cancel the running activation, keep only the latest pending), `parallel` (up to `max_parallel`) |
-| `capacity`, `overflow` | Per [03](03-data-and-execution.md): proposed 256; `backpressure` where the protocol allows it, else `drop-oldest`, `drop-newest`, `coalesce-latest` or `fault`, with counters |
+| `capacity`, `overflow` | Per [03](03-data-and-execution.md): proposed 256; `backpressure` where the protocol allows it, else `drop-oldest`, `drop-newest`, `coalesce-latest` or `fault` (the envelope is rejected with `core/QueueOverflow`), with counters |
 | `on_fault` | `continue` / `stop-run` |
+| `max_parallel` | Required with `parallel`: maximum concurrent activations |
 | `order` | Handler order (O8) |
 
 Under `parallel`, activations interleave at suspension points. Get is re-pulled at every consumption, so a read-modify-write is atomic unless a value was explicitly captured (in a local or action output) before a suspension. Then `W-STALE-CAPTURE` warns and suggests `core/update-variable`.
@@ -395,9 +397,11 @@ Under `parallel`, activations interleave at suspension points. Get is re-pulled 
 | `core/on-manual` | Editor, CLI or API `trigger(run, node, payload)` | Declared type |
 | `core/on-timer` | Interval or once (`core/on-timeout`); monotonic; scheduled against a base time, so no cumulative drift; config `first: immediate/after-interval`, missed-tick `skip`/`coalesce` (default)/`catch-up(max)` | `scheduled_at`, `missed: u64` |
 | `core/on-event` | Matching custom emit | Event payload type |
-| `core/on-variable-changed` | Segment end, if the value changed (`eq`) | `value`, `previous` |
+| `core/on-variable-changed` | Segment end, if the final value differs (`eq`) from the value at segment start; a change reverted within one segment does not fire | `value`, `previous` |
 | `core/on-watch` | Segment end, when the watched cone's dependencies changed and the result changed (`changed`) or became true (`rising`) | `value` |
 | Package entries | Event-source contract; the subscription is acquired in the Starting phase ([03](03-data-and-execution.md)) | Declared type |
+
+Missed-tick policies: `skip` drops missed ticks and fires at the next scheduled tick; `coalesce` fires once with `missed` set to the number of ticks folded; `catch-up(max)` fires each missed tick in order up to `max` and drops the rest, counting them in `missed` of the next fire.
 
 Custom events are declared per graph: `{id, name, payload type, scope: run | workspace}`. Workspace-scope events go through the host bus to other runs in the workspace, with the same envelope and causal-depth rules.
 
@@ -423,7 +427,7 @@ An action or async with `event` outputs (a subscription) is allowed **only in th
 
 ### 11.2 Write conflicts
 
-Two branches of one Fork that write the same local or run variable or register → `E-WRITE-CONFLICT`. Exceptions: every such write is an `update-variable` with the same commutative operation (`add`, `min`, `max`, `and`, `or`, `xor`), or the variable declares `conflict: last-writer-wins`. Writes from different activations are ordered by the actor and need no rule. Writing an `eq`-equal value produces no change notification.
+Two branches of one Fork that write the same local or run variable or register → `E-WRITE-CONFLICT`. Exceptions: every such write is an `update-variable` with the same commutative operation (`add`, `min`, `max`, `and`, `or`, `xor`), or the variable declares `conflict: last-writer-wins` (the default is `conflict: reject`). Writes from different activations are ordered by the actor and need no rule. Writing an `eq`-equal value produces no change notification.
 
 ### 11.3 Node state
 
@@ -459,7 +463,7 @@ Runtime codes defined by the core: `NumericOverflow`, `DivideByZero`, `Domain`, 
 - A **function** is a graph-local or package-provided body with a typed interface. `core/function-entry` outputs the inputs. Action functions return through `core/return` nodes. Pure functions use a single `core/function-outputs` node.
 - The kind is inferred from the body: only pure nodes → `pure`; volatile → `volatile`; actions → `action`; anything with `suspends ≠ never` → `async`. The declared kind MUST equal the inferred kind (`E-FUNCTION-KIND`), so callers see a stable interface. The editor updates the declaration and lists affected callers.
 - Each call has its own frame and locals. Run variables are shared with the caller's run.
-- A function body has no entries, subscriptions or Watch nodes (`E-ENTRY-IN-FUNCTION`). Break and Continue do not cross the boundary. `core/return` MUST NOT appear inside a Fork branch. Every path in an action function with outputs reaches a Return (`E-MISSING-RETURN`). Return cancels any remaining detached strands of the body (`W-DETACH-IN-FUNCTION`).
+- A function body has no entries or Watch nodes (`E-ENTRY-IN-FUNCTION`) and no subscriptions (`E-SUBSCRIPTION-IN-FUNCTION`, §10.4). Break and Continue do not cross the boundary. `core/return` MUST NOT appear inside a Fork branch (`E-REGION-ESCAPE`). Every path in an action function with outputs reaches a Return (`E-MISSING-RETURN`). Return cancels any remaining detached strands of the body (`W-DETACH-IN-FUNCTION`).
 - The call graph is acyclic (§8.2). There are no macros in v1. "Collapse to function" is an editor refactoring with an interface preview, and groups or frames are presentation only.
 - A package-provided function is a definition whose implementation is a graph, pinned by the package lock like any provider.
 
@@ -491,7 +495,7 @@ Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_
 
 | Group | Codes |
 |---|---|
-| Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
+| Structure | `E-SWITCH-NOT-EXHAUSTIVE`, `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
 | Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
 | Regions and availability | `E-REGION-AMBIGUOUS`, `E-REGION-ESCAPE`, `E-UNAVAILABLE-VALUE`, `E-CROSS-ACTIVATION`, `E-BREAK-OUTSIDE-LOOP`, `E-ZONE-STRUCTURE`, `W-UNREACHABLE` |
 | Cycles | `E-CYCLE-DATA`, `E-CYCLE-SYNC-CONTROL`, `E-RECURSION`, `E-LOOP-UNBOUNDED`, `W-BUSY-LOOP` |
@@ -500,7 +504,7 @@ Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_
 
 ## 18. Conformance suite (WU-00; all NOT RUN)
 
-Each case is a golden graph fixture with expected diagnostics or an expected deterministic trace. It must pass on the reference interpreter (WU-00e) and later on the optimized executor (WU-04).
+Each case is a golden graph fixture with expected diagnostics or an expected deterministic trace. It must pass on the reference interpreter (WU-00e) and later on the optimized executor (WU-04). The fixtures are in [conformance/g-suite](../conformance/README.md); [conformance/rules.json](../conformance/rules.json) maps every testable rule of §4–§15 to its cases. G-40–G-83 were added by the 00a semantic review to cover rules G-01–G-39 did not.
 
 | ID | Fixture → expected |
 |---|---|
@@ -543,5 +547,49 @@ Each case is a golden graph fixture with expected diagnostics or an expected det
 | G-37 | Constant `1/0` → `W-CONST-ERROR`, and a run-time error at consumption |
 | G-38 | Timer missed ticks under a stalled actor → skip/coalesce/catch-up counts exact on the virtual clock |
 | G-39 | Pure-core fixture replaces presentation metadata using English/Spanish/RTL pseudo fixture projections (no real formatter or package host) → identical semantic signatures, document bytes/revision, plan identity, canonical outputs including derived enum/record display from stable IDs, diagnostic codes/arguments and structured replay trace. Missing presentation retains safe fallback/IDs without signature drift. Actual catalogue/rendering integration is L-05/L-08. |
+| G-40 | Data out to exec in → `E-KIND-MISMATCH`; exec out to data in and event out to data in rejected; non-identical types without a converter → `E-TYPE-MISMATCH`; second edge into one data input → `E-FANIN-DATA`; two edges from one exec out → `E-FANOUT-EXEC`; two edges from one event out → `E-FANOUT-EVENT`; data out fanned out to many inputs → legal and consumers share one immutable value; event out to an exec in → legal and starts a new event region |
+| G-41 | Port id violating `[a-z][a-z0-9_]{0,63}`, duplicate across kinds, or reusing a reserved implicit id → definition rejected; exec port with a type, event input → `E-PORT-DIRECTION`; `optional` on a non-`option` port, `lazy` on a non-intrinsic, `default` on a handle/stream port (`E-HANDLE-LITERAL`) → rejected; `secret-ref` literal stores only the reference |
+| G-42 | Action, async, iterator, control, entry definitions → exactly the implicit ports of 11 §4.1 (`in`/`failed`/`error`/`then`/`cancelled`); declared outcome outs replace `then`; each execution fires exactly one outcome out (`failed` and `cancelled` included); `available_on` defaults to `[then]` |
+| G-43 | Same input with edge, instance literal, definition default and optional None in turn → value taken in order edge, literal, default, `None`; none of them and not optional → `E-INPUT-REQUIRED`; literal on a handle, stream, result or error input → rejected |
+| G-44 | Insert, delete, re-add an item → new `#k` never reuses a deleted key; evaluation and persisted order follow instance order, not `k`; pull order over variadic inputs follows instance order |
+| G-45 | Open a document with a record-split node whose ports come from a template → ports resolved by the host with zero guest code executed (probe counter 0); non-intrinsic node persists its resolved signature snapshot |
+| G-46 | Persisted document and wire contract → only canonical type text (`list<string>` short form never stored); `$T` outside a definition → rejected; type lock holds `named` without arguments plus codec version; `map` iterates in insertion order and rejects float keys; `u8`, `i16`, decimal, tuple and `any` → unknown type; `secret-ref` to string → no conversion; `core/result` only from `try` or nodes declaring it |
+| G-47 | Two packages each define a `point` record with identical fields, wired together → `E-TYPE-MISMATCH`; `org.example/point@1` to `org.example/point@2` → `E-TYPE-MISMATCH` |
+| G-48 | Switch key or map key of `f64`, handle or stream → `E-CONSTRAINT-UNSATISFIED`; float ordering only through a `total-order` node; a package implementing a core constraint for a foreign type → rejected; a package implementing its own constraint for a foreign type → accepted |
+| G-49 | Generic nodes chained in a component → same `type_args` regardless of edit order (stable `NodeId` order); an edit re-infers only its connected component; conflicting arguments → `E-TYPE-MISMATCH` with converter suggestions and no conversion inserted; generic provider missing a specialization → `E-NO-SPECIALIZATION` at compile time, no run-time lookup |
+| G-50 | `int_overflow` checked (default) fails, `wrapping` wraps, `saturating` clamps; integer division truncates toward zero; `rem` takes the dividend's sign; shift by >= bit width fails in checked mode; i32/u32 follow i64 rules; f32 persists as 8-hex-digit `bits`; mixed-width arithmetic → `E-TYPE-MISMATCH` |
+| G-51 | `i64`→`i32` out of range → `core/OutOfRange`; `string`→`i64` bad text → `core/Parse`; `option<T>`→`T` on None → `core/NoneValue`; lossy `f64`→`f32` → loss metadata returned; mismatched types with no registry entry → rejected with a diagnostic and no implicit conversion; second provider for an owned pair → only through override slot `convert:<from>→<to>` with explicit rebind |
+| G-52 | Exec edge leaving its region → `E-REGION-ESCAPE` (only end of strand, Break/Continue, Return exit a region); Branch/Switch/Gate/async outcomes stay in the parent region and may merge, exactly one token arrives; exec fan-in executes the node once per arriving token; region instance completes only after every strand incl. nested Fork strands ends; Fork → two branches → same node → `E-REGION-AMBIGUOUS`; unreachable exec node → `W-UNREACHABLE` and not compiled |
+| G-53 | Async `then` output read on `failed` path → `E-UNAVAILABLE-VALUE` while `error` on `failed` is readable; Fork branch A value read in sibling B → `E-UNAVAILABLE-VALUE`; entry `payload` anywhere in its activation → accepted; action reading its own earlier output through a Wait cycle on the first pass → `E-UNAVAILABLE-VALUE`; same value read after the back edge reads the most recent execution; event-region node reading the subscribing node's `then` output → `E-CROSS-ACTIVATION` |
+| G-54 | Get V feeding two inputs of one action → one prologue read, equal values, even when another strand writes V during an offloaded `heavy` pull; each input gathering, loop check, Watch, export and preview evaluation opens a new epoch; offloaded result identical to inline; action-effect counter stays 0 across pulls |
+| G-55 | Counting kernels on const, payload-dependent and loop-body-dependent cones → const folded once per plan, activation class once per activation, epoch class once per epoch |
+| G-56 | `select`/`and`/`or`/`coalesce` with an erroring unselected input → unselected input never evaluated, no error; `try` wrapping an input cone → captures only that cone's error, errors outside the cone still propagate |
+| G-57 | Linear strand → trace order equals exec-edge order (O1); two sources → FIFO by `source_seq`, cross-source by `ingestion_seq` (O5); two independent async completions → inbox arrival order recorded (O6); Emit then Log in the emitter → Log runs before the handler starts, stack depth constant over a long emit chain (O7) |
+| G-58 | Strand A commits a write, strand B (another Fork branch) starts a later epoch → sees it (O9); V set 1→2→3 in one segment → one On Variable Changed (value 3, previous = value at segment start), enqueued after the segment in `order` and before the next ready strand (O10); On Watch `changed` vs `rising` fire per their definitions |
+| G-59 | Replay of a run with a seeded entropy node and a remote effect → algorithm and version in run metadata, entropy drawn from `stream(seed, node_id, activation_seq, invocation_in_activation)`, local computation re-executed, remote effect simulated from the log and never re-sent |
+| G-60 | `count` of -1 → `core/OutOfRange`; list variable mutated inside `for-each` body → loop iterates the entry-time value; While condition reads a variable the body sets → pulled in a new epoch each iteration; 10^6-iteration Count loop → yields at every iteration, another strand progresses |
+| G-61 | Continue inside nested Sequence/Fork → remaining body strands cancelled and next iteration starts; Break inside nested loops → terminates only the innermost loop; body with an awaited async node → next iteration starts only after the body region instance completes; Break in a function body → `E-BREAK-OUTSIDE-LOOP` |
+| G-62 | Enum switch without `default` missing a variant → rejected; enum value with a variant unknown to the locked schema → routed to `default`, else fails with `core/UnknownVariant` |
+| G-63 | Gate, Do Once, Flip Flop and Register (also `scope: activation`) → state is run-scoped, visible in inspection, reset at run start, absent from a checkpoint |
+| G-64 | Emit before the wait starts is ignored, the next matching emit resumes `core/await-event` without starting an activation; `timeout` elapses → `timed_out` fires |
+| G-65 | Zone body containing an action, `state-read` volatile or async node → `E-ZONE-STRUCTURE`; value leaving a zone other than through the end node → `E-ZONE-STRUCTURE`; entropy-volatile body accepted; edge into body treated as a loop-invariant capture |
+| G-66 | Two ready strands and a burst of inbox messages → inbox drained in arrival order, ready queue FIFO, a slice-exhausted or yielding strand goes to the tail, no interleaving inside a segment; idle actor performs zero scheduler iterations; two runs overlap on the compute executor; heavy pure and async completions return as inbox messages |
+| G-67 | Fork branch faults → sibling strands cancelled (fail-fast), activation Faulted then Cancelled; `on_fault: stop-run` stops the run; stop/replace/race drives Cancelling then Cancelled and cancel reaches the in-flight operation; second cancel during cleanup aborts cleanup; unconnected `cancelled` ends the strand |
+| G-68 | Burst larger than `capacity` under each of `drop-oldest`, `drop-newest`, `coalesce-latest`, `fault` and `backpressure` → surviving items and counters exact per policy |
+| G-69 | Under `parallel`, Get-then-Set separated by a suspension in two activations → `W-STALE-CAPTURE` suggesting `core/update-variable`; same read-modify-write without a captured value → no warning and atomic result |
+| G-70 | `core/on-start` fires once at Running; `core/on-stop` fires once on graceful Draining only (not on cancel or fault), new triggers rejected and Emit fails with `core/RunStopping`; `core/on-manual` `trigger(run, node, payload)` delivers the declared payload type; package entry subscription acquired in the Starting phase |
+| G-71 | On Timer with stalled actor → scheduled against base time (no cumulative drift); `first: immediate` vs `after-interval`; `core/on-timeout` fires once; payload carries `scheduled_at` and `missed: u64` |
+| G-72 | External, timer and manual envelopes → depth 0; Emit, variable change and Watch from activation A → `A.depth + 1`; On V changed → Set V (new value) above `max_cause_depth` → notification suppressed with counter and diagnostic; workspace-scope event reaches another run with the same envelope and depth rules |
+| G-73 | Subscription action in the top-level graph → run-owned; ends on run stop or via `handle` plus close node; each event starts an activation of the region rooted at its event port; nothing else outlives its region instance |
+| G-74 | `local` initialized at activation or call start and never persisted; `run` initialized at Starting; Get of an uninitialized variable → `core/UninitializedVariable`; `update-variable` ops `add sub min max and or xor append compare-and-set` yield `old`/`new` on `then` |
+| G-75 | Handle stored in a persistent or workspace variable → `E-HANDLE-PERSIST`; stream stored in any variable → `E-STREAM-STORE`; stream used as a literal or exported → rejected |
+| G-76 | Fork branches writing one register → `E-WRITE-CONFLICT`; mixed commutative ops (`add` vs `max`) or non-commutative same op (`sub`, `append`) → `E-WRITE-CONFLICT`; variable with `conflict: last-writer-wins` → legal; writes from two different activations → no diagnostic, ordered by the actor |
+| G-77 | `for-each-item` end of stream → `completed`; item error → `failed` and stream closed; `next-item` → `Some` then `None` at end; `collect` without `max_items` rejected, over the limit → `core/LimitExceeded`; `close-stream` twice → idempotent and allowed in cleanup mode; push source stream without declared capacity and overflow policy → rejected |
+| G-78 | Failing node → `core/error@1` with namespaced `code`, `node`, `activation`, message fields and typed redacted `details`; `sensitive` port values redacted in traces; `cause` chain truncated at depth 8; all core runtime codes carry the `core/` prefix |
+| G-79 | Property and fuzz run over every bundled native kernel with arbitrary inputs → no panic; failures only as `core/` error values |
+| G-80 | Function with `function-entry` and `return` (action) or `function-outputs` (pure) → typed interface; body of only volatile, action or suspending nodes inferred `volatile`/`action`/`async` and a mismatched declaration → `E-FUNCTION-KIND` while the editor updates the declaration and lists callers; two calls get separate frames and locals while run variables are shared; package function pinned by the package lock |
+| G-81 | Entry or Watch node in a function → `E-ENTRY-IN-FUNCTION`; subscription → `E-SUBSCRIPTION-IN-FUNCTION`; `return` inside a Fork branch → rejected; action function with a path missing Return → `E-MISSING-RETURN`; Return with a detached strand left → detached strand cancelled and `W-DETACH-IN-FUNCTION` |
+| G-82 | Semantic edit while a run is active → running plan unchanged, run shows stale plan (revision r), new plan compiled in the background (debounced), a run started afterwards uses it; restart = graceful stop plus new RunId, state carried only via an opt-in checkpoint |
+| G-83 | Pinned pure/volatile outputs → volatile read from selected live run snapshot (read-only) or declared initial values; `execution` output shows last inspected value labelled or unavailable; entropy uses a fixed preview seed; actions and async nodes never executed; edit re-evaluates only the downstream cone off the main thread within budget; erroring preview or export → error on node, run not faulted |
 
 Requirements: FR-02, FR-08–16, FR-44–51 in [01](01-product-requirements.md). ADR-13–17 in [08](08-decisions.md). Work unit WU-00 in [07](07-delivery-plan.md); presentation qualification also follows [13](13-internationalization.md).

@@ -1,0 +1,185 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-24",
+  "title": "Function recursion",
+  "rules": ["R-8.1-recursion", "R-8.2-call-graph-acyclic"],
+  "cases": [
+    {
+      "name": "direct-recursion-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000024",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [
+          {
+            "id": "50000000-0000-4000-8000-000000000001",
+            "name": "f",
+            "kind": "pure",
+            "type_params": [],
+            "inputs": [{"port_id": "x", "direction": "input", "kind": "data", "type": "core/i64@1"}],
+            "outputs": [{"port_id": "y", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}],
+            "nodes": [
+              {
+                "id": "10000000-0000-4000-8000-000000000001",
+                "definition_id": "core/function-entry",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000002",
+                "definition_id": "core/call",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {"function": "50000000-0000-4000-8000-000000000001"}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "definition_id": "core/function-outputs",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "id": "20000000-0000-4000-8000-000000000001",
+                "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "x"},
+                "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "x"}
+              },
+              {
+                "id": "20000000-0000-4000-8000-000000000002",
+                "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "y"},
+                "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "y"}
+              }
+            ]
+          }
+        ],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"diagnostics": [{"code": "E-RECURSION", "subject": {"node": "10000000-0000-4000-8000-000000000002"}}]}
+    },
+    {
+      "name": "indirect-recursion-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000024",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [
+          {
+            "id": "50000000-0000-4000-8000-000000000001",
+            "name": "f",
+            "kind": "pure",
+            "type_params": [],
+            "inputs": [{"port_id": "x", "direction": "input", "kind": "data", "type": "core/i64@1"}],
+            "outputs": [{"port_id": "y", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}],
+            "nodes": [
+              {
+                "id": "10000000-0000-4000-8000-000000000001",
+                "definition_id": "core/function-entry",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000002",
+                "definition_id": "core/call",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {"function": "50000000-0000-4000-8000-000000000002"}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "definition_id": "core/function-outputs",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "id": "20000000-0000-4000-8000-000000000001",
+                "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "x"},
+                "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "x"}
+              },
+              {
+                "id": "20000000-0000-4000-8000-000000000002",
+                "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "y"},
+                "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "y"}
+              }
+            ]
+          },
+          {
+            "id": "50000000-0000-4000-8000-000000000002",
+            "name": "g",
+            "kind": "pure",
+            "type_params": [],
+            "inputs": [{"port_id": "x", "direction": "input", "kind": "data", "type": "core/i64@1"}],
+            "outputs": [{"port_id": "y", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}],
+            "nodes": [
+              {
+                "id": "10000000-0000-4000-8000-000000000004",
+                "definition_id": "core/function-entry",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000005",
+                "definition_id": "core/call",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {"function": "50000000-0000-4000-8000-000000000001"}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000006",
+                "definition_id": "core/function-outputs",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "id": "20000000-0000-4000-8000-000000000003",
+                "from": {"node": "10000000-0000-4000-8000-000000000004", "port": "x"},
+                "to": {"node": "10000000-0000-4000-8000-000000000005", "port": "x"}
+              },
+              {
+                "id": "20000000-0000-4000-8000-000000000004",
+                "from": {"node": "10000000-0000-4000-8000-000000000005", "port": "y"},
+                "to": {"node": "10000000-0000-4000-8000-000000000006", "port": "y"}
+              }
+            ]
+          }
+        ],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {"code": "E-RECURSION", "subject": {"node": "10000000-0000-4000-8000-000000000002"}},
+          {"code": "E-RECURSION", "subject": {"node": "10000000-0000-4000-8000-000000000005"}}
+        ]
+      }
+    }
+  ]
+}

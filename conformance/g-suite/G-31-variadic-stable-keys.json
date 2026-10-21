@@ -1,0 +1,173 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-31",
+  "title": "Variadic insert in the middle keeps existing keys and edges; counters are never reused",
+  "rules": ["R-4.5-variadic-stable-keys"],
+  "cases": [
+    {
+      "name": "insert-in-the-middle-leaves-existing-edges-unchanged",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000031",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {"type": "core/option@1", "codec": "orange.value.v1"},
+          {"type": "core/i64@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/option@1<core/i64@1>"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/coalesce",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"},
+            "variadic": {"value": {"order": [0, 1], "next": 2}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value#0"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value#1"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "edits": [{"op": "insert-variadic", "node": "10000000-0000-4000-8000-000000000002", "port": "value", "at": 1}],
+      "expect": {
+        "change_set": {
+          "layout_only": false,
+          "from_revision": 0,
+          "to_revision": 1,
+          "nodes": {"changed": ["10000000-0000-4000-8000-000000000002"]},
+          "edges": {"added": [], "removed": [], "changed": []}
+        },
+        "document": {
+          "revision": 1,
+          "nodes": {"10000000-0000-4000-8000-000000000002": {"variadic": {"value": {"order": [0, 2, 1], "next": 3}}}},
+          "edges": {
+            "20000000-0000-4000-8000-000000000001": {
+              "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+              "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value#0"}
+            },
+            "20000000-0000-4000-8000-000000000002": {
+              "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+              "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value#1"}
+            }
+          }
+        },
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "counter-is-never-reused-after-a-removed-slot",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000031",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {"type": "core/option@1", "codec": "orange.value.v1"},
+          {"type": "core/i64@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/option@1<core/i64@1>"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/coalesce",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"},
+            "variadic": {"value": {"order": [0, 2], "next": 3}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value#0"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value#2"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "edits": [{"op": "insert-variadic", "node": "10000000-0000-4000-8000-000000000002", "port": "value", "at": 2}],
+      "expect": {
+        "change_set": {
+          "layout_only": false,
+          "from_revision": 0,
+          "to_revision": 1,
+          "nodes": {"changed": ["10000000-0000-4000-8000-000000000002"]},
+          "edges": {"added": [], "removed": [], "changed": []}
+        },
+        "document": {
+          "revision": 1,
+          "nodes": {"10000000-0000-4000-8000-000000000002": {"variadic": {"value": {"order": [0, 2, 3], "next": 4}}}},
+          "edges": {
+            "20000000-0000-4000-8000-000000000001": {
+              "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+              "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value#0"}
+            },
+            "20000000-0000-4000-8000-000000000002": {
+              "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+              "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value#2"}
+            }
+          }
+        },
+        "diagnostics": []
+      }
+    }
+  ]
+}

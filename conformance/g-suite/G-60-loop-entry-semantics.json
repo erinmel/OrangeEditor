@@ -1,0 +1,255 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-60",
+  "title": "Loop entry semantics: negative count, for-each snapshot, While epoch, yield per iteration",
+  "rules": ["R-8.1-structured-loop-yield", "R-8.3-count-negative", "R-8.3-for-each-snapshot", "R-8.3-while-condition-epoch"],
+  "cases": [
+    {
+      "name": "negative-count-fails-with-out-of-range",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000060",
+        "revision": 0,
+        "package_lock": [
+          {"id":"org.orange.test","version":"0.1.0","content_digest":"sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"}
+        ],
+        "type_lock": [
+          {"type":"core/i64@1","codec":"orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-log-i64": {"kind":"action","ports":[{"port_id":"value","direction":"input","kind":"data","type":"core/i64@1"}]}
+        },
+        "nodes": [
+          {"id":"10000000-0000-4000-8000-000000000001","definition_id":"core/on-manual","definition_version":1,"config_version":1,"config":{"payload":"core/i64@1"},"activation":{"mode":"queue","capacity":256,"overflow":"fault","on_fault":"continue","order":0}},
+          {"id":"10000000-0000-4000-8000-000000000002","definition_id":"core/count","definition_version":1,"config_version":1,"config":{},"inputs":{"count":{"type":"core/i64@1","value":"-1"}}},
+          {"id":"10000000-0000-4000-8000-000000000003","definition_id":"org.orange.test/log","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/i64@1"},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-log-i64"}
+        ],
+        "edges": [
+          {"id":"20000000-0000-4000-8000-000000000001","from":{"node":"10000000-0000-4000-8000-000000000001","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000002","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000002","from":{"node":"10000000-0000-4000-8000-000000000002","port":"body"},"to":{"node":"10000000-0000-4000-8000-000000000003","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000003","from":{"node":"10000000-0000-4000-8000-000000000002","port":"index"},"to":{"node":"10000000-0000-4000-8000-000000000003","port":"value"}}
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {"trigger":{"node":"10000000-0000-4000-8000-000000000001","payload":{"type":"core/i64@1","value":"0"}}}
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "exact",
+          "events": [
+            {"t":"0","event":"activation-start","activation":1,"entry":"10000000-0000-4000-8000-000000000001","cause_depth":0},
+            {"t":"0","event":"exec","activation":1,"node":"10000000-0000-4000-8000-000000000001","outcome":"then"},
+            {"t":"0","event":"exec","activation":1,"node":"10000000-0000-4000-8000-000000000002","outcome":"failed"},
+            {"t":"0","event":"fault","activation":1,"node":"10000000-0000-4000-8000-000000000002","error":"core/OutOfRange"},
+            {"t":"0","event":"activation-end","activation":1,"outcome":"faulted"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "for-each-iterates-the-entry-time-list",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000060",
+        "revision": 0,
+        "package_lock": [
+          {"id":"org.orange.test","version":"0.1.0","content_digest":"sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"}
+        ],
+        "type_lock": [
+          {"type":"core/i64@1","codec":"orange.value.v1"},
+          {"type":"core/list@1","codec":"orange.value.v1"}
+        ],
+        "variables": [
+          {"id":"30000000-0000-4000-8000-000000000001","name":"xs","type":"core/list@1<core/i64@1>","scope":"run","init":{"type":"core/list@1<core/i64@1>","value":["1","2","3"]},"persistent":false,"conflict":"reject"}
+        ],
+        "events": [],
+        "signatures": {
+          "s-log-i64": {"kind":"action","ports":[{"port_id":"value","direction":"input","kind":"data","type":"core/i64@1"}]},
+          "s-log-list-i64": {"kind":"action","ports":[{"port_id":"value","direction":"input","kind":"data","type":"core/list@1<core/i64@1>"}]}
+        },
+        "nodes": [
+          {"id":"10000000-0000-4000-8000-000000000001","definition_id":"core/on-manual","definition_version":1,"config_version":1,"config":{"payload":"core/i64@1"},"activation":{"mode":"queue","capacity":256,"overflow":"fault","on_fault":"continue","order":0}},
+          {"id":"10000000-0000-4000-8000-000000000002","definition_id":"core/get-variable","definition_version":1,"config_version":1,"config":{"variable":"30000000-0000-4000-8000-000000000001"}},
+          {"id":"10000000-0000-4000-8000-000000000003","definition_id":"core/for-each","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/i64@1"}},
+          {"id":"10000000-0000-4000-8000-000000000004","definition_id":"org.orange.test/log","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/i64@1"},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-log-i64"},
+          {"id":"10000000-0000-4000-8000-000000000005","definition_id":"core/update-variable","definition_version":1,"config_version":1,"config":{"variable":"30000000-0000-4000-8000-000000000001","op":"append"},"inputs":{"operand":{"type":"core/i64@1","value":"9"}}},
+          {"id":"10000000-0000-4000-8000-000000000006","definition_id":"org.orange.test/log","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/list@1<core/i64@1>"},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-log-list-i64"}
+        ],
+        "edges": [
+          {"id":"20000000-0000-4000-8000-000000000001","from":{"node":"10000000-0000-4000-8000-000000000001","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000003","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000002","from":{"node":"10000000-0000-4000-8000-000000000002","port":"value"},"to":{"node":"10000000-0000-4000-8000-000000000003","port":"items"}},
+          {"id":"20000000-0000-4000-8000-000000000003","from":{"node":"10000000-0000-4000-8000-000000000003","port":"body"},"to":{"node":"10000000-0000-4000-8000-000000000004","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000004","from":{"node":"10000000-0000-4000-8000-000000000003","port":"element"},"to":{"node":"10000000-0000-4000-8000-000000000004","port":"value"}},
+          {"id":"20000000-0000-4000-8000-000000000005","from":{"node":"10000000-0000-4000-8000-000000000004","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000005","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000006","from":{"node":"10000000-0000-4000-8000-000000000003","port":"completed"},"to":{"node":"10000000-0000-4000-8000-000000000006","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000007","from":{"node":"10000000-0000-4000-8000-000000000002","port":"value"},"to":{"node":"10000000-0000-4000-8000-000000000006","port":"value"}}
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {"trigger":{"node":"10000000-0000-4000-8000-000000000001","payload":{"type":"core/i64@1","value":"0"}}}
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {"t":"0","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000004","value":{"type":"core/i64@1","value":"1"}},
+            {"t":"0","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000004","value":{"type":"core/i64@1","value":"2"}},
+            {"t":"0","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000004","value":{"type":"core/i64@1","value":"3"}},
+            {"t":"0","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000006","value":{"type":"core/list@1<core/i64@1>","value":["1","2","3","9","9","9"]}},
+            {"t":"0","event":"activation-end","activation":1,"outcome":"completed"}
+          ]
+        },
+        "variables": {
+          "30000000-0000-4000-8000-000000000001": {"type":"core/list@1<core/i64@1>","value":["1","2","3","9","9","9"]}
+        }
+      }
+    },
+    {
+      "name": "while-condition-is-pulled-in-a-new-epoch-per-iteration",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000060",
+        "revision": 0,
+        "package_lock": [
+          {"id":"org.orange.test","version":"0.1.0","content_digest":"sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"}
+        ],
+        "type_lock": [
+          {"type":"core/i64@1","codec":"orange.value.v1"},
+          {"type":"core/bool@1","codec":"orange.value.v1"}
+        ],
+        "variables": [
+          {"id":"30000000-0000-4000-8000-000000000001","name":"n","type":"core/i64@1","scope":"run","init":{"type":"core/i64@1","value":"0"},"persistent":false,"conflict":"reject"}
+        ],
+        "events": [],
+        "signatures": {
+          "s-greater": {"kind":"pure","ports":[{"port_id":"a","direction":"input","kind":"data","type":"core/i64@1"},{"port_id":"b","direction":"input","kind":"data","type":"core/i64@1"},{"port_id":"result","direction":"output","kind":"data","type":"core/bool@1","source":"computed"}]},
+          "s-log-i64": {"kind":"action","ports":[{"port_id":"value","direction":"input","kind":"data","type":"core/i64@1"}]}
+        },
+        "nodes": [
+          {"id":"10000000-0000-4000-8000-000000000001","definition_id":"core/on-manual","definition_version":1,"config_version":1,"config":{"payload":"core/i64@1"},"activation":{"mode":"queue","capacity":256,"overflow":"fault","on_fault":"continue","order":0}},
+          {"id":"10000000-0000-4000-8000-000000000002","definition_id":"core/while","definition_version":1,"config_version":1,"config":{"max_iterations":10}},
+          {"id":"10000000-0000-4000-8000-000000000003","definition_id":"org.orange.test/greater","definition_version":1,"config_version":1,"config":{},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-greater","inputs":{"a":{"type":"core/i64@1","value":"3"}}},
+          {"id":"10000000-0000-4000-8000-000000000004","definition_id":"core/get-variable","definition_version":1,"config_version":1,"config":{"variable":"30000000-0000-4000-8000-000000000001"}},
+          {"id":"10000000-0000-4000-8000-000000000005","definition_id":"core/update-variable","definition_version":1,"config_version":1,"config":{"variable":"30000000-0000-4000-8000-000000000001","op":"add"},"inputs":{"operand":{"type":"core/i64@1","value":"1"}}},
+          {"id":"10000000-0000-4000-8000-000000000006","definition_id":"org.orange.test/log","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/i64@1"},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-log-i64"}
+        ],
+        "edges": [
+          {"id":"20000000-0000-4000-8000-000000000001","from":{"node":"10000000-0000-4000-8000-000000000001","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000002","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000002","from":{"node":"10000000-0000-4000-8000-000000000003","port":"result"},"to":{"node":"10000000-0000-4000-8000-000000000002","port":"condition"}},
+          {"id":"20000000-0000-4000-8000-000000000003","from":{"node":"10000000-0000-4000-8000-000000000004","port":"value"},"to":{"node":"10000000-0000-4000-8000-000000000003","port":"b"}},
+          {"id":"20000000-0000-4000-8000-000000000004","from":{"node":"10000000-0000-4000-8000-000000000002","port":"body"},"to":{"node":"10000000-0000-4000-8000-000000000005","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000005","from":{"node":"10000000-0000-4000-8000-000000000005","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000006","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000006","from":{"node":"10000000-0000-4000-8000-000000000005","port":"new"},"to":{"node":"10000000-0000-4000-8000-000000000006","port":"value"}}
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {"trigger":{"node":"10000000-0000-4000-8000-000000000001","payload":{"type":"core/i64@1","value":"0"}}}
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {"t":"0","event":"kernel","node":"10000000-0000-4000-8000-000000000003"},
+            {"t":"0","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000006","value":{"type":"core/i64@1","value":"1"}},
+            {"t":"0","event":"kernel","node":"10000000-0000-4000-8000-000000000003"},
+            {"t":"0","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000006","value":{"type":"core/i64@1","value":"2"}},
+            {"t":"0","event":"kernel","node":"10000000-0000-4000-8000-000000000003"},
+            {"t":"0","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000006","value":{"type":"core/i64@1","value":"3"}},
+            {"t":"0","event":"kernel","node":"10000000-0000-4000-8000-000000000003"},
+            {"t":"0","event":"activation-end","activation":1,"outcome":"completed"}
+          ]
+        },
+        "variables": {
+          "30000000-0000-4000-8000-000000000001": {"type":"core/i64@1","value":"3"}
+        }
+      }
+    },
+    {
+      "name": "million-iteration-count-loop-lets-another-strand-progress",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000060",
+        "revision": 0,
+        "package_lock": [
+          {"id":"org.orange.test","version":"0.1.0","content_digest":"sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"}
+        ],
+        "type_lock": [
+          {"type":"core/i64@1","codec":"orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-close": {"kind":"action","ports":[]},
+          "s-log-i64": {"kind":"action","ports":[{"port_id":"value","direction":"input","kind":"data","type":"core/i64@1"}]}
+        },
+        "nodes": [
+          {"id":"10000000-0000-4000-8000-000000000001","definition_id":"core/on-manual","definition_version":1,"config_version":1,"config":{"payload":"core/i64@1"},"activation":{"mode":"queue","capacity":256,"overflow":"fault","on_fault":"continue","order":0}},
+          {"id":"10000000-0000-4000-8000-000000000002","definition_id":"core/fork","definition_version":1,"config_version":1,"config":{"join":"all"},"variadic":{"branch":{"order":[0,1],"next":2}}},
+          {"id":"10000000-0000-4000-8000-000000000003","definition_id":"core/count","definition_version":1,"config_version":1,"config":{},"inputs":{"count":{"type":"core/i64@1","value":"1000000"}}},
+          {"id":"10000000-0000-4000-8000-000000000004","definition_id":"org.orange.test/close","definition_version":1,"config_version":1,"config":{},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-close"},
+          {"id":"10000000-0000-4000-8000-000000000005","definition_id":"org.orange.test/log","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/i64@1"},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-log-i64","inputs":{"value":{"type":"core/i64@1","value":"1"}}},
+          {"id":"10000000-0000-4000-8000-000000000006","definition_id":"org.orange.test/log","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/i64@1"},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-log-i64","inputs":{"value":{"type":"core/i64@1","value":"2"}}}
+        ],
+        "edges": [
+          {"id":"20000000-0000-4000-8000-000000000001","from":{"node":"10000000-0000-4000-8000-000000000001","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000002","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000002","from":{"node":"10000000-0000-4000-8000-000000000002","port":"branch#0"},"to":{"node":"10000000-0000-4000-8000-000000000003","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000003","from":{"node":"10000000-0000-4000-8000-000000000003","port":"body"},"to":{"node":"10000000-0000-4000-8000-000000000004","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000004","from":{"node":"10000000-0000-4000-8000-000000000003","port":"completed"},"to":{"node":"10000000-0000-4000-8000-000000000005","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000005","from":{"node":"10000000-0000-4000-8000-000000000002","port":"branch#1"},"to":{"node":"10000000-0000-4000-8000-000000000006","port":"in"}}
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {"trigger":{"node":"10000000-0000-4000-8000-000000000001","payload":{"type":"core/i64@1","value":"0"}}}
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {"t":"0","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000006","value":{"type":"core/i64@1","value":"2"}},
+            {"t":"0","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000005","value":{"type":"core/i64@1","value":"1"}},
+            {"t":"0","event":"activation-end","activation":1,"outcome":"completed"}
+          ]
+        }
+      }
+    }
+  ]
+}

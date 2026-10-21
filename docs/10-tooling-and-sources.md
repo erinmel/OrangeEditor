@@ -32,6 +32,30 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 - 00b gaps follow-up (Windows x64, Rust 1.99.1, 2026-10-21): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked` and `cargo test --workspace --locked` passed with 102 tests. New tests cover JSON text depth (64 accepted, 65 and 84 rejected, brackets inside strings ignored), the size budget, hash/equality agreement, and decode/encode of a 20 000-key map with duplicate detection. `MAX_JSON_TEXT_BYTES = 1 MiB` is a proposed value and an open budget, like `MAX_NESTING = 64`.
 - Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working Bevy build toolchain.
 
+## WU-00/00a fixture review (2026-10-21)
+
+Selected environment: Windows x64, `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`, host `x86_64-pc-windows-msvc`, LLVM 23.1.1, Node.js v24.18.0. The workspace/toolchain/lockfile are unchanged. `Cargo.lock` SHA-256: `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`. Debug/test profiles, default workspace features; `indexmap/serde`, `serde/derive`, `serde_json/preserve_order` and `uuid/serde` remain as declared in the manifests. No Bevy dependency, new numeric library or installed product package.
+
+The [review](../conformance/REVIEW.md) records corrections and maintainability findings. The fixture inventory contains 83 files, 356 named cases and 272 mapped rules. Five Rust tests check fixture structure, package snapshots, inverse mappings, script clocks/replay expectation shape and documentation JSON agreement. Thirty-two prose-only cases have explicit deferred owners/reasons. G-45's template assertion and G-49's missing specialization diagnostic remain contract gaps; G-31/G-36 have structured editor expectations rather than graph traces. These counts are inventory, not executed semantic coverage. Six new G-49 vectors define numeric authoring with Float Single/Double and integer math; no editor executes them yet.
+
+Executed from the OrangeEditor repository root:
+
+| Command | Result and scope |
+|---|---|
+| `cargo test -q -p orange-model --locked --test conformance_fixtures` | PASS: five structural checks, including projection of every test-package node. The new check initially failed on G-48's stale `numbers` signature; corrected its optional `fail_at` input and type lock before the passing run |
+| `cargo fmt --all --check` | PASS |
+| `$env:RUSTDOCFLAGS='-D warnings'; $env:CARGO_INCREMENTAL='0'; cargo doc --workspace --no-deps --locked` | PASS: API documentation generated with warnings denied |
+| `$env:CARGO_INCREMENTAL='0'; cargo clippy --workspace --all-targets --locked -- -D warnings` | PASS |
+| `$env:CARGO_INCREMENTAL='0'; cargo test --workspace --locked` | PASS: 107 model/structural tests; zero doc tests. This executes no validator, compiler, run actor or graph trace |
+| `node tools/check-cargo-metadata.mjs` | PASS: core dependency boundary; Bevy version check inapplicable because Bevy is absent |
+| `git diff --check` | PASS: tracked diff whitespace; staged additions are checked before commit |
+| `rustc -vV`, `cargo --version`, `cargo tree --workspace --locked --depth 1`, `Get-FileHash Cargo.lock -Algorithm SHA256` | Recorded toolchain, host, dependency versions and unchanged lock identity |
+| `pub fn wider_float(value: f128) -> f128 { value }` piped to `rustc - --crate-name wider_float_probe --crate-type lib --emit metadata --out-dir .artifacts/plans` | Expected negative probe: compiler exit 1, `E0658`, f128 is unstable on the selected Rust 1.99.1. No product source or dependency changed |
+
+Early incremental-cache commands emitted filesystem hard-link fallback warnings and copied files successfully; final workspace test/Clippy runs used `CARGO_INCREMENTAL=0`. This is an environment limitation, not a code-lint failure. Official competitor/numeric sources and their access limits are linked in the review. No competitor app or new numeric implementation was tested.
+
+G-suite expected diagnostics/traces, NFR-15/W9, replay transport simulation, Bevy, Wasm/native-worker isolation and cross-OS runtime qualification remain **NOT RUN**. G0, full 00a acceptance, G1 and G2 are not passed. Remaining contracts/harnesses have owners 00c/00d/00e/00f and WU-03/04/05; there is no 00g in the delivery plan. Remote CI must validate the eventual PR independently.
+
 ## Model review fixes and slice 4 analysis (2026-10-20)
 
 Review findings on the first four slices were fixed in isolated worktrees based on `8c1f42f`, with explicit source/test ownership, and integrated into the feature checkout. No commit, push, merge or remote CI was part of the fixes.

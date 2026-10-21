@@ -1,0 +1,41 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-45",
+  "title": "Dynamic ports from declarative templates",
+  "rules": [
+    "R-4.5-declarative-port-templates"
+  ],
+  "cases": [
+    {
+      "name": "template-ports-resolve-without-guest-code",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000045",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [],
+        "behaviour": {
+          "rule": "R-4.5-declarative-port-templates",
+          "expect": "Opening a document with a record-split node whose ports come from a port_template resolves those ports in the host with zero guest code executed (probe counter 0); the node persists the resolved signature snapshot"
+        }
+      },
+      "deferred": {
+        "owner": "00c, WU-03",
+        "reason": "Declarative port-template wire format and host-resolution probe are unspecified (README question 10)."
+      }
+    }
+  ]
+}

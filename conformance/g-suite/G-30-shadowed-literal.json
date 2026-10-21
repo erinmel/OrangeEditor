@@ -1,0 +1,168 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-30",
+  "title": "A literal shadowed by an edge stays in the document; disconnecting restores it",
+  "rules": ["R-4.4-shadowed-literal"],
+  "cases": [
+    {
+      "name": "connected-edge-shadows-the-literal-but-it-stays-in-the-document",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000030",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-add-i64": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "sum", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/i64@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-add-i64",
+            "inputs": {"a": {"type": "core/i64@1", "value": "5"}, "b": {"type": "core/i64@1", "value": "1"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "a"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "document": {
+          "revision": 0,
+          "nodes": {
+            "10000000-0000-4000-8000-000000000002": {
+              "inputs": {"a": {"type": "core/i64@1", "value": "5"}, "b": {"type": "core/i64@1", "value": "1"}}
+            }
+          }
+        },
+        "diagnostics": [
+          {
+            "code": "W-LITERAL-SHADOWED",
+            "subject": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "a",
+              "edge": "20000000-0000-4000-8000-000000000001"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "disconnecting-restores-the-literal",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000030",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-add-i64": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "sum", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/i64@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-add-i64",
+            "inputs": {"a": {"type": "core/i64@1", "value": "5"}, "b": {"type": "core/i64@1", "value": "1"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "a"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "edits": [{"op": "disconnect", "edge": "20000000-0000-4000-8000-000000000001"}],
+      "expect": {
+        "change_set": {
+          "layout_only": false,
+          "from_revision": 0,
+          "to_revision": 1,
+          "nodes": {"added": [], "removed": [], "changed": []},
+          "edges": {"removed": ["20000000-0000-4000-8000-000000000001"]}
+        },
+        "document": {
+          "revision": 1,
+          "nodes": {
+            "10000000-0000-4000-8000-000000000002": {
+              "inputs": {"a": {"type": "core/i64@1", "value": "5"}, "b": {"type": "core/i64@1", "value": "1"}}
+            }
+          }
+        },
+        "diagnostics": []
+      }
+    }
+  ]
+}

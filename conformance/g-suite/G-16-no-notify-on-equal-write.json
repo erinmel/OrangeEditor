@@ -1,0 +1,108 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-16",
+  "title": "Writing an eq-equal value from On Variable Changed produces no further notification",
+  "rules": ["R-11.2-equal-write-silent"],
+  "cases": [
+    {
+      "name": "same-value-write-in-handler-ends-the-chain",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000016",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [
+          {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "name": "v",
+            "type": "core/i64@1",
+            "scope": "run",
+            "init": {"type": "core/i64@1", "value": "0"},
+            "persistent": false,
+            "conflict": "reject"
+          }
+        ],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/i64@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/set-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001"},
+            "inputs": {"value": {"type": "core/i64@1", "value": "1"}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "core/on-variable-changed",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 1}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/set-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001"},
+            "inputs": {"value": {"type": "core/i64@1", "value": "1"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000003", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000004", "port": "in"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {"seed": 1, "max_cause_depth": 64, "steps": [{"trigger": {"node": "10000000-0000-4000-8000-000000000001", "payload": {"type": "core/i64@1", "value": "0"}}}]},
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "exact",
+          "events": [
+            {"t": "0", "event": "activation-start", "activation": 1, "entry": "10000000-0000-4000-8000-000000000001", "cause_depth": 0},
+            {"t": "0", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000001", "outcome": "then"},
+            {"t": "0", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000002", "outcome": "then"},
+            {"t": "0", "event": "activation-end", "activation": 1, "outcome": "completed"},
+            {
+              "t": "0",
+              "event": "notify",
+              "variable": "30000000-0000-4000-8000-000000000001",
+              "value": {"type": "core/i64@1", "value": "1"},
+              "previous": {"type": "core/i64@1", "value": "0"}
+            },
+            {"t": "0", "event": "activation-start", "activation": 2, "entry": "10000000-0000-4000-8000-000000000003", "cause_depth": 1},
+            {"t": "0", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000003", "outcome": "then"},
+            {"t": "0", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000004", "outcome": "then"},
+            {"t": "0", "event": "activation-end", "activation": 2, "outcome": "completed"}
+          ]
+        },
+        "variables": {"30000000-0000-4000-8000-000000000001": {"type": "core/i64@1", "value": "1"}},
+        "counters": {"accepted": 2}
+      }
+    }
+  ]
+}

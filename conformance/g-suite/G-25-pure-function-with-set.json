@@ -1,0 +1,84 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-25",
+  "title": "Function declared pure containing Set",
+  "rules": ["R-14-function-kind-equal"],
+  "cases": [
+    {
+      "name": "declared-pure-but-contains-set-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000025",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [
+          {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "name": "counter",
+            "type": "core/i64@1",
+            "scope": "run",
+            "init": {"type": "core/i64@1", "value": "0"},
+            "persistent": false,
+            "conflict": "reject"
+          }
+        ],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [
+          {
+            "id": "50000000-0000-4000-8000-000000000001",
+            "name": "bump",
+            "kind": "pure",
+            "type_params": [],
+            "inputs": [],
+            "outputs": [],
+            "nodes": [
+              {
+                "id": "10000000-0000-4000-8000-000000000001",
+                "definition_id": "core/function-entry",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000002",
+                "definition_id": "core/set-variable",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {"variable": "30000000-0000-4000-8000-000000000001"},
+                "inputs": {"value": {"type": "core/i64@1", "value": "1"}}
+              },
+              {
+                "id": "10000000-0000-4000-8000-000000000003",
+                "definition_id": "core/return",
+                "definition_version": 1,
+                "config_version": 1,
+                "config": {}
+              }
+            ],
+            "edges": [
+              {
+                "id": "20000000-0000-4000-8000-000000000001",
+                "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+                "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+              },
+              {
+                "id": "20000000-0000-4000-8000-000000000002",
+                "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "then"},
+                "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+              }
+            ]
+          }
+        ],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"diagnostics": [{"code": "E-FUNCTION-KIND", "subject": {"decl": "50000000-0000-4000-8000-000000000001"}}]}
+    }
+  ]
+}

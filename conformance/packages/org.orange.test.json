@@ -1,0 +1,406 @@
+{
+  "format": "orange.test-package",
+  "format_version": 1,
+  "id": "org.orange.test",
+  "version": "0.1.0",
+  "provider": "reference",
+  "definitions": [
+    {
+      "definition_id": "org.orange.test/add",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "pure",
+      "label": {"key": "org.orange.test/add-label", "fallback": "Add"},
+      "type_params": [{"name": "T", "constraints": ["num"]}],
+      "ports": [
+        {"port_id": "a", "direction": "input", "kind": "data", "type": "$T"},
+        {"port_id": "b", "direction": "input", "kind": "data", "type": "$T"},
+        {"port_id": "sum", "direction": "output", "kind": "data", "type": "$T", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": ["core/NumericOverflow"],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/add@1",
+      "x_test_behavior": "sum = a + b; integer overflow fails with core/NumericOverflow."
+    },
+    {
+      "definition_id": "org.orange.test/divide",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "pure",
+      "label": {"key": "org.orange.test/divide-label", "fallback": "Divide"},
+      "ports": [
+        {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "quotient", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": ["core/DivideByZero", "core/NumericOverflow"],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/divide@1",
+      "x_test_behavior": "quotient = a / b truncated toward zero; b = 0 fails with core/DivideByZero; MIN / -1 fails with core/NumericOverflow."
+    },
+    {
+      "definition_id": "org.orange.test/greater",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "pure",
+      "label": {"key": "org.orange.test/greater-label", "fallback": "Greater"},
+      "ports": [
+        {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "result", "direction": "output", "kind": "data", "type": "core/bool@1", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/greater@1",
+      "x_test_behavior": "result = a > b."
+    },
+    {
+      "definition_id": "org.orange.test/equal",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "pure",
+      "label": {"key": "org.orange.test/equal-label", "fallback": "Equal"},
+      "type_params": [{"name": "T", "constraints": ["eq"]}],
+      "ports": [
+        {"port_id": "a", "direction": "input", "kind": "data", "type": "$T"},
+        {"port_id": "b", "direction": "input", "kind": "data", "type": "$T"},
+        {"port_id": "result", "direction": "output", "kind": "data", "type": "core/bool@1", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/equal@1",
+      "x_test_behavior": "result = (a == b)."
+    },
+    {
+      "definition_id": "org.orange.test/identity",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "pure",
+      "label": {"key": "org.orange.test/identity-label", "fallback": "Identity"},
+      "type_params": [{"name": "T", "constraints": []}],
+      "ports": [
+        {"port_id": "x", "direction": "input", "kind": "data", "type": "$T"},
+        {"port_id": "y", "direction": "output", "kind": "data", "type": "$T", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/identity@1",
+      "x_test_behavior": "y = x. Like every pure kernel, each invocation emits a `kernel` trace event, so fixtures can count memoization."
+    },
+    {
+      "definition_id": "org.orange.test/random",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "volatile",
+      "volatility": "entropy",
+      "label": {"key": "org.orange.test/random-label", "fallback": "Random"},
+      "ports": [
+        {"port_id": "value", "direction": "output", "kind": "data", "type": "core/u64@1", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "seeded",
+      "implementation_slot": "node:org.orange.test/random@1",
+      "x_test_behavior": "value = the next u64 of stream(seed, node_id, activation_seq, invocation_in_activation) (11 §7.6). Fixtures compare values for equality, never against fixed numbers."
+    },
+    {
+      "definition_id": "org.orange.test/noise",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "pure",
+      "label": {"key": "org.orange.test/noise-label", "fallback": "Noise"},
+      "ports": [
+        {"port_id": "value", "direction": "output", "kind": "data", "type": "core/u64@1", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "nondeterministic",
+      "implementation_slot": "node:org.orange.test/noise@1",
+      "x_test_behavior": "value is not reproducible; a run using it records replay: partial (11 §7.6)."
+    },
+    {
+      "definition_id": "org.orange.test/log",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "action",
+      "cleanup_safe": true,
+      "label": {"key": "org.orange.test/log-label", "fallback": "Log"},
+      "type_params": [{"name": "T", "constraints": []}],
+      "ports": [
+        {"port_id": "value", "direction": "input", "kind": "data", "type": "$T"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/log@1",
+      "x_test_behavior": "Emits a `log` trace event with value, then fires then."
+    },
+    {
+      "definition_id": "org.orange.test/log-secret",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "action",
+      "cleanup_safe": true,
+      "label": {"key": "org.orange.test/log-secret-label", "fallback": "Log secret"},
+      "type_params": [{"name": "T", "constraints": []}],
+      "ports": [
+        {"port_id": "value", "direction": "input", "kind": "data", "type": "$T", "sensitivity": "sensitive"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/log-secret@1",
+      "x_test_behavior": "Like log, but the trace `log` event's value is the redacted form {\"redacted\": true}, then fires then."
+    },
+    {
+      "definition_id": "org.orange.test/make",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "action",
+      "label": {"key": "org.orange.test/make-label", "fallback": "Make"},
+      "type_params": [{"name": "T", "constraints": []}],
+      "ports": [
+        {"port_id": "x", "direction": "input", "kind": "data", "type": "$T"},
+        {"port_id": "y", "direction": "output", "kind": "data", "type": "$T", "source": "execution", "available_on": ["then"]}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/make@1",
+      "x_test_behavior": "y = x, written when the node executes; fires then."
+    },
+    {
+      "definition_id": "org.orange.test/fail",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "action",
+      "label": {"key": "org.orange.test/fail-label", "fallback": "Fail"},
+      "ports": [],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": ["org.orange.test/Boom"],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/fail@1",
+      "x_test_behavior": "Always fires failed with error code org.orange.test/Boom."
+    },
+    {
+      "definition_id": "org.orange.test/close",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "action",
+      "cleanup_safe": true,
+      "label": {"key": "org.orange.test/close-label", "fallback": "Close"},
+      "ports": [],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/close@1",
+      "x_test_behavior": "No effect; fires then. Allowed in cleanup mode (11 §9.4)."
+    },
+    {
+      "definition_id": "org.orange.test/step",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "async",
+      "suspends": "always",
+      "cleanup_safe": false,
+      "label": {"key": "org.orange.test/step-label", "fallback": "Step"},
+      "ports": [
+        {"port_id": "delay", "direction": "input", "kind": "data", "type": "core/duration@1"},
+        {"port_id": "done", "direction": "output", "kind": "data", "type": "core/duration@1", "source": "execution", "available_on": ["then"]}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/step@1",
+      "x_test_behavior": "Suspends; completes delay ns later on the virtual clock with done = delay and fires then. Cancellation fires cancelled."
+    },
+    {
+      "definition_id": "org.orange.test/numbers",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "async",
+      "suspends": "maybe",
+      "cleanup_safe": false,
+      "label": {"key": "org.orange.test/numbers-label", "fallback": "Numbers"},
+      "ports": [
+        {"port_id": "count", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "interval", "direction": "input", "kind": "data", "type": "core/duration@1"},
+        {"port_id": "fail_at", "direction": "input", "kind": "data", "type": "core/option@1<core/i64@1>", "optional": true},
+        {"port_id": "items", "direction": "output", "kind": "data", "type": "core/stream@1<core/i64@1>", "source": "execution", "available_on": ["then"]}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": ["org.orange.test/Boom"],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/numbers@1",
+      "x_test_behavior": "Fires then at once with a stream yielding 0..count-1. Item k is produced interval ns after the consumer pulled item k-1 (pull-based). Closing or cancelling the consumer closes the producer. Item 0 is produced interval ns after the first pull; the pull after the last item reports end-of-stream at once. If fail_at = Some(k), pulling item k fails with org.orange.test/Boom instead of yielding it; the stream is then closed."
+    },
+    {
+      "definition_id": "org.orange.test/subscribe",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "action",
+      "label": {"key": "org.orange.test/subscribe-label", "fallback": "Subscribe"},
+      "ports": [
+        {"port_id": "interval", "direction": "input", "kind": "data", "type": "core/duration@1"},
+        {"port_id": "subscribed_at", "direction": "output", "kind": "data", "type": "core/timestamp@1", "source": "execution", "available_on": ["then"]},
+        {"port_id": "tick", "direction": "output", "kind": "event", "type": "core/i64@1"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/subscribe@1",
+      "x_test_behavior": "Fires then; afterwards fires the tick event every interval ns with payload 1, 2, …, until the run stops (subscription owned by the run, 11 §10.4)."
+    },
+    {
+      "definition_id": "org.orange.test/add-mode",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "pure",
+      "label": {"key": "org.orange.test/add-mode-label", "fallback": "Add (overflow mode)"},
+      "ports": [
+        {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "sum", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {"int_overflow": {"enum": ["checked", "wrapping", "saturating"], "default": "checked"}}, "additionalProperties": false},
+      "errors": ["core/NumericOverflow"],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/add-mode@1",
+      "x_test_behavior": "sum = a + b under config int_overflow: checked (default) fails with core/NumericOverflow on overflow; wrapping wraps; saturating clamps to the i64 range."
+    },
+    {
+      "definition_id": "org.orange.test/rem",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "pure",
+      "label": {"key": "org.orange.test/rem-label", "fallback": "Remainder"},
+      "ports": [
+        {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "result", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": ["core/DivideByZero", "core/NumericOverflow"],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/rem@1",
+      "x_test_behavior": "result = a rem b, with the sign of the dividend a (truncated); b = 0 fails with core/DivideByZero; MIN rem -1 fails with core/NumericOverflow."
+    },
+    {
+      "definition_id": "org.orange.test/shl",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "pure",
+      "label": {"key": "org.orange.test/shl-label", "fallback": "Shift left"},
+      "ports": [
+        {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "by", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "result", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": ["core/OutOfRange"],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/shl@1",
+      "x_test_behavior": "result = a << by (checked shift); by < 0 or by >= 64 fails with core/OutOfRange."
+    },
+    {
+      "definition_id": "org.orange.test/defaults",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "action",
+      "label": {"key": "org.orange.test/defaults-label", "fallback": "Defaults"},
+      "ports": [
+        {"port_id": "x", "direction": "input", "kind": "data", "type": "core/i64@1", "default": {"type": "core/i64@1", "value": "5"}},
+        {"port_id": "y", "direction": "input", "kind": "data", "type": "core/option@1<core/i64@1>", "optional": true},
+        {"port_id": "out", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "execution", "available_on": ["then"]}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": ["core/NumericOverflow"],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/defaults@1",
+      "x_test_behavior": "out = x + (y if y is Some, else 0), written when the node executes; fires then. Overflow fails with core/NumericOverflow."
+    },
+    {
+      "definition_id": "org.orange.test/send",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "action",
+      "label": {"key": "org.orange.test/send-label", "fallback": "Send"},
+      "ports": [
+        {"port_id": "value", "direction": "input", "kind": "data", "type": "core/i64@1"}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "external",
+      "implementation_slot": "node:org.orange.test/send@1",
+      "x_test_behavior": "Records a remote effect; never re-sent on replay (11 §7.6)."
+    },
+    {
+      "definition_id": "org.orange.test/pause",
+      "definition_version": 1,
+      "config_version": 1,
+      "kind": "async",
+      "suspends": "always",
+      "cleanup_safe": true,
+      "label": {"key": "org.orange.test/pause-label", "fallback": "Pause"},
+      "ports": [
+        {"port_id": "delay", "direction": "input", "kind": "data", "type": "core/duration@1"},
+        {"port_id": "done", "direction": "output", "kind": "data", "type": "core/duration@1", "source": "execution", "available_on": ["then"]}
+      ],
+      "config_schema": {"type": "object", "properties": {}, "additionalProperties": false},
+      "errors": [],
+      "determinism": "deterministic",
+      "implementation_slot": "node:org.orange.test/pause@1",
+      "x_test_behavior": "Suspends for delay, then fires then with done = delay on the virtual clock. Allowed in cleanup mode (11 §9.4); a second cancel aborts it."
+    }
+  ],
+  "types": [
+    {
+      "format": "orange.type",
+      "format_version": 1,
+      "type_id": "org.orange.test/point",
+      "major": 1,
+      "minor": 0,
+      "kind": "record",
+      "fields": [
+        {"field_id": "f-x", "name": "x", "type": "core/i64@1", "optional": false},
+        {"field_id": "f-label", "name": "label", "type": "core/option@1<core/string@1>", "optional": true}
+      ],
+      "constraints": {"eq": "derive", "hash": "derive", "display": "derive", "serialize": "derive"},
+      "codec": {"id": "orange.value.v1", "version": 1},
+      "sensitivity": "normal",
+      "label": {"key": "org.orange.test/point-label", "fallback": "Point"}
+    },
+    {
+      "format": "orange.type",
+      "format_version": 1,
+      "type_id": "org.orange.test/mode",
+      "major": 1,
+      "minor": 0,
+      "kind": "enum",
+      "variants": [
+        {"variant_id": "v-idle", "name": "idle"},
+        {"variant_id": "v-busy", "name": "busy", "payload": "core/i64@1"}
+      ],
+      "constraints": {"eq": "derive", "hash": "derive", "display": "derive", "serialize": "derive"},
+      "codec": {"id": "orange.value.v1", "version": 1},
+      "sensitivity": "normal",
+      "label": {"key": "org.orange.test/mode-label", "fallback": "Mode"}
+    }
+  ],
+  "converters": [
+    {
+      "from": "org.orange.test/point@1",
+      "to": "core/string@1",
+      "class": "lossless-total",
+      "errors": [],
+      "policies": [],
+      "slot": "convert:org.orange.test/point@1->core/string@1",
+      "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"}
+    }
+  ]
+}

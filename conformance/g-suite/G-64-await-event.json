@@ -1,0 +1,149 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-64",
+  "title": "Await Event: next matching emit after the wait starts, and timeout",
+  "rules": ["R-8.4-await-event"],
+  "cases": [
+    {
+      "name": "earlier-emit-is-ignored-and-the-next-emit-resumes-the-wait",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000064",
+        "revision": 0,
+        "package_lock": [
+          {"id":"org.orange.test","version":"0.1.0","content_digest":"sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"}
+        ],
+        "type_lock": [
+          {"type":"core/i64@1","codec":"orange.value.v1"}
+        ],
+        "variables": [
+          {"id":"30000000-0000-4000-8000-000000000001","name":"resumes","type":"core/i64@1","scope":"run","init":{"type":"core/i64@1","value":"0"},"persistent":false,"conflict":"reject"}
+        ],
+        "events": [
+          {"id":"40000000-0000-4000-8000-000000000001","name":"ping","payload":"core/i64@1","scope":"run"}
+        ],
+        "signatures": {
+          "s-log-i64": {"kind":"action","ports":[{"port_id":"value","direction":"input","kind":"data","type":"core/i64@1"}]}
+        },
+        "nodes": [
+          {"id":"10000000-0000-4000-8000-000000000001","definition_id":"core/on-manual","definition_version":1,"config_version":1,"config":{"payload":"core/i64@1"},"activation":{"mode":"queue","capacity":256,"overflow":"fault","on_fault":"continue","order":0}},
+          {"id":"10000000-0000-4000-8000-000000000002","definition_id":"core/emit","definition_version":1,"config_version":1,"config":{"event":"40000000-0000-4000-8000-000000000001"}},
+          {"id":"10000000-0000-4000-8000-000000000003","definition_id":"core/on-manual","definition_version":1,"config_version":1,"config":{"payload":"core/i64@1"},"activation":{"mode":"queue","capacity":256,"overflow":"fault","on_fault":"continue","order":1}},
+          {"id":"10000000-0000-4000-8000-000000000004","definition_id":"core/await-event","definition_version":1,"config_version":1,"config":{"event":"40000000-0000-4000-8000-000000000001"}},
+          {"id":"10000000-0000-4000-8000-000000000005","definition_id":"core/update-variable","definition_version":1,"config_version":1,"config":{"variable":"30000000-0000-4000-8000-000000000001","op":"add"},"inputs":{"operand":{"type":"core/i64@1","value":"1"}}},
+          {"id":"10000000-0000-4000-8000-000000000006","definition_id":"org.orange.test/log","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/i64@1"},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-log-i64"}
+        ],
+        "edges": [
+          {"id":"20000000-0000-4000-8000-000000000001","from":{"node":"10000000-0000-4000-8000-000000000001","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000002","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000002","from":{"node":"10000000-0000-4000-8000-000000000001","port":"payload"},"to":{"node":"10000000-0000-4000-8000-000000000002","port":"payload"}},
+          {"id":"20000000-0000-4000-8000-000000000003","from":{"node":"10000000-0000-4000-8000-000000000003","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000004","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000004","from":{"node":"10000000-0000-4000-8000-000000000004","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000005","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000005","from":{"node":"10000000-0000-4000-8000-000000000005","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000006","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000006","from":{"node":"10000000-0000-4000-8000-000000000004","port":"payload"},"to":{"node":"10000000-0000-4000-8000-000000000006","port":"value"}}
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {"trigger":{"node":"10000000-0000-4000-8000-000000000001","payload":{"type":"core/i64@1","value":"1"}}},
+          {"trigger":{"node":"10000000-0000-4000-8000-000000000003","payload":{"type":"core/i64@1","value":"0"}}},
+          {"trigger":{"node":"10000000-0000-4000-8000-000000000001","payload":{"type":"core/i64@1","value":"2"}}}
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "exact",
+          "events": [
+            {"t":"0","event":"activation-start","activation":1,"entry":"10000000-0000-4000-8000-000000000001","cause_depth":0},
+            {"t":"0","event":"exec","activation":1,"node":"10000000-0000-4000-8000-000000000001","outcome":"then"},
+            {"t":"0","event":"emit","activation":1,"decl":"40000000-0000-4000-8000-000000000001","value":{"type":"core/i64@1","value":"1"}},
+            {"t":"0","event":"exec","activation":1,"node":"10000000-0000-4000-8000-000000000002","outcome":"then"},
+            {"t":"0","event":"activation-end","activation":1,"outcome":"completed"},
+            {"t":"0","event":"activation-start","activation":2,"entry":"10000000-0000-4000-8000-000000000003","cause_depth":0},
+            {"t":"0","event":"exec","activation":2,"node":"10000000-0000-4000-8000-000000000003","outcome":"then"},
+            {"t":"0","event":"activation-start","activation":3,"entry":"10000000-0000-4000-8000-000000000001","cause_depth":0},
+            {"t":"0","event":"exec","activation":3,"node":"10000000-0000-4000-8000-000000000001","outcome":"then"},
+            {"t":"0","event":"emit","activation":3,"decl":"40000000-0000-4000-8000-000000000001","value":{"type":"core/i64@1","value":"2"}},
+            {"t":"0","event":"exec","activation":3,"node":"10000000-0000-4000-8000-000000000002","outcome":"then"},
+            {"t":"0","event":"activation-end","activation":3,"outcome":"completed"},
+            {"t":"0","event":"exec","activation":2,"node":"10000000-0000-4000-8000-000000000004","outcome":"then"},
+            {"t":"0","event":"exec","activation":2,"node":"10000000-0000-4000-8000-000000000005","outcome":"then"},
+            {"t":"0","event":"log","activation":2,"node":"10000000-0000-4000-8000-000000000006","value":{"type":"core/i64@1","value":"2"}},
+            {"t":"0","event":"exec","activation":2,"node":"10000000-0000-4000-8000-000000000006","outcome":"then"},
+            {"t":"0","event":"activation-end","activation":2,"outcome":"completed"}
+          ]
+        },
+        "variables": {
+          "30000000-0000-4000-8000-000000000001": {"type":"core/i64@1","value":"1"}
+        }
+      }
+    },
+    {
+      "name": "elapsed-timeout-fires-timed-out",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000064",
+        "revision": 0,
+        "package_lock": [
+          {"id":"org.orange.test","version":"0.1.0","content_digest":"sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"}
+        ],
+        "type_lock": [
+          {"type":"core/i64@1","codec":"orange.value.v1"},
+          {"type":"core/duration@1","codec":"orange.value.v1"},
+          {"type":"core/option@1","codec":"orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [
+          {"id":"40000000-0000-4000-8000-000000000001","name":"ping","payload":"core/i64@1","scope":"run"}
+        ],
+        "signatures": {
+          "s-log-i64": {"kind":"action","ports":[{"port_id":"value","direction":"input","kind":"data","type":"core/i64@1"}]}
+        },
+        "nodes": [
+          {"id":"10000000-0000-4000-8000-000000000001","definition_id":"core/on-manual","definition_version":1,"config_version":1,"config":{"payload":"core/i64@1"},"activation":{"mode":"queue","capacity":256,"overflow":"fault","on_fault":"continue","order":0}},
+          {"id":"10000000-0000-4000-8000-000000000002","definition_id":"core/await-event","definition_version":1,"config_version":1,"config":{"event":"40000000-0000-4000-8000-000000000001"},"inputs":{"timeout":{"type":"core/option@1<core/duration@1>","value":{"some":"500"}}}},
+          {"id":"10000000-0000-4000-8000-000000000003","definition_id":"org.orange.test/log","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/i64@1"},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-log-i64","inputs":{"value":{"type":"core/i64@1","value":"1"}}},
+          {"id":"10000000-0000-4000-8000-000000000004","definition_id":"org.orange.test/log","definition_version":1,"config_version":1,"config":{},"type_args":{"T":"core/i64@1"},"provider":{"package":"org.orange.test","version":"0.1.0","id":"reference"},"signature":"s-log-i64","inputs":{"value":{"type":"core/i64@1","value":"2"}}}
+        ],
+        "edges": [
+          {"id":"20000000-0000-4000-8000-000000000001","from":{"node":"10000000-0000-4000-8000-000000000001","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000002","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000002","from":{"node":"10000000-0000-4000-8000-000000000002","port":"timed_out"},"to":{"node":"10000000-0000-4000-8000-000000000003","port":"in"}},
+          {"id":"20000000-0000-4000-8000-000000000003","from":{"node":"10000000-0000-4000-8000-000000000002","port":"then"},"to":{"node":"10000000-0000-4000-8000-000000000004","port":"in"}}
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {"trigger":{"node":"10000000-0000-4000-8000-000000000001","payload":{"type":"core/i64@1","value":"0"}}},
+          {"advance":"500"}
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "exact",
+          "events": [
+            {"t":"0","event":"activation-start","activation":1,"entry":"10000000-0000-4000-8000-000000000001","cause_depth":0},
+            {"t":"0","event":"exec","activation":1,"node":"10000000-0000-4000-8000-000000000001","outcome":"then"},
+            {"t":"500","event":"exec","activation":1,"node":"10000000-0000-4000-8000-000000000002","outcome":"timed_out"},
+            {"t":"500","event":"log","activation":1,"node":"10000000-0000-4000-8000-000000000003","value":{"type":"core/i64@1","value":"1"}},
+            {"t":"500","event":"exec","activation":1,"node":"10000000-0000-4000-8000-000000000003","outcome":"then"},
+            {"t":"500","event":"activation-end","activation":1,"outcome":"completed"}
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,110 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-21",
+  "title": "A package may register a converter only when it owns from or to",
+  "rules": ["R-6-converter-ownership"],
+  "cases": [
+    {
+      "name": "converter-between-two-foreign-types-is-rejected",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.rogue",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [],
+          "types": [],
+          "converters": [
+            {
+              "from": "core/bytes@1",
+              "to": "core/duration@1",
+              "class": "checked-partial",
+              "errors": ["core/OutOfRange"],
+              "policies": [],
+              "slot": "convert:core/bytes@1->core/duration@1",
+              "provider": {"package": "org.orange.rogue", "version": "0.1.0", "id": "reference"}
+            }
+          ]
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000021",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "registry": {"result": "rejected", "reason": "a package may register converters only when it owns from or to (11 s6 item 4)"},
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "converter-from-an-owned-type-is-accepted",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.rogue",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [],
+          "types": [
+            {
+              "format": "orange.type",
+              "format_version": 1,
+              "type_id": "org.orange.rogue/flag",
+              "major": 1,
+              "minor": 0,
+              "kind": "enum",
+              "variants": [{"variant_id": "v-off", "name": "off"}, {"variant_id": "v-on", "name": "on"}],
+              "constraints": {"eq": "derive", "hash": "derive", "display": "derive", "serialize": "derive"},
+              "codec": {"id": "orange.value.v1", "version": 1},
+              "sensitivity": "normal",
+              "label": {"key": "org.orange.rogue/flag-label", "fallback": "Flag"}
+            }
+          ],
+          "converters": [
+            {
+              "from": "org.orange.rogue/flag@1",
+              "to": "core/string@1",
+              "class": "lossless-total",
+              "errors": [],
+              "policies": [],
+              "slot": "convert:org.orange.rogue/flag@1->core/string@1",
+              "provider": {"package": "org.orange.rogue", "version": "0.1.0", "id": "reference"}
+            }
+          ]
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000021",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"registry": {"result": "accepted", "reason": "R-6-converter-ownership"}, "diagnostics": []}
+    }
+  ]
+}

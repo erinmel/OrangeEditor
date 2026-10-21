@@ -1,0 +1,725 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-71",
+  "title": "Timer scheduling: first tick, base time, payload",
+  "rules": ["R-10.2-on-timer-first", "R-10.2-on-timer-no-drift", "R-10.2-on-timer-payload"],
+  "cases": [
+    {
+      "name": "first-immediate-fires-at-run-start-then-every-interval",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000071",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {"type": "core/i64@1", "codec": "orange.value.v1"},
+          {"type": "core/duration@1", "codec": "orange.value.v1"},
+          {"type": "core/timestamp@1", "codec": "orange.value.v1"},
+          {"type": "core/u64@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-log-timestamp": {"kind": "action", "ports": [{"port_id": "value", "direction": "input", "kind": "data", "type": "core/timestamp@1"}]},
+          "s-log-u64": {"kind": "action", "ports": [{"port_id": "value", "direction": "input", "kind": "data", "type": "core/u64@1"}]}
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-timer",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"interval": "1000", "first": "immediate", "missed": "coalesce"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/timestamp@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-log-timestamp"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/u64@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-log-u64"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "scheduled_at"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "missed"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "value"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {"seed": 1, "max_cause_depth": 64, "steps": [{"advance": "2500"}]},
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "exact",
+          "events": [
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "0", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000001", "outcome": "then"},
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "value": {"type": "core/timestamp@1", "value": "0"}
+            },
+            {"t": "0", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000002", "outcome": "then"},
+            {
+              "t": "0",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "value": {"type": "core/u64@1", "value": "0"}
+            },
+            {"t": "0", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000003", "outcome": "then"},
+            {"t": "0", "event": "activation-end", "activation": 1, "outcome": "completed"},
+            {
+              "t": "1000",
+              "event": "activation-start",
+              "activation": 2,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "1000", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000001", "outcome": "then"},
+            {
+              "t": "1000",
+              "event": "log",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "value": {"type": "core/timestamp@1", "value": "1000"}
+            },
+            {"t": "1000", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000002", "outcome": "then"},
+            {
+              "t": "1000",
+              "event": "log",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "value": {"type": "core/u64@1", "value": "0"}
+            },
+            {"t": "1000", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000003", "outcome": "then"},
+            {"t": "1000", "event": "activation-end", "activation": 2, "outcome": "completed"},
+            {
+              "t": "2000",
+              "event": "activation-start",
+              "activation": 3,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "2000", "event": "exec", "activation": 3, "node": "10000000-0000-4000-8000-000000000001", "outcome": "then"},
+            {
+              "t": "2000",
+              "event": "log",
+              "activation": 3,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "value": {"type": "core/timestamp@1", "value": "2000"}
+            },
+            {"t": "2000", "event": "exec", "activation": 3, "node": "10000000-0000-4000-8000-000000000002", "outcome": "then"},
+            {
+              "t": "2000",
+              "event": "log",
+              "activation": 3,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "value": {"type": "core/u64@1", "value": "0"}
+            },
+            {"t": "2000", "event": "exec", "activation": 3, "node": "10000000-0000-4000-8000-000000000003", "outcome": "then"},
+            {"t": "2000", "event": "activation-end", "activation": 3, "outcome": "completed"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "first-after-interval-waits-one-interval",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000071",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {"type": "core/i64@1", "codec": "orange.value.v1"},
+          {"type": "core/duration@1", "codec": "orange.value.v1"},
+          {"type": "core/timestamp@1", "codec": "orange.value.v1"},
+          {"type": "core/u64@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-log-timestamp": {"kind": "action", "ports": [{"port_id": "value", "direction": "input", "kind": "data", "type": "core/timestamp@1"}]},
+          "s-log-u64": {"kind": "action", "ports": [{"port_id": "value", "direction": "input", "kind": "data", "type": "core/u64@1"}]}
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-timer",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"interval": "1000", "first": "after-interval", "missed": "coalesce"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/timestamp@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-log-timestamp"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/u64@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-log-u64"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "scheduled_at"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "missed"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "value"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {"seed": 1, "max_cause_depth": 64, "steps": [{"advance": "2500"}]},
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "exact",
+          "events": [
+            {
+              "t": "1000",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "1000", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000001", "outcome": "then"},
+            {
+              "t": "1000",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "value": {"type": "core/timestamp@1", "value": "1000"}
+            },
+            {"t": "1000", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000002", "outcome": "then"},
+            {
+              "t": "1000",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "value": {"type": "core/u64@1", "value": "0"}
+            },
+            {"t": "1000", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000003", "outcome": "then"},
+            {"t": "1000", "event": "activation-end", "activation": 1, "outcome": "completed"},
+            {
+              "t": "2000",
+              "event": "activation-start",
+              "activation": 2,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "2000", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000001", "outcome": "then"},
+            {
+              "t": "2000",
+              "event": "log",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "value": {"type": "core/timestamp@1", "value": "2000"}
+            },
+            {"t": "2000", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000002", "outcome": "then"},
+            {
+              "t": "2000",
+              "event": "log",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "value": {"type": "core/u64@1", "value": "0"}
+            },
+            {"t": "2000", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000003", "outcome": "then"},
+            {"t": "2000", "event": "activation-end", "activation": 2, "outcome": "completed"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "scheduled-at-stays-on-the-base-time-grid-while-the-handler-is-slow",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000071",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {"type": "core/i64@1", "codec": "orange.value.v1"},
+          {"type": "core/duration@1", "codec": "orange.value.v1"},
+          {"type": "core/timestamp@1", "codec": "orange.value.v1"},
+          {"type": "core/u64@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-log-timestamp": {"kind": "action", "ports": [{"port_id": "value", "direction": "input", "kind": "data", "type": "core/timestamp@1"}]},
+          "s-log-u64": {"kind": "action", "ports": [{"port_id": "value", "direction": "input", "kind": "data", "type": "core/u64@1"}]},
+          "s-step": {
+            "kind": "async",
+            "ports": [
+              {"port_id": "delay", "direction": "input", "kind": "data", "type": "core/duration@1"},
+              {
+                "port_id": "done",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/duration@1",
+                "source": "execution",
+                "available_on": ["then"]
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-timer",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"interval": "1000", "first": "after-interval", "missed": "coalesce"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/timestamp@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-log-timestamp"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/u64@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-log-u64"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "org.orange.test/step",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-step",
+            "inputs": {"delay": {"type": "core/duration@1", "value": "1500"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000004", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000004", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "scheduled_at"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "value"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000005",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "missed"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "value"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {"seed": 1, "max_cause_depth": 64, "steps": [{"advance": "4500"}]},
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "exact",
+          "events": [
+            {
+              "t": "1000",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "1000", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000001", "outcome": "then"},
+            {"t": "2500", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000004", "outcome": "then"},
+            {
+              "t": "2500",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "value": {"type": "core/timestamp@1", "value": "1000"}
+            },
+            {"t": "2500", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000002", "outcome": "then"},
+            {
+              "t": "2500",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "value": {"type": "core/u64@1", "value": "0"}
+            },
+            {"t": "2500", "event": "exec", "activation": 1, "node": "10000000-0000-4000-8000-000000000003", "outcome": "then"},
+            {"t": "2500", "event": "activation-end", "activation": 1, "outcome": "completed"},
+            {
+              "t": "2500",
+              "event": "activation-start",
+              "activation": 2,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "2500", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000001", "outcome": "then"},
+            {"t": "4000", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000004", "outcome": "then"},
+            {
+              "t": "4000",
+              "event": "log",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "value": {"type": "core/timestamp@1", "value": "2000"}
+            },
+            {"t": "4000", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000002", "outcome": "then"},
+            {
+              "t": "4000",
+              "event": "log",
+              "activation": 2,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "value": {"type": "core/u64@1", "value": "0"}
+            },
+            {"t": "4000", "event": "exec", "activation": 2, "node": "10000000-0000-4000-8000-000000000003", "outcome": "then"},
+            {"t": "4000", "event": "activation-end", "activation": 2, "outcome": "completed"},
+            {
+              "t": "4000",
+              "event": "activation-start",
+              "activation": 3,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "4000", "event": "exec", "activation": 3, "node": "10000000-0000-4000-8000-000000000001", "outcome": "then"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "on-timeout-fires-once",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000071",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/duration@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/timestamp@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/u64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-log-timestamp": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/timestamp@1"
+              }
+            ]
+          },
+          "s-log-u64": {
+            "kind": "action",
+            "ports": [
+              {
+                "port_id": "value",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/u64@1"
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-timeout",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "interval": "1000"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/timestamp@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-timestamp"
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/log",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {
+              "T": "core/u64@1"
+            },
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-log-u64"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "in"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "scheduled_at"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "value"
+            }
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000004",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "missed"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000003",
+              "port": "value"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {
+            "advance": "3500"
+          }
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "exact",
+          "events": [
+            {
+              "t": "1000",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {
+              "t": "1000",
+              "event": "exec",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000001",
+              "outcome": "then"
+            },
+            {
+              "t": "1000",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "value": {
+                "type": "core/timestamp@1",
+                "value": "1000"
+              }
+            },
+            {
+              "t": "1000",
+              "event": "exec",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000002",
+              "outcome": "then"
+            },
+            {
+              "t": "1000",
+              "event": "log",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "value": {
+                "type": "core/u64@1",
+                "value": "0"
+              }
+            },
+            {
+              "t": "1000",
+              "event": "exec",
+              "activation": 1,
+              "node": "10000000-0000-4000-8000-000000000003",
+              "outcome": "then"
+            },
+            {
+              "t": "1000",
+              "event": "activation-end",
+              "activation": 1,
+              "outcome": "completed"
+            }
+          ]
+        }
+      }
+    }
+  ]
+}

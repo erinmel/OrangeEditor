@@ -1,0 +1,71 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-10",
+  "title": "One node wired from two Fork branches",
+  "rules": ["R-7.1-region-ambiguous", "R-7.3-diamond-fork-same-node"],
+  "cases": [
+    {
+      "name": "node-reachable-from-two-branches-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000010",
+        "revision": 0,
+        "package_lock": [{"id": "org.orange.test", "version": "0.1.0", "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"}],
+        "type_lock": [{"type": "core/bool@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {"s-close": {"kind": "action", "ports": []}},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/bool@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/fork",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"join": "all"},
+            "variadic": {"branch": {"order": [1, 2], "next": 3}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "org.orange.test/close",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-close"
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#1"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#2"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {"diagnostics": [{"code": "E-REGION-AMBIGUOUS", "subject": {"node": "10000000-0000-4000-8000-000000000003"}}]}
+    }
+  ]
+}

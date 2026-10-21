@@ -1,0 +1,442 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-75",
+  "title": "Handle and stream storage restrictions",
+  "rules": ["R-11.1-handle-persist", "R-11.1-stream-store", "R-12-stream-no-store-literal-export"],
+  "cases": [
+    {
+      "name": "handle-in-workspace-or-persistent-variable-is-rejected",
+      "packages": [
+        {
+          "format": "orange.test-package",
+          "format_version": 1,
+          "id": "org.orange.test.handledef",
+          "version": "0.1.0",
+          "provider": "reference",
+          "definitions": [],
+          "types": [
+            {
+              "format": "orange.type",
+              "format_version": 1,
+              "type_id": "org.orange.test.handledef/session",
+              "major": 1,
+              "minor": 0,
+              "kind": "handle-kind",
+              "sensitivity": "normal",
+              "label": {
+                "key": "org.orange.test.handledef/session-label",
+                "fallback": "Session"
+              }
+            }
+          ],
+          "converters": []
+        }
+      ],
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000075",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [
+          {
+            "type": "core/bool@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [
+          {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "name": "workspace_session",
+            "type": "core/handle@1<org.orange.test.handledef/session@1>",
+            "scope": "workspace",
+            "persistent": false,
+            "conflict": "reject"
+          },
+          {
+            "id": "30000000-0000-4000-8000-000000000002",
+            "name": "persistent_session",
+            "type": "core/handle@1<org.orange.test.handledef/session@1>",
+            "scope": "run",
+            "persistent": true,
+            "conflict": "reject"
+          },
+          {
+            "id": "30000000-0000-4000-8000-000000000003",
+            "name": "run_session",
+            "type": "core/handle@1<org.orange.test.handledef/session@1>",
+            "scope": "run",
+            "persistent": false,
+            "conflict": "reject"
+          }
+        ],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/bool@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          }
+        ],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-HANDLE-PERSIST",
+            "subject": {
+              "decl": "30000000-0000-4000-8000-000000000001"
+            }
+          },
+          {
+            "code": "E-HANDLE-PERSIST",
+            "subject": {
+              "decl": "30000000-0000-4000-8000-000000000002"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "stream-variable-in-any-scope-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000075",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/bool@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [
+          {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "name": "items",
+            "type": "core/stream@1<core/i64@1>",
+            "scope": "run",
+            "persistent": false,
+            "conflict": "reject"
+          },
+          {
+            "id": "30000000-0000-4000-8000-000000000002",
+            "name": "local_items",
+            "type": "core/stream@1<core/i64@1>",
+            "scope": "local",
+            "persistent": false,
+            "conflict": "reject"
+          }
+        ],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/bool@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          }
+        ],
+        "edges": [],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-STREAM-STORE",
+            "subject": {
+              "decl": "30000000-0000-4000-8000-000000000001"
+            }
+          },
+          {
+            "code": "E-STREAM-STORE",
+            "subject": {
+              "decl": "30000000-0000-4000-8000-000000000002"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "stream-input-literal-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000075",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/bool@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/bool@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/collect",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "max_items": 10
+            },
+            "type_args": {
+              "T": "core/i64@1"
+            },
+            "inputs": {
+              "stream": {
+                "type": "core/stream@1<core/i64@1>",
+                "value": "0"
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "in"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-HANDLE-LITERAL",
+            "subject": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "stream"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "stream-export-is-rejected",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000075",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [
+          {
+            "type": "core/i64@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/duration@1",
+            "codec": "orange.value.v1"
+          },
+          {
+            "type": "core/bool@1",
+            "codec": "orange.value.v1"
+          }
+        ],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-numbers": {
+            "kind": "async",
+            "ports": [
+              {
+                "port_id": "count",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/i64@1"
+              },
+              {
+                "port_id": "interval",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/duration@1"
+              },
+              {
+                "port_id": "fail_at",
+                "direction": "input",
+                "kind": "data",
+                "type": "core/option@1<core/i64@1>",
+                "optional": true
+              },
+              {
+                "port_id": "items",
+                "direction": "output",
+                "kind": "data",
+                "type": "core/stream@1<core/i64@1>",
+                "source": "execution",
+                "available_on": [
+                  "then"
+                ]
+              }
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {
+              "payload": "core/bool@1"
+            },
+            "activation": {
+              "mode": "queue",
+              "capacity": 256,
+              "overflow": "fault",
+              "on_fault": "continue",
+              "order": 0
+            }
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/numbers",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "provider": {
+              "package": "org.orange.test",
+              "version": "0.1.0",
+              "id": "reference"
+            },
+            "signature": "s-numbers",
+            "inputs": {
+              "count": {
+                "type": "core/i64@1",
+                "value": "3"
+              },
+              "interval": {
+                "type": "core/duration@1",
+                "value": "1000"
+              }
+            }
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {
+              "node": "10000000-0000-4000-8000-000000000001",
+              "port": "then"
+            },
+            "to": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "in"
+            }
+          }
+        ],
+        "functions": [],
+        "exports": [
+          {
+            "id": "items",
+            "node": "10000000-0000-4000-8000-000000000002",
+            "port": "items"
+          }
+        ],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-STREAM-STORE",
+            "subject": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "items"
+            }
+          },
+          {
+            "code": "E-CROSS-ACTIVATION",
+            "subject": {
+              "node": "10000000-0000-4000-8000-000000000002",
+              "port": "items"
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

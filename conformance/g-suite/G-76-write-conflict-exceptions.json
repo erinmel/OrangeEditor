@@ -1,0 +1,559 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-76",
+  "title": "Write-conflict rule, its exceptions and cross-activation writes",
+  "rules": ["R-11.2-cross-activation-writes", "R-11.2-write-conflict-lww", "R-11.2-write-conflict-mixed-ops", "R-11.2-write-conflict-register"],
+  "cases": [
+    {
+      "name": "fork-branches-storing-into-one-register-conflict",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000076",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [{"type": "core/bool@1", "codec": "orange.value.v1"}, {"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/bool@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/fork",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"join": "all"},
+            "variadic": {"branch": {"order": [0, 1], "next": 2}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "core/register",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"initial": {"type": "core/i64@1", "value": "0"}, "scope": "run"},
+            "type_args": {"T": "core/i64@1"},
+            "inputs": {"next": {"type": "core/i64@1", "value": "1"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#0"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "store"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#1"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "store"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {"code": "E-REGION-AMBIGUOUS", "subject": {"node": "10000000-0000-4000-8000-000000000003"}},
+          {
+            "code": "E-WRITE-CONFLICT",
+            "subject": {"node": "10000000-0000-4000-8000-000000000003"},
+            "args": {"nodes": ["10000000-0000-4000-8000-000000000003"]}
+          }
+        ]
+      }
+    },
+    {
+      "name": "add-and-max-branches-conflict",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000076",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [
+          {"type": "core/bool@1", "codec": "orange.value.v1"},
+          {"type": "core/i64@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [
+          {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "name": "x",
+            "type": "core/i64@1",
+            "scope": "run",
+            "init": {"type": "core/i64@1", "value": "0"},
+            "persistent": false,
+            "conflict": "reject"
+          }
+        ],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/bool@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/fork",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"join": "all"},
+            "variadic": {"branch": {"order": [0, 1], "next": 2}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "core/update-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001", "op": "add"},
+            "inputs": {"operand": {"type": "core/i64@1", "value": "1"}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/update-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001", "op": "max"},
+            "inputs": {"operand": {"type": "core/i64@1", "value": "5"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#0"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#1"},
+            "to": {"node": "10000000-0000-4000-8000-000000000004", "port": "in"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-WRITE-CONFLICT",
+            "subject": {"decl": "30000000-0000-4000-8000-000000000001"},
+            "args": {"nodes": ["10000000-0000-4000-8000-000000000003", "10000000-0000-4000-8000-000000000004"]}
+          }
+        ]
+      }
+    },
+    {
+      "name": "two-sub-branches-conflict-because-sub-is-not-commutative",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000076",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [
+          {"type": "core/bool@1", "codec": "orange.value.v1"},
+          {"type": "core/i64@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [
+          {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "name": "x",
+            "type": "core/i64@1",
+            "scope": "run",
+            "init": {"type": "core/i64@1", "value": "0"},
+            "persistent": false,
+            "conflict": "reject"
+          }
+        ],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/bool@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/fork",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"join": "all"},
+            "variadic": {"branch": {"order": [0, 1], "next": 2}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "core/update-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001", "op": "sub"},
+            "inputs": {"operand": {"type": "core/i64@1", "value": "1"}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/update-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001", "op": "sub"},
+            "inputs": {"operand": {"type": "core/i64@1", "value": "2"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#0"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#1"},
+            "to": {"node": "10000000-0000-4000-8000-000000000004", "port": "in"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-WRITE-CONFLICT",
+            "subject": {"decl": "30000000-0000-4000-8000-000000000001"},
+            "args": {"nodes": ["10000000-0000-4000-8000-000000000003", "10000000-0000-4000-8000-000000000004"]}
+          }
+        ]
+      }
+    },
+    {
+      "name": "two-append-branches-conflict-because-append-is-not-commutative",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000076",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [
+          {"type": "core/bool@1", "codec": "orange.value.v1"},
+          {"type": "core/string@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [
+          {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "name": "x",
+            "type": "core/string@1",
+            "scope": "run",
+            "init": {"type": "core/string@1", "value": ""},
+            "persistent": false,
+            "conflict": "reject"
+          }
+        ],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/bool@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/fork",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"join": "all"},
+            "variadic": {"branch": {"order": [0, 1], "next": 2}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "core/update-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001", "op": "append"},
+            "inputs": {"operand": {"type": "core/string@1", "value": "a"}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/update-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001", "op": "append"},
+            "inputs": {"operand": {"type": "core/string@1", "value": "b"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#0"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#1"},
+            "to": {"node": "10000000-0000-4000-8000-000000000004", "port": "in"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "expect": {
+        "diagnostics": [
+          {
+            "code": "E-WRITE-CONFLICT",
+            "subject": {"decl": "30000000-0000-4000-8000-000000000001"},
+            "args": {"nodes": ["10000000-0000-4000-8000-000000000003", "10000000-0000-4000-8000-000000000004"]}
+          }
+        ]
+      }
+    },
+    {
+      "name": "last-writer-wins-lifts-the-conflict-and-the-later-branch-wins",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000076",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [
+          {"type": "core/bool@1", "codec": "orange.value.v1"},
+          {"type": "core/i64@1", "codec": "orange.value.v1"}
+        ],
+        "variables": [
+          {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "name": "x",
+            "type": "core/i64@1",
+            "scope": "run",
+            "init": {"type": "core/i64@1", "value": "0"},
+            "persistent": false,
+            "conflict": "last-writer-wins"
+          }
+        ],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/bool@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/fork",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"join": "all"},
+            "variadic": {"branch": {"order": [0, 1], "next": 2}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "core/set-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001"},
+            "inputs": {"value": {"type": "core/i64@1", "value": "1"}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/set-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001"},
+            "inputs": {"value": {"type": "core/i64@1", "value": "2"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#0"},
+            "to": {"node": "10000000-0000-4000-8000-000000000003", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000003",
+            "from": {"node": "10000000-0000-4000-8000-000000000002", "port": "branch#1"},
+            "to": {"node": "10000000-0000-4000-8000-000000000004", "port": "in"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [{"trigger": {"node": "10000000-0000-4000-8000-000000000001", "payload": {"type": "core/bool@1", "value": true}}}]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "0", "event": "activation-end", "activation": 1, "outcome": "completed"}
+          ]
+        },
+        "variables": {"30000000-0000-4000-8000-000000000001": {"type": "core/i64@1", "value": "2"}}
+      }
+    },
+    {
+      "name": "writes-from-two-activations-need-no-rule-and-follow-actor-order",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000076",
+        "revision": 0,
+        "package_lock": [],
+        "type_lock": [{"type": "core/bool@1", "codec": "orange.value.v1"}, {"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [
+          {
+            "id": "30000000-0000-4000-8000-000000000001",
+            "name": "x",
+            "type": "core/i64@1",
+            "scope": "run",
+            "init": {"type": "core/i64@1", "value": "0"},
+            "persistent": false,
+            "conflict": "reject"
+          }
+        ],
+        "events": [],
+        "signatures": {},
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/bool@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "core/set-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001"},
+            "inputs": {"value": {"type": "core/i64@1", "value": "1"}}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000003",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/bool@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 1}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000004",
+            "definition_id": "core/set-variable",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"variable": "30000000-0000-4000-8000-000000000001"},
+            "inputs": {"value": {"type": "core/i64@1", "value": "2"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "in"}
+          },
+          {
+            "id": "20000000-0000-4000-8000-000000000002",
+            "from": {"node": "10000000-0000-4000-8000-000000000003", "port": "then"},
+            "to": {"node": "10000000-0000-4000-8000-000000000004", "port": "in"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {}
+      },
+      "run": {
+        "seed": 1,
+        "max_cause_depth": 64,
+        "steps": [
+          {"trigger": {"node": "10000000-0000-4000-8000-000000000001", "payload": {"type": "core/bool@1", "value": true}}},
+          {"trigger": {"node": "10000000-0000-4000-8000-000000000003", "payload": {"type": "core/bool@1", "value": true}}}
+        ]
+      },
+      "expect": {
+        "diagnostics": [],
+        "trace": {
+          "match": "subsequence",
+          "events": [
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 1,
+              "entry": "10000000-0000-4000-8000-000000000001",
+              "cause_depth": 0
+            },
+            {"t": "0", "event": "activation-end", "activation": 1, "outcome": "completed"},
+            {
+              "t": "0",
+              "event": "activation-start",
+              "activation": 2,
+              "entry": "10000000-0000-4000-8000-000000000003",
+              "cause_depth": 0
+            },
+            {"t": "0", "event": "activation-end", "activation": 2, "outcome": "completed"}
+          ]
+        },
+        "variables": {"30000000-0000-4000-8000-000000000001": {"type": "core/i64@1", "value": "2"}}
+      }
+    }
+  ]
+}

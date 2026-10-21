@@ -1,6 +1,6 @@
 # Monorepo layout and ownership
 
-Status: **selected source layout**, 2026-10-20. The user selected one public GitHub repository, `erinmel/OrangeEditor`, containing the application and authored expansion plugins. A directory exists only once it has content: today that is `app/crates/orange-model`, `tools/` and `.github/`. The other directories are reserved names; no SDK or plugin implementation is implied. Repository bootstrap evidence is recorded separately in 10 and 14.
+Status: **selected source layout**, 2026-10-20. The user selected one public GitHub repository, `erinmel/OrangeEditor`, containing the application and authored expansion plugins. A directory exists only once it has content: today that is `app/crates/orange-model`, `conformance/`, `tools/` and `.github/`. The other directories are reserved names; no SDK or plugin implementation is implied. Repository bootstrap evidence is recorded separately in 10 and 14.
 
 ```text
 OrangeEditor/
@@ -10,6 +10,7 @@ OrangeEditor/
   plugins/         one directory per installable expansion
   sdk/             versioned public plugin interfaces/schemas/bindings
   examples/        validated workflow and SDK examples
+  conformance/     graph-language golden fixtures (G-suite) and their test package
   docs/            requirements, architecture, decisions and evidence
   tools/           CI support scripts
   .github/         PR template and CI workflows
@@ -29,6 +30,7 @@ The tradeoff is shared repository access/history and a larger CI change surface.
 | `plugins/<name>` | Independently built/package-versioned expansion; Rust guest/worker workspaces are excluded from root host defaults and use their own lock/toolchain as needed |
 | `sdk` | Public versioned WIT/wire/schema/packaging contract, exported deliberately from the host design; not a second private runtime API |
 | `examples` | Small version-locked workflows and SDK usage with expected results |
+| `conformance` | Language-level golden fixtures shared by the validator, compiler, interpreter and executor; data only, no product code ([README](../conformance/README.md)) |
 | `tools`, `.github` | Repository checks and automation; no product runtime responsibilities |
 
 The repository bootstrap added no Cargo manifest. WU-00/00b.1 added the root workspace (`Cargo.toml`, `Cargo.lock`, `rust-toolchain.toml`) with its first member `app/crates/orange-model`; `plugins` is excluded. WU-01 still verifies the Bevy pins before any Bevy member is added, and WU-00 grows the host core incrementally. Once manifests exist, commit the root application lockfile and each independently built plugin lockfile. Code location does not turn an installable Wasm/worker expansion into an in-process Bevy developer plugin. Privileged statically linked base kernels remain `app/crates/orange-bundled`, under the exception in 04.

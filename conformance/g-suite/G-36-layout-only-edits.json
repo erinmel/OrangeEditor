@@ -1,0 +1,346 @@
+{
+  "format": "orange.conformance",
+  "format_version": 1,
+  "id": "G-36",
+  "title": "Layout-only edits cause no recompile and no preview invalidation",
+  "rules": ["R-15-layout-edits-inert"],
+  "cases": [
+    {
+      "name": "moving-a-node-is-layout-only",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000036",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-add-i64": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "sum", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/i64@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-add-i64",
+            "inputs": {"b": {"type": "core/i64@1", "value": "1"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "a"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {
+          "nodes": {
+            "10000000-0000-4000-8000-000000000001": {"x": 0, "y": 0},
+            "10000000-0000-4000-8000-000000000002": {"x": 200, "y": 0}
+          },
+          "viewport": {"x": 0, "y": 0, "zoom": 1}
+        }
+      },
+      "edits": [
+        {"op": "layout", "path": ["nodes", "10000000-0000-4000-8000-000000000002"], "value": {"x": 240, "y": 80}}
+      ],
+      "expect": {
+        "change_set": {
+          "layout_only": true,
+          "from_revision": 0,
+          "to_revision": 1,
+          "nodes": {"added": [], "removed": [], "changed": []},
+          "edges": {"added": [], "removed": [], "changed": []},
+          "decls": {"added": [], "removed": [], "changed": []}
+        },
+        "document": {
+          "revision": 1,
+          "editor": {"nodes": {"10000000-0000-4000-8000-000000000002": {"x": 240, "y": 80}}}
+        },
+        "counters": {"recompiles": 0, "preview_invalidations": 0},
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "adding-an-edge-waypoint-is-layout-only",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000036",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-add-i64": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "sum", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/i64@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-add-i64",
+            "inputs": {"b": {"type": "core/i64@1", "value": "1"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "a"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {
+          "nodes": {
+            "10000000-0000-4000-8000-000000000001": {"x": 0, "y": 0},
+            "10000000-0000-4000-8000-000000000002": {"x": 200, "y": 0}
+          },
+          "viewport": {"x": 0, "y": 0, "zoom": 1}
+        }
+      },
+      "edits": [
+        {"op": "layout", "path": ["edges", "20000000-0000-4000-8000-000000000001", "waypoints"], "value": [[100, 40]]}
+      ],
+      "expect": {
+        "change_set": {
+          "layout_only": true,
+          "from_revision": 0,
+          "to_revision": 1,
+          "nodes": {"added": [], "removed": [], "changed": []},
+          "edges": {"added": [], "removed": [], "changed": []},
+          "decls": {"added": [], "removed": [], "changed": []}
+        },
+        "document": {
+          "revision": 1,
+          "editor": {"edges": {"20000000-0000-4000-8000-000000000001": {"waypoints": [[100, 40]]}}}
+        },
+        "counters": {"recompiles": 0, "preview_invalidations": 0},
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "changing-the-viewport-is-layout-only",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000036",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-add-i64": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "sum", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/i64@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-add-i64",
+            "inputs": {"b": {"type": "core/i64@1", "value": "1"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "a"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {
+          "nodes": {
+            "10000000-0000-4000-8000-000000000001": {"x": 0, "y": 0},
+            "10000000-0000-4000-8000-000000000002": {"x": 200, "y": 0}
+          },
+          "viewport": {"x": 0, "y": 0, "zoom": 1}
+        }
+      },
+      "edits": [{"op": "layout", "path": ["viewport"], "value": {"x": -50, "y": 20, "zoom": 2}}],
+      "expect": {
+        "change_set": {
+          "layout_only": true,
+          "from_revision": 0,
+          "to_revision": 1,
+          "nodes": {"added": [], "removed": [], "changed": []},
+          "edges": {"added": [], "removed": [], "changed": []},
+          "decls": {"added": [], "removed": [], "changed": []}
+        },
+        "document": {"revision": 1, "editor": {"viewport": {"x": -50, "y": 20, "zoom": 2}}},
+        "counters": {"recompiles": 0, "preview_invalidations": 0},
+        "diagnostics": []
+      }
+    },
+    {
+      "name": "a-semantic-edit-is-not-layout-only",
+      "document": {
+        "format": "orange.graph",
+        "format_version": 1,
+        "graph_id": "a0000000-0000-4000-8000-000000000036",
+        "revision": 0,
+        "package_lock": [
+          {
+            "id": "org.orange.test",
+            "version": "0.1.0",
+            "content_digest": "sha256:f5705b5cb99f3666372644001c9444cc39b4cc57c9bfc173d45f0b33600ceeca"
+          }
+        ],
+        "type_lock": [{"type": "core/i64@1", "codec": "orange.value.v1"}],
+        "variables": [],
+        "events": [],
+        "signatures": {
+          "s-add-i64": {
+            "kind": "pure",
+            "ports": [
+              {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+              {"port_id": "sum", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+            ]
+          }
+        },
+        "nodes": [
+          {
+            "id": "10000000-0000-4000-8000-000000000001",
+            "definition_id": "core/on-manual",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {"payload": "core/i64@1"},
+            "activation": {"mode": "queue", "capacity": 256, "overflow": "fault", "on_fault": "continue", "order": 0}
+          },
+          {
+            "id": "10000000-0000-4000-8000-000000000002",
+            "definition_id": "org.orange.test/add",
+            "definition_version": 1,
+            "config_version": 1,
+            "config": {},
+            "type_args": {"T": "core/i64@1"},
+            "provider": {"package": "org.orange.test", "version": "0.1.0", "id": "reference"},
+            "signature": "s-add-i64",
+            "inputs": {"b": {"type": "core/i64@1", "value": "1"}}
+          }
+        ],
+        "edges": [
+          {
+            "id": "20000000-0000-4000-8000-000000000001",
+            "from": {"node": "10000000-0000-4000-8000-000000000001", "port": "payload"},
+            "to": {"node": "10000000-0000-4000-8000-000000000002", "port": "a"}
+          }
+        ],
+        "functions": [],
+        "exports": [],
+        "editor": {
+          "nodes": {
+            "10000000-0000-4000-8000-000000000001": {"x": 0, "y": 0},
+            "10000000-0000-4000-8000-000000000002": {"x": 200, "y": 0}
+          },
+          "viewport": {"x": 0, "y": 0, "zoom": 1}
+        }
+      },
+      "edits": [
+        {
+          "op": "set-literal",
+          "port": {"node": "10000000-0000-4000-8000-000000000002", "port": "b"},
+          "literal": {"type": "core/i64@1", "value": "2"}
+        }
+      ],
+      "expect": {
+        "change_set": {
+          "layout_only": false,
+          "from_revision": 0,
+          "to_revision": 1,
+          "nodes": {"changed": ["10000000-0000-4000-8000-000000000002"]}
+        },
+        "document": {
+          "revision": 1,
+          "nodes": {"10000000-0000-4000-8000-000000000002": {"inputs": {"b": {"type": "core/i64@1", "value": "2"}}}}
+        },
+        "counters": {"recompiles": 1},
+        "diagnostics": []
+      }
+    }
+  ]
+}
