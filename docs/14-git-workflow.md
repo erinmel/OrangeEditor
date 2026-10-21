@@ -4,40 +4,41 @@ Status: **selected development policy**, 2026-10-20. Initial inspection found pl
 
 ## 1. Branch model
 
-Use one integration branch, `main`, plus short-lived topic branches. `main` contains reviewed work valid for the current phase: today that means consistent planning, later a buildable/tested implementation. No permanent `develop` branch. One branch/PR normally implements one executable subunit from 07 or a smaller independently reviewable part. A broad WU is not one giant PR. Prefer completing a small slice over leaving a branch open through several phases.
+Use two long-lived branches plus short-lived topic branches. Every topic PR targets `dev`, the protected integration branch and repository default. `main` holds promoted work and changes only through a `dev` → `main` PR. Every PR is squash-merged and its branch deleted after merge. One branch/PR normally implements one executable subunit from 07 or a smaller independently reviewable part. A broad WU is not one giant PR. Prefer completing a small slice over leaving a branch open through several phases.
 
 | Branch | Base and purpose | Example |
 |---|---|---|
-| `main` | Protected integration branch | `main` |
-| `docs/<work-id>-<slug>` | `main`; planning/contracts/examples | `docs/wu-00a-graph-fixtures` |
-| `feat/<work-id>-<slug>` | `main`; product behavior | `feat/wu-00b-document-model` |
-| `fix/<work-id>-<slug>` | `main`; bug and regression fixture | `fix/wu-04d-stale-completion` |
-| `chore/<slug>` | `main`; tooling, dependencies, maintenance | `chore/document-checks` |
-| `exp/<probe-id>-<slug>` | `main`; bounded disposable feasibility experiment | `exp/b-p02-ime-locales` |
+| `dev` | Protected integration branch; target of every topic PR | `dev` |
+| `main` | Protected promoted branch; changes only through a `dev` → `main` PR | `main` |
+| `docs/<work-id>-<slug>` | `dev`; planning/contracts/examples | `docs/wu-00a-graph-fixtures` |
+| `feat/<work-id>-<slug>` | `dev`; product behavior | `feat/wu-00b-document-model` |
+| `fix/<work-id>-<slug>` | `dev`; bug and regression fixture | `fix/wu-04d-stale-completion` |
+| `chore/<slug>` | `dev`; tooling, dependencies, maintenance | `chore/document-checks` |
+| `exp/<probe-id>-<slug>` | `dev`; bounded disposable feasibility experiment | `exp/b-p02-ime-locales` |
 | `release/<major>.<minor>` | Qualified commit; temporary stabilization or explicitly supported older release only | `release/0.1` |
-| `hotfix/<issue-id>-<slug>` | Affected release branch, or `main` if no older supported line | `hotfix/123-save-recovery` |
+| `hotfix/<issue-id>-<slug>` | Affected release branch, or `dev` if no older supported line | `hotfix/123-save-recovery` |
 
 Use lowercase ASCII and hyphens; keep names descriptive. A ticket number is optional for ordinary work; the work/probe ID is the traceability anchor. `release/*` and `hotfix/*` are created only when a real release needs them. Preview tags do not imply G5 or full 1.0 scope.
 
-Dependent branches may temporarily start from another topic branch only when necessary. Mark the PR draft, name the parent PR and list its dependency. After the parent squash-merges, transplant only the child's commits onto current `main`, retarget the PR, inspect its entire diff and rerun relevant checks. Do not merge the child's duplicate copy of its parent's commits. Shared branches are not rebased without coordination.
+Dependent branches may temporarily start from another topic branch only when necessary. Mark the PR draft, name the parent PR and list its dependency. After the parent squash-merges, transplant only the child's commits onto current `dev`, retarget the PR, inspect its entire diff and rerun relevant checks. Do not merge the child's duplicate copy of its parent's commits. Shared branches are not rebased without coordination.
 
 ## 2. Normal change sequence
 
 1. Inspect status/diffs and existing branches; preserve unrelated edits. Select the subunit and its prerequisite gates from 07. Documentation/research work may proceed before product implementation; a branch name does not waive those prerequisites.
-2. Create a topic branch from current `main` after fetching the configured remote. Use a separate worktree for concurrent independent changes, with one owner per branch/checkout and explicit file ownership when collaboration is authorized. Do not switch a shared dirty checkout underneath another task. The worktree location is explicitly selected within authorized directories.
+2. Create a topic branch from current `dev` after fetching the configured remote. Use a separate worktree for concurrent independent changes, with one owner per branch/checkout and explicit file ownership when collaboration is authorized. Do not switch a shared dirty checkout underneath another task. The worktree location is explicitly selected within authorized directories.
 3. Implement the slice and update affected contracts, fixtures, FR/NFR traceability and ADRs together. Include translation keys/accessibility text for new product UI and structured diagnostics per [13](13-internationalization.md).
 4. Run applicable checks; record exact commands, versions, results and limitations. Inspect the staged diff and whitespace. Stage explicit paths so unrelated work and generated files are not swept in.
 5. Open a PR using the [template](../.github/PULL_REQUEST_TEMPLATE.md), with the work ID, dependencies, behavior, validation and remaining risk. Draft means incomplete work, not permission to merge failed checks.
 6. Resolve review findings and conflicts. Synchronize with the target, rerun affected checks after changes, and merge through the configured PR mechanism once §4 is met.
-7. Squash-merge, retain the PR/evidence link, then delete the merged topic branch when no dependent work needs it. Remove a worktree only after checking its uncommitted/untracked work and confirming its contents are safely retained. Begin the next slice from current `main`.
+7. Squash-merge, retain the PR/evidence link, then delete the merged topic branch when no dependent work needs it. Remove a worktree only after checking its uncommitted/untracked work and confirming its contents are safely retained. Begin the next slice from current `dev`. A `dev` → `main` promotion is squash-merged too, so the two branches share content but not history; a later promotion PR can list already-promoted commits until history is reconciled.
 
-Examples below are **future commands**, assuming a configured `origin`, an existing `main` and a clean checkout. The branch name is an example, not an instruction to execute it now:
+Examples below are **future commands**, assuming a configured `origin`, an existing `dev` and a clean checkout. The branch name is an example, not an instruction to execute it now:
 
 ```powershell
 git status --short
 git fetch origin
-git switch main
-git pull --ff-only origin main
+git switch dev
+git pull --ff-only origin dev
 git switch -c docs/wu-00a-graph-fixtures
 git diff --check
 git diff --cached
@@ -47,7 +48,7 @@ git diff --cached
 
 Use `<type>(<scope>): <imperative summary>`, with types `docs`, `feat`, `fix`, `refactor`, `test`, `perf`, `build`, `ci`, `chore` or `revert`. Scope identifies the affected area. Example: `docs(i18n): define package catalogue fallback`. The commit body/PR records `Work: WU-00/00a` or the relevant probe, and affected requirement/fixture IDs. A commit changing a public contract explains compatibility and links its ADR/migration decision. `!` or `BREAKING CHANGE:` describes a breaking change; it does not authorize breaking frozen contracts.
 
-Keep local commits coherent and reviewable. WIP commits are allowed on a topic branch; the final squash commit/title summarizes the final change, preserves contributor attribution and references the PR/work unit. Use one squash commit per PR on protected branches. Rebase only an owned topic branch; rewriting an already published owned topic branch uses `--force-with-lease` after checking collaborators and dependencies. Never force-push `main`, release branches or tags. Fix merged mistakes with a new revert/fix PR, preserving history. A revert cannot undo effects already performed outside Git.
+Keep local commits coherent and reviewable. WIP commits are allowed on a topic branch; the final squash commit/title summarizes the final change, preserves contributor attribution and references the PR/work unit. Use one squash commit per PR on protected branches. Rebase only an owned topic branch; rewriting an already published owned topic branch uses `--force-with-lease` after checking collaborators and dependencies. Never force-push `dev`, `main`, release branches or tags. Fix merged mistakes with a new revert/fix PR, preserving history. A revert cannot undo effects already performed outside Git.
 
 Commit source, tests/fixtures, schemas, source catalogues, migrations, documentation and reproducible build inputs. Once Rust scaffolding exists, track the workspace `Cargo.lock` and selected `rust-toolchain.toml`; dependency changes include the updated lock/features/MSRV/license evidence. Do not commit credentials, tokens, local vaults, personal profiles, machine IDE state, `target/`, caches, raw secret-bearing traces or generated binaries. Deliberate binary fixtures need documented size/license/provenance. `.gitignore` is convenience, not secret protection; review staged content and scan it. A leaked real credential is revoked/rotated immediately, with removal/history remediation coordinated separately.
 
@@ -55,13 +56,13 @@ User-selected attribution policy: use the configured human author and omit AI co
 
 ## 4. Review and merge rules
 
-Every change to `main` or a release branch uses a PR after repository bootstrap. Require the latest applicable checks, resolved review conversations, a conflict-free diff against the current target, and complete work-unit evidence. Update the branch or use a validated merge queue so the tested integration matches the merge candidate. New commits/conflict resolutions invalidate affected test evidence; rerun it. Local green tests do not substitute for required remote checks once those are enabled.
+Every change to `dev`, `main` or a release branch uses a PR after repository bootstrap. Require the latest applicable checks, resolved review conversations, a conflict-free diff against the current target, and complete work-unit evidence. Update the branch or use a validated merge queue so the tested integration matches the merge candidate. New commits/conflict resolutions invalidate affected test evidence; rerun it. Local green tests do not substitute for required remote checks once those are enabled.
 
 **Solo maintainer mode:** require PRs/checks/conversation resolution and a recorded self-review, with zero required independent approvals. AI review is supplementary evidence, not an independent human approval. This avoids configuring a review requirement the only maintainer cannot satisfy. **Team mode:** when another human maintainer is available, require at least one non-author approval, dismiss stale approvals after new changes and require approval of the latest reviewable push by someone other than its pusher. Publish actual owner accounts before enabling CODEOWNERS; do not invent owners.
 
 Public language/schema/SDK changes need contract review and matching fixtures/diagnostics/traceability/ADR; security-sensitive changes need review of authority/redaction; i18n changes need catalogue/argument coverage. Independent specialist evidence required by an engineering gate remains required in solo mode; an unavailable reviewer is recorded as a gate limitation, not an approval manufactured by another agent. Routine local work does not acquire a new user confirmation step from this policy.
 
-If GitHub is selected, configure an active ruleset or equivalent branch protection for `main` and `release/*`: require PRs, block force pushes/deletion, require linear history, require applicable checks on the current candidate, and resolve conversations. Allow squash merging only for those branches. Apply §4's solo/team approval settings. Limit bypass to named emergency maintainers; document incident, reason, commit and omitted checks, then run them and open follow-up review promptly. A bypass never records a failed gate as passed. Confirm protection capabilities against the selected hosting plan before claiming enforcement.
+If GitHub is selected, configure an active ruleset or equivalent branch protection for `dev`, `main` and `release/*`: require PRs, block force pushes/deletion, require linear history, require applicable checks on the current candidate, and resolve conversations. Allow squash merging only for those branches. Apply §4's solo/team approval settings. Limit bypass to named emergency maintainers; document incident, reason, commit and omitted checks, then run them and open follow-up review promptly. A bypass never records a failed gate as passed. Confirm protection capabilities against the selected hosting plan before claiming enforcement.
 
 Local hooks may provide fast feedback; CI/remote rules enforce merge policy. Hooks are not assumed installed or mandatory merely because a file exists. Commit signing is optional until maintainer key management is configured; release signing and artifact provenance are a separate WU-12 requirement. Do not enable an unusable signing requirement during bootstrap.
 
@@ -76,15 +77,15 @@ Local hooks may provide fast feedback; CI/remote rules enforce merge policy. Hoo
 | Dependency/toolchain/CI permissions | Lock/feature/MSRV/license/security review and applicable full matrix. CI must not expose repository secrets or write credentials to untrusted PR code. Workflow changes receive explicit permission-scope review. |
 | Release | WU-12/G5 evidence, signed/provenance-recorded artifacts, supported capability/locale matrix, recovery/security review and changelog; an early preview explicitly lists its incomplete scope. |
 
-The single required status is the stable `rust` aggregate. At the user's request, documentation and generic repository-policy jobs are removed from CI; their scripts remain optional local helpers. Remove obsolete `docs` and `policy` requirements from branch protection when adopting this workflow. This is a deliberate scope change, not a waiver for a failing check. The Rust workflow runs on every PR, including documentation-only PRs, with no path-filtering machinery; never describe an unexecuted check as passed. Changed public contracts and toolchain/CI changes trigger their full dependent tests. Slow hardware/soak/protocol checks run at their documented gates. Never disable a failing code check just to merge.
+The single required status is the stable `rust` aggregate. At the user's request, documentation and generic repository-policy jobs are removed from CI; their scripts were deleted. Remove obsolete `docs` and `policy` requirements from branch protection when adopting this workflow. This is a deliberate scope change, not a waiver for a failing check. The Rust workflow runs on every PR, including documentation-only PRs, with no path-filtering machinery; never describe an unexecuted check as passed. Changed public contracts and toolchain/CI changes trigger their full dependent tests. Slow hardware/soak/protocol checks run at their documented gates. Never disable a failing code check just to merge.
 
-The configured workflow reports separate formatting, Clippy and rustdoc jobs on Ubuntu with matrix fail-fast disabled; Cargo architecture and declared-MSRV checks; pinned cargo-deny advisory/source checks; and locked core tests on Ubuntu x64, Windows x64 and macOS arm64. Formatting failure does not suppress other code-check results. A stable `rust` aggregate requires every Rust job to succeed; failure, cancellation or unexpected skipping cannot produce a green aggregate. It runs for each PR, pushes to `main` and manual dispatch; its weekly schedule becomes active once merged to the default branch. Dependabot proposes weekly Cargo and GitHub Actions updates after merge. Only the pinned cargo-deny installation is cached; the online advisory scan always executes. Checks use read-only permissions, do not persist checkout credentials and have bounded job durations. Deployment waits for a packaged application and the applicable release gates; CI configuration alone is not release evidence.
+The configured workflow reports separate formatting, Clippy and rustdoc jobs on Ubuntu with matrix fail-fast disabled; Cargo architecture and declared-MSRV checks; pinned cargo-deny advisory/source checks; and locked core tests on Ubuntu x64, Windows x64 and macOS arm64. Formatting failure does not suppress other code-check results. A stable `rust` aggregate requires every Rust job to succeed; failure, cancellation or unexpected skipping cannot produce a green aggregate. It runs for each PR, pushes to `dev` and `main`, and manual dispatch; its weekly schedule becomes active once merged to the default branch. Dependabot proposes weekly Cargo and GitHub Actions updates after merge. Only the pinned cargo-deny installation is cached; the online advisory scan always executes. Checks use read-only permissions, do not persist checkout credentials and have bounded job durations. Deployment waits for a packaged application and the applicable release gates; CI configuration alone is not release evidence.
 
 ## 6. Releases, hotfixes and compatibility
 
 Use immutable annotated tags: `v0.1.0-alpha.1`, `v0.1.0-rc.1`, `v0.1.0` are naming examples, not scheduled releases. Tag only the exact qualified commit and record tag, full commit ID, toolchain, lockfile/features, artifact digests and gate evidence. A published tag is never moved or reused; corrections receive a new version. Restrict tag creation/update/deletion to the release role when hosting is configured.
 
-Create `release/<major>.<minor>` only to stabilize a candidate or maintain a declared supported older line. Accept fixes/docs/version changes, with PRs and the same checks; new features target `main`. Fix a supported older version on its line, then forward-port the fix to `main` and any other affected supported line through separate PRs. Record cherry-pick/source PR and validate each target; do not merge an entire old release branch into `main`. Publish support/EOL decisions before maintaining multiple release lines. Package/SDK/graph-format versions remain separate axes from application Git tags.
+Create `release/<major>.<minor>` only to stabilize a candidate or maintain a declared supported older line. Accept fixes/docs/version changes, with PRs and the same checks; new features target `dev`. Fix a supported older version on its line, then forward-port the fix to `dev` and any other affected supported line through separate PRs. Record cherry-pick/source PR and validate each target; do not merge an entire old release branch into `dev` or `main`. Publish support/EOL decisions before maintaining multiple release lines. Package/SDK/graph-format versions remain separate axes from application Git tags.
 
 ## 7. Bootstrap and verification
 

@@ -2,7 +2,7 @@
 
 Follow the [Git workflow](docs/14-git-workflow.md) for branch names, commits, PRs, checks, review, merging and releases. Start with the [document map](README.md) and select a small subunit from the [delivery plan](docs/07-delivery-plan.md).
 
-- Base ordinary work on `main`; use `docs/`, `feat/`, `fix/`, `chore/` or `exp/` branches tied to a work/probe ID.
+- Base ordinary work on `dev` and open every PR against `dev`; use `docs/`, `feat/`, `fix/`, `chore/` or `exp/` branches tied to a work/probe ID. `main` receives `dev` through a promotion PR. PRs are squash-merged and their branches deleted.
 - Keep changes scoped. Update relevant contracts, fixtures, requirements, ADRs and translatable text together.
 - Use commit subjects such as `docs(i18n): define package catalogue fallback` and record work/requirement IDs in the body or PR.
 - Use the configured human Git author; omit AI co-author trailers and generated-with footers from commit messages and PR descriptions.

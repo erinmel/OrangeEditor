@@ -4,7 +4,7 @@ Status: architecture proposal, 2026-10-20. No product implementation, compilatio
 
 OrangeEditor is a Rust desktop and headless visual programming platform for typed calculations, state, events, files, connections and media. Its expansion plugins are installable product packages that add functionality or replace explicitly supported base providers while the application remains open. Bevy **=0.20.0** is the application/graphics pin; it does not define the graph language or external package ABI.
 
-Public source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). The repository has a protected `main` branch and a Rust code pipeline for the graph-model workspace. Desktop application and expansion-package implementation remain future work.
+Public source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). The repository has protected `dev` (integration) and `main` (promoted) branches and a Rust code pipeline for the graph-model workspace. Desktop application and expansion-package implementation remain future work.
 
 ## Document map
 
@@ -30,7 +30,7 @@ Public source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). 
 
 For node editor work, read 01 for product scope, 11 for language semantics, 12 for data layouts, 13 for presentation text, then 02/04 for editor and expansion boundaries and 06/07 for acceptance/dependencies. These are separate contract owners: examples and summaries must agree with them; conflicts are defects to fix, not permission to select a convenient rule. ADRs in 08 record decisions and evidence; 09/10 record research limits rather than proof of implementation.
 
-Development follows [14](docs/14-git-workflow.md): protected `main`, short-lived branches per work subunit, PR checks/review and squash merging. Repository bootstrap/enforcement evidence is recorded there and in 10.
+Development follows [14](docs/14-git-workflow.md): short-lived branches per work subunit, PRs into protected `dev`, promotion PRs into `main`, squash merging and branch deletion after merge. Repository bootstrap/enforcement evidence is recorded there and in 10.
 
 ## Monorepo
 
