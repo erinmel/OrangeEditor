@@ -4,7 +4,7 @@ Status: architecture proposal, 2026-10-20. No product implementation, compilatio
 
 OrangeEditor is a Rust desktop and headless visual programming platform for typed calculations, state, events, files, connections and media. Its expansion plugins are installable product packages that add functionality or replace explicitly supported base providers while the application remains open. Bevy **=0.20.0** is the application/graphics pin; it does not define the graph language or external package ABI.
 
-Public source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). The repository has `main` protection and passing documentation/policy CI; application and plugin implementation remains future work.
+Public source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). The repository has a protected `main` branch and a Rust code pipeline for the graph-model workspace. Desktop application and expansion-package implementation remain future work.
 
 ## Document map
 

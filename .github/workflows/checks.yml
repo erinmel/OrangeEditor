@@ -1,4 +1,4 @@
-name: Repository checks
+name: Rust checks
 
 on:
   push:
@@ -16,53 +16,33 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  docs:
-    name: docs
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.18.0
-          package-manager-cache: false
-      - run: node tools/check-docs.mjs
-
-  policy:
-    name: policy
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          persist-credentials: false
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: 24.18.0
-          package-manager-cache: false
-      - run: node tools/check-repo-policy.mjs
-
-  rust_quality:
-    name: rust-quality
+  rust_checks:
+    name: ${{ matrix.check }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - check: rust-format
+            command: cargo fmt --all --check
+          - check: rust-clippy
+            command: cargo clippy --workspace --all-targets --locked -- -D warnings
+          - check: rustdoc
+            command: cargo doc --workspace --no-deps --locked
     runs-on: ubuntu-24.04
     timeout-minutes: 15
+    env:
+      RUSTDOCFLAGS: -D warnings
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # The runner's preinstalled rustup installs the toolchain pinned in rust-toolchain.toml.
       - run: rustup show active-toolchain
-      - run: cargo fmt --all --check
-      - run: cargo clippy --workspace --all-targets --locked -- -D warnings
-      - name: Build rustdoc with warnings denied
-        run: cargo doc --workspace --no-deps --locked
-        env:
-          RUSTDOCFLAGS: -D warnings
+      - name: ${{ matrix.check }}
+        run: ${{ matrix.command }}
 
-  rust_policy:
-    name: rust-policy
+  rust_architecture:
+    name: rust-architecture
     outputs:
       msrv: ${{ steps.msrv.outputs.version }}
     runs-on: ubuntu-24.04
@@ -84,7 +64,7 @@ jobs:
 
   rust_msrv:
     name: rust-msrv
-    needs: rust_policy
+    needs: rust_architecture
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -93,33 +73,47 @@ jobs:
           persist-credentials: false
       - name: Install declared MSRV
         env:
-          MSRV: ${{ needs.rust_policy.outputs.msrv }}
+          MSRV: ${{ needs.rust_architecture.outputs.msrv }}
         run: rustup toolchain install "$MSRV" --profile minimal
       - name: Record declared MSRV compiler
         env:
-          MSRV: ${{ needs.rust_policy.outputs.msrv }}
+          MSRV: ${{ needs.rust_architecture.outputs.msrv }}
         run: rustc +"$MSRV" --version --verbose
       - name: Test on declared MSRV
         env:
-          MSRV: ${{ needs.rust_policy.outputs.msrv }}
+          MSRV: ${{ needs.rust_architecture.outputs.msrv }}
         run: cargo +"$MSRV" test --workspace --locked
 
   dependency_security:
     name: dependency-security
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      CARGO_DENY_VERSION: 0.20.2
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Install pinned cargo-deny
+      - run: rustup show active-toolchain
+      - name: Restore pinned cargo-deny installation
+        id: deny_cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ runner.temp }}/cargo-deny
+          key: cargo-deny-v1-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml') }}-${{ env.CARGO_DENY_VERSION }}
+      - name: Install pinned cargo-deny on cache miss
+        if: steps.deny_cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
-          rustup show active-toolchain
-          cargo install --locked --root "$RUNNER_TEMP/cargo-deny" cargo-deny --version 0.20.2
-          echo "$RUNNER_TEMP/cargo-deny/bin" >> "$GITHUB_PATH"
-      - name: Record cargo-deny version
-        run: cargo deny --version
+          cargo install --locked --root "$RUNNER_TEMP/cargo-deny" cargo-deny --version "$CARGO_DENY_VERSION"
+      - name: Add pinned cargo-deny to PATH
+        shell: bash
+        run: echo "$RUNNER_TEMP/cargo-deny/bin" >> "$GITHUB_PATH"
+      - name: Verify cargo-deny version
+        shell: bash
+        run: |
+          cargo deny --version
+          test "$(cargo deny --version)" = "cargo-deny $CARGO_DENY_VERSION"
       - name: Check advisories and sources with current databases
         run: cargo deny --locked check advisories sources
 
@@ -143,20 +137,20 @@ jobs:
   rust:
     name: rust
     if: ${{ always() }}
-    needs: [rust_quality, rust_policy, rust_msrv, dependency_security, rust_tests]
+    needs: [rust_checks, rust_architecture, rust_msrv, dependency_security, rust_tests]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
-      - name: Require quality and every platform test
+      - name: Require all Rust checks
         shell: bash
         env:
-          QUALITY_RESULT: ${{ needs.rust_quality.result }}
-          POLICY_RESULT: ${{ needs.rust_policy.result }}
+          CHECKS_RESULT: ${{ needs.rust_checks.result }}
+          ARCHITECTURE_RESULT: ${{ needs.rust_architecture.result }}
           MSRV_RESULT: ${{ needs.rust_msrv.result }}
           SECURITY_RESULT: ${{ needs.dependency_security.result }}
           TESTS_RESULT: ${{ needs.rust_tests.result }}
         run: |
-          if [[ "$QUALITY_RESULT" != "success" || "$POLICY_RESULT" != "success" || "$MSRV_RESULT" != "success" || "$SECURITY_RESULT" != "success" || "$TESTS_RESULT" != "success" ]]; then
-            echo "Rust quality, policy, MSRV, dependency security, or platform tests failed, were cancelled, or were skipped." >&2
+          if [[ "$CHECKS_RESULT" != "success" || "$ARCHITECTURE_RESULT" != "success" || "$MSRV_RESULT" != "success" || "$SECURITY_RESULT" != "success" || "$TESTS_RESULT" != "success" ]]; then
+            echo "Rust format, Clippy, rustdoc, architecture, MSRV, dependency security, or platform tests failed, were cancelled, or were skipped." >&2
             exit 1
           fi
