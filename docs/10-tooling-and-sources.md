@@ -174,6 +174,22 @@ Do not select a crate solely because an ecosystem page lists it; UI integrations
 
 Orchestrator review on 2026-10-20 checked the delegated architecture documents against the assignment and resolved consistency issues concerning numeric rounding, selected-provider preservation, atomic directory-bundle saves, OBS auth-provider ownership, transport versus method authority, and broad work-package decomposition.
 
+### G0 check for 00d (2026-10-21)
+
+Scope: the contracts the 00d validator implements, read against each other and against the 00b/00c code they build on: 11 §3–4 (kinds, connection matrix, cardinality), §7.1–7.2 (regions, availability), §8.1–8.2 (cycles), §10.4 (subscriptions), §11.2 (write conflicts), §14 (functions), §17 (catalog), 12 §3.1 (`SignatureSnapshot`) and §11 (invariants I-1–I-4). The FRs involved (FR-14, FR-44–47) name their owning documents and verification families. This is a documentation check; no validator code or test ran.
+
+| Finding | Resolution |
+|---|---|
+| 11 §4.2 rejected cells had no code apart from data→exec | All rejected cells are `E-KIND-MISMATCH`; reversed direction is `E-PORT-DIRECTION`; non-identical data types are `E-TYPE-MISMATCH` |
+| 11 §7.1 "every exec node in exactly one region" contradicted unreachable nodes | Applies to reachable nodes; unreachable ones get `W-UNREACHABLE` and no region |
+| 11 §7.2 treating Fork `all` as a sequential composition made branch A dominate sibling B, contradicting its own table | The composition applies only to sites reached through `completed`; sibling branches never dominate each other |
+| 11 §11.2 did not say whether calls count as writes, and listed registers, which cannot be shared across branches | A call writes every run variable its body writes, transitively; callee locals never conflict; a shared register is already `E-REGION-AMBIGUOUS` |
+| 11 §14 gave subscriptions in functions `E-ENTRY-IN-FUNCTION`; §10.4 gives `E-SUBSCRIPTION-IN-FUNCTION` | Subscriptions use `E-SUBSCRIPTION-IN-FUNCTION`; entries and Watch keep `E-ENTRY-IN-FUNCTION` |
+| 11 §14 Return inside a Fork branch had no code; kind inference had no precedence | `E-REGION-ESCAPE`; the strongest kind present wins and a call counts as its callee's kind |
+| 12 §3.1 `SignatureSnapshot` had no `suspends`, so control cycles and function kinds could not be checked for nodes whose package is missing | `suspends` is added to the contract; it lands with the 00d cycle checks and changes async/iterator snapshot keys (format v1 is unreleased) |
+
+Open limits: the call graph through package-provided graph bodies (G-24 "through packages") needs those bodies from the registry, so 00d checks document-local functions first. Control and zone intrinsics have no stored signature; 00d needs a host-owned intrinsic table for their ports and `suspends`. Result: the 00d scope is consistent enough to start its first slice. This passes no G1/G2 or runtime gate, and 00b/00c's own scopes were not rechecked.
+
 ### Graph-core review (2026-10-20)
 
 A second review compared the plan against the goal of an expandable, performant node editor with events and triggers. No product code exists, so "code" findings refer to the planned contracts. The findings were resolved by adding [11](11-graph-language.md) and [12](12-graph-data-structures.md), FR-44–50, NFR-15, ADR-13–16, OPEN-10–12 and WU-00:
