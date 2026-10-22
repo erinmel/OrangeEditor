@@ -136,7 +136,7 @@ fn component_updates(
         let Some(node) = document.node(id) else {
             continue;
         };
-        let Some(template) = templates.get(&node.definition) else {
+        let Some(template) = templates.get_for_node(node) else {
             continue;
         };
         let args = component.type_args.get(&id).cloned().unwrap_or_default();

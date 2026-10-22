@@ -77,6 +77,9 @@ impl ProviderKey {
 #[derive(Debug, Clone, Default)]
 pub struct TemplateCatalog {
     templates: BTreeMap<(DefinitionId, u32), GenericDefinition>,
+    /// Trusted, ephemeral host overlays for one concrete graph node. The stored definition
+    /// identity prevents an overlay surviving a definition-identity rebind or version change.
+    node_templates: BTreeMap<NodeId, (DefinitionRef, GenericDefinition)>,
     /// Exact supported argument sets per definition version and provider (`None` = core).
     /// A provider without a list delegates to constraint implementations.
     specializations: BTreeMap<(DefinitionId, u32, Option<ProviderKey>), Vec<TypeArgs>>,
@@ -87,6 +90,19 @@ impl TemplateCatalog {
     pub fn insert(&mut self, definition: DefinitionRef, template: GenericDefinition) {
         self.templates
             .insert((definition.id, definition.version), template);
+        self.generation = crate::id::process_unique();
+    }
+
+    /// Installs a host-trusted template for one node without changing ordinary definition
+    /// lookup or provider specialization identities. This is ephemeral evidence for the
+    /// current document snapshot: rebuild it after config, provider, lock, or body changes.
+    pub fn insert_node(
+        &mut self,
+        node: NodeId,
+        definition: DefinitionRef,
+        template: GenericDefinition,
+    ) {
+        self.node_templates.insert(node, (definition, template));
         self.generation = crate::id::process_unique();
     }
 
@@ -125,9 +141,21 @@ impl TemplateCatalog {
             .get(&(definition.id.clone(), definition.version))
     }
 
+    /// Looks up a node-specific overlay only while its exact definition identity still
+    /// matches; otherwise falls back to the ordinary definition catalog. The caller must
+    /// keep this catalog scoped to the immutable document/provider/config snapshot from
+    /// which its overlays were derived.
+    pub fn get_for_node(&self, node: &NodeInstance) -> Option<&GenericDefinition> {
+        self.node_templates
+            .get(&node.id)
+            .filter(|(definition, _)| definition == &node.definition)
+            .map(|(_, template)| template)
+            .or_else(|| self.get(&node.definition))
+    }
+
     /// The template of a node whose definition declares at least one type parameter.
     fn generic(&self, node: &NodeInstance) -> Option<&GenericDefinition> {
-        self.get(&node.definition)
+        self.get_for_node(node)
             .filter(|template| !template.type_params.is_empty())
     }
 }
@@ -506,7 +534,7 @@ pub(crate) fn declared_port<'a>(
     port: &PortRef,
 ) -> Option<&'a ResolvedPort> {
     let node = document.node(port.node)?;
-    let ports = match templates.get(&node.definition) {
+    let ports = match templates.get_for_node(node) {
         Some(template) => &template.ports,
         None => &document.signatures().get(node.signature.as_ref()?)?.ports,
     };
@@ -612,7 +640,6 @@ fn capability_request(constraint: &str) -> Option<CapabilityRequest> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
     #[test]
     fn constraint_names_parse_as_core_or_package_requests() {
         assert_eq!(

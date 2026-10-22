@@ -115,6 +115,8 @@ Function declarations remain graph-local. `core/call.config.function` contains a
 
 ### 3.2 Derived indexes (not persisted)
 
+Inference may use a host-supplied per-node template overlay, keyed by node ID and exact definition/version, before the shared definition catalogue. Ordinary definition lookup and exact-provider specialization lists remain separate. These overlays are ephemeral evidence for one immutable document snapshot: rebuild them after configuration, provider, lock, or body changes. A matching node ID is not proof of cache freshness. Inference, edit persistence and connection planning use node-specific lookup; contextual validator projection is a separate integration prerequisite.
+
 | Index | Structure | Used by | Update cost |
 |---|---|---|---|
 | Dense document index | `NodeId → DocIx(u32)` slot map | All derived indexes | O(1) |

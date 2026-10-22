@@ -354,7 +354,7 @@ fn endpoint_type(
     }
     let empty = BTreeMap::new();
     let args = if templates
-        .get(&node.definition)
+        .get_for_node(node)
         .is_some_and(|template| !template.type_params.is_empty())
     {
         components
