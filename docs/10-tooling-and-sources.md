@@ -33,6 +33,27 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 - 00c.3b analysis guard (2026-10-21): expanded scoped/concrete type terms are limited to a provisional `MAX_EXPANDED_TYPE_NODES = 16_384` nodes per term; nesting keeps `MAX_NESTING = 64`. Limits return typed analysis failures before constructing an oversized output. Alias traversal is iterative; a 10,000-variable alias regression passes without consuming type nesting depth. These are open resource budgets, not a new language type exclusion, measured NFR-15 timing or production memory qualification.
 - Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working UI build toolchain.
 
+## Initial validator passes (2026-10-21)
+
+Implemented WU-00/00d.1 and the node/input foundations of 00d.2 in `orange-model::validation`: `validate_connections`, `validate_nodes`, `validate_inputs`, exact host-supplied `ProviderCatalog` availability and typed diagnostics with immutable host catalogue origins. Trace: FR-05/08/44–46/51, I-1/I-4/I-5, NFR-14. These are read-only analysis passes, not a complete validator or compile approval. Provider metadata is declarative host evidence, not package authentication or installation.
+
+Connection checks cover endpoint/scope/direction/kind errors, cardinality, affine stream fan-out, stable variadic instances and concrete snapshot types. Unavailable metadata is explicit. Node resolution checks exact definition/config/provider versions and locked digest/implementation IDs; it never substitutes a core implementation for a missing selected package. Fresh generic inference uses current host contracts, including non-generic and implicit-port evidence, without seeding from cached `type_args`. Implicit ports are expanded for inference separately from signature projection, preserving semantic snapshot keys. Unresolved neighbours defer dependent generic resolution without suppressing unrelated diagnostics. Input checks reuse the literal codec and preserve shadowed values without decoding them.
+
+Focused regressions cover provider identity and core-list isolation, immutable documents, insertion-order invariance, missing metadata, implicit `error` output inference, signature drift, malformed option metadata and combined template/argument depth exhaustion (`E-TYPE-COMPLEXITY`). New resolution codes and I-4 clarification are in 11 §17 and 12 §3.1/§11. Existing inference specialization fallback is unchanged; validation separately rejects a missing lock. Plans and working handoffs are local ignored artifacts, not committed documentation.
+
+Local environment: Rust `1.99.1 (58cf8f9c3 2026-10-13)`, Cargo `1.99.1 (5f94df478 2026-08-27)`, `x86_64-pc-windows-msvc`, Node.js `v24.18.0`. MSRV remains 1.97.1. `orange-model` has no declared Cargo features; dependency defaults and workspace selections (indexmap/serde, serde/derive, serde_json/preserve_order, uuid/serde) are unchanged. No dependency, manifest, toolchain or lockfile change. Cargo.lock SHA-256: `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+| Command | Local result |
+|---|---|
+| `cargo test --workspace --locked --offline --quiet` | PASS: 230 tests, 0 failures; 0 doctests |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `$env:RUSTDOCFLAGS = '-D warnings'; cargo doc --workspace --no-deps --locked --offline` | PASS |
+| `node tools/check-cargo-metadata.mjs` | PASS: core dependency boundary |
+| `git diff --check` | PASS |
+
+Windows incremental-cache hard-link failures used Cargo's copy fallback. No new remote CI, MSRV execution, Linux/macOS execution, NFR-15 timing or gate passage is claimed. Host intrinsic projection currently covers definition/config version 1 of Branch, Sequence, Fork, Count, While, Yield, Wait, Break and Continue; other recognized intrinsics remain explicitly unresolved until their consuming slices add metadata. Config-dependent generic intrinsic projection, functions/suspension, regions/zones, cycles, availability, state conflicts, incremental invalidation, authoring integration and edit-cost measurements remain later 00d work. `W-CONST-ERROR` needs 00e folding/evaluation; the W9 runtime storm needs 00f. Source snapshots still support offline edge checks even when exact provider resolution fails.
+
 ## Inference replacement review fixes (2026-10-21)
 
 Work: WU-00/00c review corrections, FR-44/45/46. Connection planning now infers generic endpoint types from surviving evidence before selecting a converter: replaced wires are removed and the newly shadowed target literal is excluded on a scratch copy only. Pins and other active evidence still constrain selection. Changed edge deltas contribute both old and new endpoints to inference, including a disconnect/connect that reuses the same ID. Bindings/signatures remain in the originating transaction. Public API shapes, JSON format, dependencies and lockfile are unchanged; 11 §5.5/§6, 12 §3.3 and ADR-16 clarify these existing invariants.

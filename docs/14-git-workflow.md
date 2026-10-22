@@ -1,10 +1,10 @@
 # Git workflow, branches and change rules
 
-Status: **selected development policy**, 2026-10-20. Initial inspection found planning documents with no Git repository. The user subsequently selected public GitHub `erinmel/OrangeEditor` and the [monorepo layout](15-monorepo-layout.md), with `erinmel` as solo maintainer. Bootstrap adds local Git and the `docs`/`policy` CI definitions; remote execution/protection evidence is recorded in 10 and the setup status below. Git reports `2.55.0.windows.1`. [07](07-delivery-plan.md) owns delivery dependencies; Git merges do not pass engineering gates by themselves.
+Status: **selected development policy**, 2026-10-20. Initial inspection found planning documents with no Git repository. The user subsequently selected public GitHub `erinmel/OrangeEditor` and the [monorepo layout](15-monorepo-layout.md), with `erinmel` as solo maintainer. Bootstrap adds local Git and the `docs`/`policy` CI definitions; remote execution/protection evidence is recorded in 10 and the setup status below. Git reports `2.55.0.windows.1`. Local delivery plans in ignored `.artifacts/` own work sequencing; Git merges do not pass engineering gates by themselves. Plans, WU task packets and working notes are not committed; durable product contracts and verification evidence remain in `docs/`.
 
 ## 1. Branch model
 
-Use two long-lived branches plus short-lived topic branches. Every topic PR targets `dev`, the protected integration branch and repository default. `main` holds promoted work and changes only through a `dev` → `main` PR. Every PR is squash-merged and its branch deleted after merge. One branch/PR normally implements one executable subunit from 07 or a smaller independently reviewable part. A broad WU is not one giant PR. Prefer completing a small slice over leaving a branch open through several phases.
+Use two long-lived branches plus short-lived topic branches. Every topic PR targets `dev`, the protected integration branch and repository default. `main` holds promoted work and changes only through a `dev` → `main` PR. Every PR is squash-merged and its branch deleted after merge. One branch/PR normally implements one assigned executable subunit or a smaller independently reviewable part. A broad WU is not one giant PR. Prefer completing a small slice over leaving a branch open through several phases.
 
 | Branch | Base and purpose | Example |
 |---|---|---|
@@ -24,7 +24,7 @@ Dependent branches may temporarily start from another topic branch only when nec
 
 ## 2. Normal change sequence
 
-1. Inspect status/diffs and existing branches; preserve unrelated edits. Select the subunit and its prerequisite gates from 07. Documentation/research work may proceed before product implementation; a branch name does not waive those prerequisites.
+1. Inspect status/diffs and existing branches; preserve unrelated edits. Select the subunit and its prerequisite gates from the assigned task and local delivery plan. Documentation/research work may proceed before product implementation; a branch name does not waive those prerequisites.
 2. Create a topic branch from current `dev` after fetching the configured remote. Use a separate worktree for concurrent independent changes, with one owner per branch/checkout and explicit file ownership when collaboration is authorized. Do not switch a shared dirty checkout underneath another task. The worktree location is explicitly selected within authorized directories.
 3. Implement the slice and update affected contracts, fixtures, FR/NFR traceability and ADRs together. Include translation keys/accessibility text for new product UI and structured diagnostics per [13](13-internationalization.md).
 4. Run applicable checks; record exact commands, versions, results and limitations. Inspect the staged diff and whitespace. Stage explicit paths so unrelated work and generated files are not swept in.

@@ -19,6 +19,7 @@ pub mod paste;
 pub mod signature;
 pub mod type_term;
 pub mod types;
+pub mod validation;
 pub mod value;
 
 pub use document::codec::{from_json, to_json};

@@ -1,6 +1,6 @@
 # Contributing to OrangeEditor
 
-Follow the [Git workflow](docs/14-git-workflow.md) for branch names, commits, PRs, checks, review, merging and releases. Start with the [document map](README.md) and select a small subunit from the [delivery plan](docs/07-delivery-plan.md).
+Follow the [Git workflow](docs/14-git-workflow.md) for branch names, commits, PRs, checks, review, merging and releases. Start with the [document map](README.md) and select a small subunit from the assigned task or local delivery plan. Keep delivery plans, WU task packets and working notes in ignored `.artifacts/`; do not commit them. Remove temporary reviews when their work is complete.
 
 - Base ordinary work on `dev` and open every PR against `dev`; use `docs/`, `feat/`, `fix/`, `chore/` or `exp/` branches tied to a work/probe ID. `main` receives `dev` through a promotion PR. PRs are squash-merged and their branches deleted.
 - Keep changes scoped. Update relevant contracts, fixtures, requirements, ADRs and translatable text together.

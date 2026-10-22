@@ -57,7 +57,7 @@ pub struct GraphBody {
 pub struct NodeInstance {
     pub id: NodeId,
     pub definition: DefinitionRef,           // id + definition_version
-    pub provider: Option<ProviderBinding>,   // None only for core/ intrinsics
+    pub provider: Option<ProviderBinding>,   // None only for host-owned language intrinsics
     pub config_version: u32,
     pub config: ConfigValue,                 // validated by definition config_schema
     pub type_args: BTreeMap<TypeParamName, TypeExpr>,  // resolved parameters (cache)
@@ -96,7 +96,11 @@ pub struct ActivationPolicy {
 }
 ```
 
-`SignatureKey` is a document-local key. The implementation uses `sha256:` over the canonical JSON of the snapshot, so identical signatures share one entry; examples use short keys. Core intrinsic signatures are defined by `format_version` and config, so they are not stored. Serialization order is `IndexMap` order (creation order, compacted on removal), which makes output deterministic for the same command history.
+`SignatureKey` is a document-local key. The implementation uses `sha256:` over the canonical JSON of the snapshot, so identical signatures share one entry; examples use short keys. Host-owned language intrinsics are identified by the host's intrinsic definitions and use their `format_version` and config to derive signatures, so they do not store snapshots, provider bindings or package locks. A `core/` namespace alone does not make an ordinary definition intrinsic or compile-ready without a provider binding and exact package lock.
+
+Validation resolves definitions and providers from immutable host-supplied registry metadata; it never executes package code. A non-intrinsic node requires its stored signature snapshot, exact provider binding and matching package lock. If the package or exact provider metadata is unavailable, the node remains unresolved and cannot be reported as successfully resolved. Its stored snapshot still supplies ports for edge checks, including orphan-edge reporting, while checks that require unavailable current definition metadata are incomplete.
+
+Serialization order is `IndexMap` order (creation order, compacted on removal), which makes output deterministic for the same command history.
 
 `domain` names the execution domain of a body (ADR-21): the root graph's key sits beside its `nodes`/`edges`, and each function body carries its own. It is a namespaced ID such as `org.example.music/signal`; absent means the built-in `control` domain (11 §2–§15), so existing format v1 documents are unchanged. A domain the host does not provide makes the body load and round-trip but not compile, like an unresolved provider. Domains come from crates linked by the embedding product, never from installed packages. The typed field is added to `orange-model` when a host first registers a second domain; until then a `domain` key is preserved as an unknown field.
 
@@ -699,7 +703,7 @@ pub trait IteratorKernel {
 | I-1 | Each data input has ≤ 1 edge; each exec and event output ≤ 1; each stream output ≤ 1. |
 | I-2 | D is acyclic; every control cycle contains `suspends: always`; the call graph is acyclic. |
 | I-3 | Every exec node is in exactly one region; every consumed `execution` value satisfies availability ([11 §7.2](11-graph-language.md)). |
-| I-4 | Every non-intrinsic node has a signature snapshot, a provider binding and a lock entry. Edges to unknown ports are retained as orphan edges. |
+| I-4 | Every non-intrinsic node has a signature snapshot, a provider binding and a lock entry. `provider: None` is valid only for a host-owned language intrinsic; the `None` specialization bucket in `TemplateCatalog` is inference metadata for core providers, not evidence that an ordinary node resolves. Edges to unknown ports are retained as orphan edges, and unavailable package/provider metadata leaves the node unresolved while its snapshot remains available for edge checks. |
 | I-5 | `type_args` fully resolve every type parameter of a compiled node. |
 | I-6 | Plans and snapshots are immutable. Run state is mutated only by its actor. Workspace state only by the host actor. |
 | I-7 | No engine or UI entity ID, Rust `TypeId`, pointer, live handle or secret is ever persisted. |
@@ -715,4 +719,4 @@ pub trait IteratorKernel {
 | Event enqueue / dispatch | O(1) amortized, bounded queue | NFR-02 |
 | Handle or continuation lookup | O(1) index + generation compare | NFR-02 |
 
-Requirements: FR-05, FR-08, FR-09, FR-44–50. Tests: G-suite in [11 §18](11-graph-language.md), V01/V02/V05 in [06](06-quality-and-validation.md). ADR-06, ADR-13–16 in [08](08-decisions.md).
+Requirements: FR-05, FR-08, FR-09, FR-44–51. Tests: G-suite in [11 §18](11-graph-language.md), V01/V02/V05 in [06](06-quality-and-validation.md). ADR-06, ADR-13–17 in [08](08-decisions.md).
