@@ -18,8 +18,8 @@ use super::unify::{
 };
 use crate::GraphDocument;
 use crate::document::{
-    DefinitionRef, GraphBody, NodeInstance, NodeKind, PortKind, PortRef, ResolvedPort, TypeParam,
-    TypeParamName,
+    DefinitionRef, GraphBody, NodeInstance, NodeKind, PortKind, PortRef, ProviderBinding,
+    ResolvedPort, TypeParam, TypeParamName,
 };
 use crate::error::IdError;
 use crate::id::{DefinitionId, EdgeId, NodeId, TypeExpr};
@@ -39,14 +39,45 @@ pub struct GenericDefinition {
     pub type_params: Vec<TypeParam>,
     /// Declared ports; data port types may mention `$name` parameters.
     pub ports: Vec<ResolvedPort>,
-    /// Exact supported argument sets, or `None` to delegate to constraint implementations.
-    pub specializations: Option<Vec<BTreeMap<TypeParamName, TypeExpr>>>,
+}
+
+/// Resolved type arguments of one generic node, by parameter name.
+pub type TypeArgs = BTreeMap<TypeParamName, TypeExpr>;
+
+/// Exact implementation identity that specialization metadata belongs to: a node's
+/// provider binding plus the document lock's digest for that package version. Two
+/// providers of one definition can support different argument sets.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct ProviderKey {
+    pub package: String,
+    pub version: String,
+    pub content_digest: String,
+    pub id: String,
+}
+
+impl ProviderKey {
+    /// The exact identity of a package binding, if the document locks its package version.
+    pub fn of(document: &GraphDocument, binding: &ProviderBinding) -> Option<Self> {
+        let entry = document
+            .package_lock()
+            .iter()
+            .find(|entry| entry.id == binding.package && entry.version == binding.version)?;
+        Some(Self {
+            package: binding.package.clone(),
+            version: binding.version.clone(),
+            content_digest: entry.content_digest.clone(),
+            id: binding.id.clone(),
+        })
+    }
 }
 
 /// Generic templates by definition identity and version, supplied by the host registry.
 #[derive(Debug, Clone, Default)]
 pub struct TemplateCatalog {
     templates: BTreeMap<(DefinitionId, u32), GenericDefinition>,
+    /// Exact supported argument sets per definition version and provider (`None` = core).
+    /// A provider without a list delegates to constraint implementations.
+    specializations: BTreeMap<(DefinitionId, u32, Option<ProviderKey>), Vec<TypeArgs>>,
     generation: u64,
 }
 
@@ -55,6 +86,29 @@ impl TemplateCatalog {
         self.templates
             .insert((definition.id, definition.version), template);
         self.generation = crate::id::process_unique();
+    }
+
+    /// Limits one exact provider (`None` = core) of `definition` to the listed argument sets.
+    pub fn insert_specializations(
+        &mut self,
+        definition: DefinitionRef,
+        provider: Option<ProviderKey>,
+        supported: Vec<TypeArgs>,
+    ) {
+        self.specializations
+            .insert((definition.id, definition.version, provider), supported);
+        self.generation = crate::id::process_unique();
+    }
+
+    /// The argument sets `provider` supports, or `None` when it delegates to constraints.
+    pub fn specializations(
+        &self,
+        definition: &DefinitionRef,
+        provider: Option<&ProviderKey>,
+    ) -> Option<&[TypeArgs]> {
+        self.specializations
+            .get(&(definition.id.clone(), definition.version, provider.cloned()))
+            .map(Vec::as_slice)
     }
 
     /// Identity of the current contents: zero while empty, process-unique after every
@@ -211,6 +265,22 @@ impl Graph<'_> {
         Some((node, self.templates.generic(node)?))
     }
 
+    /// True unless the node's exact provider lists its supported argument sets and `args` is
+    /// not one of them. A binding without a lock entry has no exact identity, so it
+    /// delegates to constraints; reporting the missing lock entry is the validator's job (I-4).
+    fn specialized(&self, node: &NodeInstance, args: &TypeArgs) -> bool {
+        let provider = match &node.provider {
+            None => None,
+            Some(binding) => match ProviderKey::of(self.document, binding) {
+                Some(key) => Some(key),
+                None => return true,
+            },
+        };
+        self.templates
+            .specializations(&node.definition, provider.as_ref())
+            .is_none_or(|supported| supported.contains(args))
+    }
+
     /// Generic nodes joined to `id` by a data edge whose type mentions a parameter.
     fn generic_neighbours(&self, id: NodeId) -> BTreeSet<NodeId> {
         let mut neighbours = BTreeSet::new();
@@ -307,7 +377,7 @@ impl Graph<'_> {
             }
         };
         for &id in &result.nodes {
-            let Some((_, template)) = self.generic(id) else {
+            let Some((node, template)) = self.generic(id) else {
                 continue;
             };
             let mut args = BTreeMap::new();
@@ -348,10 +418,7 @@ impl Graph<'_> {
                     }
                 }
             }
-            if complete
-                && let Some(supported) = &template.specializations
-                && !supported.contains(&args)
-            {
+            if complete && !self.specialized(node, &args) {
                 result.issues.push(InferenceIssue::NoSpecialization {
                     node: id,
                     type_args: args.clone(),

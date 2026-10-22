@@ -8,7 +8,7 @@ use orange_model::conversion::{
     ConverterRegistry, ConverterRegistryBuilder, PackageProvider, plan_connection,
 };
 use orange_model::document::{DefinitionRef, NodeKind, ResolvedPort, TypeParam};
-use orange_model::inference::{GenericDefinition, TemplateCatalog};
+use orange_model::inference::{GenericDefinition, TemplateCatalog, TypeArgs};
 use orange_model::types::TypeRegistry;
 use orange_model::{GraphDocument, from_json};
 use serde_json::{Value as Json, json};
@@ -35,13 +35,26 @@ pub fn catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
     }
 }
 
+/// The `org.test/add` definition version 1.
+pub fn add_definition() -> DefinitionRef {
+    DefinitionRef {
+        id: ADD.parse().unwrap(),
+        version: 1,
+    }
+}
+
+/// Argument sets binding `T` to each of `types`.
+pub fn only(types: &[&str]) -> Vec<TypeArgs> {
+    types
+        .iter()
+        .map(|ty| [("T".to_owned(), ty.parse().unwrap())].into())
+        .collect()
+}
+
 fn build_catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
     let mut catalog = TemplateCatalog::default();
     catalog.insert(
-        DefinitionRef {
-            id: ADD.parse().unwrap(),
-            version: 1,
-        },
+        add_definition(),
         GenericDefinition {
             kind: NodeKind::Pure,
             type_params: vec![
@@ -53,14 +66,11 @@ fn build_catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
                 port("b", "input", "$T"),
                 port("sum", "output", "$T"),
             ],
-            specializations: specializations.map(|types| {
-                types
-                    .into_iter()
-                    .map(|ty| [("T".to_owned(), ty.parse().unwrap())].into())
-                    .collect()
-            }),
         },
     );
+    if let Some(types) = specializations {
+        catalog.insert_specializations(add_definition(), None, only(&types));
+    }
     catalog
 }
 

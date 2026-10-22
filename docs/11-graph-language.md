@@ -196,7 +196,7 @@ The initial host supports explicit package structural derives for `eq`, `hash`, 
 - Function bodies are inferred like the root: an edit inside a body, or a replaced body, re-infers the touched components there.
 - A disconnect/connect that reuses an edge ID re-infers the components at both its old and new endpoints; a net `changed` edge is not an unchanged inference input.
 - Exhausting an analysis resource budget produces `E-TYPE-COMPLEXITY`, with the relevant node/parameter context and limit. It does not fall back to a numeric type or report a semantic mismatch. Provisional implementation budgets are recorded in [10](10-tooling-and-sources.md); a resource failure does not redefine the valid type grammar.
-- A generic provider MUST list its supported specializations, or delegate to constraint implementations. A missing specialization is `E-NO-SPECIALIZATION` at compile time, never a run-time lookup.
+- A generic provider MUST list its supported specializations, or delegate to constraint implementations. The list belongs to the exact provider (binding plus the locked content digest), so two providers of one definition may support different arguments. A missing specialization is `E-NO-SPECIALIZATION` at compile time, never a run-time lookup.
 - Numeric authoring presents Float with Single (`core/f32@1`) and Double (`core/f64@1`) precision, alongside integer math (ADR-20). New untyped numbers default to Double; a resolved port or explicit type selection takes precedence. Integer text parses directly as the selected integer type, without a floating intermediate. Saved type identities and visible precision conversions remain governed by §5–6.
 
 ### 5.6 Numeric additions to [03](03-data-and-execution.md)

@@ -2,16 +2,16 @@
 
 mod common;
 
-use common::generic::{add, catalog, data_edge, document, source};
-use common::node_id;
+use common::generic::{add, add_definition, catalog, data_edge, document, only, source};
+use common::{minimal_document, node_id};
 use orange_model::DocIndex;
-use orange_model::GraphDocument;
 use orange_model::id::NodeId;
 use orange_model::inference::{
-    ComponentInference, EquationEvidence, InferenceIssue, TemplateCatalog, UnificationError,
-    infer_components,
+    ComponentInference, EquationEvidence, InferenceIssue, ProviderKey, TemplateCatalog,
+    UnificationError, infer_components,
 };
 use orange_model::types::TypeRegistry;
+use orange_model::{GraphDocument, from_json};
 use proptest::prelude::*;
 use serde_json::json;
 
@@ -166,6 +166,47 @@ fn constraints_and_specializations_are_checked_after_solving() {
             .issues
             .is_empty()
     );
+}
+
+#[test]
+fn specializations_belong_to_the_exact_provider_of_a_node() {
+    // Two packages implement `add`; only `org.ints` limits it, and only to integers.
+    let digest = |byte: &str| format!("sha256:{}", byte.repeat(32));
+    let doc: GraphDocument = from_json(&minimal_document(json!({
+        "package_lock": [
+            {"id": "org.ints", "version": "1.0.0", "content_digest": digest("aa")},
+            {"id": "org.any", "version": "1.0.0", "content_digest": digest("bb")},
+        ],
+        "nodes": [
+            add(2, json!({"type_pins": {"T": "core/f64@1"},
+                "provider": {"package": "org.ints", "version": "1.0.0", "id": "add"}})),
+            add(3, json!({"type_pins": {"T": "core/f64@1"},
+                "provider": {"package": "org.any", "version": "1.0.0", "id": "add"}})),
+        ],
+    })))
+    .unwrap();
+    let ints = ProviderKey {
+        package: "org.ints".to_owned(),
+        version: "1.0.0".to_owned(),
+        content_digest: digest("aa"),
+        id: "add".to_owned(),
+    };
+    let mut templates = catalog(None);
+    templates.insert_specializations(add_definition(), Some(ints.clone()), only(&["core/i64@1"]));
+    assert_eq!(
+        codes(&infer(&doc, &[2], &templates)[0]),
+        ["E-NO-SPECIALIZATION"]
+    );
+    assert!(infer(&doc, &[3], &templates)[0].issues.is_empty());
+
+    // The same package version under another digest is a different provider.
+    let mut other = catalog(None);
+    let rebuilt = ProviderKey {
+        content_digest: digest("cc"),
+        ..ints
+    };
+    other.insert_specializations(add_definition(), Some(rebuilt), only(&["core/i64@1"]));
+    assert!(infer(&doc, &[2], &other)[0].issues.is_empty());
 }
 
 #[test]
