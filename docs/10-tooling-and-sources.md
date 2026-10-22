@@ -143,7 +143,7 @@ Remote implementation evidence: [run 39534720986](https://github.com/erinmel/Ora
 
 ## Core quality fixes (2026-10-21)
 
-A code review of `orange-model` reproduced five problems; four are fixed with regression tests:
+A code review of `orange-model` reproduced five problems; all are fixed with regression tests:
 
 - Revision exhaustion is checked before any patch (`TxError::RevisionExhausted`), so a loaded `u64::MAX` revision can no longer panic in debug or wrap in release.
 - `format_version`, `graph_id`, `type_lock`, `exports` and document `extensions` are read-only accessors, so no caller can change content without a new `state_id` (a previously made connection plan was accepted after such a change).
