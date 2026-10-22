@@ -4,6 +4,7 @@ use thiserror::Error;
 
 use crate::document::{
     GraphDocument, NodeKind, PortDirection, PortKind, PortRef, ResolvedPort, SignatureSnapshot,
+    Suspends,
 };
 use crate::id::{PortId, TypeExpr};
 
@@ -222,8 +223,14 @@ pub(crate) fn intrinsic_snapshot(id: &str, config_version: u32) -> Option<Signat
             serde_json::from_value(value.take()).expect("intrinsic descriptor is valid");
         ports.push(descriptor);
     }
+    let suspends = match id {
+        "core/yield" | "core/wait" => Some(Suspends::Always),
+        "core/count" | "core/while" => Some(Suspends::Maybe),
+        _ => None,
+    };
     Some(SignatureSnapshot {
         kind,
+        suspends,
         ports,
         extensions: Default::default(),
     })

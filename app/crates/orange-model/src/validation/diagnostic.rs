@@ -5,9 +5,9 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::id::{EdgeId, NodeId, PortKey};
+use crate::id::{EdgeId, FunctionId, NodeId, PortKey};
 
-/// Connection-level diagnostic identifiers implemented by the first validation slice.
+/// Stable identifiers for implemented graph validation diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DiagnosticCode {
     #[serde(rename = "E-PORT-UNKNOWN")]
@@ -54,6 +54,26 @@ pub enum DiagnosticCode {
     HandleLiteral,
     #[serde(rename = "W-LITERAL-SHADOWED")]
     LiteralShadowed,
+    #[serde(rename = "E-SUSPENDS-MISSING")]
+    SuspendsMissing,
+    #[serde(rename = "E-SUSPENDS-INVALID")]
+    SuspendsInvalid,
+    #[serde(rename = "E-RECURSION")]
+    Recursion,
+    #[serde(rename = "E-FUNCTION-KIND")]
+    FunctionKind,
+    #[serde(rename = "E-CALL-TARGET-MISSING")]
+    CallTargetMissing,
+    #[serde(rename = "E-CALL-TARGET-UNKNOWN")]
+    CallTargetUnknown,
+    #[serde(rename = "E-FUNCTION-METADATA-UNAVAILABLE")]
+    FunctionMetadataUnavailable,
+    #[serde(rename = "E-VARIABLE-UNKNOWN")]
+    VariableUnknown,
+    #[serde(rename = "E-UPDATE-OPERATION")]
+    UpdateOperation,
+    #[serde(rename = "E-ENTRY-IN-FUNCTION")]
+    EntryInFunction,
 }
 
 impl DiagnosticCode {
@@ -82,6 +102,16 @@ impl DiagnosticCode {
             Self::LiteralType => "E-LITERAL-TYPE",
             Self::HandleLiteral => "E-HANDLE-LITERAL",
             Self::LiteralShadowed => "W-LITERAL-SHADOWED",
+            Self::SuspendsMissing => "E-SUSPENDS-MISSING",
+            Self::SuspendsInvalid => "E-SUSPENDS-INVALID",
+            Self::Recursion => "E-RECURSION",
+            Self::FunctionKind => "E-FUNCTION-KIND",
+            Self::CallTargetMissing => "E-CALL-TARGET-MISSING",
+            Self::CallTargetUnknown => "E-CALL-TARGET-UNKNOWN",
+            Self::FunctionMetadataUnavailable => "E-FUNCTION-METADATA-UNAVAILABLE",
+            Self::VariableUnknown => "E-VARIABLE-UNKNOWN",
+            Self::UpdateOperation => "E-UPDATE-OPERATION",
+            Self::EntryInFunction => "E-ENTRY-IN-FUNCTION",
         }
     }
 
@@ -109,6 +139,16 @@ impl DiagnosticCode {
             Self::LiteralType => "core/graph-literal-type",
             Self::HandleLiteral => "core/graph-handle-literal",
             Self::LiteralShadowed => "core/graph-literal-shadowed",
+            Self::SuspendsMissing => "core/graph-suspends-missing",
+            Self::SuspendsInvalid => "core/graph-suspends-invalid",
+            Self::Recursion => "core/graph-recursion",
+            Self::FunctionKind => "core/graph-function-kind",
+            Self::CallTargetMissing => "core/graph-call-target-missing",
+            Self::CallTargetUnknown => "core/graph-call-target-unknown",
+            Self::FunctionMetadataUnavailable => "core/graph-function-metadata-unavailable",
+            Self::VariableUnknown => "core/graph-variable-unknown",
+            Self::UpdateOperation => "core/graph-update-operation",
+            Self::EntryInFunction => "core/graph-entry-in-function",
         }
     }
 
@@ -147,6 +187,22 @@ impl DiagnosticCode {
             Self::LiteralType => "Input literal does not match the declared port type.".into(),
             Self::HandleLiteral => "Handle ports cannot have literals.".into(),
             Self::LiteralShadowed => "Input literal is shadowed by a connected edge.".into(),
+            Self::SuspendsMissing => "Suspension metadata is required for this node kind.".into(),
+            Self::SuspendsInvalid => "Suspension metadata conflicts with the node kind.".into(),
+            Self::Recursion => "Function calls contain a recursion cycle.".into(),
+            Self::FunctionKind => {
+                "Declared function kind differs from the inferred body kind.".into()
+            }
+            Self::CallTargetMissing => "Function call requires a canonical function target.".into(),
+            Self::CallTargetUnknown => "Function call target is not declared in this graph.".into(),
+            Self::FunctionMetadataUnavailable => {
+                "Function body or leaf semantics are unavailable.".into()
+            }
+            Self::VariableUnknown => "Variable reference is missing, invalid or undeclared.".into(),
+            Self::UpdateOperation => "Variable update requires a supported operation.".into(),
+            Self::EntryInFunction => {
+                "Entry and watch nodes are not permitted in a function.".into()
+            }
         }
     }
 }
@@ -169,6 +225,8 @@ pub enum Severity {
 #[derive(Debug, Clone, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub struct Subject {
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub function: Option<FunctionId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub node: Option<NodeId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<PortKey>,
@@ -178,7 +236,18 @@ pub struct Subject {
 
 impl Subject {
     pub const fn new(node: Option<NodeId>, port: Option<PortKey>, edge: Option<EdgeId>) -> Self {
-        Self { node, port, edge }
+        Self {
+            function: None,
+            node,
+            port,
+            edge,
+        }
+    }
+
+    /// Adds the graph-local function owning this diagnostic subject.
+    pub const fn with_function(mut self, function: FunctionId) -> Self {
+        self.function = Some(function);
+        self
     }
 
     fn port_suffix(&self) -> String {

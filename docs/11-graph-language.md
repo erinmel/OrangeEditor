@@ -74,6 +74,8 @@ A definition has exactly one `kind`. Ports inherited from a kind (§4.1) are imp
 
 `volatile` subclasses: `state-read` (variables, register `current`, node-state outputs), `clock` (Now) and `entropy` (seeded random). `state-read` and `clock` nodes MUST have **no data inputs**; the state they read is chosen by config. They are evaluated in the epoch prologue (§7.4), so every read in one epoch sees one consistent snapshot. `entropy` nodes may have inputs and draw from the host's deterministic stream (§7.6). Plugin volatile definitions are limited to `entropy`. Reading external service state is an `async` action.
 
+**Trusted control boundary.** Packages may contribute definitions within the kinds above, but cannot override control/zone intrinsics, function/cycle legality, or scheduler semantics (§16). Intrinsic status comes from the host's exact intrinsic registry, not a `core/` name prefix or package declaration. Nominal types and constrained nodes remain extensible through their owning type's declared constraints; this does not grant packages authority over control legality.
+
 ## 4. Ports
 
 ### 4.1 Descriptor
@@ -318,7 +320,7 @@ A run is reproducible when its plan hash, seed, virtual clock, ingestion log (ev
 ### 8.2 Formal checks
 
 - **D** (data dependency graph): an edge `p → q` exists for each data edge, plus `input → output` within a node for every output whose `source` is `computed`. `execution`, `state`, `payload` and `iteration` outputs do not depend on the node's inputs. Zone back links are omitted. **D MUST be acyclic.**
-- **C** (control graph per region, with implicit loop back edges excluded): every cycle MUST contain a node with `suspends: always`.
+- **C** (control graph per region, with implicit loop back edges excluded): every cycle MUST contain a node with `suspends: always`. A function-call summary may provide `always` only when every path proves guaranteed suspension; merely finding a Wait somewhere does not prove it. Unknown or incomplete facts cannot certify a cycle.
 - **Call graph** over functions and graph-implemented definitions: acyclic.
 - An action reading its own previous output through a control cycle fails §7.2 (no dominance on the first pass). Feedback MUST go through a register or variable, which makes the intent explicit.
 
@@ -481,6 +483,11 @@ Runtime codes defined by the core: `NumericOverflow`, `DivideByZero`, `Domain`, 
 
 - A **function** is a graph-local or package-provided body with a typed interface. `core/function-entry` outputs the inputs. Action functions return through `core/return` nodes. Pure functions use a single `core/function-outputs` node.
 - The kind is inferred from the body: only pure nodes → `pure`; volatile → `volatile`; actions → `action`; anything with `suspends ≠ never` → `async`; the strongest present wins (async > action > volatile > pure), and a call counts as its callee's kind. The declared kind MUST equal the inferred kind (`E-FUNCTION-KIND`), so callers see a stable interface. The editor updates the declaration and lists affected callers.
+- `core/call` identifies its graph-local target with `config.function`, a canonical `FunctionId`; it MUST resolve to a declaration in the same graph. Missing and unknown targets report `E-CALL-TARGET-MISSING` and `E-CALL-TARGET-UNKNOWN`. Calls do not resolve by display name. Function kind and effects come from the validated body/callee summaries, never from the declared kind alone.
+- Function analysis summarizes suspension and transitive writes to `run` variables. `core/get-variable`, `core/set-variable`, and `core/update-variable` reference a canonical `VariableId` in `config.variable`; update operations use the stable `config.operation` token from §11.1. Variable names and arbitrary config strings are not scanned. An unresolved reference reports `E-VARIABLE-UNKNOWN`. Local-variable writes stay in the call frame and do not escape the summary.
+- A missing external/package body or unavailable leaf semantics makes the summary incomplete (`E-FUNCTION-METADATA-UNAVAILABLE`); it is not treated as an empty effect set or a proven non-suspending body. Hosts may supply explicit leaf semantics such as suspension and run-write facts for trusted native functions. No package code executes during validation or compilation analysis.
+- A call's suspension is `never` only when its resolved summary proves no suspension; any possible suspension yields at least `maybe`. Finding a suspending node somewhere in a body does not prove `always`: `always` requires proof on every path. Incomplete facts cannot establish `always`, so they cannot certify a control cycle.
+- Function-structure nodes are classified by exact host intrinsic identity: `core/function-entry` declares interface inputs, `core/return` terminates an action-function path, and `core/function-outputs` supplies the single pure-function result. Declared function type parameters and interface types are the authoritative type contract; body analysis validates conformance without trusting a declared kind as inferred evidence.
 - Each call has its own frame and locals. Run variables are shared with the caller's run.
 - A function body has no entries or Watch nodes (`E-ENTRY-IN-FUNCTION`) and no subscriptions (`E-SUBSCRIPTION-IN-FUNCTION`, §10.4). Break and Continue do not cross the boundary. `core/return` MUST NOT appear inside a Fork branch (`E-REGION-ESCAPE`). Every path in an action function with outputs reaches a Return (`E-MISSING-RETURN`). Return cancels any remaining detached strands of the body (`W-DETACH-IN-FUNCTION`).
 - The call graph is acyclic (§8.2). There are no macros in v1. "Collapse to function" is an editor refactoring with an interface preview, and groups or frames are presentation only.
@@ -521,6 +528,7 @@ Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_
 | Cycles | `E-CYCLE-DATA`, `E-CYCLE-SYNC-CONTROL`, `E-RECURSION`, `E-LOOP-UNBOUNDED`, `W-BUSY-LOOP` |
 | State and concurrency | `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `W-CONST-ERROR` |
 | Functions and entries | `E-FUNCTION-KIND`, `E-MISSING-RETURN`, `E-ENTRY-IN-FUNCTION`, `E-SUBSCRIPTION-IN-FUNCTION`, `W-DETACH-IN-FUNCTION` |
+| Function resolution | `E-CALL-TARGET-MISSING`, `E-CALL-TARGET-UNKNOWN`, `E-VARIABLE-UNKNOWN`, `E-UPDATE-OPERATION`, `E-FUNCTION-METADATA-UNAVAILABLE`, `E-SUSPENDS-MISSING`, `E-SUSPENDS-INVALID` |
 
 ## 18. Reference test scenarios (WU-00)
 

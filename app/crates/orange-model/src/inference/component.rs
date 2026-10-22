@@ -19,7 +19,7 @@ use super::unify::{
 use crate::GraphDocument;
 use crate::document::{
     DefinitionRef, GraphBody, NodeInstance, NodeKind, PortKind, PortRef, ProviderBinding,
-    ResolvedPort, TypeParam, TypeParamName,
+    ResolvedPort, Suspends, TypeParam, TypeParamName,
 };
 use crate::error::IdError;
 use crate::id::{DefinitionId, EdgeId, NodeId, TypeExpr};
@@ -36,6 +36,8 @@ use crate::types::{
 pub struct GenericDefinition {
     /// Kind of the projected signature snapshots of this definition's instances.
     pub kind: NodeKind,
+    /// Declared suspension behavior. `None` is unresolved for async/iterator definitions.
+    pub suspends: Option<Suspends>,
     pub type_params: Vec<TypeParam>,
     /// Declared ports; data port types may mention `$name` parameters.
     pub ports: Vec<ResolvedPort>,

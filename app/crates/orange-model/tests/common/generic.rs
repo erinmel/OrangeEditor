@@ -57,6 +57,7 @@ fn build_catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
         add_definition(),
         GenericDefinition {
             kind: NodeKind::Pure,
+            suspends: None,
             type_params: vec![
                 serde_json::from_value::<TypeParam>(json!({"name": "T", "constraints": ["num"]}))
                     .unwrap(),

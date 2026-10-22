@@ -72,9 +72,10 @@ pub struct PortRef { pub node: NodeId, pub port: PortKey }
 pub struct VariadicState { pub order: Vec<u16>, pub next: u16 }
 pub struct SignatureSnapshot {
     pub kind: NodeKind,
-    pub suspends: Option<Suspends>,          // async and iterator only: Maybe | Always
+    pub suspends: Option<Suspends>,          // semantic async/iterator fact; see below
     pub ports: Vec<ResolvedPort>,
 }
+pub enum Suspends { Never, Maybe, Always }   // synchronous absence is equivalent to Never
 pub struct VariableDecl {
     pub id: VariableId, pub name: String, pub ty: TypeExpr,
     pub scope: VarScope,                     // Local | Run | Workspace
@@ -108,7 +109,9 @@ Implementation correction (00b review): replacing an existing entry at its curre
 
 `ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
 
-`suspends` is semantic: it decides control-cycle legality and an enclosing function's kind (11 §8.2, §14), so a node whose package is missing must still carry it, and it is part of the hash. It lands with the 00d cycle checks; until then no stored snapshot has it, and adding it changes the keys of async and iterator snapshots (format v1 is unreleased).
+`suspends` is semantic: it decides control-cycle legality and an enclosing function's kind (11 §8.2, §14), so a node whose package is missing must still carry it, and it is part of the hash. For a current synchronous definition, absence means `never`. For a current `async` or `iterator` definition, absence means unknown metadata and reports `E-SUSPENDS-MISSING`; it is not silently changed to `maybe` or `always`. A value on an incompatible kind, or an invalid value, reports `E-SUSPENDS-INVALID`. Exact historical snapshot bytes remain preserved until an explicit re-projection/migration; validators do not rewrite old snapshots to manufacture a fact. The current host may re-project a supported intrinsic or exact provider definition and compare semantic signatures.
+
+Function declarations remain graph-local. `core/call.config.function` contains a canonical `FunctionId`; variable intrinsics use `config.variable` with a canonical `VariableId`, and update nodes use `config.operation` with a stable operation token. These are typed references, not names or arbitrary strings to search. Function summaries (inferred kind, suspension, transitive run-variable writes, and completeness) are derived validation/compile data, not persisted document fields. A host may provide explicit trusted native-leaf semantics; unresolved external bodies remain incomplete, never assumed effect-free. The call graph is analyzed iteratively with bounded explicit traversal state; recursive calls report `E-RECURSION` without relying on the Rust call stack.
 
 ### 3.2 Derived indexes (not persisted)
 

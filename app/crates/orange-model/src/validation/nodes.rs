@@ -2,7 +2,9 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::document::{DefinitionRef, GraphDocument, PortKind, PortRef, SignatureSnapshot};
+use crate::document::{
+    DefinitionRef, GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends,
+};
 use crate::error::IdError;
 use crate::id::{DefinitionId, NodeId, PortId, PortKey};
 use crate::index::DocIndex;
@@ -213,10 +215,15 @@ fn preflight_node(
             );
             return false;
         };
+        if let Some(code) = suspension_contract_issue(snapshot.kind, snapshot.suspends) {
+            unresolved(node.id, code, origin, report, diagnostics);
+            return false;
+        }
         contracts.insert(
             node.definition.clone(),
             GenericDefinition {
                 kind: snapshot.kind,
+                suspends: snapshot.suspends,
                 type_params: Vec::new(),
                 ports: snapshot.ports,
             },
@@ -258,9 +265,21 @@ fn preflight_node(
         );
         return false;
     };
-    if contracts.get(&node.definition).is_none()
-        || !providers.contains(&node.definition, node.config_version, &provider)
-    {
+    let Some(contract) = contracts.get(&node.definition) else {
+        unresolved(
+            node.id,
+            DiagnosticCode::ProviderUnavailable,
+            origin,
+            report,
+            diagnostics,
+        );
+        return false;
+    };
+    if let Some(code) = suspension_contract_issue(contract.kind, contract.suspends) {
+        unresolved(node.id, code, origin, report, diagnostics);
+        return false;
+    }
+    if !providers.contains(&node.definition, node.config_version, &provider) {
         unresolved(
             node.id,
             DiagnosticCode::ProviderUnavailable,
@@ -271,6 +290,27 @@ fn preflight_node(
         return false;
     }
     true
+}
+
+fn suspension_contract_issue(
+    kind: crate::document::NodeKind,
+    suspends: Option<Suspends>,
+) -> Option<DiagnosticCode> {
+    match (kind, suspends) {
+        (crate::document::NodeKind::Async | crate::document::NodeKind::Iterator, None) => {
+            Some(DiagnosticCode::SuspendsMissing)
+        }
+        (
+            crate::document::NodeKind::Async | crate::document::NodeKind::Iterator,
+            Some(Suspends::Never),
+        ) => Some(DiagnosticCode::SuspendsInvalid),
+        (
+            crate::document::NodeKind::Async | crate::document::NodeKind::Iterator,
+            Some(Suspends::Maybe | Suspends::Always),
+        ) => None,
+        (_, Some(Suspends::Maybe | Suspends::Always)) => Some(DiagnosticCode::SuspendsInvalid),
+        _ => None,
+    }
 }
 
 fn inference_catalog(
@@ -293,6 +333,7 @@ fn inference_catalog(
         };
         let mut snapshot = SignatureSnapshot {
             kind: contract.kind,
+            suspends: contract.suspends,
             ports: contract.ports.clone(),
             extensions: Default::default(),
         };
@@ -314,6 +355,7 @@ fn inference_catalog(
             node.definition.clone(),
             GenericDefinition {
                 kind: snapshot.kind,
+                suspends: snapshot.suspends,
                 type_params: contract.type_params.clone(),
                 ports: snapshot.ports,
             },
@@ -506,7 +548,12 @@ fn project_node(
             }
         }
     }
-    let projected = signature::project(contract.kind, ports, &BTreeMap::new());
+    let projected = signature::project_with_suspension(
+        contract.kind,
+        contract.suspends,
+        ports,
+        &BTreeMap::new(),
+    );
     if !validate_projected_types(id, &projected, pass.types, pass.origin, report, diagnostics) {
         return None;
     }

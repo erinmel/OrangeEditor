@@ -439,6 +439,7 @@ fn convert_node(
     }
     let snapshot = SignatureSnapshot {
         kind: NodeKind::Pure,
+        suspends: None,
         ports,
         extensions: Extensions::new(),
     };
@@ -527,6 +528,7 @@ mod tests {
             GraphDocument::new("a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6".parse().unwrap());
         let snapshot = SignatureSnapshot {
             kind: NodeKind::Pure,
+            suspends: None,
             ports: vec![],
             extensions: Extensions::new(),
         };

@@ -19,7 +19,7 @@ use crate::edit::{ChangeSet, Committed, DeclId, DocCommand};
 use crate::error::TxError;
 use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
-use crate::signature::{project, semantic_key};
+use crate::signature::{project_with_suspension, semantic_key};
 use crate::types::TypeRegistry;
 
 /// An edit plus the commands that persist its inference result.
@@ -140,7 +140,12 @@ fn component_updates(
             continue;
         };
         let args = component.type_args.get(&id).cloned().unwrap_or_default();
-        let snapshot = project(template.kind, template.ports.iter().cloned(), &args);
+        let snapshot = project_with_suspension(
+            template.kind,
+            template.suspends,
+            template.ports.iter().cloned(),
+            &args,
+        );
         let key = semantic_key(&snapshot);
         if node.type_args != args {
             commands.push(DocCommand::SetTypeArgs { node: id, args });

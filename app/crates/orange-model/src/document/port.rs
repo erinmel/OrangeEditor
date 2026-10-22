@@ -34,9 +34,38 @@ pub struct PortRef {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SignatureSnapshot {
     pub kind: NodeKind,
+    /// Semantic suspension contract for execution and function-kind analysis.
+    /// `None` preserves unknown suspension metadata on legacy async/iterator snapshots.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub suspends: Option<Suspends>,
     pub ports: Vec<ResolvedPort>,
     #[serde(flatten)]
     pub extensions: Extensions,
+}
+
+/// Whether an execution can suspend its strand (11 §§3, 8, 14).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Suspends {
+    /// This operation always completes in its current strand segment.
+    #[default]
+    Never,
+    /// Suspension depends on runtime behavior, such as whether data is immediately ready.
+    Maybe,
+    /// This operation always suspends before it resumes or completes.
+    Always,
+}
+
+impl SignatureSnapshot {
+    /// Returns the known suspension behavior. Older snapshots without a value are
+    /// semantically known to be synchronous for non-suspending kinds, but remain
+    /// unresolved for async and iterator kinds.
+    pub fn suspension(&self) -> Option<Suspends> {
+        self.suspends.or(match self.kind {
+            NodeKind::Async | NodeKind::Iterator => None,
+            _ => Some(Suspends::Never),
+        })
+    }
 }
 
 /// Kinds that can appear in a signature or function interface. Control and zone

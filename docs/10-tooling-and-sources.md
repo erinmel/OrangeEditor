@@ -33,6 +33,27 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 - 00c.3b analysis guard (2026-10-21): expanded scoped/concrete type terms are limited to a provisional `MAX_EXPANDED_TYPE_NODES = 16_384` nodes per term; nesting keeps `MAX_NESTING = 64`. Limits return typed analysis failures before constructing an oversized output. Alias traversal is iterative; a 10,000-variable alias regression passes without consuming type nesting depth. These are open resource budgets, not a new language type exclusion, measured NFR-15 timing or production memory qualification.
 - Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working UI build toolchain.
 
+## Function analysis and suspension (2026-10-21)
+
+WU-00/00d.3 adds graph-local function analysis to `orange-model`: inferred execution kind, conservative suspension and transitive run-variable write operations. Iterative strongly connected components reject recursion with an actual closed call path; callee-first dependency ordering avoids enumerating all call paths. Missing native/package semantics keep a function and dependent callers incomplete; declared kinds are never evidence for inferred behavior. Exact host intrinsic identities are separate from replaceable definitions such as `core/add`. Typed config references and node/function diagnostic subjects preserve redaction. Trace: FR-14/44/46/47, ADR-15/20/21, I-2/I-4.
+
+`Suspends::{Never, Maybe, Always}` now flows through templates, snapshots, projection, hashing, inference persistence and drift. Absent historical async/iterator metadata stays unknown. Current async/iterator declarations require Maybe or Always; synchronous Never and omission have the same semantic key. A Wait in a function yields a conservative Maybe summary, never an every-path guarantee. Existing unreleased v1 async keys change on explicit re-projection; validators do not migrate stored snapshots.
+
+The user selected core execution before concrete host services and editor integration. This changes sequencing, not broader release requirements. Contextual per-node call/variable ports are the next integration prerequisite: distinct call targets cannot share a definition-only template entry. Regions, data/control cycles, availability, return coverage, state conflicts, incremental invalidation, compiler and runtime remain unimplemented. This analyzer alone does not approve execution. Resolved signature/effect maps are fresh, call-scoped host evidence for the exact immutable document/config/provider/lock snapshot; they are not reusable after edits. External graph-body traversal remains package-host integration work.
+
+Environment and dependency features are unchanged from the validator record below: Rust `1.99.1 (58cf8f9c3 2026-10-13)`, Cargo `1.99.1 (5f94df478 2026-08-27)`, Windows x86_64-pc-windows-msvc, MSRV 1.97.1, no crate features declared, no dependency/manifest/toolchain/lock changes. Cargo.lock SHA-256 remains `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+| Command | Final local result |
+|---|---|
+| `cargo test --workspace --locked --offline --quiet` | PASS: 254 tests, 0 failures; 0 doctests |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `$env:RUSTDOCFLAGS = '-D warnings'; cargo doc --workspace --no-deps --locked --offline` | PASS |
+| `node tools/check-cargo-metadata.mjs` | PASS: no UI/engine dependency in core |
+| `git diff --check` | PASS |
+
+Regressions cover indirect recursion, a 400-function shared-callee DAG, exact intrinsic versions versus ordinary provider-backed core definitions, incomplete facts without misleading kind errors, typed variable operations, local/workspace exclusions, suspension identity/drift and historical snapshot preservation. Root review corrected traversal and intrinsic-classification errors before final verification. Windows hard-link cache warnings used the existing copy fallback. No runtime, performance target, MSRV, other-OS or remote CI result is claimed for this slice.
+
 ## Initial validator passes (2026-10-21)
 
 Implemented WU-00/00d.1 and the node/input foundations of 00d.2 in `orange-model::validation`: `validate_connections`, `validate_nodes`, `validate_inputs`, exact host-supplied `ProviderCatalog` availability and typed diagnostics with immutable host catalogue origins. Trace: FR-05/08/44–46/51, I-1/I-4/I-5, NFR-14. These are read-only analysis passes, not a complete validator or compile approval. Provider metadata is declarative host evidence, not package authentication or installation.

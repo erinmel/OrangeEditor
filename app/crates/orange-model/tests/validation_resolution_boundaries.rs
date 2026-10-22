@@ -94,6 +94,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         generic_definition,
         GenericDefinition {
             kind: NodeKind::Pure,
+            suspends: None,
             type_params: vec![TypeParam {
                 name: "T".into(),
                 constraints: vec![],
@@ -114,6 +115,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         ambiguous_definition,
         GenericDefinition {
             kind: NodeKind::Pure,
+            suspends: None,
             type_params: vec![TypeParam {
                 name: "T".into(),
                 constraints: vec![],
@@ -220,6 +222,7 @@ fn intrinsic_implicit_error_port_supplies_generic_type_evidence() {
         definition,
         GenericDefinition {
             kind: NodeKind::Pure,
+            suspends: None,
             type_params: vec![TypeParam {
                 name: "T".into(),
                 constraints: vec![],
@@ -284,6 +287,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         definition.clone(),
         GenericDefinition {
             kind: NodeKind::Pure,
+            suspends: None,
             type_params: vec![TypeParam {
                 name: "T".into(),
                 constraints: vec![],
