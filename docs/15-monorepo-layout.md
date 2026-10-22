@@ -41,4 +41,4 @@ The repository bootstrap added no Cargo manifest. WU-00/00b.1 added the root wor
 - Public catalogues, examples, manifests and traces contain no credential material. Machine IDE state, output directories and local configuration are ignored.
 - Maintainer: `erinmel`, with solo-review mode initially. License selection and artifact-signing identities remain future distribution decisions; this bootstrap does not choose a license for the user.
 
-Architecture ownership is in [02](02-architecture.md), package isolation/lifecycle in [04](04-expansion-plugins.md), and delivery gates in [07](07-delivery-plan.md). This document changes source placement, not graph semantics, public package identity or execution rules. ADR-19 records the decision under NFR-14.
+Architecture ownership is in [02](02-architecture.md) and package isolation/lifecycle in [04](04-expansion-plugins.md). Delivery sequencing and WU task packets are local working artifacts under ignored `.artifacts/`. This document changes source placement, not graph semantics, public package identity or execution rules. ADR-19 records the decision under NFR-14.

@@ -27,7 +27,7 @@ The metadata check enforces the core dependency boundary. The release configurat
 ## Project references
 
 - [Contributing](CONTRIBUTING.md) and [agent instructions](AGENTS.md): work scope, checks and the [Git workflow](docs/14-git-workflow.md). Topic PRs target `dev`; `main` receives promotions.
-- [Delivery plan](docs/07-delivery-plan.md) and [decisions](docs/08-decisions.md): implementation order and selected choices.
+- [Decisions](docs/08-decisions.md): selected product and engineering choices. Local delivery plans and WU task packets live in ignored `.artifacts/` and are not committed.
 - [Graph language](docs/11-graph-language.md), [data structures](docs/12-graph-data-structures.md) and [localization](docs/13-internationalization.md): normative core contracts.
 - [Requirements](docs/01-product-requirements.md), [architecture](docs/02-architecture.md), [expansion packages](docs/04-expansion-plugins.md) and [source layout](docs/15-monorepo-layout.md): product scope and boundaries.
 - [Data/execution](docs/03-data-and-execution.md), [services/platforms](docs/05-services-and-platforms.md), [feasibility probes](docs/09-feasibility-probes.md) and [tooling evidence](docs/10-tooling-and-sources.md): detailed contracts and recorded limitations.

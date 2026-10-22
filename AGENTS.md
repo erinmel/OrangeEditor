@@ -2,7 +2,9 @@
 
 Product and current workspace: OrangeEditor. Earlier planning evidence may mention `OraneEditor`; do not rename directories implicitly.
 
-Read `README.md`, then `docs/07-delivery-plan.md`. Read the contract/ADR documents relevant to the current work unit before changing a public interface.
+Read `README.md`, then `.artifacts/07-delivery-plan.md` when available. Read the contract/ADR documents relevant to the current work unit before changing a public interface.
+
+Delivery plans, WU task packets and agent working notes belong in ignored `.artifacts/`, not `docs/`, and must not be committed. Reviews are temporary; remove them when their work is complete. Keep durable product contracts, decisions and verification evidence in `docs/`.
 
 ## Implementation rules
 

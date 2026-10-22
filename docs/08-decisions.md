@@ -36,7 +36,7 @@ Why egui:
 **Consequences (applied 2026-10-21):**
 
 - AGENTS.md has no Bevy rules; the selected egui version is pinned when adopted.
-- [09](09-feasibility-probes.md) now lists engine-free probes P-01–06, and the Bevy source register left [10](10-tooling-and-sources.md); [02](02-architecture.md) `orange-desktop` is an eframe app over an `orange-editor-ui` crate; [07](07-delivery-plan.md) WU-01/02 target egui; FR-41 scene handles are downstream work (ADR-21); NFR-14 requires no UI or engine dependency in the core.
+- [09](09-feasibility-probes.md) now lists engine-free probes P-01–06, and the Bevy source register left [10](10-tooling-and-sources.md); [02](02-architecture.md) `orange-desktop` is an eframe app over an `orange-editor-ui` crate; WU-01/02 target egui; FR-41 scene handles are downstream work (ADR-21); NFR-14 requires no UI or engine dependency in the core.
 - Pin the exact egui/eframe versions and record MSRV and license review in [10](10-tooling-and-sources.md) when the probe starts, as for any dependency.
 
 **Falsification (Conditional probe, replaces P-01/02/06 for the UI):** on Windows, Linux and macOS, demonstrate IME composition with CJK, clipboard, DPI and 200% scale, keyboard-only authoring of a small graph, screen-reader names, roles and actions for nodes, ports and links, an RTL plan that meets 13, and W4 graph frame time within NFR-03. A required capability that cannot be met → compare Slint, then the others, before WU-05. Owner: editor/platform lead; G1.
