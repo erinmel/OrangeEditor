@@ -33,6 +33,26 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 - 00c.3b analysis guard (2026-10-21): expanded scoped/concrete type terms are limited to a provisional `MAX_EXPANDED_TYPE_NODES = 16_384` nodes per term; nesting keeps `MAX_NESTING = 64`. Limits return typed analysis failures before constructing an oversized output. Alias traversal is iterative; a 10,000-variable alias regression passes without consuming type nesting depth. These are open resource budgets, not a new language type exclusion, measured NFR-15 timing or production memory qualification.
 - Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working UI build toolchain.
 
+## Inference replacement review fixes (2026-10-21)
+
+Work: WU-00/00c review corrections, FR-44/45/46. Connection planning now infers generic endpoint types from surviving evidence before selecting a converter: replaced wires are removed and the newly shadowed target literal is excluded on a scratch copy only. Pins and other active evidence still constrain selection. Changed edge deltas contribute both old and new endpoints to inference, including a disconnect/connect that reuses the same ID. Bindings/signatures remain in the originating transaction. Public API shapes, JSON format, dependencies and lockfile are unchanged; 11 §5.5/§6, 12 §3.3 and ADR-16 clarify these existing invariants.
+
+Selected local environment: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`, `x86_64-pc-windows-msvc`, Node.js `v24.18.0`. `orange-model` declares no Cargo features; workspace selections remain indexmap/serde, serde/derive, serde_json/preserve_order and uuid/serde with dependency defaults, with no additional command-line features. `rust-toolchain.toml` and `Cargo.lock` are unchanged; lockfile SHA-256 is `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+Four added Rust tests cover replacement with a preserved shadowed literal, explicit pins versus surviving edges, a generic source with a stale cache, and reused edge IDs at the same or different targets with exact undo/redo restoration and unrelated-node preservation. An existing rejection test now checks empty, correct and stale caches produce the same no-direct-converter outcome. The connection regressions failed against the pre-fix planner and pass after correction; the earlier review also reproduced the reused-ID failure.
+
+| Executed command | Local result |
+|---|---|
+| `cargo test --locked -p orange-model --test connection_apply --test inference_persist --test connection_plan --test connection_flow` | PASS: 31 tests |
+| `cargo test --workspace --locked` | PASS: 195 tests, 0 failures; 0 doctests |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | PASS |
+| `$env:RUSTDOCFLAGS = '-D warnings'; cargo doc --workspace --no-deps --locked` | PASS (PowerShell) |
+| `node tools/check-cargo-metadata.mjs` | PASS |
+| `git diff --check` | PASS |
+
+Windows emitted incremental-cache hard-link warnings and used its copy fallback. Selection adds a scratch document/index and endpoint-component inference before final edit inference; NFR-15 time/memory costs remain unmeasured. No MSRV 1.97.1 run, remote CI, cross-OS run, validator implementation or gate passage is claimed. Work is local on `codex/fix-inference-replacements`, based on `659986d` to preserve the existing documentation/test-policy changes; `origin/dev` was `bafd183` when fetched.
+
 ## Model review fixes and slice 4 analysis (2026-10-20)
 
 Review findings on the first four slices were fixed in isolated worktrees based on `8c1f42f`, with explicit source/test ownership, and integrated into the feature checkout. No commit, push, merge or remote CI was part of the fixes.
@@ -121,6 +141,17 @@ During implementation, a concurrent repository update introduced the `dev` integ
 
 Remote implementation evidence: [run 39534720986](https://github.com/erinmel/OrangeEditor/actions/runs/39534720986) on `805e16b` passed all 11 jobs. Step readback confirms Linux executed tests, Windows/macOS used native compile/link without execution, and MSRV used all-target compilation. Workflow lint, eight release-helper tests/configuration, architecture, format/Clippy/rustdoc, security and the aggregate passed. This documentation-only follow-up leaves both workflows/tooling unchanged and exercises cache reuse; the PR records the final head/run and observed cache outcome. CD's real build/sign/install/publish path remains unexecuted because release readiness is intentionally false.
 
+## Core quality fixes (2026-10-21)
+
+A code review of `orange-model` reproduced five problems; all are fixed with regression tests:
+
+- Revision exhaustion is checked before any patch (`TxError::RevisionExhausted`), so a loaded `u64::MAX` revision can no longer panic in debug or wrap in release.
+- `format_version`, `graph_id`, `type_lock`, `exports` and document `extensions` are read-only accessors, so no caller can change content without a new `state_id` (a previously made connection plan was accepted after such a change).
+- Structural derivation memoizes each (type, constraint, depth) proof; 16 records that each hold the previous one twice dropped from about 220 ms to 0.1 ms in a debug sample, and the `MAX_NESTING` budget fires where it did before.
+- A type expression nested past the parser budget reports `E-TYPE-COMPLEXITY` instead of `E-TYPE-MISMATCH` (`IdError::TypeTooDeep`).
+
+Specialization metadata moved from `GenericDefinition` to `TemplateCatalog::insert_specializations`, keyed by definition version and exact `ProviderKey` (package, version, locked content digest, implementation ID; `None` is the core implementation), so two providers of one definition can support different arguments. A binding without a lock entry delegates to constraints; reporting it is the validator's job (I-4). Not measured yet: whole-document cloning behind edits (NFR-15), the retention policy for unused signatures and lock entries, and the rule that treats config strings matching an ID as references. Local checks on Rust 1.99.1, Windows x64: fmt, Clippy `-D warnings`, rustdoc `-D warnings`, 199 tests after the provider change; `Cargo.lock` unchanged.
+
 ## Additional AI development integrations
 
 **No new MCP/plugin is required to finish this plan.** Web research, filesystem tools and an architecture subagent are available. These development integrations are unrelated to OrangeEditor expansion packages.
@@ -173,6 +204,22 @@ Do not select a crate solely because an ecosystem page lists it; UI integrations
 ## Planning review evidence
 
 Orchestrator review on 2026-10-20 checked the delegated architecture documents against the assignment and resolved consistency issues concerning numeric rounding, selected-provider preservation, atomic directory-bundle saves, OBS auth-provider ownership, transport versus method authority, and broad work-package decomposition.
+
+### G0 check for 00d (2026-10-21)
+
+Scope: the contracts the 00d validator implements, read against each other and against the 00b/00c code they build on: 11 §3–4 (kinds, connection matrix, cardinality), §7.1–7.2 (regions, availability), §8.1–8.2 (cycles), §10.4 (subscriptions), §11.2 (write conflicts), §14 (functions), §17 (catalog), 12 §3.1 (`SignatureSnapshot`) and §11 (invariants I-1–I-4). The FRs involved (FR-14, FR-44–47) name their owning documents and verification families. This is a documentation check; no validator code or test ran.
+
+| Finding | Resolution |
+|---|---|
+| 11 §4.2 rejected cells had no code apart from data→exec | All rejected cells are `E-KIND-MISMATCH`; reversed direction is `E-PORT-DIRECTION`; non-identical data types are `E-TYPE-MISMATCH` |
+| 11 §7.1 "every exec node in exactly one region" contradicted unreachable nodes | Applies to reachable nodes; unreachable ones get `W-UNREACHABLE` and no region |
+| 11 §7.2 treating Fork `all` as a sequential composition made branch A dominate sibling B, contradicting its own table | The composition applies only to sites reached through `completed`; sibling branches never dominate each other |
+| 11 §11.2 did not say whether calls count as writes, and listed registers, which cannot be shared across branches | A call writes every run variable its body writes, transitively; callee locals never conflict; a shared register is already `E-REGION-AMBIGUOUS` |
+| 11 §14 gave subscriptions in functions `E-ENTRY-IN-FUNCTION`; §10.4 gives `E-SUBSCRIPTION-IN-FUNCTION` | Subscriptions use `E-SUBSCRIPTION-IN-FUNCTION`; entries and Watch keep `E-ENTRY-IN-FUNCTION` |
+| 11 §14 Return inside a Fork branch had no code; kind inference had no precedence | `E-REGION-ESCAPE`; the strongest kind present wins and a call counts as its callee's kind |
+| 12 §3.1 `SignatureSnapshot` had no `suspends`, so control cycles and function kinds could not be checked for nodes whose package is missing | `suspends` is added to the contract; it lands with the 00d cycle checks and changes async/iterator snapshot keys (format v1 is unreleased) |
+
+Open limits: the call graph through package-provided graph bodies (G-24 "through packages") needs those bodies from the registry, so 00d checks document-local functions first. Control and zone intrinsics have no stored signature; 00d needs a host-owned intrinsic table for their ports and `suspends`. Result: the 00d scope is consistent enough to start its first slice. This passes no G1/G2 or runtime gate, and 00b/00c's own scopes were not rechecked.
 
 ### Graph-core review (2026-10-20)
 

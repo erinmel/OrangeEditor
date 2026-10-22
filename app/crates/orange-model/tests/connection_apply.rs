@@ -176,3 +176,97 @@ fn a_document_locking_the_provider_to_another_digest_cannot_plan_it() {
         Err(ConnectionError::Edit(TxError::PackageLockConflict { .. }))
     ));
 }
+
+#[test]
+fn replacing_the_only_type_evidence_reinfers_and_preserves_the_shadowed_literal() {
+    let registry = package_converters();
+    let templates = catalog(None);
+    let mut doc = document(
+        vec![
+            typed_source(1, "i64"),
+            typed_source(2, "f64"),
+            add(
+                3,
+                json!({
+                    "type_args": {"T": "core/i64@1"},
+                    "inputs": {"a": {"type": "core/i32@1", "value": 7}}
+                }),
+            ),
+        ],
+        vec![data_edge(1, (1, "value"), (3, "a"))],
+    );
+    let before = content(&doc);
+    let literal = doc.node(nid(3)).unwrap().inputs.clone();
+    let plan = ready_plan(&doc, &registry, (2, "value"), (3, "a"));
+    assert!(plan.converter.is_none() && plan.issues.is_empty());
+    assert_eq!(content(&doc), before, "planning is read-only");
+    let done = apply_connection(&mut doc, &registry, &templates, plan).unwrap();
+    let node = doc.node(nid(3)).unwrap();
+    assert_eq!(node.type_args["T"].as_str(), "core/f64@1");
+    assert_eq!(node.inputs, literal);
+    let snapshot = &doc.signatures()[node.signature.as_ref().unwrap()];
+    assert!(
+        snapshot
+            .ports
+            .iter()
+            .all(|p| p.ty.as_ref().unwrap().as_str() == "core/f64@1")
+    );
+    let after = content(&doc);
+    let redo = doc.revert(done.inverse).unwrap().inverse;
+    assert_eq!(content(&doc), before);
+    let _ = doc.revert(redo).unwrap();
+    assert_eq!(content(&doc), after);
+}
+
+#[test]
+fn replacement_conversion_uses_pins_or_remaining_type_evidence() {
+    for pinned in [false, true] {
+        let registry = package_converters();
+        let extra = if pinned {
+            json!({"type_args": {"T": "core/f64@1"}, "type_pins": {"T": "core/i64@1"}})
+        } else {
+            json!({"type_args": {"T": "core/f64@1"}})
+        };
+        let mut edges = vec![data_edge(1, (1, "value"), (3, "a"))];
+        if !pinned {
+            edges.push(data_edge(2, (1, "value"), (3, "b")));
+        }
+        let mut doc = document(
+            vec![
+                typed_source(1, "i64"),
+                typed_source(2, "i32"),
+                add(3, extra),
+            ],
+            edges,
+        );
+        let pins = doc.node(nid(3)).unwrap().type_pins.clone();
+        let plan = ready_plan(&doc, &registry, (2, "value"), (3, "a"));
+        assert_eq!(
+            plan.converter.as_ref().unwrap().resolved.entry.to_string(),
+            "core/i32-to-i64@1"
+        );
+        let _ = apply_connection(&mut doc, &registry, &catalog(None), plan).unwrap();
+        assert_eq!(
+            doc.node(nid(3)).unwrap().type_args["T"].as_str(),
+            "core/i64@1"
+        );
+        assert_eq!(doc.node(nid(3)).unwrap().type_pins, pins);
+    }
+}
+
+#[test]
+fn selection_reinfers_the_generic_source_instead_of_using_its_cache() {
+    let registry = package_converters();
+    let doc = document(
+        vec![
+            add(
+                1,
+                json!({"type_args": {"T": "core/i64@1"}, "type_pins": {"T": "core/f64@1"}}),
+            ),
+            typed_sink(3, "f64", json!({})),
+        ],
+        vec![],
+    );
+    let plan = ready_plan(&doc, &registry, (1, "sum"), (3, "value"));
+    assert!(plan.converter.is_none() && plan.issues.is_empty());
+}

@@ -33,3 +33,7 @@ Thumbs.db
 Desktop.ini
 
 # Keep Cargo.lock tracked for the host and each plugin workspace.
+
+.agents/
+.claude/
+skills-lock.json

@@ -70,7 +70,11 @@ pub struct NodeInstance {
 pub struct Edge { pub id: EdgeId, pub from: PortRef, pub to: PortRef }
 pub struct PortRef { pub node: NodeId, pub port: PortKey }
 pub struct VariadicState { pub order: Vec<u16>, pub next: u16 }
-pub struct SignatureSnapshot { pub kind: NodeKind, pub ports: Vec<ResolvedPort> }
+pub struct SignatureSnapshot {
+    pub kind: NodeKind,
+    pub suspends: Option<Suspends>,          // async and iterator only: Maybe | Always
+    pub ports: Vec<ResolvedPort>,
+}
 pub struct VariableDecl {
     pub id: VariableId, pub name: String, pub ty: TypeExpr,
     pub scope: VarScope,                     // Local | Run | Workspace
@@ -100,6 +104,8 @@ Implementation correction (00b review): replacing an existing entry at its curre
 
 `ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
 
+`suspends` is semantic: it decides control-cycle legality and an enclosing function's kind (11 §8.2, §14), so a node whose package is missing must still carry it, and it is part of the hash. It lands with the 00d cycle checks; until then no stored snapshot has it, and adding it changes the keys of async and iterator snapshots (format v1 is unreleased).
+
 ### 3.2 Derived indexes (not persisted)
 
 | Index | Structure | Used by | Update cost |
@@ -122,6 +128,8 @@ Implementation note (WU-00/00b.3): `orange-model` provides `DocIndex` with node 
 - **Deferred rows:** the dense document index, data topological order, type components, region index and diagnostics arrive with their consumers (00c/00d).
 
 ### 3.3 Transactions and change sets
+
+Inference consumes net edge deltas from both sides of the transaction: added edges use their new endpoints, removed edges use their old endpoints, and changed edges use both. In particular, disconnecting and reconnecting the same `EdgeId` can change its endpoints without reporting an addition/removal. The resulting bindings and projected signatures stay in the originating undoable transaction (11 §5.5); no wire-format change is needed.
 
 ```rust
 pub enum DocCommand {

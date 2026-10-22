@@ -44,8 +44,15 @@ impl TypeTerm {
         let mut parser = Parser {
             text: text.as_bytes(),
             pos: 0,
+            too_deep: false,
         };
-        let term = parser.term(0).ok_or_else(invalid)?;
+        let term = parser.term(0);
+        if parser.too_deep {
+            return Err(IdError::TypeTooDeep {
+                text: text.to_owned(),
+            });
+        }
+        let term = term.ok_or_else(invalid)?;
         if parser.pos != text.len() || term.to_string() != text {
             return Err(invalid());
         }
@@ -103,11 +110,14 @@ impl fmt::Display for TypeTerm {
 struct Parser<'a> {
     text: &'a [u8],
     pos: usize,
+    /// Set when nesting exceeds [`MAX_NESTING`], so the caller reports a budget, not syntax.
+    too_deep: bool,
 }
 
 impl Parser<'_> {
     fn term(&mut self, depth: usize) -> Option<TypeTerm> {
         if depth > MAX_NESTING {
+            self.too_deep = true;
             return None;
         }
         if self.eat(b'$') {

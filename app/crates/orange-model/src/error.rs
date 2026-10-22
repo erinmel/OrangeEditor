@@ -23,6 +23,8 @@ pub enum IdError {
     InvalidDefinitionId { text: String },
     #[error("`{text}` is not a canonical type expression (11 §5.1)")]
     InvalidTypeExpr { text: String },
+    #[error("`{text}` nests deeper than the type expression budget")]
+    TypeTooDeep { text: String },
     #[error("{what} must not be empty or padded with whitespace")]
     Blank { what: &'static str },
 }
@@ -140,6 +142,8 @@ pub enum TxError {
     SignatureNotFound(SignatureKey),
     #[error("package `{package}` {version} is already locked to a different content digest")]
     PackageLockConflict { package: String, version: String },
+    #[error("the document revision counter is exhausted")]
+    RevisionExhausted,
     #[error("a layout path needs at least one key")]
     EmptyLayoutPath,
     #[error("layout path `{path}` passes through a value that is not an object")]

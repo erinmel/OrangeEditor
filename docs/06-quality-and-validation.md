@@ -59,7 +59,7 @@ Release CD is separate from PR validation and reuses the latter with full native
 
 | ID | Level and scope | Fixtures / pass evidence |
 |---|---|---|
-| V01 | Unit/property/model tests | Numeric boundaries/nonfinite/domain cases; Unicode grapheme/scalar/byte policies; serde/codec round trips; missing/null/error; ID remapping; enum unknown payload; compiler cycle/type/effect rejection; variables/atomic update ordering; migration idempotence/source preservation. Compare optimized and unoptimized execution against a simple reference interpreter. Graph-language G-suite ([11 §18](11-graph-language.md)): representative diagnostic rejection cases, generic inference determinism, converter auto-insert, availability/dominance, cycle classes, signature snapshots and orphan edges; property tests generate random graphs and check that the incremental validator equals a full revalidation. |
+| V01 | Unit/property/model tests | Numeric boundaries/nonfinite/domain cases; Unicode grapheme/scalar/byte policies; serde/codec round trips; missing/null/error; ID remapping; enum unknown payload; compiler cycle/type/effect rejection; variables/atomic update ordering; migration idempotence/source preservation. Compare optimized and unoptimized execution against a simple reference interpreter. Graph-language G-suite ([11 §18](11-graph-language.md)): representative diagnostic rejection cases, generic inference determinism, converter auto-insert, availability/dominance, cycle classes, signature snapshots and orphan edges; property tests generate random graphs and check that the incremental validator equals a full revalidation. Layers and rules: [V01 test layers](#v01-test-layers). |
 | V02 | Runtime/lifecycle concurrency tests | Deterministic virtual clock; cancel before/after completion; stop during acquisition/reconnect; stale generation; serial/parallel activations; queue overflow policies; loop fairness; checkpoint races; exactly-one local continuation completion. Race model small state machines, then stress thread schedule. G-suite runtime cases: Sequence/Fork joins, reentrancy modes, causal depth, glitch-free watches, cleanup mode, stream backpressure and byte-identical replay of a recorded ingestion log. |
 | V03 | SDK/package contract + hostile-input tests | Cross-language golden wire/manifest vectors, quotas, malformed archives, dependency conflicts, guest trap/fuel exhaustion, worker exit/hang, install rollback, active remove, revoked handles, competing override providers, explicit rebind, failed migration and restart journal recovery. |
 | V04 | Protocol/service integration tests | Local HTTP/TLS CA fixture, bad hostname/cert and redirects, WebSocket fragmentation/close, MQTT QoS/session fixture, RabbitMQ 0-9-1 confirms/manual ack/prefetch, GraphQL mixed data/errors and negotiated WS, gRPC all four method shapes with deadlines/trailers/half-close, inbound webhook bind/auth/replay/limits. Network fault proxy or in-test controlled transport. OBS mock handshake/correlation/events; Twitch mock device/refresh/rate/reconnect. |
@@ -70,6 +70,28 @@ Release CD is separate from PR validation and reuses the latter with full native
 | V09 | Security/redaction/fuzz review | Canary secrets all layers; log/error/export/crash scan; path traversal and reparse races; destination/redirect grant checks; auth-transform/credential.read difference; malformed descriptors/codec bombs; worker authority disclosure; TLS defaults; imported document cannot execute code on open. |
 | V10 | Audio real-time and perceptual verification | Preallocated callback instrumentation, underflow and CPU counters, silence/clipping/channel-map/seek fixtures, rates, 16 voices, selected virtual cable route, PipeWire source appear/capture/disappear, existing macOS virtual device; listening plus captured waveform reference. |
 | V11 | Localization/schema/UI integration | [13](13-internationalization.md) L-01–08: source-key extraction and argument parity, catalogue hostile inputs and package lifetime, locale negotiation, plural/select, expanded/RTL pseudo locales, CJK/bidi, accessible names, live switching and invariant structured output. G-39 checks graph/display/diagnostic/replay invariance; human review for advertised languages. |
+
+### V01 test layers
+
+ADR-20 sets the acceptance rule: each implemented semantic rule has enough meaningful evidence to distinguish correct behavior from plausible bugs. Tests live beside the code they verify.
+
+| Layer | Tool | What to test |
+|---|---|---|
+| Focused component behavior | `#[test]` | Rollback, type mismatches, provider preservation |
+| Named contract scenarios | `rstest` | Representative valid/invalid graphs and numeric boundaries, sharing setup |
+| General invariants | `proptest` | Undo restores content; inference is deterministic; incremental validation matches full validation |
+| Complete graph behavior | `rstest` | Diamonds, branches, loops and calculations through the real interpreter/runtime |
+
+1. **Small typed graph builders.** Helpers construct graphs; assertions stay visible in each test. No custom testing language or framework.
+2. **Explicit, named cases** such as `pure_cycle_rejected` and `register_feedback_allowed`. No automatic combinations unless they represent a real requirement.
+3. **A pair is a starting point.** Add cases when a rule has distinct failure causes, important boundaries or interactions that one accept/reject pair cannot distinguish. Test semantic behavior rather than counting diagnostic codes.
+4. **Independently expected acceptance scenarios.** Diamond: correct output, shared calculation evaluated once per epoch. Branch: only the selected effect occurs. Loop: correct final value and iteration sequence; cancellation works. Numbers: integer exactness, float precision, overflow and explicit conversion policies.
+5. **Bounded generators.** Small graphs and short edit sequences first; shrinking keeps relevant structural validity; failing seeds are committed so regressions replay.
+6. **Equivalence plus known answers.** Incremental/full and interpreter/executor agreement is evidence, not proof of correctness.
+7. **Stable assertions.** Outputs, diagnostic codes and subject IDs, provider identities, document content and relevant execution counters. Never translated messages, incidental internal structures or large trace snapshots.
+8. **JSON goldens for serialization only.** Save/load and wire compatibility; graph behavior uses Rust builders.
+
+`rstest` is adopted incrementally, with an exact pin, when a test first removes duplicated setup with it. Existing `proptest` tests stay; already clear tests are left alone.
 
 ## CI and release evidence
 

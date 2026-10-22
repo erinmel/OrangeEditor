@@ -458,3 +458,36 @@ fn put_package_lock_appends_is_idempotent_rejects_another_digest_and_undoes() {
     let _ = document.revert(first.inverse).unwrap();
     assert_eq!(content(&document), before);
 }
+
+/// A loaded document whose revision is `revision`.
+fn at_revision(revision: u64) -> GraphDocument {
+    let mut value: serde_json::Value = serde_json::from_str(&saved(&empty_document())).unwrap();
+    value["revision"] = revision.into();
+    from_json(&value.to_string()).unwrap()
+}
+
+#[test]
+fn an_exhausted_revision_rejects_edits_and_undo_without_changing_anything() {
+    let mut doc = at_revision(u64::MAX);
+    let (before, state) = (content(&doc), doc.state_id());
+    let add_node = || DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: node(1),
+    };
+    assert_eq!(doc.apply([add_node()]), Err(TxError::RevisionExhausted));
+    assert_eq!(
+        (content(&doc), doc.revision(), doc.state_id()),
+        (before, u64::MAX, state)
+    );
+
+    // The last revision is reachable, and undo then fails the same way.
+    let mut doc = at_revision(u64::MAX - 1);
+    let done = doc.apply([add_node()]).unwrap();
+    let (after, state) = (content(&doc), doc.state_id());
+    assert_eq!(doc.revision(), u64::MAX);
+    assert_eq!(doc.revert(done.inverse), Err(TxError::RevisionExhausted));
+    assert_eq!(
+        (content(&doc), doc.revision(), doc.state_id()),
+        (after, u64::MAX, state)
+    );
+}

@@ -102,6 +102,8 @@ Implicit ports by kind: action/async/iterator/control get `in` (unless the intri
 | exec out | rejected | OK within the same region (§7.1) | rejected |
 | event out | rejected | OK; the target starts a new event region | rejected |
 
+Every "rejected" cell is `E-KIND-MISMATCH`. An edge that starts at an input or ends at an output is `E-PORT-DIRECTION`. Data types that are not identical after resolution are `E-TYPE-MISMATCH` (§5.5).
+
 ### 4.3 Cardinality
 
 | Port | Edges | Reason |
@@ -192,8 +194,9 @@ The initial host supports explicit package structural derives for `eq`, `hash`, 
 - An explicit choice is a **pin**, persisted in `type_pins` and kept until the user removes it. `type_args` holds the resolved value of every parameter, pinned or inferred, and is a cache: inference seeds from pins, typed literals on generic ports, edges and the concrete port types of non-generic neighbours, never from persisted `type_args`, so disconnecting and reconnecting cannot reuse a stale binding. Constraints and listed specializations are checked after solving.
 - Unresolved parameter → `E-TYPE-AMBIGUOUS`, and it gets no `type_args` entry; the signature snapshot keeps `$name` for it. The user pins it in the inspector. Conflict → `E-TYPE-MISMATCH` with converter suggestions. Inference never inserts conversions. A new connection whose inference reports a conflict (`E-TYPE-MISMATCH`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION` or `E-TYPE-COMPLEXITY`) is refused, unless the components it joins already reported one: a conflicting document, for example an imported one, can still be edited and repaired. Other edits, such as a disconnect or unpin, are never refused for their inference result.
 - Function bodies are inferred like the root: an edit inside a body, or a replaced body, re-infers the touched components there.
+- A disconnect/connect that reuses an edge ID re-infers the components at both its old and new endpoints; a net `changed` edge is not an unchanged inference input.
 - Exhausting an analysis resource budget produces `E-TYPE-COMPLEXITY`, with the relevant node/parameter context and limit. It does not fall back to a numeric type or report a semantic mismatch. Provisional implementation budgets are recorded in [10](10-tooling-and-sources.md); a resource failure does not redefine the valid type grammar.
-- A generic provider MUST list its supported specializations, or delegate to constraint implementations. A missing specialization is `E-NO-SPECIALIZATION` at compile time, never a run-time lookup.
+- A generic provider MUST list its supported specializations, or delegate to constraint implementations. The list belongs to the exact provider (binding plus the locked content digest), so two providers of one definition may support different arguments. A missing specialization is `E-NO-SPECIALIZATION` at compile time, never a run-time lookup.
 - Numeric authoring presents Float with Single (`core/f32@1`) and Double (`core/f64@1`) precision, alongside integer math (ADR-20). New untyped numbers default to Double; a resolved port or explicit type selection takes precedence. Integer text parses directly as the selected integer type, without a floating intermediate. Saved type identities and visible precision conversions remain governed by §5–6.
 
 ### 5.6 Numeric additions to [03](03-data-and-execution.md)
@@ -214,6 +217,8 @@ Entry identity is a stable converter ID plus contract version. Multiple implemen
 
 The converter node itself is persisted as specified in [12 §5](12-graph-data-structures.md): it names the entry key, the exact provider and the resolved policy choices, and its ports are `value` in, `result` out and, for lossy entries, `loss`. A connection plan fixes the node and edge identities once, and records the document content state, the immutable registry snapshot (which fixes the available providers) and the generic template catalog it was made against; applying it rechecks all three, so a stale plan is rejected instead of re-resolved. Inserting a converter reuses the wire's existing data-input replacement rule (§4.3): the old edge is removed in the same transaction. Shadowed literals stay in the document.
 
+Before selecting a converter, infer generic endpoint types from the evidence that survives removal of replaced edges. Exclude the target literal that the proposed wire will shadow, while preserving it in the document. Explicit pins and other active literals/edges remain evidence; cached `type_args` do not constrain selection. An unresolved endpoint connects directly for joint inference. Thus replacing an unpinned generic node's only i64 source with f64 can change its type without inserting a conversion; a pin or remaining i64 source still requires the normal converter selection.
+
 The initial host policy form is a named finite set of string choices, with an optional default; missing required choices, unknown policy names/values and unsupported forms are rejected. Packages may declare their own finite choices. Lossy entries expose a separate `loss: core/json@1` output for converter-defined loss details. Core precision entries declare f32→f64 lossless and f64→f32 lossy; the latter declares nearest-even rounding and rejection of out-of-range values. These are conversion contracts; arithmetic kernels and runtime loss-detail production are later work.
 
 ## 7. Regions, availability, ordering and determinism
@@ -222,17 +227,17 @@ The initial host policy form is a named finite set of string choices, with an op
 
 A **region** is a set of exec nodes executed by one structured construct. Roots: each entry's `then`, each event output, each function entry, each Sequence `then#k`, each Fork `branch#k`, and each loop or iterator `body`. A node's region is found by walking exec edges from roots without entering child-region roots. Rules:
 
-- Every exec node belongs to **exactly one** region. Reachable from two sibling regions → `E-REGION-AMBIGUOUS`. An exec edge leaving its region → `E-REGION-ESCAPE`. Leaving a region is possible only through its terminators: end of strand, Break/Continue (loop bodies), Return (functions).
+- Every reachable exec node belongs to **exactly one** region. Reachable from two sibling regions → `E-REGION-AMBIGUOUS`. An exec edge leaving its region → `E-REGION-ESCAPE`. Leaving a region is possible only through its terminators: end of strand, Break/Continue (loop bodies), Return (functions).
 - Branch, Switch, Gate and async outcomes do not create regions. Their outs stay in the parent region, so they may merge again (exec fan-in).
 - A **region instance completes** when every strand inside it has ended, including nested Fork strands. Structured concurrency: nothing outlives its region instance, except subscriptions owned by the run (§10.4).
-- Unreachable exec nodes → `W-UNREACHABLE`; they are not compiled.
+- Unreachable exec nodes → `W-UNREACHABLE`; they belong to no region and are not compiled.
 
 ### 7.2 Value availability (dominance rule)
 
 A data value from output `p` of exec node `N` (`source: execution`, `available_on: S`) may be consumed, directly or through pure nodes, by consumer site `X` only if:
 
 1. `N` and `X` are in the same activation tree (same entry or event root, or the same function body). Otherwise `E-CROSS-ACTIVATION`.
-2. In the control-flow graph (structured constructs expanded: Sequence steps chained; Fork `all` treated as the sequential composition of its branches; loops with a zero-iteration path), **every path from the root to `X` passes through an `S`-outcome edge of `N`**. Otherwise `E-UNAVAILABLE-VALUE`. With back edges, `X` reads the most recent execution of `N` on that path.
+2. In the control-flow graph (structured constructs expanded: Sequence steps chained; Fork `all` treated as the sequential composition of its branches for sites reached through its `completed`; sibling branches stay concurrent, so neither dominates the other; loops with a zero-iteration path), **every path from the root to `X` passes through an `S`-outcome edge of `N`**. Otherwise `E-UNAVAILABLE-VALUE`. With back edges, `X` reads the most recent execution of `N` on that path.
 
 Consequences:
 
@@ -441,7 +446,7 @@ An action or async with `event` outputs (a subscription) is allowed **only in th
 
 ### 11.2 Write conflicts
 
-Two branches of one Fork that write the same local or run variable or register → `E-WRITE-CONFLICT`. Exceptions: every such write is an `update-variable` with the same commutative operation (`add`, `min`, `max`, `and`, `or`, `xor`), or the variable declares `conflict: last-writer-wins`. Writes from different activations are ordered by the actor and need no rule. Writing an `eq`-equal value produces no change notification.
+Two branches of one Fork that write the same local or run variable or register → `E-WRITE-CONFLICT`. Exceptions: every such write is an `update-variable` with the same commutative operation (`add`, `min`, `max`, `and`, `or`, `xor`), or the variable declares `conflict: last-writer-wins`. A function call in a branch writes every run variable its body writes, transitively; the callee's locals belong to its frame and never conflict. A register is one node, so two branches reaching it are already `E-REGION-AMBIGUOUS`. Writes from different activations are ordered by the actor and need no rule. Writing an `eq`-equal value produces no change notification.
 
 ### 11.3 Node state
 
@@ -475,9 +480,9 @@ Runtime codes defined by the core: `NumericOverflow`, `DivideByZero`, `Domain`, 
 ## 14. Functions (subgraphs)
 
 - A **function** is a graph-local or package-provided body with a typed interface. `core/function-entry` outputs the inputs. Action functions return through `core/return` nodes. Pure functions use a single `core/function-outputs` node.
-- The kind is inferred from the body: only pure nodes → `pure`; volatile → `volatile`; actions → `action`; anything with `suspends ≠ never` → `async`. The declared kind MUST equal the inferred kind (`E-FUNCTION-KIND`), so callers see a stable interface. The editor updates the declaration and lists affected callers.
+- The kind is inferred from the body: only pure nodes → `pure`; volatile → `volatile`; actions → `action`; anything with `suspends ≠ never` → `async`; the strongest present wins (async > action > volatile > pure), and a call counts as its callee's kind. The declared kind MUST equal the inferred kind (`E-FUNCTION-KIND`), so callers see a stable interface. The editor updates the declaration and lists affected callers.
 - Each call has its own frame and locals. Run variables are shared with the caller's run.
-- A function body has no entries, subscriptions or Watch nodes (`E-ENTRY-IN-FUNCTION`). Break and Continue do not cross the boundary. `core/return` MUST NOT appear inside a Fork branch. Every path in an action function with outputs reaches a Return (`E-MISSING-RETURN`). Return cancels any remaining detached strands of the body (`W-DETACH-IN-FUNCTION`).
+- A function body has no entries or Watch nodes (`E-ENTRY-IN-FUNCTION`) and no subscriptions (`E-SUBSCRIPTION-IN-FUNCTION`, §10.4). Break and Continue do not cross the boundary. `core/return` MUST NOT appear inside a Fork branch (`E-REGION-ESCAPE`). Every path in an action function with outputs reaches a Return (`E-MISSING-RETURN`). Return cancels any remaining detached strands of the body (`W-DETACH-IN-FUNCTION`).
 - The call graph is acyclic (§8.2). There are no macros in v1. "Collapse to function" is an editor refactoring with an interface preview, and groups or frames are presentation only.
 - A package-provided function is a definition whose implementation is a graph, pinned by the package lock like any provider.
 

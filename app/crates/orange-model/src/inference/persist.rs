@@ -44,8 +44,8 @@ pub struct InferredCommit {
 /// Plans `edit` and the inference updates it implies, without modifying `document`.
 ///
 /// Only the generic components the edit touched are inspected (nodes it added or changed,
-/// both ends of every edge it added or removed, and every node of a function body it added
-/// or replaced). Their nodes are updated to the solved `type_args`, removing entries that
+/// old and new ends of every edge it added, changed or removed, and every node of a function
+/// body it added or replaced). Their nodes are updated to the solved `type_args`, removing entries that
 /// are now ambiguous or invalid, and to the signature projected from them. `type_pins`,
 /// provider bindings and nodes outside those components are never written.
 ///
@@ -87,8 +87,9 @@ pub fn apply_inferred(
 }
 
 /// Surviving nodes whose inference inputs the transaction changed. Removed edges are looked
-/// up in `before`, because their endpoints are gone from `after`. A replaced function body
-/// reports only its function, so all of its nodes count as touched.
+/// up in `before`, because their endpoints are gone from `after`. Changed edges contribute
+/// endpoints from both documents, including when a disconnect/connect reuses an ID. A
+/// replaced function body reports only its function, so all of its nodes count as touched.
 fn touched_nodes(
     before: &GraphDocument,
     after: &GraphDocument,
@@ -110,6 +111,8 @@ fn touched_nodes(
         .collect();
     touched.extend(endpoints(after, &change.edges.added));
     touched.extend(endpoints(before, &change.edges.removed));
+    touched.extend(endpoints(before, &change.edges.changed));
+    touched.extend(endpoints(after, &change.edges.changed));
     for decl in change.decls.added.iter().chain(&change.decls.changed) {
         if let DeclId::Function(function) = decl
             && let Some(function) = after.functions().get(function)

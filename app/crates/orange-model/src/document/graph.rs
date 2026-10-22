@@ -23,8 +23,8 @@ pub(crate) fn fresh_state_id() -> u64 {
 /// The format v1 document, without the `"format"` envelope tag, which the codec owns.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct GraphDocument {
-    pub format_version: u32,
-    pub graph_id: GraphId,
+    pub(crate) format_version: u32,
+    pub(crate) graph_id: GraphId,
     pub(crate) revision: u64,
     /// Identifies the content within this session; see [`GraphDocument::state_id`].
     #[serde(skip, default = "fresh_state_id")]
@@ -32,7 +32,7 @@ pub struct GraphDocument {
     #[serde(default)]
     pub(crate) package_lock: Vec<PackageLockEntry>,
     #[serde(default)]
-    pub type_lock: Vec<TypeLockEntry>,
+    pub(crate) type_lock: Vec<TypeLockEntry>,
     #[serde(default, with = "crate::document::keyed")]
     pub(crate) variables: IndexMap<VariableId, VariableDecl>,
     #[serde(default, with = "crate::document::keyed")]
@@ -45,12 +45,12 @@ pub struct GraphDocument {
     #[serde(default, with = "crate::document::keyed")]
     pub(crate) functions: IndexMap<FunctionId, FunctionDecl>,
     #[serde(default)]
-    pub exports: Vec<GraphExport>,
+    pub(crate) exports: Vec<GraphExport>,
     /// Layout only; never read by the compiler. Typed by the editor work, opaque here.
     #[serde(default)]
     pub(crate) editor: Map<String, Json>,
     #[serde(flatten)]
-    pub extensions: Extensions,
+    pub(crate) extensions: Extensions,
 }
 
 impl PartialEq for GraphDocument {
@@ -97,6 +97,28 @@ impl GraphDocument {
             editor: Map::new(),
             extensions: Extensions::new(),
         }
+    }
+
+    pub fn format_version(&self) -> u32 {
+        self.format_version
+    }
+
+    pub fn graph_id(&self) -> GraphId {
+        self.graph_id
+    }
+
+    pub fn type_lock(&self) -> &[TypeLockEntry] {
+        &self.type_lock
+    }
+
+    pub fn exports(&self) -> &[GraphExport] {
+        &self.exports
+    }
+
+    /// Unknown top-level fields, preserved on save. Read-only: no edit command changes them,
+    /// so content and [`GraphDocument::state_id`] stay in step.
+    pub fn extensions(&self) -> &Extensions {
+        &self.extensions
     }
 
     /// +1 per committed transaction, undo and redo included.

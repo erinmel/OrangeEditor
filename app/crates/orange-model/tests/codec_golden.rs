@@ -39,7 +39,7 @@ fn save_matches_canonical_bytes_and_is_idempotent() {
 #[test]
 fn fields_are_reachable_through_the_model() {
     let document = from_json(&read_fixture(SOURCE)).unwrap();
-    assert_eq!((document.format_version, document.revision()), (1, 7));
+    assert_eq!((document.format_version(), document.revision()), (1, 7));
     assert_eq!(document.package_lock().len(), 2);
     assert_eq!(document.root().nodes.len(), 9);
     assert_eq!(document.root().edges.len(), 11);
@@ -93,6 +93,6 @@ fn fields_are_reachable_through_the_model() {
     );
 
     assert_eq!(document.signatures().len(), 3);
-    assert_eq!(document.exports[0].id, "total");
+    assert_eq!(document.exports()[0].id, "total");
     assert!(document.functions().is_empty());
 }

@@ -24,7 +24,7 @@ fn unknown_keys_survive_at_every_level() {
     }));
 
     let document = from_json(&source).unwrap();
-    let keys: Vec<&str> = document.extensions.keys().map(String::as_str).collect();
+    let keys: Vec<&str> = document.extensions().keys().map(String::as_str).collect();
     assert_eq!(keys, ["x_doc_b", "x_doc_a"], "source order kept");
 
     let saved = to_json(&document).unwrap();
