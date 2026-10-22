@@ -150,6 +150,7 @@ impl GraphDocument {
         &mut self,
         commands: impl IntoIterator<Item = DocCommand>,
     ) -> Result<Committed, TxError> {
+        self.check_revision()?;
         let mut journal = Journal::default();
         for command in commands {
             if let Err(error) = journal.command(self, command) {
@@ -171,6 +172,7 @@ impl GraphDocument {
                 actual: self.state_id,
             });
         }
+        self.check_revision()?;
         let mut journal = Journal::default();
         for patch in inverse.patches {
             if let Err(error) = journal.patch(self, patch) {
@@ -179,6 +181,14 @@ impl GraphDocument {
             }
         }
         Ok(journal.commit(self, Some(inverse.restores)))
+    }
+
+    /// Checked before any patch so an exhausted counter (a loaded `u64::MAX`) changes nothing.
+    fn check_revision(&self) -> Result<(), TxError> {
+        self.revision
+            .checked_add(1)
+            .map(drop)
+            .ok_or(TxError::RevisionExhausted)
     }
 }
 
@@ -214,7 +224,7 @@ impl Journal {
     /// returns to the identity it `restores`.
     fn commit(mut self, document: &mut GraphDocument, restores: Option<u64>) -> Committed {
         let (from_revision, from_state) = (document.revision, document.state_id);
-        document.revision += 1;
+        document.revision += 1; // checked by `check_revision` before the first patch
         document.state_id = restores.unwrap_or_else(fresh_state_id);
         self.inverses.reverse();
         Committed {

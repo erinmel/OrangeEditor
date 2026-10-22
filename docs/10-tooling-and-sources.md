@@ -141,6 +141,17 @@ During implementation, a concurrent repository update introduced the `dev` integ
 
 Remote implementation evidence: [run 39534720986](https://github.com/erinmel/OrangeEditor/actions/runs/39534720986) on `805e16b` passed all 11 jobs. Step readback confirms Linux executed tests, Windows/macOS used native compile/link without execution, and MSRV used all-target compilation. Workflow lint, eight release-helper tests/configuration, architecture, format/Clippy/rustdoc, security and the aggregate passed. This documentation-only follow-up leaves both workflows/tooling unchanged and exercises cache reuse; the PR records the final head/run and observed cache outcome. CD's real build/sign/install/publish path remains unexecuted because release readiness is intentionally false.
 
+## Core quality fixes (2026-10-21)
+
+A code review of `orange-model` reproduced five problems; four are fixed with regression tests:
+
+- Revision exhaustion is checked before any patch (`TxError::RevisionExhausted`), so a loaded `u64::MAX` revision can no longer panic in debug or wrap in release.
+- `format_version`, `graph_id`, `type_lock`, `exports` and document `extensions` are read-only accessors, so no caller can change content without a new `state_id` (a previously made connection plan was accepted after such a change).
+- Structural derivation memoizes each (type, constraint, depth) proof; 16 records that each hold the previous one twice dropped from about 220 ms to 0.1 ms in a debug sample, and the `MAX_NESTING` budget fires where it did before.
+- A type expression nested past the parser budget reports `E-TYPE-COMPLEXITY` instead of `E-TYPE-MISMATCH` (`IdError::TypeTooDeep`).
+
+Open: specialization metadata is keyed by definition and version, not by exact provider, so two pinned providers of one definition cannot declare different support; this needs a design decision before package-host integration. Not measured yet: whole-document cloning behind edits (NFR-15), the retention policy for unused signatures and lock entries, and the rule that treats config strings matching an ID as references. Local checks on Rust 1.99.1, Windows x64: fmt, Clippy `-D warnings`, 198 tests, rustdoc `-D warnings`; `Cargo.lock` unchanged.
+
 ## Additional AI development integrations
 
 **No new MCP/plugin is required to finish this plan.** Web research, filesystem tools and an architecture subagent are available. These development integrations are unrelated to OrangeEditor expansion packages.

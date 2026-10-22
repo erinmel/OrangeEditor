@@ -1,6 +1,6 @@
 //! Read-only core constraint proofs and declared package structural derives.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use thiserror::Error;
 
@@ -192,10 +192,10 @@ impl TypeRegistry {
         request: CapabilityRequest,
     ) -> Result<Option<CapabilityWitness>, CapabilityError> {
         self.validate(term)?;
-        let mut visiting = HashSet::new();
+        let mut proof = Proof::default();
         let evidence = match &request {
             CapabilityRequest::Constraint(constraint) => {
-                constraint_evidence(self, term, *constraint, &mut visiting, 0)?
+                constraint_evidence(self, term, *constraint, &mut proof, 0)?
             }
             CapabilityRequest::PackageConstraint(constraint) => self
                 .explicit_constraint_implementation(
@@ -220,6 +220,7 @@ impl TypeRegistry {
     }
 
     pub(super) fn validate_registered_derives(&self) -> Result<(), TypeRegistrationError> {
+        let mut proof = Proof::default();
         for (id, definition) in &self.definitions {
             for constraint in &definition.derives {
                 let term = TypeTerm::Named(NamedTerm {
@@ -228,8 +229,7 @@ impl TypeRegistry {
                     major: id.major,
                     args: Vec::new(),
                 });
-                let mut visiting = HashSet::new();
-                match constraint_evidence(self, &term, *constraint, &mut visiting, 0) {
+                match constraint_evidence(self, &term, *constraint, &mut proof, 0) {
                     Ok(Some(_)) => {}
                     Ok(None) => {
                         return Err(TypeRegistrationError::InvalidDerivedConstraint {
@@ -280,8 +280,8 @@ fn validate_map_constraints(
             });
         }
         for constraint in [Constraint::Hash, Constraint::Eq] {
-            let mut visiting = HashSet::new();
-            match constraint_evidence(registry, key, constraint, &mut visiting, 0) {
+            let mut proof = Proof::default();
+            match constraint_evidence(registry, key, constraint, &mut proof, 0) {
                 Ok(Some(_)) => {}
                 Ok(None) => {
                     return Err(TypeResolveError::InvalidMapKey {
@@ -307,11 +307,20 @@ fn validate_map_constraints(
     Ok(())
 }
 
+/// Derivation state for one proof run. `proven` memoizes nominal results per depth, so a schema shared
+/// by many records is proved once per depth instead of once per path, while the
+/// [`MAX_NESTING`] budget fires exactly where an unmemoized proof would.
+#[derive(Default)]
+struct Proof {
+    visiting: HashSet<(NamedTypeId, Constraint)>,
+    proven: HashMap<(NamedTypeId, Constraint, usize), bool>,
+}
+
 fn constraint_evidence(
     registry: &TypeRegistry,
     term: &TypeTerm,
     constraint: Constraint,
-    visiting: &mut HashSet<(NamedTypeId, Constraint)>,
+    proof: &mut Proof,
     depth: usize,
 ) -> Result<Option<CapabilityEvidence>, CapabilityError> {
     if depth > MAX_NESTING {
@@ -330,13 +339,13 @@ fn constraint_evidence(
         )));
     }
     match &definition.data {
-        TypeData::Core => core_constraint(registry, named, constraint, visiting, depth),
+        TypeData::Core => core_constraint(registry, named, constraint, proof, depth),
         TypeData::Record(schema) => derive_members(
             registry,
             named,
             definition,
             constraint,
-            visiting,
+            proof,
             schema.fields.iter().map(|field| &field.ty),
             depth,
         ),
@@ -345,7 +354,7 @@ fn constraint_evidence(
             named,
             definition,
             constraint,
-            visiting,
+            proof,
             schema
                 .variants
                 .iter()
@@ -361,7 +370,7 @@ fn derive_members<'a>(
     named: &NamedTerm,
     definition: &RegisteredType,
     constraint: Constraint,
-    visiting: &mut HashSet<(NamedTypeId, Constraint)>,
+    proof: &mut Proof,
     members: impl Iterator<Item = &'a TypeTerm>,
     depth: usize,
 ) -> Result<Option<CapabilityEvidence>, CapabilityError> {
@@ -369,36 +378,40 @@ fn derive_members<'a>(
         return Ok(None);
     }
     let id = NamedTypeId::from_term(named);
-    if !visiting.insert((id.clone(), constraint)) {
+    if let Some(&proven) = proof.proven.get(&(id.clone(), constraint, depth)) {
+        return Ok(proven.then_some(CapabilityEvidence::StructuralDerive));
+    }
+    let key = (id, constraint);
+    if !proof.visiting.insert(key.clone()) {
+        let (id, constraint) = key;
         return Err(CapabilityError::RecursiveDerivation {
             ty: id.to_string(),
             constraint,
         });
     }
     let result = members
-        .map(|member| constraint_evidence(registry, member, constraint, visiting, depth + 1))
+        .map(|member| constraint_evidence(registry, member, constraint, proof, depth + 1))
         .try_fold(true, |all, member| {
             member.map(|member| all && member.is_some())
         });
-    visiting.remove(&(id, constraint));
-    match result? {
-        true => Ok(Some(CapabilityEvidence::StructuralDerive)),
-        false => Ok(None),
-    }
+    proof.visiting.remove(&key);
+    let proven = result?;
+    proof.proven.insert((key.0, key.1, depth), proven);
+    Ok(proven.then_some(CapabilityEvidence::StructuralDerive))
 }
 
 fn core_constraint(
     registry: &TypeRegistry,
     named: &NamedTerm,
     constraint: Constraint,
-    visiting: &mut HashSet<(NamedTypeId, Constraint)>,
+    proof: &mut Proof,
     depth: usize,
 ) -> Result<Option<CapabilityEvidence>, CapabilityError> {
     let name = named.name.as_str();
     let supports = match constraint {
         Constraint::Eq => match name {
-            "list" | "option" | "result" => all_args(registry, named, constraint, visiting, depth)?,
-            "map" => all_args(registry, named, constraint, visiting, depth)?,
+            "list" | "option" | "result" => all_args(registry, named, constraint, proof, depth)?,
+            "map" => all_args(registry, named, constraint, proof, depth)?,
             "f32" | "f64" | "stream" | "handle" => false,
             _ => true,
         },
@@ -413,8 +426,8 @@ fn core_constraint(
         Constraint::Num => is_numeric(name),
         Constraint::Int => matches!(name, "i32" | "i64" | "u32" | "u64"),
         Constraint::Float => matches!(name, "f32" | "f64"),
-        Constraint::Display => core_display(registry, named, visiting, depth)?,
-        Constraint::Serialize => core_serialize(registry, named, visiting, depth)?,
+        Constraint::Display => core_display(registry, named, proof, depth)?,
+        Constraint::Serialize => core_serialize(registry, named, proof, depth)?,
         Constraint::Default => matches!(
             name,
             "bool"
@@ -440,11 +453,11 @@ fn all_args(
     registry: &TypeRegistry,
     named: &NamedTerm,
     constraint: Constraint,
-    visiting: &mut HashSet<(NamedTypeId, Constraint)>,
+    proof: &mut Proof,
     depth: usize,
 ) -> Result<bool, CapabilityError> {
     for arg in &named.args {
-        if constraint_evidence(registry, arg, constraint, visiting, depth + 1)?.is_none() {
+        if constraint_evidence(registry, arg, constraint, proof, depth + 1)?.is_none() {
             return Ok(false);
         }
     }
@@ -454,13 +467,11 @@ fn all_args(
 fn core_display(
     registry: &TypeRegistry,
     named: &NamedTerm,
-    visiting: &mut HashSet<(NamedTypeId, Constraint)>,
+    proof: &mut Proof,
     depth: usize,
 ) -> Result<bool, CapabilityError> {
     match named.name.as_str() {
-        "list" | "option" | "map" => {
-            all_args(registry, named, Constraint::Display, visiting, depth)
-        }
+        "list" | "option" | "map" => all_args(registry, named, Constraint::Display, proof, depth),
         "bool" | "i32" | "i64" | "u32" | "u64" | "f32" | "f64" | "string" | "bytes"
         | "duration" | "timestamp" | "json" | "secret-ref" => Ok(true),
         // Result, error, stream and handle have no literal codec form.
@@ -471,14 +482,12 @@ fn core_display(
 fn core_serialize(
     registry: &TypeRegistry,
     named: &NamedTerm,
-    visiting: &mut HashSet<(NamedTypeId, Constraint)>,
+    proof: &mut Proof,
     depth: usize,
 ) -> Result<bool, CapabilityError> {
     match named.name.as_str() {
-        "list" | "option" | "map" => {
-            all_args(registry, named, Constraint::Serialize, visiting, depth)
-        }
-        "result" => all_args(registry, named, Constraint::Serialize, visiting, depth),
+        "list" | "option" | "map" => all_args(registry, named, Constraint::Serialize, proof, depth),
+        "result" => all_args(registry, named, Constraint::Serialize, proof, depth),
         // The type-level table includes error; the eventual value serializer still must
         // redact/validate sensitive details before emitting a value. This query cannot prove
         // that value-level condition.

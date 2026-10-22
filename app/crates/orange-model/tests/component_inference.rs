@@ -131,6 +131,20 @@ fn conflicting_pins_report_a_mismatch_with_pin_evidence_and_no_bindings() {
 }
 
 #[test]
+fn a_pin_nested_past_the_parser_budget_is_a_complexity_issue_not_a_mismatch() {
+    let deep = format!(
+        "{}core/i64@1{}",
+        "core/list@1<".repeat(orange_model::type_term::MAX_NESTING + 1),
+        ">".repeat(orange_model::type_term::MAX_NESTING + 1)
+    );
+    let doc = document(vec![add(2, json!({"type_pins": {"T": deep}}))], vec![]);
+    assert_eq!(
+        codes(&infer(&doc, &[2], &catalog(None))[0]),
+        ["E-TYPE-COMPLEXITY"]
+    );
+}
+
+#[test]
 fn constraints_and_specializations_are_checked_after_solving() {
     let text = document(
         vec![add(2, json!({"type_pins": {"T": "core/string@1"}}))],

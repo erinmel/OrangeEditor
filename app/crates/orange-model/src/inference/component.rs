@@ -21,6 +21,7 @@ use crate::document::{
     DefinitionRef, GraphBody, NodeInstance, NodeKind, PortKind, PortRef, ResolvedPort, TypeParam,
     TypeParamName,
 };
+use crate::error::IdError;
 use crate::id::{DefinitionId, EdgeId, NodeId, TypeExpr};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
@@ -452,9 +453,12 @@ fn evidence(evidence: EquationEvidence) -> EquationContext {
 }
 
 fn parse(node: NodeId, ty: &TypeExpr) -> Result<TypeTerm, InferenceIssue> {
-    TypeTerm::parse(ty).map_err(|_| InferenceIssue::InvalidTerm {
-        node,
-        ty: ty.clone(),
+    TypeTerm::parse(ty).map_err(|error| match error {
+        IdError::TypeTooDeep { .. } => budget_exceeded(TypeScopeError::TooDeep),
+        _ => InferenceIssue::InvalidTerm {
+            node,
+            ty: ty.clone(),
+        },
     })
 }
 

@@ -271,6 +271,33 @@ fn long_acyclic_derive_chain_hits_proof_budget() {
 }
 
 #[test]
+fn a_schema_shared_by_both_fields_is_proved_once_per_depth() {
+    // Each record holds the previous one twice, so an unmemoized proof visits 2^40 paths.
+    let mut builder = TypeRegistryBuilder::core();
+    for index in 0..40 {
+        let child = match index {
+            0 => "core/i64@1".to_owned(),
+            _ => format!("org.example/pair{}@1", index - 1),
+        };
+        let field = |field_id: &str| FieldSchema {
+            field_id: field_id.to_owned(),
+            ty: term(&child),
+            optional: false,
+        };
+        let ty = expr(&format!("org.example/pair{index}@1"));
+        let fields = vec![field("left"), field("right")];
+        builder
+            .register_record("org.example", &ty, RecordSchema { fields })
+            .unwrap();
+        builder
+            .derive_constraint("org.example", &ty, Constraint::Eq)
+            .unwrap();
+    }
+    let registry = builder.build().unwrap();
+    assert!(has(&registry, "org.example/pair39@1", Constraint::Eq));
+}
+
+#[test]
 fn unsupported_package_derives_fail_explicitly() {
     let mut builder = TypeRegistryBuilder::core();
     builder
