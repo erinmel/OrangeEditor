@@ -129,6 +129,8 @@ Implementation note (WU-00/00b.3): `orange-model` provides `DocIndex` with node 
 
 ### 3.3 Transactions and change sets
 
+Inference consumes net edge deltas from both sides of the transaction: added edges use their new endpoints, removed edges use their old endpoints, and changed edges use both. In particular, disconnecting and reconnecting the same `EdgeId` can change its endpoints without reporting an addition/removal. The resulting bindings and projected signatures stay in the originating undoable transaction (11 §5.5); no wire-format change is needed.
+
 ```rust
 pub enum DocCommand {
     AddNode { node: NodeInstance }, RemoveNodes { ids: Vec<NodeId> },   // incident edges removed and recorded

@@ -225,17 +225,29 @@ fn generic_endpoints_connect_directly_and_carry_their_inferred_updates() {
 }
 
 #[test]
-fn a_wire_that_makes_the_types_invalid_is_refused_with_its_conflicts() {
-    // Generic add 2 is fed i64 by 1 but not yet inferred; an f64 into `b` conflicts.
-    let doc = document(
-        vec![source(1), add(2, json!({})), typed_source(4, "f64")],
-        vec![data_edge(1, (1, "value"), (2, "a"))],
-    );
-    let Err(ConnectionError::TypeConflict(issues)) = plan(&doc, request((4, "value"), (2, "b")))
-    else {
-        panic!("expected a type conflict");
-    };
-    assert_eq!(codes(&issues), ["E-TYPE-MISMATCH"]);
+fn incompatible_connections_are_refused_independently_of_cached_arguments() {
+    // The surviving i64 source constrains add 2, regardless of its persisted cache.
+    for args in [
+        json!({}),
+        json!({"T": "core/i64@1"}),
+        json!({"T": "core/f64@1"}),
+    ] {
+        let doc = document(
+            vec![
+                source(1),
+                add(2, json!({"type_args": args})),
+                typed_source(4, "f64"),
+            ],
+            vec![data_edge(1, (1, "value"), (2, "a"))],
+        );
+        let before = content(&doc);
+        assert!(matches!(
+            plan(&doc, request((4, "value"), (2, "b"))).unwrap(),
+            ConnectionOutcome::Rejected(SelectionRejection::NoDirectConverter { from, to })
+                if from.as_str() == "core/f64@1" && to.as_str() == "core/i64@1"
+        ));
+        assert_eq!(content(&doc), before);
+    }
 
     // A constraint or specialization failure is a conflict too.
     let doc = document(vec![typed_source(4, "f64"), add(2, json!({}))], vec![]);

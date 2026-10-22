@@ -115,6 +115,8 @@ Subunits within a package run in listed order unless their inputs explicitly per
 
 ## Traceability matrix
 
+00c review correction (2026-10-21): FR-44/45/46 connection planning derives generic endpoint types from surviving evidence before converter selection, preserving pins and shadowed literals. FR-45 inference includes both old and new endpoints of a changed edge, including a reused edge ID. Focused regressions in `connection_apply`, `connection_plan` and `inference_persist` cover replacement, cache-independent rejection, retained evidence and atomic undo/redo. Verification and limitations are recorded in [10](10-tooling-and-sources.md#inference-replacement-review-fixes-2026-10-21); no new gate or NFR result is implied.
+
 Numbers below refer to the FR/NFR catalogs, not completion status. Coverage includes dependencies: work unit acceptance must produce evidence for every listed item.
 
 | Unit | FR coverage | NFR coverage | Verification |

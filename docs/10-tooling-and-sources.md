@@ -33,6 +33,26 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 - 00c.3b analysis guard (2026-10-21): expanded scoped/concrete type terms are limited to a provisional `MAX_EXPANDED_TYPE_NODES = 16_384` nodes per term; nesting keeps `MAX_NESTING = 64`. Limits return typed analysis failures before constructing an oversized output. Alias traversal is iterative; a 10,000-variable alias regression passes without consuming type nesting depth. These are open resource budgets, not a new language type exclusion, measured NFR-15 timing or production memory qualification.
 - Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working UI build toolchain.
 
+## Inference replacement review fixes (2026-10-21)
+
+Work: WU-00/00c review corrections, FR-44/45/46. Connection planning now infers generic endpoint types from surviving evidence before selecting a converter: replaced wires are removed and the newly shadowed target literal is excluded on a scratch copy only. Pins and other active evidence still constrain selection. Changed edge deltas contribute both old and new endpoints to inference, including a disconnect/connect that reuses the same ID. Bindings/signatures remain in the originating transaction. Public API shapes, JSON format, dependencies and lockfile are unchanged; 11 §5.5/§6, 12 §3.3 and ADR-16 clarify these existing invariants.
+
+Selected local environment: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`, `x86_64-pc-windows-msvc`, Node.js `v24.18.0`. `orange-model` declares no Cargo features; workspace selections remain indexmap/serde, serde/derive, serde_json/preserve_order and uuid/serde with dependency defaults, with no additional command-line features. `rust-toolchain.toml` and `Cargo.lock` are unchanged; lockfile SHA-256 is `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+Four added Rust tests cover replacement with a preserved shadowed literal, explicit pins versus surviving edges, a generic source with a stale cache, and reused edge IDs at the same or different targets with exact undo/redo restoration and unrelated-node preservation. An existing rejection test now checks empty, correct and stale caches produce the same no-direct-converter outcome. The connection regressions failed against the pre-fix planner and pass after correction; the earlier review also reproduced the reused-ID failure.
+
+| Executed command | Local result |
+|---|---|
+| `cargo test --locked -p orange-model --test connection_apply --test inference_persist --test connection_plan --test connection_flow` | PASS: 31 tests |
+| `cargo test --workspace --locked` | PASS: 195 tests, 0 failures; 0 doctests |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | PASS |
+| `$env:RUSTDOCFLAGS = '-D warnings'; cargo doc --workspace --no-deps --locked` | PASS (PowerShell) |
+| `node tools/check-cargo-metadata.mjs` | PASS |
+| `git diff --check` | PASS |
+
+Windows emitted incremental-cache hard-link warnings and used its copy fallback. Selection adds a scratch document/index and endpoint-component inference before final edit inference; NFR-15 time/memory costs remain unmeasured. No MSRV 1.97.1 run, remote CI, cross-OS run, validator implementation or gate passage is claimed. Work is local on `codex/fix-inference-replacements`, based on `659986d` to preserve the existing documentation/test-policy changes; `origin/dev` was `bafd183` when fetched.
+
 ## Model review fixes and slice 4 analysis (2026-10-20)
 
 Review findings on the first four slices were fixed in isolated worktrees based on `8c1f42f`, with explicit source/test ownership, and integrated into the feature checkout. No commit, push, merge or remote CI was part of the fixes.

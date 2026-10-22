@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::generic::{add, catalog, data_edge, document, source};
+use common::generic::{add, catalog, data_edge, document, source, typed_source};
 use common::{body, content, eid, function, function_id, nid, saved};
 use orange_model::document::{Edge, NodeInstance};
 use orange_model::inference::{InferenceIssue, apply_inferred, plan_edit};
@@ -47,6 +47,57 @@ fn signature_types(document: &GraphDocument, n: u8) -> Vec<String> {
 
 fn codes(issues: &[InferenceIssue]) -> Vec<&'static str> {
     issues.iter().map(InferenceIssue::code).collect()
+}
+
+#[test]
+fn reusing_an_edge_id_reinfers_old_and_new_endpoints_and_is_undoable() {
+    for target in [3, 4] {
+        let mut doc = document(
+            vec![
+                typed_source(1, "i64"),
+                typed_source(2, "f64"),
+                add(3, json!({})),
+                add(4, json!({})),
+                add(5, json!({"type_args": {"T": "core/i32@1"}})),
+            ],
+            vec![],
+        );
+        commit(
+            &mut doc,
+            vec![connect(data_edge(1, (1, "value"), (3, "a")))],
+        )
+        .unwrap();
+        let before = content(&doc);
+        let unrelated = doc.node(nid(5)).unwrap().clone();
+        let revision = doc.revision();
+        let done = apply_inferred(
+            &mut doc,
+            [
+                DocCommand::Disconnect { edge: eid(1) },
+                connect(data_edge(1, (2, "value"), (target, "a"))),
+            ],
+            &catalog(None),
+            &TypeRegistry::core(),
+        )
+        .unwrap();
+        assert!(done.committed.change_set.edges.changed.contains(&eid(1)));
+        assert_eq!(doc.revision(), revision + 1);
+        assert_eq!(type_arg(&doc, target).as_deref(), Some("core/f64@1"));
+        assert_eq!(signature_types(&doc, target), ["core/f64@1"; 3]);
+        if target == 4 {
+            assert_eq!(type_arg(&doc, 3), None);
+            assert_eq!(signature_types(&doc, 3), ["$T"; 3]);
+            assert_eq!(codes(&done.issues), ["E-TYPE-AMBIGUOUS"]);
+        } else {
+            assert!(done.issues.is_empty());
+        }
+        assert_eq!(doc.node(nid(5)).unwrap(), &unrelated);
+        let after = content(&doc);
+        let redo = doc.revert(done.committed.inverse).unwrap().inverse;
+        assert_eq!(content(&doc), before);
+        let _ = doc.revert(redo).unwrap();
+        assert_eq!(content(&doc), after);
+    }
 }
 
 /// An `i64` source (1) and an unresolved `add` (2), not yet connected.

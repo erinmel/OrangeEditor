@@ -28,7 +28,9 @@ use crate::error::{IdError, TxError};
 use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 use crate::index::DocIndex;
 use crate::inference::component::declared_port;
-use crate::inference::{InferenceIssue, TemplateCatalog, infer_components, plan_edit};
+use crate::inference::{
+    ComponentInference, InferenceIssue, TemplateCatalog, infer_components, plan_edit,
+};
 use crate::signature::{SignatureSubstitutionError, semantic_key, try_substitute_params};
 use crate::type_term::TypeTerm;
 
@@ -123,7 +125,9 @@ pub enum ConnectionError {
 
 /// Plans connecting output `request.from` to input `request.to`.
 ///
-/// Endpoint types come from the declared port with the node's `type_args` substituted. If
+/// Generic endpoint types are inferred from current evidence after removing replaced edges,
+/// excluding the target literal that the new wire will shadow; cached `type_args` are not
+/// evidence. Pins and remaining edges/literals still constrain selection. If
 /// either still mentions an unresolved parameter the wire is planned directly and inference
 /// decides; otherwise equal types connect directly and differing types go through
 /// [`ConverterRegistry::select_for_connection`] (or the explicit choice). An existing edge
@@ -156,8 +160,9 @@ pub fn plan_connection(
             to: to.node,
         });
     }
-    let from_type = endpoint_type(document, templates, &from, PortDirection::Output)?;
-    let to_type = endpoint_type(document, templates, &to, PortDirection::Input)?;
+    // Validate the request before analyzing or allocating any inserted identities.
+    endpoint_type(document, templates, &from, PortDirection::Output, &[])?;
+    endpoint_type(document, templates, &to, PortDirection::Input, &[])?;
 
     let index = DocIndex::build(document);
     let replaced: Vec<EdgeId> = index.incoming(&to).collect();
@@ -167,14 +172,46 @@ pub fn plan_connection(
         }
     }
 
-    let wire = match select(converters, &from_type, &to_type, choice) {
-        Ok(wire) => wire,
-        Err(outcome) => return Ok(outcome),
-    };
     let mut edit: Vec<DocCommand> = replaced
         .iter()
         .map(|&edge| DocCommand::Disconnect { edge })
         .collect();
+    // Analyze selection against the evidence that survives the replacement. The literal
+    // is removed only on this scratch copy: the accepted edit preserves it, shadowed.
+    let (from_type, to_type) = {
+        let mut selection_document = document.clone();
+        let _ = selection_document.apply(edit.iter().cloned().chain([DocCommand::SetLiteral {
+            port: to.clone(),
+            literal: None,
+        }]))?;
+        let components = infer_components(
+            &selection_document,
+            &DocIndex::build(&selection_document),
+            [from.node, to.node],
+            templates,
+            converters.type_registry(),
+        );
+        (
+            endpoint_type(
+                &selection_document,
+                templates,
+                &from,
+                PortDirection::Output,
+                &components,
+            )?,
+            endpoint_type(
+                &selection_document,
+                templates,
+                &to,
+                PortDirection::Input,
+                &components,
+            )?,
+        )
+    };
+    let wire = match select(converters, &from_type, &to_type, choice) {
+        Ok(wire) => wire,
+        Err(outcome) => return Ok(outcome),
+    };
     let mut edges = Vec::new();
     let converter = match wire {
         Wire::Direct => {
@@ -293,6 +330,7 @@ fn endpoint_type(
     templates: &TemplateCatalog,
     port: &PortRef,
     direction: PortDirection,
+    components: &[ComponentInference],
 ) -> Result<TypeExpr, ConnectionError> {
     let node = document
         .node(port.node)
@@ -314,7 +352,20 @@ fn endpoint_type(
             expected: direction,
         });
     }
-    Ok(try_substitute_params(ty, &node.type_args)?)
+    let empty = BTreeMap::new();
+    let args = if templates
+        .get(&node.definition)
+        .is_some_and(|template| !template.type_params.is_empty())
+    {
+        components
+            .iter()
+            .find(|component| component.nodes.contains(&node.id))
+            .and_then(|component| component.type_args.get(&node.id))
+            .unwrap_or(&empty)
+    } else {
+        &node.type_args
+    };
+    Ok(try_substitute_params(ty, args)?)
 }
 
 fn fresh_edge(
