@@ -10,6 +10,8 @@ use crate::id::{EdgeId, FunctionId, NodeId, PortKey};
 /// Stable identifiers for implemented graph validation diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DiagnosticCode {
+    #[serde(rename = "E-METADATA-STALE")]
+    MetadataStale,
     #[serde(rename = "E-PORT-UNKNOWN")]
     PortUnknown,
     #[serde(rename = "E-PORT-DIRECTION")]
@@ -80,6 +82,7 @@ impl DiagnosticCode {
     /// Stable code used in wire records and assertions.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::MetadataStale => "E-METADATA-STALE",
             Self::PortUnknown => "E-PORT-UNKNOWN",
             Self::PortDirection => "E-PORT-DIRECTION",
             Self::KindMismatch => "E-KIND-MISMATCH",
@@ -117,6 +120,7 @@ impl DiagnosticCode {
 
     const fn message_key(self) -> &'static str {
         match self {
+            Self::MetadataStale => "core/graph-metadata-stale",
             Self::PortUnknown => "core/graph-port-unknown",
             Self::PortDirection => "core/graph-port-direction",
             Self::KindMismatch => "core/graph-kind-mismatch",
@@ -154,6 +158,7 @@ impl DiagnosticCode {
 
     fn fallback(self, subject: &Subject) -> String {
         match self {
+            Self::MetadataStale => "Node metadata no longer matches this document.".into(),
             Self::PortUnknown => format!(
                 "Connection references an unknown port{}.",
                 subject.port_suffix()

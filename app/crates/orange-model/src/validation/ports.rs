@@ -99,41 +99,7 @@ pub(crate) fn lookup_port(
 /// Whether an ID is a language intrinsic, independent of whether this slice has a
 /// complete descriptor for it yet. Later validator passes use this to avoid treating
 /// arbitrary `core/` IDs as trusted intrinsics.
-pub(crate) fn is_intrinsic_definition(id: &str) -> bool {
-    matches!(
-        id,
-        "core/branch"
-            | "core/switch"
-            | "core/sequence"
-            | "core/fork"
-            | "core/for-each"
-            | "core/count"
-            | "core/while"
-            | "core/break"
-            | "core/continue"
-            | "core/gate"
-            | "core/do-once"
-            | "core/flip-flop"
-            | "core/yield"
-            | "core/wait"
-            | "core/await-event"
-            | "core/register"
-            | "core/select"
-            | "core/and"
-            | "core/or"
-            | "core/coalesce"
-            | "core/try"
-            | "core/match-result"
-            | "core/repeat-begin"
-            | "core/repeat-end"
-            | "core/map-begin"
-            | "core/map-end"
-            | "core/fold-begin"
-            | "core/fold-end"
-            | "core/filter-begin"
-            | "core/filter-end"
-    )
-}
+pub(crate) use crate::document::is_intrinsic_definition;
 
 type IntrinsicPortSpec<'a> = (&'a str, &'a str, &'a str, Option<&'a str>, Option<&'a str>);
 

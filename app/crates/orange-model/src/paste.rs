@@ -1,10 +1,8 @@
 //! Copy and paste with full ID remapping (FR-02, 12 §2).
 //!
 //! Every pasted node, edge and declaration gets a fresh ID, so pasted content never aliases
-//! the original. References are found and rewritten by one rule: a config string exactly
-//! equal to a source ID being remapped is a reference. IDs are random 122-bit UUIDs, so this
-//! needs no knowledge of which config keys of which definitions hold references, and an
-//! accidental match is negligible. Literals are user data and are never rewritten.
+//! the original. Config references are discovered and rewritten only at fields declared by
+//! the exact built-in schema or explicit host-supplied schemas. Other config values are data.
 //!
 //! Declarations referenced by copied nodes travel with the fragment, transitively through
 //! function bodies. On paste, a declaration the target already has (same ID) is reused, so
@@ -16,7 +14,7 @@
 //! same package version to another digest rejects the paste (`PackageLockConflict`).
 //! Layout of pasted nodes is the editor's concern.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 
 use serde_json::Value as Json;
 use uuid::Uuid;
@@ -44,6 +42,47 @@ pub struct Fragment {
     pub signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     /// Source lock entries of the package versions those nodes are bound to, in source order.
     pub package_lock: Vec<PackageLockEntry>,
+    /// Typed config references captured while copying. Constructors populate these; callers
+    /// building fragments directly may leave the list empty to preserve config data verbatim.
+    pub references: Vec<ConfigReference>,
+}
+
+/// A config field whose string value is a typed graph identity.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigReference {
+    /// Original node containing the field, including nodes in copied function bodies.
+    pub node: NodeId,
+    /// RFC 6901 JSON pointer within the node config, such as `/variable`.
+    pub pointer: String,
+    pub kind: ConfigReferenceKind,
+    /// Original string captured from the field. Paste rewrites only if it is still unchanged.
+    pub expected: String,
+}
+
+/// Identity namespace used by a declared config reference.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum ConfigReferenceKind {
+    Variable,
+    Event,
+    Function,
+}
+
+/// Host-declared reference fields for one exact package definition/config version.
+///
+/// Schemas for exact host-reserved intrinsics are ignored; those fields are owned by the
+/// core's built-in schema. Other provider-backed definitions need not use a package prefix.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigReferenceSchema {
+    pub definition: crate::document::DefinitionRef,
+    pub config_version: u32,
+    pub fields: Vec<ConfigReferenceField>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfigReferenceField {
+    /// RFC 6901 JSON pointer within `config`; the pointed value must be a string ID.
+    pub pointer: String,
+    pub kind: ConfigReferenceKind,
 }
 
 /// Commands for one paste transaction, plus where each copied node went.
@@ -58,6 +97,16 @@ impl Fragment {
     /// Copies `selection` (all from one body) with its internal edges and the declarations
     /// and signatures it references.
     pub fn copy(document: &GraphDocument, selection: &[NodeId]) -> Result<Self, PasteError> {
+        Self::copy_with_schemas(document, selection, &[])
+    }
+
+    /// Copies using the core's built-in reference fields plus exact host schemas for package
+    /// definitions. Unknown definitions and fields are copied as ordinary config data.
+    pub fn copy_with_schemas(
+        document: &GraphDocument,
+        selection: &[NodeId],
+        schemas: &[ConfigReferenceSchema],
+    ) -> Result<Self, PasteError> {
         let Some(first) = selection.first() else {
             return Ok(Self::default());
         };
@@ -93,16 +142,20 @@ impl Fragment {
             edges,
             ..Self::default()
         };
-        fragment.capture_references(document);
+        fragment.capture_references(document, schemas);
         Ok(fragment)
     }
 
     /// Adds every declaration, signature and lock entry reachable from the fragment's nodes.
-    fn capture_references(&mut self, document: &GraphDocument) {
+    fn capture_references(&mut self, document: &GraphDocument, schemas: &[ConfigReferenceSchema]) {
         let mut pending: Vec<NodeInstance> = self.nodes.clone();
-        let mut seen = HashSet::new();
+        let mut seen_nodes = HashSet::new();
+        let mut seen_declarations = HashSet::new();
         let mut bound = HashSet::new();
         while let Some(node) = pending.pop() {
+            if !seen_nodes.insert(node.id) {
+                continue;
+            }
             if let Some(key) = &node.signature
                 && let Some(snapshot) = document.signatures().get(key)
             {
@@ -111,29 +164,45 @@ impl Fragment {
             if let Some(provider) = &node.provider {
                 bound.insert((provider.package.clone(), provider.version.clone()));
             }
-            for text in config_strings(&node.config) {
-                if !seen.insert(text.to_owned()) {
+            for field in reference_fields(&node, schemas) {
+                let Some(Json::String(text)) = pointer_get(&node.config, &field.pointer) else {
+                    continue;
+                };
+                if !valid_reference(field.kind, text) {
                     continue;
                 }
-                if let Some(decl) = text
-                    .parse::<VariableId>()
-                    .ok()
-                    .and_then(|id| document.variables().get(&id))
-                {
-                    self.variables.push(decl.clone());
-                } else if let Some(decl) = text
-                    .parse::<EventDeclId>()
-                    .ok()
-                    .and_then(|id| document.events().get(&id))
-                {
-                    self.events.push(decl.clone());
-                } else if let Some(decl) = text
-                    .parse::<FunctionId>()
-                    .ok()
-                    .and_then(|id| document.functions().get(&id))
-                {
-                    pending.extend(decl.body.nodes.values().cloned());
-                    self.functions.push(decl.clone());
+                self.references.push(ConfigReference {
+                    node: node.id,
+                    pointer: field.pointer.clone(),
+                    kind: field.kind,
+                    expected: text.clone(),
+                });
+                if !seen_declarations.insert((field.kind, text.clone())) {
+                    continue;
+                }
+                match field.kind {
+                    ConfigReferenceKind::Variable => {
+                        if let Ok(id) = text.parse::<VariableId>()
+                            && let Some(decl) = document.variables().get(&id)
+                        {
+                            self.variables.push(decl.clone());
+                        }
+                    }
+                    ConfigReferenceKind::Event => {
+                        if let Ok(id) = text.parse::<EventDeclId>()
+                            && let Some(decl) = document.events().get(&id)
+                        {
+                            self.events.push(decl.clone());
+                        }
+                    }
+                    ConfigReferenceKind::Function => {
+                        if let Ok(id) = text.parse::<FunctionId>()
+                            && let Some(decl) = document.functions().get(&id)
+                        {
+                            pending.extend(decl.body.nodes.values().cloned());
+                            self.functions.push(decl.clone());
+                        }
+                    }
                 }
             }
         }
@@ -200,8 +269,11 @@ impl Fragment {
             .iter()
             .map(|(key, snapshot)| (key, semantic_key(snapshot)))
             .collect();
+        let references_by_node = remapped_references(&self.references, &remap.nodes);
         let finish = |mut node: NodeInstance| {
-            remap.rewrite(&mut node.config);
+            if let Some(references) = references_by_node.get(&node.id) {
+                remap.rewrite(&mut node.config, references);
+            }
             node.signature = node
                 .signature
                 .map(|key| signature_keys.get(&key).cloned().unwrap_or(key));
@@ -260,28 +332,37 @@ impl Fragment {
     }
 }
 
-/// Source ID → pasted ID, as text (for config rewriting) and per node for edges.
+/// Typed declaration IDs are remapped separately so equal UUID text in different namespaces
+/// cannot redirect a field to the wrong declaration kind.
 #[derive(Default)]
 struct Remap {
-    text: HashMap<String, String>,
+    references: HashMap<(ConfigReferenceKind, String), String>,
     nodes: HashMap<NodeId, NodeId>,
 }
 
 /// UUID-backed ID types the remap can create.
 trait FreshId: Copy + std::fmt::Display {
     fn from_uuid(uuid: Uuid) -> Result<Self, IdError>;
+    const REFERENCE_KIND: Option<ConfigReferenceKind>;
 }
 
 macro_rules! fresh_id {
-    ($($ty:ty),+) => {$(
+    ($($ty:ty => $kind:expr),+) => {$(
         impl FreshId for $ty {
             fn from_uuid(uuid: Uuid) -> Result<Self, IdError> {
                 <$ty>::from_uuid(uuid)
             }
+            const REFERENCE_KIND: Option<ConfigReferenceKind> = $kind;
         }
     )+};
 }
-fresh_id!(NodeId, EdgeId, VariableId, EventDeclId, FunctionId);
+fresh_id!(
+    NodeId => None,
+    EdgeId => None,
+    VariableId => Some(ConfigReferenceKind::Variable),
+    EventDeclId => Some(ConfigReferenceKind::Event),
+    FunctionId => Some(ConfigReferenceKind::Function)
+);
 
 impl Remap {
     fn fresh<T: FreshId>(
@@ -290,7 +371,10 @@ impl Remap {
         new_id: &mut impl FnMut() -> Uuid,
     ) -> Result<T, IdError> {
         let new = T::from_uuid(new_id())?;
-        self.text.insert(old.to_string(), new.to_string());
+        if let Some(kind) = T::REFERENCE_KIND {
+            self.references
+                .insert((kind, old.to_string()), new.to_string());
+        }
         Ok(new)
     }
 
@@ -350,37 +434,165 @@ impl Remap {
         })
     }
 
-    fn rewrite(&self, config: &mut ConfigValue) {
-        for value in config.values_mut() {
-            rewrite_value(value, &self.text);
-        }
-    }
-}
-
-fn rewrite_value(value: &mut Json, remap: &HashMap<String, String>) {
-    match value {
-        Json::String(text) => {
-            if let Some(new) = remap.get(text.as_str()) {
-                *text = new.clone();
+    fn rewrite(&self, config: &mut ConfigValue, references: &[&ConfigReference]) {
+        for reference in references {
+            let unchanged = matches!(
+                pointer_get(config, &reference.pointer),
+                Some(Json::String(value)) if value == &reference.expected
+            );
+            if !unchanged {
+                continue;
             }
+            let Some(rewritten) = self
+                .references
+                .get(&(reference.kind, reference.expected.clone()))
+            else {
+                continue;
+            };
+            let _ = pointer_set(config, &reference.pointer, Json::String(rewritten.clone()));
         }
-        Json::Array(items) => items.iter_mut().for_each(|item| rewrite_value(item, remap)),
-        Json::Object(map) => map.values_mut().for_each(|item| rewrite_value(item, remap)),
-        _ => {}
     }
 }
 
-/// Every string anywhere in a config value.
-fn config_strings(config: &ConfigValue) -> Vec<&str> {
-    fn walk<'a>(value: &'a Json, out: &mut Vec<&'a str>) {
-        match value {
-            Json::String(text) => out.push(text),
-            Json::Array(items) => items.iter().for_each(|item| walk(item, out)),
-            Json::Object(map) => map.values().for_each(|item| walk(item, out)),
-            _ => {}
+fn remapped_references<'a>(
+    references: &'a [ConfigReference],
+    node_ids: &HashMap<NodeId, NodeId>,
+) -> HashMap<NodeId, Vec<&'a ConfigReference>> {
+    let mut by_node = HashMap::new();
+    for reference in references {
+        if let Some(node) = node_ids.get(&reference.node) {
+            by_node
+                .entry(*node)
+                .or_insert_with(Vec::new)
+                .push(reference);
         }
     }
-    let mut out = Vec::new();
-    config.values().for_each(|value| walk(value, &mut out));
-    out
+    by_node
+}
+
+fn reference_fields(
+    node: &NodeInstance,
+    schemas: &[ConfigReferenceSchema],
+) -> Vec<ConfigReferenceField> {
+    let id = node.definition.id.as_str();
+    let builtin = match id {
+        "core/call" => Some(("/function", ConfigReferenceKind::Function)),
+        "core/get-variable"
+        | "core/set-variable"
+        | "core/update-variable"
+        | "core/set-shared"
+        | "core/update-shared" => Some(("/variable", ConfigReferenceKind::Variable)),
+        "core/on-event" | "core/emit" | "core/await-event" => {
+            Some(("/event", ConfigReferenceKind::Event))
+        }
+        _ => None,
+    };
+    if crate::document::is_intrinsic_definition(id) {
+        if node.provider.is_some() {
+            return Vec::new();
+        }
+        let Some((pointer, kind)) = builtin else {
+            return Vec::new();
+        };
+        if node.definition.version != 1 || node.config_version != 1 {
+            return Vec::new();
+        }
+        return vec![ConfigReferenceField {
+            pointer: pointer.to_owned(),
+            kind,
+        }];
+    }
+
+    if node.provider.is_none() {
+        return Vec::new();
+    }
+    schemas
+        .iter()
+        .filter(|schema| {
+            schema.definition == node.definition && schema.config_version == node.config_version
+        })
+        .flat_map(|schema| schema.fields.iter().cloned())
+        .collect()
+}
+
+fn valid_reference(kind: ConfigReferenceKind, value: &str) -> bool {
+    match kind {
+        ConfigReferenceKind::Variable => value.parse::<VariableId>().is_ok(),
+        ConfigReferenceKind::Event => value.parse::<EventDeclId>().is_ok(),
+        ConfigReferenceKind::Function => value.parse::<FunctionId>().is_ok(),
+    }
+}
+
+fn pointer_parts(pointer: &str) -> Option<Vec<String>> {
+    if !pointer.starts_with('/') {
+        return None;
+    }
+    pointer
+        .split('/')
+        .skip(1)
+        .map(|part| {
+            let mut decoded = String::with_capacity(part.len());
+            let mut chars = part.chars();
+            while let Some(ch) = chars.next() {
+                if ch != '~' {
+                    decoded.push(ch);
+                    continue;
+                }
+                match chars.next()? {
+                    '0' => decoded.push('~'),
+                    '1' => decoded.push('/'),
+                    _ => return None,
+                }
+            }
+            Some(decoded)
+        })
+        .collect()
+}
+
+fn pointer_get<'a>(config: &'a ConfigValue, pointer: &str) -> Option<&'a Json> {
+    let mut parts = pointer_parts(pointer)?.into_iter();
+    let mut value = config.get(&parts.next()?)?;
+    for part in parts {
+        value = match value {
+            Json::Object(map) => map.get(&part)?,
+            Json::Array(items) => items.get(array_index(&part)?)?,
+            _ => return None,
+        };
+    }
+    Some(value)
+}
+
+fn pointer_set(config: &mut ConfigValue, pointer: &str, replacement: Json) -> bool {
+    let Some(mut parts) = pointer_parts(pointer).map(VecDeque::from) else {
+        return false;
+    };
+    let Some(first) = parts.pop_front() else {
+        return false;
+    };
+    let Some(root) = config.get_mut(&first) else {
+        return false;
+    };
+    set_nested(root, &mut parts, replacement)
+}
+
+fn set_nested(value: &mut Json, parts: &mut VecDeque<String>, replacement: Json) -> bool {
+    let Some(part) = parts.pop_front() else {
+        *value = replacement;
+        return true;
+    };
+    let Some(child) = (match value {
+        Json::Object(map) => map.get_mut(&part),
+        Json::Array(items) => array_index(&part).and_then(|index| items.get_mut(index)),
+        _ => None,
+    }) else {
+        return false;
+    };
+    set_nested(child, parts, replacement)
+}
+
+fn array_index(part: &str) -> Option<usize> {
+    if part.is_empty() || (part.len() > 1 && part.starts_with('0')) {
+        return None;
+    }
+    part.parse().ok()
 }

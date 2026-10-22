@@ -87,6 +87,38 @@ pub enum CodecError {
     UnsupportedVersion { found: u32 },
     #[error("duplicate {kind} id `{id}` across graph bodies")]
     DuplicateId { kind: &'static str, id: String },
+    #[error("duplicate {kind} lock identity `{identity}`")]
+    DuplicateLock {
+        kind: &'static str,
+        identity: String,
+    },
+    #[error("graph import exceeds {resource} limit: {actual} > {max}")]
+    ImportLimitExceeded {
+        resource: ImportResource,
+        max: usize,
+        actual: usize,
+    },
+}
+
+/// Resource dimension checked by the graph document importer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImportResource {
+    /// Raw UTF-8 document bytes, checked before any JSON parsing.
+    Bytes,
+    /// Parsed nodes across the root and all function bodies.
+    Nodes,
+    /// Parsed edges across the root and all function bodies.
+    Edges,
+}
+
+impl std::fmt::Display for ImportResource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
+            Self::Bytes => "byte",
+            Self::Nodes => "node",
+            Self::Edges => "edge",
+        })
+    }
 }
 
 /// A copy that cannot be made.
@@ -107,6 +139,8 @@ pub enum TxError {
     NodeExists(NodeId),
     #[error("node `{0}` does not exist")]
     NodeNotFound(NodeId),
+    #[error("node `{node}` has a stale node-scoped template")]
+    StaleNodeTemplate { node: NodeId },
     #[error("edge `{0}` already exists")]
     EdgeExists(EdgeId),
     #[error("edge `{0}` does not exist")]
