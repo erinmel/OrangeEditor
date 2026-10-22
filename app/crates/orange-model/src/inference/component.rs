@@ -504,7 +504,7 @@ pub(crate) fn declared_port<'a>(
     port: &PortRef,
 ) -> Option<&'a ResolvedPort> {
     let node = document.node(port.node)?;
-    let ports = match templates.generic(node) {
+    let ports = match templates.get(&node.definition) {
         Some(template) => &template.ports,
         None => &document.signatures().get(node.signature.as_ref()?)?.ports,
     };
