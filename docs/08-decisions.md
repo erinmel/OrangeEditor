@@ -200,6 +200,8 @@ The core must therefore be strong and general on its own, and expandable without
 
 **Falsification:** a downstream prototype must fork the core, patch core code to add a domain, or change the substrate format beyond the `domain` field; a node group cannot be published, versioned and reused through 11 §14 plus package locks; or embedding the core in an engine-based host needs an engine dependency in model, compiler or runtime crates. Any of these requires revising this ADR. Owner: language/runtime lead with the product owner; review before G2.
 
+**Core-first milestone supplement (selected by the user, 2026-10-21).** The next implementation sequence completes validation and compilation, then establishes deterministic headless execution for pure math/logic and seeded random, plus a reference runtime with virtual time, structured loops, cancellation, explicit resource ownership, and typed public service ports tested through in-memory adapters. Concrete HTTP, file, and audio backend adapters, package-host composition, and editor/window integration wait until a core boundary requires narrow evidence. This sequencing preserves the wider M requirements and does not claim G2 API freeze or runtime-gate completion. The UI remains replaceable and separate as selected above; no editor or window dependency enters core crates.
+
 ## Decisions still requiring evidence or product preference
 
 | ID | Owner / deadline | Recommended default and practical consequence |

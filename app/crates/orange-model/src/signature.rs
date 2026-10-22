@@ -12,7 +12,8 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::document::{
-    Extensions, NodeKind, PortDirection, PortKind, ResolvedPort, SignatureSnapshot, TypeParamName,
+    Extensions, NodeKind, PortDirection, PortKind, ResolvedPort, SignatureSnapshot, Suspends,
+    TypeParamName,
 };
 use crate::error::IdError;
 use crate::id::{PortId, SignatureKey, TypeExpr};
@@ -25,6 +26,18 @@ const PRESENTATION_KEYS: [&str; 4] = ["label", "description", "group", "editor"]
 /// type parameters replaced by the node's `type_args`.
 pub fn project(
     kind: NodeKind,
+    ports: impl IntoIterator<Item = ResolvedPort>,
+    type_args: &BTreeMap<TypeParamName, TypeExpr>,
+) -> SignatureSnapshot {
+    project_with_suspension(kind, None, ports, type_args)
+}
+
+/// Builds a semantic snapshot with the definition's declared suspension contract.
+/// Always pass the host declaration; node kind alone does not prove that a node always
+/// suspends.
+pub fn project_with_suspension(
+    kind: NodeKind,
+    suspends: Option<Suspends>,
     ports: impl IntoIterator<Item = ResolvedPort>,
     type_args: &BTreeMap<TypeParamName, TypeExpr>,
 ) -> SignatureSnapshot {
@@ -43,6 +56,7 @@ pub fn project(
         .collect();
     SignatureSnapshot {
         kind,
+        suspends,
         ports,
         extensions: Extensions::new(),
     }
@@ -164,7 +178,13 @@ fn check_term_depth(term: &TypeTerm, depth: usize) -> Result<(), SignatureSubsti
 /// string escaping. For the ASCII keys and integer numbers of snapshots this matches
 /// RFC 8785; cross-language digest vectors are published with the WU-03 contracts.
 pub fn canonical_json(snapshot: &SignatureSnapshot) -> String {
-    let value = serde_json::to_value(snapshot).expect("snapshots always serialize");
+    let mut normalized = snapshot.clone();
+    if !matches!(normalized.kind, NodeKind::Async | NodeKind::Iterator)
+        && normalized.suspends == Some(Suspends::Never)
+    {
+        normalized.suspends = None;
+    }
+    let value = serde_json::to_value(&normalized).expect("snapshots always serialize");
     sorted(value).to_string()
 }
 
@@ -230,6 +250,7 @@ impl SignatureSnapshot {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SignatureDrift {
     pub kind_changed: bool,
+    pub suspension_changed: bool,
     /// Declared in the stored snapshot only: edges using them become orphan edges.
     pub removed: Vec<PortId>,
     pub added: Vec<PortId>,
@@ -251,6 +272,7 @@ pub fn compare(stored: &SignatureSnapshot, resolved: &SignatureSnapshot) -> Opti
     };
     let mut drift = SignatureDrift {
         kind_changed: stored.kind != resolved.kind,
+        suspension_changed: stored.suspension() != resolved.suspension(),
         ..Default::default()
     };
     for port in &stored.ports {

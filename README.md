@@ -2,7 +2,7 @@
 
 A Rust visual programming project for typed calculations, state, events and services, with planned desktop and headless execution and installable expansion packages.
 
-The working code is [orange-model](app/crates/orange-model): graph documents, transactions/undo, indexes, signatures, copy/paste, typed values, types with generic inference and converters, and read-only connection, provider-resolution and input validation. **Next is function and control-flow analysis in the validator (WU-00/00d)**; these initial passes do not approve a graph for execution. The compiler, executor, desktop app and package host are still to be implemented. OrangeEditor is a foundation: the core has no UI, window or engine dependency, and the editor UI will be a separate egui library ([ADR-02, ADR-21](docs/08-decisions.md)).
+The working code is [orange-model](app/crates/orange-model): graph documents, transactions/undo, indexes, signatures, copy/paste, typed values, types with generic inference and converters, and read-only connection, provider-resolution, input and graph-local function analysis. **Next is contextual intrinsic projection and control-flow analysis in the validator (WU-00/00d)**; these individual passes do not approve a graph for execution. The compiler and executor remain to be implemented. Current work prioritizes a tested headless core before concrete host services and editor integration. OrangeEditor is a foundation: the core has no UI, window or engine dependency, and the editor UI will be a separate egui library ([ADR-02, ADR-21](docs/08-decisions.md)).
 
 ## Development
 

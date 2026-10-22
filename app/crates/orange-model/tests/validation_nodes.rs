@@ -81,6 +81,7 @@ fn snapshot(ty: &str) -> Value {
 fn concrete_contract() -> GenericDefinition {
     GenericDefinition {
         kind: NodeKind::Pure,
+        suspends: None,
         type_params: vec![],
         ports: vec![
             serde_json::from_value(json!({
@@ -205,6 +206,7 @@ fn generic_resolution_uses_fresh_evidence_instead_of_cached_type_args() {
         definition(),
         GenericDefinition {
             kind: NodeKind::Pure,
+            suspends: None,
             type_params: vec![TypeParam {
                 name: "T".into(),
                 constraints: vec![],
@@ -336,6 +338,7 @@ fn intrinsic_data_port_supplies_fresh_generic_inference_evidence() {
         definition(),
         GenericDefinition {
             kind: NodeKind::Pure,
+            suspends: None,
             type_params: vec![TypeParam {
                 name: "T".into(),
                 constraints: vec![],
@@ -400,6 +403,7 @@ fn combined_template_and_argument_depth_is_a_complexity_diagnostic() {
         definition(),
         GenericDefinition {
             kind: NodeKind::Pure,
+            suspends: None,
             type_params: vec![TypeParam {
                 name: "T".into(),
                 constraints: vec![],

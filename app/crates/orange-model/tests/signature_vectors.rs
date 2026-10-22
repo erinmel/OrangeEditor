@@ -127,6 +127,7 @@ fn g29_missing_package_keeps_snapshot_and_edges_and_drift_finds_orphans() {
         drift,
         SignatureDrift {
             kind_changed: false,
+            suspension_changed: false,
             removed: vec!["value".parse().unwrap()],
             added: vec!["message".parse().unwrap()],
             changed: vec![],

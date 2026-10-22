@@ -8,6 +8,8 @@ Success means a third party can install an OBS expansion into the open applicati
 
 Priority: **M** required for 1.0; **S** planned after 1.0. Phase: **P1** experiments, **P2** graph/expansion foundation, **P3** editor/base language, **P4** files/connections/protocols, **P5** audio/integrations, **P6** graphics/advanced expansion. P0 is this planning delivery. Each catalog acceptance criterion is an observable contract, supplemented by [NFR gates](06-quality-and-validation.md). Validation IDs Vxx map to test families in that document.
 
+**Core-first delivery sequence (selected for the current implementation milestone).** Finish graph validation and compilation, then implement and test headless deterministic execution for pure math/logic, seeded random, and a reference runtime using a virtual clock, structured loops, cancellation, and explicit resource ownership. Typed public service ports are exercised through in-memory adapters. Defer concrete HTTP, file, and audio backend adapters, package-host composition, and editor/window integration until a core boundary requires focused evidence. This sequencing does not remove the broader M requirements or redefine 1.0; it is not evidence that the G2 API is frozen or that any runtime gate has passed.
+
 ## Glossary
 
 | Term | Meaning |
