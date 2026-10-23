@@ -442,7 +442,7 @@ fn node_references<'a>(
     registry: &'a RegistrySnapshot,
     node: &'a NodeInstance,
 ) -> Box<dyn Iterator<Item = (&'a ReferenceField, Result<DeclId, ReferenceError>)> + 'a> {
-    let usable = if crate::document::is_intrinsic_definition(node.definition.id.as_str()) {
+    let usable = if crate::catalog::is_intrinsic(node.definition.id.as_str()) {
         node.provider.is_none() && node.definition.version == 1 && node.config_version == 1
     } else {
         node.provider.is_some()

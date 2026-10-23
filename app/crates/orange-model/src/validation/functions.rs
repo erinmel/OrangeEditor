@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::catalog::{ReferenceKind, RegistrySnapshot};
+use crate::catalog::{ReferenceKind, RegistrySnapshot, intrinsic, is_intrinsic};
 use crate::document::{GraphDocument, NodeKind, SignatureSnapshot, Suspends, VarScope};
 use crate::edit::DeclId;
 use crate::id::{FunctionId, NodeId, VariableId};
@@ -177,7 +177,7 @@ pub fn analyze_functions(
 
         for node in function.body.nodes.values() {
             let definition = node.definition.id.as_str();
-            if is_function_intrinsic_id(definition)
+            if is_intrinsic(definition)
                 && (node.provider.is_some()
                     || node.definition.version != 1
                     || node.config_version != 1)
@@ -226,8 +226,9 @@ pub fn analyze_functions(
                     continue;
                 }
             }
-            if is_function_intrinsic_id(definition) && definition != "core/call" {
-                let Some((kind, suspends)) = core_kind_and_suspension(definition) else {
+            if is_intrinsic(definition) && definition != "core/call" {
+                let Some((kind, suspends)) = intrinsic(definition).and_then(|rule| rule.summary)
+                else {
                     emit_at(
                         &mut result,
                         DiagnosticCode::FunctionMetadataUnavailable,
@@ -495,36 +496,6 @@ fn is_marker(node: &crate::document::NodeInstance) -> bool {
             node.definition.id.as_str(),
             "core/function-entry" | "core/function-outputs" | "core/return"
         )
-}
-
-fn core_kind_and_suspension(id: &str) -> Option<(NodeKind, Suspends)> {
-    let kind = match id {
-        "core/yield" | "core/wait" => return Some((NodeKind::Async, Suspends::Always)),
-        "core/count" | "core/while" | "core/for-each" => {
-            return Some((NodeKind::Iterator, Suspends::Maybe));
-        }
-        "core/function-entry" | "core/function-outputs" | "core/return" => return None,
-        "core/select" | "core/and" | "core/or" | "core/coalesce" | "core/try" => NodeKind::Pure,
-        "core/set-variable" | "core/update-variable" => NodeKind::Action,
-        "core/get-variable" => NodeKind::Volatile,
-        "core/branch" | "core/switch" | "core/sequence" | "core/fork" | "core/break"
-        | "core/continue" | "core/gate" | "core/do-once" | "core/flip-flop" => NodeKind::Action,
-        _ => return None,
-    };
-    Some((kind, Suspends::Never))
-}
-
-fn is_function_intrinsic_id(id: &str) -> bool {
-    matches!(
-        id,
-        "core/call"
-            | "core/function-entry"
-            | "core/function-outputs"
-            | "core/return"
-            | "core/get-variable"
-            | "core/set-variable"
-            | "core/update-variable"
-    ) || super::ports::is_intrinsic_definition(id)
 }
 
 fn core_variable_write(

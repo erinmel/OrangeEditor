@@ -6,14 +6,15 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::intrinsics::{core_reference, intrinsic_definitions};
+use super::intrinsics::intrinsic_definitions;
+use super::language::intrinsic_reference;
 use super::{
     ContractError, NodeContract, NodeDefinition, Ports, ProviderDescriptor, ProviderKey,
     ReferenceError, ReferenceField, ReferenceKind, TypeArgs, VariableAccess,
 };
 use crate::config_pointer::pointer_parts;
 use crate::conversion::{ConverterRegistry, ConverterRegistryBuilder};
-use crate::document::{DefinitionRef, is_intrinsic_definition};
+use crate::document::DefinitionRef;
 use crate::document::{
     GraphDocument, NodeInstance, OutputSource, PortDescriptor, PortKind, VarScope,
 };
@@ -193,7 +194,7 @@ impl RegistryBuilder {
 
 fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), RegistryError> {
     let id = &definition.definition.id;
-    if !intrinsic && (id.is_core() || is_intrinsic_definition(id.as_str())) {
+    if !intrinsic && id.is_core() {
         return Err(RegistryError::CoreNamespace(id.clone()));
     }
     let mut pointers = BTreeSet::new();
@@ -339,16 +340,15 @@ impl RegistrySnapshot {
     }
 
     /// The single parser for identity references in node config: the registered definition's
-    /// `references`, or the fixed core table for core IDs without a definition.
+    /// `references`, or the language table's field for an intrinsic without a definition.
     pub fn references<'a>(
         &'a self,
         node: &'a NodeInstance,
     ) -> impl Iterator<Item = (&'a ReferenceField, Result<DeclId, ReferenceError>)> + 'a {
         let fields = match self.definition(&node.definition) {
             Some(definition) => definition.references.as_slice(),
-            None => {
-                core_reference(node.definition.id.as_str()).map_or(&[][..], std::slice::from_ref)
-            }
+            None => intrinsic_reference(node.definition.id.as_str())
+                .map_or(&[][..], std::slice::from_ref),
         };
         fields
             .iter()
@@ -696,7 +696,7 @@ mod tests {
     }
 
     #[test]
-    fn core_ids_without_a_definition_use_the_core_reference_table() {
+    fn core_ids_without_a_definition_use_the_language_table() {
         let snapshot = RegistrySnapshot::core(origin());
         let variable = VARIABLE.parse().unwrap();
         let get = node(

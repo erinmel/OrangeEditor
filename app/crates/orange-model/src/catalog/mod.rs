@@ -3,6 +3,7 @@
 
 pub mod definition;
 pub(crate) mod intrinsics;
+pub(crate) mod language;
 pub mod provider;
 pub mod snapshot;
 
@@ -10,5 +11,6 @@ pub use definition::{
     ContractError, NodeContract, NodeDefinition, Ports, ReferenceError, ReferenceField,
     ReferenceKind, TypeArgs, VariableAccess,
 };
+pub(crate) use language::{intrinsic, is_intrinsic};
 pub use provider::{ProviderDescriptor, ProviderKey};
 pub use snapshot::{RegistryBuilder, RegistryError, RegistrySnapshot};

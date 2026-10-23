@@ -4,6 +4,7 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
+use crate::catalog::{intrinsic, is_intrinsic};
 use crate::document::{GraphDocument, OutputSource, PortDescriptor, PortRef, SignatureSnapshot};
 use crate::id::{NodeId, PortId};
 
@@ -32,7 +33,7 @@ pub(crate) fn lookup_port(
     let definition = node.definition.id.as_str();
     let snapshot = match resolved.get(&port.node) {
         Some(snapshot) => snapshot,
-        None if is_intrinsic_definition(definition) => {
+        None if is_intrinsic(definition) => {
             return Err(PortLookupError::MissingMetadata);
         }
         None => node
@@ -42,9 +43,10 @@ pub(crate) fn lookup_port(
             .ok_or(PortLookupError::MissingMetadata)?,
     };
 
-    // Break and Continue terminate the current region; the generic Action default
-    // outcome is intentionally absent for these control intrinsics.
-    if matches!(definition, "core/break" | "core/continue") && port.port.port().as_str() == "then" {
+    // A terminator (Break, Continue) ends its region, so it has no `then` outcome.
+    if port.port.port().as_str() == "then"
+        && intrinsic(definition).is_some_and(|rule| rule.terminator)
+    {
         return Err(PortLookupError::UnknownPort);
     }
 
@@ -84,11 +86,6 @@ pub(crate) fn lookup_port(
     }
     implicit_port(snapshot, port.port.port()).ok_or(PortLookupError::UnknownPort)
 }
-
-/// Whether an ID is a language intrinsic, independent of whether this slice has a
-/// complete descriptor for it yet. Later validator passes use this to avoid treating
-/// arbitrary `core/` IDs as trusted intrinsics.
-pub(crate) use crate::document::is_intrinsic_definition;
 
 pub(crate) fn implicit_port(snapshot: &SignatureSnapshot, id: &PortId) -> Option<PortDescriptor> {
     if !snapshot.declares_port(id) {

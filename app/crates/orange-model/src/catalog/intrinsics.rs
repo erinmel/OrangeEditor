@@ -1,8 +1,8 @@
-//! Built-in control nodes and variable access registered as data (11 §8.4).
+//! Port layouts of the intrinsics this core version registers (11 §8.4). Their identity and
+//! fixed facts are in `language`.
 
-use std::sync::LazyLock;
-
-use super::{NodeDefinition, Ports, ReferenceField, ReferenceKind, VariableAccess};
+use super::language::intrinsic_reference;
+use super::{NodeDefinition, Ports, VariableAccess};
 use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, Suspends};
 use crate::id::TypeExpr;
 
@@ -26,7 +26,7 @@ fn definition(
         suspends,
         type_params: Vec::new(),
         ports: Ports::Declared(ports),
-        references: Vec::new(),
+        references: intrinsic_reference(id).into_iter().cloned().collect(),
         specializations: None,
         config_schema: None,
     }
@@ -36,10 +36,6 @@ fn definition(
 fn variable_definition(id: &str, kind: NodeKind, access: VariableAccess) -> NodeDefinition {
     NodeDefinition {
         ports: Ports::Variable(access),
-        references: vec![ReferenceField {
-            pointer: "/variable".to_owned(),
-            kind: ReferenceKind::Variable,
-        }],
         ..definition(id, kind, Some(Suspends::Never), Vec::new())
     }
 }
@@ -116,26 +112,4 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
         ),
         variable_definition("core/set-variable", Action, VariableAccess::Write),
     ]
-}
-
-/// Reference field of a core ID with no registered definition yet, by ID. Registered
-/// definitions (Get and Set Variable) declare their own.
-pub(crate) fn core_reference(id: &str) -> Option<&'static ReferenceField> {
-    static TABLE: LazyLock<[ReferenceField; 3]> = LazyLock::new(|| {
-        let field = |pointer: &str, kind| ReferenceField {
-            pointer: pointer.to_owned(),
-            kind,
-        };
-        [
-            field("/function", ReferenceKind::Function),
-            field("/variable", ReferenceKind::Variable),
-            field("/event", ReferenceKind::Event),
-        ]
-    });
-    match id {
-        "core/call" => Some(&TABLE[0]),
-        "core/update-variable" | "core/set-shared" | "core/update-shared" => Some(&TABLE[1]),
-        "core/on-event" | "core/emit" | "core/await-event" => Some(&TABLE[2]),
-        _ => None,
-    }
 }

@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs};
+use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs, is_intrinsic};
 use crate::document::{GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends};
 use crate::error::IdError;
 use crate::id::{NodeId, PortKey};
@@ -15,7 +15,6 @@ use crate::types::{TypeRegistry, TypeResolveError};
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
-use super::ports::is_intrinsic_definition;
 
 /// Results of resolving nodes against immutable host metadata.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -117,7 +116,7 @@ fn preflight_node(
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> bool {
-    if is_intrinsic_definition(node.definition.id.as_str()) {
+    if is_intrinsic(node.definition.id.as_str()) {
         if node.provider.is_some() {
             unresolved(
                 node.id,

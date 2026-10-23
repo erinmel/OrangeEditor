@@ -19,7 +19,6 @@ pub mod literal;
 
 mod declaration;
 mod graph;
-mod intrinsics;
 mod node;
 mod port;
 
@@ -37,7 +36,6 @@ pub use port::{
 };
 
 pub(crate) use graph::fresh_state_id;
-pub(crate) use intrinsics::is_intrinsic_definition;
 
 use serde_json::{Map, Value as Json};
 
