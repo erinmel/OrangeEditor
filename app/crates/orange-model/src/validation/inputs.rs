@@ -40,6 +40,23 @@ pub fn validate_inputs(
         let mut candidates = Vec::new();
 
         for descriptor in &snapshot.ports {
+            if let Some(bounds) = descriptor.variadic {
+                let count = node
+                    .variadic
+                    .get(&descriptor.port_id)
+                    .map_or(0, |state| state.order.len());
+                if count < usize::from(bounds.min)
+                    || bounds.max.is_some_and(|max| count > usize::from(max))
+                {
+                    diagnostics.push(diagnostic(
+                        DiagnosticCode::VariadicCount,
+                        Severity::Error,
+                        node_id,
+                        PortKey::new(descriptor.port_id.clone(), None),
+                        origin,
+                    ));
+                }
+            }
             if descriptor.direction != PortDirection::Input || descriptor.kind != PortKind::Data {
                 continue;
             }

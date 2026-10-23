@@ -129,7 +129,7 @@ Order: connected edge → instance literal → definition default → `None` for
 
 ### 4.5 Variadic and dynamic ports
 
-- A finite definition range includes both endpoints; `min == max` and `0..0` are valid, and `max: null` remains unbounded. The registry checks only that `min` does not exceed a finite `max`; it does not enforce the number of dynamic instance ports here.
+- A finite definition range includes both endpoints; `min == max` and `0..0` are valid, and `max: null` remains unbounded. Registry publication checks that `min` does not exceed a finite `max`. Validation checks each resolved variadic port against its node's persisted instance count (`order.len()`, absent state counts as zero), for input and output ports alike. Counts below `min` or above a finite `max` report `E-VARIADIC-COUNT` on the node and base port. Keys, next-counter values, connected edges and literals do not change the count. Unresolved nodes are skipped until metadata resolution succeeds.
 - Variadic instance ports use stable keys `item#k`. `k` is a per-node counter that is never reused, so inserting an item in the middle does not rewrite edges. Order is the persisted instance order, not `k`.
 - Ports that depend on config or type arguments (record split, gRPC method fields) come from a **declarative port template** that the host evaluates. No guest code runs to compute ports, which keeps the "opening a document executes nothing" rule ([03](03-data-and-execution.md)).
 - Every non-intrinsic node persists a resolved **signature snapshot** ([12 §3](12-graph-data-structures.md)). A missing package still shows ports and edges. If re-resolution differs from the snapshot, it produces a diagnostic. Edges to vanished ports become **orphan edges**: preserved, displayed and not compiled.
@@ -551,9 +551,11 @@ Compile diagnostics are `E-` (blocks compiling the affected region) or `W-` (com
 
 Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_args` and safe English fallback per [13](13-internationalization.md); suggested-fix text is translatable while its command ID stays stable. Existing codes and severity never depend on locale. Golden expectations assert codes, subject IDs, arguments and fix IDs, excluding rendered prose. Package catalogue failures use the separate host/package diagnostic codes in 13, not graph compilation errors.
 
+`E-VARIADIC-COUNT` uses the core origin, message key `core/graph-variadic-count`, empty message arguments and safe fallback "The number of variadic port instances is outside the allowed range." The subject identifies the node and base port. Saved out-of-range state remains editable; validation does not rewrite it.
+
 | Group | Codes |
 |---|---|
-| Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
+| Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-VARIADIC-COUNT`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
 | Resolution | `E-SIGNATURE-MISSING`, `E-PROVIDER-MISSING`, `E-PACKAGE-LOCK-MISSING`, `E-PROVIDER-UNAVAILABLE`, `E-DEPENDENCY-UNAVAILABLE`, `E-INTRINSIC-UNSUPPORTED`, `E-CONVERTER-CONFIG`, `E-CONVERTER-ENTRY`, `E-CONVERTER-OPTIONS` |
 | Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-TYPE-COMPLEXITY`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
 | Regions and availability | `E-REGION-AMBIGUOUS`, `E-REGION-ESCAPE`, `E-UNAVAILABLE-VALUE`, `E-CROSS-ACTIVATION`, `E-BREAK-OUTSIDE-LOOP`, `E-ZONE-STRUCTURE`, `W-UNREACHABLE` |

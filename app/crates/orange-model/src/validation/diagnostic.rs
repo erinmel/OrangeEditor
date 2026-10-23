@@ -54,6 +54,8 @@ pub enum DiagnosticCode {
     NoSpecialization,
     #[serde(rename = "E-INPUT-REQUIRED")]
     InputRequired,
+    #[serde(rename = "E-VARIADIC-COUNT")]
+    VariadicCount,
     #[serde(rename = "E-LITERAL-TYPE")]
     LiteralType,
     #[serde(rename = "E-HANDLE-LITERAL")]
@@ -118,6 +120,7 @@ impl DiagnosticCode {
             Self::ConstraintUnsatisfied => "E-CONSTRAINT-UNSATISFIED",
             Self::NoSpecialization => "E-NO-SPECIALIZATION",
             Self::InputRequired => "E-INPUT-REQUIRED",
+            Self::VariadicCount => "E-VARIADIC-COUNT",
             Self::LiteralType => "E-LITERAL-TYPE",
             Self::HandleLiteral => "E-HANDLE-LITERAL",
             Self::LiteralShadowed => "W-LITERAL-SHADOWED",
@@ -163,6 +166,7 @@ impl DiagnosticCode {
             Self::ConstraintUnsatisfied => "core/graph-constraint-unsatisfied",
             Self::NoSpecialization => "core/graph-no-specialization",
             Self::InputRequired => "core/graph-input-required",
+            Self::VariadicCount => "core/graph-variadic-count",
             Self::LiteralType => "core/graph-literal-type",
             Self::HandleLiteral => "core/graph-handle-literal",
             Self::LiteralShadowed => "core/graph-literal-shadowed",
@@ -223,6 +227,9 @@ impl DiagnosticCode {
                 "Provider does not support the resolved type arguments.".into()
             }
             Self::InputRequired => "Required input has no value.".into(),
+            Self::VariadicCount => {
+                "The number of variadic port instances is outside the allowed range.".into()
+            }
             Self::LiteralType => "Input literal does not match the declared port type.".into(),
             Self::HandleLiteral => "Handle ports cannot have literals.".into(),
             Self::LiteralShadowed => "Input literal is shadowed by a connected edge.".into(),
@@ -629,6 +636,27 @@ mod tests {
             DiagnosticCode::UpdateUnsupported
         );
         assert_eq!(wire["message_key"], "core/graph-update-unsupported");
+        assert_eq!(wire["message_args"], json!({}));
+    }
+
+    #[test]
+    fn variadic_count_diagnostic_has_stable_empty_argument_envelope() {
+        let diagnostic =
+            Diagnostic::new(DiagnosticCode::VariadicCount, Subject::default(), &origin());
+        assert_eq!(diagnostic.code.as_str(), "E-VARIADIC-COUNT");
+        assert_eq!(diagnostic.message_key, "core/graph-variadic-count");
+        assert_eq!(
+            diagnostic.message,
+            "The number of variadic port instances is outside the allowed range."
+        );
+        assert!(diagnostic.message_args.is_empty());
+        let wire = to_value(&diagnostic).unwrap();
+        assert_eq!(wire["code"], "E-VARIADIC-COUNT");
+        assert_eq!(
+            serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+            DiagnosticCode::VariadicCount
+        );
+        assert_eq!(wire["message_key"], "core/graph-variadic-count");
         assert_eq!(wire["message_args"], json!({}));
     }
 }
