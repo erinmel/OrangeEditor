@@ -8,9 +8,9 @@ Three temporary Rust probes reproduced gaps before their implementation slices:
 
 - **Converter resolution (FR-44/45/46; ADR-16):** i32→i64 connection planning/application inserts `core/convert`, but combined validation marks the inserted converter incomplete. Core selection reports `E-PROVIDER-MISSING`; package selection reports `E-PROVIDER-UNAVAILABLE`. The node catalogue has no converter-derived contract resolution. Assertions target the converter's identity; the endpoint fixtures do not prove a wholly valid graph.
 - **Declaration invalidation (FR-03/12/44/45; ADR-15/16):** after Get(i64)→generic Add persists `T=i64`, `apply_inferred(UpsertVariable(f64))` returned no issues and left the saved generic binding at i64; fresh component inference derived f64. Contract lookup itself was fresh. C2 below addresses persistence with typed-reference discovery in both document states; this probe is historical, not evidence of an executing incorrect type.
-- **Definition legality (FR-44; ADR-13/16):** an available pure definition with an exec output passes registry construction and combined validation with no diagnostics. Type-presence checks exist, but node-kind/port legality is not fully checked at registration or by the partial validator.
+- **Definition legality (FR-44; ADR-13/16):** an available pure definition with an exec output passed registry construction and combined validation with no diagnostics. C3 now rejects that declaration at registry publication; broader node-kind/port legality remains open for later bounded checks.
 
-Probes asserted the observed defects and passed (3 tests); they are not correctness acceptance tests. Their temporary test target was removed after reproduction, with source retained in ignored working artifacts. C1 addresses converter resolution and C2 declaration invalidation with desired-behavior regressions; definition legality remains open for C3. No production Rust, public API, dependency, lockfile or original review was changed by this reassessment. Documentation corrections cover current crate/validator status, fresh connection resolution, type-expression storage, existing explicit-migration policy and the unimplemented ADR-21 domain seam. Trace: FR-03/12/44–47, ADR-06/07/13/15/16/21; no change to selected semantics or delivery scope.
+Probes asserted the observed defects and passed (3 tests); they are not correctness acceptance tests. Their temporary test target was removed after reproduction, with source retained in ignored working artifacts. C1, C2 and the first bounded C3 publication rule now have desired-behavior regressions; broader definition legality remains future work. No production Rust, public API, dependency, lockfile or original review was changed by this reassessment. Documentation corrections cover current crate/validator status, fresh connection resolution, type-expression storage, existing explicit-migration policy and the unimplemented ADR-21 domain seam. Trace: FR-03/12/44–47, ADR-06/07/13/15/16/21; no change to selected semantics or delivery scope.
 
 Environment: Windows x86_64 MSVC, active rustup toolchain `1.99.1-x86_64-pc-windows-msvc`; `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, LLVM 23.1.1; `cargo 1.99.1 (5f94df478 2026-08-27)`; Node.js `v24.18.0`. Default workspace features; direct feature selection from `cargo tree --locked -e features --depth 1`: indexmap default/serde, serde default/derive, serde_json default/preserve_order, sha2 default, thiserror default, uuid default/serde; development dependency proptest default. Cargo.lock SHA-256: `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
 
@@ -522,3 +522,21 @@ These checks cover the model crate only. They do not establish runtime, UI, pack
 Root C1 integration verification (2026-10-23): Rust 1.99.1, default features and unchanged Cargo.lock SHA-256 39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4. Independently ran cargo test --workspace --locked --offline (315 tests passed), cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, Rustdoc with warnings denied, dependency-boundary guard and git diff --check; all completed successfully. Windows incremental cache hard-link warnings fell back to copying. No remote CI/MSRV/native hardware or runtime gate result is implied.
 
 Root C2 integrated verification (2026-10-23): independently reviewed invalidation and new tests; cargo test --workspace --locked --offline passed 319 tests. Formatting, Clippy with warnings denied, Rustdoc with warnings denied, dependency-boundary guard and whitespace checks passed. Rust 1.99.1/default features/unchanged lock as C1. No remote/platform/NFR result claimed.
+
+### Pure-definition exec-port publication rule (C3, 2026-10-23)
+
+`RegistryBuilder::build` now rejects an explicitly declared exec port on a `pure` definition with `RegistryError::PureExecutionPort`, carrying the definition ID and offending port ID. This is the first narrow definition-shape rule only: valid pure data definitions, package action outcome ports and host-owned control intrinsics still publish; saved authoring documents remain loadable under their existing codec rules. Remaining kind/source/direction/default/optional/variadic/lazy/suspension legality is not claimed here. Trace: FR-44; ADR-13/16; 11 §3–4 and 12 §4/§8.
+
+The registry already resolves and checks constraint proof metadata; arbitrary package constraint kernels are a separate host/runtime integration and are not executed by `orange-model`. No dependency or lockfile change.
+
+Toolchain: Rust/Cargo 1.99.1, Windows x86_64 MSVC, default workspace features and locked `Cargo.lock`. Commands run from the repository root:
+
+| Command | Result |
+|---|---|
+| `cargo test -p orange-model catalog::snapshot::tests --locked` | pass (18 tests) |
+| `cargo fmt --all --check` | pass |
+| `cargo test --workspace --locked` | pass |
+
+No MSRV 1.97.1, other-platform, remote CI, runtime or NFR evidence is claimed.
+
+Root C3 integrated verification (2026-10-23): reviewed registry rule and valid/invalid regressions; independently ran cargo test --workspace --locked --offline (321 tests passed), formatting, Clippy with warnings denied, Rustdoc with warnings denied, dependency-boundary guard and git diff --check successfully. Rust 1.99.1/default features/unchanged lock. This closes the reproduced pure/exec publication defect; other definition legality groups and full validation remain planned.

@@ -19,7 +19,7 @@ use crate::conversion::{
 };
 use crate::document::DefinitionRef;
 use crate::document::{
-    GraphDocument, NodeInstance, OutputSource, PortDescriptor, PortKind, VarScope,
+    GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, PortKind, VarScope,
 };
 use crate::edit::DeclId;
 use crate::id::{DefinitionId, PortId};
@@ -49,6 +49,11 @@ pub enum RegistryError {
         "definition `{definition}` port `{port}` must have a type exactly when it is a data or event port"
     )]
     PortType {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error("pure definition `{definition}` cannot declare execution port `{port}`")]
+    PureExecutionPort {
         definition: DefinitionId,
         port: PortId,
     },
@@ -242,6 +247,12 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         }
         if port.ty.is_some() != matches!(port.kind, PortKind::Data | PortKind::Event) {
             return Err(RegistryError::PortType {
+                definition: id.clone(),
+                port: port.port_id.clone(),
+            });
+        }
+        if definition.kind == NodeKind::Pure && port.kind == PortKind::Exec {
+            return Err(RegistryError::PureExecutionPort {
                 definition: id.clone(),
                 port: port.port_id.clone(),
             });
@@ -661,7 +672,9 @@ mod tests {
         let reserved = || vec![PortDescriptor::exec_out("then")];
         let result = build(builder().definition(definition("acme/add", &[], reserved())));
         assert!(matches!(result, Err(RegistryError::ReservedPort { .. })));
-        assert!(build(builder().intrinsic(definition("core/mine", &[], reserved()))).is_ok());
+        let mut intrinsic = definition("core/mine", &[], reserved());
+        intrinsic.kind = NodeKind::Action;
+        assert!(build(builder().intrinsic(intrinsic)).is_ok());
     }
 
     #[test]
@@ -674,6 +687,35 @@ mod tests {
             let result = build(builder().definition(definition("acme/add", &[], ports)));
             assert!(matches!(result, Err(RegistryError::PortType { .. })));
         }
+    }
+
+    #[test]
+    fn pure_definitions_cannot_publish_execution_ports() {
+        let result = build(builder().definition(definition(
+            "acme/pure-with-exec",
+            &[],
+            vec![PortDescriptor::exec_out("out")],
+        )));
+        assert_eq!(
+            result.unwrap_err(),
+            RegistryError::PureExecutionPort {
+                definition: "acme/pure-with-exec".parse().unwrap(),
+                port: "out".parse().unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn pure_data_action_and_host_intrinsic_definitions_still_publish() {
+        let pure = definition(
+            "acme/pure-data",
+            &[],
+            vec![port("value", Some("core/i64@1"))],
+        );
+        let mut action = definition("acme/action", &[], vec![PortDescriptor::exec_out("done")]);
+        action.kind = NodeKind::Action;
+        assert!(build(builder().definition(pure).definition(action)).is_ok());
+        assert!(build(builder()).is_ok());
     }
 
     #[test]

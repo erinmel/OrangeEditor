@@ -59,6 +59,8 @@ flowchart LR
 
 A definition has exactly one `kind`. Ports inherited from a kind (§4.1) are implicit and MUST NOT be declared.
 
+A `pure` definition MUST NOT declare a port of kind `exec`. Registry publication rejects this shape with a typed registration error identifying the definition and offending port. This rule checks definition metadata only; it does not discard malformed saved documents, and valid action outcomes and host-owned control intrinsics retain their exec ports.
+
 | Kind | Exec ports | Suspends | State / effects | Memo | Plugin may contribute | Examples |
 |---|---|---|---|---|---|---|
 | `pure` | none | never | none | stability class | yes | add, concat, parse JSON, format |
@@ -93,6 +95,8 @@ A definition has exactly one `kind`. Ports inherited from a kind (§4.1) are imp
 | `lazy` | Intrinsics only in v1 (`select`, `and`, `or`, `coalesce`, `try`). |
 | `group`, `label`, `description`, `editor` | Presentation only; `label`/`description` use TextRef ([13 §2](13-internationalization.md)); never semantic. |
 | `sensitivity` | `normal` / `sensitive`; drives redaction in traces ([05](05-services-and-platforms.md)). |
+
+Definition publication also checks kind/port compatibility: in particular, the explicit exec-port prohibition for `pure` definitions in §3. Other dynamic instance, region and execution checks remain validation/compiler responsibilities.
 
 Implicit ports by kind: action/async/iterator/control get `in` (unless the intrinsic names its inputs), `failed` and `error`. Action/async/entry with no declared outcome outs get `then`. Async and iterator get `cancelled`. A definition with declared outcome outs (for example `acquired` and `busy`) replaces `then`. **Exactly one outcome out fires per execution.** `failed` and `cancelled` are outcomes too.
 
