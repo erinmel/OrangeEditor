@@ -905,7 +905,7 @@ mod tests {
             );
             definition.kind = kind;
             if kind == NodeKind::Iterator {
-                definition.suspends = Some(crate::document::Suspends::Never);
+                definition.suspends = Some(crate::document::Suspends::Maybe);
             }
             registry_builder = if intrinsic {
                 registry_builder.intrinsic(definition)
