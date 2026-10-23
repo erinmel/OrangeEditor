@@ -1,5 +1,33 @@
 # Tooling, environment and research register
 
+## Foundation review reassessment (2026-10-23)
+
+Reviewed the complete user-provided foundation review against source `b287dab` on `refactor/typed-port-descriptor`, current contracts and ADRs. Its Get/Set edge, static connection-resolution, duplicated intrinsic-rule and unsupported-intrinsic diagnostic findings are addressed by the later language-rules slice recorded below. The original review remains unchanged. Its single-run full-validation timing observations were not reproduced and are not NFR-15 evidence: W9 requires semantic-edit distributions and affected-scope counts.
+
+Three temporary Rust probes reproduced open gaps:
+
+- **Converter resolution (FR-44/45/46; ADR-16):** i32→i64 connection planning/application inserts `core/convert`, but combined validation marks the inserted converter incomplete. Core selection reports `E-PROVIDER-MISSING`; package selection reports `E-PROVIDER-UNAVAILABLE`. The node catalogue has no converter-derived contract resolution. Assertions target the converter's identity; the endpoint fixtures do not prove a wholly valid graph.
+- **Declaration invalidation (FR-03/12/44/45; ADR-15/16):** after Get(i64)→generic Add persists `T=i64`, `apply_inferred(UpsertVariable(f64))` returns no issues and leaves the saved generic binding at i64; fresh component inference derives f64. Contract lookup itself is fresh. Declaration-dependent inference persistence is missing; this is not evidence of executing an incorrect type.
+- **Definition legality (FR-44; ADR-13/16):** an available pure definition with an exec output passes registry construction and combined validation with no diagnostics. Type-presence checks exist, but node-kind/port legality is not fully checked at registration or by the partial validator.
+
+Probes asserted the observed defects and passed (3 tests); they are not correctness acceptance tests. Their temporary test target was removed after reproduction, with source retained in ignored working artifacts until the findings are addressed. Follow-up fixes require focused desired-behavior regressions. No production Rust, public API, dependency, lockfile or original review was changed by this reassessment. Documentation corrections cover current crate/validator status, fresh connection resolution, type-expression storage, existing explicit-migration policy and the unimplemented ADR-21 domain seam. Trace: FR-44–47, ADR-06/07/15/16/21; no change to selected semantics or delivery scope.
+
+Environment: Windows x86_64 MSVC, active rustup toolchain `1.99.1-x86_64-pc-windows-msvc`; `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, LLVM 23.1.1; `cargo 1.99.1 (5f94df478 2026-08-27)`; Node.js `v24.18.0`. Default workspace features; direct feature selection from `cargo tree --locked -e features --depth 1`: indexmap default/serde, serde default/derive, serde_json default/preserve_order, sha2 default, thiserror default, uuid default/serde; development dependency proptest default. Cargo.lock SHA-256: `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+| Executed command | Result |
+|---|---|
+| `cargo test -p orange-model --test foundation_review_probe --locked --offline -- --nocapture` | 3 observed-defect probes passed; temporary target subsequently removed |
+| `cargo test --workspace --locked --offline` | 311 tests passed, 0 failed, after removing the probe target; 0 doctests |
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | pass |
+| `$env:RUSTDOCFLAGS = '-D warnings'; cargo doc --workspace --no-deps --locked --offline` | pass |
+| `node tools/check-cargo-metadata.mjs` | pass; core dependency boundary |
+| `git diff --check` | pass |
+
+These checks do not exercise a compiler, runtime, UI, package loader, migration engine or domain extension. No new benchmark, MSRV 1.97.1 run, other-platform run or remote CI verification was performed; no gate is passed. Cargo manifest requirements remain semver ranges, while the recorded lock and locked commands fix this tested resolution.
+
+Warudo was compared using the official [blueprint overview](https://docs.warudo.app/docs/blueprints/overview), [first-blueprint guide](https://docs.warudo.app/docs/blueprints/understanding-blueprints), [node API](https://docs.warudo.app/docs/scripting/api/nodes) and [ports/triggers API](https://docs.warudo.app/docs/scripting/api/ports-and-triggers), retrieved 2026-10-23. This supplies an interaction reference for FR-01/02/04/44/51/52/53 and P-02, not measured usability, performance or version-pinned SDK evidence. Candidate editor refinements remain proposals in ignored working notes; Warudo's scene/integration scope does not expand ADR-22.
+
 Checked 2026-10-20. Distinguish verified environment facts, verified source facts, design decisions and untested dependency candidates. Protocol/platform sources are also linked at the relevant contracts in [05](05-services-and-platforms.md); ADRs identify the decisions they support.
 
 ## Foundation scope revision (2026-10-22)
