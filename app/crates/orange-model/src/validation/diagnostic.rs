@@ -38,6 +38,10 @@ pub enum DiagnosticCode {
     PackageLockMissing,
     #[serde(rename = "E-PROVIDER-UNAVAILABLE")]
     ProviderUnavailable,
+    #[serde(rename = "E-DEPENDENCY-UNAVAILABLE")]
+    DependencyUnavailable,
+    #[serde(rename = "E-INTRINSIC-UNSUPPORTED")]
+    IntrinsicUnsupported,
     #[serde(rename = "E-SIGNATURE-DRIFT")]
     SignatureDrift,
     #[serde(rename = "E-TYPE-AMBIGUOUS")]
@@ -72,6 +76,8 @@ pub enum DiagnosticCode {
     FunctionMetadataUnavailable,
     #[serde(rename = "E-VARIABLE-UNKNOWN")]
     VariableUnknown,
+    #[serde(rename = "E-VARIABLE-SCOPE")]
+    VariableScope,
     #[serde(rename = "E-UPDATE-OPERATION")]
     UpdateOperation,
     #[serde(rename = "E-ENTRY-IN-FUNCTION")]
@@ -96,6 +102,8 @@ impl DiagnosticCode {
             Self::ProviderMissing => "E-PROVIDER-MISSING",
             Self::PackageLockMissing => "E-PACKAGE-LOCK-MISSING",
             Self::ProviderUnavailable => "E-PROVIDER-UNAVAILABLE",
+            Self::DependencyUnavailable => "E-DEPENDENCY-UNAVAILABLE",
+            Self::IntrinsicUnsupported => "E-INTRINSIC-UNSUPPORTED",
             Self::SignatureDrift => "E-SIGNATURE-DRIFT",
             Self::TypeAmbiguous => "E-TYPE-AMBIGUOUS",
             Self::TypeComplexity => "E-TYPE-COMPLEXITY",
@@ -113,6 +121,7 @@ impl DiagnosticCode {
             Self::CallTargetUnknown => "E-CALL-TARGET-UNKNOWN",
             Self::FunctionMetadataUnavailable => "E-FUNCTION-METADATA-UNAVAILABLE",
             Self::VariableUnknown => "E-VARIABLE-UNKNOWN",
+            Self::VariableScope => "E-VARIABLE-SCOPE",
             Self::UpdateOperation => "E-UPDATE-OPERATION",
             Self::EntryInFunction => "E-ENTRY-IN-FUNCTION",
         }
@@ -134,6 +143,8 @@ impl DiagnosticCode {
             Self::ProviderMissing => "core/graph-provider-missing",
             Self::PackageLockMissing => "core/graph-package-lock-missing",
             Self::ProviderUnavailable => "core/graph-provider-unavailable",
+            Self::DependencyUnavailable => "core/graph-dependency-unavailable",
+            Self::IntrinsicUnsupported => "core/graph-intrinsic-unsupported",
             Self::SignatureDrift => "core/graph-signature-drift",
             Self::TypeAmbiguous => "core/graph-type-ambiguous",
             Self::TypeComplexity => "core/graph-type-complexity",
@@ -151,6 +162,7 @@ impl DiagnosticCode {
             Self::CallTargetUnknown => "core/graph-call-target-unknown",
             Self::FunctionMetadataUnavailable => "core/graph-function-metadata-unavailable",
             Self::VariableUnknown => "core/graph-variable-unknown",
+            Self::VariableScope => "core/graph-variable-scope",
             Self::UpdateOperation => "core/graph-update-operation",
             Self::EntryInFunction => "core/graph-entry-in-function",
         }
@@ -177,6 +189,12 @@ impl DiagnosticCode {
             Self::ProviderMissing => "Node has no provider binding.".into(),
             Self::PackageLockMissing => "Node provider package version is not locked.".into(),
             Self::ProviderUnavailable => "Node definition or exact provider is unavailable.".into(),
+            Self::DependencyUnavailable => {
+                "Node cannot be checked because a connected node is unresolved.".into()
+            }
+            Self::IntrinsicUnsupported => {
+                "This core version does not support this language intrinsic yet.".into()
+            }
             Self::SignatureDrift => {
                 "Stored node signature differs from the resolved definition.".into()
             }
@@ -204,6 +222,9 @@ impl DiagnosticCode {
                 "Function body or leaf semantics are unavailable.".into()
             }
             Self::VariableUnknown => "Variable reference is missing, invalid or undeclared.".into(),
+            Self::VariableScope => {
+                "Workspace variables require an asynchronous shared write.".into()
+            }
             Self::UpdateOperation => "Variable update requires a supported operation.".into(),
             Self::EntryInFunction => {
                 "Entry and watch nodes are not permitted in a function.".into()
@@ -478,6 +499,8 @@ pub fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
             left.severity,
             &left.message_key,
             &left.message_args,
+            &left.message_origin,
+            &left.message,
         )
             .cmp(&(
                 &right.subject,
@@ -485,6 +508,8 @@ pub fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
                 right.severity,
                 &right.message_key,
                 &right.message_args,
+                &right.message_origin,
+                &right.message,
             ))
     });
 }
@@ -496,6 +521,24 @@ mod tests {
 
     fn origin() -> HostOrigin {
         HostOrigin::new("1.2.3", format!("sha256:{}", "a".repeat(64))).unwrap()
+    }
+
+    #[test]
+    fn sorting_is_total_so_equal_records_are_adjacent() {
+        let make = |message: &str| {
+            let subject = Subject::new(
+                Some("10000000-0000-4000-8000-000000000001".parse().unwrap()),
+                None,
+                None,
+            );
+            let mut item = Diagnostic::new(DiagnosticCode::PortUnknown, subject, &origin());
+            item.message = message.into();
+            item
+        };
+        let mut items = vec![make("a"), make("b"), make("a")];
+        sort_diagnostics(&mut items);
+        items.dedup();
+        assert_eq!(items, vec![make("a"), make("b")]);
     }
 
     #[test]

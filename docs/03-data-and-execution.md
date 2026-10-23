@@ -91,22 +91,22 @@ The saved graph uses explicit type tags. i64/u64 are decimal strings in JSON, so
 
 Digests above and below are **synthetic format examples**, never installable artifacts or integrity evidence. Unknown JSON fields are preserved under a bounded opaque extension map; unknown major format is opened read-only, not rewritten. Missing providers/codecs preserve raw definition/config/payload/edges with an unresolved diagnostic. App has a basic decoder for the envelope even when custom codecs are absent. No arbitrary code runs simply because a document was opened.
 
-Connection example is workspace-scoped. `options` schema is owned by `org.orange.websocket/profile@1`; OBS is an application-protocol layer on this session, not an alternative transport. The broker may derive OBS challenge authentication without exporting the password to the plugin.
+Connection example is workspace-scoped. `options` schema is owned by `org.orange.websocket/profile@1`; the synthetic local device protocol is an application layer on that session, not an alternative transport. The broker applies the selected generic authentication policy without exporting the token to the plugin.
 
 ```json
 {
   "format": "orange.connection", "format_version": 1,
-  "id": "obs-studio", "scope": "workspace", "revision": 1,
+  "id": "local-device", "scope": "workspace", "revision": 1,
   "adapter": {"id": "org.orange.websocket/client", "schema_version": 1},
-  "endpoint": "ws://127.0.0.1:4455",
+  "endpoint": "ws://127.0.0.1:9001",
   "tls": {"mode": "not-applicable-loopback"},
-  "auth": {"kind": "org.orange.obs/auth-challenge@1", "credential_ref": "credential://user/obs-studio/password"},
+  "auth": {"kind": "org.orange.auth/bearer@1", "credential_ref": "credential://user/local-device/token"},
   "options": {"connect_timeout_ms": 5000, "max_message_bytes": 1048576, "subprotocols": []},
   "retry": {"mode": "connect-only", "max_attempts": 5, "base_delay_ms": 250, "jitter": true}
 }
 ```
 
-WSS/HTTPS is the default for remote endpoints; plaintext loopback is an explicit profile choice suitable for local OBS. A credential reference is an identifier, not permission or possession. Grants bind package identity, profile, operation and destination; importing this profile requires credential remapping. [04](04-expansion-plugins.md) defines a matching OBS package manifest.
+WSS/HTTPS is the default for remote endpoints; plaintext loopback is an explicit profile choice suitable for a user-configured local device. A credential reference is an identifier, not permission or possession. Grants bind package identity, profile, operation and destination; importing this profile requires credential remapping. [04](04-expansion-plugins.md) defines a synthetic expansion manifest; neither example commits the product to a specialized integration.
 
 Graph archive v1 contains `graph.json`, `package-lock.json` if externalized, and optional assets addressed by hashes; metadata remains readable without unpacking executable code. Initial implementation may use a directory bundle for development, with one validated archive transport for sharing. Reject traversal, symlinks/reparse redirects and decompression bombs. Save document plus lock into an immutable bundle generation and atomically replace a small current-generation manifest using a verified per-OS file primitive; never assume replacing populated directories is atomic. Embedded assets are optional, referenced files are not silently copied. Profile/credential storage stays outside the graph archive. [05](05-services-and-platforms.md) defines durability/recovery limits.
 

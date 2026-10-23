@@ -1,8 +1,10 @@
+mod common;
+
+use common::registry::Facts;
 use orange_model::GraphDocument;
-use orange_model::document::{DefinitionRef, NodeKind, ResolvedPort, TypeParam};
-use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
-use orange_model::types::TypeRegistry;
-use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
+use orange_model::catalog::{NodeContract, ProviderKey};
+use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
+use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use serde_json::json;
 
 const SOURCE: &str = "10000000-0000-4000-8000-000000000001";
@@ -74,9 +76,10 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         content_digest: GENERIC_DIGEST.into(),
         id: "generic-impl".into(),
     };
-    let mut providers = ProviderCatalog::default();
-    providers.insert(generic_definition.clone(), 1, generic_provider.clone());
-    providers.insert(
+    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
+    let mut facts = Facts::new(origin);
+    facts.provider(generic_definition.clone(), 1, generic_provider.clone());
+    facts.provider(
         DefinitionRef {
             id: "example/ambiguous".parse().unwrap(),
             version: 1,
@@ -85,14 +88,13 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         generic_provider,
     );
 
-    let mut templates = TemplateCatalog::default();
-    let input: ResolvedPort = serde_json::from_value(json!({
+    let input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
-    templates.insert(
+    facts.definition(
         generic_definition,
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {
@@ -107,13 +109,13 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         id: "example/ambiguous".parse().unwrap(),
         version: 1,
     };
-    let ambiguous_input: ResolvedPort = serde_json::from_value(json!({
+    let ambiguous_input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
-    templates.insert(
+    facts.definition(
         ambiguous_definition,
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {
@@ -124,7 +126,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
             ports: vec![ambiguous_input],
         },
     );
-    templates.insert_specializations(
+    facts.specializations(
         DefinitionRef {
             id: "example/ambiguous".parse().unwrap(),
             version: 1,
@@ -138,14 +140,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         vec![],
     );
 
-    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
-    let report = validate_nodes(
-        &document,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin,
-    );
+    let report = validate_nodes(&document, &facts.snapshot());
 
     assert!(report.incomplete_nodes.contains(&SOURCE.parse().unwrap()));
     assert!(report.diagnostics.iter().any(|diagnostic| {
@@ -166,6 +161,10 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         !report.resolved.contains_key(&GENERIC.parse().unwrap()),
         "a generic contract must not be resolved from an unresolved neighbour's persisted snapshot"
     );
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::DependencyUnavailable
+            && diagnostic.subject.node == Some(GENERIC.parse().unwrap())
+    }));
 }
 
 #[test]
@@ -211,16 +210,16 @@ fn intrinsic_implicit_error_port_supplies_generic_type_evidence() {
         content_digest: GENERIC_DIGEST.into(),
         id: "generic-impl".into(),
     };
-    let mut providers = ProviderCatalog::default();
-    providers.insert(definition.clone(), 1, provider);
-    let input: ResolvedPort = serde_json::from_value(json!({
+    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
+    let mut facts = Facts::new(origin);
+    facts.provider(definition.clone(), 1, provider);
+    let input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
-    let mut templates = TemplateCatalog::default();
-    templates.insert(
+    facts.definition(
         definition,
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {
@@ -231,14 +230,7 @@ fn intrinsic_implicit_error_port_supplies_generic_type_evidence() {
             ports: vec![input],
         },
     );
-    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
-    let report = validate_nodes(
-        &document,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin,
-    );
+    let report = validate_nodes(&document, &facts.snapshot());
     assert!(report.is_valid(), "{:?}", report.diagnostics);
     assert_eq!(
         report.resolved[&GENERIC.parse().unwrap()].ports[0]
@@ -278,14 +270,15 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         id: "example/generic".parse().unwrap(),
         version: 1,
     };
-    let mut templates = TemplateCatalog::default();
-    let input: ResolvedPort = serde_json::from_value(json!({
+    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
+    let mut facts = Facts::new(origin);
+    let input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
-    templates.insert(
+    facts.definition(
         definition.clone(),
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {
@@ -296,7 +289,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
             ports: vec![input],
         },
     );
-    templates.insert_specializations(
+    facts.specializations(
         definition.clone(),
         None,
         ["core/i64@1", "core/i32@1"]
@@ -304,8 +297,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
             .map(|ty| [("T".to_owned(), ty.parse().unwrap())].into())
             .collect(),
     );
-    let mut providers = ProviderCatalog::default();
-    providers.insert(
+    facts.provider(
         definition,
         1,
         ProviderKey {
@@ -315,7 +307,6 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
             id: "generic-impl".into(),
         },
     );
-    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
 
     // Low-level inference delegates this package binding to constraints; it must not
     // consult the core list. Compilation resolution independently requires the lock.
@@ -323,8 +314,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         &document,
         &orange_model::DocIndex::build(&document),
         [node.parse().unwrap()],
-        &templates,
-        &TypeRegistry::core(),
+        &facts.snapshot(),
     );
     assert!(components[0].issues.is_empty());
     assert_eq!(
@@ -332,13 +322,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         "core/f64@1"
     );
 
-    let report = validate_nodes(
-        &document,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin,
-    );
+    let report = validate_nodes(&document, &facts.snapshot());
 
     assert_eq!(
         report

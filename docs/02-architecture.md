@@ -25,6 +25,12 @@ flowchart TD
   bundled --> model
 ```
 
+## Foundation application and general capabilities
+
+ADR-22 selects a usable basic application as well as reusable libraries. The editor, language and general file/network/input/audio capabilities are foundation deliverables. Concrete capability services stay outside model/compiler/runtime; installing a specialized plugin adds domain-specific nodes and event sources through public contracts. OBS, Twitch, browser-canvas servers and website-specific clients are not host responsibilities or release dependencies.
+
+The host owns an input-trigger service and audio capture/playback services. Keyboard, manual/button, timer and package event sources enter the same bounded run-owned event queues; no input hook or audio callback executes graph code. Node configuration and accessible controls are projected through the editor contribution model. Typed callable graphs and insertable event-containing templates follow 11 §14; a visual frame alone supplies neither behavior reuse nor resource ownership.
+
 ## Boundaries
 
 | Crate | Owns | Must not own |
@@ -33,9 +39,9 @@ flowchart TD
 | orange-contracts | Versioned wire/component contracts, errors, handles, permission vocabulary, declarative editor schema, TextRef/MessageRef | Concrete UI widgets or Rust trait objects crossing package boundaries |
 | orange-compiler | Validation, monomorphized type resolution, control/effect regions, compact immutable ExecutionPlan | Network/audio actions, editor state |
 | orange-runtime | Run/activation state, scheduler, variables, continuations, child task/resource ownership, inspection stream | UI or frame dependence |
-| orange-services | File, connection, vault, protocol and audio control services; platform adapter modules | Graph edits or arbitrary plugin UI |
+| orange-services | File, connection, vault, HTTP/WebSocket, input-trigger and audio playback/capture/analysis services; platform adapter modules | Graph edits or arbitrary plugin UI |
 | orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
-| orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Domain-specific OBS/Twitch request logic |
+| orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Specialized integration request logic |
 | orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |
 | orange-editor-ui | egui editor: document commands/history, workspace/panels, view model, accessible interaction model, diagnostics projection | Engine mutation during drawing |
 | orange-desktop | Main thread/window/input, eframe app hosting `orange-editor-ui` | Graph execution scheduler |
@@ -71,7 +77,7 @@ classDiagram
   HostServices --> AudioEngine
 ```
 
-`Kernel`, `FileService`, `CredentialBroker`, `ConnectionManager`, `AudioControl`, `SceneBridge`, `PackageStore` and `Clock` are internal Rust traits for substitution/tests. External components use versioned serialized/component interfaces, not these Rust traits. Kernels come in three shapes ([12 §10](12-graph-data-structures.md)): a pure kernel returns `Result<(), NodeError>`; an action kernel returns `Outcome(OutcomeIx) | Suspend(PendingOp) | Fail(NodeError)`, so it selects exactly one declared outcome; an iterator kernel provides `open/next/close`. Control intrinsics (Branch, Switch, Sequence, Fork, loops) are compiled control instructions, not kernels. Resources are non-forgeable table handles with owner/run/generation checks. Document, registry, plan and run-state layouts are defined in [12](12-graph-data-structures.md), and their semantics in [11](11-graph-language.md). `Value` is immutable or uniquely owned; `VariableStore` is mutated only through runtime commands. `Arc` shares immutable plans/large values; no shared mutable graph behind a lock on the execution path.
+`Kernel`, `FileService`, `CredentialBroker`, `ConnectionManager`, `AudioControl`, `AudioCapture`, `InputTriggers`, `SceneBridge`, `PackageStore` and `Clock` are internal Rust traits for substitution/tests. External components use versioned serialized/component interfaces, not these Rust traits. Kernels come in three shapes ([12 §10](12-graph-data-structures.md)): a pure kernel returns `Result<(), NodeError>`; an action kernel returns `Outcome(OutcomeIx) | Suspend(PendingOp) | Fail(NodeError)`, so it selects exactly one declared outcome; an iterator kernel provides `open/next/close`. Control intrinsics (Branch, Switch, Sequence, Fork, loops) are compiled control instructions, not kernels. Resources are non-forgeable table handles with owner/run/generation checks. Document, registry, plan and run-state layouts are defined in [12](12-graph-data-structures.md), and their semantics in [11](11-graph-language.md). `Value` is immutable or uniquely owned; `VariableStore` is mutated only through runtime commands. `Arc` shares immutable plans/large values; no shared mutable graph behind a lock on the execution path.
 
 ## Thread and runtime model
 
@@ -79,7 +85,7 @@ classDiagram
 - Dedicated **Tokio** host runtime: I/O reactors, timers, authenticated sessions and async continuations. Feature/version/MSRV pin must be verified in WU-01; network dependencies never run on the UI thread. Tokio explicitly provides its own I/O/timer/scheduler runtime services ([runtime documentation](https://docs.rs/tokio/latest/tokio/runtime/), resolved 1.54.0 on 2026-10-20; version pin pending).
 - Run actors on the bounded compute executor: each run is one logical actor that executes one strand segment at a time and owns its plan, run state, activations and queues ([11 §9](11-graph-language.md), ADR-14). Different runs execute in parallel. Run state is never locked.
 - Bounded compute executor: run actors, offloaded heavy pure programs, component calls and decoding, with cooperative yielding, or process termination for uncooperative trusted workers. Blocking OS calls use bounded blocking workers; cancellation can abandon their results but may not interrupt an OS syscall.
-- Audio callback threads: preallocated sample buffers and bounded nonblocking commands only. Decoder/control resampling preparation occurs off callback threads. No general guest invocation, vault call, mutex wait, file read or ECS query in callbacks.
+- Audio callback threads: preallocated sample buffers and bounded nonblocking commands only. Decoder/control resampling preparation occurs off callback threads. Capture and playback callbacks exchange preallocated blocks with bounded workers; level analysis and event decisions occur off callback threads. No general guest invocation, vault call, mutex wait, file read or ECS query in callbacks.
 - Optional external package workers: versioned IPC with heartbeats and bounded frames. Worker exit faults only affected package activations; host handles and child operations are revoked.
 
 Bridge messages carry `RunId`, `Generation`, `ActivationId`, sequence and a bounded payload/reference. UI inspection updates may coalesce by node; effect completions and errors use lossless bounded paths with producer backpressure. Sender shutdown wakes pending receivers. Host adapter messages are applied at documented host boundaries; headless runs see `CapabilityUnavailable` if they explicitly request rendering.

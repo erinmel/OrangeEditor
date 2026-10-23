@@ -1,9 +1,11 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
+use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
 use orange_model::document::SignatureSnapshot;
 use orange_model::from_json;
 use orange_model::id::NodeId;
-use orange_model::types::{TypeRegistry, TypeRegistryBuilder};
+use orange_model::types::TypeRegistryBuilder;
 use orange_model::validation::{Diagnostic, DiagnosticCode, HostOrigin, Severity, validate_inputs};
 use serde_json::{Value, json};
 
@@ -36,18 +38,18 @@ fn signature(ports: Value) -> SignatureSnapshot {
 }
 
 fn run(doc: &orange_model::GraphDocument, snapshot: Option<SignatureSnapshot>) -> Vec<Diagnostic> {
-    run_with_types(doc, snapshot, &TypeRegistry::core())
+    run_with_registry(doc, snapshot, &RegistrySnapshot::core(origin()))
 }
 
-fn run_with_types(
+fn run_with_registry(
     doc: &orange_model::GraphDocument,
     snapshot: Option<SignatureSnapshot>,
-    types: &TypeRegistry,
+    registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
     let resolved: BTreeMap<NodeId, SignatureSnapshot> = snapshot
         .map(|snapshot| [(NODE.parse().unwrap(), snapshot)].into())
         .unwrap_or_default();
-    validate_inputs(doc, &resolved, types, &origin())
+    validate_inputs(doc, &resolved, registry)
 }
 
 fn code_list(diagnostics: &[Diagnostic]) -> Vec<DiagnosticCode> {
@@ -193,13 +195,16 @@ fn handle_literals_have_their_specific_diagnostic() {
     builder
         .register_handle_kind("org.example", &"org.example/session@1".parse().unwrap())
         .unwrap();
-    let types = builder.build().unwrap();
-    let diagnostics = run_with_types(
+    let registry = RegistryBuilder::core(origin())
+        .types(Arc::new(builder.build().unwrap()))
+        .build()
+        .unwrap();
+    let diagnostics = run_with_registry(
         &doc,
         Some(signature(json!([
             {"port_id":"handle","direction":"input","kind":"data","type":"core/handle@1<org.example/session@1>"}
         ]))),
-        &types,
+        &registry,
     );
     assert_eq!(code_list(&diagnostics), [DiagnosticCode::HandleLiteral]);
 }

@@ -19,7 +19,6 @@ pub mod literal;
 
 mod declaration;
 mod graph;
-mod intrinsics;
 mod node;
 mod port;
 
@@ -32,12 +31,11 @@ pub use node::{
     ReentrancyMode, VariadicState,
 };
 pub use port::{
-    Edge, NodeKind, OutputSource, PortDirection, PortKind, PortRef, ResolvedPort, Sensitivity,
-    SignatureSnapshot, Suspends,
+    Edge, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind, PortRef, Sensitivity,
+    SignatureSnapshot, Suspends, Variadic,
 };
 
 pub(crate) use graph::fresh_state_id;
-pub(crate) use intrinsics::is_intrinsic_definition;
 
 use serde_json::{Map, Value as Json};
 

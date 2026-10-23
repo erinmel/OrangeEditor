@@ -139,8 +139,6 @@ pub enum TxError {
     NodeExists(NodeId),
     #[error("node `{0}` does not exist")]
     NodeNotFound(NodeId),
-    #[error("node `{node}` has a stale node-scoped template")]
-    StaleNodeTemplate { node: NodeId },
     #[error("edge `{0}` already exists")]
     EdgeExists(EdgeId),
     #[error("edge `{0}` does not exist")]

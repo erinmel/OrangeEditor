@@ -2,6 +2,14 @@
 
 Checked 2026-10-20. Distinguish verified environment facts, verified source facts, design decisions and untested dependency candidates. Protocol/platform sources are also linked at the relevant contracts in [05](05-services-and-platforms.md); ADRs identify the decisions they support.
 
+## Foundation scope revision (2026-10-22)
+
+ADR-22 records the user-selected usable foundation application, reusable core/UI and general language/trigger/file/network/audio scope. FR-52–55 add configurable input triggers, saved callable graphs, selected-device capture and level/hold events; FR-56 and MQTT remain conditional. OBS/Twitch, browser-canvas products and broader protocol suites are outside delivery. Requirements, architecture, service/package contracts, authoring/data notes, feasibility probes, FR/NFR verification and the ignored local plan were reviewed together. Existing format v1 fields, Rust APIs, dependencies and lockfile are unchanged. New editor/library/analysis encodings and algorithms require contracts and behavior tests at their implementation slice; no schema or runtime compatibility is claimed from this revision.
+
+Local documentation verification on Windows, Node.js **v24.18.0**: `node .artifacts/check-foundation-scope.mjs` **PASS** (temporary local helper: 12 changed Markdown files, 12 parsed JSON examples, 194 existing local link targets, 56 unique FR IDs with priorities/traces, continuous requirement/probe/decision tables, eight probe rows and foundation plan/G5 scope checks). `git diff --check` **PASS**. Self-review removed remaining vendor-specific normative examples, retained retired FR IDs, distinguished callable graphs from event-containing templates, and kept capture/playback separate from virtual-device creation. Temporary editing/check helpers are not product artifacts or committed tooling.
+
+Limits: file targets and JSON syntax were checked, not Markdown anchor resolution or rendered layout. No Rust builds/tests, hook registrations, microphone access, audio analysis/playback, broker probes, plugin installs, UI tests or performance measurements were run for this documentation-only change. Existing implementation evidence below remains historical; no feasibility/runtime/API-freeze or release gate is passed.
+
 ## Workspace and environment
 
 - User-selected destination: `C:\Users\eriar\OneDrive\Documentos\Projects\Programming\rust\OraneEditor`. Exact directory spelling is intentional; product name is OrangeEditor. The directory existed and was empty at inspection.
@@ -32,6 +40,28 @@ Checked 2026-10-20. Distinguish verified environment facts, verified source fact
 - 00b gaps follow-up (Windows x64, Rust 1.99.1, 2026-10-21): `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked` and `cargo test --workspace --locked` passed with 102 tests. New tests cover JSON text depth (64 accepted, 65 and 84 rejected, brackets inside strings ignored), the size budget, hash/equality agreement, and decode/encode of a 20 000-key map with duplicate detection. `MAX_JSON_TEXT_BYTES = 1 MiB` is a proposed value and an open budget, like `MAX_NESTING = 64`.
 - 00c.3b analysis guard (2026-10-21): expanded scoped/concrete type terms are limited to a provisional `MAX_EXPANDED_TYPE_NODES = 16_384` nodes per term; nesting keeps `MAX_NESTING = 64`. Limits return typed analysis failures before constructing an oversized output. Alias traversal is iterative; a 10,000-variable alias regression passes without consuming type nesting depth. These are open resource budgets, not a new language type exclusion, measured NFR-15 timing or production memory qualification.
 - Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working UI build toolchain.
+
+## Contextual Get/Set validation (2026-10-22)
+
+WU-00/00d.3b projects Get/Set ports from referenced variable declarations through the existing node-scoped template overlay, inference and input validation. Distinct nodes retain their declaration types; workspace synchronous Set reports `E-VARIABLE-SCOPE`. The variable-reference parser is shared with function analysis. No format, dependency, feature or runtime change is introduced. Trace: FR-12/44/45/51, ADR-15/16/17/21/22.
+
+Selected Windows toolchain: Rust `1.99.1 (58cf8f9c3 2026-10-13)`, Cargo `1.99.1 (5f94df478 2026-08-27)`, edition 2024; declared MSRV 1.97.1 was not tested. Cargo.lock SHA-256 remains `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`. `cargo tree -e features --locked --offline` passed; the dependency feature selection is unchanged.
+
+Four initial public-entrypoint tests were written before implementation: the focused test executable compiled and failed on the intended missing contextual behavior, then passed after projection. Four additional integration/freshness/authority tests were written afterwards. Temporarily disabling contextual routing made the Get→generic Add→Set integration regression fail with provider-unavailable diagnostics; restoring routing made all eight focused tests pass. Coverage includes declaration-owned types, required/wrong input, malformed/missing references, unknown types, exact intrinsic authority, workspace scope, stale evidence across declaration edit/undo/redo, unrelated declaration preservation, deterministic diagnostics and read-only bytes/revision/state identity.
+
+Orchestrator review independently inspected the integrated Rust changes and reran `cargo test --workspace --locked --offline` successfully, plus formatting and whitespace checks. No actionable correctness defect was found. A separate static negative-test audit mapped plausible scope/type/freshness regressions to existing assertions; it did not execute additional mutations. Review strengthened Set's existing test to assert its input has neither an output-source marker nor a default value, and reran the eight focused tests. These extra assertions were added after implementation; they are contract checks, not additional red-first evidence. Remote CI and MSRV execution remain unverified for this slice.
+
+| Command | Local result |
+|---|---|
+| `cargo test -p orange-model --locked --offline --test validation_variables` | PASS: 8 tests |
+| `cargo test --workspace --locked --offline` | PASS: 280 tests, 0 failures; 0 doctests |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `$env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps --locked --offline` | PASS; temporary override removed |
+| `node tools/check-cargo-metadata.mjs` | PASS |
+| `git diff --check` | PASS |
+
+Cargo's incremental-cache hard-link warnings used its copy fallback. No runtime, cross-body visibility, region/cycle/availability, UI, hardware, performance, remote CI, SDK-freeze or release gate is established. Offline connection validation retains its stored/fixed metadata path. Contextual calls and Update/shared-variable operations remain follow-ups.
 
 ## Core integrity fixes (2026-10-22)
 
@@ -214,7 +244,7 @@ Specialization metadata moved from `GenericDefinition` to `TemplateCatalog::inse
 
 Context7 was found in the available plugin directory and suggested as an optional documentation integration. It was **not installed or connected** in this session. It may help retrieve dependency documentation, but Bevy 0.20 coverage/version selection must be verified before using its answers. Release-tag source and versioned local Rustdoc remain authoritative. Installation is optional and must not block planning or justify substituting 0.19 APIs.
 
-OBS/Twitch account connectors are not required to design Orange's SDK. Actual integration testing later requires local OBS, an explicitly authorized Twitch test application/account and synthetic fixtures; credentials belong in the vault, never agent prompts or source files. Do not introduce an unrelated cloud project-management system as a prerequisite.
+ADR-22 removes OBS/Twitch from foundation delivery, including account connectors and live integration tests. Synthetic local fixtures qualify the SDK; any independently scoped integration owns its own later account/fixture requirements. Credentials belong in the vault, never agent prompts or source files. Do not introduce an unrelated cloud project-management system as a prerequisite.
 
 For implementation, verify the Rust toolchain, target linker/native SDKs, language server, formatting/lint tools and platform libraries. These are development prerequisites, not claims that they are installed. Any broker/container, audio diagnostic or security tool is added only for a work unit that uses it.
 
@@ -224,7 +254,7 @@ Bevy was dropped from the project (ADR-02, ADR-21); the editor UI will use egui 
 
 ## Dependency selection ledger
 
-No framework pin is fixed yet; egui/eframe are pinned in P-01. All implementation dependencies must acquire an exact version, minimum compiler, platform/feature matrix, license, maintenance/security review and contract test at their adopting work unit. A proposed family below is a research candidate, not a dependency approval or compatibility claim.
+ADR-22 defines the current foundation scope; historical research below is not a release requirement. No framework pin is fixed yet; egui/eframe are pinned in P-01. All implementation dependencies must acquire an exact version, minimum compiler, platform/feature matrix, license, maintenance/security review and contract test at their adopting work unit. A proposed family below is a research candidate, not a dependency approval or compatibility claim.
 
 | Capability | Candidate / decision boundary | Required evidence before adoption |
 |---|---|---|
@@ -233,9 +263,9 @@ No framework pin is fixed yet; egui/eframe are pinned in P-01. All implementatio
 | Hot expansion execution | Wasmtime/component-model candidate | Exact supported component interface/runtime version, fuel/epoch interruption, memory limit, host-call cancellation and boundary benchmarks |
 | Definitions and persistence | Serde-family serialization candidate | Versioned schema contract, malformed input bounds, deterministic output and migration tests |
 | HTTP/TLS | Async HTTP client with explicit TLS backend | HTTP/2, proxies, certificates, streaming, cancellation, ALPN and licenses |
-| WebSocket/MQTT/AMQP/gRPC | Separate protocol adapters, not a universal network library | Protocol version, authentication/stream behavior, async runtime compatibility, bounded payloads and fixtures |
-| Audio | Dedicated endpoint/decoder service plus OS adapters | Actual per-player routing, decoder format/license inventory, device identity, clock/rate behavior and callback audit |
-| Linux virtual source | PipeWire adapter | Versioned API/permissions/session policy and app-owned cleanup on a real Linux session |
+| WebSocket; conditional MQTT; deferred AMQP/gRPC | Separate protocol adapters; only WebSocket is foundation baseline (ADR-22) | Protocol version, authentication/stream behavior, async runtime compatibility, bounded payloads and fixtures |
+| Audio | Endpoint/decoder/capture services and off-callback level workers | Actual input/output/cable routing, capture permission, decoder formats/licenses, RMS/peak/hold fixtures, device/clock/hotplug and callback audit |
+| Input triggers | Native focused/global input adapter behind host event ingress | P-07 registration/conflict/permission/focus/repeat/release/cleanup on each advertised OS/session |
 | Credentials | OS-specific secure stores behind one host interface | Windows/macOS/Linux availability and locked/headless behavior; no plaintext fallback |
 | Localization | Fluent FTL parser/formatter candidate, Unicode/CLDR data and host font fallback | Exact versions/features/MSRV/licenses, bounded reference/argument handling and locale/plural capabilities; L-suite, G-39 and P-02 platform evidence before adoption; sources in [13](13-internationalization.md) |
 
@@ -357,3 +387,75 @@ Tools: Git `2.55.0.windows.1`, GitHub CLI `2.96.0`, Node.js `v24.18.0`. Commands
 Public/default-branch metadata and SSH origin were read back successfully. The initial repository-check workflow run `39493589359` completed both `docs` and `policy` successfully on the configured Ubuntu runner. Action refs were resolved through the GitHub API and pinned to full commits: checkout v4 `11d5960a326750d5838078e36cf38b85af677262`, setup-node v4 `49933ea5288caeca8642d1e84afbd3f7d6820020`; Node is pinned to 24.18.0. After the first passing run, the main protection API was applied and read back: strict required checks bound to Actions app 15368, PR/conversation/linear-history requirements, zero solo-mode independent approvals, admin enforcement and no force pushes/deletion. Repository settings were verified squash-only with automatic topic-branch deletion.
 
 The first attempt to use unsupported `gh repo edit --disable-merge-commit` flags made no change; supported boolean `--enable-merge-commit=false`/`--enable-rebase-merge=false` then succeeded. No rejected main push/deletion or other destructive protection test was attempted. Release/tag enforcement, license/signing choices and Rust/SDK/plugin/platform checks remain unverified future work. Follow-up evidence is submitted through a topic PR under the active workflow.
+
+### Typed ports and registry snapshot (2026-10-23)
+
+Slice 1 replaced the loose port flags with a typed `PortDescriptor` (renamed from `ResolvedPort`): optional, variadic and lazy are typed fields and the variadic bounds are explicit. Slice 2 added `orange_model::catalog` (12 §4, §8 subset): `NodeContract`, `NodeDefinition`, `ProviderDescriptor`, `RegistryBuilder` and the immutable `RegistrySnapshot`, with the built-in control nodes registered as data. Node resolution, inference, validation and connection planning now take one `&RegistrySnapshot` (plus `NodeOverlays` where per-node contracts are used) instead of separate template, provider, type and converter metadata. The former template catalog and provider catalog are removed, and plans record the document state, the snapshot generation and the overlay generation, so overlays changed after planning reject the plan (`StaleOverlays`). The document format and signature keys are unchanged.
+
+Strictness change: a non-object variadic value or a non-boolean optional/lazy value now fails load. A legacy variadic port without `max` is read and saved with `max: null`.
+
+Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands run from the repository root with these results:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo test --workspace` | pass |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+
+These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
+
+### Computed contextual contracts (2026-10-23)
+
+Slice 3 declares identity references on the definition: a `NodeDefinition` has `kind`, `suspends`, `type_params`, `ports` (declared, or derived from a variable) and `references` (an RFC 6901 pointer and a variable, event or function kind). `RegistrySnapshot::references` is the single parser of those config fields, with a fixed table for core controls that are not registered yet, and `build` rejects invalid or duplicate pointers. Only definition-declared fields are references, which closes the earlier open question about config strings that merely match an ID.
+
+Get and Set Variable are registered with ports derived from the referenced declaration, and `RegistrySnapshot::contract` computes their contracts on every lookup. `NodeOverlays`, metadata fingerprints and the stale-overlay checks are removed, along with the overlay parameter of inference, connection planning and node validation and `PlanApplyError::StaleOverlays`. A declaration edit or undo takes effect on the next lookup. Paste discovers references from definitions instead of a host schema. Connection planning now resolves implicit ports (`error` is a typed data output, `then` is exec) through the same lookup as inference. `E-METADATA-STALE` remains for function analysis evidence built for another document state. The document format and signature keys are unchanged.
+
+Tests that only exercised overlay freshness were deleted. Tests that injected a contract through an overlay now use Get/Set declarations or registered definitions with the same assertions, and new tests cover the computed Get/Set contracts and the paste gating of reference fields.
+
+Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands run from the repository root:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo test --workspace` | pass |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+
+These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
+
+### Single validation entry point (2026-10-23)
+
+Slice 4 adds `orange_model::validate(document, registry)`, which returns one `ValidationReport`: sorted, de-duplicated diagnostics, resolved signatures, incomplete nodes, function summaries and incomplete functions. It runs node resolution once and gives that resolution to the input and function passes; connection validation still works from stored signatures. It never changes document content, revision or state identity. The individual passes remain public, and `FunctionEvidence::from_nodes` binds a node resolution to the document for hosts that run passes separately. Diagnostic ordering now covers the whole record, so removing duplicates is deterministic.
+
+Decision: function leaf effects are not derived from the registry. `validate` supplies none, so a package action leaf that is not pure or volatile leaves its function incomplete (`E-FUNCTION-METADATA-UNAVAILABLE`) instead of being treated as effect-free; core Get/Set writes are still summarized. `validate_with_effects` takes host-supplied facts for hosts that have fresh ones. A report is valid only with no error diagnostics and nothing incomplete.
+
+Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands run from the repository root:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo test --workspace` | pass |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+
+These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
+
+### Language rules and connection resolution (2026-10-23)
+
+Connection validation now checks edges against the node resolution from `validate_nodes` instead of a static copy of the intrinsics; `validate_connections` takes the resolved map, like `validate_inputs`. Get and Set edges are therefore checked against the variable declaration, and a mistyped variable edge reports `E-TYPE-MISMATCH`. A package node that did not resolve still falls back to its stored signature (11 §4.5).
+
+Every incomplete node in a report now has a diagnostic that names it. `E-DEPENDENCY-UNAVAILABLE` marks a node whose check is blocked by an unresolved connected node: a generic node whose component has an unresolved member, or a resolved endpoint of an edge whose other type is unknown. `RegistryBuilder::build` rejects a data or event port without a type and an exec port with one, so a resolved node never has a data port that cannot be compared.
+
+`catalog::language` is the one table of language rules. It lists every intrinsic ID with the kind and suspension function analysis counts it as, the declaration its config references and whether it ends its region, plus the implicit ports each kind gets. It replaces the intrinsic ID list in `document`, the core reference table, the function kind table, the reserved port list and the Break/Continue special case. Inference now also sees that Break and Continue have no `then`. An intrinsic the table lists but this core version does not register (Call, On Event, Switch and others) reports `E-INTRINSIC-UNSUPPORTED` instead of `E-PROVIDER-UNAVAILABLE`.
+
+Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands run from the repository root:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo test --workspace` | pass |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+
+These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.

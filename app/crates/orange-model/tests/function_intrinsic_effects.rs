@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use orange_model::GraphDocument;
+use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::SignatureSnapshot;
 use orange_model::id::{FunctionId, NodeId};
 use orange_model::validation::{DiagnosticCode, FunctionEvidence, HostOrigin, analyze_functions};
@@ -18,6 +20,10 @@ const CALL_NODE: &str = "20000000-0000-4000-8000-000000000004";
 
 fn origin() -> HostOrigin {
     HostOrigin::new("1.0.0", format!("sha256:{}", "b".repeat(64))).unwrap()
+}
+
+fn registry() -> Arc<RegistrySnapshot> {
+    RegistrySnapshot::core(origin())
 }
 
 fn document(variables: Value, functions: Value) -> GraphDocument {
@@ -60,7 +66,7 @@ fn analyze(doc: &GraphDocument) -> orange_model::validation::FunctionAnalysis {
             BTreeMap::<NodeId, SignatureSnapshot>::new(),
             BTreeMap::new(),
         ),
-        &origin(),
+        &registry(),
     )
 }
 

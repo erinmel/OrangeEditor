@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::document::{GraphDocument, PortDirection, PortKind, ResolvedPort, SignatureSnapshot};
+use crate::catalog::RegistrySnapshot;
+use crate::document::{GraphDocument, PortDescriptor, PortDirection, PortKind, SignatureSnapshot};
 use crate::id::{NodeId, PortKey, TypeExpr};
 use crate::type_term::TypeTerm;
 use crate::types::{TypeRegistry, TypeResolveError};
@@ -16,9 +17,9 @@ use super::{Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diag
 pub fn validate_inputs(
     document: &GraphDocument,
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    types: &TypeRegistry,
-    origin: &HostOrigin,
+    registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
+    let (types, origin) = (registry.types().as_ref(), registry.origin());
     let mut diagnostics = Vec::new();
     let mut connected = BTreeSet::<(NodeId, PortKey)>::new();
     let mut nodes = BTreeMap::new();
@@ -105,13 +106,7 @@ pub fn validate_inputs(
 
             let literal = node.inputs.get(&key).or(descriptor.default.as_ref());
             let Some(literal) = literal else {
-                if descriptor
-                    .extensions
-                    .get("optional")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
-                    && expected_term.core("option").is_some()
-                {
+                if descriptor.is_optional() && expected_term.core("option").is_some() {
                     continue;
                 }
                 diagnostics.push(diagnostic(
@@ -160,10 +155,8 @@ pub fn validate_inputs(
     diagnostics
 }
 
-fn is_variadic(port: &ResolvedPort) -> bool {
-    port.extensions
-        .get("variadic")
-        .is_some_and(serde_json::Value::is_object)
+fn is_variadic(port: &PortDescriptor) -> bool {
+    port.variadic.is_some()
 }
 
 fn validate_expected_type(ty: &TypeExpr, types: &TypeRegistry) -> Result<TypeTerm, DiagnosticCode> {

@@ -1,6 +1,8 @@
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 use orange_model::GraphDocument;
+use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{SignatureSnapshot, Suspends};
 use orange_model::edit::DocCommand;
 use orange_model::id::{FunctionId, NodeId};
@@ -20,6 +22,10 @@ const SIG: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
 
 fn origin() -> HostOrigin {
     HostOrigin::new("1.0.0", format!("sha256:{}", "b".repeat(64))).unwrap()
+}
+
+fn registry() -> Arc<RegistrySnapshot> {
+    RegistrySnapshot::core(origin())
 }
 
 fn document(functions: Value) -> GraphDocument {
@@ -51,7 +57,7 @@ fn analyze(
     analyze_functions(
         doc,
         &FunctionEvidence::new(doc, resolved.clone(), effects.clone()),
-        &origin(),
+        &registry(),
     )
 }
 
@@ -375,7 +381,7 @@ fn evidence_accepts_same_state_clone_and_rejects_config_edited_document() {
     let evidence = FunctionEvidence::new(&doc, resolved, effects);
 
     let unchanged_clone = doc.clone();
-    let accepted = analyze_functions(&unchanged_clone, &evidence, &origin());
+    let accepted = analyze_functions(&unchanged_clone, &evidence, &registry());
     assert_eq!(accepted.summaries.len(), 2);
     assert!(accepted.incomplete_functions.is_empty());
 
@@ -388,7 +394,7 @@ fn evidence_accepts_same_state_clone_and_rejects_config_edited_document() {
         }])
         .unwrap();
 
-    let stale = analyze_functions(&edited, &evidence, &origin());
+    let stale = analyze_functions(&edited, &evidence, &registry());
     assert!(stale.summaries.is_empty());
     assert_eq!(
         stale.incomplete_functions,
@@ -438,4 +444,18 @@ fn large_diamond_call_graph_does_not_enumerate_paths_or_rescan_all_pending_nodes
         report.diagnostics.iter().take(4).collect::<Vec<_>>()
     );
     assert!(report.recursion_paths.is_empty());
+}
+
+#[test]
+fn evidence_from_node_validation_matches_manual_construction() {
+    let doc = document(json!([function(
+        F1,
+        "pure",
+        json!([custom_node(N1, "core/select")])
+    )]));
+    let nodes = orange_model::validation::validate_nodes(&doc, &registry());
+    let effects = BTreeMap::new();
+    let built = FunctionEvidence::from_nodes(&doc, &nodes, effects.clone());
+    let manual = FunctionEvidence::new(&doc, nodes.resolved.clone(), effects);
+    assert_eq!(built, manual);
 }

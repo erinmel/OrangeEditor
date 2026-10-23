@@ -1,13 +1,17 @@
-//! OrangeEditor graph document model (WU-00/00b).
+//! OrangeEditor graph document model.
 //!
 //! Contracts: `docs/12-graph-data-structures.md` (layout, JSON, transactions, values) and
 //! `docs/11-graph-language.md` (semantics). No Bevy, rendering, async or I/O dependency.
 //!
 //! Layers, lowest first: `id` and `type_term` (identifiers and type syntax); `document`
-//! (persisted structures and the v1 JSON codec); `value` (runtime values and the typed
-//! literal codec); `edit` (transactions and undo); `index`, `signature` and `paste`
-//! (derived lookups, semantic signatures and copy/paste).
+//! (persisted structures and the v1 JSON codec); `catalog` (host node contracts and provider
+//! identity); `value` (runtime values and the typed literal codec); `edit` (transactions and
+//! undo); `index`, `signature` and `paste` (derived lookups, semantic signatures and
+//! copy/paste); `validation` (one read-only `validate` entry point over node, input,
+//! connection and function passes).
 
+pub mod catalog;
+mod config_pointer;
 pub mod conversion;
 pub mod document;
 pub mod edit;
@@ -29,4 +33,5 @@ pub use error::{
     CodecError, IdError, ImportResource, JsonTextError, LiteralError, PasteError, TxError,
 };
 pub use index::DocIndex;
+pub use validation::{ValidationReport, validate, validate_with_effects};
 pub use value::Value;

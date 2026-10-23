@@ -73,7 +73,7 @@ pub struct VariadicState { pub order: Vec<u16>, pub next: u16 }
 pub struct SignatureSnapshot {
     pub kind: NodeKind,
     pub suspends: Option<Suspends>,          // semantic async/iterator fact; see below
-    pub ports: Vec<ResolvedPort>,
+    pub ports: Vec<PortDescriptor>,
 }
 pub enum Suspends { Never, Maybe, Always }   // synchronous absence is equivalent to Never
 pub struct VariableDecl {
@@ -107,7 +107,7 @@ Serialization order is `IndexMap` order (creation order, compacted on removal), 
 
 Implementation correction (00b review): replacing an existing entry at its current position updates that slot in place. Insertions, removals and actual reordering retain positional patches so undo restores the exact order. The replacement path avoids shifting unrelated entries; order-preserving removal and reordering can still be linear. NFR-15 timing targets remain unmeasured.
 
-`ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
+`PortDescriptor` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
 
 `suspends` is semantic: it decides control-cycle legality and an enclosing function's kind (11 §8.2, §14), so a node whose package is missing must still carry it, and it is part of the hash. For a current synchronous definition, absence means `never`. For a current `async` or `iterator` definition, absence means unknown metadata and reports `E-SUSPENDS-MISSING`; it is not silently changed to `maybe` or `always`. A value on an incompatible kind, or an invalid value, reports `E-SUSPENDS-INVALID`. Exact historical snapshot bytes remain preserved until an explicit re-projection/migration; validators do not rewrite old snapshots to manufacture a fact. The current host may re-project a supported intrinsic or exact provider definition and compare semantic signatures.
 
@@ -115,7 +115,8 @@ Function declarations remain graph-local. `core/call.config.function` contains a
 
 ### 3.2 Derived indexes (not persisted)
 
-Inference may use a host-supplied per-node template overlay before the shared definition catalogue. Ordinary definition lookup and exact-provider specialization lists remain separate. Each overlay records a metadata fingerprint: graph identity, node definition/configuration/provider, matching package locks and referenced variable/function context. Calls include their transitive callee declarations and conservatively include graph variable/event context; unrelated function edits do not invalidate the call. Lookup resolves the current document node, rejecting stale overlays (`E-METADATA-STALE`) rather than trusting a retained node clone or falling back to an old snapshot. Connection edits and inferred cache writes that leave this metadata unchanged preserve ordinary node contracts. Unused overlays for removed nodes do not prevent deletion. Inference, edit persistence, connection planning and node validation use the same node-specific lookup. Contextual call/variable port generation remains a separate prerequisite.
+Contextual contracts are computed, never stored. A definition declares its ports (`Ports::Declared`) or derives them from a referenced declaration (`Ports::Variable`), and `RegistrySnapshot::contract(document, node)` returns the node's contract as a pure function of the definition and the document. Get resolves `value` as a state output typed by the referenced VariableDecl; synchronous Set requires `value` as an input and rejects workspace targets with `E-VARIABLE-SCOPE`; a missing or malformed reference reports `E-VARIABLE-UNKNOWN` (11 §11.1). Two nodes of one definition therefore have independent contracts, a declaration edit or undo changes the result on the next lookup, and there is no overlay, fingerprint or staleness state to maintain. Inference, edit persistence, connection planning and node validation all read this one lookup. Computing a contract changes no document fields, revision, state identity or undo history. Contextual call ports and Update/shared-variable contracts remain follow-up work; offline connection validation still uses stored/fixed metadata and is not made context-aware by this slice. `orange_model::validate(document, registry)` is the single validation entry point: it runs node resolution once, then the input, connection and function passes on that resolution, and returns one sorted, de-duplicated `ValidationReport` without changing the document. It supplies no function leaf effects, so a package action leaf leaves its function incomplete (`E-FUNCTION-METADATA-UNAVAILABLE`); `validate_with_effects` accepts host-supplied leaf effects.
+
 
 Function signature/effect evidence is captured for a document content state and checked before function analysis. A changed document must receive fresh host evidence; stale input produces incomplete functions and no usable summaries. This binds evidence lifetime, not authenticity: the host remains responsible for supplying truthful metadata from exact available providers.
 
@@ -185,9 +186,15 @@ Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
 
 Import integrity: each package `(id, version)` and each type-lock identity occurs once, including when duplicate rows are identical; ambiguous locks are a structural load error. Provider resolution must not choose the first matching row. The default importer checks a 64 MiB UTF-8 byte budget before parsing and then checks 100,000 nodes and 500,000 edges across all bodies. `from_json_with_limits` lets an embedding host choose explicit budgets. Structural counts are post-deserialization checks, not allocation limits; a host reading a file or stream must also bound that read before constructing the input string. These defaults are safety limits, not supported performance targets.
 
+### 3.4 Foundation authoring projections (ADR-22)
+
+Variable declaration controls/nodes refer to the existing stable VariableDecl, and callable reusable nodes use FunctionDecl and exact package/provider locks (11 §11/§14). A declaration authoring projection adds no new runtime instruction or initialization order. Selection export must discover references through the definitions' declared reference fields, remap IDs atomically, preserve unresolved payloads and retain provider locks. Event-containing templates insert ordinary nodes and declarations rather than pretending to be callable functions. Exact library/template/editor encodings remain unimplemented and must be specified with schemas and focused round-trip/undo tests in WU-05 before adoption. This scope update changes no current format v1 field or Rust API.
+
 ## 4. Definition schema
 
 `NodeDefinition` fields: `definition_id`, `definition_version`, `config_version`, `kind`, `suspends` (`never`/`maybe`/`always`; async and iterator), `cleanup_safe`, `volatility` (volatile only), `type_params`, `ports`, `iterator` (iterator only), `event_source` (entry only), `port_template` (optional declarative dynamic ports), `config_schema`, `errors`, `capabilities`, `determinism` (`deterministic`/`seeded`/`external`/`nondeterministic`), `cost` (optional hint: `scalar`/`linear`/`heavy`), `implementation_slot`, `label`, optional `description`, `editor`. All human-facing label/help/category/alias fields use TextRef from [13 §2](13-internationalization.md), including port labels/descriptions and declarative configuration-option captions. Implicit kind ports ([11 §4.1](11-graph-language.md)) are never listed; their text comes from host catalogues.
+
+Implementation note (`orange_model::catalog`; Rust spelling only): `NodeDefinition` implements a subset: the `DefinitionRef`, `config_version`, `kind`, `suspends`, `type_params`, `ports` (declared, or typed by the referenced variable declaration for Get and Set), `references` (the config fields that hold declaration IDs), an optional core `specializations` list (`None` means constraints decide) and a stored, unenforced `config_schema`. Data and event ports carry a type; exec ports carry none. The remaining fields above are not implemented yet. Implicit kind ports are not listed in a package contract.
 
 Generic pure definition (replaces the earlier `add-i64` example):
 
@@ -298,27 +305,27 @@ Package entry (event source acquired in the run's Starting phase):
 
 ```json
 {
-  "definition_id": "org.orange.obs/on-program-scene-changed",
+  "definition_id": "org.example.device/on-state-changed",
   "definition_version": 1,
   "config_version": 1,
   "kind": "entry",
-  "label": {"key": "org.orange.obs/on-program-scene-changed-label", "fallback": "On program scene changed"},
-  "event_source": {"service": "connection:org.orange.obs/session@1", "event": "CurrentProgramSceneChanged"},
+  "label": {"key": "org.example.device/on-state-changed-label", "fallback": "On device state changed"},
+  "event_source": {"service": "connection:org.example.device/session@1", "event": "StateChanged"},
   "ports": [
     {
-      "port_id": "scene_name",
+      "port_id": "state",
       "direction": "output",
       "kind": "data",
       "type": "core/string@1",
       "source": "payload",
-      "label": {"key": "org.orange.obs/on-program-scene-changed-port-scene-name", "fallback": "Scene name"}
+      "label": {"key": "org.example.device/on-state-changed-port-state", "fallback": "State"}
     }
   ],
   "config_schema": {"type": "object", "properties": {"profile": {"type": "string"}}, "required": ["profile"], "additionalProperties": false},
   "capabilities": ["connection.use"],
   "determinism": "external",
-  "implementation_slot": "node:org.orange.obs/on-program-scene-changed@1",
-  "editor": {"category_id": "org.orange.obs/category-obs-events", "category": {"key": "org.orange.obs/category-obs-events", "fallback": "OBS/Events"}, "control": "standard-node"}
+  "implementation_slot": "node:org.example.device/on-state-changed@1",
+  "editor": {"category_id": "org.example.device/category-device-events", "category": {"key": "org.example.device/category-device-events", "fallback": "Device/Events"}, "control": "standard-node"}
 }
 ```
 
@@ -381,7 +388,7 @@ Persisted `core/convert` node (00c.6a). It binds one entry, one provider and val
 - `config.converter` and `config.contract_version` are the entry key; `config.options` holds every declared policy with its resolved choice (defaults filled in, so a later default change never alters the node).
 - `provider` is absent for the language-owned `Core` implementation (a core intrinsic); a package provider is the exact binding, and its content digest is the document's `package_lock` entry for that package version (the planner puts it in the same transaction). The provider implements the entry's `config.contract_version`, so no separate provider contract version is stored. It changes only by explicit rebind (ADR-07).
 - The node is a `pure` node whose ports follow the entry: input `value: from`, output `result: to` (`source: computed`) and, for `lossy` entries only, output `loss: core/json@1`. A checked-partial failure is the pure-node error of [11 §13](11-graph-language.md). Unlike other core intrinsics, it stores this snapshot, because its ports depend on the entry named in `config`; inference and drift detection read concrete types from it.
-- A connection plan is an edit (`PutPackageLock` for a package provider, `PutSignature`, `AddNode`, two `Connect`s, plus a `Disconnect` when it replaces a wire) and is applied as one transaction. Its identities are generated once per plan, and its commands are read-only (`ConnectionPlan::commands`). `plan_connection` returns `ConnectionError::TypeConflict` for a wire that introduces a conflict (11 §5.5); `apply_connection(document, converters, templates, plan)` rejects a plan whose document state, registry generation or `TemplateCatalog::generation` changed (`PlanApplyError::{StaleDocument, StaleRegistry, StaleTemplates}`).
+- A connection plan is an edit (`PutPackageLock` for a package provider, `PutSignature`, `AddNode`, two `Connect`s, plus a `Disconnect` when it replaces a wire) and is applied as one transaction. Its identities are generated once per plan, and its commands are read-only (`ConnectionPlan::commands`). `plan_connection` returns `ConnectionError::TypeConflict` for a wire that introduces a conflict (11 §5.5); `apply_connection(document, registry, plan)` rejects a plan whose document state or `RegistrySnapshot::generation` changed (`PlanApplyError::{StaleDocument, StaleRegistry}`).
 
 ## 6. Saved graph example
 
@@ -575,6 +582,8 @@ pub struct RegistrySnapshot {
 }
 ```
 
+Implementation note (`orange_model::catalog`; subset, Rust spelling only): `RegistryBuilder` collects the type registry, converters, host origin, node definitions and providers; `build` freezes them into an immutable `RegistrySnapshot` with a process-unique `generation` that changes only when a snapshot is built. Lookups are by definition and config version, provider key (`ProviderDescriptor` with its implemented definitions and specializations) and exact provider support. `build` rejects duplicate definitions and providers, package definitions in the `core` namespace or replacing an intrinsic, duplicate port IDs, implicit exec port IDs outside intrinsics, a data or event port without a type or an exec port with one, undeclared `$T` type parameters in a port type, and providers naming an unknown definition. Type validity stays with inference diagnostics. The built-in control nodes (branch, sequence, fork, count, while, yield, wait, break, continue) are registered as data through a host-only path that packages cannot use; Get and Set are registered with ports derived from the referenced variable declaration, and a definition lists its identity-reference fields (`references`: an RFC 6901 pointer into the config and a variable, event or function kind). `build` rejects an invalid or duplicate pointer. `references` is the one parser for those fields, and `contract` computes contextual contracts on lookup; nothing is cached beside the snapshot. `catalog::language` is the one table of language rules: every intrinsic ID with the kind and suspension function analysis counts it as, the declaration it references and whether it ends its region (Break, Continue), plus the implicit ports each kind gets. Intrinsics it lists but this core version does not register report `E-INTRINSIC-UNSUPPORTED`; their reference fields still come from the table. Plans record the document state and the snapshot generation. Not implemented: new-binding defaults, constraint implementations, slot-keyed providers and the frozen interner.
+
 Hash lookups here are compile-time only. Publication validates namespace ownership, constraint coherence and converter ownership before the snapshot is visible ([04](04-expansion-plugins.md)).
 
 Implementation (00c.1): `orange_model::types::TypeRegistryBuilder` registers type metadata and interns concrete `TypeTerm`s; `build` validates schema references/member IDs and publishes an immutable `TypeRegistry`. The registry supplies the existing literal `Schemas` interface directly, preserving one record/enum layout model. Package registrations cannot replace core types or claim another package namespace. Handle constructors require registered handle-kind arguments. Recursive nominal schema references do not expand during registration; literal decoding/encoding retains its depth budget.
@@ -713,7 +722,7 @@ pub trait IteratorKernel {
 | I-1 | Each data input has ≤ 1 edge; each exec and event output ≤ 1; each stream output ≤ 1. |
 | I-2 | D is acyclic; every control cycle contains `suspends: always`; the call graph is acyclic. |
 | I-3 | Every exec node is in exactly one region; every consumed `execution` value satisfies availability ([11 §7.2](11-graph-language.md)). |
-| I-4 | Every non-intrinsic node has a signature snapshot, a provider binding and a lock entry. `provider: None` is valid only for a host-owned language intrinsic; the `None` specialization bucket in `TemplateCatalog` is inference metadata for core providers, not evidence that an ordinary node resolves. Edges to unknown ports are retained as orphan edges, and unavailable package/provider metadata leaves the node unresolved while its snapshot remains available for edge checks. |
+| I-4 | Every non-intrinsic node has a signature snapshot, a provider binding and a lock entry. `provider: None` is valid only for a host-owned language intrinsic; the `None` specialization bucket of `RegistrySnapshot::specializations` is inference metadata for core providers, not evidence that an ordinary node resolves. Edges to unknown ports are retained as orphan edges, and unavailable package/provider metadata leaves the node unresolved while its snapshot remains available for edge checks. |
 | I-5 | `type_args` fully resolve every type parameter of a compiled node. |
 | I-6 | Plans and snapshots are immutable. Run state is mutated only by its actor. Workspace state only by the host actor. |
 | I-7 | No engine or UI entity ID, Rust `TypeId`, pointer, live handle or secret is ever persisted. |

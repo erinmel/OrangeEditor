@@ -2,7 +2,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::document::{GraphDocument, PortKind, PortRef, ResolvedPort};
+use crate::catalog::RegistrySnapshot;
+use crate::document::{Edge, GraphDocument, PortDescriptor, PortKind, PortRef, SignatureSnapshot};
 use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
@@ -31,8 +32,15 @@ impl ConnectionValidation {
     }
 }
 
-/// Validates stored edges without changing the document.
-pub fn validate_connections(document: &GraphDocument, origin: &HostOrigin) -> ConnectionValidation {
+/// Validates stored edges against the fresh node resolution `resolved` (from
+/// [`validate_nodes`](super::validate_nodes)) without changing the document. A package
+/// node that did not resolve is checked against its stored snapshot (11 §4.5).
+pub fn validate_connections(
+    document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    registry: &RegistrySnapshot,
+) -> ConnectionValidation {
+    let origin = registry.origin();
     let index = DocIndex::build(document);
     let mut report = ConnectionValidation::default();
     let mut diagnostics = Vec::new();
@@ -75,6 +83,7 @@ pub fn validate_connections(document: &GraphDocument, origin: &HostOrigin) -> Co
 
         let from = resolve_endpoint(
             document,
+            resolved,
             &edge.from,
             edge.id,
             origin,
@@ -83,6 +92,7 @@ pub fn validate_connections(document: &GraphDocument, origin: &HostOrigin) -> Co
         );
         let to = resolve_endpoint(
             document,
+            resolved,
             &edge.to,
             edge.id,
             origin,
@@ -120,33 +130,14 @@ pub fn validate_connections(document: &GraphDocument, origin: &HostOrigin) -> Co
         }
 
         if from.kind == PortKind::Data {
-            match (&from.ty, &to.ty) {
-                (Some(from_ty), Some(to_ty)) => {
-                    let from_term = TypeTerm::parse(from_ty);
-                    let to_term = TypeTerm::parse(to_ty);
-                    match (from_term, to_term) {
-                        (Ok(from_term), Ok(to_term))
-                            if from_term.contains_param() || to_term.contains_param() =>
-                        {
-                            report.incomplete_nodes.insert(edge.from.node);
-                            report.incomplete_nodes.insert(edge.to.node);
-                        }
-                        (Ok(_), Ok(_)) if from_ty != to_ty => diagnostics.push(Diagnostic::new(
-                            DiagnosticCode::TypeMismatch,
-                            subject(&edge.to, Some(edge.id)),
-                            origin,
-                        )),
-                        (Ok(_), Ok(_)) => {}
-                        _ => {
-                            report.incomplete_nodes.insert(edge.from.node);
-                            report.incomplete_nodes.insert(edge.to.node);
-                        }
-                    }
-                }
-                _ => {
-                    report.incomplete_nodes.insert(edge.from.node);
-                    report.incomplete_nodes.insert(edge.to.node);
-                }
+            if !(is_concrete(&from) && is_concrete(&to)) {
+                unchecked_edge(edge, resolved, origin, &mut report, &mut diagnostics);
+            } else if from.ty != to.ty {
+                diagnostics.push(Diagnostic::new(
+                    DiagnosticCode::TypeMismatch,
+                    subject(&edge.to, Some(edge.id)),
+                    origin,
+                ));
             }
         }
     }
@@ -160,7 +151,7 @@ pub fn validate_connections(document: &GraphDocument, origin: &HostOrigin) -> Co
         if edge_ids.len() <= 1 {
             continue;
         }
-        let Ok(port) = lookup_port(document, &port_ref) else {
+        let Ok(port) = lookup_port(document, resolved, &port_ref) else {
             continue;
         };
         if port.direction == crate::document::PortDirection::Input && port.kind == PortKind::Data {
@@ -185,7 +176,7 @@ pub fn validate_connections(document: &GraphDocument, origin: &HostOrigin) -> Co
         if edge_ids.len() <= 1 {
             continue;
         }
-        let Ok(port) = lookup_port(document, &port_ref) else {
+        let Ok(port) = lookup_port(document, resolved, &port_ref) else {
             continue;
         };
         let code = if port.direction != crate::document::PortDirection::Output {
@@ -220,13 +211,14 @@ pub fn validate_connections(document: &GraphDocument, origin: &HostOrigin) -> Co
 
 fn resolve_endpoint(
     document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     endpoint: &PortRef,
     edge: EdgeId,
     origin: &HostOrigin,
     report: &mut ConnectionValidation,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<ResolvedPort> {
-    match lookup_port(document, endpoint) {
+) -> Option<PortDescriptor> {
+    match lookup_port(document, resolved, endpoint) {
         Ok(port) => Some(port),
         Err(PortLookupError::MissingNode | PortLookupError::UnknownPort) => {
             diagnostics.push(Diagnostic::new(
@@ -243,7 +235,37 @@ fn resolve_endpoint(
     }
 }
 
-fn stream_status(port: &ResolvedPort) -> Option<bool> {
+/// True when the port's type parses and names no type parameter, so it can be compared.
+fn is_concrete(port: &PortDescriptor) -> bool {
+    port.ty
+        .as_ref()
+        .and_then(|ty| TypeTerm::parse(ty).ok())
+        .is_some_and(|term| !term.contains_param())
+}
+
+/// An edge whose data types cannot be compared leaves both endpoints incomplete. A resolved
+/// endpoint is blocked by its peer and says so; an unresolved one is already explained by
+/// node resolution.
+fn unchecked_edge(
+    edge: &Edge,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    origin: &HostOrigin,
+    report: &mut ConnectionValidation,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for endpoint in [&edge.from, &edge.to] {
+        report.incomplete_nodes.insert(endpoint.node);
+        if resolved.contains_key(&endpoint.node) {
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::DependencyUnavailable,
+                subject(endpoint, Some(edge.id)),
+                origin,
+            ));
+        }
+    }
+}
+
+fn stream_status(port: &PortDescriptor) -> Option<bool> {
     let term = TypeTerm::parse(port.ty.as_ref()?).ok()?;
     if term.contains_param() {
         None

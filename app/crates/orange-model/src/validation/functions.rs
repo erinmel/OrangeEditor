@@ -4,10 +4,13 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::catalog::{ReferenceKind, RegistrySnapshot, intrinsic, is_intrinsic};
 use crate::document::{GraphDocument, NodeKind, SignatureSnapshot, Suspends, VarScope};
+use crate::edit::DeclId;
 use crate::id::{FunctionId, NodeId, VariableId};
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
+use super::nodes::NodeValidation;
 
 /// The operation used to write a variable. This remains part of the summary so later
 /// conflict analysis can recognize the documented commutative update exceptions.
@@ -68,6 +71,18 @@ impl FunctionEvidence {
             leaf_effects,
         }
     }
+
+    /// Binds the projections produced by [`validate_nodes`](super::validate_nodes) for
+    /// `document` and the host-supplied `leaf_effects`. Leaf effects are never derived
+    /// from the registry: a package leaf without an entry leaves its function incomplete
+    /// (11 §14).
+    pub fn from_nodes(
+        document: &GraphDocument,
+        nodes: &NodeValidation,
+        leaf_effects: BTreeMap<NodeId, LeafEffects>,
+    ) -> Self {
+        Self::new(document, nodes.resolved.clone(), leaf_effects)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -117,8 +132,9 @@ impl KindRank {
 pub fn analyze_functions(
     document: &GraphDocument,
     evidence: &FunctionEvidence,
-    origin: &HostOrigin,
+    registry: &RegistrySnapshot,
 ) -> FunctionAnalysis {
+    let origin = registry.origin();
     let mut result = FunctionAnalysis::default();
     if evidence.document_state != document.state_id() {
         for function_id in document.functions().keys().copied() {
@@ -135,7 +151,7 @@ pub fn analyze_functions(
 
     let resolved = &evidence.resolved;
     let leaf_effects = &evidence.leaf_effects;
-    let calls = call_graph(document, &mut result, origin);
+    let calls = call_graph(document, registry, &mut result);
     let (cycles, cyclic) = find_cycles(&calls);
     for path in &cycles {
         let mut diagnostic = Diagnostic::new(
@@ -161,7 +177,7 @@ pub fn analyze_functions(
 
         for node in function.body.nodes.values() {
             let definition = node.definition.id.as_str();
-            if is_function_intrinsic_id(definition)
+            if is_intrinsic(definition)
                 && (node.provider.is_some()
                     || node.definition.version != 1
                     || node.config_version != 1)
@@ -197,11 +213,7 @@ pub fn analyze_functions(
                 continue;
             }
             if definition == "core/get-variable" {
-                let variable = node
-                    .config
-                    .get("variable")
-                    .and_then(Value::as_str)
-                    .and_then(|value| value.parse::<VariableId>().ok());
+                let variable = super::variables::variable_reference(registry, node).ok();
                 if variable.is_none_or(|id| !document.variables().contains_key(&id)) {
                     emit_at(
                         &mut result,
@@ -214,8 +226,9 @@ pub fn analyze_functions(
                     continue;
                 }
             }
-            if is_function_intrinsic_id(definition) && definition != "core/call" {
-                let Some((kind, suspends)) = core_kind_and_suspension(definition) else {
+            if is_intrinsic(definition) && definition != "core/call" {
+                let Some((kind, suspends)) = intrinsic(definition).and_then(|rule| rule.summary)
+                else {
                     emit_at(
                         &mut result,
                         DiagnosticCode::FunctionMetadataUnavailable,
@@ -229,7 +242,7 @@ pub fn analyze_functions(
                 rank = rank.max(rank_of(kind));
                 may_suspend |= suspends != Suspends::Never;
                 if is_variable_write(definition) {
-                    match core_variable_write(node, definition) {
+                    match core_variable_write(registry, node, definition) {
                         Ok(write) => {
                             if document.variables().get(&write.variable).is_none() {
                                 emit_at(
@@ -417,9 +430,10 @@ pub fn analyze_functions(
 
 fn call_graph(
     document: &GraphDocument,
+    registry: &RegistrySnapshot,
     result: &mut FunctionAnalysis,
-    origin: &HostOrigin,
 ) -> BTreeMap<FunctionId, BTreeMap<NodeId, FunctionId>> {
+    let origin = registry.origin();
     let mut graph = BTreeMap::new();
     for (id, function) in document.functions() {
         let mut edges = BTreeMap::new();
@@ -440,11 +454,10 @@ fn call_graph(
                 result.incomplete_functions.insert(*id);
                 continue;
             }
-            let target = node
-                .config
-                .get("function")
-                .and_then(Value::as_str)
-                .and_then(|value| value.parse::<FunctionId>().ok());
+            let target = match registry.reference(node, ReferenceKind::Function) {
+                Ok(DeclId::Function(target)) => Some(target),
+                _ => None,
+            };
             match target {
                 None => {
                     emit_at(
@@ -485,46 +498,12 @@ fn is_marker(node: &crate::document::NodeInstance) -> bool {
         )
 }
 
-fn core_kind_and_suspension(id: &str) -> Option<(NodeKind, Suspends)> {
-    let kind = match id {
-        "core/yield" | "core/wait" => return Some((NodeKind::Async, Suspends::Always)),
-        "core/count" | "core/while" | "core/for-each" => {
-            return Some((NodeKind::Iterator, Suspends::Maybe));
-        }
-        "core/function-entry" | "core/function-outputs" | "core/return" => return None,
-        "core/select" | "core/and" | "core/or" | "core/coalesce" | "core/try" => NodeKind::Pure,
-        "core/set-variable" | "core/update-variable" => NodeKind::Action,
-        "core/get-variable" => NodeKind::Volatile,
-        "core/branch" | "core/switch" | "core/sequence" | "core/fork" | "core/break"
-        | "core/continue" | "core/gate" | "core/do-once" | "core/flip-flop" => NodeKind::Action,
-        _ => return None,
-    };
-    Some((kind, Suspends::Never))
-}
-
-fn is_function_intrinsic_id(id: &str) -> bool {
-    matches!(
-        id,
-        "core/call"
-            | "core/function-entry"
-            | "core/function-outputs"
-            | "core/return"
-            | "core/get-variable"
-            | "core/set-variable"
-            | "core/update-variable"
-    ) || super::ports::is_intrinsic_definition(id)
-}
-
 fn core_variable_write(
+    registry: &RegistrySnapshot,
     node: &crate::document::NodeInstance,
     definition: &str,
 ) -> Result<VariableWrite, DiagnosticCode> {
-    let variable = node
-        .config
-        .get("variable")
-        .and_then(Value::as_str)
-        .and_then(|value| value.parse().ok())
-        .ok_or(DiagnosticCode::VariableUnknown)?;
+    let variable = super::variables::variable_reference(registry, node)?;
     let operation = if definition == "core/set-variable" {
         Some(WriteOperation::Set)
     } else {

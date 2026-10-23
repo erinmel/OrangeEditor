@@ -2,15 +2,16 @@
 
 mod common;
 
-use common::generic::{add, add_definition, catalog, data_edge, document, only, source};
+use common::generic::{
+    add, data_edge, document, only, registry, registry_with_provider_specializations, source,
+};
 use common::{minimal_document, node_id};
 use orange_model::DocIndex;
+use orange_model::catalog::{ProviderKey, RegistrySnapshot};
 use orange_model::id::NodeId;
 use orange_model::inference::{
-    ComponentInference, EquationEvidence, InferenceIssue, ProviderKey, TemplateCatalog,
-    UnificationError, infer_components,
+    ComponentInference, EquationEvidence, InferenceIssue, UnificationError, infer_components,
 };
-use orange_model::types::TypeRegistry;
 use orange_model::{GraphDocument, from_json};
 use proptest::prelude::*;
 use serde_json::json;
@@ -22,14 +23,13 @@ fn id(n: u8) -> NodeId {
 fn infer(
     document: &GraphDocument,
     touched: &[u8],
-    catalog: &TemplateCatalog,
+    registry: &RegistrySnapshot,
 ) -> Vec<ComponentInference> {
     infer_components(
         document,
         &DocIndex::build(document),
         touched.iter().map(|&n| id(n)),
-        catalog,
-        &TypeRegistry::core(),
+        registry,
     )
 }
 
@@ -55,7 +55,7 @@ fn typed_source_resolves_a_generic_chain_from_any_touched_node() {
         ],
     );
     for touched in [&[2][..], &[3], &[1]] {
-        let components = infer(&doc, touched, &catalog(None));
+        let components = infer(&doc, touched, &registry(None));
         assert_eq!(components.len(), 1, "touched {touched:?}");
         let component = &components[0];
         assert_eq!(component.nodes, [id(2), id(3)].into());
@@ -72,7 +72,7 @@ fn stale_inferred_arguments_are_never_reused_but_pins_are() {
         vec![add(2, json!({"type_args": {"T": "core/i64@1"}}))],
         vec![],
     );
-    let component = &infer(&stale, &[2], &catalog(None))[0];
+    let component = &infer(&stale, &[2], &registry(None))[0];
     assert_eq!(resolved(component, 2), None);
     assert_eq!(codes(component), ["E-TYPE-AMBIGUOUS"]);
 
@@ -83,7 +83,7 @@ fn stale_inferred_arguments_are_never_reused_but_pins_are() {
         )],
         vec![],
     );
-    let component = &infer(&pinned, &[2], &catalog(None))[0];
+    let component = &infer(&pinned, &[2], &registry(None))[0];
     assert_eq!(resolved(component, 2), Some("core/f64@1"));
     assert!(component.issues.is_empty());
 }
@@ -93,7 +93,7 @@ fn active_literals_seed_inference_and_shadowed_literals_do_not() {
     let literal = json!({"inputs": {"b": {"type": "core/i32@1", "value": 3}}});
     let doc = document(vec![add(2, literal.clone())], vec![]);
     assert_eq!(
-        resolved(&infer(&doc, &[2], &catalog(None))[0], 2),
+        resolved(&infer(&doc, &[2], &registry(None))[0], 2),
         Some("core/i32@1")
     );
 
@@ -102,7 +102,7 @@ fn active_literals_seed_inference_and_shadowed_literals_do_not() {
         vec![source(1), add(2, literal)],
         vec![data_edge(1, (1, "value"), (2, "b"))],
     );
-    let component = &infer(&doc, &[2], &catalog(None))[0];
+    let component = &infer(&doc, &[2], &registry(None))[0];
     assert_eq!(resolved(component, 2), Some("core/i64@1"));
     assert!(component.issues.is_empty());
 }
@@ -116,7 +116,7 @@ fn conflicting_pins_report_a_mismatch_with_pin_evidence_and_no_bindings() {
         ],
         vec![data_edge(1, (2, "sum"), (3, "a"))],
     );
-    let component = &infer(&doc, &[2], &catalog(None))[0];
+    let component = &infer(&doc, &[2], &registry(None))[0];
     assert!(component.type_args.is_empty());
     assert_eq!(codes(component), ["E-TYPE-MISMATCH"]);
     let InferenceIssue::Unification(UnificationError::TypeMismatch { context, .. }) =
@@ -139,7 +139,7 @@ fn a_pin_nested_past_the_parser_budget_is_a_complexity_issue_not_a_mismatch() {
     );
     let doc = document(vec![add(2, json!({"type_pins": {"T": deep}}))], vec![]);
     assert_eq!(
-        codes(&infer(&doc, &[2], &catalog(None))[0]),
+        codes(&infer(&doc, &[2], &registry(None))[0]),
         ["E-TYPE-COMPLEXITY"]
     );
 }
@@ -150,7 +150,7 @@ fn constraints_and_specializations_are_checked_after_solving() {
         vec![add(2, json!({"type_pins": {"T": "core/string@1"}}))],
         vec![],
     );
-    let component = &infer(&text, &[2], &catalog(None))[0];
+    let component = &infer(&text, &[2], &registry(None))[0];
     assert_eq!(codes(component), ["E-CONSTRAINT-UNSATISFIED"]);
     assert_eq!(resolved(component, 2), None);
 
@@ -158,11 +158,11 @@ fn constraints_and_specializations_are_checked_after_solving() {
         vec![add(2, json!({"type_pins": {"T": "core/f64@1"}}))],
         vec![],
     );
-    let only_integers = catalog(Some(vec!["core/i64@1", "core/i32@1"]));
+    let only_integers = registry(Some(vec!["core/i64@1", "core/i32@1"]));
     let component = &infer(&float, &[2], &only_integers)[0];
     assert_eq!(codes(component), ["E-NO-SPECIALIZATION"]);
     assert!(
-        infer(&float, &[2], &catalog(Some(vec!["core/f64@1"])))[0]
+        infer(&float, &[2], &registry(Some(vec!["core/f64@1"])))[0]
             .issues
             .is_empty()
     );
@@ -191,8 +191,7 @@ fn specializations_belong_to_the_exact_provider_of_a_node() {
         content_digest: digest("aa"),
         id: "add".to_owned(),
     };
-    let mut templates = catalog(None);
-    templates.insert_specializations(add_definition(), Some(ints.clone()), only(&["core/i64@1"]));
+    let templates = registry_with_provider_specializations(ints.clone(), only(&["core/i64@1"]));
     assert_eq!(
         codes(&infer(&doc, &[2], &templates)[0]),
         ["E-NO-SPECIALIZATION"]
@@ -200,12 +199,11 @@ fn specializations_belong_to_the_exact_provider_of_a_node() {
     assert!(infer(&doc, &[3], &templates)[0].issues.is_empty());
 
     // The same package version under another digest is a different provider.
-    let mut other = catalog(None);
     let rebuilt = ProviderKey {
         content_digest: digest("cc"),
         ..ints
     };
-    other.insert_specializations(add_definition(), Some(rebuilt), only(&["core/i64@1"]));
+    let other = registry_with_provider_specializations(rebuilt, only(&["core/i64@1"]));
     assert!(infer(&doc, &[2], &other)[0].issues.is_empty());
 }
 
@@ -221,7 +219,7 @@ fn both_sides_of_a_disconnect_are_separate_components_and_others_are_untouched()
         ],
         vec![data_edge(1, (4, "sum"), (5, "a"))],
     );
-    let components = infer(&doc, &[3, 2], &catalog(None));
+    let components = infer(&doc, &[3, 2], &registry(None));
     let nodes: Vec<_> = components.iter().map(|c| c.nodes.clone()).collect();
     assert_eq!(nodes, [[id(2)].into(), [id(3)].into()]);
     assert_eq!(resolved(&components[0], 2), Some("core/i64@1"));
@@ -245,11 +243,11 @@ proptest! {
             data_edge(3, (3, "sum"), (4, "b")), data_edge(4, (5, "sum"), (6, "a")),
             data_edge(5, (2, "sum"), (4, "a")),
         ];
-        let reference = infer(&document(nodes.clone(), edges.clone()), &[4, 5], &catalog(None));
+        let reference = infer(&document(nodes.clone(), edges.clone()), &[4, 5], &registry(None));
         let shuffled = document(
             node_order.iter().map(|&i| nodes[i].clone()).collect(),
             edge_order.iter().map(|&i| edges[i].clone()).collect(),
         );
-        prop_assert_eq!(infer(&shuffled, &[5, 4], &catalog(None)), reference);
+        prop_assert_eq!(infer(&shuffled, &[5, 4], &registry(None)), reference);
     }
 }

@@ -1,6 +1,6 @@
 # Graph language and execution semantics
 
-Status: **normative proposal for graph format v1**. The document model exists; validator, compiler and runtime behavior remain to be implemented and tested. Section 18 supplies reference scenarios for focused implementation tests. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
+Status: **normative proposal for graph format v1**. The document model, type/inference work and partial validator passes exist; complete validation, compiler and runtime remain to be implemented and tested. Section 18 supplies reference scenarios for focused implementation tests. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
 
 **Layering (ADR-21).** §4–§6, §16 and §17 are the shared **substrate** that every execution domain uses: ports, types, conversions, extension surface and diagnostics. §1–§3 and §7–§15 define the built-in **`control` domain** (event activations, exec/data wires, async, structured loops), which a body uses when it declares no `domain` ([12 §3.1](12-graph-data-structures.md)). The core ships no other domain; crates that depend on the core may add domains, bridges and object models, each with its own semantics document.
 
@@ -65,7 +65,7 @@ A definition has exactly one `kind`. Ports inherited from a kind (§4.1) are imp
 | `volatile` | none | never | reads state, clock or entropy | once per epoch | `entropy` subclass only | Get Variable, Now, Random (seeded) |
 | `action` | `in`; outcome outs (default `then`); `failed` | never | may write state or perform a non-blocking effect | n/a | yes | Set Variable, Emit, Log, Register store |
 | `async` | as action, plus `cancelled` | `maybe` or `always` (declared) | effects through host services | n/a | yes | HTTP request, read file, Wait |
-| `entry` | `then` only; no exec input | n/a | starts activations | n/a | yes, through event-source contract | On Start, On Timer, On Event, OBS scene changed |
+| `entry` | `then` only; no exec input | n/a | starts activations | n/a | yes, through event-source contract | On Start, On Timer, On Event, keyboard, audio threshold |
 | `iterator` | `in`, `body` (region), `completed`, `failed`, `cancelled` | `next` may suspend | open/next/close over a resource | n/a | yes | For Each Line, For Each Stream Item |
 | `control` intrinsic | per intrinsic (§8.4) | Yield only | node state for Gate/Do Once/Flip Flop | n/a | **no** | Branch, Switch, Sequence, Fork, loops |
 | `zone` intrinsic pair | none | never | none (pure loop) | per iteration | **no** | Repeat, Map, Fold, Filter |
@@ -217,7 +217,7 @@ Integer arithmetic config: `int_overflow` = `checked` (default) / `wrapping` / `
 
 Entry identity is a stable converter ID plus contract version. Multiple implementations of that same entry are provider alternatives, not additional semantic conversions. Count distinct semantic entries when applying rule 3: a unique lossless-total entry is eligible even when partial/lossy entries also exist, but its exact provider must resolve unambiguously from an explicit new-binding default, sole implementation or user choice. No default is inferred from installation order. Defaults are scoped to the entry contract within the pair slot; existing bindings remain pinned.
 
-The converter node itself is persisted as specified in [12 §5](12-graph-data-structures.md): it names the entry key, the exact provider and the resolved policy choices, and its ports are `value` in, `result` out and, for lossy entries, `loss`. A connection plan fixes the node and edge identities once, and records the document content state, the immutable registry snapshot (which fixes the available providers) and the generic template catalog it was made against; applying it rechecks all three, so a stale plan is rejected instead of re-resolved. Inserting a converter reuses the wire's existing data-input replacement rule (§4.3): the old edge is removed in the same transaction. Shadowed literals stay in the document.
+The converter node itself is persisted as specified in [12 §5](12-graph-data-structures.md): it names the entry key, the exact provider and the resolved policy choices, and its ports are `value` in, `result` out and, for lossy entries, `loss`. A connection plan fixes the node and edge identities once, and records the document content state and the immutable registry snapshot (which fixes the available providers and generic definitions) it was made against; applying it rechecks both, so a stale plan is rejected instead of re-resolved. Inserting a converter reuses the wire's existing data-input replacement rule (§4.3): the old edge is removed in the same transaction. Shadowed literals stay in the document.
 
 Before selecting a converter, infer generic endpoint types from the evidence that survives removal of replaced edges. Exclude the target literal that the proposed wire will shadow, while preserving it in the document. Explicit pins and other active literals/edges remain evidence; cached `type_args` do not constrain selection. An unresolved endpoint connects directly for joint inference. Thus replacing an unpinned generic node's only i64 source with f64 can change its type without inserting a conversion; a pin or remaining i64 source still requires the normal converter selection.
 
@@ -426,6 +426,8 @@ Under `parallel`, activations interleave at suspension points. Get is re-pulled 
 
 Custom events are declared per graph: `{id, name, payload type, scope: run | workspace}`. Workspace-scope events go through the host bus to other runs in the workspace, with the same envelope and causal-depth rules.
 
+**Foundation trigger authoring (ADR-22; FR-52/54/55).** Manual entries expose an accessible test button. Keyboard and audio-threshold sources are host-backed entry definitions governed by the same acquisition, queue, reentrancy and cancellation rules as package sources; they are not new port kinds or control intrinsics. Configuration is available from the node. Source capture/registration is active only for an owning run. An installed plugin can contribute a different event source with its own typed payload through this same contract. Input-specific acquisition and timing are in 05.
+
 ### 10.3 Envelope and causal depth
 
 An envelope carries `ingestion_seq`, source and `source_seq`, cause activation, `cause_depth`, monotonic and wall time, payload and payload size. Envelopes from external sources, timers and manual triggers have depth 0. Emits, variable changes and Watches from activation A get `A.depth + 1`. Above `max_cause_depth` (run setting; proposed 64; NFR-02 tuning), an Emit fails with `core/RunawayEventChain`, and a notification or Watch is suppressed with a counter and diagnostic. Perpetual behaviour belongs in a timer or a control cycle through Wait, not in an unbounded event chain.
@@ -445,6 +447,12 @@ An action or async with `event` outputs (a subscription) is allowed **only in th
 | `workspace` | Host actor; shared by runs | volatile read of the latest published versioned snapshot | `core/set-shared`, `core/update-shared` (**async**, serialized by the host; the snapshot is published before `then`, so the writer reads its own write) | optional checkpoint |
 
 `Get` and `Read` remain UI aliases of one operation. An uninitialized read fails with `core/UninitializedVariable`. `update-variable` operations: `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `append`, `compare-and-set(expected)`; outputs `old` and `new` are available on `then`. Handles and streams may not be stored in persistent or workspace variables (`E-HANDLE-PERSIST`), and streams in no variable at all (`E-STREAM-STORE`).
+
+**Get/Set contracts (FR-12/44/45).** Exact host intrinsics `core/get-variable@1` and `core/set-variable@1` use `config_version: 1`, no provider binding, and a canonical `VariableId` in `config.variable`. Get is `volatile`, `suspends: never`, with no data inputs and one data output `value` of the declaration's type, `source: state`. Set is an `action`, `suspends: never`, with one required data input `value` of that type and ordinary implicit action control/error outcomes (§3); it adds no data outputs. Synchronous Set accepts only `local` and `run`; a `workspace` target reports `E-VARIABLE-SCOPE` and stays unresolved. Workspace writes use the separate async shared operations above; Get may resolve a workspace declaration without establishing runtime snapshot availability.
+
+Missing, malformed or undeclared variable references report `E-VARIABLE-UNKNOWN`; an unknown declaration type fails through ordinary type resolution. Neither stored signatures nor `type_args` substitute for the declaration. These contextual contracts are derived read-only validation evidence, never persisted synthetic signatures. The registry computes them on each lookup from the declaration, so a declaration change is visible immediately and nothing can go stale. This projection does not establish local cross-body visibility, region validity, initialization or execution readiness.
+
+**Declaration authoring (FR-12).** The editor exposes variable declaration through a declaration node/control bound to the stable persisted VariableDecl ID. Type, scope and initializer edits are atomic document commands; Get/Set/Update reference that ID, never a name or arbitrary config string. This is an authoring projection, not a new executable Declare intrinsic: drawing/revisiting it never initializes or resets runtime state. Runtime initialization remains at activation/call/run start as above. Enum authoring likewise uses registered schemas with stable variant IDs and explicit constructor/match nodes; it does not introduce implicit string tags. Exact editor serialization and commands are qualified in WU-05 before adoption.
 
 ### 11.2 Write conflicts
 
@@ -493,6 +501,12 @@ Runtime codes defined by the core: `NumericOverflow`, `DivideByZero`, `Domain`, 
 - The call graph is acyclic (§8.2). There are no macros in v1. "Collapse to function" is an editor refactoring with an interface preview, and groups or frames are presentation only.
 - A package-provided function is a definition whose implementation is a graph, pinned by the package lock like any provider.
 
+### 14.1 Saved specialized nodes and templates
+
+FR-53 exposes the existing function mechanism as a user workflow: select compatible nodes → preview typed inputs/outputs, variable dependencies and inferred effects → save a named versioned callable graph → insert calls from the palette. Workspace-library and package forms retain exact dependency/provider locks, missing-node preservation and migration previews. Local edits do not silently update existing versioned users. Export/import carries the interface, body, dependency metadata and explicit asset/reference remapping; executable code is never run during import. The external library artifact schema must be specified and tested before WU-05 adopts it; this paragraph does not declare a new implemented wire format.
+
+Functions keep the entry/subscription restrictions above. A selection that contains triggers/subscriptions may instead be saved as an explicitly labelled insertable graph template with remapped IDs/references. A template inserts editable nodes; it is not a callable node, does not bypass function restrictions and is not an implied stateful component language. Visual groups remain layout only. Later encapsulated event-driven components require their own language decision and tests. Source selection remains intact if extraction/export fails or is cancelled.
+
 ## 15. Live editing and preview
 
 - Document edits never mutate a running plan. A semantic edit compiles a new plan in the background (debounced). Runs started afterwards use it.
@@ -515,20 +529,22 @@ A package may **not** add port kinds, control or zone intrinsics, scheduling or 
 
 ## 17. Diagnostics catalog
 
-Compile diagnostics are `E-` (blocks compiling the affected region) or `W-` (compiles). Each one carries the node, port and edge IDs, and suggested fixes where applicable.
+Compile diagnostics are `E-` (blocks compiling the affected region) or `W-` (compiles). Each one carries the node, port and edge IDs, and suggested fixes where applicable. Every node a validation report leaves incomplete carries at least one diagnostic that names it: its own resolution failure, or `E-DEPENDENCY-UNAVAILABLE` when an unresolved connected node blocks its check. A language intrinsic that this core version lists but does not register yet reports `E-INTRINSIC-UNSUPPORTED`.
 
 Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_args` and safe English fallback per [13](13-internationalization.md); suggested-fix text is translatable while its command ID stays stable. Existing codes and severity never depend on locale. Golden expectations assert codes, subject IDs, arguments and fix IDs, excluding rendered prose. Package catalogue failures use the separate host/package diagnostic codes in 13, not graph compilation errors.
 
 | Group | Codes |
 |---|---|
 | Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
-| Resolution | `E-SIGNATURE-MISSING`, `E-PROVIDER-MISSING`, `E-PACKAGE-LOCK-MISSING`, `E-PROVIDER-UNAVAILABLE` |
+| Resolution | `E-SIGNATURE-MISSING`, `E-PROVIDER-MISSING`, `E-PACKAGE-LOCK-MISSING`, `E-PROVIDER-UNAVAILABLE`, `E-DEPENDENCY-UNAVAILABLE`, `E-INTRINSIC-UNSUPPORTED` |
 | Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-TYPE-COMPLEXITY`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
 | Regions and availability | `E-REGION-AMBIGUOUS`, `E-REGION-ESCAPE`, `E-UNAVAILABLE-VALUE`, `E-CROSS-ACTIVATION`, `E-BREAK-OUTSIDE-LOOP`, `E-ZONE-STRUCTURE`, `W-UNREACHABLE` |
 | Cycles | `E-CYCLE-DATA`, `E-CYCLE-SYNC-CONTROL`, `E-RECURSION`, `E-LOOP-UNBOUNDED`, `W-BUSY-LOOP` |
-| State and concurrency | `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `W-CONST-ERROR` |
+| State and concurrency | `E-VARIABLE-SCOPE`, `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `W-CONST-ERROR` |
 | Functions and entries | `E-FUNCTION-KIND`, `E-MISSING-RETURN`, `E-ENTRY-IN-FUNCTION`, `E-SUBSCRIPTION-IN-FUNCTION`, `W-DETACH-IN-FUNCTION` |
 | Function resolution | `E-CALL-TARGET-MISSING`, `E-CALL-TARGET-UNKNOWN`, `E-VARIABLE-UNKNOWN`, `E-UPDATE-OPERATION`, `E-FUNCTION-METADATA-UNAVAILABLE`, `E-METADATA-STALE`, `E-SUSPENDS-MISSING`, `E-SUSPENDS-INVALID` |
+
+For FR-51, `E-VARIABLE-SCOPE` uses the core origin, message key `core/graph-variable-scope` and safe English fallback "Workspace variables require an asynchronous shared write." It uses the existing typed redacted subject arguments; locale and rendering remain host-owned ([13 §2](13-internationalization.md)).
 
 ## 18. Reference test scenarios (WU-00)
 

@@ -6,7 +6,7 @@
 //! [`plan_edit`](crate::inference::plan_edit) so the inferred `type_args` and signature
 //! updates travel with the edit. A wire that would make the touched types invalid is
 //! refused. Identities are generated once, here, and the plan records the document content
-//! state, registry snapshot and template catalog it was made against.
+//! state and registry snapshot it was made against.
 
 use std::collections::BTreeMap;
 
@@ -18,9 +18,10 @@ use super::{
     ChoiceReason, ConverterCandidate, ConverterDefinition, ConverterProvider, ConverterRegistry,
     ExplicitConverterChoice, ResolvedConverter, SelectionOutcome, SelectionRejection,
 };
+use crate::catalog::RegistrySnapshot;
 use crate::document::{
     DefinitionRef, Edge, Extensions, GraphDocument, NodeInstance, NodeKind, OutputSource,
-    PackageLockEntry, PortDirection, PortKind, PortRef, ProviderBinding, ResolvedPort,
+    PackageLockEntry, PortDescriptor, PortDirection, PortKind, PortRef, ProviderBinding,
     SignatureSnapshot,
 };
 use crate::edit::{Committed, DocCommand};
@@ -28,9 +29,7 @@ use crate::error::{IdError, TxError};
 use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 use crate::index::DocIndex;
 use crate::inference::component::declared_port;
-use crate::inference::{
-    ComponentInference, InferenceIssue, TemplateCatalog, infer_components, plan_edit,
-};
+use crate::inference::{ComponentInference, InferenceIssue, infer_components, plan_edit};
 use crate::signature::{SignatureSubstitutionError, semantic_key, try_substitute_params};
 use crate::type_term::TypeTerm;
 
@@ -62,8 +61,8 @@ pub struct InsertedConverter {
 }
 
 /// An applicable edit: the commands, the issues inference found, and the identities the
-/// commands create. Valid only for the document state, registry snapshot and template
-/// catalog it records; its commands are read-only so they stay consistent with those.
+/// commands create. Valid only for the document state and registry snapshot
+/// it records; its commands are read-only so they stay consistent with those.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ConnectionPlan {
     commands: Vec<DocCommand>,
@@ -91,7 +90,6 @@ impl ConnectionPlan {
 struct Preconditions {
     document_state: u64,
     registry_generation: u64,
-    template_generation: u64,
 }
 
 /// A request that cannot be planned at all, as opposed to one that needs a choice.
@@ -141,12 +139,12 @@ pub enum ConnectionError {
 /// document is never modified, and `ChoiceRequired`/`Rejected` carry no commands.
 pub fn plan_connection(
     document: &GraphDocument,
-    converters: &ConverterRegistry,
-    templates: &TemplateCatalog,
+    registry: &RegistrySnapshot,
     request: ConnectionRequest,
     mut new_id: impl FnMut() -> Uuid,
 ) -> Result<ConnectionOutcome, ConnectionError> {
     let ConnectionRequest { from, to, choice } = request;
+    let converters = registry.converters();
     let body = document
         .locate_node(from.node)
         .ok_or(ConnectionError::NodeNotFound(from.node))?;
@@ -161,8 +159,8 @@ pub fn plan_connection(
         });
     }
     // Validate the request before analyzing or allocating any inserted identities.
-    endpoint_type(document, templates, &from, PortDirection::Output, &[])?;
-    endpoint_type(document, templates, &to, PortDirection::Input, &[])?;
+    endpoint_type(document, registry, &from, PortDirection::Output, &[])?;
+    endpoint_type(document, registry, &to, PortDirection::Input, &[])?;
 
     let index = DocIndex::build(document);
     let replaced: Vec<EdgeId> = index.incoming(&to).collect();
@@ -188,20 +186,19 @@ pub fn plan_connection(
             &selection_document,
             &DocIndex::build(&selection_document),
             [from.node, to.node],
-            templates,
-            converters.type_registry(),
+            registry,
         );
         (
             endpoint_type(
                 &selection_document,
-                templates,
+                registry,
                 &from,
                 PortDirection::Output,
                 &components,
             )?,
             endpoint_type(
                 &selection_document,
-                templates,
+                registry,
                 &to,
                 PortDirection::Input,
                 &components,
@@ -258,13 +255,11 @@ pub fn plan_connection(
         }
     };
 
-    let types = converters.type_registry();
-    let inferred = plan_edit(document, edit, templates, types)?;
+    let inferred = plan_edit(document, edit, registry)?;
     if inferred.issues.iter().any(InferenceIssue::is_conflict) {
-        let already_broken =
-            infer_components(document, &index, [from.node, to.node], templates, types)
-                .iter()
-                .any(|component| component.issues.iter().any(InferenceIssue::is_conflict));
+        let already_broken = infer_components(document, &index, [from.node, to.node], registry)
+            .iter()
+            .any(|component| component.issues.iter().any(InferenceIssue::is_conflict));
         if !already_broken {
             let conflicts = inferred
                 .issues
@@ -281,8 +276,7 @@ pub fn plan_connection(
         converter,
         preconditions: Preconditions {
             document_state: document.state_id(),
-            registry_generation: converters.generation(),
-            template_generation: templates.generation(),
+            registry_generation: registry.generation(),
         },
     })))
 }
@@ -327,7 +321,7 @@ fn select(
 /// The resolved type of a typed data port that has `direction`.
 fn endpoint_type(
     document: &GraphDocument,
-    templates: &TemplateCatalog,
+    registry: &RegistrySnapshot,
     port: &PortRef,
     direction: PortDirection,
     components: &[ComponentInference],
@@ -339,10 +333,8 @@ fn endpoint_type(
         node: port.node,
         port: port.port.clone(),
     };
-    let contract = templates
-        .get_for_node(document, node)
-        .map_err(|_| TxError::StaleNodeTemplate { node: node.id })?;
-    let declared = declared_port(document, templates, port).ok_or_else(not_data)?;
+    let contract = registry.contract(document, node).ok().flatten();
+    let declared = declared_port(document, registry, port).ok_or_else(not_data)?;
     let ty = declared
         .ty
         .as_ref()
@@ -446,17 +438,10 @@ fn convert_node(
     (instance, snapshot)
 }
 
-fn data_port(id: &str, direction: PortDirection, ty: &TypeExpr) -> ResolvedPort {
-    ResolvedPort {
-        port_id: id.parse().expect("fixed port IDs are valid"),
-        direction,
-        kind: PortKind::Data,
-        ty: Some(ty.clone()),
-        source: (direction == PortDirection::Output).then_some(OutputSource::Computed),
-        available_on: None,
-        default: None,
-        sensitivity: None,
-        extensions: Extensions::new(),
+fn data_port(id: &str, direction: PortDirection, ty: &TypeExpr) -> PortDescriptor {
+    match direction {
+        PortDirection::Input => PortDescriptor::data_in(id, ty.clone()),
+        PortDirection::Output => PortDescriptor::data_out(id, ty.clone(), OutputSource::Computed),
     }
 }
 
@@ -465,10 +450,8 @@ fn data_port(id: &str, direction: PortDirection, ty: &TypeExpr) -> ResolvedPort 
 pub enum PlanApplyError {
     #[error("the document changed since the plan was made (state {expected}, now {actual})")]
     StaleDocument { expected: u64, actual: u64 },
-    #[error("the converter registry was replaced since the plan was made")]
+    #[error("the registry snapshot was replaced since the plan was made")]
     StaleRegistry,
-    #[error("the generic template catalog changed since the plan was made")]
-    StaleTemplates,
     #[error(transparent)]
     Edit(#[from] TxError),
 }
@@ -476,21 +459,19 @@ pub enum PlanApplyError {
 /// Applies `plan` as one transaction: one revision bump and one undo step covering the
 /// replaced wire, the converter, its edges and the inferred updates.
 ///
-/// The document content state, the registry snapshot and the template catalog must still
-/// be the ones the plan was made against; a stale plan is rejected without changing the
+/// The document content state and the registry snapshot must still be
+/// the ones the plan was made against; a stale plan is rejected without changing the
 /// document, because its selection and inference results may no longer hold. A registry
 /// snapshot is immutable, so a matching generation also means the selected provider is
 /// still available. If a command fails, nothing changes, revision included.
 pub fn apply_connection(
     document: &mut GraphDocument,
-    converters: &ConverterRegistry,
-    templates: &TemplateCatalog,
+    registry: &RegistrySnapshot,
     plan: ConnectionPlan,
 ) -> Result<Committed, PlanApplyError> {
     let Preconditions {
         document_state,
         registry_generation,
-        template_generation,
     } = plan.preconditions;
     if document.state_id() != document_state {
         return Err(PlanApplyError::StaleDocument {
@@ -498,32 +479,24 @@ pub fn apply_connection(
             actual: document.state_id(),
         });
     }
-    if converters.generation() != registry_generation {
+    if registry.generation() != registry_generation {
         return Err(PlanApplyError::StaleRegistry);
-    }
-    if templates.generation() != template_generation {
-        return Err(PlanApplyError::StaleTemplates);
     }
     Ok(document.apply(plan.commands)?)
 }
 
 #[cfg(test)]
 mod tests {
-    use std::sync::Arc;
-
     use super::*;
-    use crate::conversion::ConverterRegistryBuilder;
-    use crate::types::TypeRegistry;
+    use crate::validation::HostOrigin;
 
     /// Commands are read-only outside this module, so a command failure inside a fresh plan
     /// can only be injected here.
     #[test]
     fn an_injected_failure_rolls_back_every_command() {
-        let converters =
-            ConverterRegistryBuilder::with_core_conversions(Arc::new(TypeRegistry::core()))
-                .unwrap()
-                .build();
-        let templates = TemplateCatalog::default();
+        let registry = RegistrySnapshot::core(
+            HostOrigin::new("1.0.0", format!("sha256:{}", "0".repeat(64))).unwrap(),
+        );
         let mut document =
             GraphDocument::new("a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6".parse().unwrap());
         let snapshot = SignatureSnapshot {
@@ -548,13 +521,12 @@ mod tests {
             converter: None,
             preconditions: Preconditions {
                 document_state: document.state_id(),
-                registry_generation: converters.generation(),
-                template_generation: templates.generation(),
+                registry_generation: registry.generation(),
             },
         };
         let (revision, state) = (document.revision(), document.state_id());
 
-        let result = apply_connection(&mut document, &converters, &templates, plan);
+        let result = apply_connection(&mut document, &registry, plan);
         assert_eq!(
             result,
             Err(PlanApplyError::Edit(TxError::EdgeNotFound(missing)))

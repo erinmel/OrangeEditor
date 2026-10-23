@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::document::{
-    Extensions, NodeKind, PortDirection, PortKind, ResolvedPort, SignatureSnapshot, Suspends,
+    Extensions, NodeKind, PortDescriptor, PortDirection, PortKind, SignatureSnapshot, Suspends,
     TypeParamName,
 };
 use crate::error::IdError;
@@ -26,7 +26,7 @@ const PRESENTATION_KEYS: [&str; 4] = ["label", "description", "group", "editor"]
 /// type parameters replaced by the node's `type_args`.
 pub fn project(
     kind: NodeKind,
-    ports: impl IntoIterator<Item = ResolvedPort>,
+    ports: impl IntoIterator<Item = PortDescriptor>,
     type_args: &BTreeMap<TypeParamName, TypeExpr>,
 ) -> SignatureSnapshot {
     project_with_suspension(kind, None, ports, type_args)
@@ -38,7 +38,7 @@ pub fn project(
 pub fn project_with_suspension(
     kind: NodeKind,
     suspends: Option<Suspends>,
-    ports: impl IntoIterator<Item = ResolvedPort>,
+    ports: impl IntoIterator<Item = PortDescriptor>,
     type_args: &BTreeMap<TypeParamName, TypeExpr>,
 ) -> SignatureSnapshot {
     let ports = ports
@@ -224,25 +224,11 @@ impl SignatureSnapshot {
     /// Ports a kind gets without declaring them (11 §4.1). Declared exec outputs (outcome
     /// outs) replace `then`.
     pub fn implicit_ports(&self) -> Vec<&'static str> {
-        use NodeKind::*;
         let has_outcomes = self
             .ports
             .iter()
             .any(|port| port.direction == PortDirection::Output && port.kind == PortKind::Exec);
-        let mut ports = Vec::new();
-        if matches!(self.kind, Action | Async | Iterator) {
-            ports.extend(["in", "failed", "error"]);
-        }
-        if matches!(self.kind, Action | Async | Entry) && !has_outcomes {
-            ports.push("then");
-        }
-        if matches!(self.kind, Async | Iterator) {
-            ports.push("cancelled");
-        }
-        if self.kind == Iterator {
-            ports.extend(["body", "completed"]);
-        }
-        ports
+        crate::catalog::implicit_ports(self.kind, has_outcomes)
     }
 }
 

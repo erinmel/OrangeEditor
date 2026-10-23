@@ -6,16 +6,16 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{eid, nid, read_fixture, saved};
-use orange_model::document::{NodeKind, ResolvedPort, SignatureSnapshot};
+use orange_model::document::{NodeKind, PortDescriptor, SignatureSnapshot};
 use orange_model::id::{EdgeId, PortId, TypeExpr};
-use orange_model::signature::{SignatureDrift, compare, project, semantic_key};
+use orange_model::signature::{SignatureDrift, canonical_json, compare, project, semantic_key};
 use orange_model::{DocIndex, from_json};
 use serde_json::{Value as Json, json};
 
 const ADD_KEY: &str = include_str!("fixtures/s-add-i64.sha256");
 
 /// The 12 §4 `org.orange.math/add` ports with the given captions (`None` = no presentation).
-fn add_ports(captions: Option<[&str; 3]>) -> Vec<ResolvedPort> {
+fn add_ports(captions: Option<[&str; 3]>) -> Vec<PortDescriptor> {
     let ids = ["a", "b", "sum"];
     let mut ports = vec![
         json!({"port_id": "a", "direction": "input", "kind": "data", "type": "$T"}),
@@ -193,7 +193,7 @@ fn implicit_ports_follow_the_kind_table() {
 
 /// A projected one-port snapshot whose port has the given default literal.
 fn with_default(default: Json) -> SignatureSnapshot {
-    let port: ResolvedPort = serde_json::from_value(json!({
+    let port: PortDescriptor = serde_json::from_value(json!({
         "port_id": "value",
         "direction": "input",
         "kind": "data",
@@ -226,4 +226,21 @@ fn default_value_and_type_stay_in_the_key() {
     let narrow = with_default(json!({"type": "core/f32@1", "bits": "3f800000"}));
     assert_ne!(semantic_key(&one), semantic_key(&two));
     assert_ne!(semantic_key(&one), semantic_key(&narrow));
+}
+
+#[test]
+fn typed_port_flags_keep_their_wire_form() {
+    let port = json!({
+        "port_id": "items", "direction": "input", "kind": "data", "type": "core/i64@1",
+        "variadic": {"min": 0, "max": null}, "optional": true, "lazy": true
+    });
+    let snapshot: SignatureSnapshot =
+        serde_json::from_value(json!({"kind": "pure", "ports": [port.clone()]})).unwrap();
+    let typed = &snapshot.ports[0];
+    assert!(typed.is_optional() && typed.is_lazy());
+    assert_eq!(typed.variadic.map(|v| (v.min, v.max)), Some((0, None)));
+    assert!(typed.extensions.is_empty());
+
+    let canonical: Json = serde_json::from_str(&canonical_json(&snapshot)).unwrap();
+    assert_eq!(canonical["ports"][0], port);
 }

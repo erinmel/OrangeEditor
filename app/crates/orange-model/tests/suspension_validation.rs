@@ -1,8 +1,10 @@
+mod common;
+
+use common::registry::Facts;
 use orange_model::GraphDocument;
-use orange_model::document::{DefinitionRef, NodeKind, ResolvedPort, Suspends};
-use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
-use orange_model::types::TypeRegistry;
-use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
+use orange_model::catalog::{NodeContract, ProviderKey};
+use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, Suspends};
+use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use serde_json::json;
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -49,15 +51,15 @@ fn validate(
         id: "example/value".parse().unwrap(),
         version: 1,
     };
-    let mut templates = TemplateCatalog::default();
-    templates.insert(
+    let mut facts = Facts::new(origin());
+    facts.definition(
         definition.clone(),
-        GenericDefinition {
+        NodeContract {
             kind,
             suspends,
             type_params: vec![],
             ports: vec![
-                serde_json::from_value::<ResolvedPort>(json!({
+                serde_json::from_value::<PortDescriptor>(json!({
                     "port_id":"value","direction":"output","kind":"data",
                     "type":"core/i64@1","source":"computed"
                 }))
@@ -65,8 +67,7 @@ fn validate(
             ],
         },
     );
-    let mut providers = ProviderCatalog::default();
-    providers.insert(
+    facts.provider(
         definition,
         1,
         ProviderKey {
@@ -76,17 +77,11 @@ fn validate(
             id: "impl".into(),
         },
     );
-    validate_nodes(
-        doc,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
-    )
-    .diagnostics
-    .into_iter()
-    .map(|diagnostic| diagnostic.code)
-    .collect()
+    validate_nodes(doc, &facts.snapshot())
+        .diagnostics
+        .into_iter()
+        .map(|diagnostic| diagnostic.code)
+        .collect()
 }
 
 #[test]

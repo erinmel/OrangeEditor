@@ -13,14 +13,14 @@
 
 use std::collections::BTreeSet;
 
-use super::component::{ComponentInference, InferenceIssue, TemplateCatalog, infer_components};
+use super::component::{ComponentInference, InferenceIssue, infer_components};
+use crate::catalog::RegistrySnapshot;
 use crate::document::GraphDocument;
 use crate::edit::{ChangeSet, Committed, DeclId, DocCommand};
 use crate::error::TxError;
 use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 use crate::signature::{project_with_suspension, semantic_key};
-use crate::types::TypeRegistry;
 
 /// An edit plus the commands that persist its inference result.
 ///
@@ -53,23 +53,16 @@ pub struct InferredCommit {
 pub fn plan_edit(
     document: &GraphDocument,
     edit: impl IntoIterator<Item = DocCommand>,
-    templates: &TemplateCatalog,
-    types: &TypeRegistry,
+    registry: &RegistrySnapshot,
 ) -> Result<InferencePlan, TxError> {
-    templates
-        .ensure_fresh(document)
-        .map_err(|stale| TxError::StaleNodeTemplate { node: stale.node })?;
     let mut commands: Vec<DocCommand> = edit.into_iter().collect();
     let mut after = document.clone();
     let change = after.apply(commands.clone())?.change_set;
-    templates
-        .ensure_fresh(&after)
-        .map_err(|stale| TxError::StaleNodeTemplate { node: stale.node })?;
     let touched = touched_nodes(document, &after, &change);
     let index = DocIndex::build(&after);
     let mut issues = Vec::new();
-    for component in infer_components(&after, &index, touched, templates, types) {
-        commands.extend(component_updates(&after, templates, &component)?);
+    for component in infer_components(&after, &index, touched, registry) {
+        commands.extend(component_updates(&after, registry, &component));
         issues.extend(component.issues);
     }
     Ok(InferencePlan { commands, issues })
@@ -81,10 +74,9 @@ pub fn plan_edit(
 pub fn apply_inferred(
     document: &mut GraphDocument,
     edit: impl IntoIterator<Item = DocCommand>,
-    templates: &TemplateCatalog,
-    types: &TypeRegistry,
+    registry: &RegistrySnapshot,
 ) -> Result<InferredCommit, TxError> {
-    let plan = plan_edit(document, edit, templates, types)?;
+    let plan = plan_edit(document, edit, registry)?;
     let committed = document.apply(plan.commands)?;
     Ok(InferredCommit {
         committed,
@@ -134,18 +126,15 @@ fn touched_nodes(
 /// already in that state, or without a template, produce none.
 fn component_updates(
     document: &GraphDocument,
-    templates: &TemplateCatalog,
+    registry: &RegistrySnapshot,
     component: &ComponentInference,
-) -> Result<Vec<DocCommand>, TxError> {
+) -> Vec<DocCommand> {
     let mut commands = Vec::new();
     for &id in &component.nodes {
         let Some(node) = document.node(id) else {
             continue;
         };
-        let template = templates
-            .get_for_node(document, node)
-            .map_err(|stale| TxError::StaleNodeTemplate { node: stale.node })?;
-        let Some(template) = template else {
+        let Ok(Some(template)) = registry.contract(document, node) else {
             continue;
         };
         let args = component.type_args.get(&id).cloned().unwrap_or_default();
@@ -167,5 +156,5 @@ fn component_updates(
             commands.push(DocCommand::SetSignature { node: id, key });
         }
     }
-    Ok(commands)
+    commands
 }
