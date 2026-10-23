@@ -550,6 +550,175 @@ fn update_min_max_require_ord_and_keep_the_same_contextual_ports() {
 }
 
 #[test]
+fn compare_and_set_projects_required_operands_and_execution_results() {
+    let registry = registry();
+    let mut node = update_node(1, json!(node_id(10)), json!("compare-and-set"));
+    for (inputs, expected_codes) in [
+        (json!({}), vec![DiagnosticCode::InputRequired; 2]),
+        (
+            json!({"expected":{"type":"core/i64@1","value":"4"}}),
+            vec![DiagnosticCode::InputRequired],
+        ),
+        (
+            json!({"value":{"type":"core/i64@1","value":"5"}}),
+            vec![DiagnosticCode::InputRequired],
+        ),
+        (
+            json!({"expected":{"type":"core/bool@1","value":true},
+                "value":{"type":"core/i64@1","value":"5"}}),
+            vec![DiagnosticCode::LiteralType],
+        ),
+        (
+            json!({"expected":{"type":"core/i64@1","value":"4"},
+                "value":{"type":"core/i64@1","value":"5"}}),
+            vec![],
+        ),
+    ] {
+        node["inputs"] = inputs;
+        let doc = document(
+            json!([node]),
+            json!([declaration(10, "core/i64@1", "local")]),
+        );
+        let resolved = validate(&doc);
+        assert!(resolved.is_valid(), "{:?}", resolved.diagnostics);
+        let signature = &resolved.resolved[&nid(1)];
+        assert_eq!(signature.kind, NodeKind::Action);
+        assert_eq!(signature.suspends, Some(Suspends::Never));
+        let ports = &signature.ports;
+        assert_eq!(
+            ports.iter().map(|p| p.port_id.as_str()).collect::<Vec<_>>(),
+            ["expected", "value", "old", "new", "exchanged"]
+        );
+        for (index, port) in ports.iter().enumerate() {
+            assert_eq!(
+                port.ty.as_ref().unwrap().as_str(),
+                if index == 4 {
+                    "core/bool@1"
+                } else {
+                    "core/i64@1"
+                }
+            );
+            assert!(port.default.is_none());
+            assert!(!port.optional.unwrap_or(false));
+            assert!(!port.lazy.unwrap_or(false));
+            if index < 2 {
+                assert_eq!(port.direction, PortDirection::Input);
+                assert!(port.source.is_none());
+            } else {
+                assert_eq!(port.direction, PortDirection::Output);
+                assert_eq!(port.source, Some(OutputSource::Execution));
+                assert_eq!(
+                    port.available_on
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>(),
+                    ["then"]
+                );
+            }
+        }
+        assert_eq!(
+            validate_inputs(&doc, &resolved.resolved, &registry)
+                .iter()
+                .map(|d| d.code)
+                .collect::<Vec<_>>(),
+            expected_codes
+        );
+        assert!(doc.signatures().is_empty());
+    }
+}
+
+#[test]
+fn compare_and_set_uses_language_eq_for_scalars_and_aggregates() {
+    for (ty, eligible) in [
+        ("core/i64@1", true),
+        ("core/string@1", true),
+        ("core/list@1<core/i64@1>", true),
+        ("core/option@1<core/bool@1>", true),
+        ("core/map@1<core/string@1,core/i64@1>", true),
+        ("core/f32@1", false),
+        ("core/f64@1", false),
+        ("core/list@1<core/f64@1>", false),
+        ("core/option@1<core/f64@1>", false),
+        ("core/map@1<core/string@1,core/f64@1>", false),
+        ("core/stream@1<core/i64@1>", false),
+    ] {
+        let report = validate(&document(
+            json!([update_node(1, json!(node_id(10)), json!("compare-and-set"))]),
+            json!([declaration(10, ty, "run")]),
+        ));
+        if eligible {
+            assert!(report.is_valid(), "{ty}: {:?}", report.diagnostics);
+            assert_eq!(
+                report.resolved[&nid(1)].ports[0]
+                    .ty
+                    .as_ref()
+                    .unwrap()
+                    .as_str(),
+                ty
+            );
+        } else {
+            assert_eq!(report.diagnostics.len(), 1, "{ty}");
+            assert_eq!(
+                report.diagnostics[0].code,
+                DiagnosticCode::ConstraintUnsatisfied,
+                "{ty}"
+            );
+            assert!(report.resolved.is_empty());
+        }
+    }
+    let workspace = validate(&document(
+        json!([update_node(1, json!(node_id(10)), json!("compare-and-set"))]),
+        json!([declaration(10, "core/i64@1", "workspace")]),
+    ));
+    assert_eq!(workspace.diagnostics[0].code, DiagnosticCode::VariableScope);
+}
+
+#[test]
+fn compare_and_set_connections_use_operand_types_and_boolean_result() {
+    use common::generic::data_edge;
+    use orange_model::validation::validate_connections;
+
+    for (source_type, target_type, valid) in [
+        ("core/i64@1", "core/bool@1", true),
+        ("core/i64@1", "core/i64@1", false),
+        ("core/bool@1", "core/bool@1", false),
+    ] {
+        let doc = from_json(&minimal_document(json!({
+            "variables":[declaration(10,"core/i64@1","run"), declaration(11,target_type,"run"),
+                declaration(12,source_type,"run")],
+            "nodes":[update_node(1,json!(node_id(10)),json!("compare-and-set")),
+                variable_node(2,"get",json!(node_id(12))),
+                variable_node(3,"set",json!(node_id(11)))],
+            "edges":[data_edge(1,(2,"value"),(1,"expected")),
+                data_edge(2,(2,"value"),(1,"value")),
+                data_edge(3,(1,"exchanged"),(3,"value"))]
+        })))
+        .unwrap();
+        let registry = registry();
+        let resolved = validate_nodes(&doc, &registry);
+        let connections = validate_connections(&doc, &resolved.resolved, &registry);
+        if valid {
+            assert!(
+                connections.diagnostics.is_empty(),
+                "{:?}",
+                connections.diagnostics
+            );
+            assert!(validate_inputs(&doc, &resolved.resolved, &registry).is_empty());
+        } else {
+            assert!(
+                connections
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::TypeMismatch)
+            );
+        }
+        // This checks connection types, not execution availability or region legality.
+    }
+}
+
+#[test]
 fn update_errors_follow_reference_scope_operation_then_type_precedence() {
     let cases = [
         ("missing", "run", None, DiagnosticCode::UpdateOperation),

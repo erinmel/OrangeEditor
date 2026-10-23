@@ -114,6 +114,11 @@ fn builtin_variable_reads_and_writes_propagate_only_run_effects_to_callers() {
                         json!({"variable":RUN_VAR,"operation":"max"})
                     ),
                     node(
+                        "20000000-0000-4000-8000-000000000008",
+                        "core/update-variable",
+                        json!({"variable":RUN_VAR,"operation":"compare-and-set"})
+                    ),
+                    node(
                         "20000000-0000-4000-8000-000000000005",
                         "core/update-variable",
                         json!({"variable":LOCAL_VAR,"operation":"add"})
@@ -138,7 +143,8 @@ fn builtin_variable_reads_and_writes_propagate_only_run_effects_to_callers() {
             orange_model::validation::WriteOperation::Set,
             orange_model::validation::WriteOperation::Add,
             orange_model::validation::WriteOperation::Min,
-            orange_model::validation::WriteOperation::Max
+            orange_model::validation::WriteOperation::Max,
+            orange_model::validation::WriteOperation::CompareAndSet
         ]
         .into()
     );
@@ -255,6 +261,11 @@ fn invalid_contextual_update_keeps_function_summary_incomplete() {
         ("append", "core/i64@1", DiagnosticCode::UpdateUnsupported),
         ("add", "core/bool@1", DiagnosticCode::ConstraintUnsatisfied),
         ("min", "core/f64@1", DiagnosticCode::ConstraintUnsatisfied),
+        (
+            "compare-and-set",
+            "core/f64@1",
+            DiagnosticCode::ConstraintUnsatisfied,
+        ),
     ] {
         let mut declaration = variable(RUN_VAR, "run");
         declaration["type"] = json!(ty);

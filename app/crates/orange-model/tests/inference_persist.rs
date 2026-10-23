@@ -647,3 +647,107 @@ fn update_outputs_invalidate_generic_consumers_in_root_and_function_bodies() {
         assert_eq!(content(&doc), before_scope_change);
     }
 }
+
+#[test]
+fn compare_and_set_outputs_reinfer_consumers_and_keep_the_boolean_output() {
+    let registry = declaration_registry();
+    for in_function in [false, true] {
+        let provider = json!({"package":"org.test","version":"1.0.0","id":"native"});
+        let mut fixture = serde_json::to_value(declaration_driven_document()).unwrap();
+        fixture["nodes"] = json!([
+            variable_get(1, 10),
+            variable_get(2, 10),
+            variable_update(3, 10),
+            add(4, json!({"provider":provider})),
+            add(5, json!({"provider":provider}))
+        ]);
+        fixture["nodes"][2]["config"]["operation"] = json!("compare-and-set");
+        fixture["edges"] = json!([
+            data_edge(1, (1, "value"), (3, "expected")),
+            data_edge(2, (2, "value"), (3, "value")),
+            data_edge(3, (3, "old"), (4, "a")),
+            data_edge(4, (3, "new"), (5, "a"))
+        ]);
+        if in_function {
+            let nodes = fixture["nodes"].take();
+            let edges = fixture["edges"].take();
+            fixture["nodes"] = json!([]);
+            fixture["edges"] = json!([]);
+            fixture["functions"] = json!([{
+                "id": function_id(), "name": "cas", "kind": "action",
+                "nodes": nodes, "edges": edges
+            }]);
+        }
+        let mut doc: GraphDocument = serde_json::from_value(fixture).unwrap();
+        let setup = apply_inferred(
+            &mut doc,
+            [DocCommand::UpsertVariable(variable_decl(10, "core/i64@1"))],
+            &registry,
+        )
+        .unwrap();
+        assert!(setup.issues.is_empty(), "{:?}", setup.issues);
+        assert_eq!(type_arg(&doc, 4).as_deref(), Some("core/i64@1"));
+        assert_eq!(type_arg(&doc, 5).as_deref(), Some("core/i64@1"));
+        let before = content(&doc);
+        let revision = doc.revision();
+
+        let changed = apply_inferred(
+            &mut doc,
+            [DocCommand::UpsertVariable(variable_decl(10, "core/u32@1"))],
+            &registry,
+        )
+        .unwrap();
+        assert!(changed.issues.is_empty(), "{:?}", changed.issues);
+        assert_eq!(doc.revision(), revision + 1);
+        assert_eq!(type_arg(&doc, 4).as_deref(), Some("core/u32@1"));
+        assert_eq!(type_arg(&doc, 5).as_deref(), Some("core/u32@1"));
+        let cas = doc.node(nid(3)).unwrap();
+        let contract = registry.contract(&doc, cas).unwrap().unwrap();
+        let output_types: Vec<_> = contract
+            .ports
+            .iter()
+            .filter(|port| port.direction == orange_model::document::PortDirection::Output)
+            .map(|port| (port.port_id.as_str(), port.ty.as_ref().unwrap().to_string()))
+            .collect();
+        assert_eq!(
+            output_types,
+            [
+                ("old", "core/u32@1".to_owned()),
+                ("new", "core/u32@1".to_owned()),
+                ("exchanged", "core/bool@1".to_owned())
+            ]
+        );
+        let after = content(&doc);
+
+        let redo = doc.revert(changed.committed.inverse).unwrap().inverse;
+        assert_eq!(content(&doc), before);
+        assert_eq!(type_arg(&doc, 4).as_deref(), Some("core/i64@1"));
+        assert_eq!(type_arg(&doc, 5).as_deref(), Some("core/i64@1"));
+        let _ = doc.revert(redo).unwrap();
+        assert_eq!(content(&doc), after);
+        assert_eq!(type_arg(&doc, 4).as_deref(), Some("core/u32@1"));
+        assert!(doc.node(nid(3)).unwrap().signature.is_none());
+
+        // Removing Eq support removes the entire contextual contract, including exchanged.
+        // Existing inferred consumers must not retain the previously valid declaration type.
+        let lost_eq = apply_inferred(
+            &mut doc,
+            [DocCommand::UpsertVariable(variable_decl(10, "core/f64@1"))],
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(codes(&lost_eq.issues), ["E-TYPE-AMBIGUOUS"; 2]);
+        for consumer in [4, 5] {
+            assert_eq!(type_arg(&doc, consumer), None);
+            assert_eq!(signature_types(&doc, consumer), ["$T"; 3]);
+        }
+        assert_eq!(
+            registry
+                .contract(&doc, doc.node(nid(3)).unwrap())
+                .unwrap_err(),
+            orange_model::catalog::ContractError::UpdateConstraint
+        );
+        let _ = doc.revert(lost_eq.committed.inverse).unwrap();
+        assert_eq!(content(&doc), after);
+    }
+}

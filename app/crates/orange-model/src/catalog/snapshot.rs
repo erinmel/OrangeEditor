@@ -655,6 +655,7 @@ impl RegistrySnapshot {
                     WriteOperation::Min | WriteOperation::Max => {
                         CapabilityRequest::Constraint(Constraint::Ord)
                     }
+                    WriteOperation::CompareAndSet => CapabilityRequest::Constraint(Constraint::Eq),
                     _ => return Err(ContractError::UpdateUnsupported),
                 };
                 let term = TypeTerm::parse(&ty).map_err(|error| match error {
@@ -675,17 +676,35 @@ impl RegistrySnapshot {
                     Err(CapabilityError::Type(_)) => return Err(ContractError::TypeMismatch),
                 }
                 let then: PortId = "then".parse().map_err(|_| ContractError::TypeMismatch)?;
-                vec![
+                let compare_and_set = operation == WriteOperation::CompareAndSet;
+                let mut ports = Vec::with_capacity(if compare_and_set { 5 } else { 3 });
+                if compare_and_set {
+                    ports.push(PortDescriptor::data_in("expected", ty.clone()));
+                }
+                ports.extend([
                     PortDescriptor::data_in("value", ty.clone()),
                     PortDescriptor {
                         available_on: Some(vec![then.clone()]),
                         ..PortDescriptor::data_out("old", ty.clone(), OutputSource::Execution)
                     },
                     PortDescriptor {
-                        available_on: Some(vec![then]),
+                        available_on: Some(vec![then.clone()]),
                         ..PortDescriptor::data_out("new", ty, OutputSource::Execution)
                     },
-                ]
+                ]);
+                if compare_and_set {
+                    ports.push(PortDescriptor {
+                        available_on: Some(vec![then]),
+                        ..PortDescriptor::data_out(
+                            "exchanged",
+                            "core/bool@1"
+                                .parse()
+                                .map_err(|_| ContractError::TypeMismatch)?,
+                            OutputSource::Execution,
+                        )
+                    });
+                }
+                ports
             }
         })
     }

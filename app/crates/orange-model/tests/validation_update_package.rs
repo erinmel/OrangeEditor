@@ -28,11 +28,12 @@ const VER: &str = "1.0.0";
 const DIGEST: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const VARIABLE: &str = "30000000-0000-4000-8000-000000000001";
 
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, Debug)]
 enum CapabilityMode {
     Add,
     Num,
     Ord,
+    Eq,
 }
 
 fn origin() -> HostOrigin {
@@ -74,6 +75,14 @@ fn type_registry(mode: CapabilityMode) -> Arc<orange_model::types::TypeRegistry>
                 &term,
                 ConstraintId::Core(Constraint::Ord),
                 implementation("money-ord-v1"),
+            )
+            .unwrap(),
+        CapabilityMode::Eq => builder
+            .register_constraint_implementation(
+                PKG,
+                &term,
+                ConstraintId::Core(Constraint::Eq),
+                implementation("money-eq-v1"),
             )
             .unwrap(),
         CapabilityMode::Add => builder
@@ -255,6 +264,79 @@ fn broad_or_unrelated_evidence_does_not_authorize_update_operations() {
         assert_eq!(
             report.diagnostics[0].code,
             DiagnosticCode::ConstraintUnsatisfied
+        );
+    }
+}
+
+#[test]
+fn compare_and_set_requires_exact_package_eq_witness() {
+    let registry = registry(CapabilityMode::Eq, false);
+    let ty =
+        orange_model::type_term::TypeTerm::parse(&"org.test/money@1".parse().unwrap()).unwrap();
+    let witness = registry
+        .types()
+        .supports_term(&ty, CapabilityRequest::Constraint(Constraint::Eq))
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        witness.evidence,
+        CapabilityEvidence::PackageImplementation(implementation("money-eq-v1"))
+    );
+    assert_eq!(witness.term, ty);
+
+    let doc = document(
+        json!([variable_node("compare-and-set")]),
+        "org.test/money@1",
+    );
+    let report = validate_nodes(&doc, &registry);
+    assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
+    let signature = &report.resolved[&node_id(1).parse().unwrap()];
+    let inputs: Vec<_> = signature
+        .ports
+        .iter()
+        .filter(|port| port.direction == PortDirection::Input)
+        .map(|port| (port.port_id.as_str(), port.ty.as_ref().unwrap().as_str()))
+        .collect();
+    assert_eq!(
+        inputs,
+        [
+            ("expected", "org.test/money@1"),
+            ("value", "org.test/money@1")
+        ]
+    );
+    assert!(signature.ports.iter().any(|port| {
+        port.direction == PortDirection::Output
+            && port.port_id.as_str() == "exchanged"
+            && port
+                .ty
+                .as_ref()
+                .is_some_and(|ty| ty.as_str() == "core/bool@1")
+            && port.source == Some(OutputSource::Execution)
+            && port
+                .available_on
+                .as_ref()
+                .is_some_and(|triggers| triggers.len() == 1 && triggers[0].as_str() == "then")
+    }));
+}
+
+#[test]
+fn compare_and_set_rejects_non_eq_package_evidence() {
+    for mode in [
+        CapabilityMode::Num,
+        CapabilityMode::Add,
+        CapabilityMode::Ord,
+    ] {
+        let registry = registry(mode, false);
+        let doc = document(
+            json!([variable_node("compare-and-set")]),
+            "org.test/money@1",
+        );
+        let report = validate_nodes(&doc, &registry);
+        assert_eq!(report.diagnostics.len(), 1, "{mode:?}");
+        assert_eq!(
+            report.diagnostics[0].code,
+            DiagnosticCode::ConstraintUnsatisfied,
+            "{mode:?}"
         );
     }
 }
