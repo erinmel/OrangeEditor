@@ -1,7 +1,10 @@
 //! Provider identity.
 
+use std::collections::{BTreeMap, BTreeSet};
+
+use super::TypeArgs;
 use crate::GraphDocument;
-use crate::document::ProviderBinding;
+use crate::document::{DefinitionRef, ProviderBinding};
 
 /// Exact implementation identity that specialization metadata belongs to: a node's
 /// provider binding plus the document lock's digest for that package version. Two
@@ -32,4 +35,14 @@ impl ProviderKey {
             id: binding.id.clone(),
         })
     }
+}
+
+/// What one exact provider implements.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ProviderDescriptor {
+    pub key: ProviderKey,
+    /// Definition versions with the config version the provider accepts.
+    pub implements: BTreeSet<(DefinitionRef, u32)>,
+    /// Argument sets this provider supports, by definition.
+    pub specializations: BTreeMap<DefinitionRef, Vec<TypeArgs>>,
 }

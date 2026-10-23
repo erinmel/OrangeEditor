@@ -2,7 +2,9 @@
 
 use std::collections::BTreeMap;
 
-use crate::document::{NodeKind, PortDescriptor, Suspends, TypeParam, TypeParamName};
+use crate::document::{
+    DefinitionRef, NodeKind, PortDescriptor, Suspends, TypeParam, TypeParamName,
+};
 use crate::id::TypeExpr;
 
 /// Host-supplied contract of one definition version: its declared ports before type
@@ -20,3 +22,16 @@ pub struct NodeContract {
 
 /// Resolved type arguments of one generic node, by parameter name.
 pub type TypeArgs = BTreeMap<TypeParamName, TypeExpr>;
+
+/// One registered node definition version.
+#[derive(Debug, Clone, PartialEq)]
+pub struct NodeDefinition {
+    pub definition: DefinitionRef,
+    pub config_version: u32,
+    /// Declared ports only; config-derived ports stay contextual.
+    pub contract: NodeContract,
+    /// Core-implemented argument sets. `None`: constraints decide.
+    pub specializations: Option<Vec<TypeArgs>>,
+    /// Stored for hosts; not enforced by the model.
+    pub config_schema: Option<serde_json::Value>,
+}
