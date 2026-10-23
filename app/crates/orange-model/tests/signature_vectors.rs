@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use common::{eid, nid, read_fixture, saved};
 use orange_model::document::{NodeKind, PortDescriptor, SignatureSnapshot};
 use orange_model::id::{EdgeId, PortId, TypeExpr};
-use orange_model::signature::{SignatureDrift, compare, project, semantic_key};
+use orange_model::signature::{SignatureDrift, canonical_json, compare, project, semantic_key};
 use orange_model::{DocIndex, from_json};
 use serde_json::{Value as Json, json};
 
@@ -226,4 +226,21 @@ fn default_value_and_type_stay_in_the_key() {
     let narrow = with_default(json!({"type": "core/f32@1", "bits": "3f800000"}));
     assert_ne!(semantic_key(&one), semantic_key(&two));
     assert_ne!(semantic_key(&one), semantic_key(&narrow));
+}
+
+#[test]
+fn typed_port_flags_keep_their_wire_form() {
+    let port = json!({
+        "port_id": "items", "direction": "input", "kind": "data", "type": "core/i64@1",
+        "variadic": {"min": 0, "max": null}, "optional": true, "lazy": true
+    });
+    let snapshot: SignatureSnapshot =
+        serde_json::from_value(json!({"kind": "pure", "ports": [port.clone()]})).unwrap();
+    let typed = &snapshot.ports[0];
+    assert!(typed.is_optional() && typed.is_lazy());
+    assert_eq!(typed.variadic.map(|v| (v.min, v.max)), Some((0, None)));
+    assert!(typed.extensions.is_empty());
+
+    let canonical: Json = serde_json::from_str(&canonical_json(&snapshot)).unwrap();
+    assert_eq!(canonical["ports"][0], port);
 }
