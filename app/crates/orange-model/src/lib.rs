@@ -33,5 +33,8 @@ pub use error::{
     CodecError, IdError, ImportResource, JsonTextError, LiteralError, PasteError, TxError,
 };
 pub use index::DocIndex;
-pub use validation::{ValidationReport, validate, validate_with_effects};
+pub use validation::{
+    ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
+    required_checks, validate, validate_with_effects,
+};
 pub use value::Value;

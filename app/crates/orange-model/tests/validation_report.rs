@@ -7,11 +7,12 @@ use orange_model::catalog::{NodeContract, ProviderKey, RegistrySnapshot};
 use orange_model::document::{DefinitionRef, NodeKind};
 use orange_model::id::{FunctionId, NodeId};
 use orange_model::validation::{
-    Diagnostic, DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, VariableWrite,
-    WriteOperation, analyze_functions, sort_diagnostics, validate, validate_connections,
-    validate_inputs, validate_nodes, validate_with_effects,
+    Diagnostic, DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, ValidationCheck,
+    VariableWrite, WriteOperation, analyze, analyze_functions, analyze_with_effects,
+    sort_diagnostics, validate, validate_connections, validate_inputs, validate_nodes,
+    validate_with_effects,
 };
-use orange_model::{GraphDocument, ValidationReport, to_json};
+use orange_model::{GraphDocument, ValidationReport, from_json, to_json};
 use serde_json::{Value, json};
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -266,6 +267,9 @@ fn a_package_action_leaf_needs_host_supplied_effects() {
     assert!(without.incomplete_functions.contains(&function));
     assert!(codes(&without).contains(&DiagnosticCode::FunctionMetadataUnavailable));
     assert!(!without.is_valid());
+    let partial = analyze(&doc, &registry);
+    assert!(partial.report().incomplete_functions.contains(&function));
+    assert!(!partial.is_ready_for_compilation(&doc, &registry));
 
     let write = VariableWrite {
         variable: VAR.parse().unwrap(),
@@ -273,12 +277,101 @@ fn a_package_action_leaf_needs_host_supplied_effects() {
     };
     let effects = BTreeMap::from([(LEAF.parse().unwrap(), LeafEffects::Known(vec![write]))]);
     let with = validate_with_effects(&doc, &registry, effects.clone());
-    assert_eq!(with, merged(&doc, &registry, effects));
+    assert_eq!(with, merged(&doc, &registry, effects.clone()));
     assert!(with.is_valid(), "{:?}", with.diagnostics);
+    let with_analysis = analyze_with_effects(&doc, &registry, effects.clone());
+    assert_eq!(with_analysis.report(), &with);
+    assert!(!with_analysis.is_ready_for_compilation(&doc, &registry));
     assert_eq!(
         with.functions[&function].run_writes[&VAR.parse().unwrap()],
         [WriteOperation::Add].into()
     );
+}
+
+#[test]
+fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
+    let doc = document(json!([]), json!([]), json!([]), json!([]));
+    let registry = registry();
+    let before = (to_json(&doc).unwrap(), doc.revision(), doc.state_id());
+    let analysis = analyze(&doc, &registry);
+    assert_eq!(
+        analysis.covered_checks().collect::<Vec<_>>(),
+        [
+            ValidationCheck::NodeResolution,
+            ValidationCheck::InputValues,
+            ValidationCheck::Connections,
+            ValidationCheck::FunctionSummaries,
+        ]
+    );
+    assert_eq!(
+        analysis.missing_checks().collect::<Vec<_>>(),
+        [
+            ValidationCheck::DefinitionAndConfig,
+            ValidationCheck::BodyDomains,
+            ValidationCheck::ContextualContracts,
+            ValidationCheck::FunctionRestrictions,
+            ValidationCheck::Regions,
+            ValidationCheck::DataCycles,
+            ValidationCheck::ControlCycles,
+            ValidationCheck::ValueAvailability,
+            ValidationCheck::StateRules,
+            ValidationCheck::StreamRules,
+            ValidationCheck::EntryPoliciesAndExports,
+        ]
+    );
+    assert!(analysis.is_current(&doc, &registry));
+    assert!(!analysis.is_ready_for_compilation(&doc, &registry));
+    assert_eq!(analysis.report(), &validate(&doc, &registry));
+    assert_eq!(analysis.clone().into_report(), validate(&doc, &registry));
+    assert_eq!(
+        (to_json(&doc).unwrap(), doc.revision(), doc.state_id()),
+        before
+    );
+}
+
+#[test]
+fn analysis_freshness_tracks_content_identity_and_registry_generation() {
+    let doc = document(json!([]), json!([]), json!([]), json!([]));
+    let another_registry = registry();
+    let registry = registry();
+    let analysis = analyze(&doc, &registry);
+    assert!(analysis.is_current(&doc.clone(), &registry));
+
+    let reloaded = from_json(&to_json(&doc).unwrap()).unwrap();
+    assert!(!analysis.is_current(&reloaded, &registry));
+    assert!(!analysis.is_current(&doc, &another_registry));
+
+    let mut edited = doc.clone();
+    let inverse = edited.apply([common::add(99)]).unwrap().inverse;
+    assert!(!analysis.is_current(&edited, &registry));
+    assert!(!analysis.is_ready_for_compilation(&edited, &registry));
+    let _redo = edited.revert(inverse).unwrap();
+    assert!(analysis.is_current(&edited, &registry));
+
+    let mut left = doc.clone();
+    let mut right = doc.clone();
+    let _left_inverse = left.apply([common::add(97)]).unwrap();
+    let _right_inverse = right.apply([common::add(98)]).unwrap();
+    assert_eq!(left.revision(), right.revision());
+    assert_ne!(left.state_id(), right.state_id());
+    let left_analysis = analyze(&left, &registry);
+    assert!(!left_analysis.is_current(&right, &registry));
+}
+
+#[test]
+fn foreign_body_domain_is_never_compile_ready() {
+    let doc = from_json(&common::minimal_document(
+        json!({"domain":"vendor.signal/signal"}),
+    ))
+    .unwrap();
+    let registry = registry();
+    let analysis = analyze(&doc, &registry);
+    assert!(
+        analysis
+            .missing_checks()
+            .any(|check| check == ValidationCheck::BodyDomains)
+    );
+    assert!(!analysis.is_ready_for_compilation(&doc, &registry));
 }
 
 const GET: &str = "20000000-0000-4000-8000-000000000003";

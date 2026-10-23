@@ -1,7 +1,8 @@
 //! Read-only validation of a document against one registry snapshot.
 //!
-//! Hosts call [`validate`] (or [`validate_with_effects`] when they hold fresh leaf effects)
-//! and receive one [`ValidationReport`]: sorted, de-duplicated diagnostics, the resolved
+//! Hosts call [`analyze`] (or [`analyze_with_effects`] when they hold fresh leaf effects)
+//! and receive a [`ValidationAnalysis`] with honest pass coverage and freshness evidence.
+//! Its [`ValidationReport`] contains sorted, de-duplicated diagnostics, the resolved
 //! signatures, incomplete nodes and functions, and function summaries. It runs
 //! [`validate_nodes`] once and feeds that resolution to [`validate_inputs`],
 //! [`validate_connections`] and [`analyze_functions`]. Connections fall back to stored
@@ -32,7 +33,10 @@ pub use diagnostic::{
 pub use connections::{ConnectionValidation, validate_connections};
 pub use inputs::validate_inputs;
 pub use nodes::{NodeValidation, validate_nodes};
-pub use report::{ValidationReport, validate, validate_with_effects};
+pub use report::{
+    ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
+    required_checks, validate, validate_with_effects,
+};
 
 pub use functions::{
     FunctionAnalysis, FunctionEvidence, FunctionSummary, LeafEffects, VariableWrite,
