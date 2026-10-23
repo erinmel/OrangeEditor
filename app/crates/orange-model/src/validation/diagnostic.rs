@@ -485,6 +485,8 @@ pub fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
             left.severity,
             &left.message_key,
             &left.message_args,
+            &left.message_origin,
+            &left.message,
         )
             .cmp(&(
                 &right.subject,
@@ -492,6 +494,8 @@ pub fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
                 right.severity,
                 &right.message_key,
                 &right.message_args,
+                &right.message_origin,
+                &right.message,
             ))
     });
 }
@@ -503,6 +507,24 @@ mod tests {
 
     fn origin() -> HostOrigin {
         HostOrigin::new("1.2.3", format!("sha256:{}", "a".repeat(64))).unwrap()
+    }
+
+    #[test]
+    fn sorting_is_total_so_equal_records_are_adjacent() {
+        let make = |message: &str| {
+            let subject = Subject::new(
+                Some("10000000-0000-4000-8000-000000000001".parse().unwrap()),
+                None,
+                None,
+            );
+            let mut item = Diagnostic::new(DiagnosticCode::PortUnknown, subject, &origin());
+            item.message = message.into();
+            item
+        };
+        let mut items = vec![make("a"), make("b"), make("a")];
+        sort_diagnostics(&mut items);
+        items.dedup();
+        assert_eq!(items, vec![make("a"), make("b")]);
     }
 
     #[test]
