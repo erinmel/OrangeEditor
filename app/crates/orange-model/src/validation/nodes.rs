@@ -3,8 +3,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::{
-    ContractError, NodeContract, ProviderKey, RegistrySnapshot, TypeArgs,
-    is_converter_special_form, is_intrinsic,
+    CallInterfaceError, ContractError, NodeContract, ProviderKey, RegistrySnapshot, TypeArgs,
+    call_interface, is_converter_special_form, is_intrinsic,
 };
 use crate::document::{
     GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends, SuspensionContractIssue,
@@ -122,6 +122,21 @@ fn preflight_node(
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> bool {
+    if node.definition.id.as_str() == "core/call" {
+        let code = match call_interface(document, node, registry) {
+            Err(CallInterfaceError::Identity) => DiagnosticCode::ProviderUnavailable,
+            Err(CallInterfaceError::TargetMissing) => DiagnosticCode::CallTargetMissing,
+            Err(CallInterfaceError::TargetUnknown) => DiagnosticCode::CallTargetUnknown,
+            Err(CallInterfaceError::DomainUnsupported) => DiagnosticCode::DomainUnsupported,
+            Err(CallInterfaceError::InvalidInterface) | Ok(_) => {
+                // A type-only interface is deliberately insufficient to produce execution
+                // metadata. Body conformance and accepted call contracts come later.
+                DiagnosticCode::FunctionMetadataUnavailable
+            }
+        };
+        unresolved(node.id, code, origin, report, diagnostics);
+        return false;
+    }
     if is_converter_special_form(node.definition.id.as_str()) {
         if node
             .signature

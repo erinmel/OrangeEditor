@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 
 use super::component::{ComponentInference, InferenceIssue, infer_components};
-use crate::catalog::{ReferenceKind, RegistrySnapshot};
+use crate::catalog::{RegistrySnapshot, call_interface};
 use crate::document::GraphDocument;
 use crate::edit::{ChangeSet, Committed, DeclId, DocCommand};
 use crate::error::TxError;
@@ -48,6 +48,8 @@ pub struct InferredCommit {
 /// body it added or replaced). Their nodes are updated to the solved `type_args`, removing entries that
 /// are now ambiguous or invalid, and to the signature projected from them. `type_pins`,
 /// provider bindings and nodes outside those components are never written.
+/// Type-only calls persist arguments without a signature; touched calls that lose their
+/// generic interface clear their cache. Contextual port loss also re-infers old neighbours.
 ///
 /// Fails with the transaction error `edit` itself would produce.
 pub fn plan_edit(
@@ -61,9 +63,27 @@ pub fn plan_edit(
     let touched = touched_nodes(document, &after, &change, registry);
     let index = DocIndex::build(&after);
     let mut issues = Vec::new();
-    for component in infer_components(&after, &index, touched, registry) {
+    let mut inferred_nodes = BTreeSet::new();
+    for component in infer_components(&after, &index, touched.iter().copied(), registry) {
+        inferred_nodes.extend(component.nodes.iter().copied());
         commands.extend(component_updates(&after, registry, &component));
         issues.extend(component.issues);
+    }
+    // Calls whose function interface disappeared or became concrete are no longer generic
+    // inference nodes. Clear only their stale argument cache; their historical signature
+    // field and all type pins remain untouched.
+    for id in touched
+        .iter()
+        .copied()
+        .filter(|id| !inferred_nodes.contains(id))
+    {
+        let Some(node) = after.node(id) else { continue };
+        if is_function_call(node) && !node.type_args.is_empty() {
+            commands.push(DocCommand::SetTypeArgs {
+                node: id,
+                args: Default::default(),
+            });
+        }
     }
     Ok(InferencePlan { commands, issues })
 }
@@ -112,6 +132,11 @@ fn touched_nodes(
     touched.extend(endpoints(before, &change.edges.removed));
     touched.extend(endpoints(before, &change.edges.changed));
     touched.extend(endpoints(after, &change.edges.changed));
+    // A config edit can remove a contextual node's ports before inference can traverse
+    // them. Seed incident neighbours from both states, just as for declaration removal.
+    for document in [before, after] {
+        touch_neighbours(document, &change.nodes.changed, &mut touched);
+    }
     for decl in change.decls.added.iter().chain(&change.decls.changed) {
         if let DeclId::Function(function) = decl
             && let Some(function) = after.functions().get(function)
@@ -119,18 +144,18 @@ fn touched_nodes(
             touched.extend(function.body.nodes.keys().copied());
         }
     }
-    let variable_changes = change
+    let typed_declaration_changes = change
         .decls
         .added
         .iter()
         .chain(&change.decls.changed)
         .chain(&change.decls.removed)
         .filter_map(|decl| match decl {
-            DeclId::Variable(id) => Some(*id),
-            DeclId::Event(_) | DeclId::Function(_) => None,
+            DeclId::Variable(_) | DeclId::Function(_) => Some(*decl),
+            DeclId::Event(_) => None,
         })
         .collect::<BTreeSet<_>>();
-    if !variable_changes.is_empty() {
+    if !typed_declaration_changes.is_empty() {
         // This correctness-first scan uses the registry's typed reference parser in both
         // states. The document stores no registry-specific reverse index, and removing a
         // declaration still finds consumers through their persisted typed reference.
@@ -139,33 +164,42 @@ fn touched_nodes(
                 .bodies()
                 .flat_map(|body| body.nodes.values())
                 .filter(|node| {
-                    registry.references(node).any(|(field, parsed)| {
-                        field.kind == ReferenceKind::Variable
-                            && matches!(parsed, Ok(DeclId::Variable(id)) if variable_changes.contains(&id))
+                    registry.references(node).any(|(_, parsed)| {
+                        parsed.is_ok_and(|decl| typed_declaration_changes.contains(&decl))
                     })
                 })
                 .map(|node| node.id)
                 .collect::<BTreeSet<_>>();
             touched.extend(consumers.iter().copied());
-            // On removal, a contextual consumer no longer has a contract, so inference
-            // cannot discover a type-variable edge from that endpoint. Seed the opposite
-            // endpoint as well; it then solves without stale snapshot evidence and becomes
-            // ambiguous unless another live source exists.
-            for body in document.bodies() {
-                touched.extend(body.edges.values().filter_map(|edge| {
-                    if consumers.contains(&edge.from.node) {
-                        Some(edge.to.node)
-                    } else if consumers.contains(&edge.to.node) {
-                        Some(edge.from.node)
-                    } else {
-                        None
-                    }
-                }));
-            }
+            // When a contextual port contract disappears or changes shape, inference may
+            // no longer discover a type-variable edge from that endpoint. Seed the
+            // opposite endpoint as well; it then solves from remaining current evidence.
+            touch_neighbours(document, &consumers, &mut touched);
         }
     }
     touched.retain(|id| after.node(*id).is_some());
     touched
+}
+
+fn touch_neighbours(
+    document: &GraphDocument,
+    nodes: &BTreeSet<NodeId>,
+    touched: &mut BTreeSet<NodeId>,
+) {
+    if nodes.is_empty() {
+        return;
+    }
+    for body in document.bodies() {
+        touched.extend(body.edges.values().filter_map(|edge| {
+            if nodes.contains(&edge.from.node) {
+                Some(edge.to.node)
+            } else if nodes.contains(&edge.to.node) {
+                Some(edge.from.node)
+            } else {
+                None
+            }
+        }));
+    }
 }
 
 /// Commands bringing the component's nodes in `document` to the inferred state. Nodes
@@ -180,6 +214,19 @@ fn component_updates(
         let Some(node) = document.node(id) else {
             continue;
         };
+        if is_function_call(node) {
+            let Some(interface) = call_interface(document, node, registry).ok().flatten() else {
+                continue;
+            };
+            if interface.type_params.is_empty() {
+                continue;
+            }
+            let args = component.type_args.get(&id).cloned().unwrap_or_default();
+            if node.type_args != args {
+                commands.push(DocCommand::SetTypeArgs { node: id, args });
+            }
+            continue;
+        }
         let Ok(Some(template)) = registry.contract(document, node) else {
             continue;
         };
@@ -203,4 +250,8 @@ fn component_updates(
         }
     }
     commands
+}
+
+fn is_function_call(node: &crate::document::NodeInstance) -> bool {
+    node.definition.id.as_str() == "core/call"
 }

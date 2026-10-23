@@ -2,12 +2,14 @@
 //! registry snapshot that owns them (12 §4, §8).
 
 mod availability;
+mod call;
 pub mod definition;
 pub(crate) mod intrinsics;
 pub(crate) mod language;
 pub mod provider;
 pub mod snapshot;
 
+pub use call::{CallInterface, CallInterfaceError, call_interface};
 pub use definition::{
     ContractError, NodeContract, NodeDefinition, Ports, ReferenceError, ReferenceField,
     ReferenceKind, TypeArgs, VariableAccess,
