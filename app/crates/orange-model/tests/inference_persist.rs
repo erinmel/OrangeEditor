@@ -5,8 +5,8 @@ mod common;
 use common::generic::{add, data_edge, document, registry, source, typed_source};
 use common::{body, content, eid, function, function_id, minimal_document, nid, node_id, saved};
 use orange_model::document::{Edge, NodeInstance};
-use orange_model::inference::{InferenceIssue, apply_inferred, plan_edit};
-use orange_model::{BodyRef, DocCommand, GraphDocument, TxError, from_json};
+use orange_model::inference::{InferenceIssue, apply_inferred, apply_inferred_indexed, plan_edit};
+use orange_model::{BodyRef, DocCommand, DocIndex, GraphDocument, TxError, from_json};
 use serde_json::{Value as Json, json};
 
 fn connect(edge: Json) -> DocCommand {
@@ -163,6 +163,34 @@ fn a_failed_edit_leaves_content_revision_and_state_unchanged() {
     assert_eq!(result, Err(TxError::EdgeNotFound(eid(9))));
     assert_eq!(content(&doc), before);
     assert_eq!((doc.revision(), doc.state_id()), (revision, state));
+}
+
+#[test]
+fn a_kept_index_matches_the_document_through_commit_failure_and_removal() {
+    let registry = registry(None);
+    let mut doc = unconnected();
+    let mut index = DocIndex::build(&doc);
+    let edit = vec![connect(data_edge(1, (1, "value"), (2, "a")))];
+    let mut plain = doc.clone();
+    let expected = apply_inferred(&mut plain, edit.clone(), &registry).unwrap();
+    let done = apply_inferred_indexed(&mut doc, &mut index, edit, &registry).unwrap();
+    assert_eq!(done.issues, expected.issues);
+    assert_eq!(content(&doc), content(&plain));
+    assert_eq!(index, DocIndex::build(&doc));
+
+    let failed = apply_inferred_indexed(
+        &mut doc,
+        &mut index,
+        [DocCommand::Disconnect { edge: eid(9) }],
+        &registry,
+    );
+    assert_eq!(failed.unwrap_err(), TxError::EdgeNotFound(eid(9)));
+    assert_eq!(index, DocIndex::build(&doc));
+
+    let removal = vec![DocCommand::RemoveNodes { ids: vec![nid(1)] }];
+    apply_inferred_indexed(&mut doc, &mut index, removal, &registry).unwrap();
+    assert_eq!(index, DocIndex::build(&doc));
+    assert_eq!(type_arg(&doc, 2), None);
 }
 
 #[test]

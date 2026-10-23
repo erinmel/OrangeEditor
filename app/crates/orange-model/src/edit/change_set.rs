@@ -35,6 +35,17 @@ impl<K: Ord> Default for Delta<K> {
     }
 }
 
+impl<K: Ord + Clone> Delta<K> {
+    /// The effect of undoing this delta.
+    pub(crate) fn reversed(&self) -> Self {
+        Self {
+            added: self.removed.clone(),
+            removed: self.added.clone(),
+            changed: self.changed.clone(),
+        }
+    }
+}
+
 impl<K: Ord> Delta<K> {
     pub fn is_empty(&self) -> bool {
         self.added.is_empty() && self.removed.is_empty() && self.changed.is_empty()
@@ -52,6 +63,20 @@ pub struct ChangeSet {
     pub nodes: Delta<NodeId>,
     pub edges: Delta<EdgeId>,
     pub decls: Delta<DeclId>,
+}
+
+impl ChangeSet {
+    /// The change set of undoing this one.
+    pub(crate) fn reversed(&self) -> Self {
+        Self {
+            from_revision: self.to_revision,
+            to_revision: self.from_revision,
+            layout_only: self.layout_only,
+            nodes: self.nodes.reversed(),
+            edges: self.edges.reversed(),
+            decls: self.decls.reversed(),
+        }
+    }
 }
 
 /// Records, per touched ID, whether it existed before its first patch.

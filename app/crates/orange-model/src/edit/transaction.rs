@@ -164,6 +164,31 @@ impl GraphDocument {
         Ok(journal.commit(self, None))
     }
 
+    /// Applies `commands`, lets `observe` read the edited document and its change set, then
+    /// restores the document exactly, revision and state identity included. Costs the
+    /// edit rather than a copy of the document, which planning would otherwise clone.
+    pub(crate) fn scratch<R>(
+        &mut self,
+        commands: impl IntoIterator<Item = DocCommand>,
+        observe: impl FnOnce(&Self, &ChangeSet) -> R,
+    ) -> Result<R, TxError> {
+        self.check_revision()?;
+        let mut journal = Journal::default();
+        for command in commands {
+            if let Err(error) = journal.command(self, command) {
+                journal.rollback(self);
+                return Err(error);
+            }
+        }
+        if journal.is_empty() {
+            return Err(TxError::Empty);
+        }
+        let change = std::mem::take(&mut journal.tracker).finish(self, self.revision);
+        let result = observe(self, &change);
+        journal.rollback(self);
+        Ok(result)
+    }
+
     /// Undoes (or, with a redo inverse, redoes) a committed transaction.
     pub fn revert(&mut self, inverse: Inverse) -> Result<Committed, TxError> {
         if inverse.applies_to != self.state_id {

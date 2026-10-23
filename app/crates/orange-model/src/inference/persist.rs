@@ -57,70 +57,116 @@ pub fn plan_edit(
     edit: impl IntoIterator<Item = DocCommand>,
     registry: &RegistrySnapshot,
 ) -> Result<InferencePlan, TxError> {
+    let mut scratch = document.clone();
+    let mut index = DocIndex::build(&scratch);
+    plan_in_place(&mut scratch, &mut index, edit, registry)
+}
+
+/// Plans `edit` against `document` by applying it, reading the result and undoing it, so
+/// the document and `index` are left exactly as found. Cost follows the edit and the
+/// components it touches, not the document.
+fn plan_in_place(
+    document: &mut GraphDocument,
+    index: &mut DocIndex,
+    edit: impl IntoIterator<Item = DocCommand>,
+    registry: &RegistrySnapshot,
+) -> Result<InferencePlan, TxError> {
     let mut commands: Vec<DocCommand> = edit.into_iter().collect();
-    let mut after = document.clone();
-    let change = after.apply(commands.clone())?.change_set;
-    let touched = touched_nodes(document, &after, &change, registry);
-    let index = DocIndex::build(&after);
-    let mut issues = Vec::new();
-    let mut inferred_nodes = BTreeSet::new();
-    for component in infer_components(&after, &index, touched.iter().copied(), registry) {
-        inferred_nodes.extend(component.nodes.iter().copied());
-        commands.extend(component_updates(&after, registry, &component));
-        issues.extend(component.issues);
-    }
-    // Calls whose function interface disappeared or became concrete are no longer generic
-    // inference nodes. Clear only their stale argument cache; their historical signature
-    // field and all type pins remain untouched.
-    for id in touched
-        .iter()
-        .copied()
-        .filter(|id| !inferred_nodes.contains(id))
-    {
-        let Some(node) = after.node(id) else { continue };
-        if is_function_call(node) && !node.type_args.is_empty() {
-            commands.push(DocCommand::SetTypeArgs {
-                node: id,
-                args: Default::default(),
-            });
+    // Removed and replaced edges and nodes exist only in the original document, so their
+    // neighbours are read there, from the change the edit makes.
+    let change = document.scratch(commands.clone(), |_, change| change.clone())?;
+    let mut touched = touched_before(document, &change, registry);
+    let (updates, issues, change) = document.scratch(commands.clone(), |after, change| {
+        index.update(after, change);
+        let mut updates = Vec::new();
+        let mut issues = Vec::new();
+        touched.extend(touched_after(after, change, registry));
+        touched.retain(|id| after.node(*id).is_some());
+        let mut inferred_nodes = BTreeSet::new();
+        for component in infer_components(after, index, touched.iter().copied(), registry) {
+            inferred_nodes.extend(component.nodes.iter().copied());
+            updates.extend(component_updates(after, registry, &component));
+            issues.extend(component.issues);
         }
-    }
+        // Calls whose function interface disappeared or became concrete are no longer
+        // generic inference nodes. Clear only their stale argument cache; their historical
+        // signature field and all type pins remain untouched.
+        for id in touched
+            .iter()
+            .copied()
+            .filter(|id| !inferred_nodes.contains(id))
+        {
+            let Some(node) = after.node(id) else { continue };
+            if is_function_call(node) && !node.type_args.is_empty() {
+                updates.push(DocCommand::SetTypeArgs {
+                    node: id,
+                    args: Default::default(),
+                });
+            }
+        }
+        (updates, issues, change.clone())
+    })?;
+    index.update(document, &change.reversed());
+    commands.extend(updates);
     Ok(InferencePlan { commands, issues })
 }
 
 /// Commits `edit` and its inferred updates as one transaction.
 ///
 /// On error nothing changes, revision included. See [`plan_edit`] for what is inferred.
+/// Builds an index of `document`; use [`apply_inferred_indexed`] to keep one between edits.
 pub fn apply_inferred(
     document: &mut GraphDocument,
     edit: impl IntoIterator<Item = DocCommand>,
     registry: &RegistrySnapshot,
 ) -> Result<InferredCommit, TxError> {
-    let plan = plan_edit(document, edit, registry)?;
+    let mut index = DocIndex::build(document);
+    apply_inferred_indexed(document, &mut index, edit, registry)
+}
+
+/// [`apply_inferred`] for a caller that keeps a [`DocIndex`] of `document`, which must be
+/// current. The index is updated with the commit and, like the document, unchanged on
+/// error. A small edit costs in proportion to the generic components it touches.
+pub fn apply_inferred_indexed(
+    document: &mut GraphDocument,
+    index: &mut DocIndex,
+    edit: impl IntoIterator<Item = DocCommand>,
+    registry: &RegistrySnapshot,
+) -> Result<InferredCommit, TxError> {
+    let plan = plan_in_place(document, index, edit, registry)?;
     let committed = document.apply(plan.commands)?;
+    index.update(document, &committed.change_set);
     Ok(InferredCommit {
         committed,
         issues: plan.issues,
     })
 }
 
-/// Surviving nodes whose inference inputs the transaction changed. Removed edges are looked
-/// up in `before`, because their endpoints are gone from `after`. Changed edges contribute
-/// endpoints from both documents, including when a disconnect/connect reuses an ID. A
-/// replaced function body reports only its function, so all of its nodes count as touched.
-fn touched_nodes(
+/// Surviving nodes of the original document whose inference inputs the transaction changed.
+/// Removed edges are looked up here, because their endpoints are gone after the edit. Changed
+/// edges contribute endpoints from both states, including when a disconnect/connect reuses an
+/// ID. A config edit can remove a contextual node's ports before inference can traverse
+/// them, so incident neighbours are seeded from both states, just as for declaration removal.
+fn touched_before(
     before: &GraphDocument,
+    change: &ChangeSet,
+    registry: &RegistrySnapshot,
+) -> BTreeSet<NodeId> {
+    let mut touched = BTreeSet::new();
+    touched.extend(edge_endpoints(before, &change.edges.removed));
+    touched.extend(edge_endpoints(before, &change.edges.changed));
+    touch_neighbours(before, &change.nodes.changed, &mut touched);
+    touch_declaration_consumers(before, change, registry, &mut touched);
+    touched
+}
+
+/// The edited document's side of [`touched_before`]. A replaced function body reports only
+/// its function, so all of its nodes count as touched.
+fn touched_after(
     after: &GraphDocument,
     change: &ChangeSet,
     registry: &RegistrySnapshot,
 ) -> BTreeSet<NodeId> {
-    let endpoints = |document: &GraphDocument, edges: &BTreeSet<EdgeId>| {
-        edges
-            .iter()
-            .filter_map(|id| document.edge(*id))
-            .flat_map(|edge| [edge.from.node, edge.to.node])
-            .collect::<Vec<_>>()
-    };
     let mut touched: BTreeSet<NodeId> = change
         .nodes
         .added
@@ -128,15 +174,9 @@ fn touched_nodes(
         .chain(&change.nodes.changed)
         .copied()
         .collect();
-    touched.extend(endpoints(after, &change.edges.added));
-    touched.extend(endpoints(before, &change.edges.removed));
-    touched.extend(endpoints(before, &change.edges.changed));
-    touched.extend(endpoints(after, &change.edges.changed));
-    // A config edit can remove a contextual node's ports before inference can traverse
-    // them. Seed incident neighbours from both states, just as for declaration removal.
-    for document in [before, after] {
-        touch_neighbours(document, &change.nodes.changed, &mut touched);
-    }
+    touched.extend(edge_endpoints(after, &change.edges.added));
+    touched.extend(edge_endpoints(after, &change.edges.changed));
+    touch_neighbours(after, &change.nodes.changed, &mut touched);
     for decl in change.decls.added.iter().chain(&change.decls.changed) {
         if let DeclId::Function(function) = decl
             && let Some(function) = after.functions().get(function)
@@ -144,6 +184,26 @@ fn touched_nodes(
             touched.extend(function.body.nodes.keys().copied());
         }
     }
+    touch_declaration_consumers(after, change, registry, &mut touched);
+    touched
+}
+
+fn edge_endpoints(document: &GraphDocument, edges: &BTreeSet<EdgeId>) -> Vec<NodeId> {
+    edges
+        .iter()
+        .filter_map(|id| document.edge(*id))
+        .flat_map(|edge| [edge.from.node, edge.to.node])
+        .collect()
+}
+
+/// Nodes of `document` that reference a typed declaration the transaction changed, and their
+/// neighbours.
+fn touch_declaration_consumers(
+    document: &GraphDocument,
+    change: &ChangeSet,
+    registry: &RegistrySnapshot,
+    touched: &mut BTreeSet<NodeId>,
+) {
     let typed_declaration_changes = change
         .decls
         .added
@@ -155,30 +215,27 @@ fn touched_nodes(
             DeclId::Event(_) => None,
         })
         .collect::<BTreeSet<_>>();
-    if !typed_declaration_changes.is_empty() {
-        // This correctness-first scan uses the registry's typed reference parser in both
-        // states. The document stores no registry-specific reverse index, and removing a
-        // declaration still finds consumers through their persisted typed reference.
-        for document in [before, after] {
-            let consumers = document
-                .bodies()
-                .flat_map(|body| body.nodes.values())
-                .filter(|node| {
-                    registry.references(node).any(|(_, parsed)| {
-                        parsed.is_ok_and(|decl| typed_declaration_changes.contains(&decl))
-                    })
-                })
-                .map(|node| node.id)
-                .collect::<BTreeSet<_>>();
-            touched.extend(consumers.iter().copied());
-            // When a contextual port contract disappears or changes shape, inference may
-            // no longer discover a type-variable edge from that endpoint. Seed the
-            // opposite endpoint as well; it then solves from remaining current evidence.
-            touch_neighbours(document, &consumers, &mut touched);
-        }
+    if typed_declaration_changes.is_empty() {
+        return;
     }
-    touched.retain(|id| after.node(*id).is_some());
-    touched
+    // This correctness-first scan uses the registry's typed reference parser in both
+    // states. The document stores no registry-specific reverse index, and removing a
+    // declaration still finds consumers through their persisted typed reference.
+    let consumers = document
+        .bodies()
+        .flat_map(|body| body.nodes.values())
+        .filter(|node| {
+            registry.references(node).any(|(_, parsed)| {
+                parsed.is_ok_and(|decl| typed_declaration_changes.contains(&decl))
+            })
+        })
+        .map(|node| node.id)
+        .collect::<BTreeSet<_>>();
+    touched.extend(consumers.iter().copied());
+    // When a contextual port contract disappears or changes shape, inference may
+    // no longer discover a type-variable edge from that endpoint. Seed the
+    // opposite endpoint as well; it then solves from remaining current evidence.
+    touch_neighbours(document, &consumers, touched);
 }
 
 fn touch_neighbours(

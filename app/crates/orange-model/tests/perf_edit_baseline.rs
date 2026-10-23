@@ -9,9 +9,10 @@ use std::time::{Duration, Instant};
 
 use common::generic::{ADD, registry_with_provider};
 use common::minimal_document;
+use orange_model::DocIndex;
 use orange_model::catalog::ProviderKey;
 use orange_model::document::Edge;
-use orange_model::inference::apply_inferred;
+use orange_model::inference::{apply_inferred, apply_inferred_indexed};
 use orange_model::validation::validate;
 use orange_model::{DocCommand, GraphDocument, from_json};
 use serde_json::{Value as Json, json};
@@ -85,6 +86,23 @@ fn edit_cost_by_document_size() {
                 .unwrap();
             });
             println!("n={n:>6} apply_inferred connect ({label}): {time:.3?}");
+            let time = (0..RUNS)
+                .map(|_| {
+                    let mut copy = doc.clone();
+                    let mut index = DocIndex::build(&copy);
+                    let start = Instant::now();
+                    let _ = apply_inferred_indexed(
+                        &mut copy,
+                        &mut index,
+                        [DocCommand::Connect { edge: edge.clone() }],
+                        &registry,
+                    )
+                    .unwrap();
+                    start.elapsed()
+                })
+                .min()
+                .unwrap();
+            println!("n={n:>6} apply_inferred_indexed connect ({label}): {time:.3?}");
         }
         let time = best(&doc, |copy| {
             std::hint::black_box(validate(copy, &registry));
