@@ -134,15 +134,14 @@ fn preflight_node(
             );
             return false;
         }
-        match registry.contract(document, node) {
-            Ok(Some(contract)) => {
+        match registry.converter_contract(document, node) {
+            Ok(contract) => {
                 if let Some(code) = suspension_contract_issue(contract.kind, contract.suspends) {
                     unresolved(node.id, code, origin, report, diagnostics);
                     return false;
                 }
                 return true;
             }
-            Ok(None) => unreachable!("converter special form always has a contract result"),
             Err(error) => {
                 let code = contract_code(error);
                 unresolved(node.id, code, origin, report, diagnostics);

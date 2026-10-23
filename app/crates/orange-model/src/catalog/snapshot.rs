@@ -479,7 +479,7 @@ impl RegistrySnapshot {
         })))
     }
 
-    fn converter_contract(
+    pub(crate) fn converter_contract(
         &self,
         document: &GraphDocument,
         node: &NodeInstance,
