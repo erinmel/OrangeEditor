@@ -93,6 +93,18 @@ pub enum RegistryError {
         definition: DefinitionId,
         port: PortId,
     },
+    #[error(
+        "definition `{definition}` port `{port}` default type does not match its declared type"
+    )]
+    DefaultType {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error("definition `{definition}` port `{port}` default is not a valid literal for its type")]
+    DefaultLiteral {
+        definition: DefinitionId,
+        port: PortId,
+    },
     #[error("definition `{definition}` port `{port}` may be optional only as a data input")]
     OptionalPortPosition {
         definition: DefinitionId,
@@ -220,6 +232,7 @@ impl RegistryBuilder {
         let mut definitions = BTreeMap::new();
         for (definition, intrinsic) in self.definitions {
             check_definition(&definition, intrinsic)?;
+            check_default_literals(&definition, &self.types)?;
             let key = (
                 definition.definition.id.clone(),
                 definition.definition.version,
@@ -258,6 +271,41 @@ impl RegistryBuilder {
             providers,
         }))
     }
+}
+
+/// Validate defaults once their ordinary descriptor and input-metadata checks have passed.
+/// Unresolved, parameterized, or malformed declared types remain deferred to inference.
+fn check_default_literals(
+    definition: &NodeDefinition,
+    types: &TypeRegistry,
+) -> Result<(), RegistryError> {
+    let Ports::Declared(ports) = &definition.ports else {
+        return Ok(());
+    };
+    for port in ports {
+        let (Some(default), Some(declared_type)) = (&port.default, &port.ty) else {
+            continue;
+        };
+        let Ok(term) = TypeTerm::parse(declared_type) else {
+            continue;
+        };
+        if term.contains_param() || types.validate(&term).is_err() {
+            continue;
+        }
+        if &default.ty != declared_type {
+            return Err(RegistryError::DefaultType {
+                definition: definition.definition.id.clone(),
+                port: port.port_id.clone(),
+            });
+        }
+        if crate::value::literal_codec::decode(default, types).is_err() {
+            return Err(RegistryError::DefaultLiteral {
+                definition: definition.definition.id.clone(),
+                port: port.port_id.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 /// Publication checks for one definition, in order. Each rule group stands alone so a new
