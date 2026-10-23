@@ -2,16 +2,19 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use std::borrow::Cow;
+
 use crate::catalog::{
     CallInterfaceError, ContractError, NodeContract, ProviderKey, RegistrySnapshot, TypeArgs,
-    call_interface, is_converter_special_form, is_intrinsic,
+    call_interface, is_converter_special_form, is_intrinsic, project_interface,
 };
 use crate::document::{
-    GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends, SuspensionContractIssue,
+    BodyRef, GraphDocument, NodeKind, OutputSource, PortDescriptor, PortKind, PortRef,
+    SignatureSnapshot, Suspends, SuspensionContractIssue,
     suspension_contract_issue as classify_suspension_contract,
 };
 use crate::error::IdError;
-use crate::id::{NodeId, PortKey};
+use crate::id::{FunctionId, NodeId, PortKey};
 use crate::index::DocIndex;
 use crate::inference::{InferenceIssue, infer_components};
 use crate::signature;
@@ -43,7 +46,17 @@ impl NodeValidation {
     }
 }
 
+/// Accepted executable facts for graph-local callees, produced by the validation pipeline from
+/// complete, conformant function summaries. Standalone node validation supplies none.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CallEvidence {
+    pub(crate) accepted: BTreeMap<FunctionId, (NodeKind, Suspends)>,
+    /// Whether an unaccepted callee is explained by the function pass rather than unknown.
+    pub(crate) pipeline: bool,
+}
+
 struct NodePass<'a> {
+    calls: &'a CallEvidence,
     document: &'a GraphDocument,
     index: &'a DocIndex,
     registry: &'a RegistrySnapshot,
@@ -56,6 +69,14 @@ struct NodePass<'a> {
 /// The document is never changed. Intrinsic metadata and provider availability are
 /// declarative host inputs; package code is not loaded or executed.
 pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> NodeValidation {
+    validate_nodes_with(document, registry, &CallEvidence::default())
+}
+
+pub(crate) fn validate_nodes_with(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    calls: &CallEvidence,
+) -> NodeValidation {
     let origin = registry.origin();
     let mut report = NodeValidation::default();
     let mut diagnostics = Vec::new();
@@ -63,6 +84,7 @@ pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> 
     let eligible = resolve_contracts(
         document,
         registry,
+        calls,
         &ids,
         origin,
         &mut report,
@@ -70,6 +92,7 @@ pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> 
     );
     let index = DocIndex::build(document);
     let pass = NodePass {
+        calls,
         document,
         index: &index,
         registry,
@@ -97,6 +120,7 @@ fn node_ids(document: &GraphDocument) -> Vec<NodeId> {
 fn resolve_contracts(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
+    calls: &CallEvidence,
     ids: &[NodeId],
     origin: &HostOrigin,
     report: &mut NodeValidation,
@@ -107,7 +131,7 @@ fn resolve_contracts(
         let Some(node) = document.node(*id) else {
             continue;
         };
-        if preflight_node(document, node, registry, origin, report, diagnostics) {
+        if preflight_node(document, node, registry, calls, origin, report, diagnostics) {
             eligible.insert(*id);
         }
     }
@@ -118,6 +142,7 @@ fn preflight_node(
     document: &GraphDocument,
     node: &crate::document::NodeInstance,
     registry: &RegistrySnapshot,
+    calls: &CallEvidence,
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
@@ -129,14 +154,38 @@ fn preflight_node(
             Err(CallInterfaceError::TargetUnknown) => DiagnosticCode::CallTargetUnknown,
             Err(CallInterfaceError::DomainUnsupported) => DiagnosticCode::DomainUnsupported,
             Err(CallInterfaceError::InvalidInterface) => DiagnosticCode::FunctionInterface,
-            Ok(_) => {
-                // A type-only interface is deliberately insufficient to produce execution
-                // metadata. Body conformance and accepted call contracts come later.
-                DiagnosticCode::FunctionMetadataUnavailable
+            Ok(interface) => {
+                let accepted = interface
+                    .and_then(|interface| calls.accepted.get(&interface.function).copied());
+                if let Some((kind, suspends)) = accepted {
+                    match suspension_contract_issue(kind, call_suspends(kind, suspends)) {
+                        None => return true,
+                        Some(code) => code,
+                    }
+                } else if calls.pipeline {
+                    // The callee's own pass explains why it is not an accepted contract.
+                    DiagnosticCode::DependencyUnavailable
+                } else {
+                    // A type-only interface cannot produce execution metadata alone.
+                    DiagnosticCode::FunctionMetadataUnavailable
+                }
             }
         };
         unresolved(node.id, code, origin, report, diagnostics);
         return false;
+    }
+    if is_function_marker(node.definition.id.as_str())
+        && node.provider.is_none()
+        && node.definition.version == 1
+        && node.config_version == 1
+    {
+        return match marker_contract(document, node) {
+            Ok(_) => true,
+            Err(code) => {
+                unresolved(node.id, code, origin, report, diagnostics);
+                false
+            }
+        };
     }
     if is_converter_special_form(node.definition.id.as_str()) {
         if node
@@ -362,14 +411,7 @@ fn infer_fresh_args(
             );
             continue;
         }
-        collect_component_args(
-            &component,
-            pass.document,
-            pass.registry,
-            pass.eligible,
-            report,
-            &mut fresh_args,
-        );
+        collect_component_args(&component, pass, report, &mut fresh_args);
     }
     fresh_args
 }
@@ -401,20 +443,18 @@ fn report_component_issues(
 
 fn collect_component_args(
     component: &crate::inference::ComponentInference,
-    document: &GraphDocument,
-    registry: &RegistrySnapshot,
-    eligible: &BTreeSet<NodeId>,
+    pass: &NodePass<'_>,
     report: &mut NodeValidation,
     fresh_args: &mut BTreeMap<NodeId, TypeArgs>,
 ) {
     for id in &component.nodes {
-        if !eligible.contains(id) {
+        if !pass.eligible.contains(id) {
             continue;
         }
-        let Some(node) = document.node(*id) else {
+        let Some(node) = pass.document.node(*id) else {
             continue;
         };
-        let Ok(Some(contract)) = registry.contract(document, node) else {
+        let Some(contract) = pass.contract(node) else {
             continue;
         };
         let Some(args) = component.type_args.get(id) else {
@@ -452,7 +492,7 @@ fn project_nodes(
         let Some(node) = pass.document.node(*id) else {
             continue;
         };
-        let Ok(Some(contract)) = pass.registry.contract(pass.document, node) else {
+        let Some(contract) = pass.contract(node) else {
             continue;
         };
         let args = if contract.type_params.is_empty() {
@@ -678,4 +718,117 @@ fn inference_code(issue: &InferenceIssue) -> DiagnosticCode {
         "E-NO-SPECIALIZATION" => DiagnosticCode::NoSpecialization,
         _ => DiagnosticCode::TypeMismatch,
     }
+}
+
+impl NodePass<'_> {
+    /// The execution contract of an eligible node: registry metadata, an accepted call, or a
+    /// function marker derived from its function's declared interface.
+    fn contract(&self, node: &crate::document::NodeInstance) -> Option<Cow<'_, NodeContract>> {
+        match node.definition.id.as_str() {
+            "core/call" => self.call_contract(node).map(Cow::Owned),
+            id if is_function_marker(id) => {
+                marker_contract(self.document, node).ok().map(Cow::Owned)
+            }
+            _ => self.registry.contract(self.document, node).ok().flatten(),
+        }
+    }
+
+    /// Projects an accepted call: kind and suspension from the callee summary, ports from the
+    /// declared interface with a source for each output (the call computes or executes it).
+    fn call_contract(&self, node: &crate::document::NodeInstance) -> Option<NodeContract> {
+        let interface = call_interface(self.document, node, self.registry)
+            .ok()
+            .flatten()?;
+        let (kind, suspends) = *self.calls.accepted.get(&interface.function)?;
+        let source = if matches!(kind, NodeKind::Pure | NodeKind::Volatile) {
+            OutputSource::Computed
+        } else {
+            OutputSource::Execution
+        };
+        let mut ports = interface.ports;
+        for port in &mut ports {
+            if port.direction == crate::document::PortDirection::Output {
+                port.source = Some(source);
+            }
+        }
+        Some(NodeContract {
+            kind,
+            suspends: call_suspends(kind, suspends),
+            type_params: interface.type_params,
+            ports,
+        })
+    }
+}
+
+fn call_suspends(kind: NodeKind, suspends: Suspends) -> Option<Suspends> {
+    matches!(kind, NodeKind::Async | NodeKind::Iterator).then_some(suspends)
+}
+
+fn is_function_marker(id: &str) -> bool {
+    matches!(
+        id,
+        "core/function-entry" | "core/function-outputs" | "core/return"
+    )
+}
+
+/// Ports of a function-structure marker, derived from the owning function's interface.
+///
+/// The entry exposes the declared inputs as data outputs; return and function-outputs accept
+/// the declared outputs as required data inputs (`return` also has the exec `in`). The
+/// declaration is the only type authority, so a marker is never independently generic: an
+/// interface whose port types mention function type parameters cannot be checked against a
+/// concrete body yet and is reported instead of being inferred per marker.
+fn marker_contract(
+    document: &GraphDocument,
+    node: &crate::document::NodeInstance,
+) -> Result<NodeContract, DiagnosticCode> {
+    let Some(BodyRef::Function(function)) = document.locate_node(node.id) else {
+        return Err(DiagnosticCode::IntrinsicUnsupported);
+    };
+    let declaration = document
+        .functions()
+        .get(&function)
+        .ok_or(DiagnosticCode::IntrinsicUnsupported)?;
+    let interface =
+        project_interface(declaration).map_err(|_| DiagnosticCode::FunctionInterface)?;
+    let generic = interface.iter().any(|port| {
+        port.ty
+            .as_ref()
+            .and_then(|ty| TypeTerm::parse(ty).ok())
+            .is_none_or(|term| term.contains_param())
+    });
+    if generic {
+        return Err(DiagnosticCode::FunctionBodyMarker);
+    }
+    let entry = node.definition.id.as_str() == "core/function-entry";
+    let mut ports = Vec::new();
+    for port in interface {
+        let ty = port.ty.expect("projected interface ports are typed");
+        match (entry, port.direction) {
+            (true, crate::document::PortDirection::Input) => {
+                ports.push(PortDescriptor::data_out(
+                    port.port_id.as_str(),
+                    ty,
+                    OutputSource::Computed,
+                ));
+            }
+            (false, crate::document::PortDirection::Output) => {
+                ports.push(PortDescriptor::data_in(port.port_id.as_str(), ty));
+            }
+            _ => {}
+        }
+    }
+    if node.definition.id.as_str() == "core/return" {
+        ports.push(PortDescriptor::exec_in("in"));
+    }
+    Ok(NodeContract {
+        kind: if entry {
+            NodeKind::Entry
+        } else {
+            NodeKind::Pure
+        },
+        suspends: None,
+        type_params: Vec::new(),
+        ports,
+    })
 }

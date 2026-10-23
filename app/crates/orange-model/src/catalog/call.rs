@@ -120,7 +120,9 @@ fn domain_value_supported(domain: Option<&Value>) -> bool {
     domain.is_none_or(|value| value.as_str() == Some("control"))
 }
 
-fn project_interface(function: &FunctionDecl) -> Result<Vec<PortDescriptor>, CallInterfaceError> {
+pub(crate) fn project_interface(
+    function: &FunctionDecl,
+) -> Result<Vec<PortDescriptor>, CallInterfaceError> {
     let mut params = BTreeSet::<&str>::new();
     for param in &function.type_params {
         if !params.insert(param.name.as_str()) {

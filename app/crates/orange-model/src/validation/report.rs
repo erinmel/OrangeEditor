@@ -6,10 +6,12 @@ use crate::catalog::RegistrySnapshot;
 use crate::document::{GraphDocument, PortRef, SignatureSnapshot};
 use crate::id::{FunctionId, NodeId};
 
+use super::conformance::{BodyStatus, check_conformance};
+use super::nodes::{CallEvidence, validate_nodes_with};
 use super::{
     Diagnostic, FunctionEvidence, FunctionSummary, LeafEffects, Severity, analyze_functions,
     sort_diagnostics, validate_body_domains, validate_connections, validate_data_cycles,
-    validate_inputs, validate_nodes,
+    validate_inputs,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
@@ -213,16 +215,77 @@ pub fn analyze_with_effects(
     if !domains.unsupported_bodies.is_empty() {
         return domain_blocked_analysis(document, registry, domains.diagnostics);
     }
-    let nodes = validate_nodes(document, registry);
-    let connections = validate_connections(document, &nodes.resolved, registry);
-    let data_cycles = validate_data_cycles(document, &nodes.resolved, &connections, registry);
-    let evidence = FunctionEvidence::from_nodes(document, &nodes, leaf_effects);
-    let functions = analyze_functions(document, &evidence, registry);
+    // Calls resolve only against accepted callee summaries, and a callee is accepted only when
+    // its own body (which may contain calls) is complete and conformant. The call graph is
+    // acyclic for accepted functions, so the accepted set grows monotonically to a fixed point
+    // in at most one round per function; recursive or incomplete callees are never accepted.
+    let mut calls = CallEvidence {
+        accepted: BTreeMap::new(),
+        pipeline: true,
+    };
+    let mut round = 0;
+    let (nodes, connections, data_cycles, functions, input_diagnostics, conformance) = loop {
+        let nodes = validate_nodes_with(document, registry, &calls);
+        let connections = validate_connections(document, &nodes.resolved, registry);
+        let data_cycles = validate_data_cycles(document, &nodes.resolved, &connections, registry);
+        let evidence = FunctionEvidence::from_nodes(document, &nodes, leaf_effects.clone());
+        let functions = analyze_functions(document, &evidence, registry);
+        let input_diagnostics = validate_inputs(document, &nodes.resolved, registry);
+
+        let mut blocked: BTreeSet<_> = nodes.incomplete_nodes.clone();
+        blocked.extend(connections.incomplete_nodes.iter().copied());
+        blocked.extend(data_cycles.incomplete_nodes.iter().copied());
+        for diagnostic in nodes
+            .diagnostics
+            .iter()
+            .chain(&input_diagnostics)
+            .chain(&connections.diagnostics)
+            .chain(&data_cycles.diagnostics)
+            .filter(|item| item.severity == Severity::Error)
+        {
+            blocked.extend(diagnostic.subject.node);
+        }
+        let status = BodyStatus {
+            resolved: &nodes.resolved,
+            blocked: &blocked,
+        };
+        let conformance = check_conformance(document, &functions.summaries, &status, registry);
+        let function_errors: BTreeSet<_> = functions
+            .diagnostics
+            .iter()
+            .filter(|item| item.severity == Severity::Error)
+            .filter_map(|item| item.subject.function)
+            .collect();
+        let accepted: BTreeMap<_, _> = conformance
+            .conformant
+            .iter()
+            .filter(|id| !function_errors.contains(id))
+            .filter_map(|id| {
+                functions
+                    .summaries
+                    .get(id)
+                    .map(|summary| (*id, (summary.kind, summary.suspends)))
+            })
+            .collect();
+        round += 1;
+        if accepted == calls.accepted || round > document.functions().len() + 1 {
+            break (
+                nodes,
+                connections,
+                data_cycles,
+                functions,
+                input_diagnostics,
+                conformance,
+            );
+        }
+        calls.accepted = accepted;
+    };
 
     let mut diagnostics = nodes.diagnostics;
-    diagnostics.extend(validate_inputs(document, &nodes.resolved, registry));
+    diagnostics.extend(input_diagnostics);
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
+    diagnostics.extend(conformance.diagnostics);
     let explained_nodes: BTreeSet<_> = diagnostics
         .iter()
         .filter(|item| item.severity == Severity::Error)

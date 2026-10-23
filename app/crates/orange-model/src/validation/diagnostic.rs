@@ -102,6 +102,10 @@ pub enum DiagnosticCode {
     ConverterEntry,
     #[serde(rename = "E-CONVERTER-OPTIONS")]
     ConverterOptions,
+    #[serde(rename = "E-FUNCTION-BODY-MARKER")]
+    FunctionBodyMarker,
+    #[serde(rename = "E-MISSING-RETURN")]
+    MissingReturn,
 }
 
 impl DiagnosticCode {
@@ -154,6 +158,8 @@ impl DiagnosticCode {
             Self::ConverterConfig => "E-CONVERTER-CONFIG",
             Self::ConverterEntry => "E-CONVERTER-ENTRY",
             Self::ConverterOptions => "E-CONVERTER-OPTIONS",
+            Self::FunctionBodyMarker => "E-FUNCTION-BODY-MARKER",
+            Self::MissingReturn => "E-MISSING-RETURN",
         }
     }
 
@@ -205,6 +211,8 @@ impl DiagnosticCode {
             Self::ConverterConfig => "core/graph-converter-config",
             Self::ConverterEntry => "core/graph-converter-entry",
             Self::ConverterOptions => "core/graph-converter-options",
+            Self::FunctionBodyMarker => "core/graph-function-body-marker",
+            Self::MissingReturn => "core/graph-missing-return",
         }
     }
 
@@ -289,6 +297,10 @@ impl DiagnosticCode {
             }
             Self::ConverterEntry => "Converter registry entry is unavailable.".into(),
             Self::ConverterOptions => "Converter options are invalid or incomplete.".into(),
+            Self::FunctionBodyMarker => {
+                "Function entry, return and output markers do not match the declared interface.".into()
+            }
+            Self::MissingReturn => "A path of this function ends without reaching a return.".into(),
         }
     }
 }

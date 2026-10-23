@@ -18,6 +18,7 @@
 //! and shared-write ports are declaration-owned. Call/interface ports, regions, control cycles and
 //! availability remain later slices, and a valid report is not compile approval.
 
+mod conformance;
 mod connections;
 mod data_cycles;
 mod diagnostic;
