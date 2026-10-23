@@ -9,8 +9,8 @@ use orange_model::id::{FunctionId, NodeId};
 use orange_model::validation::{
     Diagnostic, DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, ValidationCheck,
     VariableWrite, WriteOperation, analyze, analyze_functions, analyze_with_effects,
-    sort_diagnostics, validate, validate_connections, validate_inputs, validate_nodes,
-    validate_with_effects,
+    sort_diagnostics, validate, validate_connections, validate_data_cycles, validate_inputs,
+    validate_nodes, validate_with_effects,
 };
 use orange_model::{GraphDocument, ValidationReport, from_json, to_json};
 use serde_json::{Value, json};
@@ -120,22 +120,37 @@ fn merged(
 ) -> ValidationReport {
     let nodes = validate_nodes(doc, registry);
     let connections = validate_connections(doc, &nodes.resolved, registry);
+    let data_cycles = validate_data_cycles(doc, &nodes.resolved, &connections, registry);
     let evidence = FunctionEvidence::from_nodes(doc, &nodes, effects);
     let functions = analyze_functions(doc, &evidence, registry);
     let mut diagnostics: Vec<Diagnostic> = nodes.diagnostics.clone();
     diagnostics.extend(validate_inputs(doc, &nodes.resolved, registry));
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
+    let explained_nodes: std::collections::BTreeSet<_> = diagnostics
+        .iter()
+        .filter(|item| item.severity == orange_model::validation::Severity::Error)
+        .filter_map(|item| item.subject.node)
+        .collect();
+    diagnostics.extend(data_cycles.diagnostics.into_iter().filter(|item| {
+        item.code != DiagnosticCode::DependencyUnavailable
+            || item
+                .subject
+                .node
+                .is_none_or(|node| !explained_nodes.contains(&node))
+    }));
     sort_diagnostics(&mut diagnostics);
     diagnostics.dedup();
     let mut incomplete_nodes = nodes.incomplete_nodes;
     incomplete_nodes.extend(connections.incomplete_nodes);
+    incomplete_nodes.extend(data_cycles.incomplete_nodes);
     ValidationReport {
         diagnostics,
         resolved: nodes.resolved,
         incomplete_nodes,
         functions: functions.summaries,
         incomplete_functions: functions.incomplete_functions,
+        data_cycle_paths: data_cycles.cycle_paths,
     }
 }
 
@@ -171,6 +186,56 @@ fn assert_explained(report: &ValidationReport) {
 
 fn codes(report: &ValidationReport) -> Vec<DiagnosticCode> {
     report.diagnostics.iter().map(|item| item.code).collect()
+}
+
+#[test]
+fn combined_validation_rejects_data_cycles_and_exposes_concrete_port_witnesses() {
+    let cyclic = document(
+        json!([node(NODE, "example/value", json!({}))]),
+        json!([{
+            "id":"60000000-0000-4000-8000-000000000001",
+            "from":{"node":NODE,"port":"y"},"to":{"node":NODE,"port":"x"}
+        }]),
+        json!([]),
+        json!([]),
+    );
+    let report = assert_equals_passes(&cyclic);
+    assert!(!report.is_valid());
+    assert_eq!(codes(&report), [DiagnosticCode::CycleData]);
+    assert_eq!(report.data_cycle_paths.len(), 1);
+    let path = &report.data_cycle_paths[0];
+    assert_eq!(path.first(), path.last());
+    assert_eq!(path.len(), 3);
+    assert!(path.iter().all(|port| port.node == NODE.parse().unwrap()));
+    assert!(
+        report.incomplete_nodes.is_empty(),
+        "a known invalid cycle is fully analyzed"
+    );
+    let registry = registry();
+    assert!(!analyze(&cyclic, &registry).is_ready_for_compilation(&cyclic, &registry));
+}
+
+#[test]
+fn variable_feedback_has_a_state_boundary_in_combined_validation() {
+    let get = "10000000-0000-4000-8000-000000000003";
+    let set = "10000000-0000-4000-8000-000000000004";
+    let feedback = document(
+        json!([
+            {"id":get,"definition_id":"core/get-variable","definition_version":1,"config_version":1,"config":{"variable":VAR}},
+            node(NODE,"example/value",json!({})),
+            {"id":set,"definition_id":"core/set-variable","definition_version":1,"config_version":1,"config":{"variable":VAR}}
+        ]),
+        json!([
+            {"id":"60000000-0000-4000-8000-000000000001","from":{"node":get,"port":"value"},"to":{"node":NODE,"port":"x"}},
+            {"id":"60000000-0000-4000-8000-000000000002","from":{"node":NODE,"port":"y"},"to":{"node":set,"port":"value"}}
+        ]),
+        run_variable(),
+        json!([]),
+    );
+    let report = assert_equals_passes(&feedback);
+    assert!(report.is_valid(), "{:?}", report.diagnostics);
+    assert!(report.data_cycle_paths.is_empty());
+    // This checks data dependencies; initialization, availability and execution remain separate.
 }
 
 #[test]
@@ -301,6 +366,7 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::InputValues,
             ValidationCheck::Connections,
             ValidationCheck::FunctionSummaries,
+            ValidationCheck::DataCycles,
         ]
     );
     assert_eq!(
@@ -311,7 +377,6 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::ContextualContracts,
             ValidationCheck::FunctionRestrictions,
             ValidationCheck::Regions,
-            ValidationCheck::DataCycles,
             ValidationCheck::ControlCycles,
             ValidationCheck::ValueAvailability,
             ValidationCheck::StateRules,

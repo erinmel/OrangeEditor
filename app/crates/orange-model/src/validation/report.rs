@@ -3,12 +3,12 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
-use crate::document::{GraphDocument, SignatureSnapshot};
+use crate::document::{GraphDocument, PortRef, SignatureSnapshot};
 use crate::id::{FunctionId, NodeId};
 
 use super::{
     Diagnostic, FunctionEvidence, FunctionSummary, LeafEffects, Severity, analyze_functions,
-    sort_diagnostics, validate_connections, validate_inputs, validate_nodes,
+    sort_diagnostics, validate_connections, validate_data_cycles, validate_inputs, validate_nodes,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
@@ -55,6 +55,7 @@ const COVERED_CHECKS: &[ValidationCheck] = &[
     ValidationCheck::InputValues,
     ValidationCheck::Connections,
     ValidationCheck::FunctionSummaries,
+    ValidationCheck::DataCycles,
 ];
 
 /// Checks required by the current control-domain compile-precondition contract.
@@ -80,6 +81,8 @@ pub struct ValidationReport {
     pub functions: BTreeMap<FunctionId, FunctionSummary>,
     /// Functions whose summary could not be established.
     pub incomplete_functions: BTreeSet<FunctionId>,
+    /// Closed concrete-port witnesses for cyclic data-dependency components.
+    pub data_cycle_paths: Vec<Vec<PortRef>>,
 }
 
 impl ValidationReport {
@@ -176,7 +179,7 @@ pub fn analyze(document: &GraphDocument, registry: &RegistrySnapshot) -> Validat
 
 /// Validates `document` against `registry` with host-supplied leaf effects.
 ///
-/// Runs node resolution, input, connection and function passes on the same resolution
+/// Runs node resolution, input, connection, function and data-cycle passes on the same resolution
 /// and never changes the document. `leaf_effects` must be fresh for this exact document,
 /// config, provider and lock snapshot; nodes without an entry make their function
 /// incomplete (11 §14). Diagnostics are sorted and exact duplicates removed.
@@ -200,6 +203,7 @@ pub fn analyze_with_effects(
 ) -> ValidationAnalysis {
     let nodes = validate_nodes(document, registry);
     let connections = validate_connections(document, &nodes.resolved, registry);
+    let data_cycles = validate_data_cycles(document, &nodes.resolved, &connections, registry);
     let evidence = FunctionEvidence::from_nodes(document, &nodes, leaf_effects);
     let functions = analyze_functions(document, &evidence, registry);
 
@@ -207,11 +211,24 @@ pub fn analyze_with_effects(
     diagnostics.extend(validate_inputs(document, &nodes.resolved, registry));
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
+    let explained_nodes: BTreeSet<_> = diagnostics
+        .iter()
+        .filter(|item| item.severity == Severity::Error)
+        .filter_map(|item| item.subject.node)
+        .collect();
+    diagnostics.extend(data_cycles.diagnostics.into_iter().filter(|item| {
+        item.code != super::DiagnosticCode::DependencyUnavailable
+            || item
+                .subject
+                .node
+                .is_none_or(|node| !explained_nodes.contains(&node))
+    }));
     sort_diagnostics(&mut diagnostics);
     diagnostics.dedup();
 
     let mut incomplete_nodes = nodes.incomplete_nodes;
     incomplete_nodes.extend(connections.incomplete_nodes);
+    incomplete_nodes.extend(data_cycles.incomplete_nodes);
     ValidationAnalysis {
         report: ValidationReport {
             diagnostics,
@@ -219,6 +236,7 @@ pub fn analyze_with_effects(
             incomplete_nodes,
             functions: functions.summaries,
             incomplete_functions: functions.incomplete_functions,
+            data_cycle_paths: data_cycles.cycle_paths,
         },
         document_state: document.state_id(),
         registry_generation: registry.generation(),

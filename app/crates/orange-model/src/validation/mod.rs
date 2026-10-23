@@ -5,7 +5,7 @@
 //! Its [`ValidationReport`] contains sorted, de-duplicated diagnostics, the resolved
 //! signatures, incomplete nodes and functions, and function summaries. It runs
 //! [`validate_nodes`] once and feeds that resolution to [`validate_inputs`],
-//! [`validate_connections`] and [`analyze_functions`]. Connections fall back to stored
+//! [`validate_connections`], [`validate_data_cycles`] and [`analyze_functions`]. Connections fall back to stored
 //! signatures only for package nodes that did not resolve, preserving orphan edges.
 //! `validate` supplies no leaf effects, so a package action leaf makes its function
 //! incomplete rather than assumed effect-free. No pass changes document
@@ -13,10 +13,11 @@
 //! immutable catalogue origin.
 //!
 //! The individual passes stay public for hosts that run them separately. Contextual variable
-//! and shared-write ports are declaration-owned. Call/interface ports, regions, data/control cycles and
+//! and shared-write ports are declaration-owned. Call/interface ports, regions, control cycles and
 //! availability remain later slices, and a valid report is not compile approval.
 
 mod connections;
+mod data_cycles;
 mod diagnostic;
 mod functions;
 mod inputs;
@@ -31,6 +32,7 @@ pub use diagnostic::{
 };
 
 pub use connections::{ConnectionValidation, validate_connections};
+pub use data_cycles::{DataCycleValidation, validate_data_cycles};
 pub use inputs::validate_inputs;
 pub use nodes::{NodeValidation, validate_nodes};
 pub use report::{
