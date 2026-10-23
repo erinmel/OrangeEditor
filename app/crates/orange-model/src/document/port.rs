@@ -68,6 +68,31 @@ impl SignatureSnapshot {
     }
 }
 
+/// A suspension metadata mismatch with the definition kind, shared by publication and
+/// validation without coupling document types to registry or diagnostic layers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SuspensionContractIssue {
+    Missing,
+    Invalid(Suspends),
+}
+
+pub(crate) fn suspension_contract_issue(
+    kind: NodeKind,
+    suspends: Option<Suspends>,
+) -> Option<SuspensionContractIssue> {
+    match (kind, suspends) {
+        (NodeKind::Async | NodeKind::Iterator, None) => Some(SuspensionContractIssue::Missing),
+        (NodeKind::Async | NodeKind::Iterator, Some(value @ Suspends::Never)) => {
+            Some(SuspensionContractIssue::Invalid(value))
+        }
+        (NodeKind::Async | NodeKind::Iterator, Some(Suspends::Maybe | Suspends::Always)) => None,
+        (_, Some(value @ (Suspends::Maybe | Suspends::Always))) => {
+            Some(SuspensionContractIssue::Invalid(value))
+        }
+        _ => None,
+    }
+}
+
 /// Kinds that can appear in a signature or function interface. Control and zone
 /// intrinsics have no stored signature (11 §3).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

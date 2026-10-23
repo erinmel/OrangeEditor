@@ -6,7 +6,10 @@ use crate::catalog::{
     ContractError, NodeContract, ProviderKey, RegistrySnapshot, TypeArgs,
     is_converter_special_form, is_intrinsic,
 };
-use crate::document::{GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends};
+use crate::document::{
+    GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends, SuspensionContractIssue,
+    suspension_contract_issue as classify_suspension_contract,
+};
 use crate::error::IdError;
 use crate::id::{NodeId, PortKey};
 use crate::index::DocIndex;
@@ -272,21 +275,10 @@ fn suspension_contract_issue(
     kind: crate::document::NodeKind,
     suspends: Option<Suspends>,
 ) -> Option<DiagnosticCode> {
-    match (kind, suspends) {
-        (crate::document::NodeKind::Async | crate::document::NodeKind::Iterator, None) => {
-            Some(DiagnosticCode::SuspendsMissing)
-        }
-        (
-            crate::document::NodeKind::Async | crate::document::NodeKind::Iterator,
-            Some(Suspends::Never),
-        ) => Some(DiagnosticCode::SuspendsInvalid),
-        (
-            crate::document::NodeKind::Async | crate::document::NodeKind::Iterator,
-            Some(Suspends::Maybe | Suspends::Always),
-        ) => None,
-        (_, Some(Suspends::Maybe | Suspends::Always)) => Some(DiagnosticCode::SuspendsInvalid),
-        _ => None,
-    }
+    classify_suspension_contract(kind, suspends).map(|issue| match issue {
+        SuspensionContractIssue::Missing => DiagnosticCode::SuspendsMissing,
+        SuspensionContractIssue::Invalid(_) => DiagnosticCode::SuspendsInvalid,
+    })
 }
 
 fn infer_fresh_args(

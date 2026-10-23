@@ -20,7 +20,7 @@ use crate::conversion::{
 use crate::document::DefinitionRef;
 use crate::document::{
     GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind,
-    VarScope,
+    Suspends, SuspensionContractIssue, VarScope, suspension_contract_issue,
 };
 use crate::edit::DeclId;
 use crate::id::{DefinitionId, PortId};
@@ -74,6 +74,19 @@ pub enum RegistryError {
     MissingDataOutputSource {
         definition: DefinitionId,
         port: PortId,
+    },
+    #[error("definition `{definition}` of kind {kind:?} is missing suspension metadata")]
+    SuspendsMissing {
+        definition: DefinitionId,
+        kind: NodeKind,
+    },
+    #[error(
+        "definition `{definition}` of kind {kind:?} has invalid suspension metadata {suspends:?}"
+    )]
+    SuspendsInvalid {
+        definition: DefinitionId,
+        kind: NodeKind,
+        suspends: Suspends,
     },
     #[error("definition `{definition}` port `{port}` uses undeclared type parameter `${param}`")]
     UndeclaredTypeParam {
@@ -215,6 +228,19 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         return Err(RegistryError::CoreNamespace(id.clone()));
     }
     check_references(definition)?;
+    if let Some(issue) = suspension_contract_issue(definition.kind, definition.suspends) {
+        return Err(match issue {
+            SuspensionContractIssue::Missing => RegistryError::SuspendsMissing {
+                definition: id.clone(),
+                kind: definition.kind,
+            },
+            SuspensionContractIssue::Invalid(suspends) => RegistryError::SuspendsInvalid {
+                definition: id.clone(),
+                kind: definition.kind,
+                suspends,
+            },
+        });
+    }
     let ports = match &definition.ports {
         Ports::Declared(ports) => ports,
         Ports::Variable(_) => return check_variable_ports(definition),
@@ -673,6 +699,67 @@ mod tests {
 
     fn builder() -> RegistryBuilder {
         RegistryBuilder::core(origin())
+    }
+
+    #[test]
+    fn suspension_contract_is_checked_for_declared_variable_and_intrinsic_definitions() {
+        for kind in [
+            NodeKind::Pure,
+            NodeKind::Volatile,
+            NodeKind::Action,
+            NodeKind::Entry,
+        ] {
+            let mut valid = definition("acme/sync", &[], vec![]);
+            valid.kind = kind;
+            assert!(build(builder().definition(valid)).is_ok(), "{kind:?}");
+        }
+        for kind in [NodeKind::Async, NodeKind::Iterator] {
+            for suspends in [Some(Suspends::Maybe), Some(Suspends::Always)] {
+                let mut valid = definition("acme/suspending", &[], vec![]);
+                valid.kind = kind;
+                valid.suspends = suspends;
+                assert!(build(builder().definition(valid)).is_ok(), "{kind:?}");
+            }
+            let mut missing = definition("acme/missing", &[], vec![]);
+            missing.kind = kind;
+            assert!(matches!(
+                build(builder().definition(missing)),
+                Err(RegistryError::SuspendsMissing { kind: actual, .. }) if actual == kind
+            ));
+            let mut never = definition("acme/never", &[], vec![]);
+            never.kind = kind;
+            never.suspends = Some(Suspends::Never);
+            assert!(matches!(
+                build(builder().definition(never)),
+                Err(RegistryError::SuspendsInvalid { kind: actual, suspends: Suspends::Never, .. }) if actual == kind
+            ));
+        }
+
+        let mut contextual = definition("acme/contextual", &[], vec![]);
+        contextual.kind = NodeKind::Async;
+        contextual.ports = Ports::Variable(VariableAccess::Read);
+        contextual.references = vec![ReferenceField {
+            pointer: "/variable".into(),
+            kind: ReferenceKind::Variable,
+        }];
+        assert!(matches!(
+            build(builder().definition(contextual)),
+            Err(RegistryError::SuspendsMissing {
+                kind: NodeKind::Async,
+                ..
+            })
+        ));
+
+        let mut intrinsic = definition("core/missing-suspension", &[], vec![]);
+        intrinsic.kind = NodeKind::Async;
+        assert!(matches!(
+            build(builder().intrinsic(intrinsic)),
+            Err(RegistryError::SuspendsMissing {
+                kind: NodeKind::Async,
+                ..
+            })
+        ));
+        assert!(build(builder()).is_ok(), "built-in definitions publish");
     }
 
     #[test]

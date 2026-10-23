@@ -61,6 +61,8 @@ A definition has exactly one `kind`. Ports inherited from a kind (§4.1) are imp
 
 A `pure` definition MUST NOT declare a port of kind `exec`. Registry publication rejects this shape with a typed registration error identifying the definition and offending port. This rule checks definition metadata only; it does not discard malformed saved documents, and valid action outcomes and host-owned control intrinsics retain their exec ports.
 
+Registry publication also checks suspension metadata against the declared kind: `async` and `iterator` definitions require `suspends: maybe` or `always`, while `pure`, `volatile`, `action` and `entry` definitions may omit `suspends` or declare `never`. Missing required metadata and incompatible values fail registration with typed errors. This check applies to declared and contextual-port definitions, including host intrinsics; passive saved signature snapshots remain loadable for repair and validation.
+
 | Kind | Exec ports | Suspends | State / effects | Memo | Plugin may contribute | Examples |
 |---|---|---|---|---|---|---|
 | `pure` | none | never | none | stability class | yes | add, concat, parse JSON, format |

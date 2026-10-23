@@ -5,7 +5,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::catalog::{ReferenceKind, RegistrySnapshot, intrinsic, is_intrinsic};
-use crate::document::{GraphDocument, NodeKind, SignatureSnapshot, Suspends, VarScope};
+use crate::document::{
+    GraphDocument, NodeKind, SignatureSnapshot, Suspends, SuspensionContractIssue, VarScope,
+    suspension_contract_issue,
+};
 use crate::edit::DeclId;
 use crate::id::{FunctionId, NodeId, VariableId};
 
@@ -302,35 +305,16 @@ pub fn analyze_functions(
                 complete = false;
                 continue;
             }
-            if matches!(snapshot.kind, NodeKind::Async | NodeKind::Iterator)
-                && snapshot.suspension().is_none()
-            {
-                emit_at(
-                    &mut result,
-                    DiagnosticCode::SuspendsMissing,
-                    function_id,
-                    node.id,
-                    origin,
-                );
+            if let Some(issue) = suspension_contract_issue(snapshot.kind, snapshot.suspends) {
+                let code = match issue {
+                    SuspensionContractIssue::Missing => DiagnosticCode::SuspendsMissing,
+                    SuspensionContractIssue::Invalid(_) => DiagnosticCode::SuspendsInvalid,
+                };
+                emit_at(&mut result, code, function_id, node.id, origin);
                 complete = false;
                 continue;
             }
             let suspension = snapshot.suspension().unwrap_or(Suspends::Never);
-            if (matches!(snapshot.kind, NodeKind::Async | NodeKind::Iterator)
-                && snapshot.suspends == Some(Suspends::Never))
-                || (!matches!(snapshot.kind, NodeKind::Async | NodeKind::Iterator)
-                    && snapshot.suspends.is_some_and(|s| s != Suspends::Never))
-            {
-                emit_at(
-                    &mut result,
-                    DiagnosticCode::SuspendsInvalid,
-                    function_id,
-                    node.id,
-                    origin,
-                );
-                complete = false;
-                continue;
-            }
             rank = rank.max(rank_of(snapshot.kind));
             may_suspend |= suspension != Suspends::Never;
 
