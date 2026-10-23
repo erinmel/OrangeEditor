@@ -14,8 +14,8 @@ use super::{
 };
 use crate::config_pointer::pointer_parts;
 use crate::conversion::{
-    ConversionClass, ConverterKey, ConverterProvider, ConverterRegistry, ConverterRegistryBuilder,
-    ExplicitConverterChoice,
+    ConversionClass, ConverterConfig, ConverterProvider, ConverterRegistry,
+    ConverterRegistryBuilder, ExplicitConverterChoice,
 };
 use crate::document::DefinitionRef;
 use crate::document::{
@@ -433,35 +433,15 @@ impl RegistrySnapshot {
         if node.definition.version != 1 || node.config_version != 1 {
             return Err(ContractError::ConverterConfig);
         }
-        let converter = node
-            .config
-            .get("converter")
-            .and_then(serde_json::Value::as_str)
-            .ok_or(ContractError::ConverterConfig)?;
-        let id = converter
-            .parse()
-            .map_err(|_| ContractError::ConverterConfig)?;
-        let contract_version = node
-            .config
-            .get("contract_version")
-            .and_then(serde_json::Value::as_u64)
-            .and_then(|version| u32::try_from(version).ok())
-            .filter(|version| *version > 0)
-            .ok_or(ContractError::ConverterConfig)?;
-        let key = ConverterKey {
-            id,
-            contract_version,
-        };
+        let key =
+            ConverterConfig::entry_of(&node.config).map_err(|_| ContractError::ConverterConfig)?;
         let definition = self
             .converters
             .entry(&key)
             .ok_or(ContractError::ConverterEntry)?;
-        let raw_options = node
-            .config
-            .get("options")
-            .ok_or(ContractError::ConverterOptions)?;
-        let options: BTreeMap<String, String> = serde_json::from_value(raw_options.clone())
-            .map_err(|_| ContractError::ConverterOptions)?;
+        let options = ConverterConfig::from_config(&node.config)
+            .map_err(|_| ContractError::ConverterOptions)?
+            .options;
         let provider = match &node.provider {
             None => ConverterProvider::Core,
             Some(binding) => {
@@ -473,7 +453,7 @@ impl RegistrySnapshot {
                     version: exact.version,
                     content_digest: exact.content_digest,
                     id: exact.id,
-                    contract_version,
+                    contract_version: key.contract_version,
                 })
             }
         };
