@@ -117,9 +117,11 @@ fn same_definition_nodes_use_independent_concrete_contracts_for_inference() {
     overlays
         .insert_node(&doc, context_node(&doc, 1), contract("core/i64@1"))
         .unwrap();
+    let before_insert = overlays.generation();
     overlays
         .insert_node(&doc, context_node(&doc, 3), contract("core/i32@1"))
         .unwrap();
+    assert_ne!(overlays.generation(), before_insert);
 
     let inferred = infer_components(
         &doc,

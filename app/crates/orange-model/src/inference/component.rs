@@ -38,9 +38,17 @@ use crate::types::{
 #[derive(Debug, Clone, Default)]
 pub struct NodeOverlays {
     nodes: BTreeMap<NodeId, (DefinitionRef, [u8; 32], NodeContract)>,
+    generation: u64,
 }
 
 impl NodeOverlays {
+    /// Identity of the current contents: zero while empty, process-unique after every
+    /// insert and kept by clones. Connection plans record it, so a plan made against
+    /// other overlays is stale.
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
     /// Installs a host-trusted contract for one node without changing ordinary definition
     /// lookup. This is ephemeral evidence for the current document snapshot: rebuild it
     /// after config, provider, lock, or body changes.
@@ -60,6 +68,7 @@ impl NodeOverlays {
         let freshness = metadata_fingerprint(document, current)?;
         self.nodes
             .insert(node.id, (definition, freshness, contract));
+        self.generation = crate::id::process_unique();
         Ok(())
     }
 

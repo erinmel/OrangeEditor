@@ -92,6 +92,7 @@ impl ConnectionPlan {
 struct Preconditions {
     document_state: u64,
     registry_generation: u64,
+    overlay_generation: u64,
 }
 
 /// A request that cannot be planned at all, as opposed to one that needs a choice.
@@ -291,6 +292,7 @@ pub fn plan_connection(
         preconditions: Preconditions {
             document_state: document.state_id(),
             registry_generation: registry.generation(),
+            overlay_generation: overlays.generation(),
         },
     })))
 }
@@ -469,6 +471,8 @@ pub enum PlanApplyError {
     StaleDocument { expected: u64, actual: u64 },
     #[error("the registry snapshot was replaced since the plan was made")]
     StaleRegistry,
+    #[error("the node overlays changed since the plan was made")]
+    StaleOverlays,
     #[error(transparent)]
     Edit(#[from] TxError),
 }
@@ -476,19 +480,21 @@ pub enum PlanApplyError {
 /// Applies `plan` as one transaction: one revision bump and one undo step covering the
 /// replaced wire, the converter, its edges and the inferred updates.
 ///
-/// The document content state and the registry snapshot must still
-/// be the ones the plan was made against; a stale plan is rejected without changing the
+/// The document content state, the registry snapshot and the node overlays must still be
+/// the ones the plan was made against; a stale plan is rejected without changing the
 /// document, because its selection and inference results may no longer hold. A registry
 /// snapshot is immutable, so a matching generation also means the selected provider is
 /// still available. If a command fails, nothing changes, revision included.
 pub fn apply_connection(
     document: &mut GraphDocument,
     registry: &RegistrySnapshot,
+    overlays: &NodeOverlays,
     plan: ConnectionPlan,
 ) -> Result<Committed, PlanApplyError> {
     let Preconditions {
         document_state,
         registry_generation,
+        overlay_generation,
     } = plan.preconditions;
     if document.state_id() != document_state {
         return Err(PlanApplyError::StaleDocument {
@@ -498,6 +504,9 @@ pub fn apply_connection(
     }
     if registry.generation() != registry_generation {
         return Err(PlanApplyError::StaleRegistry);
+    }
+    if overlays.generation() != overlay_generation {
+        return Err(PlanApplyError::StaleOverlays);
     }
     Ok(document.apply(plan.commands)?)
 }
@@ -539,11 +548,12 @@ mod tests {
             preconditions: Preconditions {
                 document_state: document.state_id(),
                 registry_generation: registry.generation(),
+                overlay_generation: 0,
             },
         };
         let (revision, state) = (document.revision(), document.state_id());
 
-        let result = apply_connection(&mut document, &registry, plan);
+        let result = apply_connection(&mut document, &registry, &NodeOverlays::default(), plan);
         assert_eq!(
             result,
             Err(PlanApplyError::Edit(TxError::EdgeNotFound(missing)))
