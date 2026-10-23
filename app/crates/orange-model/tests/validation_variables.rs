@@ -3,7 +3,6 @@ mod common;
 use common::{minimal_document, nid, node_id};
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{NodeKind, OutputSource, PortDirection, Suspends};
-use orange_model::inference::NodeOverlays;
 use orange_model::validation::{
     DiagnosticCode, HostOrigin, NodeValidation, validate_inputs, validate_nodes,
 };
@@ -35,7 +34,7 @@ fn validate(doc: &GraphDocument) -> NodeValidation {
     let before = to_json(doc).unwrap();
     let revision = doc.revision();
     let state = doc.state_id();
-    let report = validate_nodes(doc, &registry(), &NodeOverlays::default());
+    let report = validate_nodes(doc, &registry());
     assert_eq!(to_json(doc).unwrap(), before);
     assert_eq!(doc.revision(), revision);
     assert_eq!(doc.state_id(), state);
@@ -179,7 +178,7 @@ fn get_drives_generic_math_and_set_checks_result() {
                 {"port_id":"sum","direction":"output","kind":"data","type":"core/i64@1"}]}}
         }))).unwrap();
         let before = to_json(&doc).unwrap();
-        let report = validate_nodes(&doc, &registry, &NodeOverlays::default());
+        let report = validate_nodes(&doc, &registry);
         if valid {
             assert!(report.is_valid(), "{:?}", report.diagnostics);
             assert!(validate_inputs(&doc, &report.resolved, &registry).is_empty());
@@ -199,9 +198,8 @@ fn get_drives_generic_math_and_set_checks_result() {
     }
 }
 #[test]
-fn declaration_change_stales_captured_contract() {
+fn declaration_change_recomputes_the_contract() {
     use orange_model::DocCommand;
-    use orange_model::catalog::NodeContract;
     let mut doc = document(
         json!([variable_node(1, "get", json!(node_id(10)))]),
         json!([
@@ -209,49 +207,33 @@ fn declaration_change_stales_captured_contract() {
             declaration(11, "core/bool@1", "run")
         ]),
     );
-    let snapshot = validate(&doc).resolved.remove(&nid(1)).unwrap();
-    let mut captured = NodeOverlays::default();
-    captured
-        .insert_node(
-            &doc,
-            doc.node(nid(1)).unwrap(),
-            NodeContract {
-                kind: snapshot.kind,
-                suspends: snapshot.suspends,
-                type_params: vec![],
-                ports: snapshot.ports,
-            },
-        )
-        .unwrap();
+    let value_type = |doc: &GraphDocument| {
+        let report = validate(doc);
+        assert!(report.is_valid());
+        report.resolved[&nid(1)].ports[0]
+            .ty
+            .as_ref()
+            .unwrap()
+            .as_str()
+            .to_owned()
+    };
+    assert_eq!(value_type(&doc), "core/i64@1");
     let unrelated = doc
         .apply([DocCommand::UpsertVariable(
             serde_json::from_value(declaration(11, "core/string@1", "run")).unwrap(),
         )])
         .unwrap();
-    assert!(validate_nodes(&doc, &registry(), &captured).is_valid());
+    assert_eq!(value_type(&doc), "core/i64@1");
     let change = doc
         .apply([DocCommand::UpsertVariable(
             serde_json::from_value(declaration(10, "core/bool@1", "run")).unwrap(),
         )])
         .unwrap();
-    let stale = validate_nodes(&doc, &registry(), &captured);
-    assert_eq!(stale.diagnostics[0].code, DiagnosticCode::MetadataStale);
-    assert!(stale.resolved.is_empty());
-    assert_eq!(
-        validate(&doc).resolved[&nid(1)].ports[0]
-            .ty
-            .as_ref()
-            .unwrap()
-            .as_str(),
-        "core/bool@1"
-    );
+    assert_eq!(value_type(&doc), "core/bool@1");
     let redo = doc.revert(change.inverse).unwrap();
-    assert!(validate_nodes(&doc, &registry(), &captured).is_valid());
+    assert_eq!(value_type(&doc), "core/i64@1");
     let undo = doc.revert(redo.inverse).unwrap();
-    assert_eq!(
-        validate_nodes(&doc, &registry(), &captured).diagnostics[0].code,
-        DiagnosticCode::MetadataStale
-    );
+    assert_eq!(value_type(&doc), "core/bool@1");
     let _ = doc.revert(undo.inverse).unwrap();
     let _ = doc.revert(unrelated.inverse).unwrap();
 }

@@ -5,9 +5,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs};
 use crate::document::{GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends};
 use crate::error::IdError;
-use crate::id::{NodeId, PortId, PortKey};
+use crate::id::{NodeId, PortKey};
 use crate::index::DocIndex;
-use crate::inference::{InferenceIssue, NodeOverlays, infer_components};
+use crate::inference::{InferenceIssue, infer_components};
 use crate::signature;
 use crate::type_term::TypeTerm;
 use crate::types::{TypeRegistry, TypeResolveError};
@@ -15,7 +15,7 @@ use crate::types::{TypeRegistry, TypeResolveError};
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
-use super::ports::{implicit_port, is_intrinsic_definition};
+use super::ports::is_intrinsic_definition;
 
 /// Results of resolving nodes against immutable host metadata.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -42,8 +42,6 @@ struct NodePass<'a> {
     document: &'a GraphDocument,
     index: &'a DocIndex,
     registry: &'a RegistrySnapshot,
-    contracts: &'a NodeOverlays,
-    inference_contracts: &'a NodeOverlays,
     eligible: &'a BTreeSet<NodeId>,
     ids: &'a [NodeId],
     origin: &'a HostOrigin,
@@ -52,48 +50,24 @@ struct NodePass<'a> {
 /// Resolves node contracts, exact providers, fresh generic arguments, and signatures.
 /// The document is never changed. Intrinsic metadata and provider availability are
 /// declarative host inputs; package code is not loaded or executed.
-pub fn validate_nodes(
-    document: &GraphDocument,
-    registry: &RegistrySnapshot,
-    overlays: &NodeOverlays,
-) -> NodeValidation {
+pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> NodeValidation {
     let origin = registry.origin();
     let mut report = NodeValidation::default();
     let mut diagnostics = Vec::new();
     let ids = node_ids(document);
-    let (contracts, eligible) = resolve_contracts(
+    let eligible = resolve_contracts(
         document,
         registry,
-        overlays,
         &ids,
         origin,
         &mut report,
         &mut diagnostics,
     );
     let index = DocIndex::build(document);
-    let inference_contracts =
-        match inference_catalog(document, registry, &contracts, &eligible, &ids) {
-            Ok(catalog) => catalog,
-            Err(stale) => {
-                unresolved(
-                    stale.node,
-                    DiagnosticCode::MetadataStale,
-                    origin,
-                    &mut report,
-                    &mut diagnostics,
-                );
-                report.incomplete_nodes.extend(eligible);
-                sort_diagnostics(&mut diagnostics);
-                report.diagnostics = diagnostics;
-                return report;
-            }
-        };
     let pass = NodePass {
         document,
         index: &index,
         registry,
-        contracts: &contracts,
-        inference_contracts: &inference_contracts,
         eligible: &eligible,
         ids: &ids,
         origin,
@@ -118,52 +92,31 @@ fn node_ids(document: &GraphDocument) -> Vec<NodeId> {
 fn resolve_contracts(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
-    overlays: &NodeOverlays,
     ids: &[NodeId],
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
-) -> (NodeOverlays, BTreeSet<NodeId>) {
-    let mut contracts = overlays.clone();
+) -> BTreeSet<NodeId> {
     let mut eligible = BTreeSet::new();
     for id in ids {
         let Some(node) = document.node(*id) else {
             continue;
         };
-        if preflight_node(
-            document,
-            node,
-            registry,
-            &mut contracts,
-            origin,
-            report,
-            diagnostics,
-        ) {
+        if preflight_node(document, node, registry, origin, report, diagnostics) {
             eligible.insert(*id);
         }
     }
-    (contracts, eligible)
+    eligible
 }
 
 fn preflight_node(
     document: &GraphDocument,
     node: &crate::document::NodeInstance,
     registry: &RegistrySnapshot,
-    contracts: &mut NodeOverlays,
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> bool {
-    if contracts.get_for_node(registry, document, node).is_err() {
-        unresolved(
-            node.id,
-            DiagnosticCode::MetadataStale,
-            origin,
-            report,
-            diagnostics,
-        );
-        return false;
-    }
     if is_intrinsic_definition(node.definition.id.as_str()) {
         if node.provider.is_some() {
             unresolved(
@@ -244,7 +197,7 @@ fn preflight_node(
         );
         return false;
     };
-    let Ok(Some(contract)) = contracts.get_for_node(registry, document, node) else {
+    let Ok(Some(contract)) = registry.contract(document, node) else {
         unresolved(
             node.id,
             DiagnosticCode::ProviderUnavailable,
@@ -292,55 +245,6 @@ fn suspension_contract_issue(
     }
 }
 
-fn inference_catalog(
-    document: &GraphDocument,
-    registry: &RegistrySnapshot,
-    contracts: &NodeOverlays,
-    eligible: &BTreeSet<NodeId>,
-    ids: &[NodeId],
-) -> Result<NodeOverlays, crate::inference::StaleNodeTemplate> {
-    let mut catalog = contracts.clone();
-    for id in ids.iter().filter(|id| eligible.contains(id)) {
-        let Some(node) = document.node(*id) else {
-            continue;
-        };
-        let Ok(Some(contract)) = contracts.get_for_node(registry, document, node) else {
-            continue;
-        };
-        let mut snapshot = SignatureSnapshot {
-            kind: contract.kind,
-            suspends: contract.suspends,
-            ports: contract.ports.clone(),
-            extensions: Default::default(),
-        };
-        for name in snapshot.implicit_ports() {
-            if snapshot
-                .ports
-                .iter()
-                .any(|port| port.port_id.as_str() == name)
-            {
-                continue;
-            }
-            if let Ok(port_id) = name.parse::<PortId>()
-                && let Some(port) = implicit_port(&snapshot, &port_id)
-            {
-                snapshot.ports.push(port);
-            }
-        }
-        catalog.insert_node(
-            document,
-            node,
-            NodeContract {
-                kind: snapshot.kind,
-                suspends: snapshot.suspends,
-                type_params: contract.type_params.clone(),
-                ports: snapshot.ports,
-            },
-        )?;
-    }
-    Ok(catalog)
-}
-
 fn infer_fresh_args(
     pass: &NodePass<'_>,
     report: &mut NodeValidation,
@@ -351,7 +255,6 @@ fn infer_fresh_args(
         pass.index,
         pass.ids.iter().copied(),
         pass.registry,
-        pass.inference_contracts,
     );
     let mut fresh_args = BTreeMap::new();
     for component in components {
@@ -361,7 +264,6 @@ fn infer_fresh_args(
                     pass.document,
                     pass.index,
                     pass.registry,
-                    pass.contracts,
                     pass.eligible,
                     *node,
                 )
@@ -391,7 +293,6 @@ fn infer_fresh_args(
             &component,
             pass.document,
             pass.registry,
-            pass.contracts,
             pass.eligible,
             report,
             &mut fresh_args,
@@ -429,7 +330,6 @@ fn collect_component_args(
     component: &crate::inference::ComponentInference,
     document: &GraphDocument,
     registry: &RegistrySnapshot,
-    contracts: &NodeOverlays,
     eligible: &BTreeSet<NodeId>,
     report: &mut NodeValidation,
     fresh_args: &mut BTreeMap<NodeId, TypeArgs>,
@@ -441,7 +341,7 @@ fn collect_component_args(
         let Some(node) = document.node(*id) else {
             continue;
         };
-        let Ok(Some(contract)) = contracts.get_for_node(registry, document, node) else {
+        let Ok(Some(contract)) = registry.contract(document, node) else {
             continue;
         };
         let Some(args) = component.type_args.get(id) else {
@@ -479,10 +379,7 @@ fn project_nodes(
         let Some(node) = pass.document.node(*id) else {
             continue;
         };
-        let Ok(Some(contract)) = pass
-            .contracts
-            .get_for_node(pass.registry, pass.document, node)
-        else {
+        let Ok(Some(contract)) = pass.registry.contract(pass.document, node) else {
             continue;
         };
         let args = if contract.type_params.is_empty() {
@@ -624,7 +521,6 @@ fn touches_unresolved_data_neighbor(
     document: &GraphDocument,
     index: &DocIndex,
     registry: &RegistrySnapshot,
-    contracts: &NodeOverlays,
     eligible: &BTreeSet<NodeId>,
     node: NodeId,
 ) -> bool {
@@ -643,18 +539,17 @@ fn touches_unresolved_data_neighbor(
         // The generic endpoint determines whether type equations can depend on the
         // unavailable neighbour. Its own metadata is available; the opposite port may
         // be implicit or belong to an unavailable definition.
-        port_kind(document, registry, contracts, port) == Some(PortKind::Data)
+        port_kind(document, registry, port) == Some(PortKind::Data)
     })
 }
 
 fn port_kind(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
-    contracts: &NodeOverlays,
     port: &PortRef,
 ) -> Option<PortKind> {
     let node = document.node(port.node)?;
-    let contract = contracts.get_for_node(registry, document, node).ok()?;
+    let contract = registry.contract(document, node).ok()?;
     let ports = match &contract {
         Some(contract) => contract.ports.as_slice(),
         None => document
@@ -686,7 +581,6 @@ fn unresolved(
 
 fn issue_node(issue: &InferenceIssue) -> Option<NodeId> {
     match issue {
-        InferenceIssue::StaleNodeTemplate(stale) => Some(stale.node),
         InferenceIssue::InvalidTerm { node, .. }
         | InferenceIssue::Ambiguous { node, .. }
         | InferenceIssue::UnknownType { node, .. }
@@ -698,7 +592,6 @@ fn issue_node(issue: &InferenceIssue) -> Option<NodeId> {
 
 fn inference_code(issue: &InferenceIssue) -> DiagnosticCode {
     match issue.code() {
-        "E-METADATA-STALE" => DiagnosticCode::MetadataStale,
         "E-TYPE-AMBIGUOUS" => DiagnosticCode::TypeAmbiguous,
         "E-TYPE-COMPLEXITY" => DiagnosticCode::TypeComplexity,
         "E-CONSTRAINT-UNSATISFIED" => DiagnosticCode::ConstraintUnsatisfied,

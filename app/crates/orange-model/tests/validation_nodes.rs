@@ -3,7 +3,6 @@ mod common;
 use common::registry::Facts;
 use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::inference::NodeOverlays;
 use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use orange_model::{GraphDocument, to_json};
 use serde_json::{Value, json};
@@ -116,7 +115,7 @@ fn distinct_provider_id_and_digest_are_required() {
         Some(snapshot("core/i64@1")),
         json!({}),
     );
-    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
+    let report = validate_nodes(&doc, &facts.snapshot());
     assert_eq!(codes(&report), vec![DiagnosticCode::ProviderUnavailable]);
     assert!(report.resolved.is_empty());
 
@@ -133,7 +132,7 @@ fn distinct_provider_id_and_digest_are_required() {
         Some(snapshot("core/i64@1")),
         json!({}),
     );
-    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
+    let report = validate_nodes(&doc, &facts.snapshot());
     assert_eq!(codes(&report), vec![DiagnosticCode::ProviderUnavailable]);
 }
 
@@ -141,11 +140,7 @@ fn distinct_provider_id_and_digest_are_required() {
 fn primary_resolution_errors_do_not_cascade_or_fall_back_to_core() {
     let facts = setup("implementation-a");
     let missing_provider = document(None, true, Some(snapshot("core/i64@1")), json!({}));
-    let report = validate_nodes(
-        &missing_provider,
-        &facts.snapshot(),
-        &NodeOverlays::default(),
-    );
+    let report = validate_nodes(&missing_provider, &facts.snapshot());
     assert_eq!(codes(&report), vec![DiagnosticCode::ProviderMissing]);
     assert!(report.resolved.is_empty());
 
@@ -155,15 +150,11 @@ fn primary_resolution_errors_do_not_cascade_or_fall_back_to_core() {
         Some(snapshot("core/i64@1")),
         json!({}),
     );
-    let report = validate_nodes(&missing_lock, &facts.snapshot(), &NodeOverlays::default());
+    let report = validate_nodes(&missing_lock, &facts.snapshot());
     assert_eq!(codes(&report), vec![DiagnosticCode::PackageLockMissing]);
 
     let missing_signature = document(Some(binding("implementation-a")), true, None, json!({}));
-    let report = validate_nodes(
-        &missing_signature,
-        &facts.snapshot(),
-        &NodeOverlays::default(),
-    );
+    let report = validate_nodes(&missing_signature, &facts.snapshot());
     assert_eq!(codes(&report), vec![DiagnosticCode::SignatureMissing]);
 }
 
@@ -197,7 +188,7 @@ fn generic_resolution_uses_fresh_evidence_instead_of_cached_type_args() {
         },
     );
     facts.provider(definition(), 1, provider("implementation-a", DIGEST));
-    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
+    let report = validate_nodes(&doc, &facts.snapshot());
     assert_eq!(codes(&report), vec![DiagnosticCode::SignatureDrift]);
     assert_eq!(
         report.resolved[&NODE.parse().unwrap()].ports[0]
@@ -221,7 +212,7 @@ fn validation_does_not_change_document_content_or_revision() {
     let before = to_json(&doc).unwrap();
     let revision = doc.revision();
     let state_id = doc.state_id();
-    let _ = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
+    let _ = validate_nodes(&doc, &facts.snapshot());
     assert_eq!(to_json(&doc).unwrap(), before);
     assert_eq!(doc.revision(), revision);
     assert_eq!(doc.state_id(), state_id);
@@ -244,22 +235,14 @@ fn host_intrinsics_resolve_without_snapshots_but_reject_package_overrides() {
         "signatures": {}
     });
     let doc: GraphDocument = serde_json::from_value(value.clone()).unwrap();
-    let report = validate_nodes(
-        &doc,
-        &Facts::new(origin()).snapshot(),
-        &NodeOverlays::default(),
-    );
+    let report = validate_nodes(&doc, &Facts::new(origin()).snapshot());
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     assert!(report.resolved.contains_key(&NODE.parse().unwrap()));
 
     let mut overridden = value;
     overridden["nodes"][0]["provider"] = binding("package-override");
     let doc: GraphDocument = serde_json::from_value(overridden).unwrap();
-    let report = validate_nodes(
-        &doc,
-        &Facts::new(origin()).snapshot(),
-        &NodeOverlays::default(),
-    );
+    let report = validate_nodes(&doc, &Facts::new(origin()).snapshot());
     assert_eq!(codes(&report), vec![DiagnosticCode::ProviderUnavailable]);
     assert!(report.resolved.is_empty());
 }
@@ -317,7 +300,7 @@ fn intrinsic_data_port_supplies_fresh_generic_inference_evidence() {
         },
     );
     facts.provider(definition(), 1, provider("implementation-a", DIGEST));
-    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
+    let report = validate_nodes(&doc, &facts.snapshot());
     assert_eq!(codes(&report), vec![DiagnosticCode::SignatureDrift]);
     assert!(report.incomplete_nodes.is_empty());
     assert_eq!(
@@ -376,7 +359,7 @@ fn combined_template_and_argument_depth_is_a_complexity_diagnostic() {
         },
     );
     facts.provider(definition(), 1, provider("implementation-a", DIGEST));
-    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
+    let report = validate_nodes(&doc, &facts.snapshot());
     assert_eq!(codes(&report), vec![DiagnosticCode::TypeComplexity]);
     assert!(report.resolved.is_empty());
     assert!(report.incomplete_nodes.contains(&NODE.parse().unwrap()));

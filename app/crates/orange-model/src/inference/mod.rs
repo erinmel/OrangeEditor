@@ -5,9 +5,7 @@ pub mod component;
 pub mod persist;
 pub mod unify;
 
-pub use component::{
-    ComponentInference, InferenceIssue, NodeOverlays, StaleNodeTemplate, infer_components,
-};
+pub use component::{ComponentInference, InferenceIssue, infer_components};
 pub use persist::{InferencePlan, InferredCommit, apply_inferred, plan_edit};
 pub use unify::{
     ConcreteTypeError, EquationContext, EquationEvidence, MAX_EXPANDED_TYPE_NODES, ScopedTypeTerm,

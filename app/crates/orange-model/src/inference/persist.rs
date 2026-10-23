@@ -13,7 +13,7 @@
 
 use std::collections::BTreeSet;
 
-use super::component::{ComponentInference, InferenceIssue, NodeOverlays, infer_components};
+use super::component::{ComponentInference, InferenceIssue, infer_components};
 use crate::catalog::RegistrySnapshot;
 use crate::document::GraphDocument;
 use crate::edit::{ChangeSet, Committed, DeclId, DocCommand};
@@ -54,22 +54,15 @@ pub fn plan_edit(
     document: &GraphDocument,
     edit: impl IntoIterator<Item = DocCommand>,
     registry: &RegistrySnapshot,
-    overlays: &NodeOverlays,
 ) -> Result<InferencePlan, TxError> {
-    overlays
-        .ensure_fresh(document)
-        .map_err(|stale| TxError::StaleNodeTemplate { node: stale.node })?;
     let mut commands: Vec<DocCommand> = edit.into_iter().collect();
     let mut after = document.clone();
     let change = after.apply(commands.clone())?.change_set;
-    overlays
-        .ensure_fresh(&after)
-        .map_err(|stale| TxError::StaleNodeTemplate { node: stale.node })?;
     let touched = touched_nodes(document, &after, &change);
     let index = DocIndex::build(&after);
     let mut issues = Vec::new();
-    for component in infer_components(&after, &index, touched, registry, overlays) {
-        commands.extend(component_updates(&after, registry, overlays, &component)?);
+    for component in infer_components(&after, &index, touched, registry) {
+        commands.extend(component_updates(&after, registry, &component));
         issues.extend(component.issues);
     }
     Ok(InferencePlan { commands, issues })
@@ -82,9 +75,8 @@ pub fn apply_inferred(
     document: &mut GraphDocument,
     edit: impl IntoIterator<Item = DocCommand>,
     registry: &RegistrySnapshot,
-    overlays: &NodeOverlays,
 ) -> Result<InferredCommit, TxError> {
-    let plan = plan_edit(document, edit, registry, overlays)?;
+    let plan = plan_edit(document, edit, registry)?;
     let committed = document.apply(plan.commands)?;
     Ok(InferredCommit {
         committed,
@@ -135,18 +127,14 @@ fn touched_nodes(
 fn component_updates(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
-    overlays: &NodeOverlays,
     component: &ComponentInference,
-) -> Result<Vec<DocCommand>, TxError> {
+) -> Vec<DocCommand> {
     let mut commands = Vec::new();
     for &id in &component.nodes {
         let Some(node) = document.node(id) else {
             continue;
         };
-        let template = overlays
-            .get_for_node(registry, document, node)
-            .map_err(|stale| TxError::StaleNodeTemplate { node: stale.node })?;
-        let Some(template) = template else {
+        let Ok(Some(template)) = registry.contract(document, node) else {
             continue;
         };
         let args = component.type_args.get(&id).cloned().unwrap_or_default();
@@ -168,5 +156,5 @@ fn component_updates(
             commands.push(DocCommand::SetSignature { node: id, key });
         }
     }
-    Ok(commands)
+    commands
 }

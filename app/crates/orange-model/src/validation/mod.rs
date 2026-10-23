@@ -16,7 +16,7 @@ mod diagnostic;
 mod functions;
 mod inputs;
 mod nodes;
-mod ports;
+pub(crate) mod ports;
 mod variables;
 
 pub use diagnostic::{

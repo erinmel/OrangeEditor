@@ -2,7 +2,7 @@
 
 mod common;
 
-use common::generic::{add, data_edge, document, no_overlays, registry, source, typed_source};
+use common::generic::{add, data_edge, document, registry, source, typed_source};
 use common::{body, content, eid, function, function_id, nid, saved};
 use orange_model::document::{Edge, NodeInstance};
 use orange_model::inference::{InferenceIssue, apply_inferred, plan_edit};
@@ -26,7 +26,7 @@ fn commit(
     document: &mut GraphDocument,
     edit: Vec<DocCommand>,
 ) -> Result<Vec<InferenceIssue>, TxError> {
-    apply_inferred(document, edit, &registry(None), &no_overlays()).map(|done| done.issues)
+    apply_inferred(document, edit, &registry(None)).map(|done| done.issues)
 }
 
 fn type_arg(document: &GraphDocument, n: u8) -> Option<String> {
@@ -76,7 +76,6 @@ fn reusing_an_edge_id_reinfers_old_and_new_endpoints_and_is_undoable() {
                 connect(data_edge(1, (2, "value"), (target, "a"))),
             ],
             &registry(None),
-            &no_overlays(),
         )
         .unwrap();
         assert!(done.committed.change_set.edges.changed.contains(&eid(1)));
@@ -130,7 +129,6 @@ fn one_undo_restores_the_prior_state_and_redo_the_accepted_result() {
         &mut doc,
         vec![connect(data_edge(1, (1, "value"), (2, "a")))],
         &registry(None),
-        &no_overlays(),
     )
     .unwrap();
     assert_eq!(doc.revision(), revision + 1);
@@ -213,7 +211,6 @@ fn unrelated_nodes_and_provider_locks_are_untouched() {
         &mut doc,
         vec![connect(data_edge(1, (1, "value"), (2, "a")))],
         &registry(None),
-        &no_overlays(),
     )
     .unwrap();
 
@@ -233,7 +230,7 @@ fn planning_reports_a_conflict_without_changing_the_document() {
     );
     let edit = vec![connect(data_edge(1, (2, "sum"), (3, "a")))];
     let (before, revision) = (content(&doc), doc.revision());
-    let plan = plan_edit(&doc, edit.clone(), &registry(None), &no_overlays()).unwrap();
+    let plan = plan_edit(&doc, edit.clone(), &registry(None)).unwrap();
     assert_eq!(codes(&plan.issues), ["E-TYPE-MISMATCH"]);
     assert_eq!((content(&doc), doc.revision()), (before, revision));
 
@@ -272,7 +269,7 @@ fn pinning_resolves_unpinning_makes_ambiguous_and_one_undo_reverts_each() {
     assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/f32@1"));
     let pinned = content(&doc);
 
-    let done = apply_inferred(&mut doc, vec![pins(None)], &registry(None), &no_overlays()).unwrap();
+    let done = apply_inferred(&mut doc, vec![pins(None)], &registry(None)).unwrap();
     assert_eq!(codes(&done.issues), ["E-TYPE-AMBIGUOUS"]);
     assert_eq!(type_arg(&doc, 2), None);
     assert_eq!(signature_types(&doc, 2), ["$T"; 3]);
@@ -320,7 +317,7 @@ fn a_replaced_function_body_is_inferred_and_one_undo_removes_it() {
         vec![source(1), add(2, json!({}))],
         vec![data_edge(1, (1, "value"), (2, "a"))],
     );
-    let done = apply_inferred(&mut doc, [upsert], &registry(None), &no_overlays()).unwrap();
+    let done = apply_inferred(&mut doc, [upsert], &registry(None)).unwrap();
     assert!(done.issues.is_empty());
     assert_eq!(
         doc.locate_node(nid(2)),

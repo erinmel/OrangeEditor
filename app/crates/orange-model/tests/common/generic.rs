@@ -12,7 +12,6 @@ use orange_model::conversion::{
     ConverterRegistry, ConverterRegistryBuilder, PackageProvider, plan_connection,
 };
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::inference::NodeOverlays;
 use orange_model::types::TypeRegistry;
 use orange_model::validation::HostOrigin;
 use orange_model::{GraphDocument, from_json};
@@ -48,11 +47,6 @@ pub fn only(types: &[&str]) -> Vec<TypeArgs> {
 
 pub fn origin() -> HostOrigin {
     HostOrigin::new("1.0.0", format!("sha256:{}", "0".repeat(64))).unwrap()
-}
-
-/// No node overlays: definitions come from the registry alone.
-pub fn no_overlays() -> NodeOverlays {
-    NodeOverlays::default()
 }
 
 /// `org.test/add<T: num>(a: T, b: T) -> sum: T` as a registry builder over `converters`,
@@ -231,7 +225,7 @@ pub fn ready_plan(
         to: port_ref(to.0, to.1),
         choice: None,
     };
-    match plan_connection(doc, registry, &no_overlays(), request, id_source(5)).unwrap() {
+    match plan_connection(doc, registry, request, id_source(5)).unwrap() {
         ConnectionOutcome::Ready(plan) => *plan,
         other => panic!("expected a plan, got {other:?}"),
     }

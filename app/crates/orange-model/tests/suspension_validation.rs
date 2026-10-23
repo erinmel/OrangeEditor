@@ -4,7 +4,6 @@ use common::registry::Facts;
 use orange_model::GraphDocument;
 use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, Suspends};
-use orange_model::inference::NodeOverlays;
 use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use serde_json::json;
 
@@ -78,7 +77,7 @@ fn validate(
             id: "impl".into(),
         },
     );
-    validate_nodes(doc, &facts.snapshot(), &NodeOverlays::default())
+    validate_nodes(doc, &facts.snapshot())
         .diagnostics
         .into_iter()
         .map(|diagnostic| diagnostic.code)

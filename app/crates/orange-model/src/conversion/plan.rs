@@ -29,9 +29,7 @@ use crate::error::{IdError, TxError};
 use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 use crate::index::DocIndex;
 use crate::inference::component::declared_port;
-use crate::inference::{
-    ComponentInference, InferenceIssue, NodeOverlays, infer_components, plan_edit,
-};
+use crate::inference::{ComponentInference, InferenceIssue, infer_components, plan_edit};
 use crate::signature::{SignatureSubstitutionError, semantic_key, try_substitute_params};
 use crate::type_term::TypeTerm;
 
@@ -92,7 +90,6 @@ impl ConnectionPlan {
 struct Preconditions {
     document_state: u64,
     registry_generation: u64,
-    overlay_generation: u64,
 }
 
 /// A request that cannot be planned at all, as opposed to one that needs a choice.
@@ -143,7 +140,6 @@ pub enum ConnectionError {
 pub fn plan_connection(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
-    overlays: &NodeOverlays,
     request: ConnectionRequest,
     mut new_id: impl FnMut() -> Uuid,
 ) -> Result<ConnectionOutcome, ConnectionError> {
@@ -163,15 +159,8 @@ pub fn plan_connection(
         });
     }
     // Validate the request before analyzing or allocating any inserted identities.
-    endpoint_type(
-        document,
-        registry,
-        overlays,
-        &from,
-        PortDirection::Output,
-        &[],
-    )?;
-    endpoint_type(document, registry, overlays, &to, PortDirection::Input, &[])?;
+    endpoint_type(document, registry, &from, PortDirection::Output, &[])?;
+    endpoint_type(document, registry, &to, PortDirection::Input, &[])?;
 
     let index = DocIndex::build(document);
     let replaced: Vec<EdgeId> = index.incoming(&to).collect();
@@ -198,13 +187,11 @@ pub fn plan_connection(
             &DocIndex::build(&selection_document),
             [from.node, to.node],
             registry,
-            overlays,
         );
         (
             endpoint_type(
                 &selection_document,
                 registry,
-                overlays,
                 &from,
                 PortDirection::Output,
                 &components,
@@ -212,7 +199,6 @@ pub fn plan_connection(
             endpoint_type(
                 &selection_document,
                 registry,
-                overlays,
                 &to,
                 PortDirection::Input,
                 &components,
@@ -269,12 +255,11 @@ pub fn plan_connection(
         }
     };
 
-    let inferred = plan_edit(document, edit, registry, overlays)?;
+    let inferred = plan_edit(document, edit, registry)?;
     if inferred.issues.iter().any(InferenceIssue::is_conflict) {
-        let already_broken =
-            infer_components(document, &index, [from.node, to.node], registry, overlays)
-                .iter()
-                .any(|component| component.issues.iter().any(InferenceIssue::is_conflict));
+        let already_broken = infer_components(document, &index, [from.node, to.node], registry)
+            .iter()
+            .any(|component| component.issues.iter().any(InferenceIssue::is_conflict));
         if !already_broken {
             let conflicts = inferred
                 .issues
@@ -292,7 +277,6 @@ pub fn plan_connection(
         preconditions: Preconditions {
             document_state: document.state_id(),
             registry_generation: registry.generation(),
-            overlay_generation: overlays.generation(),
         },
     })))
 }
@@ -338,7 +322,6 @@ fn select(
 fn endpoint_type(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
-    overlays: &NodeOverlays,
     port: &PortRef,
     direction: PortDirection,
     components: &[ComponentInference],
@@ -350,10 +333,8 @@ fn endpoint_type(
         node: port.node,
         port: port.port.clone(),
     };
-    let contract = overlays
-        .get_for_node(registry, document, node)
-        .map_err(|_| TxError::StaleNodeTemplate { node: node.id })?;
-    let declared = declared_port(document, registry, overlays, port).ok_or_else(not_data)?;
+    let contract = registry.contract(document, node).ok().flatten();
+    let declared = declared_port(document, registry, port).ok_or_else(not_data)?;
     let ty = declared
         .ty
         .as_ref()
@@ -471,8 +452,6 @@ pub enum PlanApplyError {
     StaleDocument { expected: u64, actual: u64 },
     #[error("the registry snapshot was replaced since the plan was made")]
     StaleRegistry,
-    #[error("the node overlays changed since the plan was made")]
-    StaleOverlays,
     #[error(transparent)]
     Edit(#[from] TxError),
 }
@@ -480,7 +459,7 @@ pub enum PlanApplyError {
 /// Applies `plan` as one transaction: one revision bump and one undo step covering the
 /// replaced wire, the converter, its edges and the inferred updates.
 ///
-/// The document content state, the registry snapshot and the node overlays must still be
+/// The document content state and the registry snapshot must still be
 /// the ones the plan was made against; a stale plan is rejected without changing the
 /// document, because its selection and inference results may no longer hold. A registry
 /// snapshot is immutable, so a matching generation also means the selected provider is
@@ -488,13 +467,11 @@ pub enum PlanApplyError {
 pub fn apply_connection(
     document: &mut GraphDocument,
     registry: &RegistrySnapshot,
-    overlays: &NodeOverlays,
     plan: ConnectionPlan,
 ) -> Result<Committed, PlanApplyError> {
     let Preconditions {
         document_state,
         registry_generation,
-        overlay_generation,
     } = plan.preconditions;
     if document.state_id() != document_state {
         return Err(PlanApplyError::StaleDocument {
@@ -504,9 +481,6 @@ pub fn apply_connection(
     }
     if registry.generation() != registry_generation {
         return Err(PlanApplyError::StaleRegistry);
-    }
-    if overlays.generation() != overlay_generation {
-        return Err(PlanApplyError::StaleOverlays);
     }
     Ok(document.apply(plan.commands)?)
 }
@@ -548,12 +522,11 @@ mod tests {
             preconditions: Preconditions {
                 document_state: document.state_id(),
                 registry_generation: registry.generation(),
-                overlay_generation: 0,
             },
         };
         let (revision, state) = (document.revision(), document.state_id());
 
-        let result = apply_connection(&mut document, &registry, &NodeOverlays::default(), plan);
+        let result = apply_connection(&mut document, &registry, plan);
         assert_eq!(
             result,
             Err(PlanApplyError::Edit(TxError::EdgeNotFound(missing)))

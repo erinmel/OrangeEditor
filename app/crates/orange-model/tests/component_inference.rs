@@ -10,8 +10,7 @@ use orange_model::DocIndex;
 use orange_model::catalog::{ProviderKey, RegistrySnapshot};
 use orange_model::id::NodeId;
 use orange_model::inference::{
-    ComponentInference, EquationEvidence, InferenceIssue, NodeOverlays, UnificationError,
-    infer_components,
+    ComponentInference, EquationEvidence, InferenceIssue, UnificationError, infer_components,
 };
 use orange_model::{GraphDocument, from_json};
 use proptest::prelude::*;
@@ -31,7 +30,6 @@ fn infer(
         &DocIndex::build(document),
         touched.iter().map(|&n| id(n)),
         registry,
-        &NodeOverlays::default(),
     )
 }
 

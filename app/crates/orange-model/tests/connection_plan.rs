@@ -2,9 +2,7 @@
 
 mod common;
 
-use common::generic::{
-    add, data_edge, document, no_overlays, registry, source, typed_sink, typed_source,
-};
+use common::generic::{add, data_edge, document, registry, source, typed_sink, typed_source};
 use common::{content, eid, id_source, nid, port};
 use orange_model::conversion::{
     ConnectionError, ConnectionOutcome, ConnectionPlan, ConnectionRequest, ExplicitConverterChoice,
@@ -27,13 +25,7 @@ fn plan(
     request: ConnectionRequest,
 ) -> Result<ConnectionOutcome, ConnectionError> {
     let mut ids = id_source(3);
-    orange_model::conversion::plan_connection(
-        doc,
-        &registry(None),
-        &no_overlays(),
-        request,
-        &mut ids,
-    )
+    orange_model::conversion::plan_connection(doc, &registry(None), request, &mut ids)
 }
 
 fn ready(outcome: Result<ConnectionOutcome, ConnectionError>) -> ConnectionPlan {
@@ -70,7 +62,6 @@ fn a_unique_lossless_entry_plans_a_visible_converter_with_fresh_identities() {
     let outcome = orange_model::conversion::plan_connection(
         &doc,
         &registry(None),
-        &no_overlays(),
         request((1, "value"), (3, "value")),
         || {
             calls += 1;
@@ -219,7 +210,7 @@ fn generic_endpoints_connect_directly_and_carry_their_inferred_updates() {
 
     // The plan is the edit plus `plan_edit`'s updates, nothing else.
     let edit = vec![first.clone()];
-    let expected = plan_edit(&doc, edit, &registry(None), &no_overlays()).unwrap();
+    let expected = plan_edit(&doc, edit, &registry(None)).unwrap();
     assert_eq!(plan.commands(), expected.commands.as_slice());
 }
 
@@ -254,7 +245,6 @@ fn incompatible_connections_are_refused_independently_of_cached_arguments() {
     let refused = orange_model::conversion::plan_connection(
         &doc,
         &only_i64,
-        &no_overlays(),
         request((4, "value"), (2, "a")),
         id_source(3),
     );

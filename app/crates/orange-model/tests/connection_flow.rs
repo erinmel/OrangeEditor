@@ -3,12 +3,11 @@
 mod common;
 
 use common::generic::{
-    add, document, no_overlays, package_digest, package_registry, ready_plan, typed_sink,
-    typed_source,
+    add, document, package_digest, package_registry, ready_plan, typed_sink, typed_source,
 };
 use common::{content, nid, saved};
 use orange_model::conversion::apply_connection;
-use orange_model::inference::{NodeOverlays, apply_inferred};
+use orange_model::inference::apply_inferred;
 use orange_model::type_term::TypeTerm;
 use orange_model::{DocCommand, from_json};
 use serde_json::json;
@@ -30,7 +29,7 @@ fn pinned_generic_fed_by_a_narrower_source_gets_a_persisted_converter() {
         node: nid(2),
         pins: [("T".to_owned(), "core/i64@1".parse().unwrap())].into(),
     };
-    let pinned = apply_inferred(&mut doc, [pin], &registry, &NodeOverlays::default()).unwrap();
+    let pinned = apply_inferred(&mut doc, [pin], &registry).unwrap();
     assert!(pinned.issues.is_empty());
     assert_eq!(
         doc.node(nid(2)).unwrap().type_args["T"].as_str(),
@@ -46,13 +45,13 @@ fn pinned_generic_fed_by_a_narrower_source_gets_a_persisted_converter() {
         .expect("a converter node is inserted");
     assert_eq!(converter.resolved.entry.to_string(), "core/i32-to-i64@1");
     let before_insert = content(&doc);
-    let inserted = apply_connection(&mut doc, &registry, &no_overlays(), plan).unwrap();
+    let inserted = apply_connection(&mut doc, &registry, plan).unwrap();
     let after_insert = content(&doc);
 
     // A matching wire out of the generic node needs no converter.
     let plan = ready_plan(&doc, &registry, (2, "sum"), (3, "value"));
     assert!(plan.converter.is_none());
-    let wired = apply_connection(&mut doc, &registry, &no_overlays(), plan).unwrap();
+    let wired = apply_connection(&mut doc, &registry, plan).unwrap();
     let complete = content(&doc);
 
     // Save/load keeps canonical types, the converter binding and the inferred arguments.

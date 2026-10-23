@@ -4,7 +4,6 @@ use common::registry::Facts;
 use orange_model::GraphDocument;
 use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::inference::NodeOverlays;
 use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use serde_json::json;
 
@@ -141,7 +140,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         vec![],
     );
 
-    let report = validate_nodes(&document, &facts.snapshot(), &NodeOverlays::default());
+    let report = validate_nodes(&document, &facts.snapshot());
 
     assert!(report.incomplete_nodes.contains(&SOURCE.parse().unwrap()));
     assert!(report.diagnostics.iter().any(|diagnostic| {
@@ -227,7 +226,7 @@ fn intrinsic_implicit_error_port_supplies_generic_type_evidence() {
             ports: vec![input],
         },
     );
-    let report = validate_nodes(&document, &facts.snapshot(), &NodeOverlays::default());
+    let report = validate_nodes(&document, &facts.snapshot());
     assert!(report.is_valid(), "{:?}", report.diagnostics);
     assert_eq!(
         report.resolved[&GENERIC.parse().unwrap()].ports[0]
@@ -312,7 +311,6 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         &orange_model::DocIndex::build(&document),
         [node.parse().unwrap()],
         &facts.snapshot(),
-        &NodeOverlays::default(),
     );
     assert!(components[0].issues.is_empty());
     assert_eq!(
@@ -320,7 +318,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         "core/f64@1"
     );
 
-    let report = validate_nodes(&document, &facts.snapshot(), &NodeOverlays::default());
+    let report = validate_nodes(&document, &facts.snapshot());
 
     assert_eq!(
         report
