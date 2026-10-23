@@ -26,7 +26,8 @@ use crate::edit::DeclId;
 use crate::id::{DefinitionId, PortId};
 use crate::type_term::TypeTerm;
 use crate::types::{
-    CapabilityError, CapabilityRequest, NumericOperation, TypeRegistry, TypeResolveError,
+    CapabilityError, CapabilityRequest, Constraint, NumericOperation, TypeRegistry,
+    TypeResolveError,
 };
 use crate::validation::HostOrigin;
 use crate::variable::WriteOperation;
@@ -644,19 +645,23 @@ impl RegistrySnapshot {
                     .ok_or(ContractError::UpdateOperation)?;
                 let operation =
                     WriteOperation::parse_update(token).ok_or(ContractError::UpdateOperation)?;
-                let numeric_operation = match operation {
-                    WriteOperation::Add => NumericOperation::Add,
-                    WriteOperation::Sub => NumericOperation::Subtract,
+                let capability = match operation {
+                    WriteOperation::Add => {
+                        CapabilityRequest::NumericOperation(NumericOperation::Add)
+                    }
+                    WriteOperation::Sub => {
+                        CapabilityRequest::NumericOperation(NumericOperation::Subtract)
+                    }
+                    WriteOperation::Min | WriteOperation::Max => {
+                        CapabilityRequest::Constraint(Constraint::Ord)
+                    }
                     _ => return Err(ContractError::UpdateUnsupported),
                 };
                 let term = TypeTerm::parse(&ty).map_err(|error| match error {
                     crate::error::IdError::TypeTooDeep { .. } => ContractError::TypeComplexity,
                     _ => ContractError::TypeMismatch,
                 })?;
-                match self.types.supports_term(
-                    &term,
-                    CapabilityRequest::NumericOperation(numeric_operation),
-                ) {
+                match self.types.supports_term(&term, capability) {
                     Ok(Some(_)) => {}
                     Ok(None) => return Err(ContractError::UpdateConstraint),
                     Err(CapabilityError::DerivationTooDeep { .. })

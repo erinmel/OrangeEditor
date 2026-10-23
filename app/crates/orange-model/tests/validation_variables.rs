@@ -486,6 +486,70 @@ fn update_add_sub_projects_fresh_exact_action_ports_without_mutation() {
 }
 
 #[test]
+fn update_min_max_require_ord_and_keep_the_same_contextual_ports() {
+    let cases = [
+        (1, 10, "core/i64@1", "min"),
+        (2, 11, "core/bool@1", "max"),
+        (3, 12, "core/string@1", "min"),
+        (4, 13, "core/duration@1", "max"),
+        (5, 14, "core/timestamp@1", "min"),
+    ];
+    let doc = document(
+        json!(cases.map(|(node, variable, _, operation)| update_node(
+            node,
+            json!(node_id(variable)),
+            json!(operation)
+        ))),
+        json!([
+            declaration(10, "core/i64@1", "run"),
+            declaration(11, "core/bool@1", "run"),
+            declaration(12, "core/string@1", "local"),
+            declaration(13, "core/duration@1", "run"),
+            declaration(14, "core/timestamp@1", "local")
+        ]),
+    );
+    let before = to_json(&doc).unwrap();
+    let revision = doc.revision();
+    let state_id = doc.state_id();
+    let registry = registry();
+    let resolved = validate_nodes(&doc, &registry);
+    assert!(resolved.is_valid(), "{:?}", resolved.diagnostics);
+    for (node, _, ty, _) in cases {
+        let ports = &resolved.resolved[&nid(node)].ports;
+        assert_eq!(
+            ports
+                .iter()
+                .map(|port| port.port_id.as_str())
+                .collect::<Vec<_>>(),
+            ["value", "old", "new"]
+        );
+        assert_eq!(ports[0].direction, PortDirection::Input);
+        assert_eq!(ports[0].ty.as_ref().unwrap().as_str(), ty);
+        for output in &ports[1..] {
+            assert_eq!(output.direction, PortDirection::Output);
+            assert_eq!(output.ty.as_ref().unwrap().as_str(), ty);
+            assert_eq!(output.source, Some(OutputSource::Execution));
+            assert_eq!(output.available_on.as_ref().unwrap()[0].as_str(), "then");
+        }
+    }
+    assert_eq!(to_json(&doc).unwrap(), before);
+    assert_eq!(doc.revision(), revision);
+    assert_eq!(doc.state_id(), state_id);
+
+    for ty in ["core/f32@1", "core/f64@1"] {
+        let rejected = validate(&document(
+            json!([update_node(1, json!(node_id(20)), json!("min"))]),
+            json!([declaration(20, ty, "run")]),
+        ));
+        assert_eq!(
+            rejected.diagnostics[0].code,
+            DiagnosticCode::ConstraintUnsatisfied
+        );
+        assert!(rejected.resolved.is_empty());
+    }
+}
+
+#[test]
 fn update_errors_follow_reference_scope_operation_then_type_precedence() {
     let cases = [
         ("missing", "run", None, DiagnosticCode::UpdateOperation),
@@ -508,9 +572,9 @@ fn update_errors_follow_reference_scope_operation_then_type_precedence() {
             DiagnosticCode::UpdateOperation,
         ),
         (
-            "min",
+            "append",
             "run",
-            Some(json!("min")),
+            Some(json!("append")),
             DiagnosticCode::UpdateUnsupported,
         ),
         (

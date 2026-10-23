@@ -104,6 +104,16 @@ fn builtin_variable_reads_and_writes_propagate_only_run_effects_to_callers() {
                         json!({"variable":RUN_VAR,"operation":"add"})
                     ),
                     node(
+                        "20000000-0000-4000-8000-000000000006",
+                        "core/update-variable",
+                        json!({"variable":RUN_VAR,"operation":"min"})
+                    ),
+                    node(
+                        "20000000-0000-4000-8000-000000000007",
+                        "core/update-variable",
+                        json!({"variable":RUN_VAR,"operation":"max"})
+                    ),
+                    node(
                         "20000000-0000-4000-8000-000000000005",
                         "core/update-variable",
                         json!({"variable":LOCAL_VAR,"operation":"add"})
@@ -126,7 +136,9 @@ fn builtin_variable_reads_and_writes_propagate_only_run_effects_to_callers() {
         report.summaries[&caller].run_writes[&run],
         [
             orange_model::validation::WriteOperation::Set,
-            orange_model::validation::WriteOperation::Add
+            orange_model::validation::WriteOperation::Add,
+            orange_model::validation::WriteOperation::Min,
+            orange_model::validation::WriteOperation::Max
         ]
         .into()
     );
@@ -240,8 +252,9 @@ fn unsupported_reserved_pure_zone_metadata_stays_incomplete() {
 #[test]
 fn invalid_contextual_update_keeps_function_summary_incomplete() {
     for (operation, ty, code) in [
-        ("min", "core/i64@1", DiagnosticCode::UpdateUnsupported),
+        ("append", "core/i64@1", DiagnosticCode::UpdateUnsupported),
         ("add", "core/bool@1", DiagnosticCode::ConstraintUnsatisfied),
+        ("min", "core/f64@1", DiagnosticCode::ConstraintUnsatisfied),
     ] {
         let mut declaration = variable(RUN_VAR, "run");
         declaration["type"] = json!(ty);

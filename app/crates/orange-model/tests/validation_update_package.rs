@@ -28,6 +28,13 @@ const VER: &str = "1.0.0";
 const DIGEST: &str = "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 const VARIABLE: &str = "30000000-0000-4000-8000-000000000001";
 
+#[derive(Clone, Copy)]
+enum CapabilityMode {
+    Add,
+    Num,
+    Ord,
+}
+
 fn origin() -> HostOrigin {
     HostOrigin::new("0.1.0", format!("sha256:{}", "a".repeat(64))).unwrap()
 }
@@ -45,37 +52,44 @@ fn implementation(id: &str) -> ConstraintImplementationRef {
     }
 }
 
-fn type_registry(with_num: bool) -> Arc<orange_model::types::TypeRegistry> {
+fn type_registry(mode: CapabilityMode) -> Arc<orange_model::types::TypeRegistry> {
     let ty = "org.test/money@1".parse().unwrap();
     let term = orange_model::type_term::TypeTerm::parse(&ty).unwrap();
     let mut builder = TypeRegistryBuilder::core();
     builder
         .register_record(PKG, &ty, RecordSchema { fields: vec![] })
         .unwrap();
-    if with_num {
-        builder
+    match mode {
+        CapabilityMode::Num => builder
             .register_constraint_implementation(
                 PKG,
                 &term,
                 ConstraintId::Core(Constraint::Num),
                 implementation("num-only"),
             )
-            .unwrap();
-    } else {
-        builder
+            .unwrap(),
+        CapabilityMode::Ord => builder
+            .register_constraint_implementation(
+                PKG,
+                &term,
+                ConstraintId::Core(Constraint::Ord),
+                implementation("money-ord-v1"),
+            )
+            .unwrap(),
+        CapabilityMode::Add => builder
             .register_numeric_operation_implementation(
                 PKG,
                 &term,
                 NumericOperation::Add,
                 implementation("money-add-v1"),
             )
-            .unwrap();
+            .unwrap(),
     }
     Arc::new(builder.build().unwrap())
 }
 
-fn registry(with_num: bool, package_shape: bool) -> Arc<RegistrySnapshot> {
-    let mut builder = RegistryBuilder::core(origin()).types(type_registry(with_num));
+fn registry(mode: CapabilityMode, package_shape: bool) -> Arc<RegistrySnapshot> {
+    let mut builder = RegistryBuilder::core(origin()).types(type_registry(mode));
     if package_shape {
         let definition = DefinitionRef {
             id: "org.test/update-money".parse().unwrap(),
@@ -162,7 +176,7 @@ fn package_node(operation: &str) -> Value {
 
 #[test]
 fn core_update_requires_the_exact_package_operation_witness() {
-    let registry = registry(false, false);
+    let registry = registry(CapabilityMode::Add, false);
     let doc = document(json!([variable_node("add")]), "org.test/money@1");
     let report = validate_nodes(&doc, &registry);
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
@@ -190,7 +204,7 @@ fn core_update_requires_the_exact_package_operation_witness() {
         DiagnosticCode::ConstraintUnsatisfied
     );
 
-    let unsupported = document(json!([variable_node("min")]), "org.test/money@1");
+    let unsupported = document(json!([variable_node("append")]), "org.test/money@1");
     let report = validate_nodes(&unsupported, &registry);
     assert_eq!(report.diagnostics.len(), 1);
     assert_eq!(
@@ -200,31 +214,54 @@ fn core_update_requires_the_exact_package_operation_witness() {
 }
 
 #[test]
-fn broad_num_membership_does_not_authorize_update_add() {
-    let registry = registry(true, false);
-    let doc = document(json!([variable_node("add")]), "org.test/money@1");
-    assert!(
-        registry
-            .types()
-            .supports_term(
-                &orange_model::type_term::TypeTerm::parse(&"org.test/money@1".parse().unwrap(),)
-                    .unwrap(),
-                CapabilityRequest::Constraint(Constraint::Num),
-            )
-            .unwrap()
-            .is_some()
-    );
-    let report = validate_nodes(&doc, &registry);
-    assert_eq!(report.diagnostics.len(), 1);
+fn update_min_max_require_and_accept_exact_package_ord_evidence() {
+    let registry = registry(CapabilityMode::Ord, false);
+    let ty =
+        orange_model::type_term::TypeTerm::parse(&"org.test/money@1".parse().unwrap()).unwrap();
+    let witness = registry
+        .types()
+        .supports_term(&ty, CapabilityRequest::Constraint(Constraint::Ord))
+        .unwrap()
+        .unwrap();
     assert_eq!(
-        report.diagnostics[0].code,
-        DiagnosticCode::ConstraintUnsatisfied
+        witness.evidence,
+        CapabilityEvidence::PackageImplementation(implementation("money-ord-v1"))
     );
+    assert_eq!(witness.term, ty);
+
+    for operation in ["min", "max"] {
+        let doc = document(json!([variable_node(operation)]), "org.test/money@1");
+        let report = validate_nodes(&doc, &registry);
+        assert!(
+            report.diagnostics.is_empty(),
+            "{operation}: {:?}",
+            report.diagnostics
+        );
+        assert!(report.resolved.contains_key(&node_id(1).parse().unwrap()));
+    }
+}
+
+#[test]
+fn broad_or_unrelated_evidence_does_not_authorize_update_operations() {
+    for (mode, operation) in [
+        (CapabilityMode::Num, "add"),
+        (CapabilityMode::Num, "min"),
+        (CapabilityMode::Add, "min"),
+    ] {
+        let registry = registry(mode, false);
+        let doc = document(json!([variable_node(operation)]), "org.test/money@1");
+        let report = validate_nodes(&doc, &registry);
+        assert_eq!(report.diagnostics.len(), 1);
+        assert_eq!(
+            report.diagnostics[0].code,
+            DiagnosticCode::ConstraintUnsatisfied
+        );
+    }
 }
 
 #[test]
 fn package_update_shape_projects_ports_without_claiming_core_effects() {
-    let registry = registry(false, true);
+    let registry = registry(CapabilityMode::Add, true);
     let mut node = package_node("add");
     node["inputs"] = json!({"value":{"type":"org.test/money@1","value":{}}});
     let doc = document(json!([node]), "org.test/money@1");
@@ -255,7 +292,7 @@ fn package_update_shape_projects_ports_without_claiming_core_effects() {
 
 #[test]
 fn package_update_shape_does_not_supply_function_leaf_effects() {
-    let registry = registry(false, true);
+    let registry = registry(CapabilityMode::Add, true);
     let node = package_node("add");
     let signature = package_signature();
     let signature_key = orange_model::signature::semantic_key(&signature);
