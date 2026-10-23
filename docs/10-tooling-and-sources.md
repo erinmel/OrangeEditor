@@ -662,3 +662,18 @@ Inference instantiates each call independently in its node scope and shares repe
 Root orchestrated separate catalog and inference developers plus independent read-only review, integrated validation/error mappings and public exports, and updated FR-45, contracts and ADR-15/16 clarification. Review rejected silently clearing provenance from malformed input declarations; root corrected that rule and the positive fixture's optional/constraint metadata. Root added nested/output-only inference, conflict, pure-plan and unrelated-call preservation checks. Initial developer test fixtures needed typed signature/config values and state-correct undo expectations; they were corrected before acceptance. Final root focused suites passed catalog interface6, call inference7, validation calls3 and combined report15. Existing persistence18 and component inference9 also passed.
 
 `cargo test --workspace --locked --offline` passed 427 tests including compile-fail. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked --offline -- -D warnings`, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --offline`, `node tools/check-cargo-metadata.mjs` and `git diff --check` passed. Ignored logs include call-target-loss-repro.log (expected failing pre-fix regression), call-inference-root-final.log, call-focused-final.log, call-workspace.log, call-clippy.log and call-doc.log. Rust 1.99.1 (58cf8f9c3), Cargo 1.99.1, Windows x86_64 MSVC, default features; unchanged Cargo.lock SHA-256 39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4. Existing incremental hard-link warnings fell back to copying. Normal validation coverage remains six categories with nine missing; no ContextualContracts completion, accepted executable calls, body/return conformance, compiler/runtime, native/other-OS/MSRV, UI, performance or NFR gate is claimed.
+
+### Edit cost by document size (2026-10-23)
+
+`plan_edit` cloned the document and rebuilt `DocIndex` per edit. `apply_inferred_indexed` now plans by applying the edit to the live document, reading the result and undoing it, and updates a caller-kept index; the registry returns declared contracts by borrow and looks definitions up without cloning ids. `apply_inferred` and `plan_edit` keep their results but still build an index per call.
+
+Measured once with `cargo test --release -p orange-model --test perf_edit_baseline -- --ignored --nocapture` (ignored test, best of 5, chain of `org.test/add` nodes, one `Connect`; Windows x86_64, Rust 1.99.1). This is not NFR-15 qualification.
+
+| Case (10,000 nodes) | Before | After |
+|---|---|---|
+| `apply_inferred`, edit joins a small isolated component | 16.6 ms | 9.5 ms (index build) |
+| `apply_inferred_indexed`, same edit | n/a | 0.10 ms |
+| `apply_inferred` / `_indexed`, edit extends the 10,000-node component | 305 ms | 196 / 186 ms |
+| `validate` | 220 ms | 119 ms |
+
+At 1,000 nodes the isolated edit is 0.04 ms indexed. An edit that touches a 10,000-node generic component still re-solves the whole component; incremental solving and the O(document) declaration-consumer scan remain open, so NFR-15 is not met for such edits.
