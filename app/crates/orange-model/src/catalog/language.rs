@@ -1,11 +1,73 @@
-//! The language rules the host owns (11 §3, §8.4, §11, §14): every intrinsic ID and the
-//! fixed facts about it. Packages can neither add nor replace these (11 §16). Whether this
-//! core version registers an intrinsic's contract is separate; see `intrinsic_definitions`.
+//! The language rules the host owns (11 §3, §4.1, §8.4, §11, §14): every intrinsic ID with
+//! the fixed facts about it, and the implicit ports each kind gets. Packages can neither add
+//! nor replace these (11 §16). Whether this core version registers an intrinsic's contract
+//! is separate; see `intrinsic_definitions`.
 
 use std::sync::LazyLock;
 
 use super::{ReferenceField, ReferenceKind};
-use crate::document::{NodeKind, Suspends};
+use crate::document::{NodeKind, OutputSource, PortDescriptor, SignatureSnapshot, Suspends};
+use crate::id::PortId;
+
+/// Port IDs that kinds supply implicitly (11 §4.1); only intrinsics may declare them.
+pub(crate) const IMPLICIT_PORTS: [&str; 7] = [
+    "in",
+    "then",
+    "failed",
+    "error",
+    "cancelled",
+    "body",
+    "completed",
+];
+
+/// Ports a node of `kind` gets without declaring them (11 §4.1). Declared exec outputs
+/// (outcome outs) replace `then`.
+pub(crate) fn implicit_ports(kind: NodeKind, has_outcomes: bool) -> Vec<&'static str> {
+    use NodeKind::*;
+    let mut ports = Vec::new();
+    if matches!(kind, Action | Async | Iterator) {
+        ports.extend(["in", "failed", "error"]);
+    }
+    if matches!(kind, Action | Async | Entry) && !has_outcomes {
+        ports.push("then");
+    }
+    if matches!(kind, Async | Iterator) {
+        ports.push("cancelled");
+    }
+    if kind == Iterator {
+        ports.extend(["body", "completed"]);
+    }
+    ports
+}
+
+/// The implicit port `id` of a node of `definition` with these ports, if it has one: the
+/// kind's (11 §4.1), except that a terminator has no `then` (11 §8.3).
+pub(crate) fn implicit_port(
+    definition: &str,
+    snapshot: &SignatureSnapshot,
+    id: &PortId,
+) -> Option<PortDescriptor> {
+    let name = id.as_str();
+    let terminator = intrinsic(definition).is_some_and(|rule| rule.terminator);
+    if (terminator && name == "then") || !snapshot.declares_port(id) {
+        return None;
+    }
+    Some(match name {
+        "in" => PortDescriptor::exec_in(name),
+        "failed" | "cancelled" | "then" | "body" | "completed" => PortDescriptor::exec_out(name),
+        "error" => PortDescriptor {
+            available_on: Some(vec!["failed".parse().expect("port id is valid")]),
+            ..PortDescriptor::data_out(
+                name,
+                "core/error@1"
+                    .parse()
+                    .expect("intrinsic type expression is valid"),
+                OutputSource::Execution,
+            )
+        },
+        _ => return None,
+    })
+}
 
 /// One language intrinsic.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -169,6 +231,36 @@ mod tests {
                 "{id}"
             );
         }
+    }
+
+    fn action(ports: Vec<PortDescriptor>) -> SignatureSnapshot {
+        SignatureSnapshot {
+            kind: NodeKind::Action,
+            suspends: None,
+            ports,
+            extensions: Default::default(),
+        }
+    }
+
+    #[test]
+    fn implicit_ports_come_from_the_kind_except_a_terminator_then() {
+        let then: PortId = "then".parse().unwrap();
+        let error = implicit_port("acme/act", &action(vec![]), &"error".parse().unwrap())
+            .expect("an action has an error output");
+        assert_eq!(error.ty.unwrap().as_str(), "core/error@1");
+        assert!(implicit_port("acme/act", &action(vec![]), &then).is_some());
+        let outcome = vec![PortDescriptor::exec_out("done")];
+        assert!(implicit_port("acme/act", &action(outcome), &then).is_none());
+        let exec_in = vec![PortDescriptor::exec_in("in")];
+        assert!(implicit_port("core/break", &action(exec_in), &then).is_none());
+        for kind in [NodeKind::Pure, NodeKind::Volatile] {
+            assert!(implicit_ports(kind, false).is_empty());
+        }
+        assert!(
+            implicit_ports(NodeKind::Iterator, false)
+                .iter()
+                .all(|id| IMPLICIT_PORTS.contains(id))
+        );
     }
 
     #[test]

@@ -4,9 +4,9 @@ use std::collections::BTreeMap;
 
 use thiserror::Error;
 
-use crate::catalog::{intrinsic, is_intrinsic};
-use crate::document::{GraphDocument, OutputSource, PortDescriptor, PortRef, SignatureSnapshot};
-use crate::id::{NodeId, PortId};
+use crate::catalog::{implicit_port, is_intrinsic};
+use crate::document::{GraphDocument, PortDescriptor, PortRef, SignatureSnapshot};
+use crate::id::NodeId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum PortLookupError {
@@ -43,13 +43,6 @@ pub(crate) fn lookup_port(
             .ok_or(PortLookupError::MissingMetadata)?,
     };
 
-    // A terminator (Break, Continue) ends its region, so it has no `then` outcome.
-    if port.port.port().as_str() == "then"
-        && intrinsic(definition).is_some_and(|rule| rule.terminator)
-    {
-        return Err(PortLookupError::UnknownPort);
-    }
-
     if let Some(index) = port.port.instance() {
         let state = node
             .variadic
@@ -84,30 +77,7 @@ pub(crate) fn lookup_port(
     {
         return Ok(declared.clone());
     }
-    implicit_port(snapshot, port.port.port()).ok_or(PortLookupError::UnknownPort)
-}
-
-pub(crate) fn implicit_port(snapshot: &SignatureSnapshot, id: &PortId) -> Option<PortDescriptor> {
-    if !snapshot.declares_port(id) {
-        return None;
-    }
-    let name = id.as_str();
-    let port = match name {
-        "in" => PortDescriptor::exec_in(name),
-        "failed" | "cancelled" | "then" | "body" | "completed" => PortDescriptor::exec_out(name),
-        "error" => PortDescriptor {
-            available_on: Some(vec!["failed".parse().expect("port id is valid")]),
-            ..PortDescriptor::data_out(
-                name,
-                "core/error@1"
-                    .parse()
-                    .expect("intrinsic type expression is valid"),
-                OutputSource::Execution,
-            )
-        },
-        _ => return None,
-    };
-    Some(port)
+    implicit_port(definition, snapshot, port.port.port()).ok_or(PortLookupError::UnknownPort)
 }
 
 #[cfg(test)]

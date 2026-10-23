@@ -224,25 +224,11 @@ impl SignatureSnapshot {
     /// Ports a kind gets without declaring them (11 §4.1). Declared exec outputs (outcome
     /// outs) replace `then`.
     pub fn implicit_ports(&self) -> Vec<&'static str> {
-        use NodeKind::*;
         let has_outcomes = self
             .ports
             .iter()
             .any(|port| port.direction == PortDirection::Output && port.kind == PortKind::Exec);
-        let mut ports = Vec::new();
-        if matches!(self.kind, Action | Async | Iterator) {
-            ports.extend(["in", "failed", "error"]);
-        }
-        if matches!(self.kind, Action | Async | Entry) && !has_outcomes {
-            ports.push("then");
-        }
-        if matches!(self.kind, Async | Iterator) {
-            ports.push("cancelled");
-        }
-        if self.kind == Iterator {
-            ports.extend(["body", "completed"]);
-        }
-        ports
+        crate::catalog::implicit_ports(self.kind, has_outcomes)
     }
 }
 

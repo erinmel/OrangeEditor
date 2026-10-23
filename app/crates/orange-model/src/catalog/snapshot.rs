@@ -7,7 +7,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::intrinsics::intrinsic_definitions;
-use super::language::intrinsic_reference;
+use super::language::{IMPLICIT_PORTS, intrinsic_reference};
 use super::{
     ContractError, NodeContract, NodeDefinition, Ports, ProviderDescriptor, ProviderKey,
     ReferenceError, ReferenceField, ReferenceKind, TypeArgs, VariableAccess,
@@ -23,17 +23,6 @@ use crate::id::{DefinitionId, PortId};
 use crate::type_term::TypeTerm;
 use crate::types::TypeRegistry;
 use crate::validation::HostOrigin;
-
-/// Implicit exec ports of 11 §4.1; only intrinsics may declare them.
-const RESERVED_PORTS: [&str; 7] = [
-    "in",
-    "then",
-    "failed",
-    "error",
-    "cancelled",
-    "body",
-    "completed",
-];
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RegistryError {
@@ -242,7 +231,7 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
                 port: port.port_id.clone(),
             });
         }
-        if !intrinsic && RESERVED_PORTS.contains(&name) {
+        if !intrinsic && IMPLICIT_PORTS.contains(&name) {
             return Err(RegistryError::ReservedPort {
                 definition: id.clone(),
                 port: port.port_id.clone(),

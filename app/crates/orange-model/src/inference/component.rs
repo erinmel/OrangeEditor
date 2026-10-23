@@ -18,7 +18,7 @@ use super::unify::{
     TypeScopeError, TypeVariable, UnificationError, unify,
 };
 use crate::GraphDocument;
-use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs};
+use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs, implicit_port};
 use crate::document::{
     GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, SignatureSnapshot, TypeParam,
     TypeParamName,
@@ -31,7 +31,6 @@ use crate::types::{
     CapabilityError, CapabilityRequest, Constraint, PackageConstraintId, TypeRegistry,
     TypeResolveError,
 };
-use crate::validation::ports::implicit_port;
 
 /// A typed inference outcome, mapped to its 11 §17 code by [`InferenceIssue::code`].
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -423,7 +422,7 @@ pub(crate) fn declared_port(
         .iter()
         .find(|declared| declared.port_id == *port.port.port())
         .cloned()
-        .or_else(|| implicit_port(&snapshot, port.port.port()))
+        .or_else(|| implicit_port(node.definition.id.as_str(), &snapshot, port.port.port()))
 }
 
 fn evidence(evidence: EquationEvidence) -> EquationContext {
