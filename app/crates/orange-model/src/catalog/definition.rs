@@ -49,6 +49,8 @@ pub enum VariableAccess {
     Read,
     Write,
     Update,
+    WriteShared,
+    UpdateShared,
 }
 
 /// Where a definition's ports come from.
@@ -57,7 +59,8 @@ pub enum Ports {
     /// Fixed ports; data port types may mention `$name` parameters.
     Declared(Vec<PortDescriptor>),
     /// Variable-derived ports: Read has a `value` output, Write has a `value`
-    /// input, and Update has a `value` input plus `old`/`new` outputs.
+    /// input, and Update has a `value` input plus `old`/`new` outputs. Shared writes
+    /// use the async shared-variable contracts.
     Variable(VariableAccess),
 }
 
@@ -108,12 +111,14 @@ impl ReferenceField {
 pub enum ContractError {
     #[error("the referenced variable is missing or not declared")]
     VariableUnknown,
-    #[error("a workspace variable cannot be written from a graph")]
+    #[error("synchronous variable writes cannot target workspace scope")]
     VariableScope,
     #[error("variable update operation is missing, malformed or unknown")]
     UpdateOperation,
     #[error("variable update operation is recognized but not supported by this contract")]
     UpdateUnsupported,
+    #[error("shared variable writes require a workspace variable")]
+    SharedVariableScope,
     #[error("variable type has no exact proof for the requested update operation")]
     UpdateConstraint,
     #[error("variable type cannot be resolved")]

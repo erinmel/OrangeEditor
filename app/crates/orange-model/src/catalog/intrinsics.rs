@@ -33,10 +33,15 @@ fn definition(
 }
 
 /// A variable node: its single `value` port is typed by the referenced declaration.
-fn variable_definition(id: &str, kind: NodeKind, access: VariableAccess) -> NodeDefinition {
+fn variable_definition(
+    id: &str,
+    kind: NodeKind,
+    suspends: Option<Suspends>,
+    access: VariableAccess,
+) -> NodeDefinition {
     NodeDefinition {
         ports: Ports::Variable(access),
-        ..definition(id, kind, Some(Suspends::Never), Vec::new())
+        ..definition(id, kind, suspends, Vec::new())
     }
 }
 
@@ -108,9 +113,32 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
         variable_definition(
             "core/get-variable",
             NodeKind::Volatile,
+            Some(Suspends::Never),
             VariableAccess::Read,
         ),
-        variable_definition("core/set-variable", Action, VariableAccess::Write),
-        variable_definition("core/update-variable", Action, VariableAccess::Update),
+        variable_definition(
+            "core/set-variable",
+            Action,
+            Some(Suspends::Never),
+            VariableAccess::Write,
+        ),
+        variable_definition(
+            "core/update-variable",
+            Action,
+            Some(Suspends::Never),
+            VariableAccess::Update,
+        ),
+        variable_definition(
+            "core/set-shared",
+            Async,
+            Some(Suspends::Maybe),
+            VariableAccess::WriteShared,
+        ),
+        variable_definition(
+            "core/update-shared",
+            Async,
+            Some(Suspends::Maybe),
+            VariableAccess::UpdateShared,
+        ),
     ]
 }

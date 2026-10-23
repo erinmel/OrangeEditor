@@ -5,7 +5,7 @@
 
 use std::sync::LazyLock;
 
-use super::{ReferenceField, ReferenceKind};
+use super::{ReferenceField, ReferenceKind, VariableAccess};
 use crate::document::{NodeKind, OutputSource, PortDescriptor, SignatureSnapshot, Suspends};
 use crate::id::PortId;
 
@@ -78,6 +78,8 @@ pub(crate) struct Intrinsic {
     pub(crate) summary: Option<(NodeKind, Suspends)>,
     /// Kind of the graph declaration its config names, in the standard field.
     pub(crate) reference: Option<ReferenceKind>,
+    /// How this exact variable intrinsic derives its declaration-owned ports.
+    pub(crate) variable_access: Option<VariableAccess>,
     /// Ends its region instead of continuing through `then` (11 §8.3).
     pub(crate) terminator: bool,
 }
@@ -91,7 +93,19 @@ const fn rule(
         id,
         summary,
         reference,
+        variable_access: None,
         terminator: false,
+    }
+}
+
+const fn variable_rule(
+    id: &'static str,
+    summary: Option<(NodeKind, Suspends)>,
+    access: VariableAccess,
+) -> Intrinsic {
+    Intrinsic {
+        variable_access: Some(access),
+        ..rule(id, summary, VARIABLE)
     }
 }
 
@@ -117,11 +131,19 @@ const INTRINSICS: [Intrinsic; 41] = [
     rule("core/function-entry", None, None),
     rule("core/function-outputs", None, None),
     rule("core/return", None, None),
-    rule("core/get-variable", VOLATILE, VARIABLE),
-    rule("core/set-variable", ACTION, VARIABLE),
-    rule("core/update-variable", ACTION, VARIABLE),
-    rule("core/set-shared", None, VARIABLE),
-    rule("core/update-shared", None, VARIABLE),
+    variable_rule("core/get-variable", VOLATILE, VariableAccess::Read),
+    variable_rule("core/set-variable", ACTION, VariableAccess::Write),
+    variable_rule("core/update-variable", ACTION, VariableAccess::Update),
+    variable_rule(
+        "core/set-shared",
+        Some((NodeKind::Async, Suspends::Maybe)),
+        VariableAccess::WriteShared,
+    ),
+    variable_rule(
+        "core/update-shared",
+        Some((NodeKind::Async, Suspends::Maybe)),
+        VariableAccess::UpdateShared,
+    ),
     rule("core/on-event", None, EVENT),
     rule("core/emit", None, EVENT),
     rule("core/branch", ACTION, None),
@@ -237,6 +259,11 @@ mod tests {
                     .collect::<Vec<_>>(),
                 "{id}"
             );
+            let variable_access = match definition.ports {
+                crate::catalog::Ports::Variable(access) => Some(access),
+                crate::catalog::Ports::Declared(_) => None,
+            };
+            assert_eq!(rule.variable_access, variable_access, "{id}");
         }
     }
 

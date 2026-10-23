@@ -12,8 +12,8 @@
 //! content, revision or state identity, and none loads package code; the host supplies the
 //! immutable catalogue origin.
 //!
-//! The individual passes stay public for hosts that run them separately. Contextual Get/Set
-//! ports are declaration-owned. Call/Update ports, regions, data/control cycles and
+//! The individual passes stay public for hosts that run them separately. Contextual variable
+//! and shared-write ports are declaration-owned. Call/interface ports, regions, data/control cycles and
 //! availability remain later slices, and a valid report is not compile approval.
 
 mod connections;

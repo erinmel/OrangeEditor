@@ -143,6 +143,11 @@ pub enum RegistryError {
         definition: DefinitionId,
         kind: NodeKind,
     },
+    #[error("shared variable definition `{definition}` must have kind Async, found {kind:?}")]
+    SharedVariableKind {
+        definition: DefinitionId,
+        kind: NodeKind,
+    },
     #[error("provider `{}/{}` names unknown definition `{}@{}`", .provider.package, .provider.id, .definition.id, .definition.version)]
     UnknownDefinition {
         provider: Box<ProviderKey>,
@@ -280,6 +285,16 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         && definition.kind != NodeKind::Action
     {
         return Err(RegistryError::VariableUpdateKind {
+            definition: id.clone(),
+            kind: definition.kind,
+        });
+    }
+    if matches!(
+        &definition.ports,
+        Ports::Variable(VariableAccess::WriteShared | VariableAccess::UpdateShared)
+    ) && definition.kind != NodeKind::Async
+    {
+        return Err(RegistryError::SharedVariableKind {
             definition: id.clone(),
             kind: definition.kind,
         });
@@ -682,16 +697,26 @@ impl RegistrySnapshot {
             .variables()
             .get(&id)
             .ok_or(ContractError::VariableUnknown)?;
-        if access != VariableAccess::Read && declaration.scope == VarScope::Workspace {
-            return Err(ContractError::VariableScope);
+        match (access, declaration.scope) {
+            (VariableAccess::Write | VariableAccess::Update, VarScope::Workspace) => {
+                return Err(ContractError::VariableScope);
+            }
+            (VariableAccess::WriteShared | VariableAccess::UpdateShared, scope)
+                if scope != VarScope::Workspace =>
+            {
+                return Err(ContractError::SharedVariableScope);
+            }
+            _ => {}
         }
         let ty = declaration.ty.clone();
         Ok(match access {
             VariableAccess::Read => {
                 vec![PortDescriptor::data_out("value", ty, OutputSource::State)]
             }
-            VariableAccess::Write => vec![PortDescriptor::data_in("value", ty)],
-            VariableAccess::Update => {
+            VariableAccess::Write | VariableAccess::WriteShared => {
+                vec![PortDescriptor::data_in("value", ty)]
+            }
+            VariableAccess::Update | VariableAccess::UpdateShared => {
                 let token = node
                     .config
                     .get("operation")

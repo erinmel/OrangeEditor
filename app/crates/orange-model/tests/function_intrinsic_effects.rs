@@ -228,6 +228,157 @@ fn workspace_sync_write_is_incomplete_instead_of_becoming_a_run_effect() {
 }
 
 #[test]
+fn workspace_shared_writes_make_transitive_async_summaries_without_run_effects() {
+    let doc = document(
+        json!([variable(WORKSPACE_VAR, "workspace")]),
+        json!([
+            function(
+                CALLER,
+                "async",
+                json!([node(CALL_NODE, "core/call", json!({"function":CALLEE}))])
+            ),
+            function(
+                CALLEE,
+                "async",
+                json!([
+                    node(
+                        SET_NODE,
+                        "core/set-shared",
+                        json!({"variable":WORKSPACE_VAR})
+                    ),
+                    node(
+                        UPDATE_NODE,
+                        "core/update-shared",
+                        json!({"variable":WORKSPACE_VAR,"operation":"add"})
+                    )
+                ])
+            )
+        ]),
+    );
+    let run: orange_model::id::VariableId = RUN_VAR.parse().unwrap();
+    let forged_effects = BTreeMap::from([
+        (
+            SET_NODE.parse().unwrap(),
+            orange_model::validation::LeafEffects::Known(vec![
+                orange_model::validation::VariableWrite {
+                    variable: run,
+                    operation: orange_model::validation::WriteOperation::Set,
+                },
+            ]),
+        ),
+        (
+            UPDATE_NODE.parse().unwrap(),
+            orange_model::validation::LeafEffects::Known(vec![
+                orange_model::validation::VariableWrite {
+                    variable: run,
+                    operation: orange_model::validation::WriteOperation::Add,
+                },
+            ]),
+        ),
+    ]);
+    let forged_signatures = BTreeMap::from([
+        (
+            SET_NODE.parse().unwrap(),
+            serde_json::from_value(json!({"kind":"pure","ports":[]})).unwrap(),
+        ),
+        (
+            UPDATE_NODE.parse().unwrap(),
+            serde_json::from_value(json!({"kind":"pure","ports":[]})).unwrap(),
+        ),
+    ]);
+    let evidence = FunctionEvidence::new(&doc, forged_signatures, forged_effects);
+    let report = analyze_functions(&doc, &evidence, &registry());
+    let caller: FunctionId = CALLER.parse().unwrap();
+    let callee: FunctionId = CALLEE.parse().unwrap();
+
+    for function in [caller, callee] {
+        assert!(!report.incomplete_functions.contains(&function));
+        assert_eq!(
+            report.summaries[&function].kind,
+            orange_model::document::NodeKind::Async
+        );
+        assert_eq!(
+            report.summaries[&function].suspends,
+            orange_model::document::Suspends::Maybe
+        );
+        assert!(report.summaries[&function].run_writes.is_empty());
+    }
+}
+
+#[test]
+fn shared_write_contract_errors_keep_functions_incomplete() {
+    let cases = [
+        (
+            variable(RUN_VAR, "run"),
+            "core/set-shared",
+            json!({"variable":RUN_VAR}),
+            DiagnosticCode::SharedVariableScope,
+        ),
+        (
+            {
+                let mut value = variable(WORKSPACE_VAR, "workspace");
+                value["type"] = json!("core/bool@1");
+                value
+            },
+            "core/update-shared",
+            json!({"variable":WORKSPACE_VAR,"operation":"invented"}),
+            DiagnosticCode::UpdateOperation,
+        ),
+        (
+            {
+                let mut value = variable(WORKSPACE_VAR, "workspace");
+                value["type"] = json!("core/bool@1");
+                value
+            },
+            "core/update-shared",
+            json!({"variable":WORKSPACE_VAR,"operation":"add"}),
+            DiagnosticCode::ConstraintUnsatisfied,
+        ),
+        (
+            {
+                let mut value = variable(WORKSPACE_VAR, "workspace");
+                value["type"] = json!("core/unknown@1");
+                value
+            },
+            "core/set-shared",
+            json!({"variable":WORKSPACE_VAR}),
+            DiagnosticCode::TypeMismatch,
+        ),
+    ];
+
+    for (declaration, definition, config, expected) in cases {
+        let doc = document(
+            json!([declaration]),
+            json!([function(
+                CALLER,
+                "async",
+                json!([node(SET_NODE, definition, config)])
+            )]),
+        );
+        let evidence = FunctionEvidence::new(
+            &doc,
+            BTreeMap::from([(
+                SET_NODE.parse().unwrap(),
+                serde_json::from_value(json!({"kind":"pure","ports":[]})).unwrap(),
+            )]),
+            BTreeMap::new(),
+        );
+        let report = analyze_functions(&doc, &evidence, &registry());
+        let function: FunctionId = CALLER.parse().unwrap();
+        assert!(
+            report.incomplete_functions.contains(&function),
+            "{definition}"
+        );
+        assert!(!report.summaries.contains_key(&function), "{definition}");
+        assert_eq!(
+            diagnostic_subjects(&report, expected),
+            vec![SET_NODE.parse().unwrap()],
+            "{definition}"
+        );
+    }
+}
+
+#[test]
 fn malformed_variable_reference_and_update_operation_have_node_subjects() {
     let doc = document(
         json!([variable(RUN_VAR, "run")]),

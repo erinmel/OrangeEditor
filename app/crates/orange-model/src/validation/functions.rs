@@ -4,13 +4,17 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::catalog::{ReferenceKind, RegistrySnapshot, intrinsic, is_intrinsic};
+use crate::catalog::{
+    NodeContract, ReferenceKind, RegistrySnapshot, VariableAccess, intrinsic, is_intrinsic,
+};
 use crate::document::{
     GraphDocument, NodeKind, SignatureSnapshot, Suspends, SuspensionContractIssue, VarScope,
     suspension_contract_issue,
 };
 use crate::edit::DeclId;
 use crate::id::{FunctionId, NodeId, VariableId};
+use crate::type_term::TypeTerm;
+use crate::types::TypeResolveError;
 pub use crate::variable::WriteOperation;
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
@@ -229,10 +233,26 @@ pub fn analyze_functions(
                 };
                 rank = rank.max(rank_of(kind));
                 may_suspend |= suspends != Suspends::Never;
-                if is_variable_write(definition) {
-                    if definition == "core/update-variable" {
+                if let Some(
+                    access @ (VariableAccess::Write
+                    | VariableAccess::Update
+                    | VariableAccess::WriteShared
+                    | VariableAccess::UpdateShared),
+                ) = intrinsic(definition).and_then(|rule| rule.variable_access)
+                {
+                    let shared = matches!(
+                        access,
+                        VariableAccess::WriteShared | VariableAccess::UpdateShared
+                    );
+                    let mut fresh_contract = None;
+                    if matches!(
+                        access,
+                        VariableAccess::Update
+                            | VariableAccess::WriteShared
+                            | VariableAccess::UpdateShared
+                    ) {
                         match registry.contract(document, node) {
-                            Ok(Some(_)) => {}
+                            Ok(Some(contract)) => fresh_contract = Some(contract),
                             Ok(None) => {
                                 emit_at(
                                     &mut result,
@@ -257,7 +277,21 @@ pub fn analyze_functions(
                             }
                         }
                     }
-                    match core_variable_write(registry, node, definition) {
+                    if access == VariableAccess::WriteShared {
+                        match fresh_contract
+                            .as_deref()
+                            .ok_or(DiagnosticCode::FunctionMetadataUnavailable)
+                            .and_then(|contract| validate_shared_variable_type(registry, contract))
+                        {
+                            Ok(()) => {}
+                            Err(code) => {
+                                emit_at(&mut result, code, function_id, node.id, origin);
+                                complete = false;
+                                continue;
+                            }
+                        }
+                    }
+                    match core_variable_write(registry, node, access) {
                         Ok(write) => {
                             if document.variables().get(&write.variable).is_none() {
                                 emit_at(
@@ -268,8 +302,9 @@ pub fn analyze_functions(
                                     origin,
                                 );
                                 complete = false;
-                            } else if document.variables()[&write.variable].scope
-                                == VarScope::Workspace
+                            } else if !shared
+                                && document.variables()[&write.variable].scope
+                                    == VarScope::Workspace
                             {
                                 emit_at(
                                     &mut result,
@@ -279,7 +314,9 @@ pub fn analyze_functions(
                                     origin,
                                 );
                                 complete = false;
-                            } else if document.variables()[&write.variable].scope == VarScope::Run {
+                            } else if !shared
+                                && document.variables()[&write.variable].scope == VarScope::Run
+                            {
                                 writes
                                     .entry(write.variable)
                                     .or_default()
@@ -497,26 +534,51 @@ fn is_marker(node: &crate::document::NodeInstance) -> bool {
 fn core_variable_write(
     registry: &RegistrySnapshot,
     node: &crate::document::NodeInstance,
-    definition: &str,
+    access: VariableAccess,
 ) -> Result<VariableWrite, DiagnosticCode> {
     let variable = super::variables::variable_reference(registry, node)?;
-    let operation = if definition == "core/set-variable" {
-        Some(WriteOperation::Set)
-    } else {
-        node.config
+    let operation = match access {
+        VariableAccess::Write | VariableAccess::WriteShared => WriteOperation::Set,
+        VariableAccess::Update | VariableAccess::UpdateShared => node
+            .config
             .get("operation")
             .and_then(Value::as_str)
             .and_then(WriteOperation::parse_update)
-    }
-    .ok_or(DiagnosticCode::UpdateOperation)?;
+            .ok_or(DiagnosticCode::UpdateOperation)?,
+        VariableAccess::Read => return Err(DiagnosticCode::FunctionMetadataUnavailable),
+    };
     Ok(VariableWrite {
         variable,
         operation,
     })
 }
 
-fn is_variable_write(id: &str) -> bool {
-    matches!(id, "core/set-variable" | "core/update-variable")
+fn validate_shared_variable_type(
+    registry: &RegistrySnapshot,
+    contract: &NodeContract,
+) -> Result<(), DiagnosticCode> {
+    let ty = contract
+        .ports
+        .iter()
+        .find(|port| {
+            port.direction == crate::document::PortDirection::Input
+                && port.kind == crate::document::PortKind::Data
+        })
+        .and_then(|port| port.ty.as_ref())
+        .ok_or(DiagnosticCode::FunctionMetadataUnavailable)?;
+    let term = TypeTerm::parse(ty).map_err(|error| match error {
+        crate::error::IdError::TypeTooDeep { .. } => DiagnosticCode::TypeComplexity,
+        _ => DiagnosticCode::TypeMismatch,
+    })?;
+    registry
+        .types()
+        .validate(&term)
+        .map_err(|error| match error {
+            TypeResolveError::TooDeep { .. } | TypeResolveError::DerivationTooDeep { .. } => {
+                DiagnosticCode::TypeComplexity
+            }
+            _ => DiagnosticCode::TypeMismatch,
+        })
 }
 fn rank_of(kind: NodeKind) -> KindRank {
     match kind {

@@ -270,6 +270,7 @@ pub(crate) fn contract_code(error: ContractError) -> DiagnosticCode {
     match error {
         ContractError::VariableUnknown => DiagnosticCode::VariableUnknown,
         ContractError::VariableScope => DiagnosticCode::VariableScope,
+        ContractError::SharedVariableScope => DiagnosticCode::SharedVariableScope,
         ContractError::UpdateOperation => DiagnosticCode::UpdateOperation,
         ContractError::UpdateUnsupported => DiagnosticCode::UpdateUnsupported,
         ContractError::UpdateConstraint => DiagnosticCode::ConstraintUnsatisfied,

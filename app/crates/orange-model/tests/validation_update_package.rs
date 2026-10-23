@@ -98,8 +98,19 @@ fn type_registry(mode: CapabilityMode) -> Arc<orange_model::types::TypeRegistry>
 }
 
 fn registry(mode: CapabilityMode, package_shape: bool) -> Arc<RegistrySnapshot> {
+    registry_with_access(mode, package_shape.then_some(VariableAccess::Update))
+}
+
+fn registry_with_access(
+    mode: CapabilityMode,
+    access: Option<VariableAccess>,
+) -> Arc<RegistrySnapshot> {
     let mut builder = RegistryBuilder::core(origin()).types(type_registry(mode));
-    if package_shape {
+    if let Some(access) = access {
+        let shared = matches!(
+            access,
+            VariableAccess::WriteShared | VariableAccess::UpdateShared
+        );
         let definition = DefinitionRef {
             id: "org.test/update-money".parse().unwrap(),
             version: 1,
@@ -108,10 +119,18 @@ fn registry(mode: CapabilityMode, package_shape: bool) -> Arc<RegistrySnapshot> 
             .definition(NodeDefinition {
                 definition: definition.clone(),
                 config_version: 1,
-                kind: orange_model::document::NodeKind::Action,
-                suspends: Some(orange_model::document::Suspends::Never),
+                kind: if shared {
+                    orange_model::document::NodeKind::Async
+                } else {
+                    orange_model::document::NodeKind::Action
+                },
+                suspends: Some(if shared {
+                    Suspends::Maybe
+                } else {
+                    Suspends::Never
+                }),
                 type_params: vec![],
-                ports: Ports::Variable(VariableAccess::Update),
+                ports: Ports::Variable(access),
                 references: vec![ReferenceField {
                     pointer: "/variable".to_owned(),
                     kind: ReferenceKind::Variable,
@@ -426,6 +445,52 @@ fn package_update_shape_projects_ports_without_claiming_core_effects() {
                 .is_some_and(|triggers| triggers.len() == 1 && triggers[0].as_str() == "then")
     }));
     assert_eq!(orange_model::to_json(&doc).unwrap(), before);
+}
+
+#[test]
+fn package_shared_shape_still_requires_trusted_function_effects() {
+    let registry = registry_with_access(CapabilityMode::Add, Some(VariableAccess::UpdateShared));
+    let mut signature = package_signature();
+    signature.kind = orange_model::document::NodeKind::Async;
+    signature.suspends = Some(Suspends::Maybe);
+    let signature_key = orange_model::signature::semantic_key(&signature);
+    let mut node = package_node("add");
+    node["signature"] = json!(signature_key.as_str());
+    let function = "40000000-0000-4000-8000-000000000001";
+    let mut fixture = json!({
+        "package_lock":[{"id":PKG,"version":VER,"content_digest":DIGEST}],
+        "variables":[{"id":VARIABLE,"name":"balance","type":"org.test/money@1","scope":"workspace"}],
+        "functions":[{"id":function,"name":"adjust","kind":"async","nodes":[node],"edges":[]}],
+        "signatures":{}
+    });
+    fixture["signatures"][signature_key.as_str()] = serde_json::to_value(signature).unwrap();
+    let doc = from_json(&minimal_document(fixture)).unwrap();
+    let nodes = validate_nodes(&doc, &registry);
+    assert!(nodes.is_valid(), "{:?}", nodes.diagnostics);
+    let missing = analyze_functions(
+        &doc,
+        &FunctionEvidence::from_nodes(&doc, &nodes, Default::default()),
+        &registry,
+    );
+    assert!(
+        missing
+            .incomplete_functions
+            .contains(&function.parse().unwrap())
+    );
+    let evidence = FunctionEvidence::from_nodes(
+        &doc,
+        &nodes,
+        [(
+            node_id(1).parse().unwrap(),
+            orange_model::validation::LeafEffects::Known(vec![]),
+        )]
+        .into(),
+    );
+    let trusted = analyze_functions(&doc, &evidence, &registry);
+    let summary = &trusted.summaries[&function.parse().unwrap()];
+    assert_eq!(summary.kind, orange_model::document::NodeKind::Async);
+    assert_eq!(summary.suspends, Suspends::Maybe);
+    assert!(summary.run_writes.is_empty());
 }
 
 #[test]

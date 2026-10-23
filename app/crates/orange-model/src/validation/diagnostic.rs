@@ -80,6 +80,8 @@ pub enum DiagnosticCode {
     VariableUnknown,
     #[serde(rename = "E-VARIABLE-SCOPE")]
     VariableScope,
+    #[serde(rename = "E-SHARED-VARIABLE-SCOPE")]
+    SharedVariableScope,
     #[serde(rename = "E-UPDATE-OPERATION")]
     UpdateOperation,
     #[serde(rename = "E-UPDATE-UNSUPPORTED")]
@@ -133,6 +135,7 @@ impl DiagnosticCode {
             Self::FunctionMetadataUnavailable => "E-FUNCTION-METADATA-UNAVAILABLE",
             Self::VariableUnknown => "E-VARIABLE-UNKNOWN",
             Self::VariableScope => "E-VARIABLE-SCOPE",
+            Self::SharedVariableScope => "E-SHARED-VARIABLE-SCOPE",
             Self::UpdateOperation => "E-UPDATE-OPERATION",
             Self::UpdateUnsupported => "E-UPDATE-UNSUPPORTED",
             Self::EntryInFunction => "E-ENTRY-IN-FUNCTION",
@@ -179,6 +182,7 @@ impl DiagnosticCode {
             Self::FunctionMetadataUnavailable => "core/graph-function-metadata-unavailable",
             Self::VariableUnknown => "core/graph-variable-unknown",
             Self::VariableScope => "core/graph-variable-scope",
+            Self::SharedVariableScope => "core/graph-shared-variable-scope",
             Self::UpdateOperation => "core/graph-update-operation",
             Self::UpdateUnsupported => "core/graph-update-unsupported",
             Self::EntryInFunction => "core/graph-entry-in-function",
@@ -249,6 +253,7 @@ impl DiagnosticCode {
                 "Workspace variables require an asynchronous shared write.".into()
             }
             Self::UpdateOperation => "Variable update requires a supported operation.".into(),
+            Self::SharedVariableScope => "Shared writes require a workspace variable.".into(),
             Self::UpdateUnsupported => {
                 "This variable update operation is not supported by this core version.".into()
             }
@@ -637,6 +642,28 @@ mod tests {
         );
         assert_eq!(wire["message_key"], "core/graph-update-unsupported");
         assert_eq!(wire["message_args"], json!({}));
+    }
+
+    #[test]
+    fn shared_variable_scope_has_stable_redacted_message() {
+        let diagnostic = Diagnostic::new(
+            DiagnosticCode::SharedVariableScope,
+            Subject::default(),
+            &origin(),
+        );
+        assert_eq!(diagnostic.code.as_str(), "E-SHARED-VARIABLE-SCOPE");
+        assert_eq!(diagnostic.message_key, "core/graph-shared-variable-scope");
+        assert_eq!(
+            diagnostic.message,
+            "Shared writes require a workspace variable."
+        );
+        assert!(diagnostic.message_args.is_empty());
+        let wire = to_value(&diagnostic).unwrap();
+        assert_eq!(wire["code"], "E-SHARED-VARIABLE-SCOPE");
+        assert_eq!(
+            serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+            DiagnosticCode::SharedVariableScope
+        );
     }
 
     #[test]
