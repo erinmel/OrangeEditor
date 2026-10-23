@@ -6,7 +6,7 @@ mod common;
 use std::collections::BTreeMap;
 
 use common::{eid, nid, read_fixture, saved};
-use orange_model::document::{NodeKind, ResolvedPort, SignatureSnapshot};
+use orange_model::document::{NodeKind, PortDescriptor, SignatureSnapshot};
 use orange_model::id::{EdgeId, PortId, TypeExpr};
 use orange_model::signature::{SignatureDrift, compare, project, semantic_key};
 use orange_model::{DocIndex, from_json};
@@ -15,7 +15,7 @@ use serde_json::{Value as Json, json};
 const ADD_KEY: &str = include_str!("fixtures/s-add-i64.sha256");
 
 /// The 12 §4 `org.orange.math/add` ports with the given captions (`None` = no presentation).
-fn add_ports(captions: Option<[&str; 3]>) -> Vec<ResolvedPort> {
+fn add_ports(captions: Option<[&str; 3]>) -> Vec<PortDescriptor> {
     let ids = ["a", "b", "sum"];
     let mut ports = vec![
         json!({"port_id": "a", "direction": "input", "kind": "data", "type": "$T"}),
@@ -193,7 +193,7 @@ fn implicit_ports_follow_the_kind_table() {
 
 /// A projected one-port snapshot whose port has the given default literal.
 fn with_default(default: Json) -> SignatureSnapshot {
-    let port: ResolvedPort = serde_json::from_value(json!({
+    let port: PortDescriptor = serde_json::from_value(json!({
         "port_id": "value",
         "direction": "input",
         "kind": "data",

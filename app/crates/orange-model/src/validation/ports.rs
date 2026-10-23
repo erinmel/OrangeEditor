@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 use crate::document::{
-    GraphDocument, NodeKind, PortDirection, PortKind, PortRef, ResolvedPort, SignatureSnapshot,
+    GraphDocument, NodeKind, PortDescriptor, PortDirection, PortKind, PortRef, SignatureSnapshot,
     Suspends,
 };
 use crate::id::{PortId, TypeExpr};
@@ -24,7 +24,7 @@ pub(crate) enum PortLookupError {
 pub(crate) fn lookup_port(
     document: &GraphDocument,
     port: &PortRef,
-) -> Result<ResolvedPort, PortLookupError> {
+) -> Result<PortDescriptor, PortLookupError> {
     let node = document
         .node(port.node)
         .ok_or(PortLookupError::MissingNode)?;
@@ -159,7 +159,7 @@ pub(crate) fn intrinsic_snapshot(id: &str, config_version: u32) -> Option<Signat
         }
         _ => return None,
     };
-    let mut ports: Vec<ResolvedPort> = specs
+    let mut ports: Vec<PortDescriptor> = specs
         .iter()
         .map(|(name, direction, port_kind, ty, source)| {
             let mut value =
@@ -185,7 +185,7 @@ pub(crate) fn intrinsic_snapshot(id: &str, config_version: u32) -> Option<Signat
             "kind":"exec",
             "variadic":{"min": if id == "core/sequence" { 2 } else { 1 }, "max": null}
         });
-        let descriptor: ResolvedPort =
+        let descriptor: PortDescriptor =
             serde_json::from_value(value.take()).expect("intrinsic descriptor is valid");
         ports.push(descriptor);
     }
@@ -202,7 +202,7 @@ pub(crate) fn intrinsic_snapshot(id: &str, config_version: u32) -> Option<Signat
     })
 }
 
-pub(crate) fn implicit_port(snapshot: &SignatureSnapshot, id: &PortId) -> Option<ResolvedPort> {
+pub(crate) fn implicit_port(snapshot: &SignatureSnapshot, id: &PortId) -> Option<PortDescriptor> {
     if !snapshot.declares_port(id) {
         return None;
     }
@@ -219,7 +219,7 @@ pub(crate) fn implicit_port(snapshot: &SignatureSnapshot, id: &PortId) -> Option
         "then" | "body" | "completed" => (PortDirection::Output, PortKind::Exec, None, None),
         _ => return None,
     };
-    Some(ResolvedPort {
+    Some(PortDescriptor {
         port_id: id.clone(),
         direction,
         kind,

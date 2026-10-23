@@ -7,7 +7,7 @@ use orange_model::conversion::{
     ConnectionOutcome, ConnectionPlan, ConnectionRequest, ConverterKey, ConverterProvider,
     ConverterRegistry, ConverterRegistryBuilder, PackageProvider, plan_connection,
 };
-use orange_model::document::{DefinitionRef, NodeKind, ResolvedPort, TypeParam};
+use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
 use orange_model::inference::{GenericDefinition, TemplateCatalog, TypeArgs};
 use orange_model::types::TypeRegistry;
 use orange_model::{GraphDocument, from_json};
@@ -18,7 +18,7 @@ use super::{edge_id, id_source, minimal_document, node_id, port as port_ref};
 pub const ADD: &str = "org.test/add";
 const SOURCE: &str = "org.test/source";
 
-pub fn port(port_id: &str, direction: &str, ty: &str) -> ResolvedPort {
+pub fn port(port_id: &str, direction: &str, ty: &str) -> PortDescriptor {
     serde_json::from_value(
         json!({"port_id": port_id, "direction": direction, "kind": "data", "type": ty}),
     )

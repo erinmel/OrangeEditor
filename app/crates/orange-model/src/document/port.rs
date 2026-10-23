@@ -38,7 +38,7 @@ pub struct SignatureSnapshot {
     /// `None` preserves unknown suspension metadata on legacy async/iterator snapshots.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub suspends: Option<Suspends>,
-    pub ports: Vec<ResolvedPort>,
+    pub ports: Vec<PortDescriptor>,
     #[serde(flatten)]
     pub extensions: Extensions,
 }
@@ -84,7 +84,7 @@ pub enum NodeKind {
 /// Port descriptor fields from 11 §4.1 that this slice types. The rest (`optional`,
 /// `variadic`, `lazy`, presentation in function interfaces) is kept in `extensions`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ResolvedPort {
+pub struct PortDescriptor {
     pub port_id: PortId,
     pub direction: PortDirection,
     pub kind: PortKind,

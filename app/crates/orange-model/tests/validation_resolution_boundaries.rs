@@ -1,5 +1,5 @@
 use orange_model::GraphDocument;
-use orange_model::document::{DefinitionRef, NodeKind, ResolvedPort, TypeParam};
+use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
 use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
 use orange_model::types::TypeRegistry;
 use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
@@ -86,7 +86,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
     );
 
     let mut templates = TemplateCatalog::default();
-    let input: ResolvedPort = serde_json::from_value(json!({
+    let input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
@@ -107,7 +107,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         id: "example/ambiguous".parse().unwrap(),
         version: 1,
     };
-    let ambiguous_input: ResolvedPort = serde_json::from_value(json!({
+    let ambiguous_input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
@@ -213,7 +213,7 @@ fn intrinsic_implicit_error_port_supplies_generic_type_evidence() {
     };
     let mut providers = ProviderCatalog::default();
     providers.insert(definition.clone(), 1, provider);
-    let input: ResolvedPort = serde_json::from_value(json!({
+    let input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
@@ -279,7 +279,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         version: 1,
     };
     let mut templates = TemplateCatalog::default();
-    let input: ResolvedPort = serde_json::from_value(json!({
+    let input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();

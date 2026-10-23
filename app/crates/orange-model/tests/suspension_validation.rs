@@ -1,5 +1,5 @@
 use orange_model::GraphDocument;
-use orange_model::document::{DefinitionRef, NodeKind, ResolvedPort, Suspends};
+use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, Suspends};
 use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
 use orange_model::types::TypeRegistry;
 use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
@@ -57,7 +57,7 @@ fn validate(
             suspends,
             type_params: vec![],
             ports: vec![
-                serde_json::from_value::<ResolvedPort>(json!({
+                serde_json::from_value::<PortDescriptor>(json!({
                     "port_id":"value","direction":"output","kind":"data",
                     "type":"core/i64@1","source":"computed"
                 }))

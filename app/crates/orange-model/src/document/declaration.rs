@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 
 use super::keyed::Keyed;
 use super::literal::Literal;
-use super::{Extensions, GraphBody, NodeKind, ResolvedPort, TypeParamName};
+use super::{Extensions, GraphBody, NodeKind, PortDescriptor, TypeParamName};
 use crate::id::{EventDeclId, FunctionId, TypeExpr, VariableId};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -84,9 +84,9 @@ pub struct FunctionDecl {
     #[serde(default)]
     pub type_params: Vec<TypeParam>,
     #[serde(default)]
-    pub inputs: Vec<ResolvedPort>,
+    pub inputs: Vec<PortDescriptor>,
     #[serde(default)]
-    pub outputs: Vec<ResolvedPort>,
+    pub outputs: Vec<PortDescriptor>,
     #[serde(flatten)]
     pub body: GraphBody,
     #[serde(flatten)]

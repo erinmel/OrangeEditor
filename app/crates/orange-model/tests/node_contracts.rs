@@ -5,7 +5,7 @@ mod common;
 use common::generic::{add, catalog as generic_catalog, data_edge, document};
 use common::node_id;
 use orange_model::DocIndex;
-use orange_model::document::{DefinitionRef, NodeInstance, NodeKind, ResolvedPort, TypeParam};
+use orange_model::document::{DefinitionRef, NodeInstance, NodeKind, PortDescriptor, TypeParam};
 use orange_model::id::NodeId;
 use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog, infer_components};
 use orange_model::types::TypeRegistry;
@@ -21,7 +21,7 @@ fn contract(ty: &str) -> GenericDefinition {
         suspends: None,
         type_params: vec![],
         ports: vec![
-            serde_json::from_value::<ResolvedPort>(json!({
+            serde_json::from_value::<PortDescriptor>(json!({
                 "port_id":"value","direction":"output","kind":"data","type":ty
             }))
             .unwrap(),

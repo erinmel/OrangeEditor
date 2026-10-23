@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::document::{GraphDocument, PortDirection, PortKind, ResolvedPort, SignatureSnapshot};
+use crate::document::{GraphDocument, PortDescriptor, PortDirection, PortKind, SignatureSnapshot};
 use crate::id::{NodeId, PortKey, TypeExpr};
 use crate::type_term::TypeTerm;
 use crate::types::{TypeRegistry, TypeResolveError};
@@ -160,7 +160,7 @@ pub fn validate_inputs(
     diagnostics
 }
 
-fn is_variadic(port: &ResolvedPort) -> bool {
+fn is_variadic(port: &PortDescriptor) -> bool {
     port.extensions
         .get("variadic")
         .is_some_and(serde_json::Value::is_object)

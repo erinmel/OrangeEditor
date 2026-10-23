@@ -1,4 +1,4 @@
-use orange_model::document::{DefinitionRef, NodeKind, ResolvedPort, SignatureSnapshot};
+use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, SignatureSnapshot};
 use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
 use orange_model::types::TypeRegistry;
 use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
@@ -34,7 +34,7 @@ fn snapshot(ty: &str) -> SignatureSnapshot {
         kind: NodeKind::Pure,
         suspends: None,
         ports: vec![
-            serde_json::from_value::<ResolvedPort>(json!({
+            serde_json::from_value::<PortDescriptor>(json!({
                 "port_id":"value",
                 "direction":"output",
                 "kind":"data",

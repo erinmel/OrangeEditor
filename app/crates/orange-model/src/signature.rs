@@ -12,7 +12,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 use crate::document::{
-    Extensions, NodeKind, PortDirection, PortKind, ResolvedPort, SignatureSnapshot, Suspends,
+    Extensions, NodeKind, PortDescriptor, PortDirection, PortKind, SignatureSnapshot, Suspends,
     TypeParamName,
 };
 use crate::error::IdError;
@@ -26,7 +26,7 @@ const PRESENTATION_KEYS: [&str; 4] = ["label", "description", "group", "editor"]
 /// type parameters replaced by the node's `type_args`.
 pub fn project(
     kind: NodeKind,
-    ports: impl IntoIterator<Item = ResolvedPort>,
+    ports: impl IntoIterator<Item = PortDescriptor>,
     type_args: &BTreeMap<TypeParamName, TypeExpr>,
 ) -> SignatureSnapshot {
     project_with_suspension(kind, None, ports, type_args)
@@ -38,7 +38,7 @@ pub fn project(
 pub fn project_with_suspension(
     kind: NodeKind,
     suspends: Option<Suspends>,
-    ports: impl IntoIterator<Item = ResolvedPort>,
+    ports: impl IntoIterator<Item = PortDescriptor>,
     type_args: &BTreeMap<TypeParamName, TypeExpr>,
 ) -> SignatureSnapshot {
     let ports = ports

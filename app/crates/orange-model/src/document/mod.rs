@@ -32,7 +32,7 @@ pub use node::{
     ReentrancyMode, VariadicState,
 };
 pub use port::{
-    Edge, NodeKind, OutputSource, PortDirection, PortKind, PortRef, ResolvedPort, Sensitivity,
+    Edge, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind, PortRef, Sensitivity,
     SignatureSnapshot, Suspends,
 };
 

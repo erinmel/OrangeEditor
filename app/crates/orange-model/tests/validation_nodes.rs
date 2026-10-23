@@ -1,4 +1,4 @@
-use orange_model::document::{DefinitionRef, NodeKind, ResolvedPort, TypeParam};
+use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
 use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
 use orange_model::types::TypeRegistry;
 use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
@@ -197,7 +197,7 @@ fn generic_resolution_uses_fresh_evidence_instead_of_cached_type_args() {
         json!({"value":{"type":"core/i64@1","value":3}}),
     );
     let mut templates = TemplateCatalog::default();
-    let mut port: ResolvedPort = serde_json::from_value(json!({
+    let mut port: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();

@@ -20,7 +20,7 @@ use super::{
 };
 use crate::document::{
     DefinitionRef, Edge, Extensions, GraphDocument, NodeInstance, NodeKind, OutputSource,
-    PackageLockEntry, PortDirection, PortKind, PortRef, ProviderBinding, ResolvedPort,
+    PackageLockEntry, PortDescriptor, PortDirection, PortKind, PortRef, ProviderBinding,
     SignatureSnapshot,
 };
 use crate::edit::{Committed, DocCommand};
@@ -446,8 +446,8 @@ fn convert_node(
     (instance, snapshot)
 }
 
-fn data_port(id: &str, direction: PortDirection, ty: &TypeExpr) -> ResolvedPort {
-    ResolvedPort {
+fn data_port(id: &str, direction: PortDirection, ty: &TypeExpr) -> PortDescriptor {
+    PortDescriptor {
         port_id: id.parse().expect("fixed port IDs are valid"),
         direction,
         kind: PortKind::Data,

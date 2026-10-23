@@ -19,8 +19,8 @@ use super::unify::{
 };
 use crate::GraphDocument;
 use crate::document::{
-    DefinitionRef, GraphBody, NodeInstance, NodeKind, PortKind, PortRef, ProviderBinding,
-    ResolvedPort, Suspends, TypeParam, TypeParamName,
+    DefinitionRef, GraphBody, NodeInstance, NodeKind, PortDescriptor, PortKind, PortRef,
+    ProviderBinding, Suspends, TypeParam, TypeParamName,
 };
 use crate::error::IdError;
 use crate::id::{DefinitionId, EdgeId, FunctionId, NodeId, TypeExpr, VariableId};
@@ -41,7 +41,7 @@ pub struct GenericDefinition {
     pub suspends: Option<Suspends>,
     pub type_params: Vec<TypeParam>,
     /// Declared ports; data port types may mention `$name` parameters.
-    pub ports: Vec<ResolvedPort>,
+    pub ports: Vec<PortDescriptor>,
 }
 
 /// Resolved type arguments of one generic node, by parameter name.
@@ -526,7 +526,7 @@ impl Graph<'_> {
             .is_some_and(|declared| declared.kind == PortKind::Data)
     }
 
-    fn declared_port(&self, port: &PortRef) -> Option<&ResolvedPort> {
+    fn declared_port(&self, port: &PortRef) -> Option<&PortDescriptor> {
         declared_port(self.document, self.templates, port)
     }
 
@@ -700,7 +700,7 @@ pub(crate) fn declared_port<'a>(
     document: &'a GraphDocument,
     templates: &'a TemplateCatalog,
     port: &PortRef,
-) -> Option<&'a ResolvedPort> {
+) -> Option<&'a PortDescriptor> {
     let node = document.node(port.node)?;
     let ports = match templates.get_for_node(document, node) {
         Ok(Some(template)) => &template.ports,

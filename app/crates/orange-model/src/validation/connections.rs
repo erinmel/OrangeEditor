@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::document::{GraphDocument, PortKind, PortRef, ResolvedPort};
+use crate::document::{GraphDocument, PortDescriptor, PortKind, PortRef};
 use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
@@ -225,7 +225,7 @@ fn resolve_endpoint(
     origin: &HostOrigin,
     report: &mut ConnectionValidation,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<ResolvedPort> {
+) -> Option<PortDescriptor> {
     match lookup_port(document, endpoint) {
         Ok(port) => Some(port),
         Err(PortLookupError::MissingNode | PortLookupError::UnknownPort) => {
@@ -243,7 +243,7 @@ fn resolve_endpoint(
     }
 }
 
-fn stream_status(port: &ResolvedPort) -> Option<bool> {
+fn stream_status(port: &PortDescriptor) -> Option<bool> {
     let term = TypeTerm::parse(port.ty.as_ref()?).ok()?;
     if term.contains_param() {
         None

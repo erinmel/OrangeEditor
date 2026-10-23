@@ -2,7 +2,7 @@
 
 use super::diagnostic::DiagnosticCode;
 use crate::document::{
-    GraphDocument, NodeInstance, NodeKind, OutputSource, PortDirection, PortKind, ResolvedPort,
+    GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind,
     Suspends, VarScope,
 };
 use crate::id::VariableId;
@@ -42,7 +42,7 @@ pub(super) fn variable_contract(
             },
             suspends: Some(Suspends::Never),
             type_params: Vec::new(),
-            ports: vec![ResolvedPort {
+            ports: vec![PortDescriptor {
                 port_id: "value".parse().expect("fixed language port ID"),
                 direction: if write {
                     PortDirection::Input

@@ -73,7 +73,7 @@ pub struct VariadicState { pub order: Vec<u16>, pub next: u16 }
 pub struct SignatureSnapshot {
     pub kind: NodeKind,
     pub suspends: Option<Suspends>,          // semantic async/iterator fact; see below
-    pub ports: Vec<ResolvedPort>,
+    pub ports: Vec<PortDescriptor>,
 }
 pub enum Suspends { Never, Maybe, Always }   // synchronous absence is equivalent to Never
 pub struct VariableDecl {
@@ -107,7 +107,7 @@ Serialization order is `IndexMap` order (creation order, compacted on removal), 
 
 Implementation correction (00b review): replacing an existing entry at its current position updates that slot in place. Insertions, removals and actual reordering retain positional patches so undo restores the exact order. The replacement path avoids shifting unrelated entries; order-preserving removal and reordering can still be linear. NFR-15 timing targets remain unmeasured.
 
-`ResolvedPort` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
+`PortDescriptor` is the post-template, post-type-substitution semantic port projection from [11 §4](11-graph-language.md): stable port key, direction/kind, resolved type where applicable, source/availability, literal/default/optional, variadic/lazy and sensitivity policy where applicable. Its snapshot excludes presentation `group`, TextRef labels/descriptions and `editor` fields, including non-authoritative `display` text on a default literal. The default's type and encoded value remain semantic. Hash only that semantic snapshot. Optional cached presentation belongs in `editor`, keyed by stable definition/port IDs, outside signature and semantic plan hashes. Without a catalogue or cache, show stable IDs. Locale changes cannot trigger `E-SIGNATURE-DRIFT` (G-39).
 
 `suspends` is semantic: it decides control-cycle legality and an enclosing function's kind (11 §8.2, §14), so a node whose package is missing must still carry it, and it is part of the hash. For a current synchronous definition, absence means `never`. For a current `async` or `iterator` definition, absence means unknown metadata and reports `E-SUSPENDS-MISSING`; it is not silently changed to `maybe` or `always`. A value on an incompatible kind, or an invalid value, reports `E-SUSPENDS-INVALID`. Exact historical snapshot bytes remain preserved until an explicit re-projection/migration; validators do not rewrite old snapshots to manufacture a fact. The current host may re-project a supported intrinsic or exact provider definition and compare semantic signatures.
 
