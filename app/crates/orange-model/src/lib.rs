@@ -7,7 +7,8 @@
 //! (persisted structures and the v1 JSON codec); `catalog` (host node contracts and provider
 //! identity); `value` (runtime values and the typed literal codec); `edit` (transactions and
 //! undo); `index`, `signature` and `paste` (derived lookups, semantic signatures and
-//! copy/paste).
+//! copy/paste); `validation` (one read-only `validate` entry point over node, input,
+//! connection and function passes).
 
 pub mod catalog;
 mod config_pointer;

@@ -423,3 +423,20 @@ Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
 
 These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
+
+### Single validation entry point (2026-10-23)
+
+Slice 4 adds `orange_model::validate(document, registry)`, which returns one `ValidationReport`: sorted, de-duplicated diagnostics, resolved signatures, incomplete nodes, function summaries and incomplete functions. It runs node resolution once and gives that resolution to the input and function passes; connection validation still works from stored signatures. It never changes document content, revision or state identity. The individual passes remain public, and `FunctionEvidence::from_nodes` binds a node resolution to the document for hosts that run passes separately. Diagnostic ordering now covers the whole record, so removing duplicates is deterministic.
+
+Decision: function leaf effects are not derived from the registry. `validate` supplies none, so a package action leaf that is not pure or volatile leaves its function incomplete (`E-FUNCTION-METADATA-UNAVAILABLE`) instead of being treated as effect-free; core Get/Set writes are still summarized. `validate_with_effects` takes host-supplied facts for hosts that have fresh ones. A report is valid only with no error diagnostics and nothing incomplete.
+
+Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands run from the repository root:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo test --workspace` | pass |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+
+These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.

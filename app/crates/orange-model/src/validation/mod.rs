@@ -1,15 +1,18 @@
-//! Read-only connection, node-resolution, input and function analysis (WU-00d.1–3).
+//! Read-only validation of a document against one registry snapshot.
 //!
-//! [`validate_nodes`] resolves current declarative contracts and exact provider evidence;
-//! its projections feed [`validate_inputs`]. [`validate_connections`] also works offline
-//! from stored signatures, preserving orphan edges. Each pass returns stable diagnostics
-//! without changing document content, revision or state identity. The embedding host
-//! supplies the immutable catalogue origin; these passes do not load package code.
+//! Hosts call [`validate`] (or [`validate_with_effects`] when they hold fresh leaf effects)
+//! and receive one [`ValidationReport`]: sorted, de-duplicated diagnostics, the resolved
+//! signatures, incomplete nodes and functions, and function summaries. It runs
+//! [`validate_nodes`] once and feeds that resolution to [`validate_inputs`] and
+//! [`analyze_functions`]; [`validate_connections`] works offline from stored signatures,
+//! preserving orphan edges. `validate` supplies no leaf effects, so a package action leaf
+//! makes its function incomplete rather than assumed effect-free. No pass changes document
+//! content, revision or state identity, and none loads package code; the host supplies the
+//! immutable catalogue origin.
 //!
-//! [`analyze_functions`] derives graph-local kind, suspension and run-write summaries
-//! from fresh resolved metadata. Contextual Get/Set ports are declaration-owned. Call/Update ports, regions,
-//! data/control cycles and availability remain later slices. Passing these individual
-//! analyses is not compile approval.
+//! The individual passes stay public for hosts that run them separately. Contextual Get/Set
+//! ports are declaration-owned. Call/Update ports, regions, data/control cycles and
+//! availability remain later slices, and a valid report is not compile approval.
 
 mod connections;
 mod diagnostic;
