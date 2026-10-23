@@ -19,6 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet, VecDeque};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
+use crate::catalog::ReferenceKind;
 use crate::document::{
     BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
     PackageLockEntry, SignatureSnapshot, VariableDecl,
@@ -54,17 +55,9 @@ pub struct ConfigReference {
     pub node: NodeId,
     /// RFC 6901 JSON pointer within the node config, such as `/variable`.
     pub pointer: String,
-    pub kind: ConfigReferenceKind,
+    pub kind: ReferenceKind,
     /// Original string captured from the field. Paste rewrites only if it is still unchanged.
     pub expected: String,
-}
-
-/// Identity namespace used by a declared config reference.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ConfigReferenceKind {
-    Variable,
-    Event,
-    Function,
 }
 
 /// Host-declared reference fields for one exact package definition/config version.
@@ -82,7 +75,7 @@ pub struct ConfigReferenceSchema {
 pub struct ConfigReferenceField {
     /// RFC 6901 JSON pointer within `config`; the pointed value must be a string ID.
     pub pointer: String,
-    pub kind: ConfigReferenceKind,
+    pub kind: ReferenceKind,
 }
 
 /// Commands for one paste transaction, plus where each copied node went.
@@ -181,21 +174,21 @@ impl Fragment {
                     continue;
                 }
                 match field.kind {
-                    ConfigReferenceKind::Variable => {
+                    ReferenceKind::Variable => {
                         if let Ok(id) = text.parse::<VariableId>()
                             && let Some(decl) = document.variables().get(&id)
                         {
                             self.variables.push(decl.clone());
                         }
                     }
-                    ConfigReferenceKind::Event => {
+                    ReferenceKind::Event => {
                         if let Ok(id) = text.parse::<EventDeclId>()
                             && let Some(decl) = document.events().get(&id)
                         {
                             self.events.push(decl.clone());
                         }
                     }
-                    ConfigReferenceKind::Function => {
+                    ReferenceKind::Function => {
                         if let Ok(id) = text.parse::<FunctionId>()
                             && let Some(decl) = document.functions().get(&id)
                         {
@@ -336,14 +329,14 @@ impl Fragment {
 /// cannot redirect a field to the wrong declaration kind.
 #[derive(Default)]
 struct Remap {
-    references: HashMap<(ConfigReferenceKind, String), String>,
+    references: HashMap<(ReferenceKind, String), String>,
     nodes: HashMap<NodeId, NodeId>,
 }
 
 /// UUID-backed ID types the remap can create.
 trait FreshId: Copy + std::fmt::Display {
     fn from_uuid(uuid: Uuid) -> Result<Self, IdError>;
-    const REFERENCE_KIND: Option<ConfigReferenceKind>;
+    const REFERENCE_KIND: Option<ReferenceKind>;
 }
 
 macro_rules! fresh_id {
@@ -352,16 +345,16 @@ macro_rules! fresh_id {
             fn from_uuid(uuid: Uuid) -> Result<Self, IdError> {
                 <$ty>::from_uuid(uuid)
             }
-            const REFERENCE_KIND: Option<ConfigReferenceKind> = $kind;
+            const REFERENCE_KIND: Option<ReferenceKind> = $kind;
         }
     )+};
 }
 fresh_id!(
     NodeId => None,
     EdgeId => None,
-    VariableId => Some(ConfigReferenceKind::Variable),
-    EventDeclId => Some(ConfigReferenceKind::Event),
-    FunctionId => Some(ConfigReferenceKind::Function)
+    VariableId => Some(ReferenceKind::Variable),
+    EventDeclId => Some(ReferenceKind::Event),
+    FunctionId => Some(ReferenceKind::Function)
 );
 
 impl Remap {
@@ -476,14 +469,14 @@ fn reference_fields(
 ) -> Vec<ConfigReferenceField> {
     let id = node.definition.id.as_str();
     let builtin = match id {
-        "core/call" => Some(("/function", ConfigReferenceKind::Function)),
+        "core/call" => Some(("/function", ReferenceKind::Function)),
         "core/get-variable"
         | "core/set-variable"
         | "core/update-variable"
         | "core/set-shared"
-        | "core/update-shared" => Some(("/variable", ConfigReferenceKind::Variable)),
+        | "core/update-shared" => Some(("/variable", ReferenceKind::Variable)),
         "core/on-event" | "core/emit" | "core/await-event" => {
-            Some(("/event", ConfigReferenceKind::Event))
+            Some(("/event", ReferenceKind::Event))
         }
         _ => None,
     };
@@ -515,11 +508,11 @@ fn reference_fields(
         .collect()
 }
 
-fn valid_reference(kind: ConfigReferenceKind, value: &str) -> bool {
+fn valid_reference(kind: ReferenceKind, value: &str) -> bool {
     match kind {
-        ConfigReferenceKind::Variable => value.parse::<VariableId>().is_ok(),
-        ConfigReferenceKind::Event => value.parse::<EventDeclId>().is_ok(),
-        ConfigReferenceKind::Function => value.parse::<FunctionId>().is_ok(),
+        ReferenceKind::Variable => value.parse::<VariableId>().is_ok(),
+        ReferenceKind::Event => value.parse::<EventDeclId>().is_ok(),
+        ReferenceKind::Function => value.parse::<FunctionId>().is_ok(),
     }
 }
 

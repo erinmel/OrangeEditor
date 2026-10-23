@@ -1,6 +1,6 @@
 //! Built-in control nodes registered as data (11 §8.4). Get/Set stay contextual.
 
-use super::{NodeContract, NodeDefinition};
+use super::{NodeDefinition, Ports};
 use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, Suspends};
 use crate::id::TypeExpr;
 
@@ -20,12 +20,11 @@ fn definition(
             version: 1,
         },
         config_version: 1,
-        contract: NodeContract {
-            kind,
-            suspends,
-            type_params: Vec::new(),
-            ports,
-        },
+        kind,
+        suspends,
+        type_params: Vec::new(),
+        ports: Ports::Declared(ports),
+        references: Vec::new(),
         specializations: None,
         config_schema: None,
     }

@@ -10,11 +10,10 @@ use common::{
     body, content, empty_document, function, function_id, id_source, nid, node, port, read_fixture,
     typed_edge,
 };
+use orange_model::catalog::ReferenceKind;
 use orange_model::document::ProviderBinding;
 use orange_model::id::{EdgeId, EventDeclId, NodeId, VariableId};
-use orange_model::paste::{
-    ConfigReferenceField, ConfigReferenceKind, ConfigReferenceSchema, Fragment,
-};
+use orange_model::paste::{ConfigReferenceField, ConfigReferenceSchema, Fragment};
 use orange_model::{BodyRef, DocCommand, GraphDocument, PasteError, from_json};
 use proptest::prelude::*;
 use serde_json::json;
@@ -203,7 +202,7 @@ fn host_schema_captures_only_the_exact_package_reference_field() {
         config_version: custom.config_version,
         fields: vec![ConfigReferenceField {
             pointer: "/nested/variable".into(),
-            kind: ConfigReferenceKind::Variable,
+            kind: ReferenceKind::Variable,
         }],
     };
     let fragment = Fragment::copy_with_schemas(&source, &[nid(10)], &[schema]).unwrap();
@@ -307,7 +306,7 @@ fn referenced_functions_travel_with_remapped_bodies() {
         config_version: call.config_version,
         fields: vec![ConfigReferenceField {
             pointer: "/notes/label".into(),
-            kind: ConfigReferenceKind::Function,
+            kind: ReferenceKind::Function,
         }],
     };
     let fragment = Fragment::copy_with_schemas(&source, &[nid(1)], &[attempted_override]).unwrap();

@@ -101,15 +101,15 @@ pub(crate) fn intrinsic_snapshot(id: &str, config_version: u32) -> Option<Signat
     static SNAPSHOTS: LazyLock<BTreeMap<String, SignatureSnapshot>> = LazyLock::new(|| {
         intrinsic_definitions()
             .into_iter()
-            .map(|definition| {
-                let contract = definition.contract;
+            .filter_map(|definition| {
+                let contract = definition.declared_contract()?;
                 let snapshot = SignatureSnapshot {
                     kind: contract.kind,
                     suspends: contract.suspends,
                     ports: contract.ports,
                     extensions: Default::default(),
                 };
-                (definition.definition.id.as_str().to_owned(), snapshot)
+                Some((definition.definition.id.as_str().to_owned(), snapshot))
             })
             .collect()
     });

@@ -6,7 +6,9 @@ pub(crate) mod intrinsics;
 pub mod provider;
 pub mod snapshot;
 
-pub use definition::{NodeContract, NodeDefinition, TypeArgs};
+pub use definition::{
+    NodeContract, NodeDefinition, Ports, ReferenceField, ReferenceKind, TypeArgs, VariableAccess,
+};
 pub(crate) use intrinsics::intrinsic_definitions;
 pub use provider::{ProviderDescriptor, ProviderKey};
 pub use snapshot::{RegistryBuilder, RegistryError, RegistrySnapshot};

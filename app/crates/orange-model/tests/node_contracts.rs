@@ -6,7 +6,7 @@ use common::generic::{add, core_converters, data_edge, document, origin, registr
 use common::node_id;
 use orange_model::DocIndex;
 use orange_model::catalog::{
-    NodeContract, NodeDefinition, ProviderKey, RegistryBuilder, RegistrySnapshot,
+    NodeContract, NodeDefinition, Ports, ProviderKey, RegistryBuilder, RegistrySnapshot,
 };
 use orange_model::document::{DefinitionRef, NodeInstance, NodeKind, PortDescriptor, TypeParam};
 use orange_model::id::NodeId;
@@ -58,10 +58,15 @@ fn fallback_contract() -> NodeContract {
 }
 
 fn node_definition(version: u32) -> NodeDefinition {
+    let fallback = fallback_contract();
     NodeDefinition {
         definition: definition(version),
         config_version: 1,
-        contract: fallback_contract(),
+        kind: fallback.kind,
+        suspends: fallback.suspends,
+        type_params: fallback.type_params,
+        ports: Ports::Declared(fallback.ports),
+        references: Vec::new(),
         specializations: None,
         config_schema: None,
     }

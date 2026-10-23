@@ -510,7 +510,7 @@ fn project_nodes(
             .as_ref()
             .and_then(|key| pass.document.signatures().get(key));
         if let Some(projected) =
-            project_node(pass, *id, contract, &args, stored, report, diagnostics)
+            project_node(pass, *id, &contract, &args, stored, report, diagnostics)
         {
             report.resolved.insert(*id, projected);
         }
@@ -666,16 +666,15 @@ fn port_kind(
     port: &PortRef,
 ) -> Option<PortKind> {
     let node = document.node(port.node)?;
-    let ports = contracts
-        .get_for_node(registry, document, node)
-        .ok()?
-        .map(|contract| contract.ports.as_slice())
-        .or_else(|| {
-            document
-                .signatures()
-                .get(node.signature.as_ref()?)
-                .map(|snapshot| snapshot.ports.as_slice())
-        })?;
+    let contract = contracts.get_for_node(registry, document, node).ok()?;
+    let ports = match &contract {
+        Some(contract) => contract.ports.as_slice(),
+        None => document
+            .signatures()
+            .get(node.signature.as_ref()?)?
+            .ports
+            .as_slice(),
+    };
     ports
         .iter()
         .find(|candidate| candidate.port_id == *port.port.port())

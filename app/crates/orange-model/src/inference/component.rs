@@ -8,6 +8,7 @@
 //! inferred binding cannot act as a pin. The document is never modified; `persist` turns
 //! the result into commands.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use sha2::{Digest, Sha256};
@@ -18,7 +19,7 @@ use super::unify::{
     TypeScopeError, TypeVariable, UnificationError, unify,
 };
 use crate::GraphDocument;
-use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs};
+use crate::catalog::{NodeContract, NodeDefinition, ProviderKey, RegistrySnapshot, TypeArgs};
 use crate::document::{
     DefinitionRef, GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, TypeParam,
     TypeParamName,
@@ -81,13 +82,14 @@ impl NodeOverlays {
         registry: &'a RegistrySnapshot,
         document: &GraphDocument,
         node: &NodeInstance,
-    ) -> Result<Option<&'a NodeContract>, StaleNodeTemplate> {
+    ) -> Result<Option<Cow<'a, NodeContract>>, StaleNodeTemplate> {
         if let Some(contract) = self.overlay(document, node)? {
-            return Ok(Some(contract));
+            return Ok(Some(Cow::Borrowed(contract)));
         }
         Ok(registry
             .definition(&node.definition)
-            .map(|definition| &definition.contract))
+            .and_then(NodeDefinition::declared_contract)
+            .map(Cow::Owned))
     }
 
     /// The node's own overlay, if any, while its fingerprint still matches.
@@ -118,7 +120,7 @@ impl NodeOverlays {
         registry: &'a RegistrySnapshot,
         document: &GraphDocument,
         node: &NodeInstance,
-    ) -> Option<&'a NodeContract> {
+    ) -> Option<Cow<'a, NodeContract>> {
         self.get_for_node(registry, document, node)
             .ok()
             .flatten()
@@ -397,7 +399,7 @@ impl Graph<'_> {
         Some((body, body.nodes.get(&id)?))
     }
 
-    fn generic(&self, id: NodeId) -> Option<(&NodeInstance, &NodeContract)> {
+    fn generic(&self, id: NodeId) -> Option<(&NodeInstance, Cow<'_, NodeContract>)> {
         let (_, node) = self.node(id)?;
         Some((
             node,
@@ -467,7 +469,7 @@ impl Graph<'_> {
             .is_some_and(|declared| declared.kind == PortKind::Data)
     }
 
-    fn declared_port(&self, port: &PortRef) -> Option<&PortDescriptor> {
+    fn declared_port(&self, port: &PortRef) -> Option<PortDescriptor> {
         declared_port(self.document, self.registry, self.overlays, port)
     }
 
@@ -478,13 +480,10 @@ impl Graph<'_> {
     }
 
     fn port_term(&self, port: &PortRef) -> PortTerm {
-        let Some(ty) = self
-            .declared_port(port)
-            .and_then(|declared| declared.ty.as_ref())
-        else {
+        let Some(ty) = self.declared_port(port).and_then(|declared| declared.ty) else {
             return Ok(None);
         };
-        let term = parse(port.node, ty)?;
+        let term = parse(port.node, &ty)?;
         let generic = self.generic(port.node).is_some();
         if !generic && term.contains_param() {
             // An unresolved non-generic snapshot carries no usable evidence.
@@ -640,11 +639,12 @@ impl Graph<'_> {
 pub(crate) fn declared_port<'a>(
     document: &'a GraphDocument,
     registry: &'a RegistrySnapshot,
-    overlays: &'a NodeOverlays,
+    overlays: &NodeOverlays,
     port: &PortRef,
-) -> Option<&'a PortDescriptor> {
+) -> Option<PortDescriptor> {
     let node = document.node(port.node)?;
-    let ports = match overlays.get_for_node(registry, document, node) {
+    let template = overlays.get_for_node(registry, document, node);
+    let ports = match &template {
         Ok(Some(template)) => &template.ports,
         Ok(None) => &document.signatures().get(node.signature.as_ref()?)?.ports,
         Err(_) => return None,
@@ -652,6 +652,7 @@ pub(crate) fn declared_port<'a>(
     ports
         .iter()
         .find(|declared| declared.port_id == *port.port.port())
+        .cloned()
 }
 
 fn evidence(evidence: EquationEvidence) -> EquationContext {

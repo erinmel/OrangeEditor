@@ -4,7 +4,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use orange_model::catalog::{
-    NodeContract, NodeDefinition, ProviderDescriptor, ProviderKey, RegistryBuilder,
+    NodeContract, NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder,
     RegistrySnapshot, TypeArgs,
 };
 use orange_model::document::DefinitionRef;
@@ -60,7 +60,11 @@ impl Facts {
             builder = builder.definition(NodeDefinition {
                 definition,
                 config_version: 1,
-                contract,
+                kind: contract.kind,
+                suspends: contract.suspends,
+                type_params: contract.type_params,
+                ports: Ports::Declared(contract.ports),
+                references: Vec::new(),
                 specializations: core,
                 config_schema: None,
             });

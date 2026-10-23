@@ -6,7 +6,7 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::intrinsics::intrinsic_definitions;
-use super::{NodeDefinition, ProviderDescriptor, ProviderKey, TypeArgs};
+use super::{NodeDefinition, Ports, ProviderDescriptor, ProviderKey, TypeArgs};
 use crate::conversion::{ConverterRegistry, ConverterRegistryBuilder};
 use crate::document::{DefinitionRef, is_intrinsic_definition};
 use crate::id::{DefinitionId, PortId};
@@ -48,6 +48,16 @@ pub enum RegistryError {
         definition: DefinitionId,
         port: PortId,
         param: String,
+    },
+    #[error("definition `{definition}` declares invalid reference pointer `{pointer}`")]
+    InvalidReferencePointer {
+        definition: DefinitionId,
+        pointer: String,
+    },
+    #[error("definition `{definition}` declares reference pointer `{pointer}` twice")]
+    DuplicateReference {
+        definition: DefinitionId,
+        pointer: String,
     },
     #[error("provider `{}/{}` names unknown definition `{}@{}`", .provider.package, .provider.id, .definition.id, .definition.version)]
     UnknownDefinition {
@@ -166,14 +176,31 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
     if !intrinsic && (id.is_core() || is_intrinsic_definition(id.as_str())) {
         return Err(RegistryError::CoreNamespace(id.clone()));
     }
+    let mut pointers = BTreeSet::new();
+    for field in &definition.references {
+        if !valid_pointer(&field.pointer) {
+            return Err(RegistryError::InvalidReferencePointer {
+                definition: id.clone(),
+                pointer: field.pointer.clone(),
+            });
+        }
+        if !pointers.insert(field.pointer.as_str()) {
+            return Err(RegistryError::DuplicateReference {
+                definition: id.clone(),
+                pointer: field.pointer.clone(),
+            });
+        }
+    }
+    let Ports::Declared(ports) = &definition.ports else {
+        return Ok(());
+    };
     let declared: BTreeSet<&str> = definition
-        .contract
         .type_params
         .iter()
         .map(|param| param.name.as_str())
         .collect();
     let mut seen = BTreeSet::new();
-    for port in &definition.contract.ports {
+    for port in ports {
         let name = port.port_id.as_str();
         if !seen.insert(name) {
             return Err(RegistryError::DuplicatePort {
@@ -199,6 +226,15 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         }
     }
     Ok(())
+}
+
+/// A non-empty RFC 6901 pointer: it starts with `/` and every `~` escapes `0` or `1`.
+fn valid_pointer(pointer: &str) -> bool {
+    pointer.starts_with('/')
+        && pointer
+            .split('~')
+            .skip(1)
+            .all(|rest| rest.starts_with(['0', '1']))
 }
 
 fn undeclared_param(term: &TypeTerm, declared: &BTreeSet<&str>) -> Option<String> {
@@ -293,7 +329,7 @@ impl RegistrySnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::NodeContract;
+    use crate::catalog::{ReferenceField, ReferenceKind};
     use crate::document::{NodeKind, PortDescriptor, TypeParam};
 
     fn origin() -> HostOrigin {
@@ -321,18 +357,16 @@ mod tests {
         NodeDefinition {
             definition: dref(id),
             config_version: 1,
-            contract: NodeContract {
-                kind: NodeKind::Pure,
-                suspends: None,
-                type_params: params
-                    .iter()
-                    .map(|name| {
-                        serde_json::from_value::<TypeParam>(serde_json::json!({"name": name}))
-                            .unwrap()
-                    })
-                    .collect(),
-                ports,
-            },
+            kind: NodeKind::Pure,
+            suspends: None,
+            type_params: params
+                .iter()
+                .map(|name| {
+                    serde_json::from_value::<TypeParam>(serde_json::json!({"name": name})).unwrap()
+                })
+                .collect(),
+            ports: Ports::Declared(ports),
+            references: Vec::new(),
             specializations: None,
             config_schema: None,
         }
@@ -445,6 +479,35 @@ mod tests {
             Err(RegistryError::UndeclaredTypeParam { ref param, .. }) if param == "T"
         ));
         assert!(build(builder().definition(definition("acme/add", &["T"], ports()))).is_ok());
+    }
+
+    fn with_references(pointers: &[&str]) -> NodeDefinition {
+        let mut definition = definition("acme/get", &[], vec![]);
+        definition.references = pointers
+            .iter()
+            .map(|pointer| ReferenceField {
+                pointer: (*pointer).to_owned(),
+                kind: ReferenceKind::Variable,
+            })
+            .collect();
+        definition
+    }
+
+    #[test]
+    fn reference_pointers_must_be_valid_and_unique() {
+        assert!(build(builder().definition(with_references(&["/variable", "/a~1b/c~0"]))).is_ok());
+        for pointer in ["", "variable", "/a~", "/a~2"] {
+            let result = build(builder().definition(with_references(&[pointer])));
+            assert!(
+                matches!(result, Err(RegistryError::InvalidReferencePointer { .. })),
+                "{pointer:?}"
+            );
+        }
+        let result = build(builder().definition(with_references(&["/variable", "/variable"])));
+        assert!(matches!(
+            result,
+            Err(RegistryError::DuplicateReference { .. })
+        ));
     }
 
     #[test]

@@ -4,8 +4,8 @@
 use std::sync::{Arc, LazyLock};
 
 use orange_model::catalog::{
-    NodeContract, NodeDefinition, ProviderDescriptor, ProviderKey, RegistryBuilder,
-    RegistrySnapshot, TypeArgs,
+    NodeDefinition, Ports, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistrySnapshot,
+    TypeArgs,
 };
 use orange_model::conversion::{
     ConnectionOutcome, ConnectionPlan, ConnectionRequest, ConverterKey, ConverterProvider,
@@ -66,21 +66,18 @@ pub fn registry_builder(
         .definition(NodeDefinition {
             definition: add_definition(),
             config_version: 1,
-            contract: NodeContract {
-                kind: NodeKind::Pure,
-                suspends: None,
-                type_params: vec![
-                    serde_json::from_value::<TypeParam>(
-                        json!({"name": "T", "constraints": ["num"]}),
-                    )
+            kind: NodeKind::Pure,
+            suspends: None,
+            type_params: vec![
+                serde_json::from_value::<TypeParam>(json!({"name": "T", "constraints": ["num"]}))
                     .unwrap(),
-                ],
-                ports: vec![
-                    port("a", "input", "$T"),
-                    port("b", "input", "$T"),
-                    port("sum", "output", "$T"),
-                ],
-            },
+            ],
+            ports: Ports::Declared(vec![
+                port("a", "input", "$T"),
+                port("b", "input", "$T"),
+                port("sum", "output", "$T"),
+            ]),
+            references: Vec::new(),
             specializations: specializations.map(|types| only(&types)),
             config_schema: None,
         })
