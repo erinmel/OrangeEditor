@@ -118,7 +118,7 @@ fn merged(
     effects: BTreeMap<NodeId, LeafEffects>,
 ) -> ValidationReport {
     let nodes = validate_nodes(doc, registry);
-    let connections = validate_connections(doc, registry);
+    let connections = validate_connections(doc, &nodes.resolved, registry);
     let evidence = FunctionEvidence::from_nodes(doc, &nodes, effects);
     let functions = analyze_functions(doc, &evidence, registry);
     let mut diagnostics: Vec<Diagnostic> = nodes.diagnostics.clone();
@@ -264,4 +264,51 @@ fn a_package_action_leaf_needs_host_supplied_effects() {
         with.functions[&function].run_writes[&VAR.parse().unwrap()],
         [WriteOperation::Add].into()
     );
+}
+
+const GET: &str = "20000000-0000-4000-8000-000000000003";
+const TEXT_VAR: &str = "40000000-0000-4000-8000-000000000002";
+
+fn variable_node(id: &str, definition: &str, variable: &str) -> Value {
+    json!({"id":id,"definition_id":definition,"definition_version":1,
+        "config_version":1,"config":{"variable":variable}})
+}
+
+fn wire(from: &str, from_port: &str, to: &str, to_port: &str) -> Value {
+    json!([{"id":"60000000-0000-4000-8000-000000000001",
+        "from":{"node":from,"port":from_port},"to":{"node":to,"port":to_port}}])
+}
+
+#[test]
+fn a_get_variable_edge_is_checked_against_its_declaration() {
+    let doc = document(
+        json!([
+            variable_node(GET, "core/get-variable", VAR),
+            node(NODE, "example/value", json!({}))
+        ]),
+        wire(GET, "value", NODE, "x"),
+        run_variable(),
+        json!([]),
+    );
+    let report = assert_equals_passes(&doc);
+    assert!(report.is_valid(), "{:?}", report.diagnostics);
+}
+
+#[test]
+fn a_mistyped_variable_edge_is_a_type_mismatch() {
+    let doc = document(
+        json!([
+            variable_node(GET, "core/get-variable", TEXT_VAR),
+            variable_node(SET, "core/set-variable", VAR)
+        ]),
+        wire(GET, "value", SET, "value"),
+        json!([
+            {"id":VAR,"name":"v","type":"core/i64@1","scope":"run"},
+            {"id":TEXT_VAR,"name":"s","type":"core/string@1","scope":"run"}
+        ]),
+        json!([]),
+    );
+    let report = assert_equals_passes(&doc);
+    assert_eq!(codes(&report), [DiagnosticCode::TypeMismatch]);
+    assert!(report.incomplete_nodes.is_empty());
 }

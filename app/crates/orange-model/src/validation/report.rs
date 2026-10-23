@@ -60,7 +60,7 @@ pub fn validate_with_effects(
     leaf_effects: BTreeMap<NodeId, LeafEffects>,
 ) -> ValidationReport {
     let nodes = validate_nodes(document, registry);
-    let connections = validate_connections(document, registry);
+    let connections = validate_connections(document, &nodes.resolved, registry);
     let evidence = FunctionEvidence::from_nodes(document, &nodes, leaf_effects);
     let functions = analyze_functions(document, &evidence, registry);
 

@@ -3,10 +3,11 @@
 //! Hosts call [`validate`] (or [`validate_with_effects`] when they hold fresh leaf effects)
 //! and receive one [`ValidationReport`]: sorted, de-duplicated diagnostics, the resolved
 //! signatures, incomplete nodes and functions, and function summaries. It runs
-//! [`validate_nodes`] once and feeds that resolution to [`validate_inputs`] and
-//! [`analyze_functions`]; [`validate_connections`] works offline from stored signatures,
-//! preserving orphan edges. `validate` supplies no leaf effects, so a package action leaf
-//! makes its function incomplete rather than assumed effect-free. No pass changes document
+//! [`validate_nodes`] once and feeds that resolution to [`validate_inputs`],
+//! [`validate_connections`] and [`analyze_functions`]. Connections fall back to stored
+//! signatures only for package nodes that did not resolve, preserving orphan edges.
+//! `validate` supplies no leaf effects, so a package action leaf makes its function
+//! incomplete rather than assumed effect-free. No pass changes document
 //! content, revision or state identity, and none loads package code; the host supplies the
 //! immutable catalogue origin.
 //!

@@ -3,7 +3,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
-use crate::document::{GraphDocument, PortDescriptor, PortKind, PortRef};
+use crate::document::{GraphDocument, PortDescriptor, PortKind, PortRef, SignatureSnapshot};
 use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
@@ -32,9 +32,12 @@ impl ConnectionValidation {
     }
 }
 
-/// Validates stored edges without changing the document.
+/// Validates stored edges against the fresh node resolution `resolved` (from
+/// [`validate_nodes`](super::validate_nodes)) without changing the document. A package
+/// node that did not resolve is checked against its stored snapshot (11 §4.5).
 pub fn validate_connections(
     document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> ConnectionValidation {
     let origin = registry.origin();
@@ -80,6 +83,7 @@ pub fn validate_connections(
 
         let from = resolve_endpoint(
             document,
+            resolved,
             &edge.from,
             edge.id,
             origin,
@@ -88,6 +92,7 @@ pub fn validate_connections(
         );
         let to = resolve_endpoint(
             document,
+            resolved,
             &edge.to,
             edge.id,
             origin,
@@ -165,7 +170,7 @@ pub fn validate_connections(
         if edge_ids.len() <= 1 {
             continue;
         }
-        let Ok(port) = lookup_port(document, &port_ref) else {
+        let Ok(port) = lookup_port(document, resolved, &port_ref) else {
             continue;
         };
         if port.direction == crate::document::PortDirection::Input && port.kind == PortKind::Data {
@@ -190,7 +195,7 @@ pub fn validate_connections(
         if edge_ids.len() <= 1 {
             continue;
         }
-        let Ok(port) = lookup_port(document, &port_ref) else {
+        let Ok(port) = lookup_port(document, resolved, &port_ref) else {
             continue;
         };
         let code = if port.direction != crate::document::PortDirection::Output {
@@ -225,13 +230,14 @@ pub fn validate_connections(
 
 fn resolve_endpoint(
     document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     endpoint: &PortRef,
     edge: EdgeId,
     origin: &HostOrigin,
     report: &mut ConnectionValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> Option<PortDescriptor> {
-    match lookup_port(document, endpoint) {
+    match lookup_port(document, resolved, endpoint) {
         Ok(port) => Some(port),
         Err(PortLookupError::MissingNode | PortLookupError::UnknownPort) => {
             diagnostics.push(Diagnostic::new(

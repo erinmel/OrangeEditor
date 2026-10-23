@@ -1,13 +1,11 @@
 //! Shared, read-only resolution of a graph port reference.
 
 use std::collections::BTreeMap;
-use std::sync::LazyLock;
 
 use thiserror::Error;
 
-use crate::catalog::{Ports, intrinsic_definitions};
 use crate::document::{GraphDocument, OutputSource, PortDescriptor, PortRef, SignatureSnapshot};
-use crate::id::PortId;
+use crate::id::{NodeId, PortId};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum PortLookupError {
@@ -19,33 +17,29 @@ pub(crate) enum PortLookupError {
     UnknownPort,
 }
 
-/// Look up a concrete port using the node's stored semantic snapshot or known intrinsic
-/// metadata. Intrinsic metadata is host-owned and deliberately limited to port layouts
-/// settled in 11 §8.4.
+/// Look up a concrete port in the node's fresh resolution (`resolved`, from
+/// [`validate_nodes`](super::validate_nodes)). A package node that did not resolve falls
+/// back to its stored snapshot, so a missing package still shows its ports (11 §4.5); an
+/// unresolved intrinsic has no stored snapshot and stays unavailable.
 pub(crate) fn lookup_port(
     document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     port: &PortRef,
 ) -> Result<PortDescriptor, PortLookupError> {
     let node = document
         .node(port.node)
         .ok_or(PortLookupError::MissingNode)?;
     let definition = node.definition.id.as_str();
-    let snapshot = if is_intrinsic_definition(definition) {
-        if node.definition.version != 1 {
+    let snapshot = match resolved.get(&port.node) {
+        Some(snapshot) => snapshot,
+        None if is_intrinsic_definition(definition) => {
             return Err(PortLookupError::MissingMetadata);
         }
-        intrinsic_snapshot(definition, node.config_version)
-            .ok_or(PortLookupError::MissingMetadata)?
-    } else {
-        let key = node
+        None => node
             .signature
             .as_ref()
-            .ok_or(PortLookupError::MissingMetadata)?;
-        document
-            .signatures()
-            .get(key)
-            .cloned()
-            .ok_or(PortLookupError::MissingMetadata)?
+            .and_then(|key| document.signatures().get(key))
+            .ok_or(PortLookupError::MissingMetadata)?,
     };
 
     // Break and Continue terminate the current region; the generic Action default
@@ -88,38 +82,13 @@ pub(crate) fn lookup_port(
     {
         return Ok(declared.clone());
     }
-    implicit_port(&snapshot, port.port.port()).ok_or(PortLookupError::UnknownPort)
+    implicit_port(snapshot, port.port.port()).ok_or(PortLookupError::UnknownPort)
 }
 
 /// Whether an ID is a language intrinsic, independent of whether this slice has a
 /// complete descriptor for it yet. Later validator passes use this to avoid treating
 /// arbitrary `core/` IDs as trusted intrinsics.
 pub(crate) use crate::document::is_intrinsic_definition;
-
-/// Port layout of a built-in control node, derived from the registered intrinsic data.
-pub(crate) fn intrinsic_snapshot(id: &str, config_version: u32) -> Option<SignatureSnapshot> {
-    static SNAPSHOTS: LazyLock<BTreeMap<String, SignatureSnapshot>> = LazyLock::new(|| {
-        intrinsic_definitions()
-            .into_iter()
-            .filter_map(|definition| {
-                let Ports::Declared(ports) = definition.ports else {
-                    return None;
-                };
-                let snapshot = SignatureSnapshot {
-                    kind: definition.kind,
-                    suspends: definition.suspends,
-                    ports,
-                    extensions: Default::default(),
-                };
-                Some((definition.definition.id.as_str().to_owned(), snapshot))
-            })
-            .collect()
-    });
-    if config_version != 1 {
-        return None;
-    }
-    SNAPSHOTS.get(id).cloned()
-}
 
 pub(crate) fn implicit_port(snapshot: &SignatureSnapshot, id: &PortId) -> Option<PortDescriptor> {
     if !snapshot.declares_port(id) {
@@ -147,8 +116,17 @@ pub(crate) fn implicit_port(snapshot: &SignatureSnapshot, id: &PortId) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::catalog::RegistrySnapshot;
     use crate::document::PortKind;
+    use crate::validation::{HostOrigin, validate_nodes};
     use serde_json::json;
+
+    /// Looks a port up against the core registry's fresh resolution of `doc`.
+    fn lookup(doc: &GraphDocument, port: &PortRef) -> Result<PortDescriptor, PortLookupError> {
+        let origin = HostOrigin::new("0.1.0", format!("sha256:{}", "c".repeat(64))).unwrap();
+        let resolved = validate_nodes(doc, &RegistrySnapshot::core(origin)).resolved;
+        lookup_port(doc, &resolved, port)
+    }
 
     fn document(
         definition: &str,
@@ -199,24 +177,21 @@ mod tests {
     fn distinguishes_missing_metadata_from_missing_node_and_unknown_port() {
         let doc = document("vendor/task", None, json!({}));
         assert_eq!(
-            lookup_port(&doc, &reference("in")),
+            lookup(&doc, &reference("in")),
             Err(PortLookupError::MissingMetadata)
         );
         let absent: PortRef = serde_json::from_value(
             json!({"node":"10000000-0000-4000-8000-000000000099","port":"in"}),
         )
         .unwrap();
-        assert_eq!(
-            lookup_port(&doc, &absent),
-            Err(PortLookupError::MissingNode)
-        );
+        assert_eq!(lookup(&doc, &absent), Err(PortLookupError::MissingNode));
         let doc = document("core/branch", None, json!({}));
         assert_eq!(
-            lookup_port(&doc, &reference("anything")),
+            lookup(&doc, &reference("anything")),
             Err(PortLookupError::UnknownPort)
         );
         assert_eq!(
-            lookup_port(&doc, &reference("condition"))
+            lookup(&doc, &reference("condition"))
                 .unwrap()
                 .ty
                 .as_ref()
@@ -225,7 +200,7 @@ mod tests {
             "core/bool@1"
         );
         assert_eq!(
-            lookup_port(
+            lookup(
                 &document("core/not-known", None, json!({})),
                 &reference("in")
             ),
@@ -240,20 +215,20 @@ mod tests {
             Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
             json!({}),
         );
-        assert!(lookup_port(&stored, &reference("value")).is_ok());
+        assert!(lookup(&stored, &reference("value")).is_ok());
         assert_eq!(
-            lookup_port(&document("core/foo", None, json!({})), &reference("in")),
+            lookup(&document("core/foo", None, json!({})), &reference("in")),
             Err(PortLookupError::MissingMetadata)
         );
         assert_eq!(
-            lookup_port(
+            lookup(
                 &document_with_versions("core/branch", None, json!({}), 2, 1),
                 &reference("in")
             ),
             Err(PortLookupError::MissingMetadata)
         );
         assert_eq!(
-            lookup_port(
+            lookup(
                 &document_with_versions("core/branch", None, json!({}), 1, 2),
                 &reference("in")
             ),
@@ -261,12 +236,9 @@ mod tests {
         );
         for definition in ["core/break", "core/continue"] {
             let doc = document(definition, None, json!({}));
+            assert_eq!(lookup(&doc, &reference("in")).unwrap().kind, PortKind::Exec);
             assert_eq!(
-                lookup_port(&doc, &reference("in")).unwrap().kind,
-                PortKind::Exec
-            );
-            assert_eq!(
-                lookup_port(&doc, &reference("error"))
+                lookup(&doc, &reference("error"))
                     .unwrap()
                     .ty
                     .as_ref()
@@ -275,7 +247,7 @@ mod tests {
                 "core/error@1"
             );
             assert_eq!(
-                lookup_port(&doc, &reference("then")),
+                lookup(&doc, &reference("then")),
                 Err(PortLookupError::UnknownPort)
             );
         }
@@ -288,15 +260,12 @@ mod tests {
             Some("sha256:0000000000000000000000000000000000000000000000000000000000000000"),
             json!({"args":{"order":[2,5],"next":6}}),
         );
-        assert_eq!(
-            lookup_port(&doc, &reference("in")).unwrap().kind,
-            PortKind::Exec
-        );
-        let event = lookup_port(&doc, &reference("value")).unwrap();
+        assert_eq!(lookup(&doc, &reference("in")).unwrap().kind, PortKind::Exec);
+        let event = lookup(&doc, &reference("value")).unwrap();
         assert_eq!(event.kind, PortKind::Event);
         assert_eq!(event.available_on.as_ref().unwrap()[0].as_str(), "failed");
         assert_eq!(
-            lookup_port(&doc, &reference("error"))
+            lookup(&doc, &reference("error"))
                 .unwrap()
                 .ty
                 .as_ref()
@@ -305,22 +274,19 @@ mod tests {
             "core/error@1"
         );
         assert_eq!(
-            lookup_port(&doc, &reference("args#5"))
-                .unwrap()
-                .port_id
-                .as_str(),
+            lookup(&doc, &reference("args#5")).unwrap().port_id.as_str(),
             "args"
         );
         assert_eq!(
-            lookup_port(&doc, &reference("args#3")),
+            lookup(&doc, &reference("args#3")),
             Err(PortLookupError::UnknownPort)
         );
         assert_eq!(
-            lookup_port(&doc, &reference("args")),
+            lookup(&doc, &reference("args")),
             Err(PortLookupError::UnknownPort)
         );
         assert_eq!(
-            lookup_port(&doc, &reference("value#2")),
+            lookup(&doc, &reference("value#2")),
             Err(PortLookupError::UnknownPort)
         );
     }
@@ -333,15 +299,15 @@ mod tests {
             json!({"then":{"order":[0,2],"next":3}}),
         );
         assert_eq!(
-            lookup_port(&doc, &reference("then#2")).unwrap().kind,
+            lookup(&doc, &reference("then#2")).unwrap().kind,
             PortKind::Exec
         );
         assert_eq!(
-            lookup_port(&doc, &reference("then#1")),
+            lookup(&doc, &reference("then#1")),
             Err(PortLookupError::UnknownPort)
         );
         assert_eq!(
-            lookup_port(&doc, &reference("then")),
+            lookup(&doc, &reference("then")),
             Err(PortLookupError::UnknownPort)
         );
     }

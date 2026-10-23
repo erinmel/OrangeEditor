@@ -1,7 +1,9 @@
 use std::sync::Arc;
 
 use orange_model::catalog::RegistrySnapshot;
-use orange_model::validation::{DiagnosticCode, HostOrigin, validate_connections};
+use orange_model::validation::{
+    ConnectionValidation, DiagnosticCode, HostOrigin, validate_connections, validate_nodes,
+};
 use orange_model::{GraphDocument, to_json};
 use proptest::prelude::*;
 use serde_json::{Value, json};
@@ -19,6 +21,13 @@ fn origin() -> HostOrigin {
 
 fn registry() -> Arc<RegistrySnapshot> {
     RegistrySnapshot::core(origin())
+}
+
+/// Connection pass over the core registry's fresh resolution of `doc`.
+fn check(doc: &GraphDocument) -> ConnectionValidation {
+    let registry = registry();
+    let resolved = validate_nodes(doc, &registry).resolved;
+    validate_connections(doc, &resolved, &registry)
 }
 
 fn node(id: &str, signature: &str, variadic: Value) -> Value {
@@ -69,7 +78,7 @@ fn graph(edges: Vec<Value>, missing_node: bool) -> GraphDocument {
     })).unwrap()
 }
 
-fn codes(report: &orange_model::validation::ConnectionValidation) -> Vec<DiagnosticCode> {
+fn codes(report: &ConnectionValidation) -> Vec<DiagnosticCode> {
     report
         .diagnostics
         .iter()
@@ -87,7 +96,7 @@ fn accepts_data_exec_and_event_connections() {
         ],
         false,
     );
-    let result = validate_connections(&doc, &registry());
+    let result = check(&doc);
     assert!(result.is_valid(), "{:?}", result.diagnostics);
     assert!(result.diagnostics.is_empty());
 }
@@ -107,7 +116,7 @@ fn reports_missing_endpoints_and_preserves_document_state() {
     let before = to_json(&doc).unwrap();
     let revision = doc.revision();
     let state_id = doc.state_id();
-    let result = validate_connections(&doc, &registry());
+    let result = check(&doc);
     assert_eq!(
         codes(&result),
         vec![DiagnosticCode::PortUnknown, DiagnosticCode::PortUnknown]
@@ -129,7 +138,7 @@ fn unavailable_metadata_is_incomplete_without_fabricating_an_unknown_port() {
         .unwrap()
         .remove("signature");
     let doc: GraphDocument = serde_json::from_value(value).unwrap();
-    let result = validate_connections(&doc, &registry());
+    let result = check(&doc);
     assert!(result.diagnostics.is_empty());
     assert!(result.incomplete_nodes.contains(&SRC.parse().unwrap()));
     assert!(!result.is_valid());
@@ -154,7 +163,7 @@ fn cross_body_edge_gets_only_the_scope_diagnostic() {
         "edges":[]
     }]);
     let doc: GraphDocument = serde_json::from_value(value).unwrap();
-    let result = validate_connections(&doc, &registry());
+    let result = check(&doc);
     assert_eq!(codes(&result), vec![DiagnosticCode::ScopeEdge]);
 
     let mut misplaced_value: Value =
@@ -169,10 +178,7 @@ fn cross_body_edge_gets_only_the_scope_diagnostic() {
         "edges":[edge(2, SRC, "value", DST, "value")]
     }]);
     let misplaced: GraphDocument = serde_json::from_value(misplaced_value).unwrap();
-    assert_eq!(
-        codes(&validate_connections(&misplaced, &registry())),
-        vec![DiagnosticCode::ScopeEdge]
-    );
+    assert_eq!(codes(&check(&misplaced)), vec![DiagnosticCode::ScopeEdge]);
 }
 
 #[test]
@@ -193,7 +199,7 @@ fn checks_direction_kind_and_cardinality_including_streams() {
         ],
         false,
     );
-    let result = validate_connections(&doc, &registry());
+    let result = check(&doc);
     let actual: std::collections::BTreeSet<_> = codes(&result).into_iter().collect();
     for expected in [
         DiagnosticCode::PortDirection,
@@ -215,10 +221,7 @@ fn checks_direction_kind_and_cardinality_including_streams() {
     .unwrap();
     mismatched_types["signatures"][DST_SIG]["ports"][0]["type"] = json!("core/u64@1");
     let mismatched_types: GraphDocument = serde_json::from_value(mismatched_types).unwrap();
-    assert!(
-        codes(&validate_connections(&mismatched_types, &registry()))
-            .contains(&DiagnosticCode::TypeMismatch)
-    );
+    assert!(codes(&check(&mismatched_types)).contains(&DiagnosticCode::TypeMismatch));
 
     let malformed_peer = graph(
         vec![
@@ -233,7 +236,7 @@ fn checks_direction_kind_and_cardinality_including_streams() {
         ],
         true,
     );
-    let malformed_codes = codes(&validate_connections(&malformed_peer, &registry()));
+    let malformed_codes = codes(&check(&malformed_peer));
     assert!(malformed_codes.contains(&DiagnosticCode::PortUnknown));
     assert!(malformed_codes.contains(&DiagnosticCode::FaninData));
 }
@@ -244,14 +247,11 @@ fn variadic_keys_resolve_by_persisted_instance_key() {
     let mut value: Value = serde_json::from_str(&to_json(&first).unwrap()).unwrap();
     value["nodes"][0]["variadic"] = json!({"many":{"order":[2,5],"next":6}});
     first = serde_json::from_value(value).unwrap();
-    let valid = validate_connections(&first, &registry());
+    let valid = check(&first);
     assert!(valid.is_valid(), "{:?}", valid.diagnostics);
 
     let invalid = graph(vec![edge(1, SRC, "many#3", DST, "in")], false);
-    assert_eq!(
-        codes(&validate_connections(&invalid, &registry())),
-        vec![DiagnosticCode::PortUnknown]
-    );
+    assert_eq!(codes(&check(&invalid)), vec![DiagnosticCode::PortUnknown]);
 }
 
 proptest! {
@@ -277,8 +277,8 @@ proptest! {
         value["edges"] = Value::Array(edge_order.iter().map(|index| edges[*index].clone()).collect());
         let shuffled: GraphDocument = serde_json::from_value(value).unwrap();
         prop_assert_eq!(
-            validate_connections(&base, &registry()).diagnostics,
-            validate_connections(&shuffled, &registry()).diagnostics
+            check(&base).diagnostics,
+            check(&shuffled).diagnostics
         );
     }
 }
