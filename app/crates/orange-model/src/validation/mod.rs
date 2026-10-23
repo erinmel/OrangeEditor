@@ -17,6 +17,7 @@ mod functions;
 mod inputs;
 mod nodes;
 pub(crate) mod ports;
+mod report;
 mod variables;
 
 pub use diagnostic::{
@@ -27,6 +28,7 @@ pub use diagnostic::{
 pub use connections::{ConnectionValidation, validate_connections};
 pub use inputs::validate_inputs;
 pub use nodes::{NodeValidation, validate_nodes};
+pub use report::{ValidationReport, validate, validate_with_effects};
 
 pub use functions::{
     FunctionAnalysis, FunctionEvidence, FunctionSummary, LeafEffects, VariableWrite,
