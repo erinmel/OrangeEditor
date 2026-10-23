@@ -93,7 +93,7 @@ Registry publication also checks suspension metadata against the declared kind: 
 | `available_on` | For `execution` outputs: the exec outcome outs after which the value is defined. Default `["then"]`. Implicit `error: core/error@1` is available on `failed`. |
 | `default` | Literal used when unconnected and the instance has no literal. Not allowed for handle or stream types. A `secret-ref` literal is only a reference, never secret material. |
 | `optional` | Only if the type is `core/option@1<…>`. An unconnected port with no literal or default receives `None`. |
-| `variadic` | `{min, max}`; instance ports are `port_id#k` (§4.5). |
+| `variadic` | `{min, max}` with `max: null` unbounded and `min ≤ max` when finite; registry publication rejects inverted bounds with a typed error naming the definition, port and bounds. Instance ports are `port_id#k` (§4.5). |
 | `lazy` | A true lazy flag is permitted only on host-registered intrinsics in v1 (`select`, `and`, `or`, `coalesce`, `try`). Missing or false means non-lazy; package definitions cannot select the host intrinsic registration path. |
 | `group`, `label`, `description`, `editor` | Presentation only; `label`/`description` use TextRef ([13 §2](13-internationalization.md)); never semantic. |
 | `sensitivity` | `normal` / `sensitive`; drives redaction in traces ([05](05-services-and-platforms.md)). |
@@ -129,6 +129,7 @@ Order: connected edge → instance literal → definition default → `None` for
 
 ### 4.5 Variadic and dynamic ports
 
+- A finite definition range includes both endpoints; `min == max` and `0..0` are valid, and `max: null` remains unbounded. The registry checks only that `min` does not exceed a finite `max`; it does not enforce the number of dynamic instance ports here.
 - Variadic instance ports use stable keys `item#k`. `k` is a per-node counter that is never reused, so inserting an item in the middle does not rewrite edges. Order is the persisted instance order, not `k`.
 - Ports that depend on config or type arguments (record split, gRPC method fields) come from a **declarative port template** that the host evaluates. No guest code runs to compute ports, which keeps the "opening a document executes nothing" rule ([03](03-data-and-execution.md)).
 - Every non-intrinsic node persists a resolved **signature snapshot** ([12 §3](12-graph-data-structures.md)). A missing package still shows ports and edges. If re-resolution differs from the snapshot, it produces a diagnostic. Edges to vanished ports become **orphan edges**: preserved, displayed and not compiled.

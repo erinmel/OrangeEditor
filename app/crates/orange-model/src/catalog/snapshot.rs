@@ -75,6 +75,15 @@ pub enum RegistryError {
         definition: DefinitionId,
         port: PortId,
     },
+    #[error(
+        "definition `{definition}` port `{port}` has invalid variadic bounds: min {min} exceeds max {max}"
+    )]
+    InvalidVariadicBounds {
+        definition: DefinitionId,
+        port: PortId,
+        min: u16,
+        max: u16,
+    },
     #[error("definition `{definition}` of kind {kind:?} is missing suspension metadata")]
     SuspendsMissing {
         definition: DefinitionId,
@@ -337,6 +346,17 @@ fn check_port_shape(id: &DefinitionId, port: &PortDescriptor) -> Result<(), Regi
         return Err(RegistryError::EventInputPort {
             definition,
             port: port_id,
+        });
+    }
+    if let Some(variadic) = port.variadic
+        && let Some(max) = variadic.max
+        && variadic.min > max
+    {
+        return Err(RegistryError::InvalidVariadicBounds {
+            definition,
+            port: port_id,
+            min: variadic.min,
+            max,
         });
     }
     Ok(())
@@ -1020,6 +1040,45 @@ mod tests {
             )
         };
         assert!(build(builder().definition(action)).is_ok());
+    }
+
+    #[test]
+    fn finite_variadic_bounds_publish_when_ordered_and_reject_inversion() {
+        for (min, max) in [(0, Some(0)), (2, Some(2)), (1, Some(3)), (u16::MAX, None)] {
+            let mut definition = definition("acme/variadic", &[], vec![]);
+            definition.ports = Ports::Declared(vec![
+                PortDescriptor::data_in("items", "core/i64@1".parse().unwrap()).variadic(min, max),
+            ]);
+            assert!(
+                build(builder().definition(definition)).is_ok(),
+                "{min}..{max:?}"
+            );
+        }
+
+        for intrinsic in [false, true] {
+            let mut definition = definition("acme/invalid-variadic", &[], vec![]);
+            definition.ports = Ports::Declared(vec![
+                PortDescriptor::data_in("items", "core/i64@1".parse().unwrap())
+                    .variadic(3, Some(2)),
+            ]);
+            let builder = if intrinsic {
+                builder().intrinsic(definition)
+            } else {
+                builder().definition(definition)
+            };
+            assert_eq!(
+                build(builder).unwrap_err(),
+                RegistryError::InvalidVariadicBounds {
+                    definition: dref("acme/invalid-variadic").id,
+                    port: "items".parse().unwrap(),
+                    min: 3,
+                    max: 2,
+                }
+            );
+        }
+
+        // Core sequence/fork intrinsic definitions use valid, unbounded variadic outputs.
+        assert!(build(builder()).is_ok());
     }
 
     #[test]
