@@ -188,7 +188,7 @@ fn a_kept_index_matches_the_document_through_commit_failure_and_removal() {
     assert_eq!(index, DocIndex::build(&doc));
 
     let removal = vec![DocCommand::RemoveNodes { ids: vec![nid(1)] }];
-    apply_inferred_indexed(&mut doc, &mut index, removal, &registry).unwrap();
+    let _ = apply_inferred_indexed(&mut doc, &mut index, removal, &registry).unwrap();
     assert_eq!(index, DocIndex::build(&doc));
     assert_eq!(type_arg(&doc, 2), None);
 }
