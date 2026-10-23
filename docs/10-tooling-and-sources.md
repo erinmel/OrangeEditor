@@ -540,3 +540,11 @@ Toolchain: Rust/Cargo 1.99.1, Windows x86_64 MSVC, default workspace features an
 No MSRV 1.97.1, other-platform, remote CI, runtime or NFR evidence is claimed.
 
 Root C3 integrated verification (2026-10-23): reviewed registry rule and valid/invalid regressions; independently ran cargo test --workspace --locked --offline (321 tests passed), formatting, Clippy with warnings denied, Rustdoc with warnings denied, dependency-boundary guard and git diff --check successfully. Rust 1.99.1/default features/unchanged lock. This closes the reproduced pure/exec publication defect; other definition legality groups and full validation remain planned.
+
+### C3 registry port publication rules (2026-10-23)
+
+Registry publication now rejects event input ports and package definitions with `lazy: true`, using typed `RegistryError` variants that identify the definition and port. Host intrinsics registered through the crate-private path may declare lazy ports. Missing and explicit `lazy: false` are both non-lazy. Passive `PortDescriptor` serde remains unchanged. The focused snapshot unit fixtures cover accepted event outputs, rejected event inputs, host lazy acceptance, package lazy rejection and package explicit-false acceptance. No suspension/source/default/optional redesign is included.
+
+Toolchain: Rust 1.99.1 via rustup (MSRV 1.97.1), checked-in lockfile unchanged. Validation: `cargo test -p orange-model catalog::snapshot::tests --locked` passed; `cargo fmt --all --check` passed; `cargo test --workspace --locked` passed. Cargo emitted existing Windows hard-link fallback warnings for incremental compilation and one existing `orange-model` warning; no test failed. No Clippy/Rustdoc/MSRV-matrix, runtime, or performance claim is made for this slice.
+
+Root C3 event/lazy integration verification (2026-10-23): reviewed rule branches and corrected the event-output acceptance fixture to a valid action with no data-source annotation. Independently ran cargo test --workspace --locked --offline (323 tests), fmt, Clippy with warnings denied, Rustdoc with warnings denied, dependency-boundary guard and git diff --check successfully. Rust 1.99.1/default features/unchanged Cargo.lock SHA-256 39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4. No full definition or execution gate passed.

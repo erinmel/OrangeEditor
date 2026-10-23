@@ -57,6 +57,18 @@ pub enum RegistryError {
         definition: DefinitionId,
         port: PortId,
     },
+    #[error("definition `{definition}` event port `{port}` must be an output")]
+    EventInputPort {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error(
+        "definition `{definition}` port `{port}` may be lazy only when registered as a host intrinsic"
+    )]
+    LazyPackagePort {
+        definition: DefinitionId,
+        port: PortId,
+    },
     #[error("definition `{definition}` port `{port}` uses undeclared type parameter `${param}`")]
     UndeclaredTypeParam {
         definition: DefinitionId,
@@ -253,6 +265,19 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         }
         if definition.kind == NodeKind::Pure && port.kind == PortKind::Exec {
             return Err(RegistryError::PureExecutionPort {
+                definition: id.clone(),
+                port: port.port_id.clone(),
+            });
+        }
+        if port.kind == PortKind::Event && port.direction != crate::document::PortDirection::Output
+        {
+            return Err(RegistryError::EventInputPort {
+                definition: id.clone(),
+                port: port.port_id.clone(),
+            });
+        }
+        if !intrinsic && port.is_lazy() {
+            return Err(RegistryError::LazyPackagePort {
                 definition: id.clone(),
                 port: port.port_id.clone(),
             });
@@ -716,6 +741,57 @@ mod tests {
         action.kind = NodeKind::Action;
         assert!(build(builder().definition(pure).definition(action)).is_ok());
         assert!(build(builder()).is_ok());
+    }
+
+    #[test]
+    fn event_inputs_are_rejected_at_publication() {
+        let event_output = PortDescriptor {
+            direction: crate::document::PortDirection::Output,
+            kind: PortKind::Event,
+            ty: Some("core/i64@1".parse().unwrap()),
+            ..PortDescriptor::data_in("event", "core/i64@1".parse().unwrap())
+        };
+        let mut valid = definition("acme/event-output", &[], vec![event_output]);
+        valid.kind = NodeKind::Action;
+        assert!(build(builder().definition(valid)).is_ok());
+
+        let event_input = PortDescriptor {
+            direction: crate::document::PortDirection::Input,
+            kind: PortKind::Event,
+            ty: Some("core/i64@1".parse().unwrap()),
+            ..PortDescriptor::data_in("event", "core/i64@1".parse().unwrap())
+        };
+        let result =
+            build(builder().definition(definition("acme/event-input", &[], vec![event_input])));
+        assert_eq!(
+            result.unwrap_err(),
+            RegistryError::EventInputPort {
+                definition: "acme/event-input".parse().unwrap(),
+                port: "event".parse().unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn only_host_intrinsics_may_publish_lazy_ports() {
+        let lazy = || PortDescriptor::data_in("value", "core/i64@1".parse().unwrap()).lazy();
+        let result = build(builder().definition(definition("acme/lazy", &[], vec![lazy()])));
+        assert_eq!(
+            result.unwrap_err(),
+            RegistryError::LazyPackagePort {
+                definition: "acme/lazy".parse().unwrap(),
+                port: "value".parse().unwrap(),
+            }
+        );
+
+        let mut intrinsic = definition("core/lazy", &[], vec![lazy()]);
+        assert!(build(builder().intrinsic(intrinsic.clone())).is_ok());
+        // An explicitly false lazy flag is semantically non-lazy and is permitted for packages.
+        intrinsic.definition = dref("acme/non-lazy");
+        let mut non_lazy = PortDescriptor::data_in("value", "core/i64@1".parse().unwrap());
+        non_lazy.lazy = Some(false);
+        intrinsic.ports = Ports::Declared(vec![non_lazy]);
+        assert!(build(builder().definition(intrinsic)).is_ok());
     }
 
     #[test]
