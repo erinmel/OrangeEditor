@@ -169,6 +169,40 @@ fn builtin_variable_reads_and_writes_propagate_only_run_effects_to_callers() {
 }
 
 #[test]
+fn append_records_a_transitive_run_write_without_executing_concatenation() {
+    let mut declaration = variable(RUN_VAR, "run");
+    declaration["type"] = json!("core/string@1");
+    let doc = document(
+        json!([declaration]),
+        json!([
+            function(
+                CALLER,
+                "action",
+                json!([node(CALL_NODE, "core/call", json!({"function":CALLEE}))])
+            ),
+            function(
+                CALLEE,
+                "action",
+                json!([node(
+                    UPDATE_NODE,
+                    "core/update-variable",
+                    json!({"variable":RUN_VAR,"operation":"append"})
+                )])
+            )
+        ]),
+    );
+    let report = analyze(&doc);
+    for function in [CALLER, CALLEE] {
+        let function: FunctionId = function.parse().unwrap();
+        assert!(!report.incomplete_functions.contains(&function));
+        assert_eq!(
+            report.summaries[&function].run_writes[&RUN_VAR.parse().unwrap()],
+            [orange_model::validation::WriteOperation::Append].into()
+        );
+    }
+}
+
+#[test]
 fn workspace_sync_write_is_incomplete_instead_of_becoming_a_run_effect() {
     let doc = document(
         json!([variable(WORKSPACE_VAR, "workspace")]),
@@ -276,7 +310,11 @@ fn unsupported_reserved_pure_zone_metadata_stays_incomplete() {
 #[test]
 fn invalid_contextual_update_keeps_function_summary_incomplete() {
     for (operation, ty, code) in [
-        ("append", "core/i64@1", DiagnosticCode::UpdateUnsupported),
+        (
+            "append",
+            "core/i64@1",
+            DiagnosticCode::ConstraintUnsatisfied,
+        ),
         ("add", "core/bool@1", DiagnosticCode::ConstraintUnsatisfied),
         ("min", "core/f64@1", DiagnosticCode::ConstraintUnsatisfied),
         ("and", "core/f64@1", DiagnosticCode::ConstraintUnsatisfied),

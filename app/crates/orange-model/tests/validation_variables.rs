@@ -801,6 +801,85 @@ fn update_logical_and_bitwise_require_exact_core_scalar_types() {
 }
 
 #[test]
+fn update_append_accepts_only_core_string_bytes_and_lists() {
+    let registry = registry();
+    for (ty, literal) in [
+        ("core/string@1", json!("hello")),
+        ("core/bytes@1", json!("AP8=")),
+        (
+            "core/list@1<core/f64@1>",
+            json!(["3ff8000000000000", "c000000000000000"]),
+        ),
+    ] {
+        let mut node = update_node(1, json!(node_id(10)), json!("append"));
+        let doc = document(json!([node.clone()]), json!([declaration(10, ty, "run")]));
+        let resolved = validate_nodes(&doc, &registry);
+        assert!(resolved.is_valid(), "{ty}: {:?}", resolved.diagnostics);
+        let ports = &resolved.resolved[&nid(1)].ports;
+        assert_eq!(
+            ports.iter().map(|p| p.port_id.as_str()).collect::<Vec<_>>(),
+            ["value", "old", "new"]
+        );
+        assert_eq!(ports[0].direction, PortDirection::Input);
+        assert_eq!(ports[0].ty.as_ref().unwrap().as_str(), ty);
+        assert!(ports[0].default.is_none());
+        assert!(!ports[0].optional.unwrap_or(false));
+        for output in &ports[1..] {
+            assert_eq!(output.direction, PortDirection::Output);
+            assert_eq!(output.ty.as_ref().unwrap().as_str(), ty);
+            assert_eq!(output.source, Some(OutputSource::Execution));
+            assert_eq!(output.available_on.as_ref().unwrap()[0].as_str(), "then");
+        }
+        assert_eq!(
+            validate_inputs(&doc, &resolved.resolved, &registry)
+                .iter()
+                .map(|d| d.code)
+                .collect::<Vec<_>>(),
+            [DiagnosticCode::InputRequired]
+        );
+        node["inputs"] = json!({"value":{"type":ty,"value":literal}});
+        let supplied = document(json!([node]), json!([declaration(10, ty, "run")]));
+        let supplied_resolved = validate_nodes(&supplied, &registry);
+        assert!(
+            supplied_resolved.is_valid(),
+            "{ty}: {:?}",
+            supplied_resolved.diagnostics
+        );
+        let input_diagnostics = validate_inputs(&supplied, &supplied_resolved.resolved, &registry);
+        assert!(input_diagnostics.is_empty(), "{ty}: {input_diagnostics:?}");
+    }
+
+    for ty in [
+        "core/i64@1",
+        "core/f64@1",
+        "core/map@1<core/string@1,core/i64@1>",
+    ] {
+        let report = validate(&document(
+            json!([update_node(1, json!(node_id(10)), json!("append"))]),
+            json!([declaration(10, ty, "run")]),
+        ));
+        assert_eq!(
+            report.diagnostics[0].code,
+            DiagnosticCode::ConstraintUnsatisfied,
+            "{ty}"
+        );
+        assert!(report.resolved.is_empty());
+    }
+    for ty in ["missing/type@1", "core/list@1<missing/type@1>"] {
+        let report = validate(&document(
+            json!([update_node(1, json!(node_id(10)), json!("append"))]),
+            json!([declaration(10, ty, "run")]),
+        ));
+        assert_eq!(
+            report.diagnostics[0].code,
+            DiagnosticCode::TypeMismatch,
+            "{ty}"
+        );
+        assert!(report.resolved.is_empty());
+    }
+}
+
+#[test]
 fn update_errors_follow_reference_scope_operation_then_type_precedence() {
     let cases = [
         ("missing", "run", None, DiagnosticCode::UpdateOperation),
@@ -826,7 +905,7 @@ fn update_errors_follow_reference_scope_operation_then_type_precedence() {
             "append",
             "run",
             Some(json!("append")),
-            DiagnosticCode::UpdateUnsupported,
+            DiagnosticCode::ConstraintUnsatisfied,
         ),
         (
             "add",
@@ -848,10 +927,14 @@ fn update_errors_follow_reference_scope_operation_then_type_precedence() {
         ),
     ];
     for (name, scope, operation, expected) in cases {
-        let ty = match expected {
-            DiagnosticCode::ConstraintUnsatisfied => "core/bool@1",
-            DiagnosticCode::TypeMismatch => "missing/type@1",
-            _ => "core/i64@1",
+        let ty = if name == "append" {
+            "core/i64@1"
+        } else {
+            match expected {
+                DiagnosticCode::ConstraintUnsatisfied => "core/bool@1",
+                DiagnosticCode::TypeMismatch => "missing/type@1",
+                _ => "core/i64@1",
+            }
         };
         let node = if let Some(operation) = operation {
             update_node(1, json!(node_id(10)), operation)

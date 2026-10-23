@@ -213,12 +213,12 @@ fn core_update_requires_the_exact_package_operation_witness() {
         DiagnosticCode::ConstraintUnsatisfied
     );
 
-    let unsupported = document(json!([variable_node("append")]), "org.test/money@1");
-    let report = validate_nodes(&unsupported, &registry);
+    let incompatible = document(json!([variable_node("append")]), "org.test/money@1");
+    let report = validate_nodes(&incompatible, &registry);
     assert_eq!(report.diagnostics.len(), 1);
     assert_eq!(
         report.diagnostics[0].code,
-        DiagnosticCode::UpdateUnsupported
+        DiagnosticCode::ConstraintUnsatisfied
     );
 }
 
@@ -361,6 +361,39 @@ fn package_constraints_do_not_declare_logical_or_bitwise_kernels() {
             );
             assert!(report.resolved.is_empty());
         }
+    }
+}
+
+#[test]
+fn append_accepts_package_elements_without_inventing_nominal_concat_kernels() {
+    for mode in [
+        CapabilityMode::Add,
+        CapabilityMode::Num,
+        CapabilityMode::Ord,
+        CapabilityMode::Eq,
+    ] {
+        let registry = registry(mode, false);
+        let list = document(
+            json!([variable_node("append")]),
+            "core/list@1<org.test/money@1>",
+        );
+        let report = validate_nodes(&list, &registry);
+        assert!(report.is_valid(), "{mode:?}: {:?}", report.diagnostics);
+        assert_eq!(
+            report.resolved[&node_id(1).parse().unwrap()].ports[0]
+                .ty
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "core/list@1<org.test/money@1>"
+        );
+        let nominal = document(json!([variable_node("append")]), "org.test/money@1");
+        let report = validate_nodes(&nominal, &registry);
+        assert_eq!(
+            report.diagnostics[0].code,
+            DiagnosticCode::ConstraintUnsatisfied
+        );
+        assert!(report.resolved.is_empty());
     }
 }
 

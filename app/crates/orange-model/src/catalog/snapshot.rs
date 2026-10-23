@@ -88,6 +88,23 @@ pub enum RegistryError {
         min: u16,
         max: u16,
     },
+    #[error("definition `{definition}` port `{port}` may have a default only as a data input")]
+    DefaultPortPosition {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error("definition `{definition}` port `{port}` may be optional only as a data input")]
+    OptionalPortPosition {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error(
+        "definition `{definition}` port `{port}` marked optional must have type core/option@1<T>"
+    )]
+    OptionalType {
+        definition: DefinitionId,
+        port: PortId,
+    },
     #[error("definition `{definition}` of kind {kind:?} is missing suspension metadata")]
     SuspendsMissing {
         definition: DefinitionId,
@@ -284,6 +301,11 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         check_port_authority(id, port, intrinsic)?;
         check_port_params(id, port, &declared)?;
     }
+    // Input initialization metadata checks run after the established descriptor checks,
+    // preserving their error precedence (including deferred type-expression parsing).
+    for port in ports {
+        check_input_metadata(id, port)?;
+    }
     Ok(())
 }
 
@@ -423,6 +445,38 @@ fn check_port_params(
             port: port.port_id.clone(),
             param,
         });
+    }
+    Ok(())
+}
+
+/// Defaults and optional absence define only how a data input is initialized (11 §4.1).
+fn check_input_metadata(id: &DefinitionId, port: &PortDescriptor) -> Result<(), RegistryError> {
+    let (definition, port_id) = (id.clone(), port.port_id.clone());
+    let is_data_input = port.direction == PortDirection::Input && port.kind == PortKind::Data;
+    if port.default.is_some() && !is_data_input {
+        return Err(RegistryError::DefaultPortPosition {
+            definition,
+            port: port_id,
+        });
+    }
+    if port.optional.unwrap_or(false) {
+        if !is_data_input {
+            return Err(RegistryError::OptionalPortPosition {
+                definition,
+                port: port_id,
+            });
+        }
+        // Parse only the outer Option wrapper; name resolution (including its inner
+        // argument) remains deferred to inference.
+        if let Some(ty) = port.ty.as_ref()
+            && let Ok(term) = TypeTerm::parse(ty)
+            && !term.core("option").is_some_and(|args| args.len() == 1)
+        {
+            return Err(RegistryError::OptionalType {
+                definition,
+                port: port_id,
+            });
+        }
     }
     Ok(())
 }
@@ -645,9 +699,6 @@ impl RegistrySnapshot {
                     .ok_or(ContractError::UpdateOperation)?;
                 let operation =
                     WriteOperation::parse_update(token).ok_or(ContractError::UpdateOperation)?;
-                if operation == WriteOperation::Append {
-                    return Err(ContractError::UpdateUnsupported);
-                }
                 let term = TypeTerm::parse(&ty).map_err(|error| match error {
                     crate::error::IdError::TypeTooDeep { .. } => ContractError::TypeComplexity,
                     _ => ContractError::TypeMismatch,
@@ -670,6 +721,16 @@ impl RegistrySnapshot {
                     WriteOperation::CompareAndSet => {
                         Some(CapabilityRequest::Constraint(Constraint::Eq))
                     }
+                    WriteOperation::Append => {
+                        let eligible = term.core("string").is_some_and(|args| args.is_empty())
+                            || term.core("bytes").is_some_and(|args| args.is_empty())
+                            || term.core("list").is_some_and(|args| args.len() == 1);
+                        if !eligible {
+                            return Err(ContractError::UpdateConstraint);
+                        }
+                        // List element types need no Eq or other operation proof.
+                        None
+                    }
                     WriteOperation::And | WriteOperation::Or | WriteOperation::Xor => {
                         let eligible = [
                             "core/bool@1",
@@ -686,7 +747,7 @@ impl RegistrySnapshot {
                         // package implementation is consulted for these kernels.
                         None
                     }
-                    _ => return Err(ContractError::UpdateUnsupported),
+                    WriteOperation::Set => return Err(ContractError::UpdateOperation),
                 };
                 if let Some(capability) = capability {
                     match self.types.supports_term(&term, capability) {
