@@ -4,6 +4,8 @@ An expansion is installed into the running OrangeEditor application. It is not a
 
 Maintained expansion source lives under `plugins/<name>` in the [monorepo](15-monorepo-layout.md), with the versioned public SDK under `sdk`. Package versions/builds and application releases stay independent. Sharing a Git commit does not grant a package private host imports or bypass installation/permissions/provider locks.
 
+ADR-22 narrows foundation delivery to generic capabilities. Specialized OBS/Twitch, TTS, webhook and browser-canvas integrations are independent plugins, not bundled release requirements. A plugin can add a typed event source (for example, a remote service notification) using owned bounded ingress, without adding scheduler rules. The SDK acceptance sample is synthetic and requires no live account. Plugins generating speech return an approved audio asset or bounded PCM stream to the existing selected-device playback service; they never write to an audio callback.
+
 ## Execution boundary decision
 
 | Boundary | Hot addition / portability | Failure and authority | Contribution/latency limits | Decision |
@@ -25,8 +27,9 @@ Guest permissions are **enforced host-service authority**: profiles/destinations
 | Node implementation, types, codecs, reusable graph | Yes; bounded values/calls | Yes; same contracts over IPC | Yes; shared definitions |
 | Language surface ([11 §16](11-graph-language.md)): pure/volatile-entropy/action/async/entry/iterator definitions, constraint implementations for owned types, converters touching owned types | Yes; iterator `next` and async run as guest calls with host-mediated suspension | Yes | Yes |
 | Port kinds, control/zone intrinsics, scheduling/reentrancy modes, cycle or availability rules | No; host language release only | No | Host language release only |
+| Event-source provider | Typed payload and host-mediated owned subscription; no arbitrary OS hook or inline handler execution | Same ingress with native trust disclosure | Host input/timer/audio adapters; same event ownership |
 | Connection adapter/service provider | Yes; host transport/credential imports and leases | Yes; registers versioned broker-facing service adapter; may own native connection with trust disclosure | Yes |
-| File/audio backend provider | Non-real-time control/format policy through approved handles; cannot supply native callback | Yes; decoded PCM/control via bounded buffer bridge, never direct host callback | Yes; low-level OS/backend callback |
+| File/audio/input-trigger backend provider | Non-real-time control/format policy through approved handles; cannot supply native callback | Yes; decoded PCM/control via bounded buffer bridge, never direct host callback | Yes; low-level OS/backend callback |
 | Panels, settings, inspectors, value editors | Declarative widget tree, commands/actions, owned state | Same declarative contract | Same schema; host adapter privileged |
 | Translation catalogues and translatable UI text | Data-only FTL resources and namespaced TextRef/MessageRef | Same contract; no executable formatter injection | Same public contract for bundled text |
 | Scene objects/material parameters/behavior | Validated scene command batches/resource handles, P6 | Same bridge | Can implement renderer adapter, app release required |
@@ -46,30 +49,30 @@ Packages contributing text include `localization` and catalogue files per [13 §
 ```json
 {
   "format": "orange.plugin", "format_version": 1,
-  "id": "org.orange.obs", "version": "0.1.0", "publisher": "org.orange",
+  "id": "org.example.device", "version": "0.1.0", "publisher": "org.example",
   "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
   "localization": {"format_version": 1, "format": "fluent", "default_locale": "en", "catalogs": {"en": ["locales/en.ftl"]}, "arguments": {}},
   "execution": {"kind": "wasm-component", "entry": "component.wasm", "world": "orange:expansion/plugin@1.0.0"},
   "dependencies": [{"id": "org.orange.websocket", "version": "0.1.0"}],
   "contributions": {
-    "nodes": ["org.orange.obs/get-scenes", "org.orange.obs/set-scene", "org.orange.obs/on-program-scene-changed"],
-    "panels": ["org.orange.obs/session"],
-    "providers": [{"slot": "connection:org.orange.obs/session@1", "id": "obs-v5"}]
+    "nodes": ["org.example.device/get-status", "org.example.device/set-state", "org.example.device/on-state-changed"],
+    "panels": ["org.example.device/session"],
+    "providers": [{"slot": "connection:org.example.device/session@1", "id": "device-v1"}]
   },
   "permissions": [
-    {"kind": "connection.use", "profiles": ["obs-studio"], "operations": ["websocket.send", "websocket.receive"]},
-    {"kind": "auth.transform", "provider": "org.orange.obs/auth-challenge@1", "profiles": ["obs-studio"]}
+    {"kind": "connection.use", "profiles": ["local-device"], "operations": ["websocket.send", "websocket.receive"]},
+    {"kind": "auth.transform", "provider": "org.orange.auth/bearer@1", "profiles": ["local-device"]}
   ],
   "integrity": {"algorithm": "sha256", "payload_digest": "2222222222222222222222222222222222222222222222222222222222222222"},
   "license": "MIT"
 }
 ```
 
-Digest is synthetic. This OBS package owns the protocol implementation and has raw WebSocket send/receive authority for the granted profile; those grants do **not** enforce OBS method-level restrictions. It exposes a separate protocol-aware `connection:org.orange.obs/session@1` service which validates allowed method/event operations for downstream expansions. A third-party package granted only `obs.request`/`obs.subscribe` uses that checked service, not the raw socket. The host's namespaced auth transform is described in 05.
+Digest and package are synthetic. This sample device package implements a protocol over the granted WebSocket profile; raw send/receive grants do not enforce protocol operation restrictions. Its separate namespaced service validates allowed operations for other expansions. A consumer granted only typed device operations uses that checked service rather than receiving raw socket authority. Authentication uses host-supported broker operations; any new secret transform requires the explicit policy below and in 05. This sample is not a promised shipped device integration.
 
 Archive digest excludes manifest signature/digest fields under a specified canonicalization rule; WU-03 must finalize this rule and publish cross-language vectors before distributing packages. Publisher names alone are not identity proof. Signed packages verify signatures against explicitly trusted signing identities; local unsigned packages show origin/hash and require explicit trust. Integrity verifies bytes, not benign behavior. Dependency locks record exact version+digest; a package cannot claim another publisher's reserved namespace. Cycles/incompatible major host API fail before activation. Offline local installation is baseline; registry/marketplace is P6.
 
-SDK deliverables: versioned host/guest interfaces, JSON schemas, generated Rust guest bindings plus language-neutral wire documentation, conformance test runner, package validator, sample OBS extension, migration sample, signing/bundling instructions and minimal supported toolchain. Guest toolchain may differ from the host if its output meets the pinned component contract; native worker binaries declare target OS/architecture and wire version. Every SDK release publishes a compatibility matrix against Orange host API and a supported deprecation window (proposed two minor host releases, confirmed at API freeze). No semver range alone overrides a graph's exact provider lock.
+SDK deliverables: versioned host/guest interfaces, JSON schemas, generated Rust guest bindings plus language-neutral wire documentation, conformance test runner, package validator, synthetic node/event-source/editor extension, migration sample, signing/bundling instructions and minimal supported toolchain. Guest toolchain may differ from the host if its output meets the pinned component contract; native worker binaries declare target OS/architecture and wire version. Every SDK release publishes a compatibility matrix against Orange host API and a supported deprecation window (proposed two minor host releases, confirmed at API freeze). No semver range alone overrides a graph's exact provider lock.
 
 ## Installation, activation and override
 

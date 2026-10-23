@@ -1,6 +1,6 @@
 # Graph language and execution semantics
 
-Status: **normative proposal for graph format v1**. The document model exists; validator, compiler and runtime behavior remain to be implemented and tested. Section 18 supplies reference scenarios for focused implementation tests. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
+Status: **normative proposal for graph format v1**. The document model, type/inference work and partial validator passes exist; complete validation, compiler and runtime remain to be implemented and tested. Section 18 supplies reference scenarios for focused implementation tests. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
 
 **Layering (ADR-21).** §4–§6, §16 and §17 are the shared **substrate** that every execution domain uses: ports, types, conversions, extension surface and diagnostics. §1–§3 and §7–§15 define the built-in **`control` domain** (event activations, exec/data wires, async, structured loops), which a body uses when it declares no `domain` ([12 §3.1](12-graph-data-structures.md)). The core ships no other domain; crates that depend on the core may add domains, bridges and object models, each with its own semantics document.
 
@@ -65,7 +65,7 @@ A definition has exactly one `kind`. Ports inherited from a kind (§4.1) are imp
 | `volatile` | none | never | reads state, clock or entropy | once per epoch | `entropy` subclass only | Get Variable, Now, Random (seeded) |
 | `action` | `in`; outcome outs (default `then`); `failed` | never | may write state or perform a non-blocking effect | n/a | yes | Set Variable, Emit, Log, Register store |
 | `async` | as action, plus `cancelled` | `maybe` or `always` (declared) | effects through host services | n/a | yes | HTTP request, read file, Wait |
-| `entry` | `then` only; no exec input | n/a | starts activations | n/a | yes, through event-source contract | On Start, On Timer, On Event, OBS scene changed |
+| `entry` | `then` only; no exec input | n/a | starts activations | n/a | yes, through event-source contract | On Start, On Timer, On Event, keyboard, audio threshold |
 | `iterator` | `in`, `body` (region), `completed`, `failed`, `cancelled` | `next` may suspend | open/next/close over a resource | n/a | yes | For Each Line, For Each Stream Item |
 | `control` intrinsic | per intrinsic (§8.4) | Yield only | node state for Gate/Do Once/Flip Flop | n/a | **no** | Branch, Switch, Sequence, Fork, loops |
 | `zone` intrinsic pair | none | never | none (pure loop) | per iteration | **no** | Repeat, Map, Fold, Filter |
@@ -426,6 +426,8 @@ Under `parallel`, activations interleave at suspension points. Get is re-pulled 
 
 Custom events are declared per graph: `{id, name, payload type, scope: run | workspace}`. Workspace-scope events go through the host bus to other runs in the workspace, with the same envelope and causal-depth rules.
 
+**Foundation trigger authoring (ADR-22; FR-52/54/55).** Manual entries expose an accessible test button. Keyboard and audio-threshold sources are host-backed entry definitions governed by the same acquisition, queue, reentrancy and cancellation rules as package sources; they are not new port kinds or control intrinsics. Configuration is available from the node. Source capture/registration is active only for an owning run. An installed plugin can contribute a different event source with its own typed payload through this same contract. Input-specific acquisition and timing are in 05.
+
 ### 10.3 Envelope and causal depth
 
 An envelope carries `ingestion_seq`, source and `source_seq`, cause activation, `cause_depth`, monotonic and wall time, payload and payload size. Envelopes from external sources, timers and manual triggers have depth 0. Emits, variable changes and Watches from activation A get `A.depth + 1`. Above `max_cause_depth` (run setting; proposed 64; NFR-02 tuning), an Emit fails with `core/RunawayEventChain`, and a notification or Watch is suppressed with a counter and diagnostic. Perpetual behaviour belongs in a timer or a control cycle through Wait, not in an unbounded event chain.
@@ -445,6 +447,8 @@ An action or async with `event` outputs (a subscription) is allowed **only in th
 | `workspace` | Host actor; shared by runs | volatile read of the latest published versioned snapshot | `core/set-shared`, `core/update-shared` (**async**, serialized by the host; the snapshot is published before `then`, so the writer reads its own write) | optional checkpoint |
 
 `Get` and `Read` remain UI aliases of one operation. An uninitialized read fails with `core/UninitializedVariable`. `update-variable` operations: `add`, `sub`, `min`, `max`, `and`, `or`, `xor`, `append`, `compare-and-set(expected)`; outputs `old` and `new` are available on `then`. Handles and streams may not be stored in persistent or workspace variables (`E-HANDLE-PERSIST`), and streams in no variable at all (`E-STREAM-STORE`).
+
+**Declaration authoring (FR-12).** The editor exposes variable declaration through a declaration node/control bound to the stable persisted VariableDecl ID. Type, scope and initializer edits are atomic document commands; Get/Set/Update reference that ID, never a name or arbitrary config string. This is an authoring projection, not a new executable Declare intrinsic: drawing/revisiting it never initializes or resets runtime state. Runtime initialization remains at activation/call/run start as above. Enum authoring likewise uses registered schemas with stable variant IDs and explicit constructor/match nodes; it does not introduce implicit string tags. Exact editor serialization and commands are qualified in WU-05 before adoption.
 
 ### 11.2 Write conflicts
 
@@ -492,6 +496,12 @@ Runtime codes defined by the core: `NumericOverflow`, `DivideByZero`, `Domain`, 
 - A function body has no entries or Watch nodes (`E-ENTRY-IN-FUNCTION`) and no subscriptions (`E-SUBSCRIPTION-IN-FUNCTION`, §10.4). Break and Continue do not cross the boundary. `core/return` MUST NOT appear inside a Fork branch (`E-REGION-ESCAPE`). Every path in an action function with outputs reaches a Return (`E-MISSING-RETURN`). Return cancels any remaining detached strands of the body (`W-DETACH-IN-FUNCTION`).
 - The call graph is acyclic (§8.2). There are no macros in v1. "Collapse to function" is an editor refactoring with an interface preview, and groups or frames are presentation only.
 - A package-provided function is a definition whose implementation is a graph, pinned by the package lock like any provider.
+
+### 14.1 Saved specialized nodes and templates
+
+FR-53 exposes the existing function mechanism as a user workflow: select compatible nodes → preview typed inputs/outputs, variable dependencies and inferred effects → save a named versioned callable graph → insert calls from the palette. Workspace-library and package forms retain exact dependency/provider locks, missing-node preservation and migration previews. Local edits do not silently update existing versioned users. Export/import carries the interface, body, dependency metadata and explicit asset/reference remapping; executable code is never run during import. The external library artifact schema must be specified and tested before WU-05 adopts it; this paragraph does not declare a new implemented wire format.
+
+Functions keep the entry/subscription restrictions above. A selection that contains triggers/subscriptions may instead be saved as an explicitly labelled insertable graph template with remapped IDs/references. A template inserts editable nodes; it is not a callable node, does not bypass function restrictions and is not an implied stateful component language. Visual groups remain layout only. Later encapsulated event-driven components require their own language decision and tests. Source selection remains intact if extraction/export fails or is cancelled.
 
 ## 15. Live editing and preview
 

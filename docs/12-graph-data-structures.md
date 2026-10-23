@@ -185,6 +185,10 @@ Implementation notes (WU-00/00b.2; Rust spelling only, JSON format unchanged):
 
 Import integrity: each package `(id, version)` and each type-lock identity occurs once, including when duplicate rows are identical; ambiguous locks are a structural load error. Provider resolution must not choose the first matching row. The default importer checks a 64 MiB UTF-8 byte budget before parsing and then checks 100,000 nodes and 500,000 edges across all bodies. `from_json_with_limits` lets an embedding host choose explicit budgets. Structural counts are post-deserialization checks, not allocation limits; a host reading a file or stream must also bound that read before constructing the input string. These defaults are safety limits, not supported performance targets.
 
+### 3.4 Foundation authoring projections (ADR-22)
+
+Variable declaration controls/nodes refer to the existing stable VariableDecl, and callable reusable nodes use FunctionDecl and exact package/provider locks (11 §11/§14). A declaration authoring projection adds no new runtime instruction or initialization order. Selection export must discover references through typed host metadata, remap IDs atomically, preserve unresolved payloads and retain provider locks. Event-containing templates insert ordinary nodes and declarations rather than pretending to be callable functions. Exact library/template/editor encodings remain unimplemented and must be specified with schemas and focused round-trip/undo tests in WU-05 before adoption. This scope update changes no current format v1 field or Rust API.
+
 ## 4. Definition schema
 
 `NodeDefinition` fields: `definition_id`, `definition_version`, `config_version`, `kind`, `suspends` (`never`/`maybe`/`always`; async and iterator), `cleanup_safe`, `volatility` (volatile only), `type_params`, `ports`, `iterator` (iterator only), `event_source` (entry only), `port_template` (optional declarative dynamic ports), `config_schema`, `errors`, `capabilities`, `determinism` (`deterministic`/`seeded`/`external`/`nondeterministic`), `cost` (optional hint: `scalar`/`linear`/`heavy`), `implementation_slot`, `label`, optional `description`, `editor`. All human-facing label/help/category/alias fields use TextRef from [13 §2](13-internationalization.md), including port labels/descriptions and declarative configuration-option captions. Implicit kind ports ([11 §4.1](11-graph-language.md)) are never listed; their text comes from host catalogues.
@@ -298,27 +302,27 @@ Package entry (event source acquired in the run's Starting phase):
 
 ```json
 {
-  "definition_id": "org.orange.obs/on-program-scene-changed",
+  "definition_id": "org.example.device/on-state-changed",
   "definition_version": 1,
   "config_version": 1,
   "kind": "entry",
-  "label": {"key": "org.orange.obs/on-program-scene-changed-label", "fallback": "On program scene changed"},
-  "event_source": {"service": "connection:org.orange.obs/session@1", "event": "CurrentProgramSceneChanged"},
+  "label": {"key": "org.example.device/on-state-changed-label", "fallback": "On device state changed"},
+  "event_source": {"service": "connection:org.example.device/session@1", "event": "StateChanged"},
   "ports": [
     {
-      "port_id": "scene_name",
+      "port_id": "state",
       "direction": "output",
       "kind": "data",
       "type": "core/string@1",
       "source": "payload",
-      "label": {"key": "org.orange.obs/on-program-scene-changed-port-scene-name", "fallback": "Scene name"}
+      "label": {"key": "org.example.device/on-state-changed-port-state", "fallback": "State"}
     }
   ],
   "config_schema": {"type": "object", "properties": {"profile": {"type": "string"}}, "required": ["profile"], "additionalProperties": false},
   "capabilities": ["connection.use"],
   "determinism": "external",
-  "implementation_slot": "node:org.orange.obs/on-program-scene-changed@1",
-  "editor": {"category_id": "org.orange.obs/category-obs-events", "category": {"key": "org.orange.obs/category-obs-events", "fallback": "OBS/Events"}, "control": "standard-node"}
+  "implementation_slot": "node:org.example.device/on-state-changed@1",
+  "editor": {"category_id": "org.example.device/category-device-events", "category": {"key": "org.example.device/category-device-events", "fallback": "Device/Events"}, "control": "standard-node"}
 }
 ```
 

@@ -2,6 +2,14 @@
 
 Checked 2026-10-20. Distinguish verified environment facts, verified source facts, design decisions and untested dependency candidates. Protocol/platform sources are also linked at the relevant contracts in [05](05-services-and-platforms.md); ADRs identify the decisions they support.
 
+## Foundation scope revision (2026-10-22)
+
+ADR-22 records the user-selected usable foundation application, reusable core/UI and general language/trigger/file/network/audio scope. FR-52–55 add configurable input triggers, saved callable graphs, selected-device capture and level/hold events; FR-56 and MQTT remain conditional. OBS/Twitch, browser-canvas products and broader protocol suites are outside delivery. Requirements, architecture, service/package contracts, authoring/data notes, feasibility probes, FR/NFR verification and the ignored local plan were reviewed together. Existing format v1 fields, Rust APIs, dependencies and lockfile are unchanged. New editor/library/analysis encodings and algorithms require contracts and behavior tests at their implementation slice; no schema or runtime compatibility is claimed from this revision.
+
+Local documentation verification on Windows, Node.js **v24.18.0**: `node .artifacts/check-foundation-scope.mjs` **PASS** (temporary local helper: 12 changed Markdown files, 12 parsed JSON examples, 194 existing local link targets, 56 unique FR IDs with priorities/traces, continuous requirement/probe/decision tables, eight probe rows and foundation plan/G5 scope checks). `git diff --check` **PASS**. Self-review removed remaining vendor-specific normative examples, retained retired FR IDs, distinguished callable graphs from event-containing templates, and kept capture/playback separate from virtual-device creation. Temporary editing/check helpers are not product artifacts or committed tooling.
+
+Limits: file targets and JSON syntax were checked, not Markdown anchor resolution or rendered layout. No Rust builds/tests, hook registrations, microphone access, audio analysis/playback, broker probes, plugin installs, UI tests or performance measurements were run for this documentation-only change. Existing implementation evidence below remains historical; no feasibility/runtime/API-freeze or release gate is passed.
+
 ## Workspace and environment
 
 - User-selected destination: `C:\Users\eriar\OneDrive\Documentos\Projects\Programming\rust\OraneEditor`. Exact directory spelling is intentional; product name is OrangeEditor. The directory existed and was empty at inspection.
@@ -214,7 +222,7 @@ Specialization metadata moved from `GenericDefinition` to `TemplateCatalog::inse
 
 Context7 was found in the available plugin directory and suggested as an optional documentation integration. It was **not installed or connected** in this session. It may help retrieve dependency documentation, but Bevy 0.20 coverage/version selection must be verified before using its answers. Release-tag source and versioned local Rustdoc remain authoritative. Installation is optional and must not block planning or justify substituting 0.19 APIs.
 
-OBS/Twitch account connectors are not required to design Orange's SDK. Actual integration testing later requires local OBS, an explicitly authorized Twitch test application/account and synthetic fixtures; credentials belong in the vault, never agent prompts or source files. Do not introduce an unrelated cloud project-management system as a prerequisite.
+ADR-22 removes OBS/Twitch from foundation delivery, including account connectors and live integration tests. Synthetic local fixtures qualify the SDK; any independently scoped integration owns its own later account/fixture requirements. Credentials belong in the vault, never agent prompts or source files. Do not introduce an unrelated cloud project-management system as a prerequisite.
 
 For implementation, verify the Rust toolchain, target linker/native SDKs, language server, formatting/lint tools and platform libraries. These are development prerequisites, not claims that they are installed. Any broker/container, audio diagnostic or security tool is added only for a work unit that uses it.
 
@@ -224,7 +232,7 @@ Bevy was dropped from the project (ADR-02, ADR-21); the editor UI will use egui 
 
 ## Dependency selection ledger
 
-No framework pin is fixed yet; egui/eframe are pinned in P-01. All implementation dependencies must acquire an exact version, minimum compiler, platform/feature matrix, license, maintenance/security review and contract test at their adopting work unit. A proposed family below is a research candidate, not a dependency approval or compatibility claim.
+ADR-22 defines the current foundation scope; historical research below is not a release requirement. No framework pin is fixed yet; egui/eframe are pinned in P-01. All implementation dependencies must acquire an exact version, minimum compiler, platform/feature matrix, license, maintenance/security review and contract test at their adopting work unit. A proposed family below is a research candidate, not a dependency approval or compatibility claim.
 
 | Capability | Candidate / decision boundary | Required evidence before adoption |
 |---|---|---|
@@ -233,9 +241,9 @@ No framework pin is fixed yet; egui/eframe are pinned in P-01. All implementatio
 | Hot expansion execution | Wasmtime/component-model candidate | Exact supported component interface/runtime version, fuel/epoch interruption, memory limit, host-call cancellation and boundary benchmarks |
 | Definitions and persistence | Serde-family serialization candidate | Versioned schema contract, malformed input bounds, deterministic output and migration tests |
 | HTTP/TLS | Async HTTP client with explicit TLS backend | HTTP/2, proxies, certificates, streaming, cancellation, ALPN and licenses |
-| WebSocket/MQTT/AMQP/gRPC | Separate protocol adapters, not a universal network library | Protocol version, authentication/stream behavior, async runtime compatibility, bounded payloads and fixtures |
-| Audio | Dedicated endpoint/decoder service plus OS adapters | Actual per-player routing, decoder format/license inventory, device identity, clock/rate behavior and callback audit |
-| Linux virtual source | PipeWire adapter | Versioned API/permissions/session policy and app-owned cleanup on a real Linux session |
+| WebSocket; conditional MQTT; deferred AMQP/gRPC | Separate protocol adapters; only WebSocket is foundation baseline (ADR-22) | Protocol version, authentication/stream behavior, async runtime compatibility, bounded payloads and fixtures |
+| Audio | Endpoint/decoder/capture services and off-callback level workers | Actual input/output/cable routing, capture permission, decoder formats/licenses, RMS/peak/hold fixtures, device/clock/hotplug and callback audit |
+| Input triggers | Native focused/global input adapter behind host event ingress | P-07 registration/conflict/permission/focus/repeat/release/cleanup on each advertised OS/session |
 | Credentials | OS-specific secure stores behind one host interface | Windows/macOS/Linux availability and locked/headless behavior; no plaintext fallback |
 | Localization | Fluent FTL parser/formatter candidate, Unicode/CLDR data and host font fallback | Exact versions/features/MSRV/licenses, bounded reference/argument handling and locale/plural capabilities; L-suite, G-39 and P-02 platform evidence before adoption; sources in [13](13-internationalization.md) |
 

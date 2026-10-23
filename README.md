@@ -1,6 +1,6 @@
 # OrangeEditor
 
-A Rust visual programming project for typed calculations, state, events and services, with planned desktop and headless execution and installable expansion packages.
+A reusable Rust node editor foundation: an embeddable graph core, a separate usable and extensible egui editor, and a basic application with desktop and headless execution. The selected scope is typed logic/math, variables/enums, loops/time/branching, reusable graphs and import/export, configurable triggers, files, HTTP/HTTPS/WebSocket, and basic audio playback/input/level events. MQTT and frequency/pitch analysis are conditional extensions. Specialized integrations such as OBS, Twitch and browser-canvas servers are outside this delivery; installed plugins can add them through public contracts (ADR-22).
 
 The working code is [orange-model](app/crates/orange-model): graph documents, transactions/undo, indexes, signatures, copy/paste, typed values, types with generic inference and converters, and read-only connection, provider-resolution, input and graph-local function analysis. **Next is contextual intrinsic projection and control-flow analysis in the validator (WU-00/00d)**; these individual passes do not approve a graph for execution. The compiler and executor remain to be implemented. Current work prioritizes a tested headless core before concrete host services and editor integration. OrangeEditor is a foundation: the core has no UI, window or engine dependency, and the editor UI will be a separate egui library ([ADR-02, ADR-21](docs/08-decisions.md)).
 
