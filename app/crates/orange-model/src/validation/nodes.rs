@@ -124,7 +124,22 @@ pub fn validate_nodes(
         &mut diagnostics,
     );
     let index = DocIndex::build(document);
-    let inference_contracts = inference_catalog(document, &contracts, &eligible, &ids);
+    let inference_contracts = match inference_catalog(document, &contracts, &eligible, &ids) {
+        Ok(catalog) => catalog,
+        Err(stale) => {
+            unresolved(
+                stale.node,
+                DiagnosticCode::MetadataStale,
+                origin,
+                &mut report,
+                &mut diagnostics,
+            );
+            report.incomplete_nodes.extend(eligible);
+            sort_diagnostics(&mut diagnostics);
+            report.diagnostics = diagnostics;
+            return report;
+        }
+    };
     let pass = NodePass {
         document,
         index: &index,
@@ -191,6 +206,16 @@ fn preflight_node(
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> bool {
+    if contracts.get_for_node(document, node).is_err() {
+        unresolved(
+            node.id,
+            DiagnosticCode::MetadataStale,
+            origin,
+            report,
+            diagnostics,
+        );
+        return false;
+    }
     if is_intrinsic_definition(node.definition.id.as_str()) {
         if node.provider.is_some() {
             unresolved(
@@ -219,8 +244,9 @@ fn preflight_node(
             unresolved(node.id, code, origin, report, diagnostics);
             return false;
         }
-        contracts.insert(
-            node.definition.clone(),
+        let inserted = contracts.insert_node(
+            document,
+            node,
             GenericDefinition {
                 kind: snapshot.kind,
                 suspends: snapshot.suspends,
@@ -228,6 +254,16 @@ fn preflight_node(
                 ports: snapshot.ports,
             },
         );
+        if inserted.is_err() {
+            unresolved(
+                node.id,
+                DiagnosticCode::MetadataStale,
+                origin,
+                report,
+                diagnostics,
+            );
+            return false;
+        }
         return true;
     }
 
@@ -265,7 +301,7 @@ fn preflight_node(
         );
         return false;
     };
-    let Some(contract) = contracts.get(&node.definition) else {
+    let Ok(Some(contract)) = contracts.get_for_node(document, node) else {
         unresolved(
             node.id,
             DiagnosticCode::ProviderUnavailable,
@@ -318,17 +354,13 @@ fn inference_catalog(
     contracts: &TemplateCatalog,
     eligible: &BTreeSet<NodeId>,
     ids: &[NodeId],
-) -> TemplateCatalog {
+) -> Result<TemplateCatalog, crate::inference::StaleNodeTemplate> {
     let mut catalog = contracts.clone();
-    let mut expanded = BTreeSet::new();
     for id in ids.iter().filter(|id| eligible.contains(id)) {
         let Some(node) = document.node(*id) else {
             continue;
         };
-        if !expanded.insert((node.definition.id.clone(), node.definition.version)) {
-            continue;
-        }
-        let Some(contract) = contracts.get(&node.definition) else {
+        let Ok(Some(contract)) = contracts.get_for_node(document, node) else {
             continue;
         };
         let mut snapshot = SignatureSnapshot {
@@ -351,17 +383,18 @@ fn inference_catalog(
                 snapshot.ports.push(port);
             }
         }
-        catalog.insert(
-            node.definition.clone(),
+        catalog.insert_node(
+            document,
+            node,
             GenericDefinition {
                 kind: snapshot.kind,
                 suspends: snapshot.suspends,
                 type_params: contract.type_params.clone(),
                 ports: snapshot.ports,
             },
-        );
+        )?;
     }
-    catalog
+    Ok(catalog)
 }
 
 fn infer_fresh_args(
@@ -461,7 +494,7 @@ fn collect_component_args(
         let Some(node) = document.node(*id) else {
             continue;
         };
-        let Some(contract) = contracts.get(&node.definition) else {
+        let Ok(Some(contract)) = contracts.get_for_node(document, node) else {
             continue;
         };
         let Some(args) = component.type_args.get(id) else {
@@ -499,7 +532,7 @@ fn project_nodes(
         let Some(node) = pass.document.node(*id) else {
             continue;
         };
-        let Some(contract) = pass.contracts.get(&node.definition) else {
+        let Ok(Some(contract)) = pass.contracts.get_for_node(pass.document, node) else {
             continue;
         };
         let args = if contract.type_params.is_empty() {
@@ -663,7 +696,8 @@ fn port_kind(
 ) -> Option<PortKind> {
     let node = document.node(port.node)?;
     let ports = contracts
-        .get(&node.definition)
+        .get_for_node(document, node)
+        .ok()?
         .map(|contract| contract.ports.as_slice())
         .or_else(|| {
             document
@@ -694,6 +728,7 @@ fn unresolved(
 
 fn issue_node(issue: &InferenceIssue) -> Option<NodeId> {
     match issue {
+        InferenceIssue::StaleNodeTemplate(stale) => Some(stale.node),
         InferenceIssue::InvalidTerm { node, .. }
         | InferenceIssue::Ambiguous { node, .. }
         | InferenceIssue::UnknownType { node, .. }
@@ -705,6 +740,7 @@ fn issue_node(issue: &InferenceIssue) -> Option<NodeId> {
 
 fn inference_code(issue: &InferenceIssue) -> DiagnosticCode {
     match issue.code() {
+        "E-METADATA-STALE" => DiagnosticCode::MetadataStale,
         "E-TYPE-AMBIGUOUS" => DiagnosticCode::TypeAmbiguous,
         "E-TYPE-COMPLEXITY" => DiagnosticCode::TypeComplexity,
         "E-CONSTRAINT-UNSATISFIED" => DiagnosticCode::ConstraintUnsatisfied,

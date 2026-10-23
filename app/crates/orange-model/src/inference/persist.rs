@@ -56,14 +56,20 @@ pub fn plan_edit(
     templates: &TemplateCatalog,
     types: &TypeRegistry,
 ) -> Result<InferencePlan, TxError> {
+    templates
+        .ensure_fresh(document)
+        .map_err(|stale| TxError::StaleNodeTemplate { node: stale.node })?;
     let mut commands: Vec<DocCommand> = edit.into_iter().collect();
     let mut after = document.clone();
     let change = after.apply(commands.clone())?.change_set;
+    templates
+        .ensure_fresh(&after)
+        .map_err(|stale| TxError::StaleNodeTemplate { node: stale.node })?;
     let touched = touched_nodes(document, &after, &change);
     let index = DocIndex::build(&after);
     let mut issues = Vec::new();
     for component in infer_components(&after, &index, touched, templates, types) {
-        commands.extend(component_updates(&after, templates, &component));
+        commands.extend(component_updates(&after, templates, &component)?);
         issues.extend(component.issues);
     }
     Ok(InferencePlan { commands, issues })
@@ -130,13 +136,16 @@ fn component_updates(
     document: &GraphDocument,
     templates: &TemplateCatalog,
     component: &ComponentInference,
-) -> Vec<DocCommand> {
+) -> Result<Vec<DocCommand>, TxError> {
     let mut commands = Vec::new();
     for &id in &component.nodes {
         let Some(node) = document.node(id) else {
             continue;
         };
-        let Some(template) = templates.get(&node.definition) else {
+        let template = templates
+            .get_for_node(document, node)
+            .map_err(|stale| TxError::StaleNodeTemplate { node: stale.node })?;
+        let Some(template) = template else {
             continue;
         };
         let args = component.type_args.get(&id).cloned().unwrap_or_default();
@@ -158,5 +167,5 @@ fn component_updates(
             commands.push(DocCommand::SetSignature { node: id, key });
         }
     }
-    commands
+    Ok(commands)
 }

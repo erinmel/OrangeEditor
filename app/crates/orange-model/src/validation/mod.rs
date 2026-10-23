@@ -28,6 +28,6 @@ pub use inputs::validate_inputs;
 pub use nodes::{NodeValidation, ProviderCatalog, validate_nodes};
 
 pub use functions::{
-    FunctionAnalysis, FunctionSummary, LeafEffects, VariableWrite, WriteOperation,
-    analyze_functions,
+    FunctionAnalysis, FunctionEvidence, FunctionSummary, LeafEffects, VariableWrite,
+    WriteOperation, analyze_functions,
 };

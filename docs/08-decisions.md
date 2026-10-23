@@ -204,6 +204,8 @@ The core must therefore be strong and general on its own, and expandable without
 
 ## Decisions still requiring evidence or product preference
 
+Core integrity clarification (2026-10-22, ADR-15/21): editing and embedding APIs must preserve user data independently of identity text, reject ambiguous lock identities and detect stale semantic evidence. Typed configuration reference metadata is host-owned and exact-versioned; packages cannot redefine intrinsic reference/control meaning. Authoring composes atomic transactions, so wire insertion and later collapse-to-function can remain separate from presentation and execution. These corrections do not freeze the SDK or qualify incremental performance.
+
 | ID | Owner / deadline | Recommended default and practical consequence |
 |---|---|---|
 | OPEN-01 Exact UI adapter | Editor lead / G1 | Proposed: egui editor UI hosted by eframe (ADR-02 revision). Run the egui probe first (IME/CJK, accessibility, keyboard, DPI, RTL plan, W4 frame time); fall back to Slint if a required capability fails. |

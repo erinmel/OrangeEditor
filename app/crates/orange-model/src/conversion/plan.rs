@@ -339,6 +339,9 @@ fn endpoint_type(
         node: port.node,
         port: port.port.clone(),
     };
+    let contract = templates
+        .get_for_node(document, node)
+        .map_err(|_| TxError::StaleNodeTemplate { node: node.id })?;
     let declared = declared_port(document, templates, port).ok_or_else(not_data)?;
     let ty = declared
         .ty
@@ -353,10 +356,7 @@ fn endpoint_type(
         });
     }
     let empty = BTreeMap::new();
-    let args = if templates
-        .get(&node.definition)
-        .is_some_and(|template| !template.type_params.is_empty())
-    {
+    let args = if contract.is_some_and(|template| !template.type_params.is_empty()) {
         components
             .iter()
             .find(|component| component.nodes.contains(&node.id))

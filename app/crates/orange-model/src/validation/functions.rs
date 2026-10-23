@@ -40,6 +40,36 @@ pub enum LeafEffects {
     GraphBodyUnavailable,
 }
 
+/// Fresh resolved signatures and leaf effects bound to one document content state.
+///
+/// The embedding host constructs this evidence only after resolving metadata for the exact
+/// document/config/provider/lock snapshot. Its private state token prevents reuse after a
+/// transaction changes that document; a clone of the unchanged document retains the token.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FunctionEvidence {
+    document_state: u64,
+    resolved: BTreeMap<NodeId, SignatureSnapshot>,
+    leaf_effects: BTreeMap<NodeId, LeafEffects>,
+}
+
+impl FunctionEvidence {
+    /// Binds host-resolved metadata to the document's current content state.
+    ///
+    /// Calling this constructor is the host's declaration that both maps were freshly
+    /// resolved for `document`; it does not authenticate providers or metadata sources.
+    pub fn new(
+        document: &GraphDocument,
+        resolved: BTreeMap<NodeId, SignatureSnapshot>,
+        leaf_effects: BTreeMap<NodeId, LeafEffects>,
+    ) -> Self {
+        Self {
+            document_state: document.state_id(),
+            resolved,
+            leaf_effects,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct FunctionSummary {
     pub kind: NodeKind,
@@ -81,16 +111,30 @@ impl KindRank {
 }
 
 /// Analyzes graph-local functions without executing package code or changing the document.
-/// `resolved` and `leaf_effects` must be freshly computed for this exact immutable document
-/// and its current config, provider, and lock identities; NodeId-keyed evidence is not reusable
-/// after any such identity changes.
+/// `evidence` must have been freshly constructed for this exact immutable document and its
+/// current config, provider, and lock identities. A mismatched document state produces stale
+/// metadata diagnostics and no summaries.
 pub fn analyze_functions(
     document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    leaf_effects: &BTreeMap<NodeId, LeafEffects>,
+    evidence: &FunctionEvidence,
     origin: &HostOrigin,
 ) -> FunctionAnalysis {
     let mut result = FunctionAnalysis::default();
+    if evidence.document_state != document.state_id() {
+        for function_id in document.functions().keys().copied() {
+            result.incomplete_functions.insert(function_id);
+            result.diagnostics.push(Diagnostic::new(
+                DiagnosticCode::MetadataStale,
+                Subject::new(None, None, None).with_function(function_id),
+                origin,
+            ));
+        }
+        sort_diagnostics(&mut result.diagnostics);
+        return result;
+    }
+
+    let resolved = &evidence.resolved;
+    let leaf_effects = &evidence.leaf_effects;
     let calls = call_graph(document, &mut result, origin);
     let (cycles, cyclic) = find_cycles(&calls);
     for path in &cycles {

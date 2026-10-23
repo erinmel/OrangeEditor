@@ -2,9 +2,11 @@ use std::collections::BTreeMap;
 
 use orange_model::GraphDocument;
 use orange_model::document::{SignatureSnapshot, Suspends};
+use orange_model::edit::DocCommand;
 use orange_model::id::{FunctionId, NodeId};
 use orange_model::validation::{
-    DiagnosticCode, HostOrigin, LeafEffects, VariableWrite, WriteOperation, analyze_functions,
+    DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, VariableWrite, WriteOperation,
+    analyze_functions,
 };
 use serde_json::{Value, json};
 
@@ -46,7 +48,11 @@ fn analyze(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     effects: &BTreeMap<NodeId, LeafEffects>,
 ) -> orange_model::validation::FunctionAnalysis {
-    analyze_functions(doc, resolved, effects, &origin())
+    analyze_functions(
+        doc,
+        &FunctionEvidence::new(doc, resolved.clone(), effects.clone()),
+        &origin(),
+    )
 }
 
 #[test]
@@ -350,6 +356,55 @@ fn analysis_is_order_independent_and_read_only() {
     assert_eq!(second.state_id(), second_state);
     assert_eq!(first.revision(), 7);
     assert_eq!(second.revision(), 7);
+}
+
+#[test]
+fn evidence_accepts_same_state_clone_and_rejects_config_edited_document() {
+    let doc = document(json!([
+        function(F1, "action", json!([custom_node(N1, "example/action")])),
+        function(F2, "action", json!([custom_node(N2, "example/action")]))
+    ]));
+    let resolved = BTreeMap::from([
+        (N1.parse().unwrap(), snapshot("action", None)),
+        (N2.parse().unwrap(), snapshot("action", None)),
+    ]);
+    let effects = BTreeMap::from([
+        (N1.parse().unwrap(), LeafEffects::Known(vec![])),
+        (N2.parse().unwrap(), LeafEffects::Known(vec![])),
+    ]);
+    let evidence = FunctionEvidence::new(&doc, resolved, effects);
+
+    let unchanged_clone = doc.clone();
+    let accepted = analyze_functions(&unchanged_clone, &evidence, &origin());
+    assert_eq!(accepted.summaries.len(), 2);
+    assert!(accepted.incomplete_functions.is_empty());
+
+    let mut edited = doc;
+    let _committed = edited
+        .apply([DocCommand::SetConfig {
+            node: N1.parse().unwrap(),
+            config_version: 1,
+            config: serde_json::from_value(json!({"mode":"changed"})).unwrap(),
+        }])
+        .unwrap();
+
+    let stale = analyze_functions(&edited, &evidence, &origin());
+    assert!(stale.summaries.is_empty());
+    assert_eq!(
+        stale.incomplete_functions,
+        [F1.parse().unwrap(), F2.parse().unwrap()].into()
+    );
+    assert_eq!(
+        stale
+            .diagnostics
+            .iter()
+            .map(|diagnostic| (diagnostic.code, diagnostic.subject.function))
+            .collect::<Vec<_>>(),
+        [
+            (DiagnosticCode::MetadataStale, Some(F1.parse().unwrap())),
+            (DiagnosticCode::MetadataStale, Some(F2.parse().unwrap()))
+        ]
+    );
 }
 
 #[test]

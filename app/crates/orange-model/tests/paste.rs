@@ -10,8 +10,11 @@ use common::{
     body, content, empty_document, function, function_id, id_source, nid, node, port, read_fixture,
     typed_edge,
 };
-use orange_model::id::{EdgeId, NodeId, VariableId};
-use orange_model::paste::Fragment;
+use orange_model::document::ProviderBinding;
+use orange_model::id::{EdgeId, EventDeclId, NodeId, VariableId};
+use orange_model::paste::{
+    ConfigReferenceField, ConfigReferenceKind, ConfigReferenceSchema, Fragment,
+};
 use orange_model::{BodyRef, DocCommand, GraphDocument, PasteError, from_json};
 use proptest::prelude::*;
 use serde_json::json;
@@ -145,12 +148,142 @@ fn paste_into_another_document_copies_declarations_under_new_ids() {
     }
 }
 
+#[test]
+fn untyped_nested_config_strings_that_match_ids_are_preserved() {
+    let mut source = fixture();
+    let mut ordinary = node(10);
+    ordinary.config.insert(
+        "notes".into(),
+        json!({"label": total_variable().to_string()}),
+    );
+    let _ = source
+        .apply([DocCommand::AddNode {
+            body: BodyRef::Root,
+            node: ordinary,
+        }])
+        .unwrap();
+
+    let fragment = Fragment::copy(&source, &[nid(2), nid(10)]).unwrap();
+    let mut target = empty_document();
+    let paste = fragment
+        .paste(&target, BodyRef::Root, id_source(5))
+        .unwrap();
+    let pasted_ids = paste.nodes.clone();
+    let _ = target.apply(paste.commands).unwrap();
+
+    let rewritten = target.node(pasted_ids[&nid(2)]).unwrap().config["variable"]
+        .as_str()
+        .unwrap();
+    assert_ne!(rewritten, total_variable().to_string());
+    assert_eq!(
+        target.node(pasted_ids[&nid(10)]).unwrap().config["notes"]["label"],
+        json!(total_variable().to_string()),
+        "ordinary nested text is never interpreted as an ID reference"
+    );
+}
+
+#[test]
+fn host_schema_captures_only_the_exact_package_reference_field() {
+    let mut source = fixture();
+    let mut custom = node(10);
+    custom.definition.id = "core/custom-reference".parse().unwrap();
+    custom.provider = Some(source.node(nid(3)).unwrap().provider.clone().unwrap());
+    custom.config.insert(
+        "nested".into(),
+        json!({"variable": total_variable().to_string(), "label": total_variable().to_string()}),
+    );
+    let _ = source
+        .apply([DocCommand::AddNode {
+            body: BodyRef::Root,
+            node: custom.clone(),
+        }])
+        .unwrap();
+    let schema = ConfigReferenceSchema {
+        definition: custom.definition,
+        config_version: custom.config_version,
+        fields: vec![ConfigReferenceField {
+            pointer: "/nested/variable".into(),
+            kind: ConfigReferenceKind::Variable,
+        }],
+    };
+    let fragment = Fragment::copy_with_schemas(&source, &[nid(10)], &[schema]).unwrap();
+    assert_eq!(fragment.variables.len(), 1);
+
+    let mut target = empty_document();
+    let paste = fragment
+        .paste(&target, BodyRef::Root, id_source(6))
+        .unwrap();
+    let node_id = paste.nodes[&nid(10)];
+    let _ = target.apply(paste.commands).unwrap();
+    let pasted = target.node(node_id).unwrap();
+    assert_ne!(
+        pasted.config["nested"]["variable"],
+        json!(total_variable().to_string())
+    );
+    assert_eq!(
+        pasted.config["nested"]["label"],
+        json!(total_variable().to_string())
+    );
+}
+
+#[test]
+fn await_event_reference_remaps_without_rewriting_matching_text() {
+    let mut source = fixture();
+    let event_id = source.events().keys().next().unwrap().to_string();
+    let mut await_event = node(10);
+    await_event.definition.id = "core/await-event".parse().unwrap();
+    await_event.config.insert("event".into(), json!(event_id));
+    await_event.config.insert(
+        "notes".into(),
+        json!({"label": source.events().keys().next().unwrap().to_string()}),
+    );
+    let _ = source
+        .apply([DocCommand::AddNode {
+            body: BodyRef::Root,
+            node: await_event,
+        }])
+        .unwrap();
+
+    let fragment = Fragment::copy(&source, &[nid(10)]).unwrap();
+    assert_eq!(fragment.events.len(), 1);
+    let mut target = empty_document();
+    let paste = fragment
+        .paste(&target, BodyRef::Root, id_source(8))
+        .unwrap();
+    let node_id = paste.nodes[&nid(10)];
+    let _ = target.apply(paste.commands).unwrap();
+    let pasted = target.node(node_id).unwrap();
+    let remapped_event = pasted.config["event"].as_str().unwrap();
+    assert_ne!(
+        remapped_event,
+        source.events().keys().next().unwrap().to_string()
+    );
+    assert_eq!(target.events().len(), 1);
+    let remapped_event: EventDeclId = remapped_event.parse().unwrap();
+    assert!(target.events().contains_key(&remapped_event));
+    assert_eq!(
+        pasted.config["notes"]["label"],
+        json!(source.events().keys().next().unwrap().to_string())
+    );
+}
+
 /// Root node 1 calls function f, whose body is nodes 5 → 6.
-fn with_function() -> GraphDocument {
+fn with_function(provider_bound_call: bool) -> GraphDocument {
     let mut document = empty_document();
     let mut call = node(1);
+    call.definition.id = "core/call".parse().unwrap();
+    if provider_bound_call {
+        call.provider = Some(ProviderBinding {
+            package: "example.override".into(),
+            version: "1.0.0".into(),
+            id: "attempted-call-override".into(),
+            extensions: Default::default(),
+        });
+    }
     call.config
         .insert("function".into(), json!(function_id().to_string()));
+    call.config
+        .insert("notes".into(), json!({"label": function_id().to_string()}));
     let edge = typed_edge(5, port(5, "then"), port(6, "in"));
     let function = function(body([node(5), node(6)], [edge]));
     let _ = document
@@ -167,8 +300,17 @@ fn with_function() -> GraphDocument {
 
 #[test]
 fn referenced_functions_travel_with_remapped_bodies() {
-    let source = with_function();
-    let fragment = Fragment::copy(&source, &[nid(1)]).unwrap();
+    let source = with_function(false);
+    let call = source.node(nid(1)).unwrap();
+    let attempted_override = ConfigReferenceSchema {
+        definition: call.definition.clone(),
+        config_version: call.config_version,
+        fields: vec![ConfigReferenceField {
+            pointer: "/notes/label".into(),
+            kind: ConfigReferenceKind::Function,
+        }],
+    };
+    let fragment = Fragment::copy_with_schemas(&source, &[nid(1)], &[attempted_override]).unwrap();
     assert_eq!(fragment.functions.len(), 1);
 
     let mut target = empty_document();
@@ -193,6 +335,11 @@ fn referenced_functions_travel_with_remapped_bodies() {
     );
     let call = target.node(paste.nodes[&nid(1)]).unwrap();
     assert_eq!(call.config["function"], json!(new_fid.to_string()));
+    assert_eq!(
+        call.config["notes"]["label"],
+        json!(function_id().to_string()),
+        "function-like text outside the declared config field remains user data"
+    );
 
     // Pasting into the source reuses the existing function.
     let mut same = source.clone();
@@ -202,8 +349,29 @@ fn referenced_functions_travel_with_remapped_bodies() {
 }
 
 #[test]
+fn provider_bound_reserved_call_does_not_use_host_reference_schema() {
+    let source = with_function(true);
+    let fragment = Fragment::copy(&source, &[nid(1)]).unwrap();
+    assert!(fragment.functions.is_empty());
+    assert!(fragment.references.is_empty());
+
+    let mut target = empty_document();
+    let paste = fragment
+        .paste(&target, BodyRef::Root, id_source(7))
+        .unwrap();
+    let call_id = paste.nodes[&nid(1)];
+    let _ = target.apply(paste.commands).unwrap();
+    assert_eq!(
+        target.node(call_id).unwrap().config["function"],
+        json!(function_id().to_string()),
+        "a provider-bound reserved control is left unresolved for validation"
+    );
+    assert!(target.functions().is_empty());
+}
+
+#[test]
 fn invalid_selections_are_rejected() {
-    let document = with_function();
+    let document = with_function(false);
     assert_eq!(
         Fragment::copy(&document, &[nid(1), nid(5)]),
         Err(PasteError::SelectionSpansBodies)

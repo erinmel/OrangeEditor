@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use orange_model::GraphDocument;
 use orange_model::document::SignatureSnapshot;
 use orange_model::id::{FunctionId, NodeId};
-use orange_model::validation::{DiagnosticCode, HostOrigin, analyze_functions};
+use orange_model::validation::{DiagnosticCode, FunctionEvidence, HostOrigin, analyze_functions};
 use serde_json::{Value, json};
 
 const CALLER: &str = "10000000-0000-4000-8000-000000000001";
@@ -55,8 +55,11 @@ fn node(id: &str, definition: &str, config: Value) -> Value {
 fn analyze(doc: &GraphDocument) -> orange_model::validation::FunctionAnalysis {
     analyze_functions(
         doc,
-        &BTreeMap::<NodeId, SignatureSnapshot>::new(),
-        &BTreeMap::new(),
+        &FunctionEvidence::new(
+            doc,
+            BTreeMap::<NodeId, SignatureSnapshot>::new(),
+            BTreeMap::new(),
+        ),
         &origin(),
     )
 }
