@@ -404,3 +404,22 @@ Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
 
 These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
+
+### Computed contextual contracts (2026-10-23)
+
+Slice 3 declares identity references on the definition: a `NodeDefinition` has `kind`, `suspends`, `type_params`, `ports` (declared, or derived from a variable) and `references` (an RFC 6901 pointer and a variable, event or function kind). `RegistrySnapshot::references` is the single parser of those config fields, with a fixed table for core controls that are not registered yet, and `build` rejects invalid or duplicate pointers. Only definition-declared fields are references, which closes the earlier open question about config strings that merely match an ID.
+
+Get and Set Variable are registered with ports derived from the referenced declaration, and `RegistrySnapshot::contract` computes their contracts on every lookup. `NodeOverlays`, metadata fingerprints and the stale-overlay checks are removed, along with the overlay parameter of inference, connection planning and node validation and `PlanApplyError::StaleOverlays`. A declaration edit or undo takes effect on the next lookup. Paste discovers references from definitions instead of a host schema. Connection planning now resolves implicit ports (`error` is a typed data output, `then` is exec) through the same lookup as inference. `E-METADATA-STALE` remains for function analysis evidence built for another document state. The document format and signature keys are unchanged.
+
+Tests that only exercised overlay freshness were deleted. Tests that injected a contract through an overlay now use Get/Set declarations or registered definitions with the same assertions, and new tests cover the computed Get/Set contracts and the paste gating of reference fields.
+
+Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands run from the repository root:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo test --workspace` | pass |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+
+These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
