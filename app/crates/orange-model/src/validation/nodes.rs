@@ -185,18 +185,19 @@ fn preflight_node(
             );
             return false;
         }
-        let contract = if let Some(result) = super::variables::variable_contract(document, node) {
-            result
-        } else {
-            intrinsic_snapshot(node.definition.id.as_str(), node.config_version)
-                .map(|snapshot| NodeContract {
-                    kind: snapshot.kind,
-                    suspends: snapshot.suspends,
-                    type_params: Vec::new(),
-                    ports: snapshot.ports,
-                })
-                .ok_or(DiagnosticCode::ProviderUnavailable)
-        };
+        let contract =
+            if let Some(result) = super::variables::variable_contract(registry, document, node) {
+                result
+            } else {
+                intrinsic_snapshot(node.definition.id.as_str(), node.config_version)
+                    .map(|snapshot| NodeContract {
+                        kind: snapshot.kind,
+                        suspends: snapshot.suspends,
+                        type_params: Vec::new(),
+                        ports: snapshot.ports,
+                    })
+                    .ok_or(DiagnosticCode::ProviderUnavailable)
+            };
         let contract = match contract {
             Ok(contract) => contract,
             Err(code) => {

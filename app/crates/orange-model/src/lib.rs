@@ -10,6 +10,7 @@
 //! copy/paste).
 
 pub mod catalog;
+mod config_pointer;
 pub mod conversion;
 pub mod document;
 pub mod edit;

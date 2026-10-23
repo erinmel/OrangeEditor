@@ -19,13 +19,18 @@ use super::unify::{
     TypeScopeError, TypeVariable, UnificationError, unify,
 };
 use crate::GraphDocument;
-use crate::catalog::{NodeContract, NodeDefinition, ProviderKey, RegistrySnapshot, TypeArgs};
+use crate::catalog::{
+    NodeContract, NodeDefinition, ProviderKey, ReferenceField, ReferenceKind, RegistrySnapshot,
+    TypeArgs, core_reference,
+};
+use crate::config_pointer::pointer_get;
 use crate::document::{
     DefinitionRef, GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, TypeParam,
     TypeParamName,
 };
+use crate::edit::DeclId;
 use crate::error::IdError;
-use crate::id::{EdgeId, FunctionId, NodeId, TypeExpr, VariableId};
+use crate::id::{EdgeId, NodeId, TypeExpr};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
 use crate::types::{
@@ -157,32 +162,21 @@ fn metadata_fingerprint(
     document: &GraphDocument,
     node: &NodeInstance,
 ) -> Result<[u8; 32], StaleNodeTemplate> {
-    let definition = node.definition.id.as_str();
-    let context = match definition {
-        "core/call" => call_context(document, node),
-        "core/get-variable"
-        | "core/set-variable"
-        | "core/update-variable"
-        | "core/set-shared"
-        | "core/update-shared" => {
-            let declaration = node
-                .config
-                .get("variable")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|id| id.parse::<VariableId>().ok())
-                .and_then(|id| document.variables().get(&id));
-            serde_json::json!({"kind":"variable","declaration":declaration})
-        }
-        "core/on-event" | "core/emit" | "core/await-event" => {
-            let declaration = node
-                .config
-                .get("event")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|id| id.parse::<crate::id::EventDeclId>().ok())
-                .and_then(|id| document.events().get(&id));
-            serde_json::json!({"kind":"event","declaration":declaration})
-        }
-        _ => serde_json::json!({"kind":"other"}),
+    let context = match core_reference(node.definition.id.as_str()) {
+        Some(field) => match (field.kind, field.parse(&node.config)) {
+            (ReferenceKind::Function, _) => call_context(document, node, field),
+            (_, Ok(DeclId::Variable(id))) => {
+                serde_json::json!({"kind":"variable","declaration":document.variables().get(&id)})
+            }
+            (_, Ok(DeclId::Event(id))) => {
+                serde_json::json!({"kind":"event","declaration":document.events().get(&id)})
+            }
+            (ReferenceKind::Variable, _) => {
+                serde_json::json!({"kind":"variable","declaration":null})
+            }
+            _ => serde_json::json!({"kind":"event","declaration":null}),
+        },
+        None => serde_json::json!({"kind":"other"}),
     };
     let locks: Vec<_> = node
         .provider
@@ -208,12 +202,13 @@ fn metadata_fingerprint(
     Ok(Sha256::digest(bytes).into())
 }
 
-fn call_context(document: &GraphDocument, node: &NodeInstance) -> serde_json::Value {
-    let target_value = node.config.get("function");
-    let Some(target) = target_value
-        .and_then(serde_json::Value::as_str)
-        .and_then(|id| id.parse::<FunctionId>().ok())
-    else {
+fn call_context(
+    document: &GraphDocument,
+    node: &NodeInstance,
+    field: &ReferenceField,
+) -> serde_json::Value {
+    let Ok(DeclId::Function(target)) = field.parse(&node.config) else {
+        let target_value = pointer_get(&node.config, &field.pointer);
         return serde_json::json!({
             "kind":"call",
             "missing_target":target_value,
@@ -238,12 +233,7 @@ fn call_context(document: &GraphDocument, node: &NodeInstance) -> serde_json::Va
             if child.definition.id.as_str() != "core/call" {
                 continue;
             }
-            if let Some(callee) = child
-                .config
-                .get("function")
-                .and_then(serde_json::Value::as_str)
-                .and_then(|id| id.parse::<FunctionId>().ok())
-            {
+            if let Ok(DeclId::Function(callee)) = field.parse(&child.config) {
                 pending.insert(callee);
             }
         }

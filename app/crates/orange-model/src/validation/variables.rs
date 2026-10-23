@@ -1,21 +1,25 @@
 //! Contextual variable identity and declaration-owned port contracts.
 
 use super::diagnostic::DiagnosticCode;
-use crate::catalog::NodeContract;
+use crate::catalog::{NodeContract, ReferenceKind, RegistrySnapshot};
 use crate::document::{
     GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, Suspends, VarScope,
 };
+use crate::edit::DeclId;
 use crate::id::VariableId;
 
-pub(super) fn variable_reference(node: &NodeInstance) -> Result<VariableId, DiagnosticCode> {
-    node.config
-        .get("variable")
-        .and_then(serde_json::Value::as_str)
-        .and_then(|value| value.parse().ok())
-        .ok_or(DiagnosticCode::VariableUnknown)
+pub(super) fn variable_reference(
+    registry: &RegistrySnapshot,
+    node: &NodeInstance,
+) -> Result<VariableId, DiagnosticCode> {
+    match registry.reference(node, ReferenceKind::Variable) {
+        Ok(DeclId::Variable(id)) => Ok(id),
+        _ => Err(DiagnosticCode::VariableUnknown),
+    }
 }
 
 pub(super) fn variable_contract(
+    registry: &RegistrySnapshot,
     document: &GraphDocument,
     node: &NodeInstance,
 ) -> Option<Result<NodeContract, DiagnosticCode>> {
@@ -25,7 +29,7 @@ pub(super) fn variable_contract(
         _ => return None,
     };
     Some((|| {
-        let id = variable_reference(node)?;
+        let id = variable_reference(registry, node)?;
         let declaration = document
             .variables()
             .get(&id)

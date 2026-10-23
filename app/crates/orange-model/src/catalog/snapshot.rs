@@ -5,10 +5,16 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::intrinsics::intrinsic_definitions;
-use super::{NodeDefinition, Ports, ProviderDescriptor, ProviderKey, TypeArgs};
+use super::intrinsics::{core_reference, intrinsic_definitions};
+use super::{
+    NodeDefinition, Ports, ProviderDescriptor, ProviderKey, ReferenceError, ReferenceField,
+    ReferenceKind, TypeArgs,
+};
+use crate::config_pointer::pointer_parts;
 use crate::conversion::{ConverterRegistry, ConverterRegistryBuilder};
+use crate::document::NodeInstance;
 use crate::document::{DefinitionRef, is_intrinsic_definition};
+use crate::edit::DeclId;
 use crate::id::{DefinitionId, PortId};
 use crate::type_term::TypeTerm;
 use crate::types::TypeRegistry;
@@ -178,7 +184,7 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
     }
     let mut pointers = BTreeSet::new();
     for field in &definition.references {
-        if !valid_pointer(&field.pointer) {
+        if pointer_parts(&field.pointer).is_none() {
             return Err(RegistryError::InvalidReferencePointer {
                 definition: id.clone(),
                 pointer: field.pointer.clone(),
@@ -226,15 +232,6 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         }
     }
     Ok(())
-}
-
-/// A non-empty RFC 6901 pointer: it starts with `/` and every `~` escapes `0` or `1`.
-fn valid_pointer(pointer: &str) -> bool {
-    pointer.starts_with('/')
-        && pointer
-            .split('~')
-            .skip(1)
-            .all(|rest| rest.starts_with(['0', '1']))
 }
 
 fn undeclared_param(term: &TypeTerm, declared: &BTreeSet<&str>) -> Option<String> {
@@ -308,6 +305,34 @@ impl RegistrySnapshot {
         })
     }
 
+    /// The single parser for identity references in node config: the registered definition's
+    /// `references`, or the fixed core table for core IDs without a definition.
+    pub fn references<'a>(
+        &'a self,
+        node: &'a NodeInstance,
+    ) -> impl Iterator<Item = (&'a ReferenceField, Result<DeclId, ReferenceError>)> + 'a {
+        let fields = match self.definition(&node.definition) {
+            Some(definition) => definition.references.as_slice(),
+            None => {
+                core_reference(node.definition.id.as_str()).map_or(&[][..], std::slice::from_ref)
+            }
+        };
+        fields
+            .iter()
+            .map(|field| (field, field.parse(&node.config)))
+    }
+
+    /// The first reference of `kind` the node declares.
+    pub fn reference(
+        &self,
+        node: &NodeInstance,
+        kind: ReferenceKind,
+    ) -> Result<DeclId, ReferenceError> {
+        self.references(node)
+            .find(|(field, _)| field.kind == kind)
+            .map_or(Err(ReferenceError::Missing), |(_, parsed)| parsed)
+    }
+
     /// The argument sets of a definition: the provider's own with a provider, the core
     /// implementation list without one. `None` means constraints decide.
     pub fn specializations(
@@ -329,7 +354,7 @@ impl RegistrySnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::catalog::{ReferenceField, ReferenceKind};
+    use crate::document::NodeInstance;
     use crate::document::{NodeKind, PortDescriptor, TypeParam};
 
     fn origin() -> HostOrigin {
@@ -547,6 +572,93 @@ mod tests {
             Some([args("core/i64@1")].as_slice())
         );
         assert_eq!(snapshot.specializations(&add, Some(&key("q"))), None);
+    }
+
+    const VARIABLE: &str = "11111111-1111-4111-8111-111111111111";
+    const FUNCTION: &str = "22222222-2222-4222-8222-222222222222";
+
+    fn node(definition: &str, config: serde_json::Value) -> NodeInstance {
+        serde_json::from_value(serde_json::json!({
+            "id": "33333333-3333-4333-8333-333333333333",
+            "definition_id": definition,
+            "definition_version": 1,
+            "config_version": 1,
+            "config": config,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn core_ids_without_a_definition_use_the_core_reference_table() {
+        let snapshot = RegistrySnapshot::core(origin());
+        let variable = VARIABLE.parse().unwrap();
+        let get = node(
+            "core/get-variable",
+            serde_json::json!({"variable": VARIABLE}),
+        );
+        assert_eq!(
+            snapshot.reference(&get, ReferenceKind::Variable),
+            Ok(DeclId::Variable(variable))
+        );
+        assert_eq!(
+            snapshot.reference(&get, ReferenceKind::Event),
+            Err(ReferenceError::Missing)
+        );
+        let call = node("core/call", serde_json::json!({"function": FUNCTION}));
+        let fields: Vec<_> = snapshot.references(&call).collect();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(fields[0].0.pointer, "/function");
+        assert_eq!(fields[0].1, Ok(DeclId::Function(FUNCTION.parse().unwrap())));
+        let branch = node("core/branch", serde_json::json!({}));
+        assert_eq!(snapshot.references(&branch).count(), 0);
+    }
+
+    #[test]
+    fn missing_and_malformed_reference_values_are_distinguished() {
+        let snapshot = RegistrySnapshot::core(origin());
+        for (config, expected) in [
+            (serde_json::json!({}), ReferenceError::Missing),
+            (
+                serde_json::json!({"variable": 3}),
+                ReferenceError::Malformed,
+            ),
+            (
+                serde_json::json!({"variable": "nope"}),
+                ReferenceError::Malformed,
+            ),
+            (
+                serde_json::json!({"variable": "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA"}),
+                ReferenceError::Malformed,
+            ),
+        ] {
+            let set = node("core/set-variable", config);
+            assert_eq!(
+                snapshot.reference(&set, ReferenceKind::Variable),
+                Err(expected)
+            );
+        }
+    }
+
+    #[test]
+    fn registered_definitions_declare_their_own_reference_fields() {
+        let mut definition = definition("acme/read", &[], vec![]);
+        definition.references = vec![ReferenceField {
+            pointer: "/target/id".into(),
+            kind: ReferenceKind::Event,
+        }];
+        let snapshot = build(builder().definition(definition)).unwrap();
+        let config = serde_json::json!({"target": {"id": VARIABLE}});
+        let read = node("acme/read", config);
+        assert_eq!(
+            snapshot.reference(&read, ReferenceKind::Event),
+            Ok(DeclId::Event(VARIABLE.parse().unwrap()))
+        );
+        // A registered definition's list replaces the core table, even for a core ID name.
+        let get = node("acme/read", serde_json::json!({"variable": VARIABLE}));
+        assert_eq!(
+            snapshot.reference(&get, ReferenceKind::Variable),
+            Err(ReferenceError::Missing)
+        );
     }
 
     #[test]

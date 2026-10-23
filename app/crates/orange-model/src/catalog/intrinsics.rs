@@ -1,6 +1,8 @@
 //! Built-in control nodes registered as data (11 §8.4). Get/Set stay contextual.
 
-use super::{NodeDefinition, Ports};
+use std::sync::LazyLock;
+
+use super::{NodeDefinition, Ports, ReferenceField, ReferenceKind};
 use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, Suspends};
 use crate::id::TypeExpr;
 
@@ -96,4 +98,29 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
         definition("core/break", Action, None, vec![exec_in()]),
         definition("core/continue", Action, None, vec![exec_in()]),
     ]
+}
+
+/// Reference field of a core ID with no registered definition yet, by ID.
+pub(crate) fn core_reference(id: &str) -> Option<&'static ReferenceField> {
+    static TABLE: LazyLock<[ReferenceField; 3]> = LazyLock::new(|| {
+        let field = |pointer: &str, kind| ReferenceField {
+            pointer: pointer.to_owned(),
+            kind,
+        };
+        [
+            field("/function", ReferenceKind::Function),
+            field("/variable", ReferenceKind::Variable),
+            field("/event", ReferenceKind::Event),
+        ]
+    });
+    match id {
+        "core/call" => Some(&TABLE[0]),
+        "core/get-variable"
+        | "core/set-variable"
+        | "core/update-variable"
+        | "core/set-shared"
+        | "core/update-shared" => Some(&TABLE[1]),
+        "core/on-event" | "core/emit" | "core/await-event" => Some(&TABLE[2]),
+        _ => None,
+    }
 }

@@ -4,8 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::catalog::RegistrySnapshot;
+use crate::catalog::{ReferenceKind, RegistrySnapshot};
 use crate::document::{GraphDocument, NodeKind, SignatureSnapshot, Suspends, VarScope};
+use crate::edit::DeclId;
 use crate::id::{FunctionId, NodeId, VariableId};
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
@@ -137,7 +138,7 @@ pub fn analyze_functions(
 
     let resolved = &evidence.resolved;
     let leaf_effects = &evidence.leaf_effects;
-    let calls = call_graph(document, &mut result, origin);
+    let calls = call_graph(document, registry, &mut result);
     let (cycles, cyclic) = find_cycles(&calls);
     for path in &cycles {
         let mut diagnostic = Diagnostic::new(
@@ -199,7 +200,7 @@ pub fn analyze_functions(
                 continue;
             }
             if definition == "core/get-variable" {
-                let variable = super::variables::variable_reference(node).ok();
+                let variable = super::variables::variable_reference(registry, node).ok();
                 if variable.is_none_or(|id| !document.variables().contains_key(&id)) {
                     emit_at(
                         &mut result,
@@ -227,7 +228,7 @@ pub fn analyze_functions(
                 rank = rank.max(rank_of(kind));
                 may_suspend |= suspends != Suspends::Never;
                 if is_variable_write(definition) {
-                    match core_variable_write(node, definition) {
+                    match core_variable_write(registry, node, definition) {
                         Ok(write) => {
                             if document.variables().get(&write.variable).is_none() {
                                 emit_at(
@@ -415,9 +416,10 @@ pub fn analyze_functions(
 
 fn call_graph(
     document: &GraphDocument,
+    registry: &RegistrySnapshot,
     result: &mut FunctionAnalysis,
-    origin: &HostOrigin,
 ) -> BTreeMap<FunctionId, BTreeMap<NodeId, FunctionId>> {
+    let origin = registry.origin();
     let mut graph = BTreeMap::new();
     for (id, function) in document.functions() {
         let mut edges = BTreeMap::new();
@@ -438,11 +440,10 @@ fn call_graph(
                 result.incomplete_functions.insert(*id);
                 continue;
             }
-            let target = node
-                .config
-                .get("function")
-                .and_then(Value::as_str)
-                .and_then(|value| value.parse::<FunctionId>().ok());
+            let target = match registry.reference(node, ReferenceKind::Function) {
+                Ok(DeclId::Function(target)) => Some(target),
+                _ => None,
+            };
             match target {
                 None => {
                     emit_at(
@@ -514,10 +515,11 @@ fn is_function_intrinsic_id(id: &str) -> bool {
 }
 
 fn core_variable_write(
+    registry: &RegistrySnapshot,
     node: &crate::document::NodeInstance,
     definition: &str,
 ) -> Result<VariableWrite, DiagnosticCode> {
-    let variable = super::variables::variable_reference(node)?;
+    let variable = super::variables::variable_reference(registry, node)?;
     let operation = if definition == "core/set-variable" {
         Some(WriteOperation::Set)
     } else {

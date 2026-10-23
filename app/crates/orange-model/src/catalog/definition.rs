@@ -2,9 +2,13 @@
 
 use std::collections::BTreeMap;
 
+use thiserror::Error;
+
+use crate::config_pointer::pointer_get;
 use crate::document::{
-    DefinitionRef, NodeKind, PortDescriptor, Suspends, TypeParam, TypeParamName,
+    ConfigValue, DefinitionRef, NodeKind, PortDescriptor, Suspends, TypeParam, TypeParamName,
 };
+use crate::edit::DeclId;
 use crate::id::TypeExpr;
 
 /// Host-supplied contract of one definition version: its declared ports before type
@@ -86,5 +90,28 @@ impl NodeDefinition {
             }),
             Ports::Variable(_) => None,
         }
+    }
+}
+
+/// Why a reference field does not yield a declaration ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ReferenceError {
+    #[error("reference field is absent")]
+    Missing,
+    #[error("reference field is not a valid declaration ID")]
+    Malformed,
+}
+
+impl ReferenceField {
+    /// Reads the field from `config`; the only place a config string becomes a declaration ID.
+    pub(crate) fn parse(&self, config: &ConfigValue) -> Result<DeclId, ReferenceError> {
+        let value = pointer_get(config, &self.pointer).ok_or(ReferenceError::Missing)?;
+        let text = value.as_str().ok_or(ReferenceError::Malformed)?;
+        let parsed = match self.kind {
+            ReferenceKind::Variable => text.parse().map(DeclId::Variable).ok(),
+            ReferenceKind::Event => text.parse().map(DeclId::Event).ok(),
+            ReferenceKind::Function => text.parse().map(DeclId::Function).ok(),
+        };
+        parsed.ok_or(ReferenceError::Malformed)
     }
 }
