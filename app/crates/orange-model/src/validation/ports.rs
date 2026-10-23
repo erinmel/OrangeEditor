@@ -1,12 +1,13 @@
 //! Shared, read-only resolution of a graph port reference.
 
+use std::collections::BTreeMap;
+use std::sync::LazyLock;
+
 use thiserror::Error;
 
-use crate::document::{
-    GraphDocument, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind, PortRef,
-    SignatureSnapshot, Suspends,
-};
-use crate::id::{PortId, TypeExpr};
+use crate::catalog::intrinsic_definitions;
+use crate::document::{GraphDocument, OutputSource, PortDescriptor, PortRef, SignatureSnapshot};
+use crate::id::PortId;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub(crate) enum PortLookupError {
@@ -95,149 +96,27 @@ pub(crate) fn lookup_port(
 /// arbitrary `core/` IDs as trusted intrinsics.
 pub(crate) use crate::document::is_intrinsic_definition;
 
-type IntrinsicPortSpec<'a> = (
-    &'a str,
-    PortDirection,
-    PortKind,
-    Option<&'a str>,
-    Option<OutputSource>,
-);
-
+/// Port layout of a built-in control node, derived from the registered intrinsic data.
 pub(crate) fn intrinsic_snapshot(id: &str, config_version: u32) -> Option<SignatureSnapshot> {
+    static SNAPSHOTS: LazyLock<BTreeMap<String, SignatureSnapshot>> = LazyLock::new(|| {
+        intrinsic_definitions()
+            .into_iter()
+            .map(|definition| {
+                let contract = definition.contract;
+                let snapshot = SignatureSnapshot {
+                    kind: contract.kind,
+                    suspends: contract.suspends,
+                    ports: contract.ports,
+                    extensions: Default::default(),
+                };
+                (definition.definition.id.as_str().to_owned(), snapshot)
+            })
+            .collect()
+    });
     if config_version != 1 {
         return None;
     }
-    let (kind, specs): (NodeKind, &[IntrinsicPortSpec<'_>]) = match id {
-        "core/branch" => (
-            NodeKind::Action,
-            &[
-                ("in", PortDirection::Input, PortKind::Exec, None, None),
-                (
-                    "condition",
-                    PortDirection::Input,
-                    PortKind::Data,
-                    Some("core/bool@1"),
-                    None,
-                ),
-                ("true", PortDirection::Output, PortKind::Exec, None, None),
-                ("false", PortDirection::Output, PortKind::Exec, None, None),
-            ],
-        ),
-        "core/sequence" => (
-            NodeKind::Action,
-            &[("in", PortDirection::Input, PortKind::Exec, None, None)],
-        ),
-        "core/fork" => (
-            NodeKind::Action,
-            &[
-                ("in", PortDirection::Input, PortKind::Exec, None, None),
-                (
-                    "completed",
-                    PortDirection::Output,
-                    PortKind::Exec,
-                    None,
-                    None,
-                ),
-            ],
-        ),
-        "core/count" => (
-            NodeKind::Iterator,
-            &[
-                ("in", PortDirection::Input, PortKind::Exec, None, None),
-                (
-                    "count",
-                    PortDirection::Input,
-                    PortKind::Data,
-                    Some("core/i64@1"),
-                    None,
-                ),
-                (
-                    "index",
-                    PortDirection::Output,
-                    PortKind::Data,
-                    Some("core/i64@1"),
-                    Some(OutputSource::Iteration),
-                ),
-            ],
-        ),
-        "core/while" => (
-            NodeKind::Iterator,
-            &[
-                ("in", PortDirection::Input, PortKind::Exec, None, None),
-                (
-                    "condition",
-                    PortDirection::Input,
-                    PortKind::Data,
-                    Some("core/bool@1"),
-                    None,
-                ),
-            ],
-        ),
-        "core/yield" => (
-            NodeKind::Async,
-            &[("in", PortDirection::Input, PortKind::Exec, None, None)],
-        ),
-        "core/wait" => (
-            NodeKind::Async,
-            &[
-                ("in", PortDirection::Input, PortKind::Exec, None, None),
-                (
-                    "duration",
-                    PortDirection::Input,
-                    PortKind::Data,
-                    Some("core/duration@1"),
-                    None,
-                ),
-            ],
-        ),
-        "core/break" | "core/continue" => (
-            NodeKind::Action,
-            &[("in", PortDirection::Input, PortKind::Exec, None, None)],
-        ),
-        _ => return None,
-    };
-    let mut ports: Vec<PortDescriptor> = specs
-        .iter()
-        .map(
-            |&(name, direction, port_kind, ty, source)| match (direction, port_kind) {
-                (PortDirection::Input, PortKind::Data) => {
-                    PortDescriptor::data_in(name, intrinsic_type(ty))
-                }
-                (PortDirection::Output, PortKind::Data) => PortDescriptor::data_out(
-                    name,
-                    intrinsic_type(ty),
-                    source.expect("intrinsic data output has a source"),
-                ),
-                (PortDirection::Input, _) => PortDescriptor::exec_in(name),
-                (PortDirection::Output, _) => PortDescriptor::exec_out(name),
-            },
-        )
-        .collect();
-    if matches!(id, "core/sequence" | "core/fork") {
-        let (name, min) = if id == "core/sequence" {
-            ("then", 2)
-        } else {
-            ("branch", 1)
-        };
-        ports.push(PortDescriptor::exec_out(name).variadic(min, None));
-    }
-    let suspends = match id {
-        "core/yield" | "core/wait" => Some(Suspends::Always),
-        "core/count" | "core/while" => Some(Suspends::Maybe),
-        _ => None,
-    };
-    Some(SignatureSnapshot {
-        kind,
-        suspends,
-        ports,
-        extensions: Default::default(),
-    })
-}
-
-fn intrinsic_type(ty: Option<&str>) -> TypeExpr {
-    ty.expect("intrinsic data port has a type")
-        .parse()
-        .expect("intrinsic type expression is valid")
+    SNAPSHOTS.get(id).cloned()
 }
 
 pub(crate) fn implicit_port(snapshot: &SignatureSnapshot, id: &PortId) -> Option<PortDescriptor> {
@@ -266,6 +145,7 @@ pub(crate) fn implicit_port(snapshot: &SignatureSnapshot, id: &PortId) -> Option
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::document::PortKind;
     use serde_json::json;
 
     fn document(

@@ -5,6 +5,7 @@ use std::sync::Arc;
 
 use thiserror::Error;
 
+use super::intrinsics::intrinsic_definitions;
 use super::{NodeDefinition, ProviderDescriptor, ProviderKey, TypeArgs};
 use crate::conversion::{ConverterRegistry, ConverterRegistryBuilder};
 use crate::document::{DefinitionRef, is_intrinsic_definition};
@@ -73,13 +74,16 @@ impl RegistryBuilder {
         let converters = ConverterRegistryBuilder::with_core_conversions(Arc::clone(&types))
             .expect("the built-in core conversions are valid")
             .build();
-        Self {
+        let builder = Self {
             origin,
             types,
             converters,
             definitions: Vec::new(),
             providers: Vec::new(),
-        }
+        };
+        intrinsic_definitions()
+            .into_iter()
+            .fold(builder, Self::intrinsic)
     }
 
     /// Replaces the type registry; converters restart empty over it.
@@ -103,7 +107,6 @@ impl RegistryBuilder {
     }
 
     /// Registers a host-owned intrinsic, which may use the `core` namespace and implicit ports.
-    #[allow(dead_code)] // wired when intrinsics become data
     pub(crate) fn intrinsic(mut self, definition: NodeDefinition) -> Self {
         self.definitions.push((definition, true));
         self
@@ -220,11 +223,11 @@ pub struct RegistrySnapshot {
 }
 
 impl RegistrySnapshot {
-    /// A snapshot of the core types and conversions with no node definitions.
+    /// A snapshot of the core types, conversions and intrinsic node definitions.
     pub fn core(origin: HostOrigin) -> Arc<Self> {
         RegistryBuilder::core(origin)
             .build()
-            .expect("an empty registry is valid")
+            .expect("the built-in registry is valid")
     }
 
     /// Process-unique identity of this snapshot. Plans record it, so one made against a
@@ -430,7 +433,7 @@ mod tests {
         let reserved = || vec![port("then", None)];
         let result = build(builder().definition(definition("acme/add", &[], reserved())));
         assert!(matches!(result, Err(RegistryError::ReservedPort { .. })));
-        assert!(build(builder().intrinsic(definition("core/branch", &[], reserved()))).is_ok());
+        assert!(build(builder().intrinsic(definition("core/mine", &[], reserved()))).is_ok());
     }
 
     #[test]
@@ -481,5 +484,14 @@ mod tests {
             Some([args("core/i64@1")].as_slice())
         );
         assert_eq!(snapshot.specializations(&add, Some(&key("q"))), None);
+    }
+
+    #[test]
+    fn the_core_snapshot_registers_the_control_intrinsics() {
+        let snapshot = RegistrySnapshot::core(origin());
+        for id in ["core/branch", "core/sequence", "core/wait", "core/continue"] {
+            assert!(snapshot.definition(&dref(id)).is_some(), "{id}");
+        }
+        assert!(snapshot.definition(&dref("core/get-variable")).is_none());
     }
 }
