@@ -14,7 +14,9 @@ use super::{
 use crate::config_pointer::pointer_parts;
 use crate::conversion::{ConverterRegistry, ConverterRegistryBuilder};
 use crate::document::{DefinitionRef, is_intrinsic_definition};
-use crate::document::{GraphDocument, NodeInstance, OutputSource, PortDescriptor, VarScope};
+use crate::document::{
+    GraphDocument, NodeInstance, OutputSource, PortDescriptor, PortKind, VarScope,
+};
 use crate::edit::DeclId;
 use crate::id::{DefinitionId, PortId};
 use crate::type_term::TypeTerm;
@@ -47,6 +49,13 @@ pub enum RegistryError {
     },
     #[error("definition `{definition}` declares reserved implicit port `{port}`")]
     ReservedPort {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error(
+        "definition `{definition}` port `{port}` must have a type exactly when it is a data or event port"
+    )]
+    PortType {
         definition: DefinitionId,
         port: PortId,
     },
@@ -234,6 +243,12 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         }
         if !intrinsic && RESERVED_PORTS.contains(&name) {
             return Err(RegistryError::ReservedPort {
+                definition: id.clone(),
+                port: port.port_id.clone(),
+            });
+        }
+        if port.ty.is_some() != matches!(port.kind, PortKind::Data | PortKind::Event) {
+            return Err(RegistryError::PortType {
                 definition: id.clone(),
                 port: port.port_id.clone(),
             });
@@ -553,10 +568,22 @@ mod tests {
 
     #[test]
     fn reserved_ports_are_rejected_for_packages_but_allowed_for_intrinsics() {
-        let reserved = || vec![port("then", None)];
+        let reserved = || vec![PortDescriptor::exec_out("then")];
         let result = build(builder().definition(definition("acme/add", &[], reserved())));
         assert!(matches!(result, Err(RegistryError::ReservedPort { .. })));
         assert!(build(builder().intrinsic(definition("core/mine", &[], reserved()))).is_ok());
+    }
+
+    #[test]
+    fn only_data_and_event_ports_have_a_type() {
+        let typed_exec = PortDescriptor {
+            ty: Some("core/i64@1".parse().unwrap()),
+            ..PortDescriptor::exec_in("go")
+        };
+        for ports in [vec![port("a", None)], vec![typed_exec]] {
+            let result = build(builder().definition(definition("acme/add", &[], ports)));
+            assert!(matches!(result, Err(RegistryError::PortType { .. })));
+        }
     }
 
     #[test]
