@@ -236,3 +236,43 @@ fn unsupported_reserved_pure_zone_metadata_stays_incomplete() {
         vec![zone_id]
     );
 }
+
+#[test]
+fn invalid_contextual_update_keeps_function_summary_incomplete() {
+    for (operation, ty, code) in [
+        ("min", "core/i64@1", DiagnosticCode::UpdateUnsupported),
+        ("add", "core/bool@1", DiagnosticCode::ConstraintUnsatisfied),
+    ] {
+        let mut declaration = variable(RUN_VAR, "run");
+        declaration["type"] = json!(ty);
+        let doc = document(
+            json!([declaration]),
+            json!([function(
+                CALLER,
+                "action",
+                json!([node(
+                    UPDATE_NODE,
+                    "core/update-variable",
+                    json!({"variable":RUN_VAR,"operation":operation})
+                )])
+            )]),
+        );
+        // A caller-supplied projection cannot substitute for the current intrinsic contract.
+        let evidence = FunctionEvidence::new(
+            &doc,
+            BTreeMap::from([(
+                UPDATE_NODE.parse().unwrap(),
+                serde_json::from_value(json!({"kind":"action","ports":[]})).unwrap(),
+            )]),
+            BTreeMap::new(),
+        );
+        let report = analyze_functions(&doc, &evidence, &registry());
+        let function: FunctionId = CALLER.parse().unwrap();
+        assert!(report.incomplete_functions.contains(&function));
+        assert!(!report.summaries.contains_key(&function));
+        assert_eq!(
+            diagnostic_subjects(&report, code),
+            vec![UPDATE_NODE.parse().unwrap()]
+        );
+    }
+}

@@ -232,15 +232,22 @@ fn preflight_node(
         );
         return false;
     };
-    let Ok(Some(contract)) = registry.contract(document, node) else {
-        unresolved(
-            node.id,
-            DiagnosticCode::ProviderUnavailable,
-            origin,
-            report,
-            diagnostics,
-        );
-        return false;
+    let contract = match registry.contract(document, node) {
+        Ok(Some(contract)) => contract,
+        Ok(None) => {
+            unresolved(
+                node.id,
+                DiagnosticCode::ProviderUnavailable,
+                origin,
+                report,
+                diagnostics,
+            );
+            return false;
+        }
+        Err(error) => {
+            unresolved(node.id, contract_code(error), origin, report, diagnostics);
+            return false;
+        }
     };
     if let Some(code) = suspension_contract_issue(contract.kind, contract.suspends) {
         unresolved(node.id, code, origin, report, diagnostics);
@@ -259,10 +266,15 @@ fn preflight_node(
     true
 }
 
-fn contract_code(error: ContractError) -> DiagnosticCode {
+pub(crate) fn contract_code(error: ContractError) -> DiagnosticCode {
     match error {
         ContractError::VariableUnknown => DiagnosticCode::VariableUnknown,
         ContractError::VariableScope => DiagnosticCode::VariableScope,
+        ContractError::UpdateOperation => DiagnosticCode::UpdateOperation,
+        ContractError::UpdateUnsupported => DiagnosticCode::UpdateUnsupported,
+        ContractError::UpdateConstraint => DiagnosticCode::ConstraintUnsatisfied,
+        ContractError::TypeMismatch => DiagnosticCode::TypeMismatch,
+        ContractError::TypeComplexity => DiagnosticCode::TypeComplexity,
         ContractError::ConverterConfig => DiagnosticCode::ConverterConfig,
         ContractError::ConverterEntry => DiagnosticCode::ConverterEntry,
         ContractError::ConverterOptions => DiagnosticCode::ConverterOptions,

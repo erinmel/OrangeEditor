@@ -11,25 +11,10 @@ use crate::document::{
 };
 use crate::edit::DeclId;
 use crate::id::{FunctionId, NodeId, VariableId};
+pub use crate::variable::WriteOperation;
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
 use super::nodes::NodeValidation;
-
-/// The operation used to write a variable. This remains part of the summary so later
-/// conflict analysis can recognize the documented commutative update exceptions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum WriteOperation {
-    Set,
-    Add,
-    Sub,
-    Min,
-    Max,
-    And,
-    Or,
-    Xor,
-    Append,
-    CompareAndSet,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VariableWrite {
@@ -245,6 +230,33 @@ pub fn analyze_functions(
                 rank = rank.max(rank_of(kind));
                 may_suspend |= suspends != Suspends::Never;
                 if is_variable_write(definition) {
+                    if definition == "core/update-variable" {
+                        match registry.contract(document, node) {
+                            Ok(Some(_)) => {}
+                            Ok(None) => {
+                                emit_at(
+                                    &mut result,
+                                    DiagnosticCode::FunctionMetadataUnavailable,
+                                    function_id,
+                                    node.id,
+                                    origin,
+                                );
+                                complete = false;
+                                continue;
+                            }
+                            Err(error) => {
+                                emit_at(
+                                    &mut result,
+                                    super::nodes::contract_code(error),
+                                    function_id,
+                                    node.id,
+                                    origin,
+                                );
+                                complete = false;
+                                continue;
+                            }
+                        }
+                    }
                     match core_variable_write(registry, node, definition) {
                         Ok(write) => {
                             if document.variables().get(&write.variable).is_none() {
@@ -494,7 +506,7 @@ fn core_variable_write(
         node.config
             .get("operation")
             .and_then(Value::as_str)
-            .and_then(parse_operation)
+            .and_then(WriteOperation::parse_update)
     }
     .ok_or(DiagnosticCode::UpdateOperation)?;
     Ok(VariableWrite {
@@ -505,20 +517,6 @@ fn core_variable_write(
 
 fn is_variable_write(id: &str) -> bool {
     matches!(id, "core/set-variable" | "core/update-variable")
-}
-fn parse_operation(value: &str) -> Option<WriteOperation> {
-    Some(match value {
-        "add" => WriteOperation::Add,
-        "sub" => WriteOperation::Sub,
-        "min" => WriteOperation::Min,
-        "max" => WriteOperation::Max,
-        "and" => WriteOperation::And,
-        "or" => WriteOperation::Or,
-        "xor" => WriteOperation::Xor,
-        "append" => WriteOperation::Append,
-        "compare-and-set" => WriteOperation::CompareAndSet,
-        _ => return None,
-    })
 }
 fn rank_of(kind: NodeKind) -> KindRank {
     match kind {

@@ -48,6 +48,7 @@ pub struct ReferenceField {
 pub enum VariableAccess {
     Read,
     Write,
+    Update,
 }
 
 /// Where a definition's ports come from.
@@ -55,7 +56,8 @@ pub enum VariableAccess {
 pub enum Ports {
     /// Fixed ports; data port types may mention `$name` parameters.
     Declared(Vec<PortDescriptor>),
-    /// One `value` port typed by the referenced variable declaration.
+    /// Variable-derived ports: Read has a `value` output, Write has a `value`
+    /// input, and Update has a `value` input plus `old`/`new` outputs.
     Variable(VariableAccess),
 }
 
@@ -108,6 +110,16 @@ pub enum ContractError {
     VariableUnknown,
     #[error("a workspace variable cannot be written from a graph")]
     VariableScope,
+    #[error("variable update operation is missing, malformed or unknown")]
+    UpdateOperation,
+    #[error("variable update operation is recognized but not supported by this contract")]
+    UpdateUnsupported,
+    #[error("variable type has no exact proof for the requested update operation")]
+    UpdateConstraint,
+    #[error("variable type cannot be resolved")]
+    TypeMismatch,
+    #[error("variable type resolution exceeded its resource limit")]
+    TypeComplexity,
     #[error("converter config is malformed or uses an unsupported version")]
     ConverterConfig,
     #[error("converter entry is unavailable")]

@@ -111,5 +111,6 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
             VariableAccess::Read,
         ),
         variable_definition("core/set-variable", Action, VariableAccess::Write),
+        variable_definition("core/update-variable", Action, VariableAccess::Update),
     ]
 }

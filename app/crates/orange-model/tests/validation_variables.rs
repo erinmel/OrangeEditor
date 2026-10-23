@@ -24,6 +24,11 @@ fn variable_node(n: u8, operation: &str, variable: Value) -> Value {
         "definition_version":1,"config_version":1,"config":{"variable":variable},
         "type_args":{"T":"core/string@1"}})
 }
+fn update_node(n: u8, variable: Value, operation: Value) -> Value {
+    json!({"id":node_id(n),"definition_id":"core/update-variable",
+        "definition_version":1,"config_version":1,
+        "config":{"variable":variable,"operation":operation}})
+}
 fn document(nodes: Value, variables: Value) -> GraphDocument {
     from_json(&minimal_document(
         json!({"nodes":nodes,"variables":variables}),
@@ -197,6 +202,53 @@ fn get_drives_generic_math_and_set_checks_result() {
         assert_eq!(to_json(&doc).unwrap(), before);
     }
 }
+
+#[test]
+fn update_requires_exact_intrinsic_identity_and_canonical_variable_id() {
+    for (field, value) in [
+        (
+            "provider",
+            json!({"package":"org.test","version":"1.0.0","id":"native"}),
+        ),
+        ("definition_version", json!(2)),
+        ("config_version", json!(2)),
+    ] {
+        let mut node = update_node(1, json!(node_id(10)), json!("add"));
+        node[field] = value;
+        let report = validate(&document(
+            json!([node]),
+            json!([declaration(10, "core/i64@1", "run")]),
+        ));
+        assert_eq!(
+            report.diagnostics[0].code,
+            DiagnosticCode::ProviderUnavailable
+        );
+        assert!(report.resolved.is_empty());
+    }
+
+    let report = validate(&document(
+        json!([update_node(1, json!("not-an-id"), json!("add"))]),
+        json!([declaration(10, "core/i64@1", "run")]),
+    ));
+    assert_eq!(report.diagnostics[0].code, DiagnosticCode::VariableUnknown);
+    assert!(report.resolved.is_empty());
+}
+
+#[test]
+fn update_type_depth_limit_has_complexity_diagnostic() {
+    let depth = 66;
+    let ty = format!(
+        "{}core/i64@1{}",
+        "core/list@1<".repeat(depth),
+        ">".repeat(depth)
+    );
+    let report = validate(&document(
+        json!([update_node(1, json!(node_id(10)), json!("add"))]),
+        json!([declaration(10, &ty, "run")]),
+    ));
+    assert_eq!(report.diagnostics[0].code, DiagnosticCode::TypeComplexity);
+    assert!(report.resolved.is_empty());
+}
 #[test]
 fn declaration_change_recomputes_the_contract() {
     use orange_model::DocCommand;
@@ -356,4 +408,153 @@ fn registry_computes_variable_contracts_from_the_document() {
     let mut unknown = doc.node(nid(1)).unwrap().clone();
     unknown.definition.id = "acme/unregistered".parse().unwrap();
     assert!(registry.contract(&doc, &unknown).unwrap().is_none());
+}
+
+#[test]
+fn update_add_sub_projects_fresh_exact_action_ports_without_mutation() {
+    let cases = [
+        (1, 10, "core/i64@1", "add"),
+        (2, 11, "core/f64@1", "sub"),
+        (3, 12, "core/duration@1", "add"),
+    ];
+    let doc = document(
+        json!(cases.map(|(node, variable, _, operation)| update_node(
+            node,
+            json!(node_id(variable)),
+            json!(operation)
+        ))),
+        json!([
+            declaration(10, "core/i64@1", "local"),
+            declaration(11, "core/f64@1", "run"),
+            declaration(12, "core/duration@1", "local")
+        ]),
+    );
+    let before = to_json(&doc).unwrap();
+    let revision = doc.revision();
+    let state_id = doc.state_id();
+    let registry = registry();
+    let resolved = validate_nodes(&doc, &registry);
+    assert!(resolved.is_valid(), "{:?}", resolved.diagnostics);
+    assert_eq!(resolved.resolved.len(), cases.len());
+    assert!(
+        doc.signatures().is_empty(),
+        "intrinsic projections are not stored"
+    );
+    for (node, variable, ty, _) in cases {
+        let signature = &resolved.resolved[&nid(node)];
+        assert_eq!(signature.kind, NodeKind::Action);
+        assert_eq!(signature.suspends, Some(Suspends::Never));
+        assert_eq!(
+            signature
+                .ports
+                .iter()
+                .map(|port| port.port_id.as_str())
+                .collect::<Vec<_>>(),
+            ["value", "old", "new"]
+        );
+        assert_eq!(signature.ports[0].direction, PortDirection::Input);
+        assert_eq!(signature.ports[0].ty.as_ref().unwrap().as_str(), ty);
+        for output in &signature.ports[1..] {
+            assert_eq!(output.direction, PortDirection::Output);
+            assert_eq!(output.ty.as_ref().unwrap().as_str(), ty);
+            assert_eq!(output.source, Some(OutputSource::Execution));
+            assert_eq!(output.available_on.as_ref().unwrap()[0].as_str(), "then");
+        }
+        assert_eq!(
+            doc.node(nid(node)).unwrap().config["variable"],
+            node_id(variable)
+        );
+    }
+    assert_eq!(
+        validate_inputs(&doc, &resolved.resolved, &registry)
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        [DiagnosticCode::InputRequired; 3]
+    );
+    let mut supplied = update_node(1, json!(node_id(10)), json!("add"));
+    supplied["inputs"] = json!({"value":{"type":"core/i64@1","value":"7"}});
+    let supplied = document(
+        json!([supplied]),
+        json!([declaration(10, "core/i64@1", "run")]),
+    );
+    let supplied_resolved = validate_nodes(&supplied, &registry);
+    assert!(validate_inputs(&supplied, &supplied_resolved.resolved, &registry).is_empty());
+    assert_eq!(to_json(&doc).unwrap(), before);
+    assert_eq!(doc.revision(), revision);
+    assert_eq!(doc.state_id(), state_id);
+}
+
+#[test]
+fn update_errors_follow_reference_scope_operation_then_type_precedence() {
+    let cases = [
+        ("missing", "run", None, DiagnosticCode::UpdateOperation),
+        (
+            "42",
+            "run",
+            Some(json!(42)),
+            DiagnosticCode::UpdateOperation,
+        ),
+        (
+            "invented",
+            "run",
+            Some(json!("invented")),
+            DiagnosticCode::UpdateOperation,
+        ),
+        (
+            "set",
+            "run",
+            Some(json!("set")),
+            DiagnosticCode::UpdateOperation,
+        ),
+        (
+            "min",
+            "run",
+            Some(json!("min")),
+            DiagnosticCode::UpdateUnsupported,
+        ),
+        (
+            "add",
+            "run",
+            Some(json!("add")),
+            DiagnosticCode::ConstraintUnsatisfied,
+        ),
+        (
+            "add",
+            "run",
+            Some(json!("add")),
+            DiagnosticCode::TypeMismatch,
+        ),
+        (
+            "add",
+            "workspace",
+            Some(json!("min")),
+            DiagnosticCode::VariableScope,
+        ),
+    ];
+    for (name, scope, operation, expected) in cases {
+        let ty = match expected {
+            DiagnosticCode::ConstraintUnsatisfied => "core/bool@1",
+            DiagnosticCode::TypeMismatch => "missing/type@1",
+            _ => "core/i64@1",
+        };
+        let node = if let Some(operation) = operation {
+            update_node(1, json!(node_id(10)), operation)
+        } else {
+            let mut node = update_node(1, json!(node_id(10)), Value::Null);
+            node["config"].as_object_mut().unwrap().remove("operation");
+            node
+        };
+        let doc = document(json!([node]), json!([declaration(10, ty, scope)]));
+        let report = validate(&doc);
+        assert_eq!(
+            report.diagnostics.len(),
+            1,
+            "{name}: {:?}",
+            report.diagnostics
+        );
+        assert_eq!(report.diagnostics[0].code, expected, "{name}");
+        assert!(report.resolved.is_empty());
+        assert!(report.incomplete_nodes.contains(&nid(1)));
+    }
 }

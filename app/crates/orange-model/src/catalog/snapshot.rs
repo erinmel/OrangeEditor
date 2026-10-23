@@ -25,8 +25,11 @@ use crate::document::{
 use crate::edit::DeclId;
 use crate::id::{DefinitionId, PortId};
 use crate::type_term::TypeTerm;
-use crate::types::TypeRegistry;
+use crate::types::{
+    CapabilityError, CapabilityRequest, NumericOperation, TypeRegistry, TypeResolveError,
+};
 use crate::validation::HostOrigin;
+use crate::variable::WriteOperation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RegistryError {
@@ -117,6 +120,11 @@ pub enum RegistryError {
         "definition `{definition}` takes its ports from a variable but declares no variable reference"
     )]
     VariablePortsWithoutReference { definition: DefinitionId },
+    #[error("variable update definition `{definition}` must have kind Action, found {kind:?}")]
+    VariableUpdateKind {
+        definition: DefinitionId,
+        kind: NodeKind,
+    },
     #[error("provider `{}/{}` names unknown definition `{}@{}`", .provider.package, .provider.id, .definition.id, .definition.version)]
     UnknownDefinition {
         provider: Box<ProviderKey>,
@@ -248,6 +256,14 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
                 kind: definition.kind,
                 suspends,
             },
+        });
+    }
+    if matches!(&definition.ports, Ports::Variable(VariableAccess::Update))
+        && definition.kind != NodeKind::Action
+    {
+        return Err(RegistryError::VariableUpdateKind {
+            definition: id.clone(),
+            kind: definition.kind,
         });
     }
     let ports = match &definition.ports {
@@ -515,7 +531,7 @@ impl RegistrySnapshot {
         };
         let ports = match &definition.ports {
             Ports::Declared(ports) => ports.clone(),
-            Ports::Variable(access) => vec![self.variable_port(document, node, *access)?],
+            Ports::Variable(access) => self.variable_ports(document, node, *access)?,
         };
         Ok(Some(Cow::Owned(NodeContract {
             kind: definition.kind,
@@ -598,12 +614,12 @@ impl RegistrySnapshot {
         })
     }
 
-    fn variable_port(
+    fn variable_ports(
         &self,
         document: &GraphDocument,
         node: &NodeInstance,
         access: VariableAccess,
-    ) -> Result<PortDescriptor, ContractError> {
+    ) -> Result<Vec<PortDescriptor>, ContractError> {
         let Ok(DeclId::Variable(id)) = self.reference(node, ReferenceKind::Variable) else {
             return Err(ContractError::VariableUnknown);
         };
@@ -611,13 +627,61 @@ impl RegistrySnapshot {
             .variables()
             .get(&id)
             .ok_or(ContractError::VariableUnknown)?;
+        if access != VariableAccess::Read && declaration.scope == VarScope::Workspace {
+            return Err(ContractError::VariableScope);
+        }
         let ty = declaration.ty.clone();
         Ok(match access {
-            VariableAccess::Read => PortDescriptor::data_out("value", ty, OutputSource::State),
-            VariableAccess::Write if declaration.scope == VarScope::Workspace => {
-                return Err(ContractError::VariableScope);
+            VariableAccess::Read => {
+                vec![PortDescriptor::data_out("value", ty, OutputSource::State)]
             }
-            VariableAccess::Write => PortDescriptor::data_in("value", ty),
+            VariableAccess::Write => vec![PortDescriptor::data_in("value", ty)],
+            VariableAccess::Update => {
+                let token = node
+                    .config
+                    .get("operation")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(ContractError::UpdateOperation)?;
+                let operation =
+                    WriteOperation::parse_update(token).ok_or(ContractError::UpdateOperation)?;
+                let numeric_operation = match operation {
+                    WriteOperation::Add => NumericOperation::Add,
+                    WriteOperation::Sub => NumericOperation::Subtract,
+                    _ => return Err(ContractError::UpdateUnsupported),
+                };
+                let term = TypeTerm::parse(&ty).map_err(|error| match error {
+                    crate::error::IdError::TypeTooDeep { .. } => ContractError::TypeComplexity,
+                    _ => ContractError::TypeMismatch,
+                })?;
+                match self.types.supports_term(
+                    &term,
+                    CapabilityRequest::NumericOperation(numeric_operation),
+                ) {
+                    Ok(Some(_)) => {}
+                    Ok(None) => return Err(ContractError::UpdateConstraint),
+                    Err(CapabilityError::DerivationTooDeep { .. })
+                    | Err(CapabilityError::Type(TypeResolveError::TooDeep { .. }))
+                    | Err(CapabilityError::Type(TypeResolveError::DerivationTooDeep { .. })) => {
+                        return Err(ContractError::TypeComplexity);
+                    }
+                    Err(CapabilityError::RecursiveDerivation { .. }) => {
+                        return Err(ContractError::UpdateConstraint);
+                    }
+                    Err(CapabilityError::Type(_)) => return Err(ContractError::TypeMismatch),
+                }
+                let then: PortId = "then".parse().map_err(|_| ContractError::TypeMismatch)?;
+                vec![
+                    PortDescriptor::data_in("value", ty.clone()),
+                    PortDescriptor {
+                        available_on: Some(vec![then.clone()]),
+                        ..PortDescriptor::data_out("old", ty.clone(), OutputSource::Execution)
+                    },
+                    PortDescriptor {
+                        available_on: Some(vec![then]),
+                        ..PortDescriptor::data_out("new", ty, OutputSource::Execution)
+                    },
+                ]
+            }
         })
     }
 
@@ -1135,6 +1199,22 @@ mod tests {
             kind: ReferenceKind::Variable,
         }];
         assert!(build(builder().definition(get)).is_ok());
+    }
+
+    #[test]
+    fn update_definition_must_be_an_action() {
+        let mut update = definition("acme/update", &[], vec![]);
+        update.kind = NodeKind::Pure;
+        update.ports = Ports::Variable(VariableAccess::Update);
+        update.references = vec![ReferenceField {
+            pointer: "/variable".into(),
+            kind: ReferenceKind::Variable,
+        }];
+        assert!(matches!(
+            build(builder().definition(update)),
+            Err(RegistryError::VariableUpdateKind { definition, kind: NodeKind::Pure })
+                if definition.as_str() == "acme/update"
+        ));
     }
 
     #[test]

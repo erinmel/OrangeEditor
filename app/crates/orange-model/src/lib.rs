@@ -25,6 +25,7 @@ pub mod type_term;
 pub mod types;
 pub mod validation;
 pub mod value;
+mod variable;
 
 pub use document::codec::{ImportLimits, from_json, from_json_with_limits, to_json};
 pub use document::{BodyRef, GraphDocument};

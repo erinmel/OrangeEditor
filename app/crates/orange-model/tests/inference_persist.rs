@@ -360,6 +360,11 @@ fn variable_get(n: u8, variable: u8) -> Json {
         "config_version":1,"config":{"variable":node_id(variable)}})
 }
 
+fn variable_update(n: u8, variable: u8) -> Json {
+    json!({"id":node_id(n),"definition_id":"core/update-variable","definition_version":1,
+        "config_version":1,"config":{"variable":node_id(variable),"operation":"add"}})
+}
+
 fn variable_decl(id: u8, ty: &str) -> orange_model::document::VariableDecl {
     serde_json::from_value(json!({"id":node_id(id),"name":"v","type":ty,"scope":"run"})).unwrap()
 }
@@ -530,4 +535,115 @@ fn declaration_change_preserves_an_incompatible_explicit_pin_and_reports_the_con
     );
     assert_eq!(type_arg(&doc, 2), None);
     assert_eq!(signature_types(&doc, 2), ["$T"; 3]);
+}
+
+#[test]
+fn update_outputs_invalidate_generic_consumers_in_root_and_function_bodies() {
+    use orange_model::validation::{validate_connections, validate_nodes};
+
+    let registry = declaration_registry();
+    for in_function in [false, true] {
+        let mut fixture = serde_json::to_value(declaration_driven_document()).unwrap();
+        let node = fixture["nodes"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|node| node["id"] == node_id(1))
+            .unwrap();
+        *node = variable_update(1, 10);
+        fixture["edges"] = json!([
+            data_edge(1, (1, "new"), (2, "a")),
+            data_edge(2, (1, "old"), (2, "b"))
+        ]);
+        if in_function {
+            let nodes = fixture["nodes"].take();
+            let edges = fixture["edges"].take();
+            fixture["nodes"] = json!([]);
+            fixture["edges"] = json!([]);
+            fixture["functions"] = json!([{
+                "id": function_id(), "name": "update", "kind": "action",
+                "nodes": nodes, "edges": edges
+            }]);
+        }
+        let mut doc: GraphDocument = serde_json::from_value(fixture).unwrap();
+        let setup = apply_inferred(
+            &mut doc,
+            [DocCommand::UpsertVariable(variable_decl(10, "core/i64@1"))],
+            &registry,
+        )
+        .unwrap();
+        assert!(setup.issues.is_empty(), "{:?}", setup.issues);
+        assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
+        assert_eq!(signature_types(&doc, 2), ["core/i64@1"; 3]);
+        let unrelated = doc.node(nid(4)).unwrap().clone();
+        let before = content(&doc);
+        let revision = doc.revision();
+
+        let changed = apply_inferred(
+            &mut doc,
+            [DocCommand::UpsertVariable(variable_decl(10, "core/f64@1"))],
+            &registry,
+        )
+        .unwrap();
+        assert!(changed.issues.is_empty(), "{:?}", changed.issues);
+        assert_eq!(doc.revision(), revision + 1);
+        assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/f64@1"));
+        assert_eq!(signature_types(&doc, 2), ["core/f64@1"; 3]);
+        assert_eq!(doc.node(nid(4)).unwrap(), &unrelated);
+        assert!(doc.node(nid(1)).unwrap().signature.is_none());
+        let nodes = validate_nodes(&doc, &registry);
+        assert!(nodes.is_valid(), "{:?}", nodes.diagnostics);
+        for port in &nodes.resolved[&nid(1)].ports {
+            assert_eq!(port.ty.as_ref().unwrap().as_str(), "core/f64@1");
+        }
+        let connections = validate_connections(&doc, &nodes.resolved, &registry);
+        assert!(
+            connections.diagnostics.is_empty(),
+            "{:?}",
+            connections.diagnostics
+        );
+        // This tests type propagation, not the absent input value or execution/region rules.
+        let after = content(&doc);
+        let redo = doc.revert(changed.committed.inverse).unwrap().inverse;
+        assert_eq!(content(&doc), before);
+        assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
+        let _ = doc.revert(redo).unwrap();
+        assert_eq!(content(&doc), after);
+
+        let removed = apply_inferred(
+            &mut doc,
+            [DocCommand::RemoveVariable(node_id(10).parse().unwrap())],
+            &registry,
+        )
+        .unwrap();
+        assert_eq!(codes(&removed.issues), ["E-TYPE-AMBIGUOUS"]);
+        assert_eq!(type_arg(&doc, 2), None);
+        assert_eq!(signature_types(&doc, 2), ["$T"; 3]);
+        let restored = apply_inferred(
+            &mut doc,
+            [DocCommand::UpsertVariable(variable_decl(10, "core/i64@1"))],
+            &registry,
+        )
+        .unwrap();
+        assert!(restored.issues.is_empty());
+        assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
+        assert_eq!(doc.node(nid(4)).unwrap(), &unrelated);
+        let before_scope_change = content(&doc);
+        let mut workspace = variable_decl(10, "core/i64@1");
+        workspace.scope = orange_model::document::VarScope::Workspace;
+        let scope_change =
+            apply_inferred(&mut doc, [DocCommand::UpsertVariable(workspace)], &registry).unwrap();
+        assert_eq!(type_arg(&doc, 2), None);
+        assert!(
+            validate_nodes(&doc, &registry)
+                .diagnostics
+                .iter()
+                .any(|diagnostic| {
+                    diagnostic.code == orange_model::validation::DiagnosticCode::VariableScope
+                        && diagnostic.subject.node == Some(nid(1))
+                })
+        );
+        let _ = doc.revert(scope_change.committed.inverse).unwrap();
+        assert_eq!(content(&doc), before_scope_change);
+    }
 }

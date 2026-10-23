@@ -80,6 +80,8 @@ pub enum DiagnosticCode {
     VariableScope,
     #[serde(rename = "E-UPDATE-OPERATION")]
     UpdateOperation,
+    #[serde(rename = "E-UPDATE-UNSUPPORTED")]
+    UpdateUnsupported,
     #[serde(rename = "E-ENTRY-IN-FUNCTION")]
     EntryInFunction,
     #[serde(rename = "E-CONVERTER-CONFIG")]
@@ -129,6 +131,7 @@ impl DiagnosticCode {
             Self::VariableUnknown => "E-VARIABLE-UNKNOWN",
             Self::VariableScope => "E-VARIABLE-SCOPE",
             Self::UpdateOperation => "E-UPDATE-OPERATION",
+            Self::UpdateUnsupported => "E-UPDATE-UNSUPPORTED",
             Self::EntryInFunction => "E-ENTRY-IN-FUNCTION",
             Self::ConverterConfig => "E-CONVERTER-CONFIG",
             Self::ConverterEntry => "E-CONVERTER-ENTRY",
@@ -173,6 +176,7 @@ impl DiagnosticCode {
             Self::VariableUnknown => "core/graph-variable-unknown",
             Self::VariableScope => "core/graph-variable-scope",
             Self::UpdateOperation => "core/graph-update-operation",
+            Self::UpdateUnsupported => "core/graph-update-unsupported",
             Self::EntryInFunction => "core/graph-entry-in-function",
             Self::ConverterConfig => "core/graph-converter-config",
             Self::ConverterEntry => "core/graph-converter-entry",
@@ -238,6 +242,9 @@ impl DiagnosticCode {
                 "Workspace variables require an asynchronous shared write.".into()
             }
             Self::UpdateOperation => "Variable update requires a supported operation.".into(),
+            Self::UpdateUnsupported => {
+                "This variable update operation is not supported by this core version.".into()
+            }
             Self::EntryInFunction => {
                 "Entry and watch nodes are not permitted in a function.".into()
             }
@@ -599,5 +606,29 @@ mod tests {
             to_value(diagnostic).unwrap()["message_origin"]["kind"],
             "host"
         );
+    }
+
+    #[test]
+    fn unsupported_update_diagnostic_has_stable_empty_argument_envelope() {
+        let diagnostic = Diagnostic::new(
+            DiagnosticCode::UpdateUnsupported,
+            Subject::default(),
+            &origin(),
+        );
+        assert_eq!(diagnostic.code.as_str(), "E-UPDATE-UNSUPPORTED");
+        assert_eq!(diagnostic.message_key, "core/graph-update-unsupported");
+        assert_eq!(
+            diagnostic.message,
+            "This variable update operation is not supported by this core version."
+        );
+        assert!(diagnostic.message_args.is_empty());
+        let wire = to_value(&diagnostic).unwrap();
+        assert_eq!(wire["code"], "E-UPDATE-UNSUPPORTED");
+        assert_eq!(
+            serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+            DiagnosticCode::UpdateUnsupported
+        );
+        assert_eq!(wire["message_key"], "core/graph-update-unsupported");
+        assert_eq!(wire["message_args"], json!({}));
     }
 }
