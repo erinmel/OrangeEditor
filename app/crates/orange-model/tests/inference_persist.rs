@@ -3,7 +3,7 @@
 mod common;
 
 use common::generic::{add, data_edge, document, registry, source, typed_source};
-use common::{body, content, eid, function, function_id, nid, saved};
+use common::{body, content, eid, function, function_id, minimal_document, nid, node_id, saved};
 use orange_model::document::{Edge, NodeInstance};
 use orange_model::inference::{InferenceIssue, apply_inferred, plan_edit};
 use orange_model::{BodyRef, DocCommand, GraphDocument, TxError, from_json};
@@ -353,4 +353,181 @@ fn edits_inside_a_function_body_are_inferred_like_root_edits() {
     .unwrap();
     assert!(issues.is_empty());
     assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
+}
+
+fn variable_get(n: u8, variable: u8) -> Json {
+    json!({"id":node_id(n),"definition_id":"core/get-variable","definition_version":1,
+        "config_version":1,"config":{"variable":node_id(variable)}})
+}
+
+fn variable_decl(id: u8, ty: &str) -> orange_model::document::VariableDecl {
+    serde_json::from_value(json!({"id":node_id(id),"name":"v","type":ty,"scope":"run"})).unwrap()
+}
+
+fn declaration_driven_document() -> GraphDocument {
+    let provider = json!({"package":"org.test","version":"1.0.0","id":"native"});
+    from_json(&minimal_document(json!({
+        "package_lock":[{"id":"org.test","version":"1.0.0","content_digest":format!("sha256:{}", "c".repeat(64))}],
+        "signatures":{"unrelated":{"kind":"pure","ports":[
+            {"port_id":"a","direction":"input","kind":"data","type":"core/i32@1"},
+            {"port_id":"b","direction":"input","kind":"data","type":"core/i32@1"},
+            {"port_id":"sum","direction":"output","kind":"data","type":"core/i32@1"}
+        ]}},
+        "nodes":[variable_get(1,10),add(2,json!({"provider":provider})),add(4,json!({"provider":provider,"type_args":{"T":"core/i32@1"},"type_pins":{"T":"core/i32@1"},"signature":"unrelated"}))],
+        "edges":[data_edge(1,(1,"value"),(2,"a"))]
+    })))
+    .unwrap()
+}
+
+fn declaration_registry() -> std::sync::Arc<orange_model::catalog::RegistrySnapshot> {
+    common::generic::registry_with_provider(orange_model::catalog::ProviderKey {
+        package: "org.test".into(),
+        version: "1.0.0".into(),
+        content_digest: format!("sha256:{}", "c".repeat(64)),
+        id: "native".into(),
+    })
+}
+
+#[test]
+fn variable_changes_reinfer_referenced_generic_components_and_undo_redo_together() {
+    let registry = declaration_registry();
+    let mut doc = declaration_driven_document();
+    let setup = apply_inferred(
+        &mut doc,
+        [DocCommand::UpsertVariable(variable_decl(10, "core/i64@1"))],
+        &registry,
+    )
+    .unwrap();
+    assert!(setup.issues.is_empty());
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
+    assert_eq!(signature_types(&doc, 2), ["core/i64@1"; 3]);
+    let before = content(&doc);
+    let unrelated = doc.node(nid(4)).unwrap().clone();
+    let revision = doc.revision();
+
+    let changed = apply_inferred(
+        &mut doc,
+        [DocCommand::UpsertVariable(variable_decl(10, "core/f64@1"))],
+        &registry,
+    )
+    .unwrap();
+    assert!(changed.issues.is_empty(), "{:?}", changed.issues);
+    assert_eq!(doc.revision(), revision + 1);
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/f64@1"));
+    assert_eq!(signature_types(&doc, 2), ["core/f64@1"; 3]);
+    assert_eq!(doc.node(nid(4)).unwrap(), &unrelated);
+    let resolved = orange_model::validation::validate_nodes(&doc, &registry);
+    assert!(resolved.is_valid(), "{:?}", resolved.diagnostics);
+    assert_eq!(
+        resolved.resolved[&nid(2)]
+            .ports
+            .iter()
+            .map(|port| port.ty.as_ref().unwrap().to_string())
+            .collect::<Vec<_>>(),
+        signature_types(&doc, 2)
+    );
+    let after = content(&doc);
+
+    let redo = doc.revert(changed.committed.inverse).unwrap().inverse;
+    assert_eq!(content(&doc), before);
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
+    assert_eq!(signature_types(&doc, 2), ["core/i64@1"; 3]);
+    let _ = doc.revert(redo).unwrap();
+    assert_eq!(content(&doc), after);
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/f64@1"));
+}
+
+#[test]
+fn deleting_and_readding_a_referenced_variable_does_not_reuse_stale_type_args() {
+    let registry = declaration_registry();
+    let mut doc = declaration_driven_document();
+    let _ = apply_inferred(
+        &mut doc,
+        [DocCommand::UpsertVariable(variable_decl(10, "core/i64@1"))],
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/i64@1"));
+
+    let removed = apply_inferred(
+        &mut doc,
+        [DocCommand::RemoveVariable(node_id(10).parse().unwrap())],
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(codes(&removed.issues), ["E-TYPE-AMBIGUOUS"]);
+    assert_eq!(type_arg(&doc, 2), None);
+    assert_eq!(signature_types(&doc, 2), ["$T"; 3]);
+
+    let restored = apply_inferred(
+        &mut doc,
+        [DocCommand::UpsertVariable(variable_decl(10, "core/f64@1"))],
+        &registry,
+    )
+    .unwrap();
+    assert!(restored.issues.is_empty());
+    assert_eq!(type_arg(&doc, 2).as_deref(), Some("core/f64@1"));
+    assert_eq!(signature_types(&doc, 2), ["core/f64@1"; 3]);
+}
+
+#[test]
+fn declaration_references_inside_function_bodies_are_invalidated() {
+    let registry = declaration_registry();
+    let mut doc = from_json(&minimal_document(json!({
+        "package_lock":[{"id":"org.test","version":"1.0.0","content_digest":format!("sha256:{}", "c".repeat(64))}],
+        "variables":[{"id":node_id(10),"name":"v","type":"core/i64@1","scope":"run"}]
+    })))
+    .unwrap();
+    let _ = apply_inferred(
+        &mut doc,
+        [function_with(
+            vec![
+                variable_get(11, 10),
+                add(
+                    12,
+                    json!({"provider":{"package":"org.test","version":"1.0.0","id":"native"}}),
+                ),
+            ],
+            vec![data_edge(11, (11, "value"), (12, "a"))],
+        )],
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(type_arg(&doc, 12).as_deref(), Some("core/i64@1"));
+
+    let changed = apply_inferred(
+        &mut doc,
+        [DocCommand::UpsertVariable(variable_decl(10, "core/f64@1"))],
+        &registry,
+    )
+    .unwrap();
+    assert!(changed.issues.is_empty(), "{:?}", changed.issues);
+    assert_eq!(type_arg(&doc, 12).as_deref(), Some("core/f64@1"));
+    assert_eq!(signature_types(&doc, 12), ["core/f64@1"; 3]);
+}
+
+#[test]
+fn declaration_change_preserves_an_incompatible_explicit_pin_and_reports_the_conflict() {
+    let registry = declaration_registry();
+    let provider = json!({"package":"org.test","version":"1.0.0","id":"native"});
+    let mut doc = from_json(&minimal_document(json!({
+        "package_lock":[{"id":"org.test","version":"1.0.0","content_digest":format!("sha256:{}", "c".repeat(64))}],
+        "variables":[{"id":node_id(10),"name":"v","type":"core/i64@1","scope":"run"}],
+        "nodes":[variable_get(1,10),add(2,json!({"provider":provider,"type_pins":{"T":"core/i64@1"}}))],
+        "edges":[data_edge(1,(1,"value"),(2,"a"))]
+    })))
+    .unwrap();
+    let changed = apply_inferred(
+        &mut doc,
+        [DocCommand::UpsertVariable(variable_decl(10, "core/f64@1"))],
+        &registry,
+    )
+    .unwrap();
+    assert_eq!(codes(&changed.issues), ["E-TYPE-MISMATCH"]);
+    assert_eq!(
+        doc.node(nid(2)).unwrap().type_pins["T"].as_str(),
+        "core/i64@1"
+    );
+    assert_eq!(type_arg(&doc, 2), None);
+    assert_eq!(signature_types(&doc, 2), ["$T"; 3]);
 }

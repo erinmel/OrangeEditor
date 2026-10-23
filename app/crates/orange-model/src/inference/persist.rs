@@ -14,7 +14,7 @@
 use std::collections::BTreeSet;
 
 use super::component::{ComponentInference, InferenceIssue, infer_components};
-use crate::catalog::RegistrySnapshot;
+use crate::catalog::{ReferenceKind, RegistrySnapshot};
 use crate::document::GraphDocument;
 use crate::edit::{ChangeSet, Committed, DeclId, DocCommand};
 use crate::error::TxError;
@@ -58,7 +58,7 @@ pub fn plan_edit(
     let mut commands: Vec<DocCommand> = edit.into_iter().collect();
     let mut after = document.clone();
     let change = after.apply(commands.clone())?.change_set;
-    let touched = touched_nodes(document, &after, &change);
+    let touched = touched_nodes(document, &after, &change, registry);
     let index = DocIndex::build(&after);
     let mut issues = Vec::new();
     for component in infer_components(&after, &index, touched, registry) {
@@ -92,6 +92,7 @@ fn touched_nodes(
     before: &GraphDocument,
     after: &GraphDocument,
     change: &ChangeSet,
+    registry: &RegistrySnapshot,
 ) -> BTreeSet<NodeId> {
     let endpoints = |document: &GraphDocument, edges: &BTreeSet<EdgeId>| {
         edges
@@ -116,6 +117,51 @@ fn touched_nodes(
             && let Some(function) = after.functions().get(function)
         {
             touched.extend(function.body.nodes.keys().copied());
+        }
+    }
+    let variable_changes = change
+        .decls
+        .added
+        .iter()
+        .chain(&change.decls.changed)
+        .chain(&change.decls.removed)
+        .filter_map(|decl| match decl {
+            DeclId::Variable(id) => Some(*id),
+            DeclId::Event(_) | DeclId::Function(_) => None,
+        })
+        .collect::<BTreeSet<_>>();
+    if !variable_changes.is_empty() {
+        // This correctness-first scan uses the registry's typed reference parser in both
+        // states. The document stores no registry-specific reverse index, and removing a
+        // declaration still finds consumers through their persisted typed reference.
+        for document in [before, after] {
+            let consumers = document
+                .bodies()
+                .flat_map(|body| body.nodes.values())
+                .filter(|node| {
+                    registry.references(node).any(|(field, parsed)| {
+                        field.kind == ReferenceKind::Variable
+                            && matches!(parsed, Ok(DeclId::Variable(id)) if variable_changes.contains(&id))
+                    })
+                })
+                .map(|node| node.id)
+                .collect::<BTreeSet<_>>();
+            touched.extend(consumers.iter().copied());
+            // On removal, a contextual consumer no longer has a contract, so inference
+            // cannot discover a type-variable edge from that endpoint. Seed the opposite
+            // endpoint as well; it then solves without stale snapshot evidence and becomes
+            // ambiguous unless another live source exists.
+            for body in document.bodies() {
+                touched.extend(body.edges.values().filter_map(|edge| {
+                    if consumers.contains(&edge.from.node) {
+                        Some(edge.to.node)
+                    } else if consumers.contains(&edge.to.node) {
+                        Some(edge.from.node)
+                    } else {
+                        None
+                    }
+                }));
+            }
         }
     }
     touched.retain(|id| after.node(*id).is_some());

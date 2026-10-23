@@ -4,13 +4,13 @@
 
 Reviewed the complete user-provided foundation review against source `b287dab` on `refactor/typed-port-descriptor`, current contracts and ADRs. Its Get/Set edge, static connection-resolution, duplicated intrinsic-rule and unsupported-intrinsic diagnostic findings are addressed by the later language-rules slice recorded below. The original review remains unchanged. Its single-run full-validation timing observations were not reproduced and are not NFR-15 evidence: W9 requires semantic-edit distributions and affected-scope counts.
 
-Three temporary Rust probes reproduced open gaps:
+Three temporary Rust probes reproduced gaps before their implementation slices:
 
 - **Converter resolution (FR-44/45/46; ADR-16):** i32→i64 connection planning/application inserts `core/convert`, but combined validation marks the inserted converter incomplete. Core selection reports `E-PROVIDER-MISSING`; package selection reports `E-PROVIDER-UNAVAILABLE`. The node catalogue has no converter-derived contract resolution. Assertions target the converter's identity; the endpoint fixtures do not prove a wholly valid graph.
-- **Declaration invalidation (FR-03/12/44/45; ADR-15/16):** after Get(i64)→generic Add persists `T=i64`, `apply_inferred(UpsertVariable(f64))` returns no issues and leaves the saved generic binding at i64; fresh component inference derives f64. Contract lookup itself is fresh. Declaration-dependent inference persistence is missing; this is not evidence of executing an incorrect type.
+- **Declaration invalidation (FR-03/12/44/45; ADR-15/16):** after Get(i64)→generic Add persists `T=i64`, `apply_inferred(UpsertVariable(f64))` returned no issues and left the saved generic binding at i64; fresh component inference derived f64. Contract lookup itself was fresh. C2 below addresses persistence with typed-reference discovery in both document states; this probe is historical, not evidence of an executing incorrect type.
 - **Definition legality (FR-44; ADR-13/16):** an available pure definition with an exec output passes registry construction and combined validation with no diagnostics. Type-presence checks exist, but node-kind/port legality is not fully checked at registration or by the partial validator.
 
-Probes asserted the observed defects and passed (3 tests); they are not correctness acceptance tests. Their temporary test target was removed after reproduction, with source retained in ignored working artifacts until the findings are addressed. Follow-up fixes require focused desired-behavior regressions. No production Rust, public API, dependency, lockfile or original review was changed by this reassessment. Documentation corrections cover current crate/validator status, fresh connection resolution, type-expression storage, existing explicit-migration policy and the unimplemented ADR-21 domain seam. Trace: FR-44–47, ADR-06/07/15/16/21; no change to selected semantics or delivery scope.
+Probes asserted the observed defects and passed (3 tests); they are not correctness acceptance tests. Their temporary test target was removed after reproduction, with source retained in ignored working artifacts. C1 addresses converter resolution and C2 declaration invalidation with desired-behavior regressions; definition legality remains open for C3. No production Rust, public API, dependency, lockfile or original review was changed by this reassessment. Documentation corrections cover current crate/validator status, fresh connection resolution, type-expression storage, existing explicit-migration policy and the unimplemented ADR-21 domain seam. Trace: FR-03/12/44–47, ADR-06/07/13/15/16/21; no change to selected semantics or delivery scope.
 
 Environment: Windows x86_64 MSVC, active rustup toolchain `1.99.1-x86_64-pc-windows-msvc`; `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, LLVM 23.1.1; `cargo 1.99.1 (5f94df478 2026-08-27)`; Node.js `v24.18.0`. Default workspace features; direct feature selection from `cargo tree --locked -e features --depth 1`: indexmap default/serde, serde default/derive, serde_json default/preserve_order, sha2 default, thiserror default, uuid default/serde; development dependency proptest default. Cargo.lock SHA-256: `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
 
@@ -29,6 +29,23 @@ These checks do not exercise a compiler, runtime, UI, package loader, migration 
 Warudo was compared using the official [blueprint overview](https://docs.warudo.app/docs/blueprints/overview), [first-blueprint guide](https://docs.warudo.app/docs/blueprints/understanding-blueprints), [node API](https://docs.warudo.app/docs/scripting/api/nodes) and [ports/triggers API](https://docs.warudo.app/docs/scripting/api/ports-and-triggers), retrieved 2026-10-23. This supplies an interaction reference for FR-01/02/04/44/51/52/53 and P-02, not measured usability, performance or version-pinned SDK evidence. Candidate editor refinements remain proposals in ignored working notes; Warudo's scene/integration scope does not expand ADR-22.
 
 Checked 2026-10-20. Distinguish verified environment facts, verified source facts, design decisions and untested dependency candidates. Protocol/platform sources are also linked at the relevant contracts in [05](05-services-and-platforms.md); ADRs identify the decisions they support.
+
+### Declaration-driven inference persistence (C2, 2026-10-23)
+
+`plan_edit` now discovers changed variable declarations through definition-declared typed references in both before and after documents, including nested function bodies. It seeds each consumer and its incident edge endpoints into existing component inference; this catches a generic neighbor even when removal means the referenced Get no longer resolves to a contextual contract. `type_args` remain cache only. Inference updates stay in the declaration edit's one transaction; explicit pins are retained, while missing evidence clears inferred arguments and leaves the generic signature ambiguous. No registry-specific index is persisted. The current whole-document reference scan is a correctness-first implementation cost; no NFR-15 measurement or performance gate is claimed.
+
+Trace: FR-03/12/44/45; ADR-15/16; [11 §5.5](11-graph-language.md) and [12 §3.2](12-graph-data-structures.md). Regression tests cover Get(i64)→generic Add followed by an f64 declaration edit with fresh signature agreement, undo/redo, removal/re-add without stale bindings, function-body references, incompatible explicit pins and an unrelated pinned component that remains unchanged. The unchanged document format, dependencies and lockfile remain as recorded above.
+
+Toolchain: Rust/Cargo 1.99.1, Windows x86_64 MSVC, default workspace features and locked `Cargo.lock`. Commands run from the repository root:
+
+| Executed command | Result |
+|---|---|
+| `cargo fmt --all --check` | pass |
+| `cargo test -p orange-model --test inference_persist --locked` | 16 tests passed |
+| `cargo test --workspace --locked` | pass; all workspace tests and doctests completed successfully |
+| `git diff --check` | pass |
+
+The build emitted Windows incremental-cache hard-link warnings and used its copy fallback. No MSRV 1.97.1 run, other-platform run, remote CI, benchmark or NFR-15 evidence was performed.
 
 ## Foundation scope revision (2026-10-22)
 
@@ -503,3 +520,5 @@ Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands
 These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
 
 Root C1 integration verification (2026-10-23): Rust 1.99.1, default features and unchanged Cargo.lock SHA-256 39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4. Independently ran cargo test --workspace --locked --offline (315 tests passed), cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, Rustdoc with warnings denied, dependency-boundary guard and git diff --check; all completed successfully. Windows incremental cache hard-link warnings fell back to copying. No remote CI/MSRV/native hardware or runtime gate result is implied.
+
+Root C2 integrated verification (2026-10-23): independently reviewed invalidation and new tests; cargo test --workspace --locked --offline passed 319 tests. Formatting, Clippy with warnings denied, Rustdoc with warnings denied, dependency-boundary guard and whitespace checks passed. Rust 1.99.1/default features/unchanged lock as C1. No remote/platform/NFR result claimed.
