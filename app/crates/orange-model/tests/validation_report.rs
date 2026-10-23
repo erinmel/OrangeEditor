@@ -355,3 +355,22 @@ fn a_node_blocked_by_an_unresolved_peer_says_so() {
     assert!(codes(&report).contains(&DiagnosticCode::ProviderUnavailable));
     assert!(!report.is_valid());
 }
+
+#[test]
+fn an_intrinsic_this_core_does_not_support_says_so() {
+    for definition in ["core/call", "core/on-event", "core/switch"] {
+        let doc = document(
+            json!([{"id":NODE,"definition_id":definition,"definition_version":1,
+                "config_version":1,"config":{}}]),
+            json!([]),
+            json!([]),
+            json!([]),
+        );
+        let report = assert_equals_passes(&doc);
+        assert_eq!(
+            codes(&report),
+            [DiagnosticCode::IntrinsicUnsupported],
+            "{definition}"
+        );
+    }
+}

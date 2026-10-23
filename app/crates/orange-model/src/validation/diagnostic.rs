@@ -40,6 +40,8 @@ pub enum DiagnosticCode {
     ProviderUnavailable,
     #[serde(rename = "E-DEPENDENCY-UNAVAILABLE")]
     DependencyUnavailable,
+    #[serde(rename = "E-INTRINSIC-UNSUPPORTED")]
+    IntrinsicUnsupported,
     #[serde(rename = "E-SIGNATURE-DRIFT")]
     SignatureDrift,
     #[serde(rename = "E-TYPE-AMBIGUOUS")]
@@ -101,6 +103,7 @@ impl DiagnosticCode {
             Self::PackageLockMissing => "E-PACKAGE-LOCK-MISSING",
             Self::ProviderUnavailable => "E-PROVIDER-UNAVAILABLE",
             Self::DependencyUnavailable => "E-DEPENDENCY-UNAVAILABLE",
+            Self::IntrinsicUnsupported => "E-INTRINSIC-UNSUPPORTED",
             Self::SignatureDrift => "E-SIGNATURE-DRIFT",
             Self::TypeAmbiguous => "E-TYPE-AMBIGUOUS",
             Self::TypeComplexity => "E-TYPE-COMPLEXITY",
@@ -141,6 +144,7 @@ impl DiagnosticCode {
             Self::PackageLockMissing => "core/graph-package-lock-missing",
             Self::ProviderUnavailable => "core/graph-provider-unavailable",
             Self::DependencyUnavailable => "core/graph-dependency-unavailable",
+            Self::IntrinsicUnsupported => "core/graph-intrinsic-unsupported",
             Self::SignatureDrift => "core/graph-signature-drift",
             Self::TypeAmbiguous => "core/graph-type-ambiguous",
             Self::TypeComplexity => "core/graph-type-complexity",
@@ -187,6 +191,9 @@ impl DiagnosticCode {
             Self::ProviderUnavailable => "Node definition or exact provider is unavailable.".into(),
             Self::DependencyUnavailable => {
                 "Node cannot be checked because a connected node is unresolved.".into()
+            }
+            Self::IntrinsicUnsupported => {
+                "This core version does not support this language intrinsic yet.".into()
             }
             Self::SignatureDrift => {
                 "Stored node signature differs from the resolved definition.".into()

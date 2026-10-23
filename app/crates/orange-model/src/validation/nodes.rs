@@ -142,7 +142,7 @@ fn preflight_node(
             Ok(None) => {
                 unresolved(
                     node.id,
-                    DiagnosticCode::ProviderUnavailable,
+                    DiagnosticCode::IntrinsicUnsupported,
                     origin,
                     report,
                     diagnostics,
