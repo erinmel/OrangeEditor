@@ -1,6 +1,7 @@
 use orange_model::GraphDocument;
+use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, Suspends};
-use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
+use orange_model::inference::TemplateCatalog;
 use orange_model::types::TypeRegistry;
 use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
 use serde_json::json;
@@ -52,7 +53,7 @@ fn validate(
     let mut templates = TemplateCatalog::default();
     templates.insert(
         definition.clone(),
-        GenericDefinition {
+        NodeContract {
             kind,
             suspends,
             type_params: vec![],

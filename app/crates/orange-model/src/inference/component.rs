@@ -18,9 +18,10 @@ use super::unify::{
     TypeScopeError, TypeVariable, UnificationError, unify,
 };
 use crate::GraphDocument;
+use crate::catalog::{NodeContract, ProviderKey, TypeArgs};
 use crate::document::{
-    DefinitionRef, GraphBody, NodeInstance, NodeKind, PortDescriptor, PortKind, PortRef,
-    ProviderBinding, Suspends, TypeParam, TypeParamName,
+    DefinitionRef, GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, TypeParam,
+    TypeParamName,
 };
 use crate::error::IdError;
 use crate::id::{DefinitionId, EdgeId, FunctionId, NodeId, TypeExpr, VariableId};
@@ -31,60 +32,13 @@ use crate::types::{
     TypeResolveError,
 };
 
-/// Host-supplied generic template of one definition version: its declared ports before
-/// type substitution. Persisted signature snapshots are resolved results, never templates.
-#[derive(Debug, Clone, PartialEq)]
-pub struct GenericDefinition {
-    /// Kind of the projected signature snapshots of this definition's instances.
-    pub kind: NodeKind,
-    /// Declared suspension behavior. `None` is unresolved for async/iterator definitions.
-    pub suspends: Option<Suspends>,
-    pub type_params: Vec<TypeParam>,
-    /// Declared ports; data port types may mention `$name` parameters.
-    pub ports: Vec<PortDescriptor>,
-}
-
-/// Resolved type arguments of one generic node, by parameter name.
-pub type TypeArgs = BTreeMap<TypeParamName, TypeExpr>;
-
-/// Exact implementation identity that specialization metadata belongs to: a node's
-/// provider binding plus the document lock's digest for that package version. Two
-/// providers of one definition can support different argument sets.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct ProviderKey {
-    pub package: String,
-    pub version: String,
-    pub content_digest: String,
-    pub id: String,
-}
-
-impl ProviderKey {
-    /// The exact identity of a package binding, if the document locks its package version.
-    pub fn of(document: &GraphDocument, binding: &ProviderBinding) -> Option<Self> {
-        let mut entries = document
-            .package_lock()
-            .iter()
-            .filter(|entry| entry.id == binding.package && entry.version == binding.version);
-        let entry = entries.next()?;
-        if entries.next().is_some() {
-            return None;
-        }
-        Some(Self {
-            package: binding.package.clone(),
-            version: binding.version.clone(),
-            content_digest: entry.content_digest.clone(),
-            id: binding.id.clone(),
-        })
-    }
-}
-
 /// Generic templates by definition identity and version, supplied by the host registry.
 #[derive(Debug, Clone, Default)]
 pub struct TemplateCatalog {
-    templates: BTreeMap<(DefinitionId, u32), GenericDefinition>,
+    templates: BTreeMap<(DefinitionId, u32), NodeContract>,
     /// Trusted, ephemeral host overlays for one concrete graph node. The stored definition
     /// identity prevents an overlay surviving a definition-identity rebind or version change.
-    node_templates: BTreeMap<NodeId, (DefinitionRef, [u8; 32], GenericDefinition)>,
+    node_templates: BTreeMap<NodeId, (DefinitionRef, [u8; 32], NodeContract)>,
     /// Exact supported argument sets per definition version and provider (`None` = core).
     /// A provider without a list delegates to constraint implementations.
     specializations: BTreeMap<(DefinitionId, u32, Option<ProviderKey>), Vec<TypeArgs>>,
@@ -92,7 +46,7 @@ pub struct TemplateCatalog {
 }
 
 impl TemplateCatalog {
-    pub fn insert(&mut self, definition: DefinitionRef, template: GenericDefinition) {
+    pub fn insert(&mut self, definition: DefinitionRef, template: NodeContract) {
         self.templates
             .insert((definition.id, definition.version), template);
         self.generation = crate::id::process_unique();
@@ -105,7 +59,7 @@ impl TemplateCatalog {
         &mut self,
         document: &GraphDocument,
         node: &NodeInstance,
-        template: GenericDefinition,
+        template: NodeContract,
     ) -> Result<(), StaleNodeTemplate> {
         let Some(current) = document.node(node.id) else {
             return Err(StaleNodeTemplate { node: node.id });
@@ -151,7 +105,7 @@ impl TemplateCatalog {
         self.generation
     }
 
-    pub fn get(&self, definition: &DefinitionRef) -> Option<&GenericDefinition> {
+    pub fn get(&self, definition: &DefinitionRef) -> Option<&NodeContract> {
         self.templates
             .get(&(definition.id.clone(), definition.version))
     }
@@ -164,7 +118,7 @@ impl TemplateCatalog {
         &self,
         document: &GraphDocument,
         node: &NodeInstance,
-    ) -> Result<Option<&GenericDefinition>, StaleNodeTemplate> {
+    ) -> Result<Option<&NodeContract>, StaleNodeTemplate> {
         if let Some((definition, expected, template)) = self.node_templates.get(&node.id) {
             let Some(current) = document.node(node.id) else {
                 return Err(StaleNodeTemplate { node: node.id });
@@ -182,7 +136,7 @@ impl TemplateCatalog {
     }
 
     /// The template of a node whose definition declares at least one type parameter.
-    fn generic(&self, document: &GraphDocument, node: &NodeInstance) -> Option<&GenericDefinition> {
+    fn generic(&self, document: &GraphDocument, node: &NodeInstance) -> Option<&NodeContract> {
         self.get_for_node(document, node)
             .ok()
             .flatten()
@@ -459,7 +413,7 @@ impl Graph<'_> {
         Some((body, body.nodes.get(&id)?))
     }
 
-    fn generic(&self, id: NodeId) -> Option<(&NodeInstance, &GenericDefinition)> {
+    fn generic(&self, id: NodeId) -> Option<(&NodeInstance, &NodeContract)> {
         let (_, node) = self.node(id)?;
         Some((node, self.templates.generic(self.document, node)?))
     }

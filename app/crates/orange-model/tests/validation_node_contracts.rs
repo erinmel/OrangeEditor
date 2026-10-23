@@ -1,5 +1,6 @@
+use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, SignatureSnapshot};
-use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
+use orange_model::inference::TemplateCatalog;
 use orange_model::types::TypeRegistry;
 use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
 use orange_model::{DocCommand, GraphDocument};
@@ -83,8 +84,8 @@ fn document(nodes: Vec<Value>, snapshots: &[SignatureSnapshot]) -> GraphDocument
     .unwrap()
 }
 
-fn contract(snapshot: &SignatureSnapshot) -> GenericDefinition {
-    GenericDefinition {
+fn contract(snapshot: &SignatureSnapshot) -> NodeContract {
+    NodeContract {
         kind: snapshot.kind,
         suspends: snapshot.suspends,
         type_params: vec![],

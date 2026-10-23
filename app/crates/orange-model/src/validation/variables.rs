@@ -1,11 +1,11 @@
 //! Contextual variable identity and declaration-owned port contracts.
 
 use super::diagnostic::DiagnosticCode;
+use crate::catalog::NodeContract;
 use crate::document::{
     GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, Suspends, VarScope,
 };
 use crate::id::VariableId;
-use crate::inference::GenericDefinition;
 
 pub(super) fn variable_reference(node: &NodeInstance) -> Result<VariableId, DiagnosticCode> {
     node.config
@@ -18,7 +18,7 @@ pub(super) fn variable_reference(node: &NodeInstance) -> Result<VariableId, Diag
 pub(super) fn variable_contract(
     document: &GraphDocument,
     node: &NodeInstance,
-) -> Option<Result<GenericDefinition, DiagnosticCode>> {
+) -> Option<Result<NodeContract, DiagnosticCode>> {
     let write = match node.definition.id.as_str() {
         "core/get-variable" => false,
         "core/set-variable" => true,
@@ -39,7 +39,7 @@ pub(super) fn variable_contract(
         } else {
             PortDescriptor::data_out("value", ty, OutputSource::State)
         };
-        Ok(GenericDefinition {
+        Ok(NodeContract {
             kind: if write {
                 NodeKind::Action
             } else {

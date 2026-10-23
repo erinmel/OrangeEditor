@@ -5,10 +5,11 @@ mod common;
 use common::generic::{add, add_definition, catalog, data_edge, document, only, source};
 use common::{minimal_document, node_id};
 use orange_model::DocIndex;
+use orange_model::catalog::ProviderKey;
 use orange_model::id::NodeId;
 use orange_model::inference::{
-    ComponentInference, EquationEvidence, InferenceIssue, ProviderKey, TemplateCatalog,
-    UnificationError, infer_components,
+    ComponentInference, EquationEvidence, InferenceIssue, TemplateCatalog, UnificationError,
+    infer_components,
 };
 use orange_model::types::TypeRegistry;
 use orange_model::{GraphDocument, from_json};

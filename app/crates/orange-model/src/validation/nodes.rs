@@ -2,15 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::catalog::{NodeContract, ProviderKey, TypeArgs};
 use crate::document::{
     DefinitionRef, GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends,
 };
 use crate::error::IdError;
 use crate::id::{DefinitionId, NodeId, PortId, PortKey};
 use crate::index::DocIndex;
-use crate::inference::{
-    GenericDefinition, InferenceIssue, ProviderKey, TemplateCatalog, TypeArgs, infer_components,
-};
+use crate::inference::{InferenceIssue, TemplateCatalog, infer_components};
 use crate::signature;
 use crate::type_term::TypeTerm;
 use crate::types::{TypeRegistry, TypeResolveError};
@@ -241,7 +240,7 @@ fn preflight_node(
             result
         } else {
             intrinsic_snapshot(node.definition.id.as_str(), node.config_version)
-                .map(|snapshot| GenericDefinition {
+                .map(|snapshot| NodeContract {
                     kind: snapshot.kind,
                     suspends: snapshot.suspends,
                     type_params: Vec::new(),
@@ -393,7 +392,7 @@ fn inference_catalog(
         catalog.insert_node(
             document,
             node,
-            GenericDefinition {
+            NodeContract {
                 kind: snapshot.kind,
                 suspends: snapshot.suspends,
                 type_params: contract.type_params.clone(),
@@ -565,7 +564,7 @@ fn project_nodes(
 fn project_node(
     pass: &NodePass<'_>,
     id: NodeId,
-    contract: &GenericDefinition,
+    contract: &NodeContract,
     args: &TypeArgs,
     stored: Option<&SignatureSnapshot>,
     report: &mut NodeValidation,

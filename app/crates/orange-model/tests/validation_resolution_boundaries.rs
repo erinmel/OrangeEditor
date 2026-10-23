@@ -1,6 +1,7 @@
 use orange_model::GraphDocument;
+use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
+use orange_model::inference::TemplateCatalog;
 use orange_model::types::TypeRegistry;
 use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
 use serde_json::json;
@@ -92,7 +93,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
     .unwrap();
     templates.insert(
         generic_definition,
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {
@@ -113,7 +114,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
     .unwrap();
     templates.insert(
         ambiguous_definition,
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {
@@ -220,7 +221,7 @@ fn intrinsic_implicit_error_port_supplies_generic_type_evidence() {
     let mut templates = TemplateCatalog::default();
     templates.insert(
         definition,
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {
@@ -285,7 +286,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
     .unwrap();
     templates.insert(
         definition.clone(),
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {

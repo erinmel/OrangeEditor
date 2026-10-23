@@ -157,7 +157,7 @@ fn set_workspace_requires_shared_operation() {
 #[test]
 fn get_drives_generic_math_and_set_checks_result() {
     use common::generic::{self, add_definition};
-    use orange_model::inference::ProviderKey;
+    use orange_model::catalog::ProviderKey;
     let signature = format!("sha256:{}", "b".repeat(64));
     let digest = format!("sha256:{}", "c".repeat(64));
     let binding = json!({"package":"org.test","version":"1.0.0","id":"native"});
@@ -218,7 +218,7 @@ fn get_drives_generic_math_and_set_checks_result() {
 #[test]
 fn declaration_change_stales_captured_contract() {
     use orange_model::DocCommand;
-    use orange_model::inference::GenericDefinition;
+    use orange_model::catalog::NodeContract;
     let mut doc = document(
         json!([variable_node(1, "get", json!(node_id(10)))]),
         json!([
@@ -232,7 +232,7 @@ fn declaration_change_stales_captured_contract() {
         .insert_node(
             &doc,
             doc.node(nid(1)).unwrap(),
-            GenericDefinition {
+            NodeContract {
                 kind: snapshot.kind,
                 suspends: snapshot.suspends,
                 type_params: vec![],

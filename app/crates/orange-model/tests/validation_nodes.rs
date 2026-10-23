@@ -1,5 +1,6 @@
+use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog};
+use orange_model::inference::TemplateCatalog;
 use orange_model::types::TypeRegistry;
 use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
 use orange_model::{GraphDocument, to_json};
@@ -78,8 +79,8 @@ fn snapshot(ty: &str) -> Value {
     })
 }
 
-fn concrete_contract() -> GenericDefinition {
-    GenericDefinition {
+fn concrete_contract() -> NodeContract {
+    NodeContract {
         kind: NodeKind::Pure,
         suspends: None,
         type_params: vec![],
@@ -204,7 +205,7 @@ fn generic_resolution_uses_fresh_evidence_instead_of_cached_type_args() {
     port.extensions = Default::default();
     templates.insert(
         definition(),
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {
@@ -336,7 +337,7 @@ fn intrinsic_data_port_supplies_fresh_generic_inference_evidence() {
     let mut templates = TemplateCatalog::default();
     templates.insert(
         definition(),
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {
@@ -401,7 +402,7 @@ fn combined_template_and_argument_depth_is_a_complexity_diagnostic() {
     let mut templates = TemplateCatalog::default();
     templates.insert(
         definition(),
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {

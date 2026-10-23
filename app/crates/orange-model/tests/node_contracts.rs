@@ -5,9 +5,10 @@ mod common;
 use common::generic::{add, catalog as generic_catalog, data_edge, document};
 use common::node_id;
 use orange_model::DocIndex;
+use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeInstance, NodeKind, PortDescriptor, TypeParam};
 use orange_model::id::NodeId;
-use orange_model::inference::{GenericDefinition, ProviderKey, TemplateCatalog, infer_components};
+use orange_model::inference::{TemplateCatalog, infer_components};
 use orange_model::types::TypeRegistry;
 use serde_json::json;
 
@@ -15,8 +16,8 @@ fn id(n: u8) -> NodeId {
     node_id(n).parse().unwrap()
 }
 
-fn contract(ty: &str) -> GenericDefinition {
-    GenericDefinition {
+fn contract(ty: &str) -> NodeContract {
+    NodeContract {
         kind: NodeKind::Pure,
         suspends: None,
         type_params: vec![],
@@ -38,7 +39,7 @@ fn definition(version: u32) -> DefinitionRef {
 
 fn catalog() -> TemplateCatalog {
     let mut catalog = generic_catalog(None);
-    let fallback = GenericDefinition {
+    let fallback = NodeContract {
         kind: NodeKind::Pure,
         suspends: None,
         type_params: vec![TypeParam {
@@ -62,7 +63,7 @@ fn stale_catalog() -> TemplateCatalog {
     let mut catalog = TemplateCatalog::default();
     catalog.insert(
         definition(1),
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![TypeParam {

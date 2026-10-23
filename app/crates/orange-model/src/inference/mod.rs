@@ -6,8 +6,7 @@ pub mod persist;
 pub mod unify;
 
 pub use component::{
-    ComponentInference, GenericDefinition, InferenceIssue, ProviderKey, StaleNodeTemplate,
-    TemplateCatalog, TypeArgs, infer_components,
+    ComponentInference, InferenceIssue, StaleNodeTemplate, TemplateCatalog, infer_components,
 };
 pub use persist::{InferencePlan, InferredCommit, apply_inferred, plan_edit};
 pub use unify::{

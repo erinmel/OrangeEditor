@@ -3,12 +3,13 @@
 
 use std::sync::{Arc, LazyLock};
 
+use orange_model::catalog::{NodeContract, TypeArgs};
 use orange_model::conversion::{
     ConnectionOutcome, ConnectionPlan, ConnectionRequest, ConverterKey, ConverterProvider,
     ConverterRegistry, ConverterRegistryBuilder, PackageProvider, plan_connection,
 };
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::inference::{GenericDefinition, TemplateCatalog, TypeArgs};
+use orange_model::inference::TemplateCatalog;
 use orange_model::types::TypeRegistry;
 use orange_model::{GraphDocument, from_json};
 use serde_json::{Value as Json, json};
@@ -55,7 +56,7 @@ fn build_catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
     let mut catalog = TemplateCatalog::default();
     catalog.insert(
         add_definition(),
-        GenericDefinition {
+        NodeContract {
             kind: NodeKind::Pure,
             suspends: None,
             type_params: vec![
