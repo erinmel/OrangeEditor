@@ -445,3 +445,17 @@ fn large_diamond_call_graph_does_not_enumerate_paths_or_rescan_all_pending_nodes
     );
     assert!(report.recursion_paths.is_empty());
 }
+
+#[test]
+fn evidence_from_node_validation_matches_manual_construction() {
+    let doc = document(json!([function(
+        F1,
+        "pure",
+        json!([custom_node(N1, "core/select")])
+    )]));
+    let nodes = orange_model::validation::validate_nodes(&doc, &registry());
+    let effects = BTreeMap::new();
+    let built = FunctionEvidence::from_nodes(&doc, &nodes, effects.clone());
+    let manual = FunctionEvidence::new(&doc, nodes.resolved.clone(), effects);
+    assert_eq!(built, manual);
+}

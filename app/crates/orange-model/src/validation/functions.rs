@@ -10,6 +10,7 @@ use crate::edit::DeclId;
 use crate::id::{FunctionId, NodeId, VariableId};
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
+use super::nodes::NodeValidation;
 
 /// The operation used to write a variable. This remains part of the summary so later
 /// conflict analysis can recognize the documented commutative update exceptions.
@@ -69,6 +70,18 @@ impl FunctionEvidence {
             resolved,
             leaf_effects,
         }
+    }
+
+    /// Binds the projections produced by [`validate_nodes`](super::validate_nodes) for
+    /// `document` and the host-supplied `leaf_effects`. Leaf effects are never derived
+    /// from the registry: a package leaf without an entry leaves its function incomplete
+    /// (11 §14).
+    pub fn from_nodes(
+        document: &GraphDocument,
+        nodes: &NodeValidation,
+        leaf_effects: BTreeMap<NodeId, LeafEffects>,
+    ) -> Self {
+        Self::new(document, nodes.resolved.clone(), leaf_effects)
     }
 }
 
