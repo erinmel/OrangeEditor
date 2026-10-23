@@ -69,6 +69,11 @@ pub enum RegistryError {
         definition: DefinitionId,
         port: PortId,
     },
+    #[error("definition `{definition}` data output port `{port}` must declare a source")]
+    MissingDataOutputSource {
+        definition: DefinitionId,
+        port: PortId,
+    },
     #[error("definition `{definition}` port `{port}` uses undeclared type parameter `${param}`")]
     UndeclaredTypeParam {
         definition: DefinitionId,
@@ -259,6 +264,15 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         }
         if port.ty.is_some() != matches!(port.kind, PortKind::Data | PortKind::Event) {
             return Err(RegistryError::PortType {
+                definition: id.clone(),
+                port: port.port_id.clone(),
+            });
+        }
+        if port.kind == PortKind::Data
+            && port.direction == crate::document::PortDirection::Output
+            && port.source.is_none()
+        {
+            return Err(RegistryError::MissingDataOutputSource {
                 definition: id.clone(),
                 port: port.port_id.clone(),
             });
@@ -792,6 +806,99 @@ mod tests {
         non_lazy.lazy = Some(false);
         intrinsic.ports = Ports::Declared(vec![non_lazy]);
         assert!(build(builder().definition(intrinsic)).is_ok());
+    }
+
+    #[test]
+    fn declared_data_outputs_require_an_explicit_source() {
+        let missing = PortDescriptor {
+            source: None,
+            ..PortDescriptor::data_out(
+                "value",
+                "core/i64@1".parse().unwrap(),
+                OutputSource::Computed,
+            )
+        };
+        let result =
+            build(builder().definition(definition("acme/missing-source", &[], vec![missing])));
+        assert_eq!(
+            result.unwrap_err(),
+            RegistryError::MissingDataOutputSource {
+                definition: dref("acme/missing-source").id,
+                port: "value".parse().unwrap(),
+            }
+        );
+    }
+
+    #[test]
+    fn declared_data_output_source_categories_publish_and_other_positions_are_unchanged() {
+        let cases = [
+            (
+                "acme/computed",
+                NodeKind::Pure,
+                OutputSource::Computed,
+                false,
+            ),
+            (
+                "acme/execution",
+                NodeKind::Action,
+                OutputSource::Execution,
+                false,
+            ),
+            ("core/state", NodeKind::Volatile, OutputSource::State, true),
+            (
+                "acme/payload",
+                NodeKind::Entry,
+                OutputSource::Payload,
+                false,
+            ),
+            (
+                "acme/iteration",
+                NodeKind::Iterator,
+                OutputSource::Iteration,
+                false,
+            ),
+        ];
+        let mut registry_builder = builder();
+        for (id, kind, source, intrinsic) in cases {
+            let mut definition = definition(
+                id,
+                &[],
+                vec![PortDescriptor::data_out(
+                    "value",
+                    "core/i64@1".parse().unwrap(),
+                    source,
+                )],
+            );
+            definition.kind = kind;
+            if kind == NodeKind::Iterator {
+                definition.suspends = Some(crate::document::Suspends::Never);
+            }
+            registry_builder = if intrinsic {
+                registry_builder.intrinsic(definition)
+            } else {
+                registry_builder.definition(definition)
+            };
+        }
+        assert!(build(registry_builder).is_ok());
+
+        let event_without_source = PortDescriptor {
+            direction: crate::document::PortDirection::Output,
+            kind: PortKind::Event,
+            ..PortDescriptor::data_in("event", "core/i64@1".parse().unwrap())
+        };
+        let action = NodeDefinition {
+            kind: NodeKind::Action,
+            ..definition(
+                "acme/other-positions",
+                &[],
+                vec![
+                    PortDescriptor::data_in("input", "core/i64@1".parse().unwrap()),
+                    event_without_source,
+                    PortDescriptor::exec_out("exec_out"),
+                ],
+            )
+        };
+        assert!(build(builder().definition(action)).is_ok());
     }
 
     #[test]

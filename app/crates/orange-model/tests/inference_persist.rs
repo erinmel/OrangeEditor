@@ -371,7 +371,7 @@ fn declaration_driven_document() -> GraphDocument {
         "signatures":{"unrelated":{"kind":"pure","ports":[
             {"port_id":"a","direction":"input","kind":"data","type":"core/i32@1"},
             {"port_id":"b","direction":"input","kind":"data","type":"core/i32@1"},
-            {"port_id":"sum","direction":"output","kind":"data","type":"core/i32@1"}
+            {"port_id":"sum","direction":"output","kind":"data","type":"core/i32@1","source":"computed"}
         ]}},
         "nodes":[variable_get(1,10),add(2,json!({"provider":provider})),add(4,json!({"provider":provider,"type_args":{"T":"core/i32@1"},"type_pins":{"T":"core/i32@1"},"signature":"unrelated"}))],
         "edges":[data_edge(1,(1,"value"),(2,"a"))]

@@ -87,7 +87,7 @@ A `pure` definition MUST NOT declare a port of kind `exec`. Registry publication
 | `port_id` | `[a-z][a-z0-9_]{0,63}`, unique per definition across all kinds. Reserved implicit IDs: `in`, `then`, `failed`, `error`, `cancelled`, `body`, `completed`. |
 | `direction` / `kind` | `input`/`output` × `data`/`exec`/`event`. `event` is output-only; registry publication rejects event inputs. |
 | `type` | Canonical type expression (§5.1) for data and event payloads; may use the definition's type parameters (`$T`). Exec ports have no type. |
-| `source` (data outputs) | `computed` (pure function of inputs), `execution` (written when the node executes), `state` (volatile read of node state), `payload` (entry/event payload), `iteration` (current loop item). |
+| `source` (data outputs) | Required on every declared data output. `computed` (pure function of inputs), `execution` (written when the node executes), `state` (volatile read of node state), `payload` (entry/event payload), `iteration` (current loop item). |
 | `available_on` | For `execution` outputs: the exec outcome outs after which the value is defined. Default `["then"]`. Implicit `error: core/error@1` is available on `failed`. |
 | `default` | Literal used when unconnected and the instance has no literal. Not allowed for handle or stream types. A `secret-ref` literal is only a reference, never secret material. |
 | `optional` | Only if the type is `core/option@1<…>`. An unconnected port with no literal or default receives `None`. |
@@ -96,7 +96,7 @@ A `pure` definition MUST NOT declare a port of kind `exec`. Registry publication
 | `group`, `label`, `description`, `editor` | Presentation only; `label`/`description` use TextRef ([13 §2](13-internationalization.md)); never semantic. |
 | `sensitivity` | `normal` / `sensitive`; drives redaction in traces ([05](05-services-and-platforms.md)). |
 
-Definition publication also checks kind/port compatibility: event ports are output-only, true lazy ports require host intrinsic registration, and `pure` definitions cannot declare exec ports (§3). Other dynamic instance, region and execution checks remain validation/compiler responsibilities.
+Definition publication also checks kind/port compatibility: declared data outputs require `source`, event ports are output-only, true lazy ports require host intrinsic registration, and `pure` definitions cannot declare exec ports (§3). Other dynamic instance, region and execution checks remain validation/compiler responsibilities.
 
 Implicit ports by kind: action/async/iterator/control get `in` (unless the intrinsic names its inputs), `failed` and `error`. Action/async/entry with no declared outcome outs get `then`. Async and iterator get `cancelled`. A definition with declared outcome outs (for example `acquired` and `busy`) replaces `then`. **Exactly one outcome out fires per execution.** `failed` and `cancelled` are outcomes too.
 
@@ -325,6 +325,8 @@ A run is reproducible when its plan hash, seed, virtual clock, ingestion log (ev
 | Synchronous function recursion | f calls f, or f → g → f | **No in v1**: `E-RECURSION` | Call graph must be acyclic (ADR-15, OPEN-10) |
 
 ### 8.2 Formal checks
+
+Every declared data output MUST name one `source` category in §4.1; a missing category is rejected at registry publication so dependency analysis does not guess how that output is produced. This rule applies only to declared data outputs; event, input and exec port metadata is unchanged by this requirement.
 
 - **D** (data dependency graph): an edge `p → q` exists for each data edge, plus `input → output` within a node for every output whose `source` is `computed`. `execution`, `state`, `payload` and `iteration` outputs do not depend on the node's inputs. Zone back links are omitted. **D MUST be acyclic.**
 - **C** (control graph per region, with implicit loop back edges excluded): every cycle MUST contain a node with `suspends: always`. A function-call summary may provide `always` only when every path proves guaranteed suspension; merely finding a Wait somewhere does not prove it. Unknown or incomplete facts cannot certify a cycle.

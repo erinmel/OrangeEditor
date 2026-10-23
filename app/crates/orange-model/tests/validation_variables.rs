@@ -175,7 +175,7 @@ fn get_drives_generic_math_and_set_checks_result() {
             "signatures":{(signature.clone()):{"kind":"pure","ports":[
                 {"port_id":"a","direction":"input","kind":"data","type":"core/i64@1"},
                 {"port_id":"b","direction":"input","kind":"data","type":"core/i64@1"},
-                {"port_id":"sum","direction":"output","kind":"data","type":"core/i64@1"}]}}
+                {"port_id":"sum","direction":"output","kind":"data","type":"core/i64@1","source":"computed"}]}}
         }))).unwrap();
         let before = to_json(&doc).unwrap();
         let report = validate_nodes(&doc, &registry);

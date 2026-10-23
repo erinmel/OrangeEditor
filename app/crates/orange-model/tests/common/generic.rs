@@ -11,7 +11,7 @@ use orange_model::conversion::{
     ConnectionOutcome, ConnectionPlan, ConnectionRequest, ConverterKey, ConverterProvider,
     ConverterRegistry, ConverterRegistryBuilder, PackageProvider, plan_connection,
 };
-use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
+use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, TypeParam};
 use orange_model::types::TypeRegistry;
 use orange_model::validation::HostOrigin;
 use orange_model::{GraphDocument, from_json};
@@ -69,7 +69,7 @@ pub fn registry_builder(
             ports: Ports::Declared(vec![
                 port("a", "input", "$T"),
                 port("b", "input", "$T"),
-                port("sum", "output", "$T"),
+                PortDescriptor::data_out("sum", "$T".parse().unwrap(), OutputSource::Computed),
             ]),
             references: Vec::new(),
             specializations: specializations.map(|types| only(&types)),
