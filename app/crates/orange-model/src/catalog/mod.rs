@@ -1,6 +1,7 @@
 //! Host metadata for node definitions: contracts, provider identity and the immutable
 //! registry snapshot that owns them (12 §4, §8).
 
+mod availability;
 pub mod definition;
 pub(crate) mod intrinsics;
 pub(crate) mod language;

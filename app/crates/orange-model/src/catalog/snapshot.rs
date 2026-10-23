@@ -105,6 +105,32 @@ pub enum RegistryError {
         definition: DefinitionId,
         port: PortId,
     },
+    #[error(
+        "definition `{definition}` port `{port}` may declare availability only as an execution-sourced data output"
+    )]
+    AvailableOnPosition {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error("definition `{definition}` port `{port}` must name at least one available outcome")]
+    AvailableOnEmpty {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error("definition `{definition}` port `{port}` names available outcome `{outcome}` twice")]
+    AvailableOnDuplicate {
+        definition: DefinitionId,
+        port: PortId,
+        outcome: PortId,
+    },
+    #[error(
+        "definition `{definition}` port `{port}` names unavailable execution outcome `{outcome}`"
+    )]
+    AvailableOnOutcome {
+        definition: DefinitionId,
+        port: PortId,
+        outcome: PortId,
+    },
     #[error("definition `{definition}` port `{port}` may be optional only as a data input")]
     OptionalPortPosition {
         definition: DefinitionId,
@@ -233,6 +259,7 @@ impl RegistryBuilder {
         for (definition, intrinsic) in self.definitions {
             check_definition(&definition, intrinsic)?;
             check_default_literals(&definition, &self.types)?;
+            super::availability::check_availability(&definition)?;
             let key = (
                 definition.definition.id.clone(),
                 definition.definition.version,
