@@ -1,6 +1,6 @@
 [package]
 name = "orange-model"
-description = "OrangeEditor graph document model: stable IDs, document structures and the v1 JSON codec"
+description = "OrangeEditor graph document model: stable IDs, document structures, node contracts, the registry snapshot and the v1 JSON codec"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true

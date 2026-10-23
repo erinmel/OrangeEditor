@@ -387,3 +387,20 @@ Tools: Git `2.55.0.windows.1`, GitHub CLI `2.96.0`, Node.js `v24.18.0`. Commands
 Public/default-branch metadata and SSH origin were read back successfully. The initial repository-check workflow run `39493589359` completed both `docs` and `policy` successfully on the configured Ubuntu runner. Action refs were resolved through the GitHub API and pinned to full commits: checkout v4 `11d5960a326750d5838078e36cf38b85af677262`, setup-node v4 `49933ea5288caeca8642d1e84afbd3f7d6820020`; Node is pinned to 24.18.0. After the first passing run, the main protection API was applied and read back: strict required checks bound to Actions app 15368, PR/conversation/linear-history requirements, zero solo-mode independent approvals, admin enforcement and no force pushes/deletion. Repository settings were verified squash-only with automatic topic-branch deletion.
 
 The first attempt to use unsupported `gh repo edit --disable-merge-commit` flags made no change; supported boolean `--enable-merge-commit=false`/`--enable-rebase-merge=false` then succeeded. No rejected main push/deletion or other destructive protection test was attempted. Release/tag enforcement, license/signing choices and Rust/SDK/plugin/platform checks remain unverified future work. Follow-up evidence is submitted through a topic PR under the active workflow.
+
+### Typed ports and registry snapshot (2026-10-23)
+
+Slice 1 replaced the loose port flags with a typed `PortDescriptor` (renamed from `ResolvedPort`): optional, variadic and lazy are typed fields and the variadic bounds are explicit. Slice 2 added `orange_model::catalog` (12 §4, §8 subset): `NodeContract`, `NodeDefinition`, `ProviderDescriptor`, `RegistryBuilder` and the immutable `RegistrySnapshot`, with the built-in control nodes registered as data. Node resolution, inference, validation and connection planning now take one `&RegistrySnapshot` (plus `NodeOverlays` where per-node contracts are used) instead of separate template, provider, type and converter metadata. The former template catalog and provider catalog are removed, and plans record the document state and the snapshot generation. The document format and signature keys are unchanged.
+
+Strictness change: a non-object variadic value or a non-boolean optional/lazy value now fails load. A legacy variadic port without `max` is read and saved with `max: null`.
+
+Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands run from the repository root with these results:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo test --workspace` | pass |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+
+These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.

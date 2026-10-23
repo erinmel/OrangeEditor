@@ -1,4 +1,4 @@
-//! OrangeEditor graph document model (WU-00/00b).
+//! OrangeEditor graph document model.
 //!
 //! Contracts: `docs/12-graph-data-structures.md` (layout, JSON, transactions, values) and
 //! `docs/11-graph-language.md` (semantics). No Bevy, rendering, async or I/O dependency.
@@ -8,7 +8,6 @@
 //! identity); `value` (runtime values and the typed literal codec); `edit` (transactions and
 //! undo); `index`, `signature` and `paste` (derived lookups, semantic signatures and
 //! copy/paste).
-//! (derived lookups, semantic signatures and copy/paste).
 
 pub mod catalog;
 pub mod conversion;

@@ -193,6 +193,8 @@ Variable declaration controls/nodes refer to the existing stable VariableDecl, a
 
 `NodeDefinition` fields: `definition_id`, `definition_version`, `config_version`, `kind`, `suspends` (`never`/`maybe`/`always`; async and iterator), `cleanup_safe`, `volatility` (volatile only), `type_params`, `ports`, `iterator` (iterator only), `event_source` (entry only), `port_template` (optional declarative dynamic ports), `config_schema`, `errors`, `capabilities`, `determinism` (`deterministic`/`seeded`/`external`/`nondeterministic`), `cost` (optional hint: `scalar`/`linear`/`heavy`), `implementation_slot`, `label`, optional `description`, `editor`. All human-facing label/help/category/alias fields use TextRef from [13 §2](13-internationalization.md), including port labels/descriptions and declarative configuration-option captions. Implicit kind ports ([11 §4.1](11-graph-language.md)) are never listed; their text comes from host catalogues.
 
+Implementation note (`orange_model::catalog`; Rust spelling only): `NodeDefinition` implements a subset: the `DefinitionRef`, `config_version`, a `NodeContract` (kind, `suspends`, `type_params`, declared `ports`), an optional core `specializations` list (`None` means constraints decide) and a stored, unenforced `config_schema`. The remaining fields above are not implemented yet. Implicit kind ports are not listed in a package contract.
+
 Generic pure definition (replaces the earlier `add-i64` example):
 
 ```json
@@ -578,6 +580,8 @@ pub struct RegistrySnapshot {
     pub new_binding_defaults: HashMap<SlotId, ProviderId>,           // never applied to existing locks
 }
 ```
+
+Implementation note (`orange_model::catalog`; subset, Rust spelling only): `RegistryBuilder` collects the type registry, converters, host origin, node definitions and providers; `build` freezes them into an immutable `RegistrySnapshot` with a process-unique `generation` that changes only when a snapshot is built. Lookups are by definition and config version, provider key (`ProviderDescriptor` with its implemented definitions and specializations) and exact provider support. `build` rejects duplicate definitions and providers, package definitions in the `core` namespace or replacing an intrinsic, duplicate port IDs, implicit exec port IDs outside intrinsics, undeclared `$T` type parameters in a port type, and providers naming an unknown definition. Type validity stays with inference diagnostics. The built-in control nodes (branch, sequence, fork, count, while, yield, wait, break, continue) are registered as data through a host-only path that packages cannot use; Get/Set stay contextual. `NodeOverlays` (per-node contextual contracts with metadata fingerprints) remain beside the snapshot until contextual contracts land; they hold no definitions or specializations. Plans record the document state and the snapshot generation. Not implemented: new-binding defaults, constraint implementations, slot-keyed providers and the frozen interner.
 
 Hash lookups here are compile-time only. Publication validates namespace ownership, constraint coherence and converter ownership before the snapshot is visible ([04](04-expansion-plugins.md)).
 
