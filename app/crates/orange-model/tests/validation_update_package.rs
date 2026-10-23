@@ -342,6 +342,29 @@ fn compare_and_set_rejects_non_eq_package_evidence() {
 }
 
 #[test]
+fn package_constraints_do_not_declare_logical_or_bitwise_kernels() {
+    for mode in [
+        CapabilityMode::Num,
+        CapabilityMode::Add,
+        CapabilityMode::Ord,
+        CapabilityMode::Eq,
+    ] {
+        let registry = registry(mode, false);
+        for operation in ["and", "or", "xor"] {
+            let doc = document(json!([variable_node(operation)]), "org.test/money@1");
+            let report = validate_nodes(&doc, &registry);
+            assert_eq!(report.diagnostics.len(), 1, "{mode:?}/{operation}");
+            assert_eq!(
+                report.diagnostics[0].code,
+                DiagnosticCode::ConstraintUnsatisfied,
+                "{mode:?}/{operation}"
+            );
+            assert!(report.resolved.is_empty());
+        }
+    }
+}
+
+#[test]
 fn package_update_shape_projects_ports_without_claiming_core_effects() {
     let registry = registry(CapabilityMode::Add, true);
     let mut node = package_node("add");

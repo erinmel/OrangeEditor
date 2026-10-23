@@ -719,6 +719,88 @@ fn compare_and_set_connections_use_operand_types_and_boolean_result() {
 }
 
 #[test]
+fn update_logical_and_bitwise_require_exact_core_scalar_types() {
+    let registry = registry();
+    for operation in ["and", "or", "xor"] {
+        for ty in ["core/i32@1", "core/i64@1", "core/u32@1", "core/u64@1"] {
+            let doc = document(
+                json!([update_node(1, json!(node_id(10)), json!(operation))]),
+                json!([declaration(10, ty, "run")]),
+            );
+            let before = to_json(&doc).unwrap();
+            let revision = doc.revision();
+            let state_id = doc.state_id();
+            let resolved = validate_nodes(&doc, &registry);
+            assert!(
+                resolved.is_valid(),
+                "{operation} {ty}: {:?}",
+                resolved.diagnostics
+            );
+            let ports = &resolved.resolved[&nid(1)].ports;
+            assert_eq!(
+                ports.iter().map(|p| p.port_id.as_str()).collect::<Vec<_>>(),
+                ["value", "old", "new"]
+            );
+            assert_eq!(ports[0].direction, PortDirection::Input);
+            assert_eq!(ports[0].ty.as_ref().unwrap().as_str(), ty);
+            assert!(ports[0].default.is_none());
+            assert!(!ports[0].optional.unwrap_or(false));
+            for output in &ports[1..] {
+                assert_eq!(output.direction, PortDirection::Output);
+                assert_eq!(output.ty.as_ref().unwrap().as_str(), ty);
+                assert_eq!(output.source, Some(OutputSource::Execution));
+                assert_eq!(output.available_on.as_ref().unwrap()[0].as_str(), "then");
+            }
+            assert_eq!(
+                validate_inputs(&doc, &resolved.resolved, &registry)
+                    .iter()
+                    .map(|d| d.code)
+                    .collect::<Vec<_>>(),
+                [DiagnosticCode::InputRequired]
+            );
+            assert_eq!(to_json(&doc).unwrap(), before);
+            assert_eq!(doc.revision(), revision);
+            assert_eq!(doc.state_id(), state_id);
+        }
+    }
+    for operation in ["and", "or", "xor"] {
+        let report = validate(&document(
+            json!([update_node(1, json!(node_id(10)), json!(operation))]),
+            json!([declaration(10, "core/bool@1", "local")]),
+        ));
+        assert!(report.is_valid(), "{operation}: {:?}", report.diagnostics);
+        assert_eq!(
+            report.resolved[&nid(1)].ports[0]
+                .ty
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "core/bool@1"
+        );
+    }
+    let rejected = validate(&document(
+        json!([
+            update_node(1, json!(node_id(10)), json!("xor")),
+            update_node(2, json!(node_id(11)), json!("and")),
+            update_node(3, json!(node_id(12)), json!("or"))
+        ]),
+        json!([
+            declaration(10, "core/duration@1", "run"),
+            declaration(11, "core/f64@1", "run"),
+            declaration(12, "core/string@1", "run")
+        ]),
+    ));
+    assert_eq!(rejected.diagnostics.len(), 3);
+    assert!(
+        rejected
+            .diagnostics
+            .iter()
+            .all(|d| d.code == DiagnosticCode::ConstraintUnsatisfied)
+    );
+    assert!(rejected.resolved.is_empty());
+}
+
+#[test]
 fn update_errors_follow_reference_scope_operation_then_type_precedence() {
     let cases = [
         ("missing", "run", None, DiagnosticCode::UpdateOperation),

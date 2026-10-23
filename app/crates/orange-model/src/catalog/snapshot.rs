@@ -645,35 +645,65 @@ impl RegistrySnapshot {
                     .ok_or(ContractError::UpdateOperation)?;
                 let operation =
                     WriteOperation::parse_update(token).ok_or(ContractError::UpdateOperation)?;
-                let capability = match operation {
-                    WriteOperation::Add => {
-                        CapabilityRequest::NumericOperation(NumericOperation::Add)
-                    }
-                    WriteOperation::Sub => {
-                        CapabilityRequest::NumericOperation(NumericOperation::Subtract)
-                    }
-                    WriteOperation::Min | WriteOperation::Max => {
-                        CapabilityRequest::Constraint(Constraint::Ord)
-                    }
-                    WriteOperation::CompareAndSet => CapabilityRequest::Constraint(Constraint::Eq),
-                    _ => return Err(ContractError::UpdateUnsupported),
-                };
+                if operation == WriteOperation::Append {
+                    return Err(ContractError::UpdateUnsupported);
+                }
                 let term = TypeTerm::parse(&ty).map_err(|error| match error {
                     crate::error::IdError::TypeTooDeep { .. } => ContractError::TypeComplexity,
                     _ => ContractError::TypeMismatch,
                 })?;
-                match self.types.supports_term(&term, capability) {
-                    Ok(Some(_)) => {}
-                    Ok(None) => return Err(ContractError::UpdateConstraint),
-                    Err(CapabilityError::DerivationTooDeep { .. })
-                    | Err(CapabilityError::Type(TypeResolveError::TooDeep { .. }))
-                    | Err(CapabilityError::Type(TypeResolveError::DerivationTooDeep { .. })) => {
-                        return Err(ContractError::TypeComplexity);
+                self.types.validate(&term).map_err(|error| match error {
+                    TypeResolveError::TooDeep { .. }
+                    | TypeResolveError::DerivationTooDeep { .. } => ContractError::TypeComplexity,
+                    _ => ContractError::TypeMismatch,
+                })?;
+                let capability = match operation {
+                    WriteOperation::Add => {
+                        Some(CapabilityRequest::NumericOperation(NumericOperation::Add))
                     }
-                    Err(CapabilityError::RecursiveDerivation { .. }) => {
-                        return Err(ContractError::UpdateConstraint);
+                    WriteOperation::Sub => Some(CapabilityRequest::NumericOperation(
+                        NumericOperation::Subtract,
+                    )),
+                    WriteOperation::Min | WriteOperation::Max => {
+                        Some(CapabilityRequest::Constraint(Constraint::Ord))
                     }
-                    Err(CapabilityError::Type(_)) => return Err(ContractError::TypeMismatch),
+                    WriteOperation::CompareAndSet => {
+                        Some(CapabilityRequest::Constraint(Constraint::Eq))
+                    }
+                    WriteOperation::And | WriteOperation::Or | WriteOperation::Xor => {
+                        let eligible = [
+                            "core/bool@1",
+                            "core/i32@1",
+                            "core/i64@1",
+                            "core/u32@1",
+                            "core/u64@1",
+                        ]
+                        .contains(&ty.as_str());
+                        if !eligible {
+                            return Err(ContractError::UpdateConstraint);
+                        }
+                        // Eligibility is language-owned and exact; no package proof or
+                        // package implementation is consulted for these kernels.
+                        None
+                    }
+                    _ => return Err(ContractError::UpdateUnsupported),
+                };
+                if let Some(capability) = capability {
+                    match self.types.supports_term(&term, capability) {
+                        Ok(Some(_)) => {}
+                        Ok(None) => return Err(ContractError::UpdateConstraint),
+                        Err(CapabilityError::DerivationTooDeep { .. })
+                        | Err(CapabilityError::Type(TypeResolveError::TooDeep { .. }))
+                        | Err(CapabilityError::Type(TypeResolveError::DerivationTooDeep {
+                            ..
+                        })) => {
+                            return Err(ContractError::TypeComplexity);
+                        }
+                        Err(CapabilityError::RecursiveDerivation { .. }) => {
+                            return Err(ContractError::UpdateConstraint);
+                        }
+                        Err(CapabilityError::Type(_)) => return Err(ContractError::TypeMismatch),
+                    }
                 }
                 let then: PortId = "then".parse().map_err(|_| ContractError::TypeMismatch)?;
                 let compare_and_set = operation == WriteOperation::CompareAndSet;

@@ -119,6 +119,21 @@ fn builtin_variable_reads_and_writes_propagate_only_run_effects_to_callers() {
                         json!({"variable":RUN_VAR,"operation":"compare-and-set"})
                     ),
                     node(
+                        "20000000-0000-4000-8000-000000000009",
+                        "core/update-variable",
+                        json!({"variable":RUN_VAR,"operation":"and"})
+                    ),
+                    node(
+                        "20000000-0000-4000-8000-000000000010",
+                        "core/update-variable",
+                        json!({"variable":RUN_VAR,"operation":"or"})
+                    ),
+                    node(
+                        "20000000-0000-4000-8000-000000000011",
+                        "core/update-variable",
+                        json!({"variable":RUN_VAR,"operation":"xor"})
+                    ),
+                    node(
                         "20000000-0000-4000-8000-000000000005",
                         "core/update-variable",
                         json!({"variable":LOCAL_VAR,"operation":"add"})
@@ -144,7 +159,10 @@ fn builtin_variable_reads_and_writes_propagate_only_run_effects_to_callers() {
             orange_model::validation::WriteOperation::Add,
             orange_model::validation::WriteOperation::Min,
             orange_model::validation::WriteOperation::Max,
-            orange_model::validation::WriteOperation::CompareAndSet
+            orange_model::validation::WriteOperation::CompareAndSet,
+            orange_model::validation::WriteOperation::And,
+            orange_model::validation::WriteOperation::Or,
+            orange_model::validation::WriteOperation::Xor
         ]
         .into()
     );
@@ -261,6 +279,17 @@ fn invalid_contextual_update_keeps_function_summary_incomplete() {
         ("append", "core/i64@1", DiagnosticCode::UpdateUnsupported),
         ("add", "core/bool@1", DiagnosticCode::ConstraintUnsatisfied),
         ("min", "core/f64@1", DiagnosticCode::ConstraintUnsatisfied),
+        ("and", "core/f64@1", DiagnosticCode::ConstraintUnsatisfied),
+        (
+            "or",
+            "core/duration@1",
+            DiagnosticCode::ConstraintUnsatisfied,
+        ),
+        (
+            "xor",
+            "core/string@1",
+            DiagnosticCode::ConstraintUnsatisfied,
+        ),
         (
             "compare-and-set",
             "core/f64@1",
