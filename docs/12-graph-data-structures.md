@@ -88,7 +88,7 @@ pub struct FunctionDecl {
     pub id: FunctionId, pub name: String, pub kind: NodeKind,
     pub type_params: Vec<TypeParam>,
     pub inputs: Vec<PortDescriptor>, pub outputs: Vec<PortDescriptor>,
-    pub body: GraphBody,                     // contains function-entry/return nodes
+    pub body: GraphBody,                     // function-entry/return/outputs markers take their ports from this interface (11 §14)
 }
 pub struct ActivationPolicy {
     pub mode: ReentrancyMode,                // Queue | Drop | Replace | Parallel{max}
