@@ -7,7 +7,7 @@
 //! supplies the immutable catalogue origin; these passes do not load package code.
 //!
 //! [`analyze_functions`] derives graph-local kind, suspension and run-write summaries
-//! from fresh resolved metadata. Contextual call/variable port projection, regions,
+//! from fresh resolved metadata. Contextual Get/Set ports are declaration-owned. Call/Update ports, regions,
 //! data/control cycles and availability remain later slices. Passing these individual
 //! analyses is not compile approval.
 
@@ -17,6 +17,7 @@ mod functions;
 mod inputs;
 mod nodes;
 mod ports;
+mod variables;
 
 pub use diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, IdentifierArg, MessageArg, MessageArgError,

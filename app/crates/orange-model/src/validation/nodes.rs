@@ -227,10 +227,7 @@ fn preflight_node(
             );
             return false;
         }
-        let snapshot = (node.definition.version == 1)
-            .then(|| intrinsic_snapshot(node.definition.id.as_str(), node.config_version))
-            .flatten();
-        let Some(snapshot) = snapshot else {
+        if node.definition.version != 1 || node.config_version != 1 {
             unresolved(
                 node.id,
                 DiagnosticCode::ProviderUnavailable,
@@ -239,21 +236,31 @@ fn preflight_node(
                 diagnostics,
             );
             return false;
+        }
+        let contract = if let Some(result) = super::variables::variable_contract(document, node) {
+            result
+        } else {
+            intrinsic_snapshot(node.definition.id.as_str(), node.config_version)
+                .map(|snapshot| GenericDefinition {
+                    kind: snapshot.kind,
+                    suspends: snapshot.suspends,
+                    type_params: Vec::new(),
+                    ports: snapshot.ports,
+                })
+                .ok_or(DiagnosticCode::ProviderUnavailable)
         };
-        if let Some(code) = suspension_contract_issue(snapshot.kind, snapshot.suspends) {
+        let contract = match contract {
+            Ok(contract) => contract,
+            Err(code) => {
+                unresolved(node.id, code, origin, report, diagnostics);
+                return false;
+            }
+        };
+        if let Some(code) = suspension_contract_issue(contract.kind, contract.suspends) {
             unresolved(node.id, code, origin, report, diagnostics);
             return false;
         }
-        let inserted = contracts.insert_node(
-            document,
-            node,
-            GenericDefinition {
-                kind: snapshot.kind,
-                suspends: snapshot.suspends,
-                type_params: Vec::new(),
-                ports: snapshot.ports,
-            },
-        );
+        let inserted = contracts.insert_node(document, node, contract);
         if inserted.is_err() {
             unresolved(
                 node.id,

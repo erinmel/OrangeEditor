@@ -72,6 +72,8 @@ pub enum DiagnosticCode {
     FunctionMetadataUnavailable,
     #[serde(rename = "E-VARIABLE-UNKNOWN")]
     VariableUnknown,
+    #[serde(rename = "E-VARIABLE-SCOPE")]
+    VariableScope,
     #[serde(rename = "E-UPDATE-OPERATION")]
     UpdateOperation,
     #[serde(rename = "E-ENTRY-IN-FUNCTION")]
@@ -113,6 +115,7 @@ impl DiagnosticCode {
             Self::CallTargetUnknown => "E-CALL-TARGET-UNKNOWN",
             Self::FunctionMetadataUnavailable => "E-FUNCTION-METADATA-UNAVAILABLE",
             Self::VariableUnknown => "E-VARIABLE-UNKNOWN",
+            Self::VariableScope => "E-VARIABLE-SCOPE",
             Self::UpdateOperation => "E-UPDATE-OPERATION",
             Self::EntryInFunction => "E-ENTRY-IN-FUNCTION",
         }
@@ -151,6 +154,7 @@ impl DiagnosticCode {
             Self::CallTargetUnknown => "core/graph-call-target-unknown",
             Self::FunctionMetadataUnavailable => "core/graph-function-metadata-unavailable",
             Self::VariableUnknown => "core/graph-variable-unknown",
+            Self::VariableScope => "core/graph-variable-scope",
             Self::UpdateOperation => "core/graph-update-operation",
             Self::EntryInFunction => "core/graph-entry-in-function",
         }
@@ -204,6 +208,9 @@ impl DiagnosticCode {
                 "Function body or leaf semantics are unavailable.".into()
             }
             Self::VariableUnknown => "Variable reference is missing, invalid or undeclared.".into(),
+            Self::VariableScope => {
+                "Workspace variables require an asynchronous shared write.".into()
+            }
             Self::UpdateOperation => "Variable update requires a supported operation.".into(),
             Self::EntryInFunction => {
                 "Entry and watch nodes are not permitted in a function.".into()

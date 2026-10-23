@@ -197,11 +197,7 @@ pub fn analyze_functions(
                 continue;
             }
             if definition == "core/get-variable" {
-                let variable = node
-                    .config
-                    .get("variable")
-                    .and_then(Value::as_str)
-                    .and_then(|value| value.parse::<VariableId>().ok());
+                let variable = super::variables::variable_reference(node).ok();
                 if variable.is_none_or(|id| !document.variables().contains_key(&id)) {
                     emit_at(
                         &mut result,
@@ -519,12 +515,7 @@ fn core_variable_write(
     node: &crate::document::NodeInstance,
     definition: &str,
 ) -> Result<VariableWrite, DiagnosticCode> {
-    let variable = node
-        .config
-        .get("variable")
-        .and_then(Value::as_str)
-        .and_then(|value| value.parse().ok())
-        .ok_or(DiagnosticCode::VariableUnknown)?;
+    let variable = super::variables::variable_reference(node)?;
     let operation = if definition == "core/set-variable" {
         Some(WriteOperation::Set)
     } else {

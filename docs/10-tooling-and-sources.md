@@ -41,6 +41,28 @@ Limits: file targets and JSON syntax were checked, not Markdown anchor resolutio
 - 00c.3b analysis guard (2026-10-21): expanded scoped/concrete type terms are limited to a provisional `MAX_EXPANDED_TYPE_NODES = 16_384` nodes per term; nesting keeps `MAX_NESTING = 64`. Limits return typed analysis failures before constructing an oversized output. Alias traversal is iterative; a 10,000-variable alias regression passes without consuming type nesting depth. These are open resource budgets, not a new language type exclusion, measured NFR-15 timing or production memory qualification.
 - Apart from `orange-model`, no application implementation, integration test, audio routing check, broker/container setup or OS packaging verification has run. Local availability of Rust is not proof of a working UI build toolchain.
 
+## Contextual Get/Set validation (2026-10-22)
+
+WU-00/00d.3b projects Get/Set ports from referenced variable declarations through the existing node-scoped template overlay, inference and input validation. Distinct nodes retain their declaration types; workspace synchronous Set reports `E-VARIABLE-SCOPE`. The variable-reference parser is shared with function analysis. No format, dependency, feature or runtime change is introduced. Trace: FR-12/44/45/51, ADR-15/16/17/21/22.
+
+Selected Windows toolchain: Rust `1.99.1 (58cf8f9c3 2026-10-13)`, Cargo `1.99.1 (5f94df478 2026-08-27)`, edition 2024; declared MSRV 1.97.1 was not tested. Cargo.lock SHA-256 remains `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`. `cargo tree -e features --locked --offline` passed; the dependency feature selection is unchanged.
+
+Four initial public-entrypoint tests were written before implementation: the focused test executable compiled and failed on the intended missing contextual behavior, then passed after projection. Four additional integration/freshness/authority tests were written afterwards. Temporarily disabling contextual routing made the Get→generic Add→Set integration regression fail with provider-unavailable diagnostics; restoring routing made all eight focused tests pass. Coverage includes declaration-owned types, required/wrong input, malformed/missing references, unknown types, exact intrinsic authority, workspace scope, stale evidence across declaration edit/undo/redo, unrelated declaration preservation, deterministic diagnostics and read-only bytes/revision/state identity.
+
+Orchestrator review independently inspected the integrated Rust changes and reran `cargo test --workspace --locked --offline` successfully, plus formatting and whitespace checks. No actionable correctness defect was found. A separate static negative-test audit mapped plausible scope/type/freshness regressions to existing assertions; it did not execute additional mutations. Review strengthened Set's existing test to assert its input has neither an output-source marker nor a default value, and reran the eight focused tests. These extra assertions were added after implementation; they are contract checks, not additional red-first evidence. Remote CI and MSRV execution remain unverified for this slice.
+
+| Command | Local result |
+|---|---|
+| `cargo test -p orange-model --locked --offline --test validation_variables` | PASS: 8 tests |
+| `cargo test --workspace --locked --offline` | PASS: 280 tests, 0 failures; 0 doctests |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `$env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps --locked --offline` | PASS; temporary override removed |
+| `node tools/check-cargo-metadata.mjs` | PASS |
+| `git diff --check` | PASS |
+
+Cargo's incremental-cache hard-link warnings used its copy fallback. No runtime, cross-body visibility, region/cycle/availability, UI, hardware, performance, remote CI, SDK-freeze or release gate is established. Offline connection validation retains its stored/fixed metadata path. Contextual calls and Update/shared-variable operations remain follow-ups.
+
 ## Core integrity fixes (2026-10-22)
 
 WU-00/00d integrity fixes address reproduced paste-data corruption, ambiguous provider locks, stale node/function evidence and import resource policy. Paste discovers/remaps only host-declared typed config paths, retaining unknown package data; exact intrinsic identities share one core list. Package/type lock duplicates are structural errors, and provider-key lookup fails closed even for a document created through direct Serde. Imports default to a pre-parse 64 MiB bound and post-parse 100k-node/500k-edge limits, configurable by the embedding host. Node template lookups compare actual current node metadata, provider/digest and contextual declarations; transitive function dependencies invalidate call overlays while unrelated functions and ordinary connection edits remain usable. Function evidence is bound to a content state. Stale evidence produces typed errors and incomplete analysis. Public inference/analysis signatures changed in unreleased v1; no stored-document migration is performed. Trace: FR-02/03/05/14/44/45/47; ADR-15/20/21; I-2/I-4.
