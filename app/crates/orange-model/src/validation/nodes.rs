@@ -269,9 +269,17 @@ fn infer_fresh_args(
                 )
         });
         if incomplete {
-            report
-                .incomplete_nodes
-                .extend(component.nodes.iter().copied());
+            // Ineligible members already carry their own diagnostic; the rest are blocked.
+            for node in &component.nodes {
+                report.incomplete_nodes.insert(*node);
+                if pass.eligible.contains(node) {
+                    diagnostics.push(Diagnostic::new(
+                        DiagnosticCode::DependencyUnavailable,
+                        Subject::new(Some(*node), None, None),
+                        pass.origin,
+                    ));
+                }
+            }
             continue;
         }
         report_component_issues(&component, pass.eligible, pass.origin, report, diagnostics);

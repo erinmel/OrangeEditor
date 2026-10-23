@@ -38,6 +38,8 @@ pub enum DiagnosticCode {
     PackageLockMissing,
     #[serde(rename = "E-PROVIDER-UNAVAILABLE")]
     ProviderUnavailable,
+    #[serde(rename = "E-DEPENDENCY-UNAVAILABLE")]
+    DependencyUnavailable,
     #[serde(rename = "E-SIGNATURE-DRIFT")]
     SignatureDrift,
     #[serde(rename = "E-TYPE-AMBIGUOUS")]
@@ -98,6 +100,7 @@ impl DiagnosticCode {
             Self::ProviderMissing => "E-PROVIDER-MISSING",
             Self::PackageLockMissing => "E-PACKAGE-LOCK-MISSING",
             Self::ProviderUnavailable => "E-PROVIDER-UNAVAILABLE",
+            Self::DependencyUnavailable => "E-DEPENDENCY-UNAVAILABLE",
             Self::SignatureDrift => "E-SIGNATURE-DRIFT",
             Self::TypeAmbiguous => "E-TYPE-AMBIGUOUS",
             Self::TypeComplexity => "E-TYPE-COMPLEXITY",
@@ -137,6 +140,7 @@ impl DiagnosticCode {
             Self::ProviderMissing => "core/graph-provider-missing",
             Self::PackageLockMissing => "core/graph-package-lock-missing",
             Self::ProviderUnavailable => "core/graph-provider-unavailable",
+            Self::DependencyUnavailable => "core/graph-dependency-unavailable",
             Self::SignatureDrift => "core/graph-signature-drift",
             Self::TypeAmbiguous => "core/graph-type-ambiguous",
             Self::TypeComplexity => "core/graph-type-complexity",
@@ -181,6 +185,9 @@ impl DiagnosticCode {
             Self::ProviderMissing => "Node has no provider binding.".into(),
             Self::PackageLockMissing => "Node provider package version is not locked.".into(),
             Self::ProviderUnavailable => "Node definition or exact provider is unavailable.".into(),
+            Self::DependencyUnavailable => {
+                "Node cannot be checked because a connected node is unresolved.".into()
+            }
             Self::SignatureDrift => {
                 "Stored node signature differs from the resolved definition.".into()
             }

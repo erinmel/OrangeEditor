@@ -150,7 +150,22 @@ fn assert_equals_passes(doc: &GraphDocument) -> ValidationReport {
     sort_diagnostics(&mut sorted);
     sorted.dedup();
     assert_eq!(report.diagnostics, sorted);
+    assert_explained(&report);
     report
+}
+
+/// Every incomplete node carries a diagnostic naming it.
+fn assert_explained(report: &ValidationReport) {
+    for node in &report.incomplete_nodes {
+        assert!(
+            report
+                .diagnostics
+                .iter()
+                .any(|item| item.subject.node == Some(*node)),
+            "{node:?} is incomplete without a diagnostic: {:?}",
+            report.diagnostics
+        );
+    }
 }
 
 fn codes(report: &ValidationReport) -> Vec<DiagnosticCode> {
@@ -311,4 +326,32 @@ fn a_mistyped_variable_edge_is_a_type_mismatch() {
     let report = assert_equals_passes(&doc);
     assert_eq!(codes(&report), [DiagnosticCode::TypeMismatch]);
     assert!(report.incomplete_nodes.is_empty());
+}
+
+const OPEN_SIG: &str = "sha256:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+#[test]
+fn a_node_blocked_by_an_unresolved_peer_says_so() {
+    let open = json!({"id":OTHER,"definition_id":"example/open","definition_version":1,
+        "signature":OPEN_SIG,"provider":{"package":"example.pkg","version":"1.0.0","id":"example/open"},
+        "config_version":1,"config":{}});
+    let mut value = serde_json::to_value(document(
+        json!([node(NODE, "example/value", json!({})), open]),
+        wire(OTHER, "out", NODE, "x"),
+        json!([]),
+        json!([]),
+    ))
+    .unwrap();
+    value["signatures"][OPEN_SIG] = json!({"kind":"pure","ports":[
+        {"port_id":"out","direction":"output","kind":"data","type":"$T","source":"computed"}]});
+    let doc: GraphDocument = serde_json::from_value(value).unwrap();
+    let report = assert_equals_passes(&doc);
+    let blocked = report
+        .diagnostics
+        .iter()
+        .find(|item| item.code == DiagnosticCode::DependencyUnavailable)
+        .expect("the resolved endpoint reports its unresolved peer");
+    assert_eq!(blocked.subject.node, Some(NODE.parse().unwrap()));
+    assert!(codes(&report).contains(&DiagnosticCode::ProviderUnavailable));
+    assert!(!report.is_valid());
 }

@@ -161,6 +161,10 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         !report.resolved.contains_key(&GENERIC.parse().unwrap()),
         "a generic contract must not be resolved from an unresolved neighbour's persisted snapshot"
     );
+    assert!(report.diagnostics.iter().any(|diagnostic| {
+        diagnostic.code == DiagnosticCode::DependencyUnavailable
+            && diagnostic.subject.node == Some(GENERIC.parse().unwrap())
+    }));
 }
 
 #[test]
