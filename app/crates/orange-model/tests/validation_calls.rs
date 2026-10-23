@@ -55,7 +55,7 @@ fn call_target_failures_are_distinct_from_unsupported_intrinsics() {
 }
 
 #[test]
-fn valid_type_only_interfaces_do_not_manufacture_execution_metadata() {
+fn valid_type_only_interfaces_do_not_manufacture_execution_metadata_and_malformed_ones_say_why() {
     for kind in ["pure", "action", "async"] {
         let mut wire = document(json!({"function":FUNCTION}));
         wire["functions"][0]["kind"] = json!(kind);
@@ -64,7 +64,7 @@ fn valid_type_only_interfaces_do_not_manufacture_execution_metadata() {
     let mut malformed = document(json!({"function":FUNCTION}));
     malformed["functions"][0]["inputs"] =
         json!([{"port_id":"value","direction":"output","kind":"data","type":"core/i64@1"}]);
-    assert_unresolved(malformed, DiagnosticCode::FunctionMetadataUnavailable);
+    assert_unresolved(malformed, DiagnosticCode::FunctionInterface);
 }
 
 #[test]
@@ -72,11 +72,11 @@ fn forged_call_identity_and_foreign_domains_cannot_supply_typing_evidence() {
     for field in ["definition_version", "config_version"] {
         let mut wire = document(json!({"function":FUNCTION}));
         wire["nodes"][0][field] = json!(2);
-        assert_unresolved(wire, DiagnosticCode::ProviderUnavailable);
+        assert_unresolved(wire, DiagnosticCode::IntrinsicUnsupported);
     }
     let mut wire = document(json!({"function":FUNCTION}));
     wire["nodes"][0]["provider"] = json!({"package":"acme","version":"1.0.0","id":"forged"});
-    assert_unresolved(wire, DiagnosticCode::ProviderUnavailable);
+    assert_unresolved(wire, DiagnosticCode::IntrinsicUnsupported);
     let mut wire = document(json!({"function":FUNCTION}));
     wire["functions"][0]["domain"] = json!("vendor/signal");
     assert_unresolved(wire, DiagnosticCode::DomainUnsupported);

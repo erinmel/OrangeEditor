@@ -80,6 +80,8 @@ pub enum DiagnosticCode {
     CallTargetUnknown,
     #[serde(rename = "E-FUNCTION-METADATA-UNAVAILABLE")]
     FunctionMetadataUnavailable,
+    #[serde(rename = "E-FUNCTION-INTERFACE")]
+    FunctionInterface,
     #[serde(rename = "E-VARIABLE-UNKNOWN")]
     VariableUnknown,
     #[serde(rename = "E-VARIABLE-SCOPE")]
@@ -141,6 +143,7 @@ impl DiagnosticCode {
             Self::CallTargetMissing => "E-CALL-TARGET-MISSING",
             Self::CallTargetUnknown => "E-CALL-TARGET-UNKNOWN",
             Self::FunctionMetadataUnavailable => "E-FUNCTION-METADATA-UNAVAILABLE",
+            Self::FunctionInterface => "E-FUNCTION-INTERFACE",
             Self::VariableUnknown => "E-VARIABLE-UNKNOWN",
             Self::VariableScope => "E-VARIABLE-SCOPE",
             Self::SharedVariableScope => "E-SHARED-VARIABLE-SCOPE",
@@ -191,6 +194,7 @@ impl DiagnosticCode {
             Self::CallTargetMissing => "core/graph-call-target-missing",
             Self::CallTargetUnknown => "core/graph-call-target-unknown",
             Self::FunctionMetadataUnavailable => "core/graph-function-metadata-unavailable",
+            Self::FunctionInterface => "core/graph-function-interface",
             Self::VariableUnknown => "core/graph-variable-unknown",
             Self::VariableScope => "core/graph-variable-scope",
             Self::SharedVariableScope => "core/graph-shared-variable-scope",
@@ -263,6 +267,9 @@ impl DiagnosticCode {
             Self::CallTargetUnknown => "Function call target is not declared in this graph.".into(),
             Self::FunctionMetadataUnavailable => {
                 "Function body or leaf semantics are unavailable.".into()
+            }
+            Self::FunctionInterface => {
+                "Function interface is malformed: ports must be unique typed data ports using declared type parameters.".into()
             }
             Self::VariableUnknown => "Variable reference is missing, invalid or undeclared.".into(),
             Self::VariableScope => {

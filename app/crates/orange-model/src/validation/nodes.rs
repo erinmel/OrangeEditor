@@ -124,11 +124,12 @@ fn preflight_node(
 ) -> bool {
     if node.definition.id.as_str() == "core/call" {
         let code = match call_interface(document, node, registry) {
-            Err(CallInterfaceError::Identity) => DiagnosticCode::ProviderUnavailable,
+            Err(CallInterfaceError::Identity) => DiagnosticCode::IntrinsicUnsupported,
             Err(CallInterfaceError::TargetMissing) => DiagnosticCode::CallTargetMissing,
             Err(CallInterfaceError::TargetUnknown) => DiagnosticCode::CallTargetUnknown,
             Err(CallInterfaceError::DomainUnsupported) => DiagnosticCode::DomainUnsupported,
-            Err(CallInterfaceError::InvalidInterface) | Ok(_) => {
+            Err(CallInterfaceError::InvalidInterface) => DiagnosticCode::FunctionInterface,
+            Ok(_) => {
                 // A type-only interface is deliberately insufficient to produce execution
                 // metadata. Body conformance and accepted call contracts come later.
                 DiagnosticCode::FunctionMetadataUnavailable
