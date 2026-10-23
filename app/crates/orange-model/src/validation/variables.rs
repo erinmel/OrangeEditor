@@ -2,8 +2,7 @@
 
 use super::diagnostic::DiagnosticCode;
 use crate::document::{
-    GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind,
-    Suspends, VarScope,
+    GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, Suspends, VarScope,
 };
 use crate::id::VariableId;
 use crate::inference::GenericDefinition;
@@ -34,6 +33,12 @@ pub(super) fn variable_contract(
         if write && declaration.scope == VarScope::Workspace {
             return Err(DiagnosticCode::VariableScope);
         }
+        let ty = declaration.ty.clone();
+        let port = if write {
+            PortDescriptor::data_in("value", ty)
+        } else {
+            PortDescriptor::data_out("value", ty, OutputSource::State)
+        };
         Ok(GenericDefinition {
             kind: if write {
                 NodeKind::Action
@@ -42,21 +47,7 @@ pub(super) fn variable_contract(
             },
             suspends: Some(Suspends::Never),
             type_params: Vec::new(),
-            ports: vec![PortDescriptor {
-                port_id: "value".parse().expect("fixed language port ID"),
-                direction: if write {
-                    PortDirection::Input
-                } else {
-                    PortDirection::Output
-                },
-                kind: PortKind::Data,
-                ty: Some(declaration.ty.clone()),
-                source: (!write).then_some(OutputSource::State),
-                available_on: None,
-                default: None,
-                sensitivity: None,
-                extensions: Default::default(),
-            }],
+            ports: vec![port],
         })
     })())
 }

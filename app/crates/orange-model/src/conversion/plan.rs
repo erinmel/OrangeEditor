@@ -447,16 +447,9 @@ fn convert_node(
 }
 
 fn data_port(id: &str, direction: PortDirection, ty: &TypeExpr) -> PortDescriptor {
-    PortDescriptor {
-        port_id: id.parse().expect("fixed port IDs are valid"),
-        direction,
-        kind: PortKind::Data,
-        ty: Some(ty.clone()),
-        source: (direction == PortDirection::Output).then_some(OutputSource::Computed),
-        available_on: None,
-        default: None,
-        sensitivity: None,
-        extensions: Extensions::new(),
+    match direction {
+        PortDirection::Input => PortDescriptor::data_in(id, ty.clone()),
+        PortDirection::Output => PortDescriptor::data_out(id, ty.clone(), OutputSource::Computed),
     }
 }
 

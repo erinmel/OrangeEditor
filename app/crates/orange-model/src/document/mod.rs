@@ -33,7 +33,7 @@ pub use node::{
 };
 pub use port::{
     Edge, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind, PortRef, Sensitivity,
-    SignatureSnapshot, Suspends,
+    SignatureSnapshot, Suspends, Variadic,
 };
 
 pub(crate) use graph::fresh_state_id;

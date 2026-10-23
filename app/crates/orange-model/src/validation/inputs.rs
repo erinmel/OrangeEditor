@@ -105,13 +105,7 @@ pub fn validate_inputs(
 
             let literal = node.inputs.get(&key).or(descriptor.default.as_ref());
             let Some(literal) = literal else {
-                if descriptor
-                    .extensions
-                    .get("optional")
-                    .and_then(serde_json::Value::as_bool)
-                    == Some(true)
-                    && expected_term.core("option").is_some()
-                {
+                if descriptor.is_optional() && expected_term.core("option").is_some() {
                     continue;
                 }
                 diagnostics.push(diagnostic(
@@ -161,9 +155,7 @@ pub fn validate_inputs(
 }
 
 fn is_variadic(port: &PortDescriptor) -> bool {
-    port.extensions
-        .get("variadic")
-        .is_some_and(serde_json::Value::is_object)
+    port.variadic.is_some()
 }
 
 fn validate_expected_type(ty: &TypeExpr, types: &TypeRegistry) -> Result<TypeTerm, DiagnosticCode> {
