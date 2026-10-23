@@ -441,12 +441,21 @@ pub(crate) fn declared_port(
             .find(|declared| declared.port_id == *port.port.port());
     }
     let snapshot = match registry.contract(document, node) {
-        Ok(Some(contract)) => SignatureSnapshot {
-            kind: contract.kind,
-            suspends: contract.suspends,
-            ports: contract.ports.clone(),
-            extensions: Default::default(),
-        },
+        Ok(Some(contract)) => {
+            let declared = contract
+                .ports
+                .iter()
+                .find(|declared| declared.port_id == *port.port.port());
+            if let Some(declared) = declared {
+                return Some(declared.clone());
+            }
+            SignatureSnapshot {
+                kind: contract.kind,
+                suspends: contract.suspends,
+                ports: contract.ports.clone(),
+                extensions: Default::default(),
+            }
+        }
         Ok(None) => document.signatures().get(node.signature.as_ref()?)?.clone(),
         Err(_) => return None,
     };

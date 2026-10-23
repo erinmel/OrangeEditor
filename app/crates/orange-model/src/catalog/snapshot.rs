@@ -255,19 +255,18 @@ impl RegistryBuilder {
     }
 
     pub fn build(self) -> Result<Arc<RegistrySnapshot>, RegistryError> {
-        let mut definitions = BTreeMap::new();
+        let mut definitions: BTreeMap<DefinitionId, BTreeMap<u32, Registered>> = BTreeMap::new();
         for (definition, intrinsic) in self.definitions {
             check_definition(&definition, intrinsic)?;
             check_default_literals(&definition, &self.types)?;
             super::availability::check_availability(&definition)?;
-            let key = (
-                definition.definition.id.clone(),
-                definition.definition.version,
-            );
-            if definitions.contains_key(&key) {
+            let versions = definitions
+                .entry(definition.definition.id.clone())
+                .or_default();
+            if versions.contains_key(&definition.definition.version) {
                 return Err(RegistryError::DuplicateDefinition(definition.definition));
             }
-            definitions.insert(key, Arc::new(definition));
+            versions.insert(definition.definition.version, Registered::new(definition));
         }
         let mut providers = BTreeMap::new();
         for provider in self.providers {
@@ -277,7 +276,10 @@ impl RegistryBuilder {
                 .map(|(definition, _)| definition)
                 .chain(provider.specializations.keys());
             for definition in named {
-                if !definitions.contains_key(&(definition.id.clone(), definition.version)) {
+                if !definitions
+                    .get(&definition.id)
+                    .is_some_and(|versions| versions.contains_key(&definition.version))
+                {
                     return Err(RegistryError::UnknownDefinition {
                         provider: Box::new(provider.key),
                         definition: definition.clone(),
@@ -588,8 +590,34 @@ pub struct RegistrySnapshot {
     origin: HostOrigin,
     types: Arc<TypeRegistry>,
     converters: Arc<ConverterRegistry>,
-    definitions: BTreeMap<(DefinitionId, u32), Arc<NodeDefinition>>,
+    /// By id, then version, so a lookup borrows the caller's id instead of cloning it.
+    definitions: BTreeMap<DefinitionId, BTreeMap<u32, Registered>>,
     providers: BTreeMap<ProviderKey, ProviderDescriptor>,
+}
+
+/// A registered definition and, for declared ports, its contract built once.
+#[derive(Debug)]
+struct Registered {
+    definition: Arc<NodeDefinition>,
+    declared: Option<NodeContract>,
+}
+
+impl Registered {
+    fn new(definition: NodeDefinition) -> Self {
+        let declared = match &definition.ports {
+            Ports::Declared(ports) => Some(NodeContract {
+                kind: definition.kind,
+                suspends: definition.suspends,
+                type_params: definition.type_params.clone(),
+                ports: ports.clone(),
+            }),
+            Ports::Variable(_) => None,
+        };
+        Self {
+            definition: Arc::new(definition),
+            declared,
+        }
+    }
 }
 
 impl RegistrySnapshot {
@@ -619,9 +647,14 @@ impl RegistrySnapshot {
     }
 
     pub fn definition(&self, definition: &DefinitionRef) -> Option<&NodeDefinition> {
+        self.registered(definition)
+            .map(|registered| registered.definition.as_ref())
+    }
+
+    fn registered(&self, definition: &DefinitionRef) -> Option<&Registered> {
         self.definitions
-            .get(&(definition.id.clone(), definition.version))
-            .map(Arc::as_ref)
+            .get(&definition.id)?
+            .get(&definition.version)
     }
 
     pub fn provider(&self, key: &ProviderKey) -> Option<&ProviderDescriptor> {
@@ -671,9 +704,13 @@ impl RegistrySnapshot {
                 .converter_contract(document, node)
                 .map(|contract| Some(Cow::Owned(contract)));
         }
-        let Some(definition) = self.definition(&node.definition) else {
+        let Some(registered) = self.registered(&node.definition) else {
             return Ok(None);
         };
+        if let Some(declared) = &registered.declared {
+            return Ok(Some(Cow::Borrowed(declared)));
+        }
+        let definition = &registered.definition;
         let ports = match &definition.ports {
             Ports::Declared(ports) => ports.clone(),
             Ports::Variable(access) => self.variable_ports(document, node, *access)?,
