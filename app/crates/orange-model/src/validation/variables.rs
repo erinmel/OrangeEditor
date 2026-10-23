@@ -1,10 +1,8 @@
-//! Contextual variable identity and declaration-owned port contracts.
+//! Variable identity lookups shared by validation passes.
 
 use super::diagnostic::DiagnosticCode;
-use crate::catalog::{NodeContract, ReferenceKind, RegistrySnapshot};
-use crate::document::{
-    GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, Suspends, VarScope,
-};
+use crate::catalog::{ContractError, ReferenceKind, RegistrySnapshot};
+use crate::document::NodeInstance;
 use crate::edit::DeclId;
 use crate::id::VariableId;
 
@@ -18,40 +16,9 @@ pub(super) fn variable_reference(
     }
 }
 
-pub(super) fn variable_contract(
-    registry: &RegistrySnapshot,
-    document: &GraphDocument,
-    node: &NodeInstance,
-) -> Option<Result<NodeContract, DiagnosticCode>> {
-    let write = match node.definition.id.as_str() {
-        "core/get-variable" => false,
-        "core/set-variable" => true,
-        _ => return None,
-    };
-    Some((|| {
-        let id = variable_reference(registry, node)?;
-        let declaration = document
-            .variables()
-            .get(&id)
-            .ok_or(DiagnosticCode::VariableUnknown)?;
-        if write && declaration.scope == VarScope::Workspace {
-            return Err(DiagnosticCode::VariableScope);
-        }
-        let ty = declaration.ty.clone();
-        let port = if write {
-            PortDescriptor::data_in("value", ty)
-        } else {
-            PortDescriptor::data_out("value", ty, OutputSource::State)
-        };
-        Ok(NodeContract {
-            kind: if write {
-                NodeKind::Action
-            } else {
-                NodeKind::Volatile
-            },
-            suspends: Some(Suspends::Never),
-            type_params: Vec::new(),
-            ports: vec![port],
-        })
-    })())
+pub(super) fn contract_code(error: ContractError) -> DiagnosticCode {
+    match error {
+        ContractError::VariableUnknown => DiagnosticCode::VariableUnknown,
+        ContractError::VariableScope => DiagnosticCode::VariableScope,
+    }
 }

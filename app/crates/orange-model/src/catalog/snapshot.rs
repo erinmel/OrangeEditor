@@ -1,5 +1,6 @@
 //! The immutable registry snapshot and its builder.
 
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -7,13 +8,13 @@ use thiserror::Error;
 
 use super::intrinsics::{core_reference, intrinsic_definitions};
 use super::{
-    NodeDefinition, Ports, ProviderDescriptor, ProviderKey, ReferenceError, ReferenceField,
-    ReferenceKind, TypeArgs,
+    ContractError, NodeContract, NodeDefinition, Ports, ProviderDescriptor, ProviderKey,
+    ReferenceError, ReferenceField, ReferenceKind, TypeArgs, VariableAccess,
 };
 use crate::config_pointer::pointer_parts;
 use crate::conversion::{ConverterRegistry, ConverterRegistryBuilder};
-use crate::document::NodeInstance;
 use crate::document::{DefinitionRef, is_intrinsic_definition};
+use crate::document::{GraphDocument, NodeInstance, OutputSource, PortDescriptor, VarScope};
 use crate::edit::DeclId;
 use crate::id::{DefinitionId, PortId};
 use crate::type_term::TypeTerm;
@@ -65,6 +66,10 @@ pub enum RegistryError {
         definition: DefinitionId,
         pointer: String,
     },
+    #[error(
+        "definition `{definition}` takes its ports from a variable but declares no variable reference"
+    )]
+    VariablePortsWithoutReference { definition: DefinitionId },
     #[error("provider `{}/{}` names unknown definition `{}@{}`", .provider.package, .provider.id, .definition.id, .definition.version)]
     UnknownDefinition {
         provider: Box<ProviderKey>,
@@ -197,8 +202,21 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
             });
         }
     }
-    let Ports::Declared(ports) = &definition.ports else {
-        return Ok(());
+    let ports = match &definition.ports {
+        Ports::Declared(ports) => ports,
+        Ports::Variable(_) => {
+            let has_variable = definition
+                .references
+                .iter()
+                .any(|field| field.kind == ReferenceKind::Variable);
+            return if has_variable {
+                Ok(())
+            } else {
+                Err(RegistryError::VariablePortsWithoutReference {
+                    definition: id.clone(),
+                })
+            };
+        }
     };
     let declared: BTreeSet<&str> = definition
         .type_params
@@ -320,6 +338,52 @@ impl RegistrySnapshot {
         fields
             .iter()
             .map(|field| (field, field.parse(&node.config)))
+    }
+
+    /// The node's contract: the definition's, with variable ports computed from the document.
+    /// `None` for an unknown definition. A pure function of the definition and document, so
+    /// it cannot go stale.
+    pub fn contract<'a>(
+        &'a self,
+        document: &GraphDocument,
+        node: &NodeInstance,
+    ) -> Result<Option<Cow<'a, NodeContract>>, ContractError> {
+        let Some(definition) = self.definition(&node.definition) else {
+            return Ok(None);
+        };
+        let ports = match &definition.ports {
+            Ports::Declared(ports) => ports.clone(),
+            Ports::Variable(access) => vec![self.variable_port(document, node, *access)?],
+        };
+        Ok(Some(Cow::Owned(NodeContract {
+            kind: definition.kind,
+            suspends: definition.suspends,
+            type_params: definition.type_params.clone(),
+            ports,
+        })))
+    }
+
+    fn variable_port(
+        &self,
+        document: &GraphDocument,
+        node: &NodeInstance,
+        access: VariableAccess,
+    ) -> Result<PortDescriptor, ContractError> {
+        let Ok(DeclId::Variable(id)) = self.reference(node, ReferenceKind::Variable) else {
+            return Err(ContractError::VariableUnknown);
+        };
+        let declaration = document
+            .variables()
+            .get(&id)
+            .ok_or(ContractError::VariableUnknown)?;
+        let ty = declaration.ty.clone();
+        Ok(match access {
+            VariableAccess::Read => PortDescriptor::data_out("value", ty, OutputSource::State),
+            VariableAccess::Write if declaration.scope == VarScope::Workspace => {
+                return Err(ContractError::VariableScope);
+            }
+            VariableAccess::Write => PortDescriptor::data_in("value", ty),
+        })
     }
 
     /// The first reference of `kind` the node declares.
@@ -536,6 +600,22 @@ mod tests {
     }
 
     #[test]
+    fn variable_ports_need_a_variable_reference() {
+        let mut get = definition("acme/get", &[], vec![]);
+        get.ports = Ports::Variable(VariableAccess::Read);
+        let result = build(builder().definition(get.clone()));
+        assert!(matches!(
+            result,
+            Err(RegistryError::VariablePortsWithoutReference { .. })
+        ));
+        get.references = vec![ReferenceField {
+            pointer: "/variable".into(),
+            kind: ReferenceKind::Variable,
+        }];
+        assert!(build(builder().definition(get)).is_ok());
+    }
+
+    #[test]
     fn providers_must_name_registered_definitions() {
         let result = build(builder().provider(provider("p", &["acme/add"])));
         assert!(matches!(
@@ -667,6 +747,7 @@ mod tests {
         for id in ["core/branch", "core/sequence", "core/wait", "core/continue"] {
             assert!(snapshot.definition(&dref(id)).is_some(), "{id}");
         }
-        assert!(snapshot.definition(&dref("core/get-variable")).is_none());
+        assert!(snapshot.definition(&dref("core/get-variable")).is_some());
+        assert!(snapshot.definition(&dref("core/call")).is_none());
     }
 }

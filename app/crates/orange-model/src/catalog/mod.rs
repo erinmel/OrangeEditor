@@ -7,8 +7,8 @@ pub mod provider;
 pub mod snapshot;
 
 pub use definition::{
-    NodeContract, NodeDefinition, Ports, ReferenceError, ReferenceField, ReferenceKind, TypeArgs,
-    VariableAccess,
+    ContractError, NodeContract, NodeDefinition, Ports, ReferenceError, ReferenceField,
+    ReferenceKind, TypeArgs, VariableAccess,
 };
 pub(crate) use intrinsics::{core_reference, intrinsic_definitions};
 pub use provider::{ProviderDescriptor, ProviderKey};

@@ -1,8 +1,8 @@
-//! Built-in control nodes registered as data (11 §8.4). Get/Set stay contextual.
+//! Built-in control nodes and variable access registered as data (11 §8.4).
 
 use std::sync::LazyLock;
 
-use super::{NodeDefinition, Ports, ReferenceField, ReferenceKind};
+use super::{NodeDefinition, Ports, ReferenceField, ReferenceKind, VariableAccess};
 use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, Suspends};
 use crate::id::TypeExpr;
 
@@ -29,6 +29,15 @@ fn definition(
         references: Vec::new(),
         specializations: None,
         config_schema: None,
+    }
+}
+
+/// A variable node: its single `value` port is typed by the referenced declaration.
+fn variable_definition(id: &str, kind: NodeKind, access: VariableAccess) -> NodeDefinition {
+    NodeDefinition {
+        ports: Ports::Variable(access),
+        references: core_reference(id).cloned().into_iter().collect(),
+        ..definition(id, kind, Some(Suspends::Never), Vec::new())
     }
 }
 
@@ -97,6 +106,12 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
         ),
         definition("core/break", Action, None, vec![exec_in()]),
         definition("core/continue", Action, None, vec![exec_in()]),
+        variable_definition(
+            "core/get-variable",
+            NodeKind::Volatile,
+            VariableAccess::Read,
+        ),
+        variable_definition("core/set-variable", Action, VariableAccess::Write),
     ]
 }
 

@@ -78,21 +78,6 @@ pub struct NodeDefinition {
     pub config_schema: Option<serde_json::Value>,
 }
 
-impl NodeDefinition {
-    /// The contract of a definition with fixed ports.
-    pub(crate) fn declared_contract(&self) -> Option<NodeContract> {
-        match &self.ports {
-            Ports::Declared(ports) => Some(NodeContract {
-                kind: self.kind,
-                suspends: self.suspends,
-                type_params: self.type_params.clone(),
-                ports: ports.clone(),
-            }),
-            Ports::Variable(_) => None,
-        }
-    }
-}
-
 /// Why a reference field does not yield a declaration ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ReferenceError {
@@ -114,4 +99,13 @@ impl ReferenceField {
         };
         parsed.ok_or(ReferenceError::Malformed)
     }
+}
+
+/// Why a contract cannot be computed from a definition and a document.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ContractError {
+    #[error("the referenced variable is missing or not declared")]
+    VariableUnknown,
+    #[error("a workspace variable cannot be written from a graph")]
+    VariableScope,
 }

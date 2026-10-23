@@ -325,3 +325,53 @@ fn declaration_types_and_traversal_order_are_authoritative() {
     ));
     assert_eq!(report, shuffled);
 }
+#[test]
+fn registry_computes_variable_contracts_from_the_document() {
+    use orange_model::DocCommand;
+    use orange_model::catalog::ContractError;
+    let mut doc = document(
+        json!([
+            variable_node(1, "get", json!(node_id(10))),
+            variable_node(2, "set", json!(node_id(10))),
+            variable_node(3, "set", json!(node_id(11))),
+            variable_node(4, "get", json!(node_id(12)))
+        ]),
+        json!([
+            declaration(10, "core/i64@1", "run"),
+            declaration(11, "core/i64@1", "workspace")
+        ]),
+    );
+    let registry = registry();
+    let contract = |doc: &GraphDocument, n: u8| registry.contract(doc, doc.node(nid(n)).unwrap());
+    let get = contract(&doc, 1).unwrap().unwrap();
+    assert_eq!(
+        (get.kind, get.suspends),
+        (NodeKind::Volatile, Some(Suspends::Never))
+    );
+    assert_eq!(get.ports[0].direction, PortDirection::Output);
+    assert_eq!(get.ports[0].source, Some(OutputSource::State));
+    let set = contract(&doc, 2).unwrap().unwrap();
+    assert_eq!(
+        (set.kind, set.suspends),
+        (NodeKind::Action, Some(Suspends::Never))
+    );
+    assert_eq!(set.ports[0].direction, PortDirection::Input);
+    assert_eq!(contract(&doc, 3).unwrap_err(), ContractError::VariableScope);
+    assert_eq!(
+        contract(&doc, 4).unwrap_err(),
+        ContractError::VariableUnknown
+    );
+
+    // Nothing is cached: the contract follows the declaration.
+    let _ = doc
+        .apply([DocCommand::UpsertVariable(
+            serde_json::from_value(declaration(10, "core/bool@1", "run")).unwrap(),
+        )])
+        .unwrap();
+    let get = contract(&doc, 1).unwrap().unwrap();
+    assert_eq!(get.ports[0].ty.as_ref().unwrap().as_str(), "core/bool@1");
+
+    let mut unknown = doc.node(nid(1)).unwrap().clone();
+    unknown.definition.id = "acme/unregistered".parse().unwrap();
+    assert!(registry.contract(&doc, &unknown).unwrap().is_none());
+}

@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 
 use thiserror::Error;
 
-use crate::catalog::intrinsic_definitions;
+use crate::catalog::{Ports, intrinsic_definitions};
 use crate::document::{GraphDocument, OutputSource, PortDescriptor, PortRef, SignatureSnapshot};
 use crate::id::PortId;
 
@@ -102,11 +102,13 @@ pub(crate) fn intrinsic_snapshot(id: &str, config_version: u32) -> Option<Signat
         intrinsic_definitions()
             .into_iter()
             .filter_map(|definition| {
-                let contract = definition.declared_contract()?;
+                let Ports::Declared(ports) = definition.ports else {
+                    return None;
+                };
                 let snapshot = SignatureSnapshot {
-                    kind: contract.kind,
-                    suspends: contract.suspends,
-                    ports: contract.ports,
+                    kind: definition.kind,
+                    suspends: definition.suspends,
+                    ports,
                     extensions: Default::default(),
                 };
                 Some((definition.definition.id.as_str().to_owned(), snapshot))

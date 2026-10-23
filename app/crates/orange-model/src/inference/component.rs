@@ -20,8 +20,8 @@ use super::unify::{
 };
 use crate::GraphDocument;
 use crate::catalog::{
-    NodeContract, NodeDefinition, ProviderKey, ReferenceField, ReferenceKind, RegistrySnapshot,
-    TypeArgs, core_reference,
+    NodeContract, ProviderKey, ReferenceField, ReferenceKind, RegistrySnapshot, TypeArgs,
+    core_reference,
 };
 use crate::config_pointer::pointer_get;
 use crate::document::{
@@ -91,10 +91,8 @@ impl NodeOverlays {
         if let Some(contract) = self.overlay(document, node)? {
             return Ok(Some(Cow::Borrowed(contract)));
         }
-        Ok(registry
-            .definition(&node.definition)
-            .and_then(NodeDefinition::declared_contract)
-            .map(Cow::Owned))
+        // A contract error leaves the node without a contract, as an unknown definition does.
+        Ok(registry.contract(document, node).ok().flatten())
     }
 
     /// The node's own overlay, if any, while its fingerprint still matches.

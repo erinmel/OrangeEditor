@@ -15,7 +15,7 @@ use crate::types::{TypeRegistry, TypeResolveError};
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
-use super::ports::{implicit_port, intrinsic_snapshot, is_intrinsic_definition};
+use super::ports::{implicit_port, is_intrinsic_definition};
 
 /// Results of resolving nodes against immutable host metadata.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -185,39 +185,26 @@ fn preflight_node(
             );
             return false;
         }
-        let contract =
-            if let Some(result) = super::variables::variable_contract(registry, document, node) {
-                result
-            } else {
-                intrinsic_snapshot(node.definition.id.as_str(), node.config_version)
-                    .map(|snapshot| NodeContract {
-                        kind: snapshot.kind,
-                        suspends: snapshot.suspends,
-                        type_params: Vec::new(),
-                        ports: snapshot.ports,
-                    })
-                    .ok_or(DiagnosticCode::ProviderUnavailable)
-            };
-        let contract = match contract {
-            Ok(contract) => contract,
-            Err(code) => {
+        let contract = match registry.contract(document, node) {
+            Ok(Some(contract)) => contract,
+            Ok(None) => {
+                unresolved(
+                    node.id,
+                    DiagnosticCode::ProviderUnavailable,
+                    origin,
+                    report,
+                    diagnostics,
+                );
+                return false;
+            }
+            Err(error) => {
+                let code = super::variables::contract_code(error);
                 unresolved(node.id, code, origin, report, diagnostics);
                 return false;
             }
         };
         if let Some(code) = suspension_contract_issue(contract.kind, contract.suspends) {
             unresolved(node.id, code, origin, report, diagnostics);
-            return false;
-        }
-        let inserted = contracts.insert_node(document, node, contract);
-        if inserted.is_err() {
-            unresolved(
-                node.id,
-                DiagnosticCode::MetadataStale,
-                origin,
-                report,
-                diagnostics,
-            );
             return false;
         }
         return true;
