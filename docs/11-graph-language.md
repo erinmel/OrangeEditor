@@ -529,14 +529,14 @@ A package may **not** add port kinds, control or zone intrinsics, scheduling or 
 
 ## 17. Diagnostics catalog
 
-Compile diagnostics are `E-` (blocks compiling the affected region) or `W-` (compiles). Each one carries the node, port and edge IDs, and suggested fixes where applicable.
+Compile diagnostics are `E-` (blocks compiling the affected region) or `W-` (compiles). Each one carries the node, port and edge IDs, and suggested fixes where applicable. Every node a validation report leaves incomplete carries at least one diagnostic that names it: its own resolution failure, or `E-DEPENDENCY-UNAVAILABLE` when an unresolved connected node blocks its check. A language intrinsic that this core version lists but does not register yet reports `E-INTRINSIC-UNSUPPORTED`.
 
 Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_args` and safe English fallback per [13](13-internationalization.md); suggested-fix text is translatable while its command ID stays stable. Existing codes and severity never depend on locale. Golden expectations assert codes, subject IDs, arguments and fix IDs, excluding rendered prose. Package catalogue failures use the separate host/package diagnostic codes in 13, not graph compilation errors.
 
 | Group | Codes |
 |---|---|
 | Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
-| Resolution | `E-SIGNATURE-MISSING`, `E-PROVIDER-MISSING`, `E-PACKAGE-LOCK-MISSING`, `E-PROVIDER-UNAVAILABLE` |
+| Resolution | `E-SIGNATURE-MISSING`, `E-PROVIDER-MISSING`, `E-PACKAGE-LOCK-MISSING`, `E-PROVIDER-UNAVAILABLE`, `E-DEPENDENCY-UNAVAILABLE`, `E-INTRINSIC-UNSUPPORTED` |
 | Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-TYPE-COMPLEXITY`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
 | Regions and availability | `E-REGION-AMBIGUOUS`, `E-REGION-ESCAPE`, `E-UNAVAILABLE-VALUE`, `E-CROSS-ACTIVATION`, `E-BREAK-OUTSIDE-LOOP`, `E-ZONE-STRUCTURE`, `W-UNREACHABLE` |
 | Cycles | `E-CYCLE-DATA`, `E-CYCLE-SYNC-CONTROL`, `E-RECURSION`, `E-LOOP-UNBOUNDED`, `W-BUSY-LOOP` |

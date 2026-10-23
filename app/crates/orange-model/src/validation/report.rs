@@ -19,7 +19,8 @@ pub struct ValidationReport {
     pub diagnostics: Vec<Diagnostic>,
     /// Current semantic projections for nodes that resolved completely.
     pub resolved: BTreeMap<NodeId, SignatureSnapshot>,
-    /// Nodes whose resolution or connection checks could not complete.
+    /// Nodes whose resolution or connection checks could not complete; each has a
+    /// diagnostic that names it.
     pub incomplete_nodes: BTreeSet<NodeId>,
     /// Summaries of functions whose analysis completed.
     pub functions: BTreeMap<FunctionId, FunctionSummary>,

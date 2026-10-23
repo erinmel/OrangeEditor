@@ -440,3 +440,22 @@ Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
 
 These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
+
+### Language rules and connection resolution (2026-10-23)
+
+Connection validation now checks edges against the node resolution from `validate_nodes` instead of a static copy of the intrinsics; `validate_connections` takes the resolved map, like `validate_inputs`. Get and Set edges are therefore checked against the variable declaration, and a mistyped variable edge reports `E-TYPE-MISMATCH`. A package node that did not resolve still falls back to its stored signature (11 §4.5).
+
+Every incomplete node in a report now has a diagnostic that names it. `E-DEPENDENCY-UNAVAILABLE` marks a node whose check is blocked by an unresolved connected node: a generic node whose component has an unresolved member, or a resolved endpoint of an edge whose other type is unknown. `RegistryBuilder::build` rejects a data or event port without a type and an exec port with one, so a resolved node never has a data port that cannot be compared.
+
+`catalog::language` is the one table of language rules. It lists every intrinsic ID with the kind and suspension function analysis counts it as, the declaration its config references and whether it ends its region, plus the implicit ports each kind gets. It replaces the intrinsic ID list in `document`, the core reference table, the function kind table, the reserved port list and the Break/Continue special case. Inference now also sees that Break and Continue have no `then`. An intrinsic the table lists but this core version does not register (Call, On Event, Switch and others) reports `E-INTRINSIC-UNSUPPORTED` instead of `E-PROVIDER-UNAVAILABLE`.
+
+Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands run from the repository root:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | pass |
+| `cargo clippy --workspace --all-targets -- -D warnings` | pass |
+| `cargo test --workspace` | pass |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
+
+These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
