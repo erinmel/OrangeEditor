@@ -197,11 +197,20 @@ fn registered_definition_captures_only_its_declared_reference_field() {
         "nested".into(),
         json!({"variable": total_variable().to_string(), "label": total_variable().to_string()}),
     );
+    // The same node unbound, or at another config version, declares no references.
+    let mut unbound = custom.clone();
+    unbound.id = nid(11);
+    unbound.provider = None;
+    let mut other_version = custom.clone();
+    other_version.id = nid(12);
+    other_version.config_version += 1;
     let _ = source
-        .apply([DocCommand::AddNode {
-            body: BodyRef::Root,
-            node: custom.clone(),
-        }])
+        .apply(
+            [custom.clone(), unbound, other_version].map(|node| DocCommand::AddNode {
+                body: BodyRef::Root,
+                node,
+            }),
+        )
         .unwrap();
     let registry = RegistryBuilder::core(origin())
         .definition(NodeDefinition {
@@ -222,6 +231,10 @@ fn registered_definition_captures_only_its_declared_reference_field() {
         .unwrap();
     let fragment = Fragment::copy(&source, &registry, &[nid(10)]).unwrap();
     assert_eq!(fragment.variables.len(), 1);
+    for gated in [nid(11), nid(12)] {
+        let fragment = Fragment::copy(&source, &registry, &[gated]).unwrap();
+        assert!(fragment.variables.is_empty() && fragment.references.is_empty());
+    }
 
     let mut target = empty_document();
     let paste = fragment
@@ -455,4 +468,34 @@ fn paste_carries_the_lock_entries_of_copied_provider_bindings() {
         Err(orange_model::TxError::PackageLockConflict { .. })
     ));
     assert_eq!(content(&other), before);
+}
+
+#[test]
+fn core_reference_fields_count_only_for_unbound_version_one_controls() {
+    let mut source = fixture();
+    let event_id = source.events().keys().next().unwrap().to_string();
+    let mut nodes = Vec::new();
+    for (n, config_version, definition_version) in [(10, 1, 1), (11, 2, 1), (12, 1, 2)] {
+        let mut await_event = node(n);
+        await_event.definition.id = "core/await-event".parse().unwrap();
+        await_event.definition.version = definition_version;
+        await_event.config_version = config_version;
+        await_event.config.insert("event".into(), json!(event_id));
+        nodes.push(DocCommand::AddNode {
+            body: BodyRef::Root,
+            node: await_event,
+        });
+    }
+    let _ = source.apply(nodes).unwrap();
+    assert_eq!(
+        Fragment::copy(&source, &registry(), &[nid(10)])
+            .unwrap()
+            .events
+            .len(),
+        1
+    );
+    for ignored in [nid(11), nid(12)] {
+        let fragment = Fragment::copy(&source, &registry(), &[ignored]).unwrap();
+        assert!(fragment.events.is_empty() && fragment.references.is_empty());
+    }
 }

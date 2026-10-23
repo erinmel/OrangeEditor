@@ -276,3 +276,27 @@ fn a_component_that_was_already_broken_stays_editable() {
 fn codes(issues: &[InferenceIssue]) -> Vec<&'static str> {
     issues.iter().map(InferenceIssue::code).collect()
 }
+
+#[test]
+fn implicit_ports_are_exec_or_typed_by_their_kind() {
+    let mut doc = pair("i64", "i64");
+    let json = json!({
+        "id": common::node_id(5), "definition_id": "org.test/act", "definition_version": 1,
+        "config_version": 1, "config": {}, "signature": "s-act"
+    });
+    let mut value: serde_json::Value =
+        serde_json::from_str(&orange_model::to_json(&doc).unwrap()).unwrap();
+    value["signatures"]["s-act"] = json!({"kind": "action", "ports": []});
+    value["nodes"].as_array_mut().unwrap().push(json);
+    doc = orange_model::from_json(&value.to_string()).unwrap();
+
+    // `then` is an exec port; `error` is a typed data output that is not an i64.
+    assert!(matches!(
+        plan(&doc, request((5, "then"), (3, "value"))),
+        Err(ConnectionError::NotADataPort { .. })
+    ));
+    assert!(!matches!(
+        plan(&doc, request((5, "error"), (3, "value"))),
+        Err(ConnectionError::NotADataPort { .. })
+    ));
+}
