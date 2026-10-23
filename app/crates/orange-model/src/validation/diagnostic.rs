@@ -112,6 +112,16 @@ pub enum DiagnosticCode {
     FunctionBodyMarker,
     #[serde(rename = "E-MISSING-RETURN")]
     MissingReturn,
+    #[serde(rename = "E-REGION-AMBIGUOUS")]
+    RegionAmbiguous,
+    #[serde(rename = "E-REGION-ESCAPE")]
+    RegionEscape,
+    #[serde(rename = "E-BREAK-OUTSIDE-LOOP")]
+    BreakOutsideLoop,
+    #[serde(rename = "E-LOOP-UNBOUNDED")]
+    LoopUnbounded,
+    #[serde(rename = "W-UNREACHABLE")]
+    Unreachable,
 }
 
 impl DiagnosticCode {
@@ -169,6 +179,11 @@ impl DiagnosticCode {
             Self::ConverterOptions => "E-CONVERTER-OPTIONS",
             Self::FunctionBodyMarker => "E-FUNCTION-BODY-MARKER",
             Self::MissingReturn => "E-MISSING-RETURN",
+            Self::RegionAmbiguous => "E-REGION-AMBIGUOUS",
+            Self::RegionEscape => "E-REGION-ESCAPE",
+            Self::BreakOutsideLoop => "E-BREAK-OUTSIDE-LOOP",
+            Self::LoopUnbounded => "E-LOOP-UNBOUNDED",
+            Self::Unreachable => "W-UNREACHABLE",
         }
     }
 
@@ -225,6 +240,11 @@ impl DiagnosticCode {
             Self::ConverterOptions => "core/graph-converter-options",
             Self::FunctionBodyMarker => "core/graph-function-body-marker",
             Self::MissingReturn => "core/graph-missing-return",
+            Self::RegionAmbiguous => "core/graph-region-ambiguous",
+            Self::RegionEscape => "core/graph-region-escape",
+            Self::BreakOutsideLoop => "core/graph-break-outside-loop",
+            Self::LoopUnbounded => "core/graph-loop-unbounded",
+            Self::Unreachable => "core/graph-unreachable",
         }
     }
 
@@ -318,6 +338,15 @@ impl DiagnosticCode {
                 "Function entry, return and output markers do not match the declared interface.".into()
             }
             Self::MissingReturn => "A path of this function ends without reaching a return.".into(),
+            Self::RegionAmbiguous => "An execution node is reachable from more than one region.".into(),
+            Self::RegionEscape => "An execution connection leaves its region.".into(),
+            Self::BreakOutsideLoop => {
+                "Break and continue need an enclosing loop body in the same function.".into()
+            }
+            Self::LoopUnbounded => "A while loop requires a finite positive max_iterations.".into(),
+            Self::Unreachable => {
+                "Execution node is not reachable from any entry or region root.".into()
+            }
         }
     }
 }
@@ -553,7 +582,10 @@ impl Diagnostic {
         {
             message_args.insert("port".to_owned(), argument);
         }
-        let severity = if code == DiagnosticCode::LiteralShadowed {
+        let severity = if matches!(
+            code,
+            DiagnosticCode::LiteralShadowed | DiagnosticCode::Unreachable
+        ) {
             Severity::Warning
         } else {
             Severity::Error
