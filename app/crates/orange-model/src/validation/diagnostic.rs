@@ -82,6 +82,12 @@ pub enum DiagnosticCode {
     UpdateOperation,
     #[serde(rename = "E-ENTRY-IN-FUNCTION")]
     EntryInFunction,
+    #[serde(rename = "E-CONVERTER-CONFIG")]
+    ConverterConfig,
+    #[serde(rename = "E-CONVERTER-ENTRY")]
+    ConverterEntry,
+    #[serde(rename = "E-CONVERTER-OPTIONS")]
+    ConverterOptions,
 }
 
 impl DiagnosticCode {
@@ -124,6 +130,9 @@ impl DiagnosticCode {
             Self::VariableScope => "E-VARIABLE-SCOPE",
             Self::UpdateOperation => "E-UPDATE-OPERATION",
             Self::EntryInFunction => "E-ENTRY-IN-FUNCTION",
+            Self::ConverterConfig => "E-CONVERTER-CONFIG",
+            Self::ConverterEntry => "E-CONVERTER-ENTRY",
+            Self::ConverterOptions => "E-CONVERTER-OPTIONS",
         }
     }
 
@@ -165,6 +174,9 @@ impl DiagnosticCode {
             Self::VariableScope => "core/graph-variable-scope",
             Self::UpdateOperation => "core/graph-update-operation",
             Self::EntryInFunction => "core/graph-entry-in-function",
+            Self::ConverterConfig => "core/graph-converter-config",
+            Self::ConverterEntry => "core/graph-converter-entry",
+            Self::ConverterOptions => "core/graph-converter-options",
         }
     }
 
@@ -229,6 +241,11 @@ impl DiagnosticCode {
             Self::EntryInFunction => {
                 "Entry and watch nodes are not permitted in a function.".into()
             }
+            Self::ConverterConfig => {
+                "Converter node uses an unsupported or malformed config.".into()
+            }
+            Self::ConverterEntry => "Converter registry entry is unavailable.".into(),
+            Self::ConverterOptions => "Converter options are invalid or incomplete.".into(),
         }
     }
 }

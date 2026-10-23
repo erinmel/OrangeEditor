@@ -108,4 +108,14 @@ pub enum ContractError {
     VariableUnknown,
     #[error("a workspace variable cannot be written from a graph")]
     VariableScope,
+    #[error("converter config is malformed or uses an unsupported version")]
+    ConverterConfig,
+    #[error("converter entry is unavailable")]
+    ConverterEntry,
+    #[error("converter options are invalid or incomplete")]
+    ConverterOptions,
+    #[error("converter provider is unavailable")]
+    ConverterProvider,
+    #[error("converter package provider has no unique package lock entry")]
+    ConverterPackageLockMissing,
 }

@@ -2,7 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs, is_intrinsic};
+use crate::catalog::{
+    ContractError, NodeContract, ProviderKey, RegistrySnapshot, TypeArgs,
+    is_converter_special_form, is_intrinsic,
+};
 use crate::document::{GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends};
 use crate::error::IdError;
 use crate::id::{NodeId, PortKey};
@@ -116,6 +119,37 @@ fn preflight_node(
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> bool {
+    if is_converter_special_form(node.definition.id.as_str()) {
+        if node
+            .signature
+            .as_ref()
+            .is_none_or(|key| !document.signatures().contains_key(key))
+        {
+            unresolved(
+                node.id,
+                DiagnosticCode::SignatureMissing,
+                origin,
+                report,
+                diagnostics,
+            );
+            return false;
+        }
+        match registry.contract(document, node) {
+            Ok(Some(contract)) => {
+                if let Some(code) = suspension_contract_issue(contract.kind, contract.suspends) {
+                    unresolved(node.id, code, origin, report, diagnostics);
+                    return false;
+                }
+                return true;
+            }
+            Ok(None) => unreachable!("converter special form always has a contract result"),
+            Err(error) => {
+                let code = contract_code(error);
+                unresolved(node.id, code, origin, report, diagnostics);
+                return false;
+            }
+        }
+    }
     if is_intrinsic(node.definition.id.as_str()) {
         if node.provider.is_some() {
             unresolved(
@@ -150,7 +184,7 @@ fn preflight_node(
                 return false;
             }
             Err(error) => {
-                let code = super::variables::contract_code(error);
+                let code = contract_code(error);
                 unresolved(node.id, code, origin, report, diagnostics);
                 return false;
             }
@@ -221,6 +255,18 @@ fn preflight_node(
         return false;
     }
     true
+}
+
+fn contract_code(error: ContractError) -> DiagnosticCode {
+    match error {
+        ContractError::VariableUnknown => DiagnosticCode::VariableUnknown,
+        ContractError::VariableScope => DiagnosticCode::VariableScope,
+        ContractError::ConverterConfig => DiagnosticCode::ConverterConfig,
+        ContractError::ConverterEntry => DiagnosticCode::ConverterEntry,
+        ContractError::ConverterOptions => DiagnosticCode::ConverterOptions,
+        ContractError::ConverterProvider => DiagnosticCode::ProviderUnavailable,
+        ContractError::ConverterPackageLockMissing => DiagnosticCode::PackageLockMissing,
+    }
 }
 
 fn suspension_contract_issue(
@@ -457,6 +503,13 @@ fn project_node(
             Subject::new(Some(id), None, None),
             pass.origin,
         ));
+        if pass
+            .document
+            .node(id)
+            .is_some_and(|node| is_converter_special_form(node.definition.id.as_str()))
+        {
+            report.incomplete_nodes.insert(id);
+        }
     }
     Some(projected)
 }

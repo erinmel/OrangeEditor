@@ -7,13 +7,16 @@ use std::sync::Arc;
 use thiserror::Error;
 
 use super::intrinsics::intrinsic_definitions;
-use super::language::{IMPLICIT_PORTS, intrinsic_reference};
+use super::language::{IMPLICIT_PORTS, intrinsic_reference, is_converter_special_form};
 use super::{
     ContractError, NodeContract, NodeDefinition, Ports, ProviderDescriptor, ProviderKey,
     ReferenceError, ReferenceField, ReferenceKind, TypeArgs, VariableAccess,
 };
 use crate::config_pointer::pointer_parts;
-use crate::conversion::{ConverterRegistry, ConverterRegistryBuilder};
+use crate::conversion::{
+    ConversionClass, ConverterKey, ConverterProvider, ConverterRegistry, ConverterRegistryBuilder,
+    ExplicitConverterChoice,
+};
 use crate::document::DefinitionRef;
 use crate::document::{
     GraphDocument, NodeInstance, OutputSource, PortDescriptor, PortKind, VarScope,
@@ -352,6 +355,11 @@ impl RegistrySnapshot {
         document: &GraphDocument,
         node: &NodeInstance,
     ) -> Result<Option<Cow<'a, NodeContract>>, ContractError> {
+        if is_converter_special_form(node.definition.id.as_str()) {
+            return self
+                .converter_contract(document, node)
+                .map(|contract| Some(Cow::Owned(contract)));
+        }
         let Some(definition) = self.definition(&node.definition) else {
             return Ok(None);
         };
@@ -365,6 +373,99 @@ impl RegistrySnapshot {
             type_params: definition.type_params.clone(),
             ports,
         })))
+    }
+
+    fn converter_contract(
+        &self,
+        document: &GraphDocument,
+        node: &NodeInstance,
+    ) -> Result<NodeContract, ContractError> {
+        if node.definition.version != 1 || node.config_version != 1 {
+            return Err(ContractError::ConverterConfig);
+        }
+        let converter = node
+            .config
+            .get("converter")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(ContractError::ConverterConfig)?;
+        let id = converter
+            .parse()
+            .map_err(|_| ContractError::ConverterConfig)?;
+        let contract_version = node
+            .config
+            .get("contract_version")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|version| u32::try_from(version).ok())
+            .filter(|version| *version > 0)
+            .ok_or(ContractError::ConverterConfig)?;
+        let key = ConverterKey {
+            id,
+            contract_version,
+        };
+        let definition = self
+            .converters
+            .entry(&key)
+            .ok_or(ContractError::ConverterEntry)?;
+        let raw_options = node
+            .config
+            .get("options")
+            .ok_or(ContractError::ConverterOptions)?;
+        let options: BTreeMap<String, String> = serde_json::from_value(raw_options.clone())
+            .map_err(|_| ContractError::ConverterOptions)?;
+        let provider = match &node.provider {
+            None => ConverterProvider::Core,
+            Some(binding) => {
+                let Some(exact) = ProviderKey::of(document, binding) else {
+                    return Err(ContractError::ConverterPackageLockMissing);
+                };
+                ConverterProvider::Package(crate::conversion::PackageProvider {
+                    package: exact.package,
+                    version: exact.version,
+                    content_digest: exact.content_digest,
+                    id: exact.id,
+                    contract_version,
+                })
+            }
+        };
+        let resolved = self
+            .converters
+            .resolve_explicit_choice(
+                &definition.from,
+                &definition.to,
+                ExplicitConverterChoice {
+                    entry: key,
+                    provider,
+                    options: options.clone(),
+                },
+            )
+            .map_err(|error| match error {
+                crate::conversion::SelectionRejection::InvalidOptions(_) => {
+                    ContractError::ConverterOptions
+                }
+                _ => ContractError::ConverterProvider,
+            })?;
+        if resolved.options != options {
+            return Err(ContractError::ConverterOptions);
+        }
+        let mut ports = vec![
+            PortDescriptor::data_in("value", definition.from.clone()),
+            PortDescriptor::data_out("result", definition.to.clone(), OutputSource::Computed),
+        ];
+        if definition.class == ConversionClass::Lossy {
+            ports.push(PortDescriptor::data_out(
+                "loss",
+                definition
+                    .loss_output_type()
+                    .expect("lossy entries declare loss output"),
+                OutputSource::Computed,
+            ));
+        }
+        Ok(NodeContract {
+            kind: crate::document::NodeKind::Pure,
+            suspends: None,
+            type_params: Vec::new(),
+            ports,
+        })
     }
 
     fn variable_port(

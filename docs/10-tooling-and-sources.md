@@ -433,6 +433,20 @@ Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands
 
 These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
 
+### Converter-node resolution C1 (2026-10-23)
+
+Implemented exact resolution for the `core/convert` host-owned special form. The resolver requires definition/config version 1 and a saved signature, selects only Core when the provider field is absent, or derives an exact package implementation from the unique matching document lock and the existing explicit-choice validator. It requires saved policy maps to equal the normalized complete map; it derives ports from the selected entry and reports signature drift while retaining the fresh resolved projection and marking the node incomplete. Focused tests cover available source/sink providers through plan/apply/combined validation for Core and a package implementation, checked/lossy ports and options, malformed entries/options/versions, missing signature/lock, wrong digest and provider, read-only validation, undo/redo, and pure function summaries. This validates metadata resolution only; it does not execute a converter kernel.
+
+Toolchain: `rustc 1.99.1 (58cf8f9c3 2026-10-13)`, `cargo 1.99.1 (5f94df478 2026-08-27)`, active `1.99.1-x86_64-pc-windows-msvc`; declared MSRV 1.97.1; default workspace features and checked-in `Cargo.lock`; no dependency or lockfile change. Commands run from the repository root:
+
+| Command | Result |
+|---|---|
+| `cargo test -p orange-model --test converter_resolution --locked` | pass (4 tests) |
+| `cargo fmt --all --check` | pass |
+| `cargo test --workspace --locked` | pass |
+
+Cargo emitted Windows incremental-cache hard-link warnings and copied the affected cache files; builds and tests completed successfully. This work does not establish runtime execution, package loading, performance or NFR evidence.
+
 ### Computed contextual contracts (2026-10-23)
 
 Slice 3 declares identity references on the definition: a `NodeDefinition` has `kind`, `suspends`, `type_params`, `ports` (declared, or derived from a variable) and `references` (an RFC 6901 pointer and a variable, event or function kind). `RegistrySnapshot::references` is the single parser of those config fields, with a fixed table for core controls that are not registered yet, and `build` rejects invalid or duplicate pointers. Only definition-declared fields are references, which closes the earlier open question about config strings that merely match an ID.
@@ -487,3 +501,5 @@ Toolchain: Rust 1.99.1 (MSRV 1.97.1), no dependency or lockfile change. Commands
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps` | pass |
 
 These checks cover the model crate only. They do not establish runtime, UI, package-loading or NFR evidence.
+
+Root C1 integration verification (2026-10-23): Rust 1.99.1, default features and unchanged Cargo.lock SHA-256 39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4. Independently ran cargo test --workspace --locked --offline (315 tests passed), cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, Rustdoc with warnings denied, dependency-boundary guard and git diff --check; all completed successfully. Windows incremental cache hard-link warnings fell back to copying. No remote CI/MSRV/native hardware or runtime gate result is implied.

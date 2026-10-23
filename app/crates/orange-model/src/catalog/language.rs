@@ -166,6 +166,13 @@ pub(crate) fn is_intrinsic(id: &str) -> bool {
     intrinsic(id).is_some()
 }
 
+/// `core/convert` is a host-owned registry special form. It uses entry metadata for ports
+/// and may bind an exact package implementation, so it does not follow ordinary intrinsic
+/// or ordinary package-definition resolution.
+pub(crate) fn is_converter_special_form(id: &str) -> bool {
+    id == "core/convert"
+}
+
 /// The standard config field naming a declaration of `kind`: `/variable`, `/event` or
 /// `/function`.
 pub(crate) fn reference_field(kind: ReferenceKind) -> &'static ReferenceField {
