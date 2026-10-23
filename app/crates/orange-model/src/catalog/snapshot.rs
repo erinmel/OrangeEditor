@@ -19,7 +19,8 @@ use crate::conversion::{
 };
 use crate::document::DefinitionRef;
 use crate::document::{
-    GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, PortKind, VarScope,
+    GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind,
+    VarScope,
 };
 use crate::edit::DeclId;
 use crate::id::{DefinitionId, PortId};
@@ -206,11 +207,37 @@ impl RegistryBuilder {
     }
 }
 
+/// Publication checks for one definition, in order. Each rule group stands alone so a new
+/// rule lands in the group it belongs to.
 fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), RegistryError> {
     let id = &definition.definition.id;
     if !intrinsic && id.is_core() {
         return Err(RegistryError::CoreNamespace(id.clone()));
     }
+    check_references(definition)?;
+    let ports = match &definition.ports {
+        Ports::Declared(ports) => ports,
+        Ports::Variable(_) => return check_variable_ports(definition),
+    };
+    let declared: BTreeSet<&str> = definition
+        .type_params
+        .iter()
+        .map(|param| param.name.as_str())
+        .collect();
+    let mut seen = BTreeSet::new();
+    for port in ports {
+        check_port_identity(id, port, &mut seen, intrinsic)?;
+        check_port_shape(id, port)?;
+        check_kind_ports(definition, port)?;
+        check_port_authority(id, port, intrinsic)?;
+        check_port_params(id, port, &declared)?;
+    }
+    Ok(())
+}
+
+/// Reference pointers are valid RFC 6901 pointers, each declared once.
+fn check_references(definition: &NodeDefinition) -> Result<(), RegistryError> {
+    let id = &definition.definition.id;
     let mut pointers = BTreeSet::new();
     for field in &definition.references {
         if pointer_parts(&field.pointer).is_none() {
@@ -226,86 +253,113 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
             });
         }
     }
-    let ports = match &definition.ports {
-        Ports::Declared(ports) => ports,
-        Ports::Variable(_) => {
-            let has_variable = definition
-                .references
-                .iter()
-                .any(|field| field.kind == ReferenceKind::Variable);
-            return if has_variable {
-                Ok(())
-            } else {
-                Err(RegistryError::VariablePortsWithoutReference {
-                    definition: id.clone(),
-                })
-            };
-        }
-    };
-    let declared: BTreeSet<&str> = definition
-        .type_params
+    Ok(())
+}
+
+/// Variable-typed ports need the variable reference that types them.
+fn check_variable_ports(definition: &NodeDefinition) -> Result<(), RegistryError> {
+    let has_variable = definition
+        .references
         .iter()
-        .map(|param| param.name.as_str())
-        .collect();
-    let mut seen = BTreeSet::new();
-    for port in ports {
-        let name = port.port_id.as_str();
-        if !seen.insert(name) {
-            return Err(RegistryError::DuplicatePort {
-                definition: id.clone(),
-                port: port.port_id.clone(),
-            });
-        }
-        if !intrinsic && IMPLICIT_PORTS.contains(&name) {
-            return Err(RegistryError::ReservedPort {
-                definition: id.clone(),
-                port: port.port_id.clone(),
-            });
-        }
-        if port.ty.is_some() != matches!(port.kind, PortKind::Data | PortKind::Event) {
-            return Err(RegistryError::PortType {
-                definition: id.clone(),
-                port: port.port_id.clone(),
-            });
-        }
-        if port.kind == PortKind::Data
-            && port.direction == crate::document::PortDirection::Output
-            && port.source.is_none()
-        {
-            return Err(RegistryError::MissingDataOutputSource {
-                definition: id.clone(),
-                port: port.port_id.clone(),
-            });
-        }
-        if definition.kind == NodeKind::Pure && port.kind == PortKind::Exec {
-            return Err(RegistryError::PureExecutionPort {
-                definition: id.clone(),
-                port: port.port_id.clone(),
-            });
-        }
-        if port.kind == PortKind::Event && port.direction != crate::document::PortDirection::Output
-        {
-            return Err(RegistryError::EventInputPort {
-                definition: id.clone(),
-                port: port.port_id.clone(),
-            });
-        }
-        if !intrinsic && port.is_lazy() {
-            return Err(RegistryError::LazyPackagePort {
-                definition: id.clone(),
-                port: port.port_id.clone(),
-            });
-        }
-        // Unparsable types are reported by inference, not here.
-        if let Some(term) = port.ty.as_ref().and_then(|ty| TypeTerm::parse(ty).ok())
-            && let Some(param) = undeclared_param(&term, &declared)
-        {
-            return Err(RegistryError::UndeclaredTypeParam {
-                definition: id.clone(),
-                port: port.port_id.clone(),
-                param,
-            });
-        }
+        .any(|field| field.kind == ReferenceKind::Variable);
+    if has_variable {
+        Ok(())
+    } else {
+        Err(RegistryError::VariablePortsWithoutReference {
+            definition: definition.definition.id.clone(),
+        })
+    }
+}
+
+/// Port IDs are unique, and only intrinsics declare implicit port IDs (11 §4.1).
+fn check_port_identity<'a>(
+    id: &DefinitionId,
+    port: &'a PortDescriptor,
+    seen: &mut BTreeSet<&'a str>,
+    intrinsic: bool,
+) -> Result<(), RegistryError> {
+    let name = port.port_id.as_str();
+    let (definition, port) = (id.clone(), port.port_id.clone());
+    if !seen.insert(name) {
+        return Err(RegistryError::DuplicatePort { definition, port });
+    }
+    if !intrinsic && IMPLICIT_PORTS.contains(&name) {
+        return Err(RegistryError::ReservedPort { definition, port });
+    }
+    Ok(())
+}
+
+/// A port's kind, direction, type and source agree (11 §4.1).
+fn check_port_shape(id: &DefinitionId, port: &PortDescriptor) -> Result<(), RegistryError> {
+    let (definition, port_id) = (id.clone(), port.port_id.clone());
+    if port.ty.is_some() != matches!(port.kind, PortKind::Data | PortKind::Event) {
+        return Err(RegistryError::PortType {
+            definition,
+            port: port_id,
+        });
+    }
+    if port.kind == PortKind::Data
+        && port.direction == PortDirection::Output
+        && port.source.is_none()
+    {
+        return Err(RegistryError::MissingDataOutputSource {
+            definition,
+            port: port_id,
+        });
+    }
+    if port.kind == PortKind::Event && port.direction != PortDirection::Output {
+        return Err(RegistryError::EventInputPort {
+            definition,
+            port: port_id,
+        });
+    }
+    Ok(())
+}
+
+/// The definition's kind allows the port (11 §3).
+fn check_kind_ports(
+    definition: &NodeDefinition,
+    port: &PortDescriptor,
+) -> Result<(), RegistryError> {
+    if definition.kind == NodeKind::Pure && port.kind == PortKind::Exec {
+        return Err(RegistryError::PureExecutionPort {
+            definition: definition.definition.id.clone(),
+            port: port.port_id.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Port features reserved to host intrinsics (11 §4.1: `lazy`).
+fn check_port_authority(
+    id: &DefinitionId,
+    port: &PortDescriptor,
+    intrinsic: bool,
+) -> Result<(), RegistryError> {
+    if !intrinsic && port.is_lazy() {
+        return Err(RegistryError::LazyPackagePort {
+            definition: id.clone(),
+            port: port.port_id.clone(),
+        });
+    }
+    Ok(())
+}
+
+/// Port types mention only declared type parameters. Unparsable types are reported by
+/// inference, not here.
+fn check_port_params(
+    id: &DefinitionId,
+    port: &PortDescriptor,
+    declared: &BTreeSet<&str>,
+) -> Result<(), RegistryError> {
+    if let Some(term) = port.ty.as_ref().and_then(|ty| TypeTerm::parse(ty).ok())
+        && let Some(param) = undeclared_param(&term, declared)
+    {
+        return Err(RegistryError::UndeclaredTypeParam {
+            definition: id.clone(),
+            port: port.port_id.clone(),
+            param,
+        });
     }
     Ok(())
 }
@@ -740,7 +794,7 @@ mod tests {
     #[test]
     fn event_inputs_are_rejected_at_publication() {
         let event_output = PortDescriptor {
-            direction: crate::document::PortDirection::Output,
+            direction: PortDirection::Output,
             kind: PortKind::Event,
             ty: Some("core/i64@1".parse().unwrap()),
             ..PortDescriptor::data_in("event", "core/i64@1".parse().unwrap())
@@ -862,7 +916,7 @@ mod tests {
         assert!(build(registry_builder).is_ok());
 
         let event_without_source = PortDescriptor {
-            direction: crate::document::PortDirection::Output,
+            direction: PortDirection::Output,
             kind: PortKind::Event,
             ..PortDescriptor::data_in("event", "core/i64@1".parse().unwrap())
         };
