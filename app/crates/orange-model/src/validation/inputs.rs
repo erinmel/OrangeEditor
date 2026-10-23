@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::catalog::RegistrySnapshot;
 use crate::document::{GraphDocument, PortDescriptor, PortDirection, PortKind, SignatureSnapshot};
 use crate::id::{NodeId, PortKey, TypeExpr};
 use crate::type_term::TypeTerm;
@@ -16,9 +17,9 @@ use super::{Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diag
 pub fn validate_inputs(
     document: &GraphDocument,
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    types: &TypeRegistry,
-    origin: &HostOrigin,
+    registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
+    let (types, origin) = (registry.types().as_ref(), registry.origin());
     let mut diagnostics = Vec::new();
     let mut connected = BTreeSet::<(NodeId, PortKey)>::new();
     let mut nodes = BTreeMap::new();

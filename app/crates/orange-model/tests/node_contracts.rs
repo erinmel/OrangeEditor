@@ -2,15 +2,17 @@
 
 mod common;
 
-use common::generic::{add, catalog as generic_catalog, data_edge, document};
+use common::generic::{add, core_converters, data_edge, document, origin, registry_builder};
 use common::node_id;
 use orange_model::DocIndex;
-use orange_model::catalog::{NodeContract, ProviderKey};
+use orange_model::catalog::{
+    NodeContract, NodeDefinition, ProviderKey, RegistryBuilder, RegistrySnapshot,
+};
 use orange_model::document::{DefinitionRef, NodeInstance, NodeKind, PortDescriptor, TypeParam};
 use orange_model::id::NodeId;
-use orange_model::inference::{TemplateCatalog, infer_components};
-use orange_model::types::TypeRegistry;
+use orange_model::inference::{NodeOverlays, infer_components};
 use serde_json::json;
+use std::sync::Arc;
 
 fn id(n: u8) -> NodeId {
     node_id(n).parse().unwrap()
@@ -37,9 +39,8 @@ fn definition(version: u32) -> DefinitionRef {
     }
 }
 
-fn catalog() -> TemplateCatalog {
-    let mut catalog = generic_catalog(None);
-    let fallback = NodeContract {
+fn fallback_contract() -> NodeContract {
+    NodeContract {
         kind: NodeKind::Pure,
         suspends: None,
         type_params: vec![TypeParam {
@@ -53,33 +54,34 @@ fn catalog() -> TemplateCatalog {
             }))
             .unwrap(),
         ],
-    };
-    catalog.insert(definition(1), fallback.clone());
-    catalog.insert(definition(2), fallback);
-    catalog
+    }
 }
 
-fn stale_catalog() -> TemplateCatalog {
-    let mut catalog = TemplateCatalog::default();
-    catalog.insert(
-        definition(1),
-        NodeContract {
-            kind: NodeKind::Pure,
-            suspends: None,
-            type_params: vec![TypeParam {
-                name: "T".into(),
-                constraints: vec![],
-                extensions: Default::default(),
-            }],
-            ports: vec![
-                serde_json::from_value(json!({
-                    "port_id":"value","direction":"output","kind":"data","type":"$T"
-                }))
-                .unwrap(),
-            ],
-        },
-    );
-    catalog
+fn node_definition(version: u32) -> NodeDefinition {
+    NodeDefinition {
+        definition: definition(version),
+        config_version: 1,
+        contract: fallback_contract(),
+        specializations: None,
+        config_schema: None,
+    }
+}
+
+/// `org.test/add` plus the generic fallback contract of both context-source versions.
+fn registry() -> Arc<RegistrySnapshot> {
+    registry_builder(core_converters(), None)
+        .definition(node_definition(1))
+        .definition(node_definition(2))
+        .build()
+        .unwrap()
+}
+
+/// Only version 1 of the context source, with no `org.test/add`.
+fn first_version_only() -> Arc<RegistrySnapshot> {
+    RegistryBuilder::core(origin())
+        .definition(node_definition(1))
+        .build()
+        .unwrap()
 }
 
 fn context_source(n: u8) -> serde_json::Value {
@@ -110,22 +112,21 @@ fn same_definition_nodes_use_independent_concrete_contracts_for_inference() {
             data_edge(2, (3, "value"), (4, "a")),
         ],
     );
-    let mut templates = catalog();
-    templates
+    let registry = registry();
+    let mut overlays = NodeOverlays::default();
+    overlays
         .insert_node(&doc, context_node(&doc, 1), contract("core/i64@1"))
         .unwrap();
-    let before_insert = templates.generation();
-    templates
+    overlays
         .insert_node(&doc, context_node(&doc, 3), contract("core/i32@1"))
         .unwrap();
-    assert_ne!(templates.generation(), before_insert);
 
     let inferred = infer_components(
         &doc,
         &DocIndex::build(&doc),
         [id(1), id(3)],
-        &templates,
-        &TypeRegistry::core(),
+        &registry,
+        &overlays,
     );
     assert_eq!(inferred.len(), 2);
     assert_eq!(inferred[0].type_args[&id(2)]["T"].as_str(), "core/i64@1");
@@ -136,14 +137,15 @@ fn same_definition_nodes_use_independent_concrete_contracts_for_inference() {
 #[test]
 fn stale_overlay_fails_closed_while_unoverlaid_node_uses_global_catalog() {
     let doc = document(vec![context_source(1)], vec![]);
-    let mut templates = catalog();
-    templates
+    let registry = registry();
+    let mut overlays = NodeOverlays::default();
+    overlays
         .insert_node(&doc, context_node(&doc, 1), contract("core/i64@1"))
         .unwrap();
 
     assert_eq!(
-        templates
-            .get_for_node(&doc, context_node(&doc, 1))
+        overlays
+            .get_for_node(&registry, &doc, context_node(&doc, 1))
             .unwrap()
             .unwrap()
             .ports[0]
@@ -156,10 +158,14 @@ fn stale_overlay_fails_closed_while_unoverlaid_node_uses_global_catalog() {
 
     let mut changed_version = context_node(&doc, 1).clone();
     changed_version.definition.version = 2;
-    assert!(templates.get_for_node(&doc, &changed_version).is_err());
+    assert!(
+        overlays
+            .get_for_node(&registry, &doc, &changed_version)
+            .is_err()
+    );
     assert_eq!(
-        templates
-            .get_for_node(&doc, context_node(&doc, 1))
+        overlays
+            .get_for_node(&registry, &doc, context_node(&doc, 1))
             .unwrap()
             .unwrap()
             .ports[0]
@@ -172,14 +178,14 @@ fn stale_overlay_fails_closed_while_unoverlaid_node_uses_global_catalog() {
 
     let mut rebound = context_node(&doc, 1).clone();
     rebound.definition.id = "org.test/other-source".parse().unwrap();
-    assert!(templates.get_for_node(&doc, &rebound).is_err());
+    assert!(overlays.get_for_node(&registry, &doc, &rebound).is_err());
 
     let unoverlaid = context_source(2);
     let doc_with_unoverlaid = document(vec![context_source(1), unoverlaid], vec![]);
     let unoverlaid_node = doc_with_unoverlaid.node(id(2)).unwrap();
     assert_eq!(
-        templates
-            .get_for_node(&doc_with_unoverlaid, unoverlaid_node)
+        overlays
+            .get_for_node(&registry, &doc_with_unoverlaid, unoverlaid_node)
             .unwrap()
             .unwrap()
             .ports[0]
@@ -190,57 +196,63 @@ fn stale_overlay_fails_closed_while_unoverlaid_node_uses_global_catalog() {
         "$T"
     );
 
-    let mut no_fallback = stale_catalog();
-    no_fallback
-        .insert_node(&doc, context_node(&doc, 1), contract("core/i64@1"))
-        .unwrap();
-    assert!(no_fallback.get_for_node(&doc, &changed_version).is_err());
+    let first_only = first_version_only();
+    assert!(
+        overlays
+            .get_for_node(&first_only, &doc, &changed_version)
+            .is_err()
+    );
 }
 
 #[test]
 fn ordinary_connection_changes_preserve_overlay_but_node_metadata_changes_stale_it() {
     let nodes = vec![context_source(1), add(2, json!({}))];
     let before = document(nodes.clone(), vec![]);
-    let mut templates = catalog();
-    templates
+    let registry = registry();
+    let mut overlays = NodeOverlays::default();
+    overlays
         .insert_node(&before, context_node(&before, 1), contract("core/i64@1"))
         .unwrap();
 
     let connected = document(nodes, vec![data_edge(1, (1, "value"), (2, "a"))]);
     assert!(
-        templates
-            .get_for_node(&connected, connected.node(id(1)).unwrap())
+        overlays
+            .get_for_node(&registry, &connected, connected.node(id(1)).unwrap())
             .unwrap()
             .is_some()
     );
 
     let mut changed_config = connected.node(id(1)).unwrap().clone();
     changed_config.config = serde_json::from_value(json!({"mode":"changed"})).unwrap();
-    assert!(templates.get_for_node(&connected, &changed_config).is_err());
+    assert!(
+        overlays
+            .get_for_node(&registry, &connected, &changed_config)
+            .is_err()
+    );
 
     let stale_copy = before.node(id(1)).unwrap().clone();
     let mut changed_node = context_source(1);
     changed_node["config"] = json!({"mode":"changed"});
     let changed_document = document(vec![changed_node], vec![]);
     assert!(
-        templates
-            .get_for_node(&changed_document, &stale_copy)
+        overlays
+            .get_for_node(&registry, &changed_document, &stale_copy)
             .is_err()
     );
 
     let mut changed_config_version = connected.node(id(1)).unwrap().clone();
     changed_config_version.config_version += 1;
     assert!(
-        templates
-            .get_for_node(&connected, &changed_config_version)
+        overlays
+            .get_for_node(&registry, &connected, &changed_config_version)
             .is_err()
     );
 
     let removed = document(vec![], vec![]);
-    assert!(templates.ensure_fresh(&removed).is_ok());
+    assert!(overlays.ensure_fresh(&removed).is_ok());
     assert!(
-        templates
-            .get_for_node(&removed, before.node(id(1)).unwrap())
+        overlays
+            .get_for_node(&registry, &removed, before.node(id(1)).unwrap())
             .is_err()
     );
 }
@@ -271,23 +283,32 @@ fn contextual_call_overlay_tracks_reachable_functions_not_unrelated_functions() 
         })).unwrap()
     };
     let before = make_document("pure", "pure");
-    let mut templates = TemplateCatalog::default();
-    templates
+    let registry = RegistrySnapshot::core(origin());
+    let mut overlays = NodeOverlays::default();
+    overlays
         .insert_node(&before, before.node(id(1)).unwrap(), contract("core/i64@1"))
         .unwrap();
 
     let unrelated_changed = make_document("pure", "action");
     assert!(
-        templates
-            .get_for_node(&unrelated_changed, unrelated_changed.node(id(1)).unwrap())
+        overlays
+            .get_for_node(
+                &registry,
+                &unrelated_changed,
+                unrelated_changed.node(id(1)).unwrap()
+            )
             .unwrap()
             .is_some()
     );
 
     let callee_changed = make_document("action", "pure");
     assert!(
-        templates
-            .get_for_node(&callee_changed, callee_changed.node(id(1)).unwrap())
+        overlays
+            .get_for_node(
+                &registry,
+                &callee_changed,
+                callee_changed.node(id(1)).unwrap()
+            )
             .is_err()
     );
 }
@@ -319,15 +340,16 @@ fn package_digest_is_part_of_overlay_identity_and_duplicate_locks_fail_closed() 
     };
     let digest_a = format!("sha256:{}", "a".repeat(64));
     let before = provider_document(&digest_a, false);
-    let mut templates = TemplateCatalog::default();
-    templates
+    let registry = RegistrySnapshot::core(origin());
+    let mut overlays = NodeOverlays::default();
+    overlays
         .insert_node(&before, before.node(id(1)).unwrap(), contract("core/i64@1"))
         .unwrap();
 
     let changed = provider_document(&format!("sha256:{}", "b".repeat(64)), false);
     assert!(
-        templates
-            .get_for_node(&changed, changed.node(id(1)).unwrap())
+        overlays
+            .get_for_node(&registry, &changed, changed.node(id(1)).unwrap())
             .is_err()
     );
 

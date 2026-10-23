@@ -1,8 +1,12 @@
-use orange_model::catalog::{NodeContract, ProviderKey};
+mod common;
+
+use std::sync::Arc;
+
+use common::registry::Facts;
+use orange_model::catalog::{NodeContract, ProviderKey, RegistrySnapshot};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, SignatureSnapshot};
-use orange_model::inference::TemplateCatalog;
-use orange_model::types::TypeRegistry;
-use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
+use orange_model::inference::NodeOverlays;
+use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use orange_model::{DocCommand, GraphDocument};
 use serde_json::{Map, Value, json};
 
@@ -93,10 +97,20 @@ fn contract(snapshot: &SignatureSnapshot) -> NodeContract {
     }
 }
 
-fn providers() -> ProviderCatalog {
-    let mut providers = ProviderCatalog::default();
-    providers.insert(definition(), 1, provider());
-    providers
+/// The provider needs a registered definition; the per-node overlays override its contract.
+fn registry() -> Arc<RegistrySnapshot> {
+    let mut facts = Facts::new(origin());
+    facts.definition(
+        definition(),
+        NodeContract {
+            kind: NodeKind::Pure,
+            suspends: None,
+            type_params: vec![],
+            ports: vec![],
+        },
+    );
+    facts.provider(definition(), 1, provider());
+    facts.snapshot()
 }
 
 #[test]
@@ -110,15 +124,15 @@ fn same_definition_nodes_keep_distinct_contextual_contracts() {
         ],
         &[a.clone(), b.clone()],
     );
-    let mut templates = TemplateCatalog::default();
-    templates
+    let mut overlays = NodeOverlays::default();
+    overlays
         .insert_node(
             &document,
             document.node(NODE_A.parse().unwrap()).unwrap(),
             contract(&a),
         )
         .unwrap();
-    templates
+    overlays
         .insert_node(
             &document,
             document.node(NODE_B.parse().unwrap()).unwrap(),
@@ -126,13 +140,7 @@ fn same_definition_nodes_keep_distinct_contextual_contracts() {
         )
         .unwrap();
 
-    let report = validate_nodes(
-        &document,
-        &templates,
-        &TypeRegistry::core(),
-        &providers(),
-        &origin(),
-    );
+    let report = validate_nodes(&document, &registry(), &overlays);
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     assert_eq!(
         report.resolved[&NODE_A.parse().unwrap()].ports[0]
@@ -159,8 +167,8 @@ fn config_edit_after_overlay_capture_is_metadata_stale_and_unresolved() {
         vec![node(NODE_A, json!({"mode":"before"}), &snapshot)],
         std::slice::from_ref(&snapshot),
     );
-    let mut templates = TemplateCatalog::default();
-    templates
+    let mut overlays = NodeOverlays::default();
+    overlays
         .insert_node(
             &document,
             document.node(NODE_A.parse().unwrap()).unwrap(),
@@ -175,13 +183,7 @@ fn config_edit_after_overlay_capture_is_metadata_stale_and_unresolved() {
         }])
         .unwrap();
 
-    let report = validate_nodes(
-        &document,
-        &templates,
-        &TypeRegistry::core(),
-        &providers(),
-        &origin(),
-    );
+    let report = validate_nodes(&document, &registry(), &overlays);
     let id = NODE_A.parse().unwrap();
     assert_eq!(
         report

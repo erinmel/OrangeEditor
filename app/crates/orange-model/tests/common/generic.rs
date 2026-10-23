@@ -3,14 +3,18 @@
 
 use std::sync::{Arc, LazyLock};
 
-use orange_model::catalog::{NodeContract, TypeArgs};
+use orange_model::catalog::{
+    NodeContract, NodeDefinition, ProviderDescriptor, ProviderKey, RegistryBuilder,
+    RegistrySnapshot, TypeArgs,
+};
 use orange_model::conversion::{
     ConnectionOutcome, ConnectionPlan, ConnectionRequest, ConverterKey, ConverterProvider,
     ConverterRegistry, ConverterRegistryBuilder, PackageProvider, plan_connection,
 };
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::inference::TemplateCatalog;
+use orange_model::inference::NodeOverlays;
 use orange_model::types::TypeRegistry;
+use orange_model::validation::HostOrigin;
 use orange_model::{GraphDocument, from_json};
 use serde_json::{Value as Json, json};
 
@@ -24,16 +28,6 @@ pub fn port(port_id: &str, direction: &str, ty: &str) -> PortDescriptor {
         json!({"port_id": port_id, "direction": direction, "kind": "data", "type": ty}),
     )
     .unwrap()
-}
-
-/// `org.test/add<T: num>(a: T, b: T) -> sum: T`, optionally limited to listed specializations.
-/// The unrestricted catalog is one shared host catalog, so plans made with it stay current.
-pub fn catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
-    static HOST: LazyLock<TemplateCatalog> = LazyLock::new(|| build_catalog(None));
-    match specializations {
-        None => HOST.clone(),
-        Some(_) => build_catalog(specializations),
-    }
 }
 
 /// The `org.test/add` definition version 1.
@@ -52,28 +46,72 @@ pub fn only(types: &[&str]) -> Vec<TypeArgs> {
         .collect()
 }
 
-fn build_catalog(specializations: Option<Vec<&str>>) -> TemplateCatalog {
-    let mut catalog = TemplateCatalog::default();
-    catalog.insert(
-        add_definition(),
-        NodeContract {
-            kind: NodeKind::Pure,
-            suspends: None,
-            type_params: vec![
-                serde_json::from_value::<TypeParam>(json!({"name": "T", "constraints": ["num"]}))
+pub fn origin() -> HostOrigin {
+    HostOrigin::new("1.0.0", format!("sha256:{}", "0".repeat(64))).unwrap()
+}
+
+/// No node overlays: definitions come from the registry alone.
+pub fn no_overlays() -> NodeOverlays {
+    NodeOverlays::default()
+}
+
+/// `org.test/add<T: num>(a: T, b: T) -> sum: T` as a registry builder over `converters`,
+/// optionally limited to listed specializations.
+pub fn registry_builder(
+    converters: Arc<ConverterRegistry>,
+    specializations: Option<Vec<&str>>,
+) -> RegistryBuilder {
+    RegistryBuilder::core(origin())
+        .converters(converters)
+        .definition(NodeDefinition {
+            definition: add_definition(),
+            config_version: 1,
+            contract: NodeContract {
+                kind: NodeKind::Pure,
+                suspends: None,
+                type_params: vec![
+                    serde_json::from_value::<TypeParam>(
+                        json!({"name": "T", "constraints": ["num"]}),
+                    )
                     .unwrap(),
-            ],
-            ports: vec![
-                port("a", "input", "$T"),
-                port("b", "input", "$T"),
-                port("sum", "output", "$T"),
-            ],
-        },
-    );
-    if let Some(types) = specializations {
-        catalog.insert_specializations(add_definition(), None, only(&types));
+                ],
+                ports: vec![
+                    port("a", "input", "$T"),
+                    port("b", "input", "$T"),
+                    port("sum", "output", "$T"),
+                ],
+            },
+            specializations: specializations.map(|types| only(&types)),
+            config_schema: None,
+        })
+}
+
+/// The registry over `converters` with `org.test/add`; a new snapshot on every call.
+pub fn registry_with(
+    converters: Arc<ConverterRegistry>,
+    specializations: Option<Vec<&str>>,
+) -> Arc<RegistrySnapshot> {
+    registry_builder(converters, specializations)
+        .build()
+        .unwrap()
+}
+
+/// Core converters, with `org.test/add` optionally limited to listed specializations. The
+/// unrestricted registry is one shared host snapshot, so plans made with it stay current.
+pub fn registry(specializations: Option<Vec<&str>>) -> Arc<RegistrySnapshot> {
+    static HOST: LazyLock<Arc<RegistrySnapshot>> =
+        LazyLock::new(|| registry_with(core_converters(), None));
+    match specializations {
+        None => Arc::clone(&HOST),
+        Some(_) => registry_with(core_converters(), specializations),
     }
-    catalog
+}
+
+/// The shared host snapshot over the package converters of [`package_converters`].
+pub fn package_registry() -> Arc<RegistrySnapshot> {
+    static HOST: LazyLock<Arc<RegistrySnapshot>> =
+        LazyLock::new(|| registry_with(package_converters(), None));
+    Arc::clone(&HOST)
 }
 
 pub fn add(n: u8, extra: Json) -> Json {
@@ -187,7 +225,7 @@ fn builder() -> ConverterRegistryBuilder {
 /// The plan connecting `from` to `to`; panics unless the planner answers `Ready`.
 pub fn ready_plan(
     doc: &GraphDocument,
-    converters: &ConverterRegistry,
+    registry: &RegistrySnapshot,
     from: (u8, &str),
     to: (u8, &str),
 ) -> ConnectionPlan {
@@ -196,8 +234,35 @@ pub fn ready_plan(
         to: port_ref(to.0, to.1),
         choice: None,
     };
-    match plan_connection(doc, converters, &catalog(None), request, id_source(5)).unwrap() {
+    match plan_connection(doc, registry, &no_overlays(), request, id_source(5)).unwrap() {
         ConnectionOutcome::Ready(plan) => *plan,
         other => panic!("expected a plan, got {other:?}"),
     }
+}
+
+/// The core-converter registry with `provider` implementing `org.test/add`.
+pub fn registry_with_provider(provider: ProviderKey) -> Arc<RegistrySnapshot> {
+    registry_builder(core_converters(), None)
+        .provider(ProviderDescriptor {
+            key: provider,
+            implements: [(add_definition(), 1)].into(),
+            specializations: Default::default(),
+        })
+        .build()
+        .unwrap()
+}
+
+/// The core-converter registry where `provider` limits `org.test/add` to `supported`.
+pub fn registry_with_provider_specializations(
+    provider: ProviderKey,
+    supported: Vec<TypeArgs>,
+) -> Arc<RegistrySnapshot> {
+    registry_builder(core_converters(), None)
+        .provider(ProviderDescriptor {
+            key: provider,
+            implements: Default::default(),
+            specializations: [(add_definition(), supported)].into(),
+        })
+        .build()
+        .unwrap()
 }

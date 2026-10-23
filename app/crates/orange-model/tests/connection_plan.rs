@@ -3,7 +3,7 @@
 mod common;
 
 use common::generic::{
-    add, catalog, core_converters, data_edge, document, source, typed_sink, typed_source,
+    add, data_edge, document, no_overlays, registry, source, typed_sink, typed_source,
 };
 use common::{content, eid, id_source, nid, port};
 use orange_model::conversion::{
@@ -11,7 +11,6 @@ use orange_model::conversion::{
     SelectionRejection,
 };
 use orange_model::inference::{InferenceIssue, plan_edit};
-use orange_model::types::TypeRegistry;
 use orange_model::{DocCommand, GraphDocument};
 use serde_json::json;
 
@@ -30,8 +29,8 @@ fn plan(
     let mut ids = id_source(3);
     orange_model::conversion::plan_connection(
         doc,
-        &core_converters(),
-        &catalog(None),
+        &registry(None),
+        &no_overlays(),
         request,
         &mut ids,
     )
@@ -70,8 +69,8 @@ fn a_unique_lossless_entry_plans_a_visible_converter_with_fresh_identities() {
     let mut source = id_source(3);
     let outcome = orange_model::conversion::plan_connection(
         &doc,
-        &core_converters(),
-        &catalog(None),
+        &registry(None),
+        &no_overlays(),
         request((1, "value"), (3, "value")),
         || {
             calls += 1;
@@ -220,7 +219,7 @@ fn generic_endpoints_connect_directly_and_carry_their_inferred_updates() {
 
     // The plan is the edit plus `plan_edit`'s updates, nothing else.
     let edit = vec![first.clone()];
-    let expected = plan_edit(&doc, edit, &catalog(None), &TypeRegistry::core()).unwrap();
+    let expected = plan_edit(&doc, edit, &registry(None), &no_overlays()).unwrap();
     assert_eq!(plan.commands(), expected.commands.as_slice());
 }
 
@@ -251,11 +250,11 @@ fn incompatible_connections_are_refused_independently_of_cached_arguments() {
 
     // A constraint or specialization failure is a conflict too.
     let doc = document(vec![typed_source(4, "f64"), add(2, json!({}))], vec![]);
-    let only_i64 = catalog(Some(vec!["core/i64@1"]));
+    let only_i64 = registry(Some(vec!["core/i64@1"]));
     let refused = orange_model::conversion::plan_connection(
         &doc,
-        &core_converters(),
         &only_i64,
+        &no_overlays(),
         request((4, "value"), (2, "a")),
         id_source(3),
     );

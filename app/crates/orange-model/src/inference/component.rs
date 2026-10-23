@@ -18,13 +18,13 @@ use super::unify::{
     TypeScopeError, TypeVariable, UnificationError, unify,
 };
 use crate::GraphDocument;
-use crate::catalog::{NodeContract, ProviderKey, TypeArgs};
+use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs};
 use crate::document::{
     DefinitionRef, GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, TypeParam,
     TypeParamName,
 };
 use crate::error::IdError;
-use crate::id::{DefinitionId, EdgeId, FunctionId, NodeId, TypeExpr, VariableId};
+use crate::id::{EdgeId, FunctionId, NodeId, TypeExpr, VariableId};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
 use crate::types::{
@@ -32,34 +32,23 @@ use crate::types::{
     TypeResolveError,
 };
 
-/// Generic templates by definition identity and version, supplied by the host registry.
+/// Trusted, ephemeral host overlays for concrete graph nodes, consulted before the
+/// registry's definition contract. The stored definition identity prevents an overlay
+/// surviving a definition-identity rebind or version change.
 #[derive(Debug, Clone, Default)]
-pub struct TemplateCatalog {
-    templates: BTreeMap<(DefinitionId, u32), NodeContract>,
-    /// Trusted, ephemeral host overlays for one concrete graph node. The stored definition
-    /// identity prevents an overlay surviving a definition-identity rebind or version change.
-    node_templates: BTreeMap<NodeId, (DefinitionRef, [u8; 32], NodeContract)>,
-    /// Exact supported argument sets per definition version and provider (`None` = core).
-    /// A provider without a list delegates to constraint implementations.
-    specializations: BTreeMap<(DefinitionId, u32, Option<ProviderKey>), Vec<TypeArgs>>,
-    generation: u64,
+pub struct NodeOverlays {
+    nodes: BTreeMap<NodeId, (DefinitionRef, [u8; 32], NodeContract)>,
 }
 
-impl TemplateCatalog {
-    pub fn insert(&mut self, definition: DefinitionRef, template: NodeContract) {
-        self.templates
-            .insert((definition.id, definition.version), template);
-        self.generation = crate::id::process_unique();
-    }
-
-    /// Installs a host-trusted template for one node without changing ordinary definition
-    /// lookup or provider specialization identities. This is ephemeral evidence for the
-    /// current document snapshot: rebuild it after config, provider, lock, or body changes.
+impl NodeOverlays {
+    /// Installs a host-trusted contract for one node without changing ordinary definition
+    /// lookup. This is ephemeral evidence for the current document snapshot: rebuild it
+    /// after config, provider, lock, or body changes.
     pub fn insert_node(
         &mut self,
         document: &GraphDocument,
         node: &NodeInstance,
-        template: NodeContract,
+        contract: NodeContract,
     ) -> Result<(), StaleNodeTemplate> {
         let Some(current) = document.node(node.id) else {
             return Err(StaleNodeTemplate { node: node.id });
@@ -69,86 +58,70 @@ impl TemplateCatalog {
         }
         let definition = node.definition.clone();
         let freshness = metadata_fingerprint(document, current)?;
-        self.node_templates
-            .insert(node.id, (definition, freshness, template));
-        self.generation = crate::id::process_unique();
+        self.nodes
+            .insert(node.id, (definition, freshness, contract));
         Ok(())
     }
 
-    /// Limits one exact provider (`None` = core) of `definition` to the listed argument sets.
-    pub fn insert_specializations(
-        &mut self,
-        definition: DefinitionRef,
-        provider: Option<ProviderKey>,
-        supported: Vec<TypeArgs>,
-    ) {
-        self.specializations
-            .insert((definition.id, definition.version, provider), supported);
-        self.generation = crate::id::process_unique();
-    }
-
-    /// The argument sets `provider` supports, or `None` when it delegates to constraints.
-    pub fn specializations(
-        &self,
-        definition: &DefinitionRef,
-        provider: Option<&ProviderKey>,
-    ) -> Option<&[TypeArgs]> {
-        self.specializations
-            .get(&(definition.id.clone(), definition.version, provider.cloned()))
-            .map(Vec::as_slice)
-    }
-
-    /// Identity of the current contents: zero while empty, process-unique after every
-    /// insert and kept by clones. Connection plans record it, so a plan made against
-    /// other templates is stale.
-    pub fn generation(&self) -> u64 {
-        self.generation
-    }
-
-    pub fn get(&self, definition: &DefinitionRef) -> Option<&NodeContract> {
-        self.templates
-            .get(&(definition.id.clone(), definition.version))
-    }
-
     /// Returns a node overlay only while its metadata fingerprint still matches. If that
-    /// node has no overlay, falls back to the ordinary definition catalog; stale overlays
-    /// return an error instead of falling back. The caller must keep the catalog scoped to
-    /// the document metadata from which its overlays were derived.
-    pub fn get_for_node(
+    /// node has no overlay, falls back to the registry's definition contract; stale
+    /// overlays return an error instead of falling back. The caller must keep the overlays
+    /// scoped to the document metadata from which they were derived.
+    pub fn get_for_node<'a>(
+        &'a self,
+        registry: &'a RegistrySnapshot,
+        document: &GraphDocument,
+        node: &NodeInstance,
+    ) -> Result<Option<&'a NodeContract>, StaleNodeTemplate> {
+        if let Some(contract) = self.overlay(document, node)? {
+            return Ok(Some(contract));
+        }
+        Ok(registry
+            .definition(&node.definition)
+            .map(|definition| &definition.contract))
+    }
+
+    /// The node's own overlay, if any, while its fingerprint still matches.
+    fn overlay(
         &self,
         document: &GraphDocument,
         node: &NodeInstance,
     ) -> Result<Option<&NodeContract>, StaleNodeTemplate> {
-        if let Some((definition, expected, template)) = self.node_templates.get(&node.id) {
-            let Some(current) = document.node(node.id) else {
-                return Err(StaleNodeTemplate { node: node.id });
-            };
-            let actual = metadata_fingerprint(document, current)?;
-            if definition != &current.definition
-                || !node_metadata_matches(node, current)
-                || actual != *expected
-            {
-                return Err(StaleNodeTemplate { node: node.id });
-            }
-            return Ok(Some(template));
+        let Some((definition, expected, contract)) = self.nodes.get(&node.id) else {
+            return Ok(None);
+        };
+        let Some(current) = document.node(node.id) else {
+            return Err(StaleNodeTemplate { node: node.id });
+        };
+        let actual = metadata_fingerprint(document, current)?;
+        if definition != &current.definition
+            || !node_metadata_matches(node, current)
+            || actual != *expected
+        {
+            return Err(StaleNodeTemplate { node: node.id });
         }
-        Ok(self.get(&node.definition))
+        Ok(Some(contract))
     }
 
-    /// The template of a node whose definition declares at least one type parameter.
-    fn generic(&self, document: &GraphDocument, node: &NodeInstance) -> Option<&NodeContract> {
-        self.get_for_node(document, node)
+    /// The contract of a node whose definition declares at least one type parameter.
+    fn generic<'a>(
+        &'a self,
+        registry: &'a RegistrySnapshot,
+        document: &GraphDocument,
+        node: &NodeInstance,
+    ) -> Option<&'a NodeContract> {
+        self.get_for_node(registry, document, node)
             .ok()
             .flatten()
-            .filter(|template| !template.type_params.is_empty())
+            .filter(|contract| !contract.type_params.is_empty())
     }
 
     /// Fails on the first stale overlay in stable NodeId order. Removed nodes are ignored:
     /// their overlays cannot be consulted by inference for this document.
     pub fn ensure_fresh(&self, document: &GraphDocument) -> Result<(), StaleNodeTemplate> {
-        for id in self.node_templates.keys() {
+        for id in self.nodes.keys() {
             if let Some(node) = document.node(*id) {
-                self.get_for_node(document, node)?;
+                self.overlay(document, node)?;
             }
         }
         Ok(())
@@ -362,10 +335,10 @@ pub fn infer_components(
     document: &GraphDocument,
     index: &DocIndex,
     touched: impl IntoIterator<Item = NodeId>,
-    templates: &TemplateCatalog,
-    types: &TypeRegistry,
+    registry: &RegistrySnapshot,
+    overlays: &NodeOverlays,
 ) -> Vec<ComponentInference> {
-    if let Err(stale) = templates.ensure_fresh(document) {
+    if let Err(stale) = overlays.ensure_fresh(document) {
         return vec![ComponentInference {
             nodes: BTreeSet::from([stale.node]),
             type_args: BTreeMap::new(),
@@ -375,7 +348,8 @@ pub fn infer_components(
     let graph = Graph {
         document,
         index,
-        templates,
+        registry,
+        overlays,
     };
     let mut seeds = BTreeSet::new();
     for node in touched {
@@ -393,7 +367,7 @@ pub fn infer_components(
         }
         let nodes = graph.component(seed);
         visited.extend(nodes.iter().copied());
-        components.push(graph.solve(nodes, types));
+        components.push(graph.solve(nodes, registry.types()));
     }
     components
 }
@@ -401,7 +375,8 @@ pub fn infer_components(
 struct Graph<'a> {
     document: &'a GraphDocument,
     index: &'a DocIndex,
-    templates: &'a TemplateCatalog,
+    registry: &'a RegistrySnapshot,
+    overlays: &'a NodeOverlays,
 }
 
 /// A port's type as seen by inference: scoped to its node when generic, concrete otherwise.
@@ -415,7 +390,10 @@ impl Graph<'_> {
 
     fn generic(&self, id: NodeId) -> Option<(&NodeInstance, &NodeContract)> {
         let (_, node) = self.node(id)?;
-        Some((node, self.templates.generic(self.document, node)?))
+        Some((
+            node,
+            self.overlays.generic(self.registry, self.document, node)?,
+        ))
     }
 
     /// True unless the node's exact provider lists its supported argument sets and `args` is
@@ -429,7 +407,7 @@ impl Graph<'_> {
                 None => return true,
             },
         };
-        self.templates
+        self.registry
             .specializations(&node.definition, provider.as_ref())
             .is_none_or(|supported| supported.contains(args))
     }
@@ -481,7 +459,7 @@ impl Graph<'_> {
     }
 
     fn declared_port(&self, port: &PortRef) -> Option<&PortDescriptor> {
-        declared_port(self.document, self.templates, port)
+        declared_port(self.document, self.registry, self.overlays, port)
     }
 
     fn edge_links_variables(&self, from: &PortRef, to: &PortRef) -> bool {
@@ -652,11 +630,12 @@ impl Graph<'_> {
 /// generic port's type may still mention `$name` parameters.
 pub(crate) fn declared_port<'a>(
     document: &'a GraphDocument,
-    templates: &'a TemplateCatalog,
+    registry: &'a RegistrySnapshot,
+    overlays: &'a NodeOverlays,
     port: &PortRef,
 ) -> Option<&'a PortDescriptor> {
     let node = document.node(port.node)?;
-    let ports = match templates.get_for_node(document, node) {
+    let ports = match overlays.get_for_node(registry, document, node) {
         Ok(Some(template)) => &template.ports,
         Ok(None) => &document.signatures().get(node.signature.as_ref()?)?.ports,
         Err(_) => return None,

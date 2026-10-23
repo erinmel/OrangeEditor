@@ -4,6 +4,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
+use crate::catalog::RegistrySnapshot;
 use crate::document::{GraphDocument, NodeKind, SignatureSnapshot, Suspends, VarScope};
 use crate::id::{FunctionId, NodeId, VariableId};
 
@@ -117,8 +118,9 @@ impl KindRank {
 pub fn analyze_functions(
     document: &GraphDocument,
     evidence: &FunctionEvidence,
-    origin: &HostOrigin,
+    registry: &RegistrySnapshot,
 ) -> FunctionAnalysis {
+    let origin = registry.origin();
     let mut result = FunctionAnalysis::default();
     if evidence.document_state != document.state_id() {
         for function_id in document.functions().keys().copied() {

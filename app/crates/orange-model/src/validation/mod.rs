@@ -26,7 +26,7 @@ pub use diagnostic::{
 
 pub use connections::{ConnectionValidation, validate_connections};
 pub use inputs::validate_inputs;
-pub use nodes::{NodeValidation, ProviderCatalog, validate_nodes};
+pub use nodes::{NodeValidation, validate_nodes};
 
 pub use functions::{
     FunctionAnalysis, FunctionEvidence, FunctionSummary, LeafEffects, VariableWrite,

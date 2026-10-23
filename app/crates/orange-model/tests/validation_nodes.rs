@@ -1,8 +1,10 @@
+mod common;
+
+use common::registry::Facts;
 use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::inference::TemplateCatalog;
-use orange_model::types::TypeRegistry;
-use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
+use orange_model::inference::NodeOverlays;
+use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use orange_model::{GraphDocument, to_json};
 use serde_json::{Value, json};
 
@@ -94,12 +96,11 @@ fn concrete_contract() -> NodeContract {
     }
 }
 
-fn setup(id: &str) -> (TemplateCatalog, ProviderCatalog) {
-    let mut templates = TemplateCatalog::default();
-    templates.insert(definition(), concrete_contract());
-    let mut providers = ProviderCatalog::default();
-    providers.insert(definition(), 1, provider(id, DIGEST));
-    (templates, providers)
+fn setup(id: &str) -> Facts {
+    let mut facts = Facts::new(origin());
+    facts.definition(definition(), concrete_contract());
+    facts.provider(definition(), 1, provider(id, DIGEST));
+    facts
 }
 
 fn codes(report: &orange_model::validation::NodeValidation) -> Vec<DiagnosticCode> {
@@ -108,25 +109,20 @@ fn codes(report: &orange_model::validation::NodeValidation) -> Vec<DiagnosticCod
 
 #[test]
 fn distinct_provider_id_and_digest_are_required() {
-    let (templates, providers) = setup("implementation-a");
+    let facts = setup("implementation-a");
     let doc = document(
         Some(binding("implementation-b")),
         true,
         Some(snapshot("core/i64@1")),
         json!({}),
     );
-    let report = validate_nodes(
-        &doc,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
-    );
+    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
     assert_eq!(codes(&report), vec![DiagnosticCode::ProviderUnavailable]);
     assert!(report.resolved.is_empty());
 
-    let mut providers = ProviderCatalog::default();
-    providers.insert(
+    let mut facts = Facts::new(origin());
+    facts.definition(definition(), concrete_contract());
+    facts.provider(
         definition(),
         1,
         provider("implementation-a", &format!("sha256:{}", "d".repeat(64))),
@@ -137,26 +133,18 @@ fn distinct_provider_id_and_digest_are_required() {
         Some(snapshot("core/i64@1")),
         json!({}),
     );
-    let report = validate_nodes(
-        &doc,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
-    );
+    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
     assert_eq!(codes(&report), vec![DiagnosticCode::ProviderUnavailable]);
 }
 
 #[test]
 fn primary_resolution_errors_do_not_cascade_or_fall_back_to_core() {
-    let (templates, providers) = setup("implementation-a");
+    let facts = setup("implementation-a");
     let missing_provider = document(None, true, Some(snapshot("core/i64@1")), json!({}));
     let report = validate_nodes(
         &missing_provider,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
+        &facts.snapshot(),
+        &NodeOverlays::default(),
     );
     assert_eq!(codes(&report), vec![DiagnosticCode::ProviderMissing]);
     assert!(report.resolved.is_empty());
@@ -167,22 +155,14 @@ fn primary_resolution_errors_do_not_cascade_or_fall_back_to_core() {
         Some(snapshot("core/i64@1")),
         json!({}),
     );
-    let report = validate_nodes(
-        &missing_lock,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
-    );
+    let report = validate_nodes(&missing_lock, &facts.snapshot(), &NodeOverlays::default());
     assert_eq!(codes(&report), vec![DiagnosticCode::PackageLockMissing]);
 
     let missing_signature = document(Some(binding("implementation-a")), true, None, json!({}));
     let report = validate_nodes(
         &missing_signature,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
+        &facts.snapshot(),
+        &NodeOverlays::default(),
     );
     assert_eq!(codes(&report), vec![DiagnosticCode::SignatureMissing]);
 }
@@ -197,13 +177,13 @@ fn generic_resolution_uses_fresh_evidence_instead_of_cached_type_args() {
         }]})),
         json!({"value":{"type":"core/i64@1","value":3}}),
     );
-    let mut templates = TemplateCatalog::default();
+    let mut facts = Facts::new(origin());
     let mut port: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
     port.extensions = Default::default();
-    templates.insert(
+    facts.definition(
         definition(),
         NodeContract {
             kind: NodeKind::Pure,
@@ -216,15 +196,8 @@ fn generic_resolution_uses_fresh_evidence_instead_of_cached_type_args() {
             ports: vec![port],
         },
     );
-    let mut providers = ProviderCatalog::default();
-    providers.insert(definition(), 1, provider("implementation-a", DIGEST));
-    let report = validate_nodes(
-        &doc,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
-    );
+    facts.provider(definition(), 1, provider("implementation-a", DIGEST));
+    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
     assert_eq!(codes(&report), vec![DiagnosticCode::SignatureDrift]);
     assert_eq!(
         report.resolved[&NODE.parse().unwrap()].ports[0]
@@ -238,7 +211,7 @@ fn generic_resolution_uses_fresh_evidence_instead_of_cached_type_args() {
 
 #[test]
 fn validation_does_not_change_document_content_or_revision() {
-    let (templates, providers) = setup("implementation-a");
+    let facts = setup("implementation-a");
     let doc = document(
         Some(binding("implementation-a")),
         true,
@@ -248,13 +221,7 @@ fn validation_does_not_change_document_content_or_revision() {
     let before = to_json(&doc).unwrap();
     let revision = doc.revision();
     let state_id = doc.state_id();
-    let _ = validate_nodes(
-        &doc,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
-    );
+    let _ = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
     assert_eq!(to_json(&doc).unwrap(), before);
     assert_eq!(doc.revision(), revision);
     assert_eq!(doc.state_id(), state_id);
@@ -279,10 +246,8 @@ fn host_intrinsics_resolve_without_snapshots_but_reject_package_overrides() {
     let doc: GraphDocument = serde_json::from_value(value.clone()).unwrap();
     let report = validate_nodes(
         &doc,
-        &TemplateCatalog::default(),
-        &TypeRegistry::core(),
-        &ProviderCatalog::default(),
-        &origin(),
+        &Facts::new(origin()).snapshot(),
+        &NodeOverlays::default(),
     );
     assert!(report.diagnostics.is_empty(), "{:?}", report.diagnostics);
     assert!(report.resolved.contains_key(&NODE.parse().unwrap()));
@@ -292,10 +257,8 @@ fn host_intrinsics_resolve_without_snapshots_but_reject_package_overrides() {
     let doc: GraphDocument = serde_json::from_value(overridden).unwrap();
     let report = validate_nodes(
         &doc,
-        &TemplateCatalog::default(),
-        &TypeRegistry::core(),
-        &ProviderCatalog::default(),
-        &origin(),
+        &Facts::new(origin()).snapshot(),
+        &NodeOverlays::default(),
     );
     assert_eq!(codes(&report), vec![DiagnosticCode::ProviderUnavailable]);
     assert!(report.resolved.is_empty());
@@ -334,8 +297,8 @@ fn intrinsic_data_port_supplies_fresh_generic_inference_evidence() {
             {"port_id":"value","direction":"input","kind":"data","type":"$T"}
         ]}}
     })).unwrap();
-    let mut templates = TemplateCatalog::default();
-    templates.insert(
+    let mut facts = Facts::new(origin());
+    facts.definition(
         definition(),
         NodeContract {
             kind: NodeKind::Pure,
@@ -353,15 +316,8 @@ fn intrinsic_data_port_supplies_fresh_generic_inference_evidence() {
             ],
         },
     );
-    let mut providers = ProviderCatalog::default();
-    providers.insert(definition(), 1, provider("implementation-a", DIGEST));
-    let report = validate_nodes(
-        &doc,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
-    );
+    facts.provider(definition(), 1, provider("implementation-a", DIGEST));
+    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
     assert_eq!(codes(&report), vec![DiagnosticCode::SignatureDrift]);
     assert!(report.incomplete_nodes.is_empty());
     assert_eq!(
@@ -399,8 +355,8 @@ fn combined_template_and_argument_depth_is_a_complexity_diagnostic() {
         }]}}
     }))
     .unwrap();
-    let mut templates = TemplateCatalog::default();
-    templates.insert(
+    let mut facts = Facts::new(origin());
+    facts.definition(
         definition(),
         NodeContract {
             kind: NodeKind::Pure,
@@ -419,15 +375,8 @@ fn combined_template_and_argument_depth_is_a_complexity_diagnostic() {
             ],
         },
     );
-    let mut providers = ProviderCatalog::default();
-    providers.insert(definition(), 1, provider("implementation-a", DIGEST));
-    let report = validate_nodes(
-        &doc,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin(),
-    );
+    facts.provider(definition(), 1, provider("implementation-a", DIGEST));
+    let report = validate_nodes(&doc, &facts.snapshot(), &NodeOverlays::default());
     assert_eq!(codes(&report), vec![DiagnosticCode::TypeComplexity]);
     assert!(report.resolved.is_empty());
     assert!(report.incomplete_nodes.contains(&NODE.parse().unwrap()));

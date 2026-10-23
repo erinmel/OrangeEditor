@@ -2,14 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::{NodeContract, ProviderKey, TypeArgs};
-use crate::document::{
-    DefinitionRef, GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends,
-};
+use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs};
+use crate::document::{GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends};
 use crate::error::IdError;
-use crate::id::{DefinitionId, NodeId, PortId, PortKey};
+use crate::id::{NodeId, PortId, PortKey};
 use crate::index::DocIndex;
-use crate::inference::{InferenceIssue, TemplateCatalog, infer_components};
+use crate::inference::{InferenceIssue, NodeOverlays, infer_components};
 use crate::signature;
 use crate::type_term::TypeTerm;
 use crate::types::{TypeRegistry, TypeResolveError};
@@ -18,55 +16,6 @@ use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
 use super::ports::{implicit_port, intrinsic_snapshot, is_intrinsic_definition};
-
-/// Host evidence that an exact package implementation is available for a declarative
-/// definition contract. This records availability only; it does not authenticate packages
-/// or execute their code.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct ProviderAvailability {
-    definition_id: DefinitionId,
-    definition_version: u32,
-    config_version: u32,
-    provider: ProviderKey,
-}
-
-/// Exact provider availability supplied by the embedding host.
-#[derive(Debug, Clone, Default)]
-pub struct ProviderCatalog {
-    available: BTreeSet<ProviderAvailability>,
-}
-
-impl ProviderCatalog {
-    /// Records that `provider` implements this definition/config contract.
-    pub fn insert(
-        &mut self,
-        definition: DefinitionRef,
-        config_version: u32,
-        provider: ProviderKey,
-    ) {
-        self.available.insert(ProviderAvailability {
-            definition_id: definition.id,
-            definition_version: definition.version,
-            config_version,
-            provider,
-        });
-    }
-
-    /// Whether the exact definition version, config version, and locked provider exists.
-    pub fn contains(
-        &self,
-        definition: &DefinitionRef,
-        config_version: u32,
-        provider: &ProviderKey,
-    ) -> bool {
-        self.available.contains(&ProviderAvailability {
-            definition_id: definition.id.clone(),
-            definition_version: definition.version,
-            config_version,
-            provider: provider.clone(),
-        })
-    }
-}
 
 /// Results of resolving nodes against immutable host metadata.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -92,11 +41,11 @@ impl NodeValidation {
 struct NodePass<'a> {
     document: &'a GraphDocument,
     index: &'a DocIndex,
-    contracts: &'a TemplateCatalog,
-    inference_contracts: &'a TemplateCatalog,
+    registry: &'a RegistrySnapshot,
+    contracts: &'a NodeOverlays,
+    inference_contracts: &'a NodeOverlays,
     eligible: &'a BTreeSet<NodeId>,
     ids: &'a [NodeId],
-    types: &'a TypeRegistry,
     origin: &'a HostOrigin,
 }
 
@@ -105,48 +54,48 @@ struct NodePass<'a> {
 /// declarative host inputs; package code is not loaded or executed.
 pub fn validate_nodes(
     document: &GraphDocument,
-    templates: &TemplateCatalog,
-    types: &TypeRegistry,
-    providers: &ProviderCatalog,
-    origin: &HostOrigin,
+    registry: &RegistrySnapshot,
+    overlays: &NodeOverlays,
 ) -> NodeValidation {
+    let origin = registry.origin();
     let mut report = NodeValidation::default();
     let mut diagnostics = Vec::new();
     let ids = node_ids(document);
     let (contracts, eligible) = resolve_contracts(
         document,
-        templates,
-        providers,
+        registry,
+        overlays,
         &ids,
         origin,
         &mut report,
         &mut diagnostics,
     );
     let index = DocIndex::build(document);
-    let inference_contracts = match inference_catalog(document, &contracts, &eligible, &ids) {
-        Ok(catalog) => catalog,
-        Err(stale) => {
-            unresolved(
-                stale.node,
-                DiagnosticCode::MetadataStale,
-                origin,
-                &mut report,
-                &mut diagnostics,
-            );
-            report.incomplete_nodes.extend(eligible);
-            sort_diagnostics(&mut diagnostics);
-            report.diagnostics = diagnostics;
-            return report;
-        }
-    };
+    let inference_contracts =
+        match inference_catalog(document, registry, &contracts, &eligible, &ids) {
+            Ok(catalog) => catalog,
+            Err(stale) => {
+                unresolved(
+                    stale.node,
+                    DiagnosticCode::MetadataStale,
+                    origin,
+                    &mut report,
+                    &mut diagnostics,
+                );
+                report.incomplete_nodes.extend(eligible);
+                sort_diagnostics(&mut diagnostics);
+                report.diagnostics = diagnostics;
+                return report;
+            }
+        };
     let pass = NodePass {
         document,
         index: &index,
+        registry,
         contracts: &contracts,
         inference_contracts: &inference_contracts,
         eligible: &eligible,
         ids: &ids,
-        types,
         origin,
     };
     let fresh_args = infer_fresh_args(&pass, &mut report, &mut diagnostics);
@@ -168,14 +117,14 @@ fn node_ids(document: &GraphDocument) -> Vec<NodeId> {
 
 fn resolve_contracts(
     document: &GraphDocument,
-    templates: &TemplateCatalog,
-    providers: &ProviderCatalog,
+    registry: &RegistrySnapshot,
+    overlays: &NodeOverlays,
     ids: &[NodeId],
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
-) -> (TemplateCatalog, BTreeSet<NodeId>) {
-    let mut contracts = templates.clone();
+) -> (NodeOverlays, BTreeSet<NodeId>) {
+    let mut contracts = overlays.clone();
     let mut eligible = BTreeSet::new();
     for id in ids {
         let Some(node) = document.node(*id) else {
@@ -184,7 +133,7 @@ fn resolve_contracts(
         if preflight_node(
             document,
             node,
-            providers,
+            registry,
             &mut contracts,
             origin,
             report,
@@ -199,13 +148,13 @@ fn resolve_contracts(
 fn preflight_node(
     document: &GraphDocument,
     node: &crate::document::NodeInstance,
-    providers: &ProviderCatalog,
-    contracts: &mut TemplateCatalog,
+    registry: &RegistrySnapshot,
+    contracts: &mut NodeOverlays,
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> bool {
-    if contracts.get_for_node(document, node).is_err() {
+    if contracts.get_for_node(registry, document, node).is_err() {
         unresolved(
             node.id,
             DiagnosticCode::MetadataStale,
@@ -307,7 +256,7 @@ fn preflight_node(
         );
         return false;
     };
-    let Ok(Some(contract)) = contracts.get_for_node(document, node) else {
+    let Ok(Some(contract)) = contracts.get_for_node(registry, document, node) else {
         unresolved(
             node.id,
             DiagnosticCode::ProviderUnavailable,
@@ -321,7 +270,7 @@ fn preflight_node(
         unresolved(node.id, code, origin, report, diagnostics);
         return false;
     }
-    if !providers.contains(&node.definition, node.config_version, &provider) {
+    if !registry.provides(&node.definition, node.config_version, &provider) {
         unresolved(
             node.id,
             DiagnosticCode::ProviderUnavailable,
@@ -357,16 +306,17 @@ fn suspension_contract_issue(
 
 fn inference_catalog(
     document: &GraphDocument,
-    contracts: &TemplateCatalog,
+    registry: &RegistrySnapshot,
+    contracts: &NodeOverlays,
     eligible: &BTreeSet<NodeId>,
     ids: &[NodeId],
-) -> Result<TemplateCatalog, crate::inference::StaleNodeTemplate> {
+) -> Result<NodeOverlays, crate::inference::StaleNodeTemplate> {
     let mut catalog = contracts.clone();
     for id in ids.iter().filter(|id| eligible.contains(id)) {
         let Some(node) = document.node(*id) else {
             continue;
         };
-        let Ok(Some(contract)) = contracts.get_for_node(document, node) else {
+        let Ok(Some(contract)) = contracts.get_for_node(registry, document, node) else {
             continue;
         };
         let mut snapshot = SignatureSnapshot {
@@ -412,8 +362,8 @@ fn infer_fresh_args(
         pass.document,
         pass.index,
         pass.ids.iter().copied(),
+        pass.registry,
         pass.inference_contracts,
-        pass.types,
     );
     let mut fresh_args = BTreeMap::new();
     for component in components {
@@ -422,6 +372,7 @@ fn infer_fresh_args(
                 || touches_unresolved_data_neighbor(
                     pass.document,
                     pass.index,
+                    pass.registry,
                     pass.contracts,
                     pass.eligible,
                     *node,
@@ -451,6 +402,7 @@ fn infer_fresh_args(
         collect_component_args(
             &component,
             pass.document,
+            pass.registry,
             pass.contracts,
             pass.eligible,
             report,
@@ -488,7 +440,8 @@ fn report_component_issues(
 fn collect_component_args(
     component: &crate::inference::ComponentInference,
     document: &GraphDocument,
-    contracts: &TemplateCatalog,
+    registry: &RegistrySnapshot,
+    contracts: &NodeOverlays,
     eligible: &BTreeSet<NodeId>,
     report: &mut NodeValidation,
     fresh_args: &mut BTreeMap<NodeId, TypeArgs>,
@@ -500,7 +453,7 @@ fn collect_component_args(
         let Some(node) = document.node(*id) else {
             continue;
         };
-        let Ok(Some(contract)) = contracts.get_for_node(document, node) else {
+        let Ok(Some(contract)) = contracts.get_for_node(registry, document, node) else {
             continue;
         };
         let Some(args) = component.type_args.get(id) else {
@@ -538,7 +491,10 @@ fn project_nodes(
         let Some(node) = pass.document.node(*id) else {
             continue;
         };
-        let Ok(Some(contract)) = pass.contracts.get_for_node(pass.document, node) else {
+        let Ok(Some(contract)) = pass
+            .contracts
+            .get_for_node(pass.registry, pass.document, node)
+        else {
             continue;
         };
         let args = if contract.type_params.is_empty() {
@@ -593,7 +549,14 @@ fn project_node(
         ports,
         &BTreeMap::new(),
     );
-    if !validate_projected_types(id, &projected, pass.types, pass.origin, report, diagnostics) {
+    if !validate_projected_types(
+        id,
+        &projected,
+        pass.registry.types(),
+        pass.origin,
+        report,
+        diagnostics,
+    ) {
         return None;
     }
     if stored.is_some_and(|stored| signature::compare(stored, &projected).is_some()) {
@@ -672,7 +635,8 @@ fn substitution_error_code(error: &signature::SignatureSubstitutionError) -> Dia
 fn touches_unresolved_data_neighbor(
     document: &GraphDocument,
     index: &DocIndex,
-    contracts: &TemplateCatalog,
+    registry: &RegistrySnapshot,
+    contracts: &NodeOverlays,
     eligible: &BTreeSet<NodeId>,
     node: NodeId,
 ) -> bool {
@@ -691,18 +655,19 @@ fn touches_unresolved_data_neighbor(
         // The generic endpoint determines whether type equations can depend on the
         // unavailable neighbour. Its own metadata is available; the opposite port may
         // be implicit or belong to an unavailable definition.
-        port_kind(document, contracts, port) == Some(PortKind::Data)
+        port_kind(document, registry, contracts, port) == Some(PortKind::Data)
     })
 }
 
 fn port_kind(
     document: &GraphDocument,
-    contracts: &TemplateCatalog,
+    registry: &RegistrySnapshot,
+    contracts: &NodeOverlays,
     port: &PortRef,
 ) -> Option<PortKind> {
     let node = document.node(port.node)?;
     let ports = contracts
-        .get_for_node(document, node)
+        .get_for_node(registry, document, node)
         .ok()?
         .map(|contract| contract.ports.as_slice())
         .or_else(|| {

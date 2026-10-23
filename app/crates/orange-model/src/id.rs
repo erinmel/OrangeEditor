@@ -13,7 +13,7 @@ use crate::error::IdError;
 static NEXT_PROCESS_UNIQUE: AtomicU64 = AtomicU64::new(1);
 
 /// A process-unique, nonzero identity for document content states, converter registry
-/// snapshots and template catalog contents. `fetch_add` works on every supported toolchain
+/// and registry snapshots. `fetch_add` works on every supported toolchain
 /// (`fetch_update` is deprecated on 1.99, and `try_update` may postdate the 1.97.1 minimum).
 pub(crate) fn process_unique() -> u64 {
     let id = NEXT_PROCESS_UNIQUE.fetch_add(1, Ordering::Relaxed);

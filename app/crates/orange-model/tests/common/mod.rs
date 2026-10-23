@@ -3,6 +3,7 @@
 
 pub mod edits;
 pub mod generic;
+pub mod registry;
 pub mod strategies;
 
 use std::path::PathBuf;

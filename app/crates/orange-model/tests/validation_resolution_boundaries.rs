@@ -1,9 +1,11 @@
+mod common;
+
+use common::registry::Facts;
 use orange_model::GraphDocument;
 use orange_model::catalog::{NodeContract, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDescriptor, TypeParam};
-use orange_model::inference::TemplateCatalog;
-use orange_model::types::TypeRegistry;
-use orange_model::validation::{DiagnosticCode, HostOrigin, ProviderCatalog, validate_nodes};
+use orange_model::inference::NodeOverlays;
+use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use serde_json::json;
 
 const SOURCE: &str = "10000000-0000-4000-8000-000000000001";
@@ -75,9 +77,10 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         content_digest: GENERIC_DIGEST.into(),
         id: "generic-impl".into(),
     };
-    let mut providers = ProviderCatalog::default();
-    providers.insert(generic_definition.clone(), 1, generic_provider.clone());
-    providers.insert(
+    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
+    let mut facts = Facts::new(origin);
+    facts.provider(generic_definition.clone(), 1, generic_provider.clone());
+    facts.provider(
         DefinitionRef {
             id: "example/ambiguous".parse().unwrap(),
             version: 1,
@@ -86,12 +89,11 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         generic_provider,
     );
 
-    let mut templates = TemplateCatalog::default();
     let input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
-    templates.insert(
+    facts.definition(
         generic_definition,
         NodeContract {
             kind: NodeKind::Pure,
@@ -112,7 +114,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
-    templates.insert(
+    facts.definition(
         ambiguous_definition,
         NodeContract {
             kind: NodeKind::Pure,
@@ -125,7 +127,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
             ports: vec![ambiguous_input],
         },
     );
-    templates.insert_specializations(
+    facts.specializations(
         DefinitionRef {
             id: "example/ambiguous".parse().unwrap(),
             version: 1,
@@ -139,14 +141,7 @@ fn unresolved_concrete_neighbor_does_not_resolve_generic_from_its_snapshot() {
         vec![],
     );
 
-    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
-    let report = validate_nodes(
-        &document,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin,
-    );
+    let report = validate_nodes(&document, &facts.snapshot(), &NodeOverlays::default());
 
     assert!(report.incomplete_nodes.contains(&SOURCE.parse().unwrap()));
     assert!(report.diagnostics.iter().any(|diagnostic| {
@@ -212,14 +207,14 @@ fn intrinsic_implicit_error_port_supplies_generic_type_evidence() {
         content_digest: GENERIC_DIGEST.into(),
         id: "generic-impl".into(),
     };
-    let mut providers = ProviderCatalog::default();
-    providers.insert(definition.clone(), 1, provider);
+    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
+    let mut facts = Facts::new(origin);
+    facts.provider(definition.clone(), 1, provider);
     let input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
-    let mut templates = TemplateCatalog::default();
-    templates.insert(
+    facts.definition(
         definition,
         NodeContract {
             kind: NodeKind::Pure,
@@ -232,14 +227,7 @@ fn intrinsic_implicit_error_port_supplies_generic_type_evidence() {
             ports: vec![input],
         },
     );
-    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
-    let report = validate_nodes(
-        &document,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin,
-    );
+    let report = validate_nodes(&document, &facts.snapshot(), &NodeOverlays::default());
     assert!(report.is_valid(), "{:?}", report.diagnostics);
     assert_eq!(
         report.resolved[&GENERIC.parse().unwrap()].ports[0]
@@ -279,12 +267,13 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         id: "example/generic".parse().unwrap(),
         version: 1,
     };
-    let mut templates = TemplateCatalog::default();
+    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
+    let mut facts = Facts::new(origin);
     let input: PortDescriptor = serde_json::from_value(json!({
         "port_id":"value","direction":"input","kind":"data","type":"$T"
     }))
     .unwrap();
-    templates.insert(
+    facts.definition(
         definition.clone(),
         NodeContract {
             kind: NodeKind::Pure,
@@ -297,7 +286,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
             ports: vec![input],
         },
     );
-    templates.insert_specializations(
+    facts.specializations(
         definition.clone(),
         None,
         ["core/i64@1", "core/i32@1"]
@@ -305,8 +294,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
             .map(|ty| [("T".to_owned(), ty.parse().unwrap())].into())
             .collect(),
     );
-    let mut providers = ProviderCatalog::default();
-    providers.insert(
+    facts.provider(
         definition,
         1,
         ProviderKey {
@@ -316,7 +304,6 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
             id: "generic-impl".into(),
         },
     );
-    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "e".repeat(64))).unwrap();
 
     // Low-level inference delegates this package binding to constraints; it must not
     // consult the core list. Compilation resolution independently requires the lock.
@@ -324,8 +311,8 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         &document,
         &orange_model::DocIndex::build(&document),
         [node.parse().unwrap()],
-        &templates,
-        &TypeRegistry::core(),
+        &facts.snapshot(),
+        &NodeOverlays::default(),
     );
     assert!(components[0].issues.is_empty());
     assert_eq!(
@@ -333,13 +320,7 @@ fn missing_package_lock_prevents_core_specialization_fallback() {
         "core/f64@1"
     );
 
-    let report = validate_nodes(
-        &document,
-        &templates,
-        &TypeRegistry::core(),
-        &providers,
-        &origin,
-    );
+    let report = validate_nodes(&document, &facts.snapshot(), &NodeOverlays::default());
 
     assert_eq!(
         report

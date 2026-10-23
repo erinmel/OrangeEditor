@@ -2,6 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use crate::catalog::RegistrySnapshot;
 use crate::document::{GraphDocument, PortDescriptor, PortKind, PortRef};
 use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
@@ -32,7 +33,11 @@ impl ConnectionValidation {
 }
 
 /// Validates stored edges without changing the document.
-pub fn validate_connections(document: &GraphDocument, origin: &HostOrigin) -> ConnectionValidation {
+pub fn validate_connections(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+) -> ConnectionValidation {
+    let origin = registry.origin();
     let index = DocIndex::build(document);
     let mut report = ConnectionValidation::default();
     let mut diagnostics = Vec::new();
