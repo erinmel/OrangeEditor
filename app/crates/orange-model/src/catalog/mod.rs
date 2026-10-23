@@ -10,6 +10,6 @@ pub use definition::{
     ContractError, NodeContract, NodeDefinition, Ports, ReferenceError, ReferenceField,
     ReferenceKind, TypeArgs, VariableAccess,
 };
-pub(crate) use intrinsics::{core_reference, intrinsic_definitions};
+pub(crate) use intrinsics::intrinsic_definitions;
 pub use provider::{ProviderDescriptor, ProviderKey};
 pub use snapshot::{RegistryBuilder, RegistryError, RegistrySnapshot};

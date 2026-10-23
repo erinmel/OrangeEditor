@@ -1,8 +1,8 @@
 //! Copy and paste with full ID remapping (FR-02, 12 §2).
 //!
 //! Every pasted node, edge and declaration gets a fresh ID, so pasted content never aliases
-//! the original. Config references are discovered and rewritten only at fields declared by
-//! the exact built-in schema or explicit host-supplied schemas. Other config values are data.
+//! the original. Config references are discovered and rewritten only at the fields registered
+//! definitions declare. Other config values are data.
 //!
 //! Declarations referenced by copied nodes travel with the fragment, transitively through
 //! function bodies. On paste, a declaration the target already has (same ID) is reused, so
@@ -19,7 +19,7 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 use serde_json::Value as Json;
 use uuid::Uuid;
 
-use crate::catalog::{ReferenceField, ReferenceKind, core_reference};
+use crate::catalog::{ReferenceError, ReferenceField, ReferenceKind, RegistrySnapshot};
 use crate::config_pointer::{pointer_get, pointer_set};
 use crate::document::{
     BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
@@ -61,24 +61,6 @@ pub struct ConfigReference {
     pub expected: String,
 }
 
-/// Host-declared reference fields for one exact package definition/config version.
-///
-/// Schemas for exact host-reserved intrinsics are ignored; those fields are owned by the
-/// core's built-in schema. Other provider-backed definitions need not use a package prefix.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigReferenceSchema {
-    pub definition: crate::document::DefinitionRef,
-    pub config_version: u32,
-    pub fields: Vec<ConfigReferenceField>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ConfigReferenceField {
-    /// RFC 6901 JSON pointer within `config`; the pointed value must be a string ID.
-    pub pointer: String,
-    pub kind: ReferenceKind,
-}
-
 /// Commands for one paste transaction, plus where each copied node went.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Paste {
@@ -89,17 +71,12 @@ pub struct Paste {
 
 impl Fragment {
     /// Copies `selection` (all from one body) with its internal edges and the declarations
-    /// and signatures it references.
-    pub fn copy(document: &GraphDocument, selection: &[NodeId]) -> Result<Self, PasteError> {
-        Self::copy_with_schemas(document, selection, &[])
-    }
-
-    /// Copies using the core's built-in reference fields plus exact host schemas for package
-    /// definitions. Unknown definitions and fields are copied as ordinary config data.
-    pub fn copy_with_schemas(
+    /// and signatures it references. Reference fields come from `registry`'s definitions;
+    /// unknown definitions and other config values are copied as ordinary data.
+    pub fn copy(
         document: &GraphDocument,
+        registry: &RegistrySnapshot,
         selection: &[NodeId],
-        schemas: &[ConfigReferenceSchema],
     ) -> Result<Self, PasteError> {
         let Some(first) = selection.first() else {
             return Ok(Self::default());
@@ -136,12 +113,12 @@ impl Fragment {
             edges,
             ..Self::default()
         };
-        fragment.capture_references(document, schemas);
+        fragment.capture_references(document, registry);
         Ok(fragment)
     }
 
     /// Adds every declaration, signature and lock entry reachable from the fragment's nodes.
-    fn capture_references(&mut self, document: &GraphDocument, schemas: &[ConfigReferenceSchema]) {
+    fn capture_references(&mut self, document: &GraphDocument, registry: &RegistrySnapshot) {
         let mut pending: Vec<NodeInstance> = self.nodes.clone();
         let mut seen_nodes = HashSet::new();
         let mut seen_declarations = HashSet::new();
@@ -158,8 +135,8 @@ impl Fragment {
             if let Some(provider) = &node.provider {
                 bound.insert((provider.package.clone(), provider.version.clone()));
             }
-            for field in reference_fields(&node, schemas) {
-                let Ok(declaration) = field.parse(&node.config) else {
+            for (field, declaration) in node_references(registry, &node) {
+                let Ok(declaration) = declaration else {
                     continue;
                 };
                 let Some(Json::String(text)) = pointer_get(&node.config, &field.pointer) else {
@@ -458,33 +435,24 @@ fn remapped_references<'a>(
     by_node
 }
 
-fn reference_fields(node: &NodeInstance, schemas: &[ConfigReferenceSchema]) -> Vec<ReferenceField> {
-    let id = node.definition.id.as_str();
-    if crate::document::is_intrinsic_definition(id) {
-        if node.provider.is_some() {
-            return Vec::new();
-        }
-        let Some(field) = core_reference(id) else {
-            return Vec::new();
-        };
-        if node.definition.version != 1 || node.config_version != 1 {
-            return Vec::new();
-        }
-        return vec![field.clone()];
+/// The reference fields of `node` with their parsed targets. Core controls count only when
+/// unbound at version 1; package definitions only when the node is provider-bound at the
+/// definition's config version.
+fn node_references<'a>(
+    registry: &'a RegistrySnapshot,
+    node: &'a NodeInstance,
+) -> Box<dyn Iterator<Item = (&'a ReferenceField, Result<DeclId, ReferenceError>)> + 'a> {
+    let usable = if crate::document::is_intrinsic_definition(node.definition.id.as_str()) {
+        node.provider.is_none() && node.definition.version == 1 && node.config_version == 1
+    } else {
+        node.provider.is_some()
+            && registry
+                .definition(&node.definition)
+                .is_some_and(|definition| definition.config_version == node.config_version)
+    };
+    if usable {
+        Box::new(registry.references(node))
+    } else {
+        Box::new(std::iter::empty())
     }
-
-    if node.provider.is_none() {
-        return Vec::new();
-    }
-    schemas
-        .iter()
-        .filter(|schema| {
-            schema.definition == node.definition && schema.config_version == node.config_version
-        })
-        .flat_map(|schema| schema.fields.iter())
-        .map(|field| ReferenceField {
-            pointer: field.pointer.clone(),
-            kind: field.kind,
-        })
-        .collect()
 }

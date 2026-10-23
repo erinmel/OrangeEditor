@@ -36,7 +36,10 @@ fn definition(
 fn variable_definition(id: &str, kind: NodeKind, access: VariableAccess) -> NodeDefinition {
     NodeDefinition {
         ports: Ports::Variable(access),
-        references: core_reference(id).cloned().into_iter().collect(),
+        references: vec![ReferenceField {
+            pointer: "/variable".to_owned(),
+            kind: ReferenceKind::Variable,
+        }],
         ..definition(id, kind, Some(Suspends::Never), Vec::new())
     }
 }
@@ -115,7 +118,8 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     ]
 }
 
-/// Reference field of a core ID with no registered definition yet, by ID.
+/// Reference field of a core ID with no registered definition yet, by ID. Registered
+/// definitions (Get and Set Variable) declare their own.
 pub(crate) fn core_reference(id: &str) -> Option<&'static ReferenceField> {
     static TABLE: LazyLock<[ReferenceField; 3]> = LazyLock::new(|| {
         let field = |pointer: &str, kind| ReferenceField {
@@ -130,11 +134,7 @@ pub(crate) fn core_reference(id: &str) -> Option<&'static ReferenceField> {
     });
     match id {
         "core/call" => Some(&TABLE[0]),
-        "core/get-variable"
-        | "core/set-variable"
-        | "core/update-variable"
-        | "core/set-shared"
-        | "core/update-shared" => Some(&TABLE[1]),
+        "core/update-variable" | "core/set-shared" | "core/update-shared" => Some(&TABLE[1]),
         "core/on-event" | "core/emit" | "core/await-event" => Some(&TABLE[2]),
         _ => None,
     }

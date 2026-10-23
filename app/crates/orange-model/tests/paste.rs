@@ -5,19 +5,25 @@ mod common;
 
 use std::collections::{BTreeSet, HashSet};
 
+use common::generic::origin;
 use common::strategies::document;
 use common::{
     body, content, empty_document, function, function_id, id_source, nid, node, port, read_fixture,
     typed_edge,
 };
-use orange_model::catalog::ReferenceKind;
-use orange_model::document::ProviderBinding;
+use orange_model::catalog::{
+    NodeDefinition, Ports, ReferenceField, ReferenceKind, RegistryBuilder, RegistrySnapshot,
+};
+use orange_model::document::{NodeKind, ProviderBinding};
 use orange_model::id::{EdgeId, EventDeclId, NodeId, VariableId};
-use orange_model::paste::{ConfigReferenceField, ConfigReferenceSchema, Fragment};
+use orange_model::paste::Fragment;
 use orange_model::{BodyRef, DocCommand, GraphDocument, PasteError, from_json};
 use proptest::prelude::*;
 use serde_json::json;
 
+fn registry() -> std::sync::Arc<RegistrySnapshot> {
+    RegistrySnapshot::core(origin())
+}
 fn fixture() -> GraphDocument {
     from_json(&read_fixture("threshold-v1.json")).unwrap()
 }
@@ -42,7 +48,7 @@ fn all_ids(document: &GraphDocument) -> (HashSet<NodeId>, HashSet<EdgeId>) {
 fn copy_keeps_internal_edges_and_captures_references() {
     let document = fixture();
     // Get (n2) → Add (n3) → Set (n4); the trigger and the branch stay behind.
-    let fragment = Fragment::copy(&document, &[nid(2), nid(3), nid(4)]).unwrap();
+    let fragment = Fragment::copy(&document, &registry(), &[nid(2), nid(3), nid(4)]).unwrap();
     assert_eq!(fragment.nodes.len(), 3);
     let edges: BTreeSet<String> = fragment
         .edges
@@ -70,7 +76,7 @@ fn same_document_paste_reuses_declarations_and_never_aliases() {
     let mut document = fixture();
     let before = content(&document);
     let (old_nodes, old_edges) = all_ids(&document);
-    let fragment = Fragment::copy(&document, &[nid(2), nid(3), nid(4)]).unwrap();
+    let fragment = Fragment::copy(&document, &registry(), &[nid(2), nid(3), nid(4)]).unwrap();
     let paste = fragment
         .paste(&document, BodyRef::Root, id_source(1))
         .unwrap();
@@ -122,7 +128,7 @@ fn same_document_paste_reuses_declarations_and_never_aliases() {
 #[test]
 fn paste_into_another_document_copies_declarations_under_new_ids() {
     let source = fixture();
-    let fragment = Fragment::copy(&source, &[nid(2), nid(4)]).unwrap();
+    let fragment = Fragment::copy(&source, &registry(), &[nid(2), nid(4)]).unwrap();
     let mut target = empty_document();
     let paste = fragment
         .paste(&target, BodyRef::Root, id_source(2))
@@ -162,7 +168,7 @@ fn untyped_nested_config_strings_that_match_ids_are_preserved() {
         }])
         .unwrap();
 
-    let fragment = Fragment::copy(&source, &[nid(2), nid(10)]).unwrap();
+    let fragment = Fragment::copy(&source, &registry(), &[nid(2), nid(10)]).unwrap();
     let mut target = empty_document();
     let paste = fragment
         .paste(&target, BodyRef::Root, id_source(5))
@@ -182,10 +188,10 @@ fn untyped_nested_config_strings_that_match_ids_are_preserved() {
 }
 
 #[test]
-fn host_schema_captures_only_the_exact_package_reference_field() {
+fn registered_definition_captures_only_its_declared_reference_field() {
     let mut source = fixture();
     let mut custom = node(10);
-    custom.definition.id = "core/custom-reference".parse().unwrap();
+    custom.definition.id = "org.test/custom-reference".parse().unwrap();
     custom.provider = Some(source.node(nid(3)).unwrap().provider.clone().unwrap());
     custom.config.insert(
         "nested".into(),
@@ -197,15 +203,24 @@ fn host_schema_captures_only_the_exact_package_reference_field() {
             node: custom.clone(),
         }])
         .unwrap();
-    let schema = ConfigReferenceSchema {
-        definition: custom.definition,
-        config_version: custom.config_version,
-        fields: vec![ConfigReferenceField {
-            pointer: "/nested/variable".into(),
-            kind: ReferenceKind::Variable,
-        }],
-    };
-    let fragment = Fragment::copy_with_schemas(&source, &[nid(10)], &[schema]).unwrap();
+    let registry = RegistryBuilder::core(origin())
+        .definition(NodeDefinition {
+            definition: custom.definition,
+            config_version: custom.config_version,
+            kind: NodeKind::Pure,
+            suspends: None,
+            type_params: Vec::new(),
+            ports: Ports::Declared(Vec::new()),
+            references: vec![ReferenceField {
+                pointer: "/nested/variable".into(),
+                kind: ReferenceKind::Variable,
+            }],
+            specializations: None,
+            config_schema: None,
+        })
+        .build()
+        .unwrap();
+    let fragment = Fragment::copy(&source, &registry, &[nid(10)]).unwrap();
     assert_eq!(fragment.variables.len(), 1);
 
     let mut target = empty_document();
@@ -243,7 +258,7 @@ fn await_event_reference_remaps_without_rewriting_matching_text() {
         }])
         .unwrap();
 
-    let fragment = Fragment::copy(&source, &[nid(10)]).unwrap();
+    let fragment = Fragment::copy(&source, &registry(), &[nid(10)]).unwrap();
     assert_eq!(fragment.events.len(), 1);
     let mut target = empty_document();
     let paste = fragment
@@ -300,16 +315,7 @@ fn with_function(provider_bound_call: bool) -> GraphDocument {
 #[test]
 fn referenced_functions_travel_with_remapped_bodies() {
     let source = with_function(false);
-    let call = source.node(nid(1)).unwrap();
-    let attempted_override = ConfigReferenceSchema {
-        definition: call.definition.clone(),
-        config_version: call.config_version,
-        fields: vec![ConfigReferenceField {
-            pointer: "/notes/label".into(),
-            kind: ReferenceKind::Function,
-        }],
-    };
-    let fragment = Fragment::copy_with_schemas(&source, &[nid(1)], &[attempted_override]).unwrap();
+    let fragment = Fragment::copy(&source, &registry(), &[nid(1)]).unwrap();
     assert_eq!(fragment.functions.len(), 1);
 
     let mut target = empty_document();
@@ -350,7 +356,7 @@ fn referenced_functions_travel_with_remapped_bodies() {
 #[test]
 fn provider_bound_reserved_call_does_not_use_host_reference_schema() {
     let source = with_function(true);
-    let fragment = Fragment::copy(&source, &[nid(1)]).unwrap();
+    let fragment = Fragment::copy(&source, &registry(), &[nid(1)]).unwrap();
     assert!(fragment.functions.is_empty());
     assert!(fragment.references.is_empty());
 
@@ -372,14 +378,17 @@ fn provider_bound_reserved_call_does_not_use_host_reference_schema() {
 fn invalid_selections_are_rejected() {
     let document = with_function(false);
     assert_eq!(
-        Fragment::copy(&document, &[nid(1), nid(5)]),
+        Fragment::copy(&document, &registry(), &[nid(1), nid(5)]),
         Err(PasteError::SelectionSpansBodies)
     );
     assert_eq!(
-        Fragment::copy(&document, &[nid(9)]),
+        Fragment::copy(&document, &registry(), &[nid(9)]),
         Err(PasteError::NodeNotFound(nid(9)))
     );
-    assert_eq!(Fragment::copy(&document, &[]), Ok(Fragment::default()));
+    assert_eq!(
+        Fragment::copy(&document, &registry(), &[]),
+        Ok(Fragment::default())
+    );
 }
 
 proptest! {
@@ -397,7 +406,7 @@ proptest! {
             .collect();
         let before = content(&document);
         let (old_nodes, old_edges) = all_ids(&document);
-        let fragment = Fragment::copy(&document, &selection).unwrap();
+        let fragment = Fragment::copy(&document, &registry(), &selection).unwrap();
         let paste = fragment.paste(&document, BodyRef::Root, id_source(9)).unwrap();
         if paste.commands.is_empty() {
             return Ok(());
@@ -426,7 +435,7 @@ proptest! {
 fn paste_carries_the_lock_entries_of_copied_provider_bindings() {
     // Node 3 is bound to org.orange.math 0.1.0; org.orange.diagnostics is not copied.
     let source = fixture();
-    let fragment = Fragment::copy(&source, &[nid(3)]).unwrap();
+    let fragment = Fragment::copy(&source, &registry(), &[nid(3)]).unwrap();
     let mut target = empty_document();
     let paste = fragment
         .paste(&target, BodyRef::Root, id_source(2))
