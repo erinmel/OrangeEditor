@@ -8,7 +8,8 @@ use crate::id::{FunctionId, NodeId};
 
 use super::{
     Diagnostic, FunctionEvidence, FunctionSummary, LeafEffects, Severity, analyze_functions,
-    sort_diagnostics, validate_connections, validate_data_cycles, validate_inputs, validate_nodes,
+    sort_diagnostics, validate_body_domains, validate_connections, validate_data_cycles,
+    validate_inputs, validate_nodes,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
@@ -55,8 +56,11 @@ const COVERED_CHECKS: &[ValidationCheck] = &[
     ValidationCheck::InputValues,
     ValidationCheck::Connections,
     ValidationCheck::FunctionSummaries,
+    ValidationCheck::BodyDomains,
     ValidationCheck::DataCycles,
 ];
+
+const DOMAIN_ONLY_CHECKS: &[ValidationCheck] = &[ValidationCheck::BodyDomains];
 
 /// Checks required by the current control-domain compile-precondition contract.
 ///
@@ -117,6 +121,7 @@ pub struct ValidationAnalysis {
     report: ValidationReport,
     document_state: u64,
     registry_generation: u64,
+    covered: &'static [ValidationCheck],
 }
 
 impl ValidationAnalysis {
@@ -132,15 +137,15 @@ impl ValidationAnalysis {
 
     /// Checks actually executed by current combined validation.
     pub fn covered_checks(&self) -> impl Iterator<Item = ValidationCheck> + '_ {
-        COVERED_CHECKS.iter().copied()
+        self.covered.iter().copied()
     }
 
-    /// Required checks that combined validation has not implemented yet.
+    /// Required checks not executed by this analysis invocation.
     pub fn missing_checks(&self) -> impl Iterator<Item = ValidationCheck> + '_ {
         REQUIRED_CHECKS
             .iter()
             .copied()
-            .filter(|check| !COVERED_CHECKS.contains(check))
+            .filter(|check| !self.covered.contains(check))
     }
 
     /// Whether this analysis belongs to the document content and registry snapshot supplied.
@@ -179,8 +184,9 @@ pub fn analyze(document: &GraphDocument, registry: &RegistrySnapshot) -> Validat
 
 /// Validates `document` against `registry` with host-supplied leaf effects.
 ///
-/// Runs node resolution, input, connection, function and data-cycle passes on the same resolution
-/// and never changes the document. `leaf_effects` must be fresh for this exact document,
+/// Checks body domains before running node resolution, input, connection, function and
+/// data-cycle passes on the same resolution. Unsupported domains stop the control passes.
+/// This never changes the document. `leaf_effects` must be fresh for this exact document,
 /// config, provider and lock snapshot; nodes without an entry make their function
 /// incomplete (11 §14). Diagnostics are sorted and exact duplicates removed.
 pub fn validate_with_effects(
@@ -196,11 +202,17 @@ pub fn validate_with_effects(
 /// Freshness binds those effects to the caller's analysis invocation, but does not authenticate
 /// their truth. The host remains responsible for supplying complete, exact effects for this
 /// document, config, provider and lock snapshot.
+/// Unsupported body domains return before the control passes; coverage records that only
+/// the domain prerequisite ran, and no resolved signatures or summaries are produced.
 pub fn analyze_with_effects(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     leaf_effects: BTreeMap<NodeId, LeafEffects>,
 ) -> ValidationAnalysis {
+    let domains = validate_body_domains(document, registry.origin());
+    if !domains.unsupported_bodies.is_empty() {
+        return domain_blocked_analysis(document, registry, domains.diagnostics);
+    }
     let nodes = validate_nodes(document, registry);
     let connections = validate_connections(document, &nodes.resolved, registry);
     let data_cycles = validate_data_cycles(document, &nodes.resolved, &connections, registry);
@@ -240,5 +252,54 @@ pub fn analyze_with_effects(
         },
         document_state: document.state_id(),
         registry_generation: registry.generation(),
+        covered: COVERED_CHECKS,
+    }
+}
+
+/// A foreign domain cannot supply evidence for the control-domain passes. Keep this
+/// prerequisite failure separate from ordinary node/provider resolution failures.
+fn domain_blocked_analysis(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    mut diagnostics: Vec<Diagnostic>,
+) -> ValidationAnalysis {
+    let incomplete_nodes: BTreeSet<_> = document
+        .bodies()
+        .flat_map(|body| body.nodes.keys().copied())
+        .collect();
+    let incomplete_functions: BTreeSet<_> = document.functions().keys().copied().collect();
+    for (body_ref, body) in document.bodies_with_refs() {
+        for node in body.nodes.keys() {
+            let subject = match body_ref {
+                crate::BodyRef::Root => super::Subject::new(Some(*node), None, None),
+                crate::BodyRef::Function(function) => {
+                    super::Subject::new(Some(*node), None, None).with_function(function)
+                }
+            };
+            diagnostics.push(Diagnostic::new(
+                super::DiagnosticCode::DomainAnalysisBlocked,
+                subject,
+                registry.origin(),
+            ));
+        }
+    }
+    for function in &incomplete_functions {
+        diagnostics.push(Diagnostic::new(
+            super::DiagnosticCode::DomainAnalysisBlocked,
+            super::Subject::default().with_function(*function),
+            registry.origin(),
+        ));
+    }
+    sort_diagnostics(&mut diagnostics);
+    ValidationAnalysis {
+        report: ValidationReport {
+            diagnostics,
+            incomplete_nodes,
+            incomplete_functions,
+            ..ValidationReport::default()
+        },
+        document_state: document.state_id(),
+        registry_generation: registry.generation(),
+        covered: DOMAIN_ONLY_CHECKS,
     }
 }

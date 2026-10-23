@@ -366,6 +366,7 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::InputValues,
             ValidationCheck::Connections,
             ValidationCheck::FunctionSummaries,
+            ValidationCheck::BodyDomains,
             ValidationCheck::DataCycles,
         ]
     );
@@ -373,7 +374,6 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
         analysis.missing_checks().collect::<Vec<_>>(),
         [
             ValidationCheck::DefinitionAndConfig,
-            ValidationCheck::BodyDomains,
             ValidationCheck::ContextualContracts,
             ValidationCheck::FunctionRestrictions,
             ValidationCheck::Regions,
@@ -431,11 +431,12 @@ fn foreign_body_domain_is_never_compile_ready() {
     .unwrap();
     let registry = registry();
     let analysis = analyze(&doc, &registry);
-    assert!(
-        analysis
-            .missing_checks()
-            .any(|check| check == ValidationCheck::BodyDomains)
+    assert_eq!(
+        analysis.covered_checks().collect::<Vec<_>>(),
+        [ValidationCheck::BodyDomains]
     );
+    assert_eq!(analysis.missing_checks().count(), 14);
+    assert!(!analysis.report().is_valid());
     assert!(!analysis.is_ready_for_compilation(&doc, &registry));
 }
 

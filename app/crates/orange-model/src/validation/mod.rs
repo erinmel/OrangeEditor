@@ -3,7 +3,9 @@
 //! Hosts call [`analyze`] (or [`analyze_with_effects`] when they hold fresh leaf effects)
 //! and receive a [`ValidationAnalysis`] with honest pass coverage and freshness evidence.
 //! Its [`ValidationReport`] contains sorted, de-duplicated diagnostics, the resolved
-//! signatures, incomplete nodes and functions, and function summaries. It runs
+//! signatures, incomplete nodes and functions, and function summaries. It first runs
+//! [`validate_body_domains`]; unsupported domains stop the control passes with only domain
+//! coverage. For supported documents it runs
 //! [`validate_nodes`] once and feeds that resolution to [`validate_inputs`],
 //! [`validate_connections`], [`validate_data_cycles`] and [`analyze_functions`]. Connections fall back to stored
 //! signatures only for package nodes that did not resolve, preserving orphan edges.
@@ -19,6 +21,7 @@
 mod connections;
 mod data_cycles;
 mod diagnostic;
+mod domains;
 mod functions;
 mod inputs;
 mod nodes;
@@ -33,6 +36,7 @@ pub use diagnostic::{
 
 pub use connections::{ConnectionValidation, validate_connections};
 pub use data_cycles::{DataCycleValidation, validate_data_cycles};
+pub use domains::{DomainValidation, validate_body_domains};
 pub use inputs::validate_inputs;
 pub use nodes::{NodeValidation, validate_nodes};
 pub use report::{

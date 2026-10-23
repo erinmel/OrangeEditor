@@ -10,6 +10,10 @@ use crate::id::{EdgeId, FunctionId, NodeId, PortKey};
 /// Stable identifiers for implemented graph validation diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DiagnosticCode {
+    #[serde(rename = "E-DOMAIN-UNSUPPORTED")]
+    DomainUnsupported,
+    #[serde(rename = "E-DOMAIN-ANALYSIS-BLOCKED")]
+    DomainAnalysisBlocked,
     #[serde(rename = "E-METADATA-STALE")]
     MetadataStale,
     #[serde(rename = "E-PORT-UNKNOWN")]
@@ -102,6 +106,8 @@ impl DiagnosticCode {
     /// Stable code used in wire records and assertions.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::DomainUnsupported => "E-DOMAIN-UNSUPPORTED",
+            Self::DomainAnalysisBlocked => "E-DOMAIN-ANALYSIS-BLOCKED",
             Self::MetadataStale => "E-METADATA-STALE",
             Self::PortUnknown => "E-PORT-UNKNOWN",
             Self::PortDirection => "E-PORT-DIRECTION",
@@ -150,6 +156,8 @@ impl DiagnosticCode {
 
     const fn message_key(self) -> &'static str {
         match self {
+            Self::DomainUnsupported => "core/graph-domain-unsupported",
+            Self::DomainAnalysisBlocked => "core/graph-domain-analysis-blocked",
             Self::MetadataStale => "core/graph-metadata-stale",
             Self::PortUnknown => "core/graph-port-unknown",
             Self::PortDirection => "core/graph-port-direction",
@@ -198,6 +206,10 @@ impl DiagnosticCode {
 
     fn fallback(self, subject: &Subject) -> String {
         match self {
+            Self::DomainUnsupported => "This execution domain is unavailable.".into(),
+            Self::DomainAnalysisBlocked => {
+                "Graph analysis requires supported execution domains.".into()
+            }
             Self::MetadataStale => "Node metadata no longer matches this document.".into(),
             Self::PortUnknown => format!(
                 "Connection references an unknown port{}.",
@@ -705,5 +717,35 @@ mod tests {
         );
         assert_eq!(wire["message_key"], "core/graph-variadic-count");
         assert_eq!(wire["message_args"], json!({}));
+    }
+
+    #[test]
+    fn domain_diagnostics_have_stable_redacted_envelopes() {
+        for (code, expected_code, key, message) in [
+            (
+                DiagnosticCode::DomainUnsupported,
+                "E-DOMAIN-UNSUPPORTED",
+                "core/graph-domain-unsupported",
+                "This execution domain is unavailable.",
+            ),
+            (
+                DiagnosticCode::DomainAnalysisBlocked,
+                "E-DOMAIN-ANALYSIS-BLOCKED",
+                "core/graph-domain-analysis-blocked",
+                "Graph analysis requires supported execution domains.",
+            ),
+        ] {
+            let diagnostic = Diagnostic::new(code, Subject::default(), &origin());
+            assert_eq!(diagnostic.code.as_str(), expected_code);
+            assert_eq!(diagnostic.message_key, key);
+            assert_eq!(diagnostic.message, message);
+            assert!(diagnostic.message_args.is_empty());
+            let wire = to_value(&diagnostic).unwrap();
+            assert_eq!(wire["code"], expected_code);
+            assert_eq!(
+                serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+                code
+            );
+        }
     }
 }
