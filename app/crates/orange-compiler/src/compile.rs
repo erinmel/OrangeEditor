@@ -38,7 +38,7 @@ pub struct CompileOptions<'a> {
     pub cancel: Option<&'a AtomicBool>,
 }
 impl CompileOptions<'_> {
-    fn checkpoint(self) -> Result<(), CompileError> {
+    pub(crate) fn checkpoint(self) -> Result<(), CompileError> {
         if self
             .cancel
             .is_some_and(|signal| signal.load(Ordering::Relaxed))
@@ -50,10 +50,10 @@ impl CompileOptions<'_> {
     }
 }
 
-fn key(port: &PortDescriptor) -> PortKey {
+pub(crate) fn key(port: &PortDescriptor) -> PortKey {
     PortKey::new(port.port_id.clone(), None)
 }
-fn port_type(node: NodeId, port: &PortDescriptor) -> Result<PlanType, CompileError> {
+pub(crate) fn port_type(node: NodeId, port: &PortDescriptor) -> Result<PlanType, CompileError> {
     port.ty
         .as_ref()
         .and_then(|ty| PlanType::parse(ty.as_str()))
@@ -62,14 +62,14 @@ fn port_type(node: NodeId, port: &PortDescriptor) -> Result<PlanType, CompileErr
             port: key(port),
         })
 }
-fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<(), CompileError> {
+pub(crate) fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<(), CompileError> {
     *used = used
         .checked_add(amount)
         .filter(|sum| *sum <= limit)
         .ok_or(CompileError::ResourceLimit)?;
     Ok(())
 }
-fn value_bytes(value: &Value) -> usize {
+pub(crate) fn value_bytes(value: &Value) -> usize {
     match value {
         Value::Json(text) => text.as_str().len().saturating_add(16),
         Value::Some(inner) | Value::Ok(inner) => value_bytes(inner).saturating_add(16),
@@ -99,7 +99,7 @@ fn push_slot(
     plan.constants.push(value);
     Ok(SlotIx(index))
 }
-fn decode(
+pub(crate) fn decode(
     literal: &Literal,
     ty: &PlanType,
     snapshot: &RegistrySnapshot,
@@ -158,7 +158,7 @@ pub(crate) fn valid_identifier(text: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_alphanumeric() || b"/-_.".contains(&b))
 }
-fn valid_fault(fault: KernelFault) -> bool {
+pub(crate) fn valid_fault(fault: KernelFault) -> bool {
     valid_identifier(fault.code)
         && valid_identifier(fault.message_key)
         && !fault.message.is_empty()
@@ -167,7 +167,7 @@ fn valid_fault(fault: KernelFault) -> bool {
 }
 
 type OutputSlots = BTreeMap<(NodeId, PortKey), SlotIx>;
-type Incoming<'a> = BTreeMap<(NodeId, PortKey), &'a orange_model::document::Edge>;
+pub(crate) type Incoming<'a> = BTreeMap<(NodeId, PortKey), &'a orange_model::document::Edge>;
 struct InputContext<'a> {
     document: &'a GraphDocument,
     snapshot: &'a RegistrySnapshot,
@@ -257,131 +257,18 @@ pub fn compile_pure(
     resolver: &impl PureKernelResolver,
     options: CompileOptions<'_>,
 ) -> Result<PurePlan, CompileError> {
-    options.checkpoint()?;
-    if analysis.document_state() != document.state_id() {
-        return Err(CompileError::StaleDocument);
-    }
-    if analysis.registry_generation() != snapshot.generation() {
-        return Err(CompileError::StaleRegistry);
-    }
-    if !analysis.is_ready_for_lowering(document, &snapshot) {
-        return Err(CompileError::ValidationIncomplete);
-    }
-    let body = document.root();
-    let mut items = 0;
-    for count in [body.nodes.len(), body.edges.len(), document.exports().len()] {
-        charge(&mut items, count, options.limits.max_graph_items)?;
-    }
-    // Admit all root nodes: no silently omitted side effects or unsupported port semantics.
-    let mut ports = 0;
-    let mut lazy_nodes = BTreeMap::new();
-    for node in body.nodes.keys() {
-        options.checkpoint()?;
-        let sig = analysis
-            .report()
-            .resolved
-            .get(node)
-            .ok_or(CompileError::UnsupportedNode { node: *node })?;
-        if sig.kind != NodeKind::Pure {
-            return Err(CompileError::UnsupportedNode { node: *node });
-        }
-        if let Some(kind) = crate::lazy::Lazy::resolve(&body.nodes[node], sig)? {
-            lazy_nodes.insert(*node, kind);
-        }
-        charge(&mut ports, sig.ports.len(), options.limits.max_graph_items)?;
-        for port in &sig.ports {
-            if port.kind != PortKind::Data
-                || (port.is_lazy() && !lazy_nodes.contains_key(node))
-                || port.is_optional()
-                || port.variadic.is_some()
-                || (port.direction == PortDirection::Output
-                    && port.source != Some(OutputSource::Computed))
-            {
-                return Err(CompileError::UnsupportedPort {
-                    node: *node,
-                    port: key(port),
-                });
-            }
-            port_type(*node, port)?;
-        }
-    }
-    let incoming: BTreeMap<_, _> = body
-        .edges
-        .values()
-        .map(|edge| ((edge.to.node, edge.to.port.clone()), edge))
-        .collect();
-    // Iterative DFS avoids stack growth with graph depth. Active/finished sets also defend
-    // against internal validation regressions. Reversing pushes preserves declaration order.
-    let mut done = BTreeSet::new();
-    let mut active = BTreeSet::new();
-    let mut order = Vec::new();
-    let mut stack = Vec::new();
-    for export in document.exports() {
-        stack.push((export.node, false));
-        while let Some((node, exit)) = stack.pop() {
-            options.checkpoint()?;
-            if exit {
-                active.remove(&node);
-                done.insert(node);
-                order.push(node);
-                continue;
-            }
-            if done.contains(&node) {
-                continue;
-            }
-            if !active.insert(node) {
-                return Err(CompileError::ValidationIncomplete);
-            }
-            if active.len().saturating_add(done.len()) > options.limits.max_fold_operations {
-                return Err(CompileError::ResourceLimit);
-            }
-            stack.push((node, true));
-            let sig = analysis
-                .report()
-                .resolved
-                .get(&node)
-                .ok_or(CompileError::UnsupportedNode { node })?;
-            for port in sig
-                .ports
-                .iter()
-                .rev()
-                .filter(|p| p.direction == PortDirection::Input)
-            {
-                if let Some(edge) = incoming.get(&(node, key(port))) {
-                    stack.push((edge.from.node, false));
-                }
-            }
-        }
-    }
-    // Preflight dense storage before resolver callbacks and scratch-output allocation.
-    let mut slots = 0;
-    for node in &order {
-        options.checkpoint()?;
-        for port in &analysis.report().resolved[node].ports {
-            if port.direction == PortDirection::Output
-                || !incoming.contains_key(&(*node, key(port)))
-            {
-                charge(
-                    &mut slots,
-                    1,
-                    options.limits.max_slots.min(u32::MAX as usize),
-                )?;
-            }
-        }
-    }
-    if slots
-        .checked_mul(16)
-        .is_none_or(|minimum| minimum > options.limits.max_constant_bytes)
-    {
-        return Err(CompileError::ResourceLimit);
-    }
-    // Potential-cone admission is complete; do not retain its traversal buffers while
-    // building the smaller demanded plan (which may omit entire lazy alternatives).
-    drop(order);
-    drop(active);
-    drop(done);
+    let Admission {
+        incoming,
+        lazy_nodes,
+    } = admit(document, &snapshot, analysis, options, false)?;
     let mut folder = ConstantFolder::new(
-        document, analysis, snapshot, resolver, options, incoming, lazy_nodes,
+        document,
+        analysis,
+        snapshot,
+        resolver,
+        options,
+        &incoming,
+        &lazy_nodes,
     )?;
     for export in document.exports() {
         folder.pull(export.node)?;
@@ -411,8 +298,8 @@ pub(crate) struct ConstantFolder<'a, R: PureKernelResolver> {
     snapshot: Arc<RegistrySnapshot>,
     resolver: &'a R,
     options: CompileOptions<'a>,
-    incoming: Incoming<'a>,
-    lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
+    incoming: &'a Incoming<'a>,
+    lazy_nodes: &'a BTreeMap<NodeId, crate::lazy::Lazy>,
     plan: PurePlan,
     outputs: OutputSlots,
     completed: BTreeSet<NodeId>,
@@ -428,8 +315,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
         snapshot: Arc<RegistrySnapshot>,
         resolver: &'a R,
         options: CompileOptions<'a>,
-        incoming: Incoming<'a>,
-        lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
+        incoming: &'a Incoming<'a>,
+        lazy_nodes: &'a BTreeMap<NodeId, crate::lazy::Lazy>,
     ) -> Result<Self, CompileError> {
         let plan = PurePlan {
             snapshot: snapshot.clone(),
@@ -467,6 +354,14 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             output_values: vec![],
             work: vec![],
         })
+    }
+    pub(crate) fn folded(&self, node: NodeId, port: &PortKey) -> Option<&FoldedValue> {
+        self.outputs
+            .get(&(node, port.clone()))
+            .map(|slot| &self.plan.constants[slot.index()])
+    }
+    pub(crate) fn diagnostics(&self) -> &[Diagnostic] {
+        &self.plan.diagnostics
     }
     pub(crate) fn pull(&mut self, root: NodeId) -> Result<(), CompileError> {
         let Self {
@@ -709,4 +604,159 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
 
         Ok(())
     }
+}
+
+pub(crate) struct Admission<'a> {
+    pub(crate) incoming: Incoming<'a>,
+    pub(crate) lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
+}
+pub(crate) fn admit<'a>(
+    document: &'a GraphDocument,
+    snapshot: &RegistrySnapshot,
+    analysis: &ValidationAnalysis,
+    options: CompileOptions<'_>,
+    allow_entropy: bool,
+) -> Result<Admission<'a>, CompileError> {
+    options.checkpoint()?;
+    if analysis.document_state() != document.state_id() {
+        return Err(CompileError::StaleDocument);
+    }
+    if analysis.registry_generation() != snapshot.generation() {
+        return Err(CompileError::StaleRegistry);
+    }
+    if !analysis.is_ready_for_lowering(document, snapshot) {
+        return Err(CompileError::ValidationIncomplete);
+    }
+    let body = document.root();
+    let mut items = 0;
+    for count in [body.nodes.len(), body.edges.len(), document.exports().len()] {
+        charge(&mut items, count, options.limits.max_graph_items)?;
+    }
+    // Admit all root nodes: no silently omitted side effects or unsupported port semantics.
+    let mut ports = 0;
+    let mut lazy_nodes = BTreeMap::new();
+    for node in body.nodes.keys() {
+        options.checkpoint()?;
+        let sig = analysis
+            .report()
+            .resolved
+            .get(node)
+            .ok_or(CompileError::UnsupportedNode { node: *node })?;
+        if sig.kind != NodeKind::Pure {
+            let metadata = snapshot.definition(&body.nodes[node].definition);
+            if !allow_entropy
+                || sig.kind != NodeKind::Volatile
+                || !metadata.is_some_and(|definition| {
+                    definition.volatility == Some(orange_model::catalog::Volatility::Entropy)
+                        && definition.determinism == orange_model::catalog::Determinism::Seeded
+                })
+            {
+                return Err(CompileError::UnsupportedNode { node: *node });
+            }
+        }
+        if let Some(kind) = crate::lazy::Lazy::resolve(&body.nodes[node], sig)? {
+            lazy_nodes.insert(*node, kind);
+        }
+        if body.nodes[node].definition.id.is_core()
+            && body.nodes[node].definition.id.as_str() != "core/convert"
+            && !lazy_nodes.contains_key(node)
+        {
+            return Err(CompileError::UnsupportedNode { node: *node });
+        }
+        charge(&mut ports, sig.ports.len(), options.limits.max_graph_items)?;
+        for port in &sig.ports {
+            if port.kind != PortKind::Data
+                || (port.is_lazy() && !lazy_nodes.contains_key(node))
+                || port.is_optional()
+                || port.variadic.is_some()
+                || (port.direction == PortDirection::Output
+                    && port.source != Some(OutputSource::Computed))
+            {
+                return Err(CompileError::UnsupportedPort {
+                    node: *node,
+                    port: key(port),
+                });
+            }
+            port_type(*node, port)?;
+        }
+    }
+    let incoming: BTreeMap<_, _> = body
+        .edges
+        .values()
+        .map(|edge| ((edge.to.node, edge.to.port.clone()), edge))
+        .collect();
+    // Iterative DFS avoids stack growth with graph depth. Active/finished sets also defend
+    // against internal validation regressions. Reversing pushes preserves declaration order.
+    let mut done = BTreeSet::new();
+    let mut active = BTreeSet::new();
+    let mut order = Vec::new();
+    let mut stack = Vec::new();
+    for export in document.exports() {
+        stack.push((export.node, false));
+        while let Some((node, exit)) = stack.pop() {
+            options.checkpoint()?;
+            if exit {
+                active.remove(&node);
+                done.insert(node);
+                order.push(node);
+                continue;
+            }
+            if done.contains(&node) {
+                continue;
+            }
+            if !active.insert(node) {
+                return Err(CompileError::ValidationIncomplete);
+            }
+            if active.len().saturating_add(done.len()) > options.limits.max_fold_operations {
+                return Err(CompileError::ResourceLimit);
+            }
+            stack.push((node, true));
+            let sig = analysis
+                .report()
+                .resolved
+                .get(&node)
+                .ok_or(CompileError::UnsupportedNode { node })?;
+            for port in sig
+                .ports
+                .iter()
+                .rev()
+                .filter(|p| p.direction == PortDirection::Input)
+            {
+                if let Some(edge) = incoming.get(&(node, key(port))) {
+                    stack.push((edge.from.node, false));
+                }
+            }
+        }
+    }
+    // Preflight dense storage before resolver callbacks and scratch-output allocation.
+    let mut slots = 0;
+    for node in &order {
+        options.checkpoint()?;
+        for port in &analysis.report().resolved[node].ports {
+            if port.direction == PortDirection::Output
+                || !incoming.contains_key(&(*node, key(port)))
+            {
+                charge(
+                    &mut slots,
+                    1,
+                    options.limits.max_slots.min(u32::MAX as usize),
+                )?;
+            }
+        }
+    }
+    if slots
+        .checked_mul(16)
+        .is_none_or(|minimum| minimum > options.limits.max_constant_bytes)
+    {
+        return Err(CompileError::ResourceLimit);
+    }
+    // Potential-cone admission is complete; do not retain its traversal buffers while
+    // building the smaller demanded plan (which may omit entire lazy alternatives).
+    drop(order);
+    drop(active);
+    drop(done);
+    Ok(Admission {
+        incoming,
+        lazy_nodes,
+    })
 }
