@@ -260,6 +260,7 @@ fn preflight_node(
             unresolved(node.id, code, origin, report, diagnostics);
             return false;
         }
+        check_activation(node, contract.kind, true, origin, diagnostics);
         return true;
     }
 
@@ -328,12 +329,14 @@ fn preflight_node(
         );
         return false;
     }
+    check_activation(node, contract.kind, false, origin, diagnostics);
     true
 }
 
 pub(crate) fn contract_code(error: ContractError) -> DiagnosticCode {
     match error {
         ContractError::VariableUnknown => DiagnosticCode::VariableUnknown,
+        ContractError::EventUnknown => DiagnosticCode::EventUnknown,
         ContractError::VariableScope => DiagnosticCode::VariableScope,
         ContractError::SharedVariableScope => DiagnosticCode::SharedVariableScope,
         ContractError::UpdateOperation => DiagnosticCode::UpdateOperation,
@@ -682,6 +685,41 @@ fn port_kind(
         .iter()
         .find(|candidate| candidate.port_id == *port.port.port())
         .map(|candidate| candidate.kind)
+}
+
+/// Entry activation metadata (11 §10.1, 12 §6). Strict reading: an entry must persist a
+/// policy (host-owned entries) and no other kind may; `capacity` is at least 1; `max_parallel` is present, at
+/// least 1, exactly for `parallel`; host-owned entries have no backpressure protocol.
+fn check_activation(
+    node: &crate::document::NodeInstance,
+    kind: NodeKind,
+    host_owned: bool,
+    origin: &HostOrigin,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use crate::document::{OverflowPolicy, ReentrancyMode};
+    let valid = match (&node.activation, kind == NodeKind::Entry) {
+        (None, false) => true,
+        (Some(_), false) => false,
+        // Package entries keep their established tolerance for an absent policy.
+        (None, true) => !host_owned,
+        (Some(policy), true) => {
+            let parallel = policy.mode == ReentrancyMode::Parallel;
+            policy.capacity >= 1
+                && match policy.max_parallel {
+                    Some(max) => parallel && max >= 1,
+                    None => !parallel,
+                }
+                && !(host_owned && policy.overflow == OverflowPolicy::Backpressure)
+        }
+    };
+    if !valid {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::ActivationPolicy,
+            Subject::new(Some(node.id), None, None),
+            origin,
+        ));
+    }
 }
 
 fn unresolved(

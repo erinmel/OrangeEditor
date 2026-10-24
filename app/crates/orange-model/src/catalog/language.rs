@@ -5,7 +5,7 @@
 
 use std::sync::LazyLock;
 
-use super::{ReferenceField, ReferenceKind, VariableAccess};
+use super::{EventAccess, ReferenceField, ReferenceKind, VariableAccess};
 use crate::document::{NodeKind, OutputSource, PortDescriptor, SignatureSnapshot, Suspends};
 use crate::id::PortId;
 
@@ -80,6 +80,8 @@ pub(crate) struct Intrinsic {
     pub(crate) reference: Option<ReferenceKind>,
     /// How this exact variable intrinsic derives its declaration-owned ports.
     pub(crate) variable_access: Option<VariableAccess>,
+    /// How this exact event intrinsic derives its declaration-owned ports.
+    pub(crate) event_access: Option<EventAccess>,
     /// Ends its region instead of continuing through `then` (11 §8.3).
     pub(crate) terminator: bool,
 }
@@ -94,7 +96,19 @@ const fn rule(
         summary,
         reference,
         variable_access: None,
+        event_access: None,
         terminator: false,
+    }
+}
+
+const fn event_rule(
+    id: &'static str,
+    summary: Option<(NodeKind, Suspends)>,
+    access: EventAccess,
+) -> Intrinsic {
+    Intrinsic {
+        event_access: Some(access),
+        ..rule(id, summary, EVENT)
     }
 }
 
@@ -120,6 +134,7 @@ const PURE: Option<(NodeKind, Suspends)> = Some((NodeKind::Pure, Suspends::Never
 const VOLATILE: Option<(NodeKind, Suspends)> = Some((NodeKind::Volatile, Suspends::Never));
 const ACTION: Option<(NodeKind, Suspends)> = Some((NodeKind::Action, Suspends::Never));
 const ASYNC: Option<(NodeKind, Suspends)> = Some((NodeKind::Async, Suspends::Always));
+const ENTRY: Option<(NodeKind, Suspends)> = Some((NodeKind::Entry, Suspends::Never));
 const ITERATOR: Option<(NodeKind, Suspends)> = Some((NodeKind::Iterator, Suspends::Maybe));
 const VARIABLE: Option<ReferenceKind> = Some(ReferenceKind::Variable);
 const EVENT: Option<ReferenceKind> = Some(ReferenceKind::Event);
@@ -144,8 +159,8 @@ const INTRINSICS: [Intrinsic; 41] = [
         Some((NodeKind::Async, Suspends::Maybe)),
         VariableAccess::UpdateShared,
     ),
-    rule("core/on-event", None, EVENT),
-    rule("core/emit", None, EVENT),
+    event_rule("core/on-event", ENTRY, EventAccess::Handle),
+    event_rule("core/emit", ACTION, EventAccess::Emit),
     rule("core/branch", ACTION, None),
     rule("core/switch", ACTION, None),
     rule("core/sequence", ACTION, None),
@@ -160,7 +175,7 @@ const INTRINSICS: [Intrinsic; 41] = [
     rule("core/flip-flop", ACTION, None),
     rule("core/yield", ASYNC, None),
     rule("core/wait", ASYNC, None),
-    rule("core/await-event", None, EVENT),
+    event_rule("core/await-event", ASYNC, EventAccess::Await),
     rule("core/register", None, None),
     rule("core/select", PURE, None),
     rule("core/and", PURE, None),
@@ -261,9 +276,14 @@ mod tests {
             );
             let variable_access = match definition.ports {
                 crate::catalog::Ports::Variable(access) => Some(access),
-                crate::catalog::Ports::Declared(_) => None,
+                crate::catalog::Ports::Declared(_) | crate::catalog::Ports::Event(_) => None,
             };
             assert_eq!(rule.variable_access, variable_access, "{id}");
+            let event_access = match definition.ports {
+                crate::catalog::Ports::Event(access) => Some(access),
+                _ => None,
+            };
+            assert_eq!(rule.event_access, event_access, "{id}");
         }
     }
 

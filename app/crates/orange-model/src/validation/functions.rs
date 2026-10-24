@@ -218,6 +218,19 @@ pub fn analyze_functions(
                     continue;
                 }
             }
+            if intrinsic(definition).is_some_and(|rule| rule.event_access.is_some())
+                && let Err(error) = registry.contract(document, node)
+            {
+                emit_at(
+                    &mut result,
+                    super::nodes::contract_code(error),
+                    function_id,
+                    node.id,
+                    origin,
+                );
+                complete = false;
+                continue;
+            }
             if is_intrinsic(definition) && definition != "core/call" {
                 let Some((kind, suspends)) = intrinsic(definition).and_then(|rule| rule.summary)
                 else {
@@ -231,6 +244,17 @@ pub fn analyze_functions(
                     complete = false;
                     continue;
                 };
+                if kind == NodeKind::Entry {
+                    emit_at(
+                        &mut result,
+                        DiagnosticCode::EntryInFunction,
+                        function_id,
+                        node.id,
+                        origin,
+                    );
+                    complete = false;
+                    continue;
+                }
                 rank = rank.max(rank_of(kind));
                 may_suspend |= suspends != Suspends::Never;
                 if let Some(
@@ -347,6 +371,20 @@ pub fn analyze_functions(
                 emit_at(
                     &mut result,
                     DiagnosticCode::EntryInFunction,
+                    function_id,
+                    node.id,
+                    origin,
+                );
+                complete = false;
+                continue;
+            }
+            if snapshot.ports.iter().any(|port| {
+                port.kind == crate::document::PortKind::Event
+                    && port.direction == crate::document::PortDirection::Output
+            }) {
+                emit_at(
+                    &mut result,
+                    DiagnosticCode::SubscriptionInFunction,
                     function_id,
                     node.id,
                     origin,

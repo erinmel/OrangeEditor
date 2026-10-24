@@ -210,10 +210,7 @@ fn touch_declaration_consumers(
         .iter()
         .chain(&change.decls.changed)
         .chain(&change.decls.removed)
-        .filter_map(|decl| match decl {
-            DeclId::Variable(_) | DeclId::Function(_) => Some(*decl),
-            DeclId::Event(_) => None,
-        })
+        .copied()
         .collect::<BTreeSet<_>>();
     if typed_declaration_changes.is_empty() {
         return;

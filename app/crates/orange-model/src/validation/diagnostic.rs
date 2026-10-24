@@ -96,6 +96,12 @@ pub enum DiagnosticCode {
     UpdateUnsupported,
     #[serde(rename = "E-ENTRY-IN-FUNCTION")]
     EntryInFunction,
+    #[serde(rename = "E-SUBSCRIPTION-IN-FUNCTION")]
+    SubscriptionInFunction,
+    #[serde(rename = "E-EVENT-UNKNOWN")]
+    EventUnknown,
+    #[serde(rename = "E-ACTIVATION-POLICY")]
+    ActivationPolicy,
     #[serde(rename = "E-CONVERTER-CONFIG")]
     ConverterConfig,
     #[serde(rename = "E-CONVERTER-ENTRY")]
@@ -155,6 +161,9 @@ impl DiagnosticCode {
             Self::UpdateOperation => "E-UPDATE-OPERATION",
             Self::UpdateUnsupported => "E-UPDATE-UNSUPPORTED",
             Self::EntryInFunction => "E-ENTRY-IN-FUNCTION",
+            Self::SubscriptionInFunction => "E-SUBSCRIPTION-IN-FUNCTION",
+            Self::EventUnknown => "E-EVENT-UNKNOWN",
+            Self::ActivationPolicy => "E-ACTIVATION-POLICY",
             Self::ConverterConfig => "E-CONVERTER-CONFIG",
             Self::ConverterEntry => "E-CONVERTER-ENTRY",
             Self::ConverterOptions => "E-CONVERTER-OPTIONS",
@@ -208,6 +217,9 @@ impl DiagnosticCode {
             Self::UpdateOperation => "core/graph-update-operation",
             Self::UpdateUnsupported => "core/graph-update-unsupported",
             Self::EntryInFunction => "core/graph-entry-in-function",
+            Self::SubscriptionInFunction => "core/graph-subscription-in-function",
+            Self::EventUnknown => "core/graph-event-unknown",
+            Self::ActivationPolicy => "core/graph-activation-policy",
             Self::ConverterConfig => "core/graph-converter-config",
             Self::ConverterEntry => "core/graph-converter-entry",
             Self::ConverterOptions => "core/graph-converter-options",
@@ -296,6 +308,11 @@ impl DiagnosticCode {
                 "Converter node uses an unsupported or malformed config.".into()
             }
             Self::ConverterEntry => "Converter registry entry is unavailable.".into(),
+            Self::SubscriptionInFunction => {
+                "Subscriptions are not permitted in a function.".into()
+            }
+            Self::EventUnknown => "Event reference is missing, invalid or undeclared.".into(),
+            Self::ActivationPolicy => "Entry activation policy is missing or invalid.".into(),
             Self::ConverterOptions => "Converter options are invalid or incomplete.".into(),
             Self::FunctionBodyMarker => {
                 "Function entry, return and output markers do not match the declared interface.".into()

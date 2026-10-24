@@ -2,7 +2,7 @@
 //! fixed facts are in `language`.
 
 use super::language::intrinsic_reference;
-use super::{NodeDefinition, Ports, VariableAccess};
+use super::{EventAccess, NodeDefinition, Ports, VariableAccess};
 use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, Suspends};
 use crate::id::TypeExpr;
 
@@ -41,6 +41,19 @@ fn variable_definition(
 ) -> NodeDefinition {
     NodeDefinition {
         ports: Ports::Variable(access),
+        ..definition(id, kind, suspends, Vec::new())
+    }
+}
+
+/// An event node: its `payload` port is typed by the referenced event declaration.
+fn event_definition(
+    id: &str,
+    kind: NodeKind,
+    suspends: Option<Suspends>,
+    access: EventAccess,
+) -> NodeDefinition {
+    NodeDefinition {
+        ports: Ports::Event(access),
         ..definition(id, kind, suspends, Vec::new())
     }
 }
@@ -139,6 +152,19 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
             Async,
             Some(Suspends::Maybe),
             VariableAccess::UpdateShared,
+        ),
+        event_definition("core/on-event", NodeKind::Entry, None, EventAccess::Handle),
+        event_definition(
+            "core/emit",
+            Action,
+            Some(Suspends::Never),
+            EventAccess::Emit,
+        ),
+        event_definition(
+            "core/await-event",
+            Async,
+            Some(Suspends::Always),
+            EventAccess::Await,
         ),
     ]
 }

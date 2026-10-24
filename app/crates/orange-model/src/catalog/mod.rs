@@ -12,8 +12,8 @@ pub mod snapshot;
 pub(crate) use call::project_interface;
 pub use call::{CallInterface, CallInterfaceError, call_interface};
 pub use definition::{
-    ContractError, NodeContract, NodeDefinition, Ports, ReferenceError, ReferenceField,
-    ReferenceKind, TypeArgs, VariableAccess,
+    ContractError, EventAccess, NodeContract, NodeDefinition, Ports, ReferenceError,
+    ReferenceField, ReferenceKind, TypeArgs, VariableAccess,
 };
 pub(crate) use language::{
     implicit_port, implicit_ports, intrinsic, is_converter_special_form, is_intrinsic,

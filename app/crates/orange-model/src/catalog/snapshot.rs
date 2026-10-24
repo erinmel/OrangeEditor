@@ -9,8 +9,8 @@ use thiserror::Error;
 use super::intrinsics::intrinsic_definitions;
 use super::language::{IMPLICIT_PORTS, intrinsic_reference, is_converter_special_form};
 use super::{
-    ContractError, NodeContract, NodeDefinition, Ports, ProviderDescriptor, ProviderKey,
-    ReferenceError, ReferenceField, ReferenceKind, TypeArgs, VariableAccess,
+    ContractError, EventAccess, NodeContract, NodeDefinition, Ports, ProviderDescriptor,
+    ProviderKey, ReferenceError, ReferenceField, ReferenceKind, TypeArgs, VariableAccess,
 };
 use crate::config_pointer::pointer_parts;
 use crate::conversion::{
@@ -184,6 +184,16 @@ pub enum RegistryError {
     #[error("shared variable definition `{definition}` must have kind Async, found {kind:?}")]
     SharedVariableKind {
         definition: DefinitionId,
+        kind: NodeKind,
+    },
+    #[error(
+        "definition `{definition}` takes its ports from an event but declares no event reference"
+    )]
+    EventPortsWithoutReference { definition: DefinitionId },
+    #[error("event definition `{definition}` must have kind {expected:?}, found {kind:?}")]
+    EventKind {
+        definition: DefinitionId,
+        expected: NodeKind,
         kind: NodeKind,
     },
     #[error("provider `{}/{}` names unknown definition `{}@{}`", .provider.package, .provider.id, .definition.id, .definition.version)]
@@ -376,9 +386,24 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
             kind: definition.kind,
         });
     }
+    if let Ports::Event(access) = &definition.ports {
+        let expected = match access {
+            EventAccess::Handle => NodeKind::Entry,
+            EventAccess::Emit => NodeKind::Action,
+            EventAccess::Await => NodeKind::Async,
+        };
+        if definition.kind != expected {
+            return Err(RegistryError::EventKind {
+                definition: id.clone(),
+                expected,
+                kind: definition.kind,
+            });
+        }
+    }
     let ports = match &definition.ports {
         Ports::Declared(ports) => ports,
         Ports::Variable(_) => return check_variable_ports(definition),
+        Ports::Event(_) => return check_event_ports(definition),
     };
     let declared: BTreeSet<&str> = definition
         .type_params
@@ -432,6 +457,21 @@ fn check_variable_ports(definition: &NodeDefinition) -> Result<(), RegistryError
         Ok(())
     } else {
         Err(RegistryError::VariablePortsWithoutReference {
+            definition: definition.definition.id.clone(),
+        })
+    }
+}
+
+/// Event-typed ports need the event reference that types them.
+fn check_event_ports(definition: &NodeDefinition) -> Result<(), RegistryError> {
+    if definition
+        .references
+        .iter()
+        .any(|field| field.kind == ReferenceKind::Event)
+    {
+        Ok(())
+    } else {
+        Err(RegistryError::EventPortsWithoutReference {
             definition: definition.definition.id.clone(),
         })
     }
@@ -611,7 +651,7 @@ impl Registered {
                 type_params: definition.type_params.clone(),
                 ports: ports.clone(),
             }),
-            Ports::Variable(_) => None,
+            Ports::Variable(_) | Ports::Event(_) => None,
         };
         Self {
             definition: Arc::new(definition),
@@ -714,6 +754,7 @@ impl RegistrySnapshot {
         let ports = match &definition.ports {
             Ports::Declared(ports) => ports.clone(),
             Ports::Variable(access) => self.variable_ports(document, node, *access)?,
+            Ports::Event(access) => self.event_ports(document, node, *access)?,
         };
         Ok(Some(Cow::Owned(NodeContract {
             kind: definition.kind,
@@ -793,6 +834,46 @@ impl RegistrySnapshot {
             suspends: None,
             type_params: Vec::new(),
             ports,
+        })
+    }
+
+    fn event_ports(
+        &self,
+        document: &GraphDocument,
+        node: &NodeInstance,
+        access: EventAccess,
+    ) -> Result<Vec<PortDescriptor>, ContractError> {
+        let Ok(DeclId::Event(id)) = self.reference(node, ReferenceKind::Event) else {
+            return Err(ContractError::EventUnknown);
+        };
+        let payload = document
+            .events()
+            .get(&id)
+            .ok_or(ContractError::EventUnknown)?
+            .payload
+            .clone();
+        Ok(match access {
+            EventAccess::Handle => vec![PortDescriptor::data_out(
+                "payload",
+                payload,
+                OutputSource::Payload,
+            )],
+            EventAccess::Emit => vec![PortDescriptor::data_in("payload", payload)],
+            EventAccess::Await => vec![
+                PortDescriptor::data_in(
+                    "timeout",
+                    "core/option@1<core/duration@1>"
+                        .parse()
+                        .expect("intrinsic type expression is valid"),
+                )
+                .optional(),
+                PortDescriptor::exec_out("then"),
+                PortDescriptor::exec_out("timed_out"),
+                PortDescriptor {
+                    available_on: Some(vec!["then".parse().expect("port id is valid")]),
+                    ..PortDescriptor::data_out("payload", payload, OutputSource::Execution)
+                },
+            ],
         })
     }
 

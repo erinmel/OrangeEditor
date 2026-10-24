@@ -53,6 +53,18 @@ pub enum VariableAccess {
     UpdateShared,
 }
 
+/// How an event intrinsic uses its event declaration (11 §8.4, §10.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventAccess {
+    /// `core/on-event`: an entry whose `payload` output carries the declared payload.
+    Handle,
+    /// `core/emit`: an action whose `payload` input carries the declared payload.
+    Emit,
+    /// `core/await-event`: an async with an optional `timeout`, `then`/`timed_out` outcomes
+    /// and a `payload` output available on `then`.
+    Await,
+}
+
 /// Where a definition's ports come from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ports {
@@ -62,6 +74,8 @@ pub enum Ports {
     /// input, and Update has a `value` input plus `old`/`new` outputs. Shared writes
     /// use the async shared-variable contracts.
     Variable(VariableAccess),
+    /// Event-derived ports: `payload` is typed by the referenced event declaration.
+    Event(EventAccess),
 }
 
 /// One registered node definition version.
@@ -125,6 +139,8 @@ pub enum ContractError {
     TypeMismatch,
     #[error("variable type resolution exceeded its resource limit")]
     TypeComplexity,
+    #[error("the referenced event is missing or not declared")]
+    EventUnknown,
     #[error("converter config is malformed or uses an unsupported version")]
     ConverterConfig,
     #[error("converter entry is unavailable")]
