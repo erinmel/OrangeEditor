@@ -122,6 +122,12 @@ fn merged(
     let connections = validate_connections(doc, &nodes.resolved, registry);
     let data_cycles = validate_data_cycles(doc, &nodes.resolved, &connections, registry);
     let regions = validate_regions(doc, &nodes.resolved, &connections, registry);
+    let control = orange_model::validation::validate_control_cycles(
+        doc,
+        &nodes.resolved,
+        &connections,
+        registry,
+    );
     let evidence = FunctionEvidence::from_nodes(doc, &nodes, effects);
     let functions = analyze_functions(doc, &evidence, registry);
     let mut diagnostics: Vec<Diagnostic> = nodes.diagnostics.clone();
@@ -138,6 +144,7 @@ fn merged(
             .diagnostics
             .into_iter()
             .chain(regions.diagnostics)
+            .chain(control.diagnostics)
             .filter(|item| {
                 item.code != DiagnosticCode::DependencyUnavailable
                     || item
@@ -152,6 +159,7 @@ fn merged(
     incomplete_nodes.extend(connections.incomplete_nodes);
     incomplete_nodes.extend(data_cycles.incomplete_nodes);
     incomplete_nodes.extend(regions.incomplete_nodes);
+    incomplete_nodes.extend(control.incomplete_nodes);
     ValidationReport {
         regions: regions.index,
         diagnostics,
@@ -160,6 +168,7 @@ fn merged(
         functions: functions.summaries,
         incomplete_functions: functions.incomplete_functions,
         data_cycle_paths: data_cycles.cycle_paths,
+        control_cycle_paths: control.cycle_paths,
     }
 }
 

@@ -20,6 +20,7 @@
 
 mod conformance;
 mod connections;
+mod control_cycles;
 mod data_cycles;
 mod diagnostic;
 mod domains;
@@ -37,6 +38,7 @@ pub use diagnostic::{
 };
 
 pub use connections::{ConnectionValidation, validate_connections};
+pub use control_cycles::{ControlCycleValidation, validate_control_cycles};
 pub use data_cycles::{DataCycleValidation, validate_data_cycles};
 pub use domains::{DomainValidation, validate_body_domains};
 pub use inputs::validate_inputs;

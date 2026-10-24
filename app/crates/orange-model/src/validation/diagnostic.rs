@@ -118,6 +118,8 @@ pub enum DiagnosticCode {
     RegionEscape,
     #[serde(rename = "E-BREAK-OUTSIDE-LOOP")]
     BreakOutsideLoop,
+    #[serde(rename = "E-CYCLE-SYNC-CONTROL")]
+    CycleSyncControl,
     #[serde(rename = "E-LOOP-UNBOUNDED")]
     LoopUnbounded,
     #[serde(rename = "W-UNREACHABLE")]
@@ -182,6 +184,7 @@ impl DiagnosticCode {
             Self::RegionAmbiguous => "E-REGION-AMBIGUOUS",
             Self::RegionEscape => "E-REGION-ESCAPE",
             Self::BreakOutsideLoop => "E-BREAK-OUTSIDE-LOOP",
+            Self::CycleSyncControl => "E-CYCLE-SYNC-CONTROL",
             Self::LoopUnbounded => "E-LOOP-UNBOUNDED",
             Self::Unreachable => "W-UNREACHABLE",
         }
@@ -243,6 +246,7 @@ impl DiagnosticCode {
             Self::RegionAmbiguous => "core/graph-region-ambiguous",
             Self::RegionEscape => "core/graph-region-escape",
             Self::BreakOutsideLoop => "core/graph-break-outside-loop",
+            Self::CycleSyncControl => "core/graph-cycle-sync-control",
             Self::LoopUnbounded => "core/graph-loop-unbounded",
             Self::Unreachable => "core/graph-unreachable",
         }
@@ -343,6 +347,7 @@ impl DiagnosticCode {
             Self::BreakOutsideLoop => {
                 "Break and continue need an enclosing loop body in the same function.".into()
             }
+            Self::CycleSyncControl => "A control cycle needs a node that always suspends.".into(),
             Self::LoopUnbounded => "A while loop requires a finite positive max_iterations.".into(),
             Self::Unreachable => {
                 "Execution node is not reachable from any entry or region root.".into()
