@@ -74,3 +74,28 @@ impl KernelError {
         }
     }
 }
+
+/// Explicit scalar conversion failures; the caller adds runtime provenance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum ConversionError {
+    #[error("The value is outside the target conversion range.")]
+    OutOfRange,
+    #[error("Converter input violates the resolved contract.")]
+    InputContract,
+}
+
+impl ConversionError {
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::OutOfRange => "core/OutOfRange",
+            Self::InputContract => "core/InternalFault",
+        }
+    }
+
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::OutOfRange => "core/conversion-out-of-range",
+            Self::InputContract => "core/conversion-input-contract",
+        }
+    }
+}

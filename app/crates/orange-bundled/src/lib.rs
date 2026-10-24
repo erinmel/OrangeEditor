@@ -6,9 +6,11 @@
 //! graph compiler, run actor, package installer or sandbox.
 
 mod catalog;
+mod conversion;
 mod error;
 mod kernel;
 
 pub use catalog::{MathPackage, math_definitions};
-pub use error::{BindingError, CatalogError, KernelError};
+pub use conversion::{ConversionOutput, ResolvedConversion, resolve_core_conversion};
+pub use error::{BindingError, CatalogError, ConversionError, KernelError};
 pub use kernel::{Operation, ResolvedKernel};

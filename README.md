@@ -6,6 +6,8 @@ The working code is [orange-model](app/crates/orange-model): graph documents, tr
 
 The first shipped scalar kernel slice is [orange-bundled](app/crates/orange-bundled): native Add/Subtract/Multiply/Divide for i32/i64/u32/u64/f32/f64 and boolean Not, with exact provider binding, explicit numeric policies and registry snapshot retention. This supplies concrete compiler prerequisites; graph compilation, constant folding and scheduled execution remain future work.
 
+The same crate executes the four existing explicit core converters: i32↔i64 and f32↔f64. Narrowing checks range; lossy float conversion returns JSON loss metadata. These preserve exact entry/provider choices and require complete saved policies; they introduce no implicit conversions.
+
 ## Development
 
 Run from the repository root with the toolchain in [rust-toolchain.toml](rust-toolchain.toml) and the checked-in Cargo.lock:
