@@ -12,6 +12,7 @@ use super::{
     Diagnostic, FunctionEvidence, FunctionSummary, LeafEffects, Severity, analyze_functions,
     sort_diagnostics, validate_availability, validate_body_domains, validate_connections,
     validate_control_cycles, validate_data_cycles, validate_inputs, validate_regions,
+    validate_state, validate_streams,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
@@ -317,6 +318,14 @@ pub fn analyze_with_effects(
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
     diagnostics.extend(conformance.diagnostics);
+    diagnostics.extend(validate_streams(document, &nodes.resolved, registry));
+    diagnostics.extend(validate_state(
+        document,
+        registry,
+        &regions.index,
+        &functions.summaries,
+        &leaf_effects,
+    ));
     let explained_nodes: BTreeSet<_> = diagnostics
         .iter()
         .filter(|item| item.severity == Severity::Error)

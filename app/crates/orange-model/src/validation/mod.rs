@@ -30,6 +30,8 @@ mod nodes;
 pub(crate) mod ports;
 mod regions;
 mod report;
+mod state;
+mod streams;
 mod variables;
 
 pub use diagnostic::{
@@ -51,6 +53,8 @@ pub use report::{
     ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
     required_checks, validate, validate_with_effects,
 };
+pub use state::validate_state;
+pub use streams::validate_streams;
 
 pub use functions::{
     FunctionAnalysis, FunctionEvidence, FunctionSummary, LeafEffects, VariableWrite,

@@ -146,7 +146,7 @@ pub fn validate_inputs(
                 ));
                 continue;
             }
-            if expected_term.core("handle").is_some() {
+            if expected_term.core("handle").is_some() || expected_term.core("stream").is_some() {
                 diagnostics.push(diagnostic(
                     DiagnosticCode::HandleLiteral,
                     Severity::Error,

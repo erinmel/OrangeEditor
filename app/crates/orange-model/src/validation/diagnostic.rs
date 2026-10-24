@@ -5,7 +5,7 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::id::{EdgeId, FunctionId, NodeId, PortKey};
+use crate::id::{EdgeId, FunctionId, NodeId, PortKey, VariableId};
 
 /// Stable identifiers for implemented graph validation diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -130,6 +130,12 @@ pub enum DiagnosticCode {
     BusyLoop,
     #[serde(rename = "W-UNREACHABLE")]
     Unreachable,
+    #[serde(rename = "E-WRITE-CONFLICT")]
+    WriteConflict,
+    #[serde(rename = "E-HANDLE-PERSIST")]
+    HandlePersist,
+    #[serde(rename = "E-STREAM-STORE")]
+    StreamStore,
 }
 
 impl DiagnosticCode {
@@ -196,6 +202,9 @@ impl DiagnosticCode {
             Self::LoopUnbounded => "E-LOOP-UNBOUNDED",
             Self::BusyLoop => "W-BUSY-LOOP",
             Self::Unreachable => "W-UNREACHABLE",
+            Self::WriteConflict => "E-WRITE-CONFLICT",
+            Self::HandlePersist => "E-HANDLE-PERSIST",
+            Self::StreamStore => "E-STREAM-STORE",
         }
     }
 
@@ -261,6 +270,9 @@ impl DiagnosticCode {
             Self::LoopUnbounded => "core/graph-loop-unbounded",
             Self::BusyLoop => "core/graph-busy-loop",
             Self::Unreachable => "core/graph-unreachable",
+            Self::WriteConflict => "core/graph-write-conflict",
+            Self::HandlePersist => "core/graph-handle-persist",
+            Self::StreamStore => "core/graph-stream-store",
         }
     }
 
@@ -371,6 +383,13 @@ impl DiagnosticCode {
             Self::Unreachable => {
                 "Execution node is not reachable from any entry or region root.".into()
             }
+            Self::WriteConflict => {
+                "Parallel Fork branches write the same variable without a compatible policy.".into()
+            }
+            Self::HandlePersist => {
+                "Handle types cannot be persisted, shared, written as literals or exported.".into()
+            }
+            Self::StreamStore => "Streams cannot be stored in variables or exported.".into(),
         }
     }
 }
@@ -400,6 +419,8 @@ pub struct Subject {
     pub port: Option<PortKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge: Option<EdgeId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variable: Option<VariableId>,
 }
 
 impl Subject {
@@ -409,7 +430,14 @@ impl Subject {
             node,
             port,
             edge,
+            variable: None,
         }
+    }
+
+    /// Adds the declared variable this diagnostic is about.
+    pub const fn with_variable(mut self, variable: VariableId) -> Self {
+        self.variable = Some(variable);
+        self
     }
 
     /// Adds the graph-local function owning this diagnostic subject.
