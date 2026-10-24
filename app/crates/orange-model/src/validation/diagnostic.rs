@@ -126,6 +126,8 @@ pub enum DiagnosticCode {
     CycleSyncControl,
     #[serde(rename = "E-LOOP-UNBOUNDED")]
     LoopUnbounded,
+    #[serde(rename = "W-BUSY-LOOP")]
+    BusyLoop,
     #[serde(rename = "W-UNREACHABLE")]
     Unreachable,
 }
@@ -192,6 +194,7 @@ impl DiagnosticCode {
             Self::BreakOutsideLoop => "E-BREAK-OUTSIDE-LOOP",
             Self::CycleSyncControl => "E-CYCLE-SYNC-CONTROL",
             Self::LoopUnbounded => "E-LOOP-UNBOUNDED",
+            Self::BusyLoop => "W-BUSY-LOOP",
             Self::Unreachable => "W-UNREACHABLE",
         }
     }
@@ -256,6 +259,7 @@ impl DiagnosticCode {
             Self::BreakOutsideLoop => "core/graph-break-outside-loop",
             Self::CycleSyncControl => "core/graph-cycle-sync-control",
             Self::LoopUnbounded => "core/graph-loop-unbounded",
+            Self::BusyLoop => "core/graph-busy-loop",
             Self::Unreachable => "core/graph-unreachable",
         }
     }
@@ -363,6 +367,7 @@ impl DiagnosticCode {
             }
             Self::CycleSyncControl => "A control cycle needs a node that always suspends.".into(),
             Self::LoopUnbounded => "A while loop requires a finite positive max_iterations.".into(),
+            Self::BusyLoop => "This control cycle only yields and keeps the CPU busy.".into(),
             Self::Unreachable => {
                 "Execution node is not reachable from any entry or region root.".into()
             }
@@ -603,7 +608,9 @@ impl Diagnostic {
         }
         let severity = if matches!(
             code,
-            DiagnosticCode::LiteralShadowed | DiagnosticCode::Unreachable
+            DiagnosticCode::LiteralShadowed
+                | DiagnosticCode::Unreachable
+                | DiagnosticCode::BusyLoop
         ) {
             Severity::Warning
         } else {

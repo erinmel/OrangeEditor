@@ -386,6 +386,7 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::FunctionSummaries,
             ValidationCheck::BodyDomains,
             ValidationCheck::DataCycles,
+            ValidationCheck::ControlCycles,
             ValidationCheck::ValueAvailability,
         ]
     );
@@ -396,7 +397,6 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::ContextualContracts,
             ValidationCheck::FunctionRestrictions,
             ValidationCheck::Regions,
-            ValidationCheck::ControlCycles,
             ValidationCheck::StateRules,
             ValidationCheck::StreamRules,
             ValidationCheck::EntryPoliciesAndExports,

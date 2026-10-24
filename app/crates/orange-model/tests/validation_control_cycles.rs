@@ -133,6 +133,38 @@ fn a_second_cycle_that_avoids_the_suspension_is_still_reported() {
     assert_eq!(result.cycle_paths, [vec![nid(2), nid(3), nid(2)]]);
 }
 
+fn named(mut n: N, definition: &str) -> N {
+    n.json["definition_id"] = json!(definition);
+    n.json.as_object_mut().unwrap().remove("signature");
+    n
+}
+
+#[test]
+fn yield_only_cycle_is_legal_but_warns() {
+    let result = run(
+        vec![
+            named(suspending(1, Suspends::Always), "core/yield"),
+            action(2),
+        ],
+        vec![wire(1, 1, 2), wire(2, 2, 1)],
+    );
+    assert!(result.is_valid());
+    let codes: Vec<_> = result.diagnostics.iter().map(|d| d.code).collect();
+    assert_eq!(codes, [DiagnosticCode::BusyLoop]);
+}
+
+#[test]
+fn wait_in_a_yield_cycle_removes_the_warning() {
+    let result = run(
+        vec![
+            named(suspending(1, Suspends::Always), "core/yield"),
+            named(suspending(2, Suspends::Always), "core/wait"),
+        ],
+        vec![wire(1, 1, 2), wire(2, 2, 1)],
+    );
+    assert!(result.diagnostics.is_empty());
+}
+
 #[test]
 fn acyclic_exec_chain_is_valid() {
     let result = run(vec![action(1), action(2)], vec![wire(1, 1, 2)]);

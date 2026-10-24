@@ -60,6 +60,7 @@ const COVERED_CHECKS: &[ValidationCheck] = &[
     ValidationCheck::FunctionSummaries,
     ValidationCheck::BodyDomains,
     ValidationCheck::DataCycles,
+    ValidationCheck::ControlCycles,
     ValidationCheck::ValueAvailability,
 ];
 

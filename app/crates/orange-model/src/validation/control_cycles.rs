@@ -68,7 +68,7 @@ pub fn validate_control_cycles(
             BodyRef::Root => None,
             BodyRef::Function(id) => Some(id),
         };
-        let mut graph = Graph::new();
+        let mut full = Graph::new();
         let mut edges: Vec<_> = body.edges.values().collect();
         edges.sort_by_key(|edge| edge.id);
         for edge in edges {
@@ -88,12 +88,7 @@ pub fn validate_control_cycles(
                         && to.kind == PortKind::Exec
                         && matches!(from.kind, PortKind::Exec | PortKind::Event) =>
                 {
-                    if !certified(edge.from.node) && !certified(edge.to.node) {
-                        graph
-                            .entry(edge.from.node)
-                            .or_default()
-                            .insert(edge.to.node);
-                    }
+                    full.entry(edge.from.node).or_default().insert(edge.to.node);
                 }
                 (Err(PortLookupError::MissingMetadata), _)
                 | (_, Err(PortLookupError::MissingMetadata)) => {
@@ -103,13 +98,12 @@ pub fn validate_control_cycles(
                 _ => {}
             }
         }
-        for component in cyclic_components(&graph) {
-            let path = cycle_witness(&graph, &component);
-            let subject = Subject::new(path.first().copied(), None, None);
-            let subject = match function {
-                Some(function) => subject.with_function(function),
-                None => subject,
-            };
+        let strict = filtered(&full, &certified);
+        let mut errors = BTreeSet::new();
+        for component in cyclic_components(&strict) {
+            let path = cycle_witness(&strict, &component);
+            errors.extend(component);
+            let subject = cycle_subject(function, &path);
             result.diagnostics.push(Diagnostic::new(
                 DiagnosticCode::CycleSyncControl,
                 subject,
@@ -117,8 +111,48 @@ pub fn validate_control_cycles(
             ));
             result.cycle_paths.push(path);
         }
+        // Cycles certified only by yields are legal but busy (11 §8.1).
+        let lenient = filtered(&full, &|node| certified(node) && !is_yield(document, node));
+        for component in cyclic_components(&lenient) {
+            if component.iter().any(|node| errors.contains(node)) {
+                continue;
+            }
+            let path = cycle_witness(&lenient, &component);
+            let subject = cycle_subject(function, &path);
+            result
+                .diagnostics
+                .push(Diagnostic::new(DiagnosticCode::BusyLoop, subject, origin));
+        }
     }
     sort_diagnostics(&mut result.diagnostics);
+    result
+}
+
+fn is_yield(document: &GraphDocument, node: NodeId) -> bool {
+    document
+        .node(node)
+        .is_some_and(|instance| instance.definition.id.as_str() == "core/yield")
+}
+
+fn cycle_subject(function: Option<crate::id::FunctionId>, path: &[NodeId]) -> Subject {
+    let subject = Subject::new(path.first().copied(), None, None);
+    match function {
+        Some(function) => subject.with_function(function),
+        None => subject,
+    }
+}
+
+/// `graph` without the nodes `removed` selects.
+fn filtered(graph: &Graph, removed: &dyn Fn(NodeId) -> bool) -> Graph {
+    let mut result = Graph::new();
+    for (from, targets) in graph {
+        if removed(*from) {
+            continue;
+        }
+        for to in targets.iter().filter(|to| !removed(**to)) {
+            result.entry(*from).or_default().insert(*to);
+        }
+    }
     result
 }
 
