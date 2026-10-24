@@ -191,3 +191,25 @@ fn params_in_term_are_declared(term: &TypeTerm, declared: &BTreeSet<&str>) -> bo
             .all(|arg| params_in_term_are_declared(arg, declared)),
     }
 }
+
+/// Whether a definition ID names a function-structure marker (`core/function-entry`,
+/// `core/function-outputs` or `core/return`).
+pub(crate) fn is_function_marker(id: &str) -> bool {
+    matches!(
+        id,
+        "core/function-entry" | "core/function-outputs" | "core/return"
+    )
+}
+
+/// The function type parameters that are rigid at `node`: its owning function's declared
+/// parameters, or none for a root-body node. Inside a body they are opaque constants, equal
+/// only to themselves; each call site of the function instantiates them afresh (11 section 14).
+pub(crate) fn rigid_params(document: &GraphDocument, node: crate::id::NodeId) -> &[TypeParam] {
+    match document.locate_node(node) {
+        Some(BodyRef::Function(id)) => document
+            .functions()
+            .get(&id)
+            .map_or(&[], |function| function.type_params.as_slice()),
+        _ => &[],
+    }
+}

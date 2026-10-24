@@ -118,14 +118,54 @@ fn recursive_and_generic_functions_never_back_a_call() {
     let report = run(vec![recursive]);
     assert!(codes(&report).contains(&DiagnosticCode::Recursion));
     assert!(!report.resolved.contains_key(&CALL.parse().unwrap()));
+}
 
+fn generic_identity(output_ty: &str) -> Value {
     let mut generic = pure_identity(F);
     generic["type_params"] = json!([{"name":"T"}]);
     generic["inputs"] = json!([port("x", "input", "$T")]);
-    generic["outputs"] = json!([port("y", "output", "$T")]);
-    let report = run(vec![generic]);
-    assert!(codes(&report).contains(&DiagnosticCode::FunctionBodyMarker));
+    generic["outputs"] = json!([port("y", "output", output_ty)]);
+    generic
+}
+
+fn run_pinned(functions: Vec<Value>, pin: Option<&str>) -> ValidationReport {
+    let mut node = call(CALL, F);
+    if let Some(pin) = pin {
+        node["type_pins"] = json!({"T": pin});
+    }
+    let document: GraphDocument = serde_json::from_value(json!({
+        "format_version":1,"graph_id":"50000000-0000-4000-8000-000000000001","revision":0,
+        "nodes":[node],"functions":functions}))
+    .unwrap();
+    let origin = HostOrigin::new("1.0.0", format!("sha256:{}", "a".repeat(64))).unwrap();
+    validate(&document, &RegistrySnapshot::core(origin))
+}
+
+#[test]
+fn generic_functions_treat_their_parameters_as_rigid_and_calls_instantiate_them() {
+    let report = run_pinned(vec![generic_identity("$T")], Some("core/f64@1"));
+    let snapshot = &report.resolved[&CALL.parse().unwrap()];
+    assert_eq!(snapshot.kind, NodeKind::Pure);
+    assert!(
+        snapshot
+            .ports
+            .iter()
+            .all(|p| p.ty.as_ref().unwrap().as_str() == "core/f64@1")
+    );
+    assert!(
+        !codes(&report).contains(&DiagnosticCode::TypeMismatch),
+        "{:?}",
+        report.diagnostics
+    );
+
+    // A body that returns a different type than `$T` is a mismatch, not an instantiation.
+    let report = run_pinned(vec![generic_identity("core/i64@1")], Some("core/i64@1"));
+    assert!(codes(&report).contains(&DiagnosticCode::TypeMismatch));
     assert!(!report.resolved.contains_key(&CALL.parse().unwrap()));
+
+    // Without evidence the call's own `$T` stays ambiguous.
+    let report = run_pinned(vec![generic_identity("$T")], None);
+    assert!(codes(&report).contains(&DiagnosticCode::TypeAmbiguous));
 }
 
 const SET: &str = "40000000-0000-4000-8000-000000000005";

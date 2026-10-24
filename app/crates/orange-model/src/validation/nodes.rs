@@ -6,7 +6,8 @@ use std::borrow::Cow;
 
 use crate::catalog::{
     CallInterfaceError, ContractError, NodeContract, ProviderKey, RegistrySnapshot, TypeArgs,
-    call_interface, is_converter_special_form, is_intrinsic, project_interface,
+    call_interface, is_converter_special_form, is_function_marker, is_intrinsic, project_interface,
+    rigid_params,
 };
 use crate::document::{
     BodyRef, GraphDocument, NodeKind, OutputSource, PortDescriptor, PortKind, PortRef,
@@ -551,6 +552,10 @@ fn project_node(
         ports,
         &BTreeMap::new(),
     );
+    let rigid: Vec<String> = rigid_params(pass.document, id)
+        .iter()
+        .map(|param| param.name.to_string())
+        .collect();
     if !validate_projected_types(
         id,
         &projected,
@@ -558,6 +563,7 @@ fn project_node(
         pass.origin,
         report,
         diagnostics,
+        &rigid,
     ) {
         return None;
     }
@@ -585,13 +591,19 @@ fn validate_projected_types(
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
+    rigid: &[String],
 ) -> bool {
     let mut valid = true;
     for port in &snapshot.ports {
         let Some(ty) = &port.ty else { continue };
         let code = match TypeTerm::parse(ty) {
-            Ok(term) if term.contains_param() => Some(DiagnosticCode::TypeMismatch),
-            Ok(term) => types.validate(&term).err().map(resolve_error_code),
+            Ok(term) => types
+                .validate_scoped(&term, rigid)
+                .err()
+                .map(|error| match error {
+                    TypeResolveError::UnresolvedParameter { .. } => DiagnosticCode::TypeMismatch,
+                    error => resolve_error_code(error),
+                }),
             Err(IdError::TypeTooDeep { .. }) => Some(DiagnosticCode::TypeComplexity),
             Err(_) => Some(DiagnosticCode::TypeMismatch),
         };
@@ -803,20 +815,13 @@ fn call_suspends(kind: NodeKind, suspends: Suspends) -> Option<Suspends> {
     matches!(kind, NodeKind::Async | NodeKind::Iterator).then_some(suspends)
 }
 
-fn is_function_marker(id: &str) -> bool {
-    matches!(
-        id,
-        "core/function-entry" | "core/function-outputs" | "core/return"
-    )
-}
-
 /// Ports of a function-structure marker, derived from the owning function's interface.
 ///
 /// The entry exposes the declared inputs as data outputs; return and function-outputs accept
 /// the declared outputs as required data inputs (`return` also has the exec `in`). The
-/// declaration is the only type authority, so a marker is never independently generic: an
-/// interface whose port types mention function type parameters cannot be checked against a
-/// concrete body yet and is reported instead of being inferred per marker.
+/// declaration is the only type authority, so a marker is never independently generic: the
+/// function's own type parameters stay in the port types as rigid `$T` constants shared by
+/// every marker, and only a call site instantiates them.
 fn marker_contract(
     document: &GraphDocument,
     node: &crate::document::NodeInstance,
@@ -830,15 +835,6 @@ fn marker_contract(
         .ok_or(DiagnosticCode::IntrinsicUnsupported)?;
     let interface =
         project_interface(declaration).map_err(|_| DiagnosticCode::FunctionInterface)?;
-    let generic = interface.iter().any(|port| {
-        port.ty
-            .as_ref()
-            .and_then(|ty| TypeTerm::parse(ty).ok())
-            .is_none_or(|term| term.contains_param())
-    });
-    if generic {
-        return Err(DiagnosticCode::FunctionBodyMarker);
-    }
     let entry = node.definition.id.as_str() == "core/function-entry";
     let mut ports = Vec::new();
     for port in interface {

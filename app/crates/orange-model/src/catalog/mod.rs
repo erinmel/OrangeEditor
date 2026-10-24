@@ -9,8 +9,8 @@ pub(crate) mod language;
 pub mod provider;
 pub mod snapshot;
 
-pub(crate) use call::project_interface;
 pub use call::{CallInterface, CallInterfaceError, call_interface};
+pub(crate) use call::{is_function_marker, project_interface, rigid_params};
 pub use definition::{
     ContractError, EventAccess, NodeContract, NodeDefinition, Ports, ReferenceError,
     ReferenceField, ReferenceKind, TypeArgs, VariableAccess,

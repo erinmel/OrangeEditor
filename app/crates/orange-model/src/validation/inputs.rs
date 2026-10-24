@@ -2,7 +2,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::RegistrySnapshot;
+use crate::catalog::{RegistrySnapshot, rigid_params};
 use crate::document::{GraphDocument, PortDescriptor, PortDirection, PortKind, SignatureSnapshot};
 use crate::id::{NodeId, PortKey, TypeExpr};
 use crate::type_term::TypeTerm;
@@ -36,6 +36,10 @@ pub fn validate_inputs(
         let Some(snapshot) = resolved.get(&node_id) else {
             continue;
         };
+        let rigid: Vec<String> = rigid_params(document, node_id)
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect();
         let mut valid_keys = BTreeSet::new();
         let mut candidates = Vec::new();
 
@@ -100,7 +104,7 @@ pub fn validate_inputs(
                 ));
                 continue;
             };
-            let expected_term = match validate_expected_type(expected, types) {
+            let expected_term = match validate_expected_type(expected, types, &rigid) {
                 Ok(term) => term,
                 Err(code) => {
                     diagnostics.push(diagnostic(code, Severity::Error, node_id, key, origin));
@@ -176,17 +180,23 @@ fn is_variadic(port: &PortDescriptor) -> bool {
     port.variadic.is_some()
 }
 
-fn validate_expected_type(ty: &TypeExpr, types: &TypeRegistry) -> Result<TypeTerm, DiagnosticCode> {
+fn validate_expected_type(
+    ty: &TypeExpr,
+    types: &TypeRegistry,
+    rigid: &[String],
+) -> Result<TypeTerm, DiagnosticCode> {
     let term = TypeTerm::parse(ty).map_err(|error| match error {
         crate::error::IdError::TypeTooDeep { .. } => DiagnosticCode::TypeComplexity,
         _ => DiagnosticCode::TypeMismatch,
     })?;
-    types.validate(&term).map_err(|error| match error {
-        TypeResolveError::TooDeep { .. } | TypeResolveError::DerivationTooDeep { .. } => {
-            DiagnosticCode::TypeComplexity
-        }
-        _ => DiagnosticCode::TypeMismatch,
-    })?;
+    types
+        .validate_scoped(&term, rigid)
+        .map_err(|error| match error {
+            TypeResolveError::TooDeep { .. } | TypeResolveError::DerivationTooDeep { .. } => {
+                DiagnosticCode::TypeComplexity
+            }
+            _ => DiagnosticCode::TypeMismatch,
+        })?;
     Ok(term)
 }
 

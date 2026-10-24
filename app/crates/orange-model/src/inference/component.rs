@@ -17,7 +17,10 @@ use super::unify::{
     TypeScopeError, TypeVariable, UnificationError, unify,
 };
 use crate::GraphDocument;
-use crate::catalog::{ProviderKey, RegistrySnapshot, TypeArgs, call_interface, implicit_port};
+use crate::catalog::{
+    ProviderKey, RegistrySnapshot, TypeArgs, call_interface, implicit_port, is_function_marker,
+    rigid_params,
+};
 use crate::document::{
     GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, SignatureSnapshot, TypeParam,
     TypeParamName,
@@ -263,6 +266,25 @@ impl Graph<'_> {
         )
     }
 
+    /// True for a builtin function marker whose `term` mentions only its function's type
+    /// parameters.
+    fn is_rigid_marker(&self, id: NodeId, term: &TypeTerm) -> bool {
+        fn declared(term: &TypeTerm, params: &[TypeParam]) -> bool {
+            match term {
+                TypeTerm::Param(name) => params.iter().any(|param| param.name.as_str() == name),
+                TypeTerm::Named(named) => named.args.iter().all(|arg| declared(arg, params)),
+            }
+        }
+        let Some((_, node)) = self.node(id) else {
+            return false;
+        };
+        is_function_marker(node.definition.id.as_str())
+            && node.provider.is_none()
+            && node.definition.version == 1
+            && node.config_version == 1
+            && declared(term, rigid_params(self.document, id))
+    }
+
     fn port_term(&self, port: &PortRef) -> PortTerm {
         let Some(ty) = self.declared_port(port).and_then(|declared| declared.ty) else {
             return Ok(None);
@@ -270,7 +292,13 @@ impl Graph<'_> {
         let term = parse(port.node, &ty)?;
         let generic = self.generic(port.node).is_some();
         if !generic && term.contains_param() {
-            // An unresolved non-generic snapshot carries no usable evidence.
+            // A function marker's parameters are the function's rigid type constants. Any
+            // other unresolved non-generic snapshot carries no usable evidence.
+            if self.is_rigid_marker(port.node, &term) {
+                return ScopedTypeTerm::from_rigid_template(port.node, &term)
+                    .map(Some)
+                    .map_err(budget_exceeded);
+            }
             return Ok(None);
         }
         ScopedTypeTerm::from_template(port.node, &term)
@@ -311,7 +339,13 @@ impl Graph<'_> {
                 let variable = ScopedTypeTerm::Variable(TypeVariable::new(id, &parameter.name));
                 let resolved = unification.resolve(&variable).map_err(InferenceIssue::from);
                 match resolved.map(|term| term.to_concrete_type_term()) {
-                    Ok(Ok(term)) => match check_argument(types, id, parameter, &term) {
+                    Ok(Ok(term)) => match check_argument(
+                        types,
+                        id,
+                        parameter,
+                        &term,
+                        rigid_params(self.document, id),
+                    ) {
                         Ok(ty) => {
                             args.insert(parameter.name.clone(), ty);
                         }
@@ -516,13 +550,15 @@ fn check_argument(
     node: NodeId,
     parameter: &TypeParam,
     term: &TypeTerm,
+    rigid: &[TypeParam],
 ) -> Result<TypeExpr, InferenceIssue> {
     let ty: TypeExpr = term
         .to_string()
         .parse()
         .expect("a concrete type term prints as a nonblank type expression");
+    let rigid_names: Vec<String> = rigid.iter().map(|param| param.name.to_string()).collect();
     types
-        .validate(term)
+        .validate_scoped(term, &rigid_names)
         .map_err(|error| InferenceIssue::UnknownType {
             node,
             parameter: parameter.name.clone(),
@@ -537,6 +573,20 @@ fn check_argument(
             constraint: constraint.clone(),
             reason,
         };
+        if term.contains_param() {
+            // A rigid parameter has only the constraints its function declares, matched
+            // exactly; a compound type over rigid parameters is never proven.
+            let declared = matches!(
+                term,
+                TypeTerm::Param(name) if rigid.iter().any(|param| {
+                    param.name.as_str() == name && param.constraints.contains(constraint)
+                })
+            );
+            if declared {
+                continue;
+            }
+            return Err(unsatisfied(None));
+        }
         let Some(request) = capability_request(constraint) else {
             return Err(unsatisfied(None));
         };
