@@ -142,6 +142,18 @@ pub enum DiagnosticCode {
     VariablePersistent,
     #[serde(rename = "E-REGISTER-CONFIG")]
     RegisterConfig,
+    #[serde(rename = "W-DETACH-IN-FUNCTION")]
+    DetachInFunction,
+    #[serde(rename = "E-EXPORT-TARGET")]
+    ExportTarget,
+    #[serde(rename = "E-EXPORT-DUPLICATE")]
+    ExportDuplicate,
+    #[serde(rename = "E-EXPORT-TYPE")]
+    ExportType,
+    #[serde(rename = "E-CONFIG-INVALID")]
+    ConfigInvalid,
+    #[serde(rename = "E-CONFIG-SCHEMA-UNSUPPORTED")]
+    ConfigSchemaUnsupported,
 }
 
 impl DiagnosticCode {
@@ -214,6 +226,12 @@ impl DiagnosticCode {
             Self::StaleCapture => "W-STALE-CAPTURE",
             Self::VariablePersistent => "E-VARIABLE-PERSISTENT",
             Self::RegisterConfig => "E-REGISTER-CONFIG",
+            Self::DetachInFunction => "W-DETACH-IN-FUNCTION",
+            Self::ExportTarget => "E-EXPORT-TARGET",
+            Self::ExportDuplicate => "E-EXPORT-DUPLICATE",
+            Self::ExportType => "E-EXPORT-TYPE",
+            Self::ConfigInvalid => "E-CONFIG-INVALID",
+            Self::ConfigSchemaUnsupported => "E-CONFIG-SCHEMA-UNSUPPORTED",
         }
     }
 
@@ -285,6 +303,12 @@ impl DiagnosticCode {
             Self::StaleCapture => "core/graph-stale-capture",
             Self::VariablePersistent => "core/graph-variable-persistent",
             Self::RegisterConfig => "core/graph-register-config",
+            Self::DetachInFunction => "core/graph-detach-in-function",
+            Self::ExportTarget => "core/graph-export-target",
+            Self::ExportDuplicate => "core/graph-export-duplicate",
+            Self::ExportType => "core/graph-export-type",
+            Self::ConfigInvalid => "core/graph-config-invalid",
+            Self::ConfigSchemaUnsupported => "core/graph-config-schema-unsupported",
         }
     }
 
@@ -409,6 +433,16 @@ impl DiagnosticCode {
             Self::RegisterConfig => {
                 "Register scope must be run or activation and initial must be a literal of its type."
                     .into()
+            }
+            Self::DetachInFunction => {
+                "A return cancels the detached strands left by this fork.".into()
+            }
+            Self::ExportTarget => "Export does not name an existing data output port.".into(),
+            Self::ExportDuplicate => "Export identifier is used more than once.".into(),
+            Self::ExportType => "Exported value type cannot be serialized.".into(),
+            Self::ConfigInvalid => "Node configuration does not satisfy its definition schema.".into(),
+            Self::ConfigSchemaUnsupported => {
+                "Definition config schema uses constructs outside the supported dialect.".into()
             }
         }
     }
@@ -660,6 +694,7 @@ impl Diagnostic {
                 | DiagnosticCode::Unreachable
                 | DiagnosticCode::BusyLoop
                 | DiagnosticCode::StaleCapture
+                | DiagnosticCode::DetachInFunction
         ) {
             Severity::Warning
         } else {

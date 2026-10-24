@@ -169,6 +169,19 @@ pub fn analyze_functions(
 
         for node in function.body.nodes.values() {
             let definition = node.definition.id.as_str();
+            // Documented host entries (11 §10) are never allowed in a body, even before this
+            // core version registers their contracts; an unsupported entry must not hide the rule.
+            if UNREGISTERED_HOST_ENTRIES.contains(&definition) {
+                emit_at(
+                    &mut result,
+                    DiagnosticCode::EntryInFunction,
+                    function_id,
+                    node.id,
+                    origin,
+                );
+                complete = false;
+                continue;
+            }
             if is_intrinsic(definition)
                 && (node.provider.is_some()
                     || node.definition.version != 1
@@ -183,6 +196,19 @@ pub fn analyze_functions(
                 );
                 complete = false;
                 continue;
+            }
+            // A function's return (or end) cancels strands a detaching fork left running
+            // (11 §14). The fork stays legal, so this is a warning and not incompleteness.
+            if definition == "core/fork"
+                && node.config.get("join").and_then(serde_json::Value::as_str) == Some("detach")
+            {
+                emit_at(
+                    &mut result,
+                    DiagnosticCode::DetachInFunction,
+                    function_id,
+                    node.id,
+                    origin,
+                );
             }
             if is_marker(node) {
                 continue;
@@ -642,6 +668,17 @@ fn emit(result: &mut FunctionAnalysis, code: DiagnosticCode, id: FunctionId, ori
         origin,
     ));
 }
+
+/// Host entry identities from the 11 §10 table that the core registry does not yet define.
+const UNREGISTERED_HOST_ENTRIES: &[&str] = &[
+    "core/on-start",
+    "core/on-stop",
+    "core/on-manual",
+    "core/on-timer",
+    "core/on-timeout",
+    "core/on-variable-changed",
+    "core/on-watch",
+];
 
 fn emit_at(
     result: &mut FunctionAnalysis,
