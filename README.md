@@ -10,6 +10,8 @@ The same crate executes the four existing explicit core converters: i32↔i64 an
 
 ## Development
 
+Saved graphs use versioned compact JSON for editing and interchange. Compilation produces typed Rust values and dense slot indices in memory, following the four representations in [12](docs/12-graph-data-structures.md). Execution does not require repeatedly parsing the saved JSON. Binary persistence and compiled-plan caching are separate choices; the measured format comparison and JSON import improvement are recorded in [10](docs/10-tooling-and-sources.md).
+
 Run from the repository root with the toolchain in [rust-toolchain.toml](rust-toolchain.toml) and the checked-in Cargo.lock:
 
 ```sh

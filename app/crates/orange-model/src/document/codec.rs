@@ -47,15 +47,6 @@ struct Header {
     format_version: u32,
 }
 
-#[derive(Deserialize)]
-struct EnvelopeIn {
-    // Header already validated the tag; consume it without storing a second String.
-    #[serde(rename = "format")]
-    _format: serde::de::IgnoredAny,
-    #[serde(flatten)]
-    document: GraphDocument,
-}
-
 #[derive(Serialize)]
 struct EnvelopeOut<'a> {
     format: &'static str,
@@ -89,7 +80,11 @@ pub fn from_json_with_limits(
             found: header.format_version,
         });
     }
-    let document = serde_json::from_str::<EnvelopeIn>(text)?.document;
+    // Deserialize the body directly: wrapping the entire graph in another flattened
+    // struct buffers it through Serde's intermediate representation a second time.
+    // `format` is envelope-owned, not an extension; keep other extension key order.
+    let mut document: GraphDocument = serde_json::from_str(text)?;
+    document.extensions.shift_remove("format");
     check_unique_across_bodies(&document)?;
     let (nodes, edges) = document
         .bodies()

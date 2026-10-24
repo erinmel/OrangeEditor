@@ -15,6 +15,8 @@ Status: **normative proposal for graph format v1**, 2026-10-20. Rust items below
 
 ## 2. Identifiers
 
+Persistence and execution are separate decisions: format v1 stores GraphDocument as compact versioned JSON; compilation lowers it into typed in-memory values, dense indices and pinned bindings. A binary document encoding would change the saved representation, while a binary plan cache would store a separate derived representation. Neither replaces typed execution data. The JSON-versus-MessagePack experiment in 10 does not adopt another interchange format or a cache ABI. Future caches require versioning, source/provider identity checks and executable rebinding; Rust memory images, pointers and live bindings are never portable persisted data (I-7).
+
 | ID | Form | Persisted | Notes |
 |---|---|---|---|
 | `GraphId`, `NodeId`, `EdgeId`, `VariableId`, `EventDeclId`, `FunctionId` | UUID (v4 or v7) | yes | Paste remaps every one of them ([01](01-product-requirements.md) FR-02) |
