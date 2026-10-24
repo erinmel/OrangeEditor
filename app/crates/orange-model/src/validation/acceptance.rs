@@ -27,7 +27,7 @@ use super::inputs::validate_inputs_in;
 use super::nodes::{CallEvidence, NodeValidation, validate_nodes_with};
 use super::regions::{RegionValidation, validate_regions_in};
 use super::scope::Scope;
-use super::{Diagnostic, Severity};
+use super::{AnalysisOptions, Diagnostic, DiagnosticCode, Severity};
 
 type Accepted = BTreeMap<FunctionId, (NodeKind, Suspends)>;
 
@@ -48,23 +48,31 @@ impl BodyPasses {
         calls: &CallEvidence,
         scope: Scope,
         index: &DocIndex,
-    ) -> Self {
+        options: &AnalysisOptions<'_>,
+    ) -> Result<Self, DiagnosticCode> {
+        options.checkpoint()?;
         let nodes = validate_nodes_with(document, registry, calls, scope, index);
+        options.checkpoint()?;
         let resolved = &nodes.resolved;
         let connections = validate_connections_in(document, resolved, registry, scope, index);
+        options.checkpoint()?;
         let data_cycles =
             validate_data_cycles_in(document, resolved, &connections, registry, scope);
+        options.checkpoint()?;
         let regions = validate_regions_in(document, resolved, &connections, registry, scope);
+        options.checkpoint()?;
         let control = validate_control_cycles_in(document, resolved, &connections, registry, scope);
+        options.checkpoint()?;
         let input_diagnostics = validate_inputs_in(document, resolved, registry, scope);
-        Self {
+        options.checkpoint()?;
+        Ok(Self {
             nodes,
             connections,
             data_cycles,
             regions,
             control,
             input_diagnostics,
-        }
+        })
     }
 
     /// Nodes that are unresolved, incomplete or carry an error diagnostic.
@@ -113,22 +121,25 @@ pub(crate) fn settle(
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
     index: &DocIndex,
     seed: Accepted,
-) -> Settled {
+    options: &AnalysisOptions<'_>,
+) -> Result<Settled, DiagnosticCode> {
     let mut calls = CallEvidence {
         accepted: seed,
         pipeline: true,
     };
     let mut rounds = 0;
     loop {
-        let passes = BodyPasses::run(document, registry, &calls, Scope::All, index);
+        let passes = BodyPasses::run(document, registry, &calls, Scope::All, index, options)?;
         let evidence = FunctionEvidence::from_nodes(document, &passes.nodes, leaf_effects.clone());
         let functions = analyze_functions(document, &evidence, registry);
+        options.checkpoint()?;
         let blocked = passes.blocked();
         let status = BodyStatus {
             resolved: &passes.nodes.resolved,
             blocked: &blocked,
         };
         let conformance = check_conformance(document, &functions.summaries, &status, registry);
+        options.checkpoint()?;
         let errors = function_errors(&functions.diagnostics);
         let accepted: Accepted = conformance
             .conformant
@@ -143,12 +154,12 @@ pub(crate) fn settle(
             .collect();
         rounds += 1;
         if accepted == calls.accepted || rounds > document.functions().len() + 1 {
-            return Settled {
+            return Ok(Settled {
                 passes,
                 functions,
                 conformance,
                 rounds,
-            };
+            });
         }
         calls.accepted = accepted;
     }
@@ -161,7 +172,9 @@ pub(crate) fn accept_functions(
     registry: &RegistrySnapshot,
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
     index: &DocIndex,
-) -> Accepted {
+    options: &AnalysisOptions<'_>,
+) -> Result<Accepted, DiagnosticCode> {
+    options.checkpoint()?;
     let mut functions = FunctionAnalysis::default();
     let graph = call_graph(document, registry, &mut functions);
     let (_, cyclic) = find_cycles(&graph);
@@ -171,7 +184,14 @@ pub(crate) fn accept_functions(
         pipeline: true,
     };
     for id in callee_first_order(&graph, &cyclic) {
-        let passes = BodyPasses::run(document, registry, &calls, Scope::Function(id), index);
+        let passes = BodyPasses::run(
+            document,
+            registry,
+            &calls,
+            Scope::Function(id),
+            index,
+            options,
+        )?;
         let context = SummaryContext {
             document,
             resolved: &passes.nodes.resolved,
@@ -182,6 +202,7 @@ pub(crate) fn accept_functions(
         };
         let known = functions.diagnostics.len();
         summarize_function(&context, id, &mut functions);
+        options.checkpoint()?;
         errors.extend(function_errors(&functions.diagnostics[known..]));
         let Some(summary) = functions.summaries.get(&id) else {
             continue;
@@ -202,7 +223,8 @@ pub(crate) fn accept_functions(
             calls.accepted.insert(id, (summary.kind, summary.suspends));
         }
     }
-    calls.accepted
+    options.checkpoint()?;
+    Ok(calls.accepted)
 }
 
 fn function_errors(diagnostics: &[Diagnostic]) -> BTreeSet<FunctionId> {
@@ -279,9 +301,26 @@ mod tests {
         );
         let effects = BTreeMap::new();
         let index = DocIndex::build(document);
-        let seed = accept_functions(document, &registry, &effects, &index);
-        let seeded = settle(document, &registry, &effects, &index, seed.clone());
-        let unseeded = settle(document, &registry, &effects, &index, BTreeMap::new());
+        let options = AnalysisOptions::default();
+        let seed = accept_functions(document, &registry, &effects, &index, &options).unwrap();
+        let seeded = settle(
+            document,
+            &registry,
+            &effects,
+            &index,
+            seed.clone(),
+            &options,
+        )
+        .unwrap();
+        let unseeded = settle(
+            document,
+            &registry,
+            &effects,
+            &index,
+            BTreeMap::new(),
+            &options,
+        )
+        .unwrap();
         assert_eq!(seeded.passes.nodes, unseeded.passes.nodes);
         assert_eq!(seeded.functions, unseeded.functions);
         assert_eq!(

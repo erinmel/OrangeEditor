@@ -35,7 +35,8 @@ pub use error::{
 };
 pub use index::DocIndex;
 pub use validation::{
-    ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
-    required_checks, validate, validate_with_effects,
+    AnalysisLimits, AnalysisOptions, ValidationAnalysis, ValidationCheck, ValidationReport,
+    analyze, analyze_with_effects, analyze_with_options, required_checks, validate,
+    validate_with_effects,
 };
 pub use value::Value;

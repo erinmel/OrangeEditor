@@ -10,14 +10,18 @@ use crate::index::DocIndex;
 
 use super::acceptance::{BodyPasses, Settled, accept_functions, settle};
 use super::{
-    Diagnostic, FunctionSummary, LeafEffects, Severity, sort_diagnostics, validate_availability,
-    validate_body_domains, validate_config, validate_exports, validate_state, validate_streams,
+    AnalysisOptions, Diagnostic, DiagnosticCode, FunctionSummary, LeafEffects, Severity, Subject,
+    sort_diagnostics, validate_availability, validate_body_domains, validate_config,
+    validate_declaration_types, validate_exports, validate_state, validate_streams,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[non_exhaustive]
 pub enum ValidationCheck {
+    DeclarationTypes,
+    /// Compiler-owned folding and preservation of constant errors (`W-CONST-ERROR`).
+    ConstantEvaluation,
     NodeResolution,
     InputValues,
     Connections,
@@ -36,6 +40,8 @@ pub enum ValidationCheck {
 }
 
 const REQUIRED_CHECKS: &[ValidationCheck] = &[
+    ValidationCheck::DeclarationTypes,
+    ValidationCheck::ConstantEvaluation,
     ValidationCheck::NodeResolution,
     ValidationCheck::InputValues,
     ValidationCheck::Connections,
@@ -54,6 +60,7 @@ const REQUIRED_CHECKS: &[ValidationCheck] = &[
 ];
 
 const COVERED_CHECKS: &[ValidationCheck] = &[
+    ValidationCheck::DeclarationTypes,
     ValidationCheck::NodeResolution,
     ValidationCheck::InputValues,
     ValidationCheck::Connections,
@@ -66,6 +73,7 @@ const COVERED_CHECKS: &[ValidationCheck] = &[
     ValidationCheck::DataCycles,
     ValidationCheck::ControlCycles,
     ValidationCheck::ValueAvailability,
+    ValidationCheck::StateRules,
     ValidationCheck::StreamRules,
     ValidationCheck::EntryPoliciesAndExports,
 ];
@@ -118,7 +126,7 @@ impl ValidationReport {
 
 /// Report plus private evidence of which checks ran and which inputs it analyzed.
 ///
-/// Only [`analyze`] and [`analyze_with_effects`] can produce this value. Extracting or
+/// Only the combined `analyze*` entry points can produce this value. Extracting or
 /// inspecting its report cannot be used to manufacture fresh analysis evidence.
 ///
 /// ```compile_fail
@@ -139,6 +147,20 @@ pub struct ValidationAnalysis {
 }
 
 impl ValidationAnalysis {
+    /// Whether semantic validation permits the compiler to begin lowering and folding.
+    /// Constant evaluation remains required before a completed plan can be published.
+    pub fn is_ready_for_lowering(
+        &self,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+    ) -> bool {
+        self.is_current(document, registry)
+            && self.report.is_valid()
+            && self
+                .missing_checks()
+                .all(|check| check == ValidationCheck::ConstantEvaluation)
+    }
+
     /// Immutable pass-local report.
     pub fn report(&self) -> &ValidationReport {
         &self.report
@@ -223,12 +245,52 @@ pub fn analyze_with_effects(
     registry: &RegistrySnapshot,
     leaf_effects: BTreeMap<NodeId, LeafEffects>,
 ) -> ValidationAnalysis {
+    analyze_with_options(document, registry, leaf_effects, AnalysisOptions::default())
+}
+
+/// Combined validation with configurable admission quotas and cooperative cancellation.
+/// A rejected/cancelled request returns one safe error, no projections and no pass coverage.
+/// Standalone pass APIs do not apply these orchestration controls.
+pub fn analyze_with_options(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    leaf_effects: BTreeMap<NodeId, LeafEffects>,
+    options: AnalysisOptions<'_>,
+) -> ValidationAnalysis {
+    match options
+        .admit(document, registry, &leaf_effects)
+        .and_then(|()| run_analysis(document, registry, leaf_effects, &options))
+    {
+        Ok(analysis) => analysis,
+        Err(code) => ValidationAnalysis {
+            report: ValidationReport {
+                diagnostics: vec![Diagnostic::new(code, Subject::default(), registry.origin())],
+                ..ValidationReport::default()
+            },
+            document_state: document.state_id(),
+            registry_generation: registry.generation(),
+            covered: &[],
+        },
+    }
+}
+
+fn run_analysis(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    leaf_effects: BTreeMap<NodeId, LeafEffects>,
+    options: &AnalysisOptions<'_>,
+) -> Result<ValidationAnalysis, DiagnosticCode> {
     let domains = validate_body_domains(document, registry.origin());
+    options.checkpoint()?;
     if !domains.unsupported_bodies.is_empty() {
-        return domain_blocked_analysis(document, registry, domains.diagnostics);
+        return Ok(domain_blocked_analysis(
+            document,
+            registry,
+            domains.diagnostics,
+        ));
     }
     let index = DocIndex::build(document);
-    let seed = accept_functions(document, registry, &leaf_effects, &index);
+    let seed = accept_functions(document, registry, &leaf_effects, &index, options)?;
     let Settled {
         passes:
             BodyPasses {
@@ -242,7 +304,7 @@ pub fn analyze_with_effects(
         functions,
         conformance,
         ..
-    } = settle(document, registry, &leaf_effects, &index, seed);
+    } = settle(document, registry, &leaf_effects, &index, seed, options)?;
 
     let availability = validate_availability(
         document,
@@ -251,15 +313,21 @@ pub fn analyze_with_effects(
         &regions.index,
         registry,
     );
+    options.checkpoint()?;
     let mut diagnostics = nodes.diagnostics;
+    diagnostics.extend(validate_declaration_types(document, registry));
+    options.checkpoint()?;
     diagnostics.extend(availability.diagnostics);
     diagnostics.extend(validate_exports(document, &nodes.resolved, registry));
+    options.checkpoint()?;
     diagnostics.extend(validate_config(document, registry));
+    options.checkpoint()?;
     diagnostics.extend(input_diagnostics);
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
     diagnostics.extend(conformance.diagnostics);
     diagnostics.extend(validate_streams(document, &nodes.resolved, registry));
+    options.checkpoint()?;
     diagnostics.extend(validate_state(
         document,
         registry,
@@ -268,6 +336,7 @@ pub fn analyze_with_effects(
         &functions.summaries,
         &leaf_effects,
     ));
+    options.checkpoint()?;
     let explained_nodes: BTreeSet<_> = diagnostics
         .iter()
         .filter(|item| item.severity == Severity::Error)
@@ -295,7 +364,8 @@ pub fn analyze_with_effects(
     incomplete_nodes.extend(data_cycles.incomplete_nodes);
     incomplete_nodes.extend(regions.incomplete_nodes);
     incomplete_nodes.extend(control.incomplete_nodes);
-    ValidationAnalysis {
+    options.checkpoint()?;
+    Ok(ValidationAnalysis {
         report: ValidationReport {
             diagnostics,
             resolved: nodes.resolved,
@@ -309,7 +379,7 @@ pub fn analyze_with_effects(
         document_state: document.state_id(),
         registry_generation: registry.generation(),
         covered: COVERED_CHECKS,
-    }
+    })
 }
 
 /// A foreign domain cannot supply evidence for the control-domain passes. Keep this

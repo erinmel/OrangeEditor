@@ -589,6 +589,8 @@ Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_
 
 `E-VARIADIC-COUNT` uses the core origin, message key `core/graph-variadic-count`, empty message arguments and safe fallback "The number of variadic port instances is outside the allowed range." The subject identifies the node and base port. Saved out-of-range state remains editable; validation does not rewrite it.
 
+All variable and event declarations require concrete, well-formed types available in the current registry, even when unused or without an initializer. `E-DECLARATION-TYPE` identifies a declaration whose syntax, identity, arity, parameter scope or type constraints fail; resource depth failures retain `E-TYPE-COMPLEXITY`. Combined analysis may stop before semantic checks with global `E-ANALYSIS-LIMIT` or `E-ANALYSIS-CANCELLED`. Neither failure supplies readiness evidence. Exact admission and diagnostic-envelope contracts are in [12 §3.2](12-graph-data-structures.md) and [13 §2](13-internationalization.md).
+
 | Group | Codes |
 |---|---|
 | Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-VARIADIC-COUNT`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |

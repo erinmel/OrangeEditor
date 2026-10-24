@@ -24,6 +24,87 @@ use serde_json::{Value as Json, json};
 const DIGEST: &str = "sha256:abababababababababababababababababababababababababababababababab";
 const RUNS: u32 = 5;
 
+#[test]
+#[ignore = "release timing evidence, not NFR acceptance"]
+fn data_cycles_cost_by_port_width() {
+    use orange_model::catalog::NodeContract;
+    use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+    use orange_model::validation::{validate_connections, validate_data_cycles, validate_inputs};
+    let definition = DefinitionRef {
+        id: "org.test/wide".parse().unwrap(),
+        version: 1,
+    };
+    let ports = vec![
+        PortDescriptor::data_in("items", "core/i64@1".parse().unwrap()).variadic(0, None),
+        PortDescriptor::data_out(
+            "results",
+            "core/i64@1".parse().unwrap(),
+            OutputSource::Computed,
+        )
+        .variadic(0, None),
+    ];
+    let mut facts = common::registry::Facts::new(common::generic::origin());
+    facts.definition(
+        definition.clone(),
+        NodeContract {
+            kind: NodeKind::Pure,
+            suspends: None,
+            type_params: vec![],
+            ports: ports.clone(),
+        },
+    );
+    let mut provider = key();
+    provider.id = "wide".into();
+    facts.provider(definition, 1, provider);
+    let registry = facts.snapshot();
+    let snapshot = orange_model::signature::project(NodeKind::Pure, ports, &Default::default());
+    for width in [64usize, 256, 512] {
+        let mut node = json!({"id":node_id(0),"definition_id":"org.test/wide","definition_version":1,
+            "config_version":1,"config":{},"signature":"wide",
+            "provider":{"package":"org.test","version":"1.0.0","id":"wide"},
+            "variadic":{"items":{"order":(0..width).collect::<Vec<_>>(),"next":width},
+                "results":{"order":(0..width).collect::<Vec<_>>(),"next":width}}});
+        node["inputs"] = Json::Object(
+            (0..width)
+                .map(|i| {
+                    (
+                        format!("items#{i}"),
+                        json!({"type":"core/i64@1","value":"0"}),
+                    )
+                })
+                .collect(),
+        );
+        let doc = from_json(&minimal_document(json!({
+            "package_lock":[{"id":"org.test","version":"1.0.0","content_digest":DIGEST}],
+            "signatures":{"wide":snapshot},"nodes":[node]
+        })))
+        .unwrap();
+        let nodes = validate_nodes(&doc, &registry);
+        assert!(nodes.is_valid(), "{:?}", nodes.diagnostics);
+        let connections = validate_connections(&doc, &nodes.resolved, &registry);
+        assert!(connections.is_valid());
+        assert!(validate_inputs(&doc, &nodes.resolved, &registry).is_empty());
+        assert!(validate_data_cycles(&doc, &nodes.resolved, &connections, &registry).is_valid());
+        let mut timings = Vec::new();
+        for _ in 0..RUNS {
+            let start = Instant::now();
+            std::hint::black_box(validate_data_cycles(
+                &doc,
+                &nodes.resolved,
+                &connections,
+                &registry,
+            ));
+            timings.push(start.elapsed());
+        }
+        timings.sort_unstable();
+        println!(
+            "width={width} data cycles: median={:.3?} max={:.3?}",
+            timings[timings.len() / 2],
+            timings.last().unwrap()
+        );
+    }
+}
+
 fn key() -> ProviderKey {
     ProviderKey {
         package: "org.test".to_owned(),
