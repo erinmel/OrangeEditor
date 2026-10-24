@@ -8,5 +8,5 @@ pub use cancel::CancelToken;
 pub use data::{DataActivation, DataError, DataLimits, DataOptions};
 pub use entropy::{
     ActivationEntropy, ENTROPY_ALGORITHM, EntropyError, EntropyKey, EntropyLayout,
-    EntropyReplayMetadata, EntropySlot, EntropyStream,
+    EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,
 };

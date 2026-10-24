@@ -108,6 +108,7 @@ fn root_data_epoch_timing_baseline() {
 fn sample(node: u32, seed: u64, sequence: u64, invocation: u64) -> u64 {
     EntropyStream::new(EntropyKey {
         seed,
+        frame: orange_runtime::FrameId::ROOT,
         node: id(node).parse().unwrap(),
         activation_sequence: sequence,
         invocation,
@@ -148,7 +149,7 @@ fn native_entropy_diamond_shares_per_epoch_advances_and_replays_with_constant_is
         frame.begin_epoch().unwrap();
         let word = sample(1, 0, 0, epoch);
         if epoch == 0 {
-            assert_eq!(word, 0xfba761e9efd54e44);
+            assert_eq!(word, 0x217b7f7d1090c139);
         }
         assert_eq!(
             frame.export(0).unwrap().unwrap().outcome,

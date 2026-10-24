@@ -195,7 +195,7 @@ fn first_fault_skips_entropy_until_actual_late_demand_and_matches_provenance() {
             assert_eq!(pull(&mut frame, 2), oracle.export(2));
             // Node 1's first invocation stays the external-vector known answer,
             // despite two elapsed epochs with no actual demand.
-            assert_eq!(pull(&mut frame, 2), Ok(Value::U64(0xfba761e9efd54e44)));
+            assert_eq!(pull(&mut frame, 2), Ok(Value::U64(0x217b7f7d1090c139)));
             assert_eq!(
                 oracle.exports(),
                 (0..3).map(|i| pull(&mut frame, i)).collect::<Vec<_>>()

@@ -168,6 +168,7 @@ impl<'a> Reference<'a> {
                 let invocation = self.invocations.entry(node_id).or_default();
                 let mut stream = orange_runtime::EntropyStream::new(orange_runtime::EntropyKey {
                     seed: self.seed,
+                    frame: orange_runtime::FrameId::ROOT,
                     node: node_id,
                     activation_sequence: self.sequence,
                     invocation: *invocation,

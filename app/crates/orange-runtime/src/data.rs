@@ -160,7 +160,8 @@ impl DataActivation {
                 }
             })
             .collect();
-        let scopes = ActivationEntropy::new(&layout, seed, activation_sequence);
+        // Root data plans have no callee frames.
+        let scopes = ActivationEntropy::new(&layout, seed, activation_sequence, 0);
         let slots = plan.initial_values().to_vec();
         let state = Frame {
             scopes,
