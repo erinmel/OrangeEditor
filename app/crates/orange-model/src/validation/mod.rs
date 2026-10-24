@@ -15,9 +15,9 @@
 //! immutable catalogue origin.
 //!
 //! The individual passes stay public for hosts that run them separately. Contextual variable
-//! and shared-write ports are declaration-owned. Call/interface ports, regions, control cycles and
-//! availability remain later slices, and a valid report is not compile approval.
+//! and shared-write ports are declaration-owned. Call/interface ports and control cycles remain later slices; [`validate_availability`] checks value availability from the region index, and a valid report is not compile approval.
 
+mod availability;
 mod conformance;
 mod connections;
 mod control_cycles;
@@ -37,6 +37,7 @@ pub use diagnostic::{
     OriginError, Severity, Subject, sort_diagnostics,
 };
 
+pub use availability::{AvailabilityValidation, validate_availability};
 pub use connections::{ConnectionValidation, validate_connections};
 pub use control_cycles::{ControlCycleValidation, validate_control_cycles};
 pub use data_cycles::{DataCycleValidation, validate_data_cycles};

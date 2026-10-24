@@ -10,8 +10,8 @@ use super::conformance::{BodyStatus, check_conformance};
 use super::nodes::{CallEvidence, validate_nodes_with};
 use super::{
     Diagnostic, FunctionEvidence, FunctionSummary, LeafEffects, Severity, analyze_functions,
-    sort_diagnostics, validate_body_domains, validate_connections, validate_control_cycles,
-    validate_data_cycles, validate_inputs, validate_regions,
+    sort_diagnostics, validate_availability, validate_body_domains, validate_connections,
+    validate_control_cycles, validate_data_cycles, validate_inputs, validate_regions,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
@@ -60,6 +60,7 @@ const COVERED_CHECKS: &[ValidationCheck] = &[
     ValidationCheck::FunctionSummaries,
     ValidationCheck::BodyDomains,
     ValidationCheck::DataCycles,
+    ValidationCheck::ValueAvailability,
 ];
 
 const DOMAIN_ONLY_CHECKS: &[ValidationCheck] = &[ValidationCheck::BodyDomains];
@@ -302,7 +303,15 @@ pub fn analyze_with_effects(
         calls.accepted = accepted;
     };
 
+    let availability = validate_availability(
+        document,
+        &nodes.resolved,
+        &connections,
+        &regions.index,
+        registry,
+    );
     let mut diagnostics = nodes.diagnostics;
+    diagnostics.extend(availability.diagnostics);
     diagnostics.extend(input_diagnostics);
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);

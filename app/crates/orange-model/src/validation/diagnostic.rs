@@ -116,6 +116,10 @@ pub enum DiagnosticCode {
     RegionAmbiguous,
     #[serde(rename = "E-REGION-ESCAPE")]
     RegionEscape,
+    #[serde(rename = "E-UNAVAILABLE-VALUE")]
+    UnavailableValue,
+    #[serde(rename = "E-CROSS-ACTIVATION")]
+    CrossActivation,
     #[serde(rename = "E-BREAK-OUTSIDE-LOOP")]
     BreakOutsideLoop,
     #[serde(rename = "E-CYCLE-SYNC-CONTROL")]
@@ -183,6 +187,8 @@ impl DiagnosticCode {
             Self::MissingReturn => "E-MISSING-RETURN",
             Self::RegionAmbiguous => "E-REGION-AMBIGUOUS",
             Self::RegionEscape => "E-REGION-ESCAPE",
+            Self::UnavailableValue => "E-UNAVAILABLE-VALUE",
+            Self::CrossActivation => "E-CROSS-ACTIVATION",
             Self::BreakOutsideLoop => "E-BREAK-OUTSIDE-LOOP",
             Self::CycleSyncControl => "E-CYCLE-SYNC-CONTROL",
             Self::LoopUnbounded => "E-LOOP-UNBOUNDED",
@@ -245,6 +251,8 @@ impl DiagnosticCode {
             Self::MissingReturn => "core/graph-missing-return",
             Self::RegionAmbiguous => "core/graph-region-ambiguous",
             Self::RegionEscape => "core/graph-region-escape",
+            Self::UnavailableValue => "core/graph-unavailable-value",
+            Self::CrossActivation => "core/graph-cross-activation",
             Self::BreakOutsideLoop => "core/graph-break-outside-loop",
             Self::CycleSyncControl => "core/graph-cycle-sync-control",
             Self::LoopUnbounded => "core/graph-loop-unbounded",
@@ -344,6 +352,12 @@ impl DiagnosticCode {
             Self::MissingReturn => "A path of this function ends without reaching a return.".into(),
             Self::RegionAmbiguous => "An execution node is reachable from more than one region.".into(),
             Self::RegionEscape => "An execution connection leaves its region.".into(),
+            Self::UnavailableValue => {
+                "A value is not available on every path that reaches this input.".into()
+            }
+            Self::CrossActivation => {
+                "A value is read from a different activation than the one that produced it.".into()
+            }
             Self::BreakOutsideLoop => {
                 "Break and continue need an enclosing loop body in the same function.".into()
             }
