@@ -27,6 +27,7 @@ mod functions;
 mod inputs;
 mod nodes;
 pub(crate) mod ports;
+mod regions;
 mod report;
 mod variables;
 
@@ -40,6 +41,9 @@ pub use data_cycles::{DataCycleValidation, validate_data_cycles};
 pub use domains::{DomainValidation, validate_body_domains};
 pub use inputs::validate_inputs;
 pub use nodes::{NodeValidation, validate_nodes};
+pub use regions::{
+    Region, RegionIndex, RegionKind, RegionRoot, RegionValidation, validate_regions,
+};
 pub use report::{
     ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
     required_checks, validate, validate_with_effects,

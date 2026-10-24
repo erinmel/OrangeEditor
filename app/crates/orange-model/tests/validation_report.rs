@@ -10,7 +10,7 @@ use orange_model::validation::{
     Diagnostic, DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, ValidationCheck,
     VariableWrite, WriteOperation, analyze, analyze_functions, analyze_with_effects,
     sort_diagnostics, validate, validate_connections, validate_data_cycles, validate_inputs,
-    validate_nodes, validate_with_effects,
+    validate_nodes, validate_regions, validate_with_effects,
 };
 use orange_model::{GraphDocument, ValidationReport, from_json, to_json};
 use serde_json::{Value, json};
@@ -121,6 +121,7 @@ fn merged(
     let nodes = validate_nodes(doc, registry);
     let connections = validate_connections(doc, &nodes.resolved, registry);
     let data_cycles = validate_data_cycles(doc, &nodes.resolved, &connections, registry);
+    let regions = validate_regions(doc, &nodes.resolved, &connections, registry);
     let evidence = FunctionEvidence::from_nodes(doc, &nodes, effects);
     let functions = analyze_functions(doc, &evidence, registry);
     let mut diagnostics: Vec<Diagnostic> = nodes.diagnostics.clone();
@@ -132,19 +133,27 @@ fn merged(
         .filter(|item| item.severity == orange_model::validation::Severity::Error)
         .filter_map(|item| item.subject.node)
         .collect();
-    diagnostics.extend(data_cycles.diagnostics.into_iter().filter(|item| {
-        item.code != DiagnosticCode::DependencyUnavailable
-            || item
-                .subject
-                .node
-                .is_none_or(|node| !explained_nodes.contains(&node))
-    }));
+    diagnostics.extend(
+        data_cycles
+            .diagnostics
+            .into_iter()
+            .chain(regions.diagnostics)
+            .filter(|item| {
+                item.code != DiagnosticCode::DependencyUnavailable
+                    || item
+                        .subject
+                        .node
+                        .is_none_or(|node| !explained_nodes.contains(&node))
+            }),
+    );
     sort_diagnostics(&mut diagnostics);
     diagnostics.dedup();
     let mut incomplete_nodes = nodes.incomplete_nodes;
     incomplete_nodes.extend(connections.incomplete_nodes);
     incomplete_nodes.extend(data_cycles.incomplete_nodes);
+    incomplete_nodes.extend(regions.incomplete_nodes);
     ValidationReport {
+        regions: regions.index,
         diagnostics,
         resolved: nodes.resolved,
         incomplete_nodes,
@@ -483,7 +492,11 @@ fn a_mistyped_variable_edge_is_a_type_mismatch() {
         json!([]),
     );
     let report = assert_equals_passes(&doc);
-    assert_eq!(codes(&report), [DiagnosticCode::TypeMismatch]);
+    // The fixture's set-variable action has no entry, so regions also warn it is unreachable.
+    assert_eq!(
+        codes(&report),
+        [DiagnosticCode::Unreachable, DiagnosticCode::TypeMismatch]
+    );
     assert!(report.incomplete_nodes.is_empty());
 }
 

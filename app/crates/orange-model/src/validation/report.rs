@@ -11,7 +11,7 @@ use super::nodes::{CallEvidence, validate_nodes_with};
 use super::{
     Diagnostic, FunctionEvidence, FunctionSummary, LeafEffects, Severity, analyze_functions,
     sort_diagnostics, validate_body_domains, validate_connections, validate_data_cycles,
-    validate_inputs,
+    validate_inputs, validate_regions,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
@@ -89,6 +89,8 @@ pub struct ValidationReport {
     pub incomplete_functions: BTreeSet<FunctionId>,
     /// Closed concrete-port witnesses for cyclic data-dependency components.
     pub data_cycle_paths: Vec<Vec<PortRef>>,
+    /// Region ownership and loop nesting for later availability and control-cycle passes.
+    pub regions: super::RegionIndex,
 }
 
 impl ValidationReport {
@@ -224,10 +226,11 @@ pub fn analyze_with_effects(
         pipeline: true,
     };
     let mut round = 0;
-    let (nodes, connections, data_cycles, functions, input_diagnostics, conformance) = loop {
+    let (nodes, connections, data_cycles, regions, functions, input_diagnostics, conformance) = loop {
         let nodes = validate_nodes_with(document, registry, &calls);
         let connections = validate_connections(document, &nodes.resolved, registry);
         let data_cycles = validate_data_cycles(document, &nodes.resolved, &connections, registry);
+        let regions = validate_regions(document, &nodes.resolved, &connections, registry);
         let evidence = FunctionEvidence::from_nodes(document, &nodes, leaf_effects.clone());
         let functions = analyze_functions(document, &evidence, registry);
         let input_diagnostics = validate_inputs(document, &nodes.resolved, registry);
@@ -235,12 +238,14 @@ pub fn analyze_with_effects(
         let mut blocked: BTreeSet<_> = nodes.incomplete_nodes.clone();
         blocked.extend(connections.incomplete_nodes.iter().copied());
         blocked.extend(data_cycles.incomplete_nodes.iter().copied());
+        blocked.extend(regions.incomplete_nodes.iter().copied());
         for diagnostic in nodes
             .diagnostics
             .iter()
             .chain(&input_diagnostics)
             .chain(&connections.diagnostics)
             .chain(&data_cycles.diagnostics)
+            .chain(&regions.diagnostics)
             .filter(|item| item.severity == Severity::Error)
         {
             blocked.extend(diagnostic.subject.node);
@@ -273,6 +278,7 @@ pub fn analyze_with_effects(
                 nodes,
                 connections,
                 data_cycles,
+                regions,
                 functions,
                 input_diagnostics,
                 conformance,
@@ -291,19 +297,26 @@ pub fn analyze_with_effects(
         .filter(|item| item.severity == Severity::Error)
         .filter_map(|item| item.subject.node)
         .collect();
-    diagnostics.extend(data_cycles.diagnostics.into_iter().filter(|item| {
-        item.code != super::DiagnosticCode::DependencyUnavailable
-            || item
-                .subject
-                .node
-                .is_none_or(|node| !explained_nodes.contains(&node))
-    }));
+    diagnostics.extend(
+        data_cycles
+            .diagnostics
+            .into_iter()
+            .chain(regions.diagnostics)
+            .filter(|item| {
+                item.code != super::DiagnosticCode::DependencyUnavailable
+                    || item
+                        .subject
+                        .node
+                        .is_none_or(|node| !explained_nodes.contains(&node))
+            }),
+    );
     sort_diagnostics(&mut diagnostics);
     diagnostics.dedup();
 
     let mut incomplete_nodes = nodes.incomplete_nodes;
     incomplete_nodes.extend(connections.incomplete_nodes);
     incomplete_nodes.extend(data_cycles.incomplete_nodes);
+    incomplete_nodes.extend(regions.incomplete_nodes);
     ValidationAnalysis {
         report: ValidationReport {
             diagnostics,
@@ -312,6 +325,7 @@ pub fn analyze_with_effects(
             functions: functions.summaries,
             incomplete_functions: functions.incomplete_functions,
             data_cycle_paths: data_cycles.cycle_paths,
+            regions: regions.index,
         },
         document_state: document.state_id(),
         registry_generation: registry.generation(),
