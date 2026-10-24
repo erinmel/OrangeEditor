@@ -380,261 +380,333 @@ pub fn compile_pure(
     drop(order);
     drop(active);
     drop(done);
-    let mut plan = PurePlan {
-        snapshot: snapshot.clone(),
-        graph: document.graph_id(),
-        revision: document.revision(),
-        state: document.state_id(),
-        steps: vec![],
-        types: vec![],
-        sources: vec![],
-        constants: vec![],
-        exports: vec![],
-        diagnostics: vec![],
-    };
-    let mut outputs = BTreeMap::new();
-    let mut bytes = 0;
+    let mut folder = ConstantFolder::new(
+        document, analysis, snapshot, resolver, options, incoming, lazy_nodes,
+    )?;
     for export in document.exports() {
-        charge(
-            &mut bytes,
-            export.id.len(),
-            options.limits.max_constant_bytes,
-        )?;
-    }
-    let mut input_values = Vec::new();
-    let mut output_values = Vec::new();
-    let context = InputContext {
-        document,
-        snapshot: &snapshot,
-        incoming: &incoming,
-        options,
-    };
-    let mut completed = BTreeSet::new();
-    let mut work: Vec<_> = document
-        .exports()
-        .iter()
-        .rev()
-        .map(|export| Work::Enter(export.node))
-        .collect();
-    while let Some(task) = work.pop() {
-        options.checkpoint()?;
-        let (node_id, decision) = match task {
-            Work::Enter(node) => {
-                if completed.contains(&node) {
-                    continue;
-                }
-                let signature = &analysis.report().resolved[&node];
-                if lazy_nodes.contains_key(&node) {
-                    work.push(Work::Choose(node));
-                    if let Some(edge) = incoming.get(&(node, key(&signature.ports[0]))) {
-                        work.push(Work::Enter(edge.from.node));
-                    }
-                } else {
-                    work.push(Work::Finish {
-                        node,
-                        decision: None,
-                    });
-                    for port in signature
-                        .ports
-                        .iter()
-                        .rev()
-                        .filter(|p| p.direction == PortDirection::Input)
-                    {
-                        if let Some(edge) = incoming.get(&(node, key(port))) {
-                            work.push(Work::Enter(edge.from.node));
-                        }
-                    }
-                }
-                continue;
-            }
-            Work::Choose(node) => {
-                let signature = &analysis.report().resolved[&node];
-                let selector =
-                    context.source(node, &signature.ports[0], &mut plan, &outputs, &mut bytes)?;
-                let selected = match &plan.constants[selector.slot.index()] {
-                    FoldedValue::Fault(_) => None,
-                    FoldedValue::Value(value) => lazy_nodes[&node]
-                        .selected(value)
-                        .ok_or(CompileError::KernelContract { node })?,
-                };
-                work.push(Work::Finish {
-                    node,
-                    decision: Some(Decision { selector, selected }),
-                });
-                if let Some(name) = selected {
-                    let port = signature
-                        .ports
-                        .iter()
-                        .find(|p| p.port_id.as_str() == name)
-                        .ok_or(CompileError::KernelContract { node })?;
-                    if let Some(edge) = incoming.get(&(node, key(port))) {
-                        work.push(Work::Enter(edge.from.node));
-                    }
-                }
-                continue;
-            }
-            Work::Finish { node, decision } => (node, decision),
-        };
-        let node = &body.nodes[&node_id];
-        let sig = &analysis.report().resolved[&node_id];
-        let input_ports: Vec<_> = sig
-            .ports
-            .iter()
-            .filter(|p| {
-                p.direction == PortDirection::Input
-                    && decision.as_ref().is_none_or(|choice| {
-                        p.port_id.as_str() == choice.selector.port.port().as_str()
-                            || Some(p.port_id.as_str()) == choice.selected
-                    })
-            })
-            .collect();
-        let output_ports: Vec<_> = sig
-            .ports
-            .iter()
-            .filter(|p| p.direction == PortDirection::Output)
-            .collect();
-        let binding = if let Some(choice) = &decision {
-            crate::lazy::binding(
-                input_ports.iter().map(|p| key(p)).collect(),
-                output_ports.iter().map(|p| key(p)).collect(),
-                matches!(
-                    plan.constants[choice.selector.slot.index()],
-                    FoldedValue::Fault(_)
-                ),
-                match lazy_nodes[&node_id] {
-                    crate::lazy::Lazy::Coalesce if choice.selected.is_none() => {
-                        crate::lazy::ProjectionMode::UnwrapOption
-                    }
-                    crate::lazy::Lazy::Try => crate::lazy::ProjectionMode::Result {
-                        boxed: port_type(node_id, &sig.ports[0])?.unboxed_error(),
-                    },
-                    _ => crate::lazy::ProjectionMode::Value,
-                },
-            )
-        } else {
-            resolver
-                .resolve(document, node, sig, snapshot.clone())
-                .map_err(|error| match error {
-                    ResolveError::Unavailable => CompileError::KernelUnavailable { node: node_id },
-                    ResolveError::Contract => CompileError::KernelContract { node: node_id },
-                })?
-        };
-        if !binding
-            .inputs
-            .iter()
-            .cloned()
-            .eq(input_ports.iter().map(|p| key(p)))
-            || !binding
-                .outputs
-                .iter()
-                .cloned()
-                .eq(output_ports.iter().map(|p| key(p)))
-        {
-            return Err(CompileError::KernelContract { node: node_id });
-        }
-        let mut inputs = Vec::new();
-        for port in input_ports {
-            let prepared = decision
-                .as_ref()
-                .filter(|choice| choice.selector.port.port() == &port.port_id);
-            inputs.push(if let Some(choice) = prepared {
-                choice.selector.clone()
-            } else {
-                context.source(node_id, port, &mut plan, &outputs, &mut bytes)?
-            });
-        }
-        let inherited = inputs
-            .iter()
-            .find_map(|input| match &plan.constants[input.slot.index()] {
-                FoldedValue::Fault(fault) => Some(fault.clone()),
-                _ => None,
-            });
-        input_values.clear();
-        output_values.clear();
-        output_values.resize(output_ports.len(), Value::Unit);
-        let fault = if let Some(fault) = inherited {
-            if matches!(lazy_nodes.get(&node_id), Some(crate::lazy::Lazy::Try)) {
-                output_values[0] = Value::Err(Arc::new(orange_model::value::NodeError {
-                    code: fault.fault.code.to_owned(),
-                    node: Some(fault.source),
-                }));
-                None
-            } else {
-                Some(fault)
-            }
-        } else {
-            for input in &inputs {
-                if let FoldedValue::Value(value) = &plan.constants[input.slot.index()] {
-                    input_values.push(value.clone());
-                }
-            }
-            options.checkpoint()?;
-            match binding.kernel.fold(&input_values, &mut output_values) {
-                Ok(()) => None,
-                Err(fault) => {
-                    if !valid_fault(fault) {
-                        return Err(CompileError::KernelContract { node: node_id });
-                    }
-                    plan.diagnostics.push(Diagnostic::new(
-                        DiagnosticCode::ConstError,
-                        Subject::new(Some(node_id), None, None),
-                        snapshot.origin(),
-                    ));
-                    Some(ConstantFault {
-                        source: node_id,
-                        fault,
-                    })
-                }
-            }
-        };
-        let mut slots = Vec::new();
-        for (port, value) in output_ports.into_iter().zip(output_values.drain(..)) {
-            let ty = port_type(node_id, port)?;
-            let value = if let Some(fault) = &fault {
-                FoldedValue::Fault(fault.clone())
-            } else if ty.accepts(&value) {
-                FoldedValue::Value(value)
-            } else {
-                return Err(CompileError::KernelContract { node: node_id });
-            };
-            let port = key(port);
-            let slot = push_slot(
-                &mut plan,
-                ty,
-                SlotSource {
-                    node: node_id,
-                    port: port.clone(),
-                },
-                value,
-                options,
-                &mut bytes,
-            )?;
-            outputs.insert((node_id, port), slot);
-            slots.push(slot);
-        }
-        let index =
-            NodeIx(u32::try_from(plan.steps.len()).map_err(|_| CompileError::ResourceLimit)?);
-        plan.steps.push(PureStep {
-            index,
-            node: node_id,
-            inputs: inputs.into(),
-            outputs: slots.into(),
-            binding,
-        });
-        completed.insert(node_id);
+        folder.pull(export.node)?;
     }
     for export in document.exports() {
         options.checkpoint()?;
-        let slot = outputs
+        let slot = folder
+            .outputs
             .get(&(export.node, export.port.clone()))
             .copied()
             .ok_or(CompileError::ValidationIncomplete)?;
-        plan.exports.push(Export {
+        folder.plan.exports.push(Export {
             id: export.id.clone(),
             slot,
         });
     }
-    orange_model::validation::sort_diagnostics(&mut plan.diagnostics);
+    orange_model::validation::sort_diagnostics(&mut folder.plan.diagnostics);
     options.checkpoint()?;
-    Ok(plan)
+    Ok(folder.plan)
+}
+
+/// Internal demand folder shared by checked lowering paths. Callers must perform
+/// fresh semantic and whole-potential-cone admission before constructing it.
+pub(crate) struct ConstantFolder<'a, R: PureKernelResolver> {
+    document: &'a GraphDocument,
+    analysis: &'a ValidationAnalysis,
+    snapshot: Arc<RegistrySnapshot>,
+    resolver: &'a R,
+    options: CompileOptions<'a>,
+    incoming: Incoming<'a>,
+    lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
+    plan: PurePlan,
+    outputs: OutputSlots,
+    completed: BTreeSet<NodeId>,
+    bytes: usize,
+    input_values: Vec<Value>,
+    output_values: Vec<Value>,
+    work: Vec<Work>,
+}
+impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
+    pub(crate) fn new(
+        document: &'a GraphDocument,
+        analysis: &'a ValidationAnalysis,
+        snapshot: Arc<RegistrySnapshot>,
+        resolver: &'a R,
+        options: CompileOptions<'a>,
+        incoming: Incoming<'a>,
+        lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
+    ) -> Result<Self, CompileError> {
+        let plan = PurePlan {
+            snapshot: snapshot.clone(),
+            graph: document.graph_id(),
+            revision: document.revision(),
+            state: document.state_id(),
+            steps: vec![],
+            types: vec![],
+            sources: vec![],
+            constants: vec![],
+            exports: vec![],
+            diagnostics: vec![],
+        };
+        let mut bytes = 0;
+        for export in document.exports() {
+            charge(
+                &mut bytes,
+                export.id.len(),
+                options.limits.max_constant_bytes,
+            )?;
+        }
+        Ok(Self {
+            document,
+            analysis,
+            snapshot,
+            resolver,
+            options,
+            incoming,
+            lazy_nodes,
+            plan,
+            outputs: BTreeMap::new(),
+            completed: BTreeSet::new(),
+            bytes,
+            input_values: vec![],
+            output_values: vec![],
+            work: vec![],
+        })
+    }
+    pub(crate) fn pull(&mut self, root: NodeId) -> Result<(), CompileError> {
+        let Self {
+            document,
+            analysis,
+            snapshot,
+            resolver,
+            options,
+            incoming,
+            lazy_nodes,
+            plan,
+            outputs,
+            completed,
+            bytes,
+            input_values,
+            output_values,
+            work,
+        } = self;
+        let body = document.root();
+        let context = InputContext {
+            document,
+            snapshot,
+            incoming,
+            options: *options,
+        };
+        work.push(Work::Enter(root));
+        while let Some(task) = work.pop() {
+            options.checkpoint()?;
+            let (node_id, decision) = match task {
+                Work::Enter(node) => {
+                    if completed.contains(&node) {
+                        continue;
+                    }
+                    let signature = &analysis.report().resolved[&node];
+                    if signature.kind != NodeKind::Pure {
+                        return Err(CompileError::UnsupportedNode { node });
+                    }
+                    if lazy_nodes.contains_key(&node) {
+                        work.push(Work::Choose(node));
+                        if let Some(edge) = incoming.get(&(node, key(&signature.ports[0]))) {
+                            work.push(Work::Enter(edge.from.node));
+                        }
+                    } else {
+                        work.push(Work::Finish {
+                            node,
+                            decision: None,
+                        });
+                        for port in signature
+                            .ports
+                            .iter()
+                            .rev()
+                            .filter(|p| p.direction == PortDirection::Input)
+                        {
+                            if let Some(edge) = incoming.get(&(node, key(port))) {
+                                work.push(Work::Enter(edge.from.node));
+                            }
+                        }
+                    }
+                    continue;
+                }
+                Work::Choose(node) => {
+                    let signature = &analysis.report().resolved[&node];
+                    let selector =
+                        context.source(node, &signature.ports[0], plan, outputs, bytes)?;
+                    let selected = match &plan.constants[selector.slot.index()] {
+                        FoldedValue::Fault(_) => None,
+                        FoldedValue::Value(value) => lazy_nodes[&node]
+                            .selected(value)
+                            .ok_or(CompileError::KernelContract { node })?,
+                    };
+                    work.push(Work::Finish {
+                        node,
+                        decision: Some(Decision { selector, selected }),
+                    });
+                    if let Some(name) = selected {
+                        let port = signature
+                            .ports
+                            .iter()
+                            .find(|p| p.port_id.as_str() == name)
+                            .ok_or(CompileError::KernelContract { node })?;
+                        if let Some(edge) = incoming.get(&(node, key(port))) {
+                            work.push(Work::Enter(edge.from.node));
+                        }
+                    }
+                    continue;
+                }
+                Work::Finish { node, decision } => (node, decision),
+            };
+            let node = &body.nodes[&node_id];
+            let sig = &analysis.report().resolved[&node_id];
+            let input_ports: Vec<_> = sig
+                .ports
+                .iter()
+                .filter(|p| {
+                    p.direction == PortDirection::Input
+                        && decision.as_ref().is_none_or(|choice| {
+                            p.port_id.as_str() == choice.selector.port.port().as_str()
+                                || Some(p.port_id.as_str()) == choice.selected
+                        })
+                })
+                .collect();
+            let output_ports: Vec<_> = sig
+                .ports
+                .iter()
+                .filter(|p| p.direction == PortDirection::Output)
+                .collect();
+            let binding = if let Some(choice) = &decision {
+                crate::lazy::binding(
+                    input_ports.iter().map(|p| key(p)).collect(),
+                    output_ports.iter().map(|p| key(p)).collect(),
+                    matches!(
+                        plan.constants[choice.selector.slot.index()],
+                        FoldedValue::Fault(_)
+                    ),
+                    match lazy_nodes[&node_id] {
+                        crate::lazy::Lazy::Coalesce if choice.selected.is_none() => {
+                            crate::lazy::ProjectionMode::UnwrapOption
+                        }
+                        crate::lazy::Lazy::Try => crate::lazy::ProjectionMode::Result {
+                            boxed: port_type(node_id, &sig.ports[0])?.unboxed_error(),
+                        },
+                        _ => crate::lazy::ProjectionMode::Value,
+                    },
+                )
+            } else {
+                resolver
+                    .resolve(document, node, sig, snapshot.clone())
+                    .map_err(|error| match error {
+                        ResolveError::Unavailable => {
+                            CompileError::KernelUnavailable { node: node_id }
+                        }
+                        ResolveError::Contract => CompileError::KernelContract { node: node_id },
+                    })?
+            };
+            if !binding
+                .inputs
+                .iter()
+                .cloned()
+                .eq(input_ports.iter().map(|p| key(p)))
+                || !binding
+                    .outputs
+                    .iter()
+                    .cloned()
+                    .eq(output_ports.iter().map(|p| key(p)))
+            {
+                return Err(CompileError::KernelContract { node: node_id });
+            }
+            let mut inputs = Vec::new();
+            for port in input_ports {
+                let prepared = decision
+                    .as_ref()
+                    .filter(|choice| choice.selector.port.port() == &port.port_id);
+                inputs.push(if let Some(choice) = prepared {
+                    choice.selector.clone()
+                } else {
+                    context.source(node_id, port, plan, outputs, bytes)?
+                });
+            }
+            let inherited =
+                inputs
+                    .iter()
+                    .find_map(|input| match &plan.constants[input.slot.index()] {
+                        FoldedValue::Fault(fault) => Some(fault.clone()),
+                        _ => None,
+                    });
+            input_values.clear();
+            output_values.clear();
+            output_values.resize(output_ports.len(), Value::Unit);
+            let fault = if let Some(fault) = inherited {
+                if matches!(lazy_nodes.get(&node_id), Some(crate::lazy::Lazy::Try)) {
+                    output_values[0] = Value::Err(Arc::new(orange_model::value::NodeError {
+                        code: fault.fault.code.to_owned(),
+                        node: Some(fault.source),
+                    }));
+                    None
+                } else {
+                    Some(fault)
+                }
+            } else {
+                for input in &inputs {
+                    if let FoldedValue::Value(value) = &plan.constants[input.slot.index()] {
+                        input_values.push(value.clone());
+                    }
+                }
+                options.checkpoint()?;
+                match binding.kernel.fold(input_values, output_values) {
+                    Ok(()) => None,
+                    Err(fault) => {
+                        if !valid_fault(fault) {
+                            return Err(CompileError::KernelContract { node: node_id });
+                        }
+                        plan.diagnostics.push(Diagnostic::new(
+                            DiagnosticCode::ConstError,
+                            Subject::new(Some(node_id), None, None),
+                            snapshot.origin(),
+                        ));
+                        Some(ConstantFault {
+                            source: node_id,
+                            fault,
+                        })
+                    }
+                }
+            };
+            let mut slots = Vec::new();
+            for (port, value) in output_ports.into_iter().zip(output_values.drain(..)) {
+                let ty = port_type(node_id, port)?;
+                let value = if let Some(fault) = &fault {
+                    FoldedValue::Fault(fault.clone())
+                } else if ty.accepts(&value) {
+                    FoldedValue::Value(value)
+                } else {
+                    return Err(CompileError::KernelContract { node: node_id });
+                };
+                let port = key(port);
+                let slot = push_slot(
+                    plan,
+                    ty,
+                    SlotSource {
+                        node: node_id,
+                        port: port.clone(),
+                    },
+                    value,
+                    *options,
+                    bytes,
+                )?;
+                outputs.insert((node_id, port), slot);
+                slots.push(slot);
+            }
+            let index =
+                NodeIx(u32::try_from(plan.steps.len()).map_err(|_| CompileError::ResourceLimit)?);
+            plan.steps.push(PureStep {
+                index,
+                node: node_id,
+                inputs: inputs.into(),
+                outputs: slots.into(),
+                binding,
+            });
+            completed.insert(node_id);
+        }
+
+        Ok(())
+    }
 }
