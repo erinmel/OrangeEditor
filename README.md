@@ -43,3 +43,5 @@ Source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). Measure
 The initial [orange-runtime](app/crates/orange-runtime) crate supplies versioned deterministic entropy streams and activation-owned consumption epochs. Bound node reads share a sample within an epoch; skipped nodes do not advance their stream. Seeded graph execution, general actors and scheduling remain open.
 
 Fresh registered definitions carry typed volatility/determinism metadata. Publication enforces pure determinism, seeded package entropy and host-owned state/clock classification before future execution lowering.
+
+MathPackage also registers org.orange.math/random-u64 with a separate trusted entropy binding. It draws from a host-owned stream and cannot run through the pure folder; compiled entropy graph evaluation remains the next integration slice.

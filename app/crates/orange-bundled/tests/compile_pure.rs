@@ -1758,6 +1758,7 @@ fn fresh_descriptor_default_and_instance_override_precede_folding() {
     for definition in definitions {
         builder = builder.definition(definition);
     }
+    builder = builder.definition(orange_bundled::random_u64_definition().unwrap());
     let snapshot = builder
         .provider(original.provider(package.provider_key()).unwrap().clone())
         .build()

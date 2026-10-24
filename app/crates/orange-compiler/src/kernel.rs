@@ -51,3 +51,39 @@ pub trait PureKernelResolver {
         snapshot: Arc<RegistrySnapshot>,
     ) -> Result<KernelBinding, ResolveError>;
 }
+
+/// Trusted host-owned deterministic stream for one resolved node invocation. This
+/// interface exposes no document, scheduler, OS source or other node stream.
+pub trait EntropySource {
+    fn next_u64(&mut self) -> Result<u64, KernelFault>;
+}
+
+/// Trusted effect-free entropy operation. Unlike PureKernel it is never constant-folded;
+/// the caller supplies the correct seed/node/activation/invocation scope.
+pub trait EntropyKernel: Debug + Send + Sync {
+    fn evaluate(
+        &self,
+        inputs: &[Value],
+        outputs: &mut [Value],
+        entropy: &mut dyn EntropySource,
+    ) -> Result<(), KernelFault>;
+}
+
+#[derive(Debug, Clone)]
+pub struct EntropyBinding {
+    pub inputs: Box<[PortKey]>,
+    pub outputs: Box<[PortKey]>,
+    pub kernel: Arc<dyn EntropyKernel>,
+}
+
+/// Binding only, not execution approval. Lowering must check fresh semantic evidence
+/// and seeded-entropy metadata before accepting this separate executable ABI.
+pub trait EntropyKernelResolver: PureKernelResolver {
+    fn resolve_entropy(
+        &self,
+        document: &GraphDocument,
+        node: &NodeInstance,
+        signature: &SignatureSnapshot,
+        snapshot: Arc<RegistrySnapshot>,
+    ) -> Result<EntropyBinding, ResolveError>;
+}

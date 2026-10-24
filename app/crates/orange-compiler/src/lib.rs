@@ -12,7 +12,10 @@ mod plan;
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
 pub use error::CompileError;
 pub use evaluate::{EvaluatedExport, EvaluationError, EvaluationOptions, PureEvaluation};
-pub use kernel::{KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError};
+pub use kernel::{
+    EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource, KernelBinding,
+    KernelFault, PureKernel, PureKernelResolver, ResolveError,
+};
 pub use plan::{
     ConstantFault, Export, FoldedValue, InputSource, NodeIx, PlanType, PurePlan, PureStep, SlotIx,
     SlotSource,

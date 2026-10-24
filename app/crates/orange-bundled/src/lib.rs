@@ -8,10 +8,12 @@
 mod catalog;
 mod compiler;
 mod conversion;
+mod entropy;
 mod error;
 mod kernel;
 
 pub use catalog::{MathPackage, math_definitions};
 pub use conversion::{ConversionOutput, ResolvedConversion, resolve_core_conversion};
+pub use entropy::{RANDOM_U64_DEFINITION, ResolvedEntropyKernel, random_u64_definition};
 pub use error::{BindingError, CatalogError, ConversionError, KernelError};
 pub use kernel::{Operation, ResolvedKernel};

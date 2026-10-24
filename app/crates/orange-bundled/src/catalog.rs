@@ -123,7 +123,8 @@ impl MathPackage {
     /// Adds definitions and this exact provider to an unpublished builder. Duplicate
     /// definitions/providers are rejected by the ordinary registry publication rules.
     pub fn register(&self, mut builder: RegistryBuilder) -> Result<RegistryBuilder, CatalogError> {
-        let definitions = math_definitions()?;
+        let mut definitions = math_definitions()?;
+        definitions.push(crate::random_u64_definition()?);
         let numeric = NUMERIC_TYPES
             .into_iter()
             .map(|name| Ok(BTreeMap::from([("T".into(), name.parse()?)])))
