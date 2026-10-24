@@ -18,6 +18,7 @@
 //! and shared-write ports are declaration-owned. Call/interface ports and control cycles remain later slices; [`validate_availability`] checks value availability from the region index, and a valid report is not compile approval.
 
 mod availability;
+mod config;
 mod conformance;
 mod connections;
 mod control_cycles;
@@ -41,6 +42,9 @@ pub use diagnostic::{
 };
 
 pub use availability::{AvailabilityValidation, validate_availability};
+pub use config::{
+    CONFIG_SCHEMA_DIALECT, config_satisfies_schema, config_schema_is_supported, validate_config,
+};
 pub use connections::{ConnectionValidation, validate_connections};
 pub use control_cycles::{ControlCycleValidation, validate_control_cycles};
 pub use data_cycles::{DataCycleValidation, validate_data_cycles};

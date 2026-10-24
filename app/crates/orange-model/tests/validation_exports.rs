@@ -56,7 +56,10 @@ fn core_codes(document: &GraphDocument) -> Vec<DiagnosticCode> {
 
 #[test]
 fn a_state_output_is_exportable() {
-    let document = document(json!([get_variable(1)]), json!([export("total", 1, "value")]));
+    let document = document(
+        json!([get_variable(1)]),
+        json!([export("total", 1, "value")]),
+    );
     assert!(core_codes(&document).is_empty());
 }
 
@@ -77,7 +80,8 @@ fn exports_must_name_an_existing_root_data_output() {
 
 #[test]
 fn an_export_of_a_function_body_node_is_not_a_root_target() {
-    let function = json!([{"id":node_id(20),"name":"f","kind":"pure","nodes":[get_variable(5)],"edges":[]}]);
+    let function =
+        json!([{"id":node_id(20),"name":"f","kind":"pure","nodes":[get_variable(5)],"edges":[]}]);
     let document = from_json(&minimal_document(json!({
         "variables":[{"id":VAR,"name":"total","type":"core/i64@1","scope":"run"}],
         "functions":function,
@@ -91,7 +95,11 @@ fn an_export_of_a_function_body_node_is_not_a_root_target() {
 fn duplicate_export_ids_report_every_later_use() {
     let document = document(
         json!([get_variable(1), get_variable(2)]),
-        json!([export("a", 1, "value"), export("a", 2, "value"), export("b", 1, "value")]),
+        json!([
+            export("a", 1, "value"),
+            export("a", 2, "value"),
+            export("b", 1, "value")
+        ]),
     );
     let codes = core_codes(&document);
     assert_eq!(
@@ -192,7 +200,11 @@ fn exported_types_must_be_serializable() {
             "sig-streams": signature("pure", "core/list@1<core/stream@1<core/i64@1>>", "computed"),
             "sig-number": signature("pure", "core/i64@1", "computed")
         }),
-        json!([export("s", 1, "out"), export("l", 2, "out"), export("n", 3, "out")]),
+        json!([
+            export("s", 1, "out"),
+            export("l", 2, "out"),
+            export("n", 3, "out")
+        ]),
     );
     let report = analyze(&document, &registry).into_report();
     let bad: Vec<_> = report
@@ -214,7 +226,10 @@ fn an_execution_sourced_export_crosses_activations() {
         json!([export("p", 1, "out")]),
     );
     let codes = export_codes(&document, &registry);
-    assert!(codes.contains(&DiagnosticCode::CrossActivation), "{codes:?}");
+    assert!(
+        codes.contains(&DiagnosticCode::CrossActivation),
+        "{codes:?}"
+    );
 }
 
 #[test]

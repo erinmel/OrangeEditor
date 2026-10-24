@@ -139,6 +139,7 @@ fn merged(
         &nodes.resolved,
         registry,
     ));
+    diagnostics.extend(orange_model::validation::validate_config(doc, registry));
     let explained_nodes: std::collections::BTreeSet<_> = diagnostics
         .iter()
         .filter(|item| item.severity == orange_model::validation::Severity::Error)
@@ -389,6 +390,7 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::InputValues,
             ValidationCheck::Connections,
             ValidationCheck::FunctionSummaries,
+            ValidationCheck::DefinitionAndConfig,
             ValidationCheck::BodyDomains,
             ValidationCheck::FunctionRestrictions,
             ValidationCheck::DataCycles,
@@ -401,7 +403,6 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
     assert_eq!(
         analysis.missing_checks().collect::<Vec<_>>(),
         [
-            ValidationCheck::DefinitionAndConfig,
             ValidationCheck::ContextualContracts,
             ValidationCheck::Regions,
             ValidationCheck::StateRules,
