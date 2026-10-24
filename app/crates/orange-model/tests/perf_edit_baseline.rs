@@ -1,4 +1,5 @@
-//! Release timing of one semantic edit in large documents (NFR-15 evidence aid).
+//! Release timing of one semantic edit, and of validation, in large documents (NFR-15
+//! evidence aid).
 //!
 //! Run with `cargo test --release -p orange-model --test perf_edit_baseline -- --ignored
 //! --nocapture`. It asserts nothing: it prints timings for the machine it runs on.
@@ -90,6 +91,8 @@ fn edit_cost_by_document_size() {
                 .map(|_| {
                     let mut copy = doc.clone();
                     let mut index = DocIndex::build(&copy);
+                    // Like the index, the document's node lookup is built once per document.
+                    let _ = copy.node(node_id(0).parse().unwrap());
                     let start = Instant::now();
                     let _ = apply_inferred_indexed(
                         &mut copy,
@@ -108,5 +111,62 @@ fn edit_cost_by_document_size() {
             std::hint::black_box(validate(copy, &registry));
         });
         println!("n={n:>6} validate: {time:.3?}");
+    }
+}
+
+fn function_id(n: usize) -> String {
+    format!("30000000-0000-4000-8000-{n:012}")
+}
+
+/// `depth` pure `x -> y` functions, each passing its input through a call to the next.
+fn call_chain(depth: usize) -> GraphDocument {
+    let marker = |id: &str, definition: &str| {
+        json!({"id": id, "definition_id": definition, "definition_version": 1,
+            "config_version": 1, "config": {}})
+    };
+    let port = |id: &str, direction: &str| json!({"port_id": id, "direction": direction, "kind": "data", "type": "core/i64@1"});
+    let edge = |n: usize, from: &str, from_port: &str, to: &str, to_port: &str| {
+        json!({"id": format!("20000000-0000-4000-8000-{n:012}"),
+            "from": {"node": from, "port": from_port}, "to": {"node": to, "port": to_port}})
+    };
+    let functions: Vec<_> = (0..depth)
+        .map(|i| {
+            let (entry, out, call) = (node_id(3 * i), node_id(3 * i + 1), node_id(3 * i + 2));
+            let mut nodes = vec![
+                marker(&entry, "core/function-entry"),
+                marker(&out, "core/function-outputs"),
+            ];
+            let edges = if i + 1 < depth {
+                let mut call_node = marker(&call, "core/call");
+                call_node["config"] = json!({"function": function_id(i + 1)});
+                nodes.push(call_node);
+                vec![
+                    edge(2 * i, &entry, "x", &call, "x"),
+                    edge(2 * i + 1, &call, "y", &out, "y"),
+                ]
+            } else {
+                vec![edge(2 * i, &entry, "x", &out, "y")]
+            };
+            json!({"id": function_id(i), "name": format!("f{i}"), "kind": "pure",
+                "nodes": nodes, "edges": edges,
+                "inputs": [port("x", "input")], "outputs": [port("y", "output")]})
+        })
+        .collect();
+    from_json(&minimal_document(json!({"functions": functions}))).unwrap()
+}
+
+#[test]
+#[ignore = "release timing; run with --ignored --nocapture"]
+fn validate_cost_by_call_chain_depth() {
+    let registry = registry_with_provider(key());
+    for depth in [200usize, 1_000, 4_000] {
+        let doc = call_chain(depth);
+        let report = validate(&doc, &registry);
+        assert!(report.diagnostics.is_empty());
+        assert_eq!(report.resolved.len(), 3 * depth - 1);
+        let time = best(&doc, |copy| {
+            std::hint::black_box(validate(copy, &registry));
+        });
+        println!("depth={depth:>5} validate: {time:.3?}");
     }
 }
