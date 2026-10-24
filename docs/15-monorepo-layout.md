@@ -1,6 +1,6 @@
 # Monorepo layout and ownership
 
-Status: **selected source layout**, 2026-10-20. The user selected one public GitHub repository, `erinmel/OrangeEditor`, containing the application and authored expansion plugins. A directory exists only once it has content: today that is `app/crates/orange-model`, `tools/` and `.github/`. The other directories are reserved names; no SDK or plugin implementation is implied. Repository bootstrap evidence is recorded separately in 10 and 14.
+Status: **selected source layout**, 2026-10-20. The user selected one public GitHub repository, `erinmel/OrangeEditor`, containing the application and authored expansion plugins. A directory exists only once it has content: current implemented core members are `orange-model`, `orange-compiler`, `orange-bundled` and the initial `orange-runtime` entropy subset, alongside `tools/` and `.github/`. The other directories are reserved names; no SDK or plugin implementation is implied. Repository bootstrap evidence is recorded separately in 10 and 14.
 
 ```text
 OrangeEditor/
@@ -45,3 +45,5 @@ Architecture ownership is in [02](02-architecture.md) and package isolation/life
 
 N1a adds the second root workspace member, app/crates/orange-bundled, for ordinary product math definitions and privileged native scalar kernels. At that checkpoint its only product dependency was orange-model; no UI, engine, host service or installable-package runtime is linked. Workspace exact dependency pins/MSRV/lints apply. Cargo.lock gains the local member entry without changing external package versions. The metadata policy includes this member in direct/transitive UI/engine checks.
 E1a adds app/crates/orange-compiler as the third workspace member. Its product dependency is orange-model; orange-bundled now depends on both model and compiler to implement the open trusted resolver, with no reverse compiler-to-bundled dependency. Existing exact external pins/features remain unchanged; Cargo.lock adds only the local compiler and dependency edge. The metadata policy checks all three members for UI/engine isolation. The compiler is currently a restricted pure-export library, not a complete runtime or editor integration.
+
+E2g1 adds app/crates/orange-runtime as the fourth workspace member, initially limited to deterministic entropy/consumption-scope primitives. It depends on orange-model and already-pinned sha2/thiserror, without a compiler/UI/engine/service dependency. Cargo.lock gains only the local runtime package entry; no external version changes. General actor/scheduler/runtime ownership remains later work; the existing metadata policy already includes this core crate.

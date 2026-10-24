@@ -1,0 +1,15 @@
+[package]
+name = "orange-runtime"
+description = "OrangeEditor headless execution primitives and deterministic consumption scopes"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+sha2.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

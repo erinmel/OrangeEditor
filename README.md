@@ -39,3 +39,5 @@ The metadata check enforces the core dependency boundary. The release configurat
 - [Data/execution](docs/03-data-and-execution.md), [services/platforms](docs/05-services-and-platforms.md), [feasibility probes](docs/09-feasibility-probes.md) and [tooling evidence](docs/10-tooling-and-sources.md): detailed contracts and recorded limitations.
 
 Source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). Measured results are recorded separately from proposed performance targets and unimplemented capabilities.
+
+The initial [orange-runtime](app/crates/orange-runtime) crate supplies versioned deterministic entropy streams and activation-owned consumption epochs. Bound node reads share a sample within an epoch; skipped nodes do not advance their stream. Seeded graph execution, general actors and scheduling remain open.
