@@ -24,6 +24,9 @@ pub struct Reference<'a> {
     snapshot: &'a RegistrySnapshot,
     analysis: &'a ValidationAnalysis,
     cache: BTreeMap<NodeId, BTreeMap<PortKey, Outcome>>,
+    seed: u64,
+    sequence: u64,
+    invocations: BTreeMap<NodeId, u64>,
     pub executions: BTreeMap<NodeId, usize>,
 }
 impl<'a> Reference<'a> {
@@ -32,21 +35,46 @@ impl<'a> Reference<'a> {
         snapshot: &'a RegistrySnapshot,
         analysis: &'a ValidationAnalysis,
     ) -> Self {
-        assert!(analysis.is_ready_for_lowering(document, snapshot));
-        Self {
+        Self::seeded(document, snapshot, analysis, 0, 0)
+    }
+    pub fn seeded(
+        document: &'a GraphDocument,
+        snapshot: &'a RegistrySnapshot,
+        analysis: &'a ValidationAnalysis,
+        seed: u64,
+        sequence: u64,
+    ) -> Self {
+        assert!(
+            analysis.is_ready_for_lowering(document, snapshot),
+            "{:?}",
+            analysis.report().diagnostics
+        );
+        let mut reference = Self {
             document,
             snapshot,
             analysis,
             cache: BTreeMap::new(),
+            seed,
+            sequence,
+            invocations: BTreeMap::new(),
             executions: BTreeMap::new(),
-        }
+        };
+        reference.begin_epoch();
+        reference
+    }
+    // The oracle deliberately recomputes constants too. Production constant reuse
+    // is checked separately by resolver/callback counters, not this slow evaluator.
+    pub fn begin_epoch(&mut self) {
+        self.cache.clear();
     }
     pub fn exports(&mut self) -> Vec<Outcome> {
-        self.document
-            .exports()
-            .iter()
-            .map(|export| self.pull(export.node, &export.port, 0))
+        (0..self.document.exports().len())
+            .map(|index| self.export(index))
             .collect()
+    }
+    pub fn export(&mut self, index: usize) -> Outcome {
+        let export = &self.document.exports()[index];
+        self.pull(export.node, &export.port, 0)
     }
     fn pull(&mut self, node_id: NodeId, port_key: &PortKey, depth: usize) -> Outcome {
         assert!(depth <= 64, "test oracle depth exceeded");
@@ -127,7 +155,51 @@ impl<'a> Reference<'a> {
             }
         } else {
             *self.executions.entry(node_id).or_default() += 1;
-            interpret(node, &inputs, signature).map_err(|code| Fault {
+            let definition = node.definition.id.as_str();
+            let values = if definition == "acme.frame/seeded-value"
+                && node.config["fault"].as_bool() == Some(true)
+            {
+                Err("core/Domain")
+            } else if definition == orange_bundled::RANDOM_U64_DEFINITION
+                || definition == "acme.frame/seeded-value"
+            {
+                // Share only the versioned stream primitive (anchored by external
+                // vectors), never dense scopes, compiler plans or native callbacks.
+                let invocation = self.invocations.entry(node_id).or_default();
+                let mut stream = orange_runtime::EntropyStream::new(orange_runtime::EntropyKey {
+                    seed: self.seed,
+                    node: node_id,
+                    activation_sequence: self.sequence,
+                    invocation: *invocation,
+                });
+                *invocation = invocation
+                    .checked_add(1)
+                    .expect("bounded oracle invocations");
+                let word = stream.next_u64().unwrap();
+                let ty = signature.ports[0].ty.as_ref().unwrap().as_str();
+                let value = match ty {
+                    "core/u64@1" => Value::U64(word),
+                    "core/bool@1" => Value::Bool(word % 2 == 1),
+                    "core/option@1<core/u64@1>" if word % 2 == 1 => Value::None,
+                    "core/option@1<core/u64@1>" => Value::U64(word),
+                    "core/option@1<core/option@1<core/u64@1>>" if word.is_multiple_of(2) => {
+                        Value::None
+                    }
+                    "core/option@1<core/option@1<core/u64@1>>" => {
+                        Value::Some(Arc::new(if (word / 2).is_multiple_of(2) {
+                            Value::None
+                        } else {
+                            Value::U64(word)
+                        }))
+                    }
+                    "core/f64@1" => Value::F64(f64::from_bits(word)),
+                    _ => panic!("seeded value outside oracle vocabulary"),
+                };
+                Ok(vec![value])
+            } else {
+                interpret(node, &inputs, signature)
+            };
+            values.map_err(|code| Fault {
                 source: node_id,
                 code,
             })

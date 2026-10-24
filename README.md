@@ -40,10 +40,10 @@ The metadata check enforces the core dependency boundary. The release configurat
 
 Source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). Measured results are recorded separately from proposed performance targets and unimplemented capabilities.
 
-The initial [orange-runtime](app/crates/orange-runtime) crate supplies versioned deterministic entropy streams and activation-owned consumption epochs. Bound node reads share a sample within an epoch; skipped nodes do not advance their stream. Seeded graph execution, general actors and scheduling remain open.
+The [orange-runtime](app/crates/orange-runtime) crate evaluates checked root data plans with versioned deterministic entropy streams and activation-owned consumption epochs. Bound node reads share a sample within an epoch; skipped nodes do not advance their stream. General actors and scheduling remain open.
 
 Fresh registered definitions carry typed volatility/determinism metadata. Publication enforces pure determinism, seeded package entropy and host-owned state/clock classification before future execution lowering.
 
 MathPackage also registers org.orange.math/random-u64 with a separate trusted entropy binding. It draws from a host-owned stream and cannot run through the pure folder; DataActivation now evaluates the checked data plan in explicit epochs.
 
-The checked DataPlan compiler now lowers pure/seeded-entropy root data exports to dense typed instructions, folding shared constant islands while leaving entropy unevaluated. Static lazy arms are pruned before binding. The existing PurePlan API remains; DataActivation executes these plans; independent multi-epoch graph equivalence and general control/actor execution remain next.
+The checked DataPlan compiler lowers pure/seeded-entropy root data exports to dense typed instructions, folding shared constant islands while leaving entropy unevaluated. Static lazy arms are pruned before binding. The existing PurePlan API remains; DataActivation executes these plans. Independent source-graph comparisons cover bounded seeded arithmetic and dynamic lazy/Option/Try graphs across epochs. General control/function/actor execution remains next.
