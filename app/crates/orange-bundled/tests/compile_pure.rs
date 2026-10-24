@@ -13,6 +13,9 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
+#[path = "support/reference.rs"]
+mod reference;
+
 fn id(n: u32) -> String {
     format!("10000000-0000-4000-8000-{n:012x}")
 }
@@ -505,11 +508,14 @@ fn fresh_descriptor_default_and_instance_override_precede_folding() {
         raw["signatures"]["not"] = serde_json::to_value(&signature).unwrap();
         raw["exports"] = json!([export(1, "result")]);
         let doc = from_json(&raw.to_string()).unwrap();
+        let analysis = analyze(&doc, &snapshot);
+        let expected = reference::Reference::new(&doc, &snapshot, &analysis).exports();
         let plan = compile(&doc, snapshot.clone(), &package);
         assert_eq!(
             plan.constants()[plan.exports()[0].slot.index()],
             FoldedValue::Value(Value::Bool(override_input))
         );
+        assert_eq!(expected, [Ok(Value::Bool(override_input))]);
     }
 }
 
