@@ -450,6 +450,8 @@ An envelope carries `ingestion_seq`, source and `source_seq`, cause activation, 
 
 An action or async with `event` outputs (a subscription) is allowed **only in the top-level graph**, never in functions (`E-SUBSCRIPTION-IN-FUNCTION`). Its subscription is owned by the run. It ends when the run stops, or through its `handle` output and a close node. Each event starts an activation of the region rooted at that event port, and that region may read the event's payload outputs only (§7.2).
 
+**Event intrinsic contracts (V4; FR-48).** `core/on-event@1` (entry, `payload` output `source: payload`), `core/emit@1` (action, `suspends: never`, required `payload` input) and `core/await-event@1` (async, `suspends: always`, optional `timeout: option<duration>`, outcomes `then`/`timed_out`, `payload` output available on `then`) use `config.event` and take the payload type from the event declaration; edits to the declaration invalidate its consumers. An unknown or malformed reference reports `E-EVENT-UNKNOWN`. Entries persist an `activation` policy (`capacity` ≥ 1; `max_parallel` ≥ 1 only with `parallel`; host-owned entries reject `backpressure`); violations, and policies on non-entries, report `E-ACTIVATION-POLICY`.
+
 ## 11. State
 
 ### 11.1 Variables
@@ -572,8 +574,8 @@ Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_
 | Regions and availability | `E-REGION-AMBIGUOUS`, `E-REGION-ESCAPE`, `E-UNAVAILABLE-VALUE`, `E-CROSS-ACTIVATION`, `E-BREAK-OUTSIDE-LOOP`, `E-ZONE-STRUCTURE`, `W-UNREACHABLE` |
 | Cycles | `E-CYCLE-DATA`, `E-CYCLE-SYNC-CONTROL`, `E-RECURSION`, `E-LOOP-UNBOUNDED`, `W-BUSY-LOOP` |
 | State and concurrency | `E-VARIABLE-SCOPE`, `E-SHARED-VARIABLE-SCOPE`, `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `W-CONST-ERROR` |
-| Functions and entries | `E-FUNCTION-KIND`, `E-FUNCTION-BODY-MARKER`, `E-MISSING-RETURN`, `E-ENTRY-IN-FUNCTION`, `E-SUBSCRIPTION-IN-FUNCTION`, `W-DETACH-IN-FUNCTION` |
-| Function resolution | `E-CALL-TARGET-MISSING`, `E-CALL-TARGET-UNKNOWN`, `E-FUNCTION-INTERFACE`, `E-VARIABLE-UNKNOWN`, `E-UPDATE-OPERATION`, `E-UPDATE-UNSUPPORTED`, `E-FUNCTION-METADATA-UNAVAILABLE`, `E-METADATA-STALE`, `E-SUSPENDS-MISSING`, `E-SUSPENDS-INVALID` |
+| Functions and entries | `E-FUNCTION-KIND`, `E-FUNCTION-BODY-MARKER`, `E-MISSING-RETURN`, `E-ENTRY-IN-FUNCTION`, `E-SUBSCRIPTION-IN-FUNCTION`, `E-ACTIVATION-POLICY`, `W-DETACH-IN-FUNCTION` |
+| Function resolution | `E-CALL-TARGET-MISSING`, `E-CALL-TARGET-UNKNOWN`, `E-FUNCTION-INTERFACE`, `E-VARIABLE-UNKNOWN`, `E-EVENT-UNKNOWN`, `E-UPDATE-OPERATION`, `E-UPDATE-UNSUPPORTED`, `E-FUNCTION-METADATA-UNAVAILABLE`, `E-METADATA-STALE`, `E-SUSPENDS-MISSING`, `E-SUSPENDS-INVALID` |
 
 `E-SHARED-VARIABLE-SCOPE` uses the core origin, message key `core/graph-shared-variable-scope`, empty arguments and safe fallback "Shared writes require a workspace variable." It identifies a local/run target of a shared write without exposing configuration values.
 
