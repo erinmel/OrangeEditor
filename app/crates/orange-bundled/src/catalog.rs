@@ -74,6 +74,8 @@ pub fn math_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
             },
             config_version: 1,
             kind: NodeKind::Pure,
+            volatility: None,
+            determinism: orange_model::catalog::Determinism::Deterministic,
             suspends: None,
             type_params,
             ports: Ports::Declared(ports),

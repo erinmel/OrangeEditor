@@ -25,6 +25,8 @@ fn definition(
         },
         config_version: 1,
         kind,
+        volatility: None,
+        determinism: super::Determinism::Deterministic,
         suspends,
         type_params: Vec::new(),
         ports: Ports::Declared(ports),
@@ -52,6 +54,7 @@ fn variable_definition(
     access: VariableAccess,
 ) -> NodeDefinition {
     NodeDefinition {
+        volatility: (access == VariableAccess::Read).then_some(super::Volatility::StateRead),
         ports: Ports::Variable(access),
         ..definition(id, kind, suspends, Vec::new())
     }

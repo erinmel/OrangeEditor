@@ -93,6 +93,8 @@ fn def(id: &str, port: PortDescriptor) -> NodeDefinition {
         },
         config_version: 1,
         kind: NodeKind::Pure,
+        volatility: None,
+        determinism: orange_model::catalog::Determinism::Deterministic,
         suspends: None,
         type_params: vec![],
         ports: Ports::Declared(vec![port]),

@@ -80,6 +80,23 @@ pub enum Ports {
     ForEach,
 }
 
+/// Inputs needed to evaluate one volatile definition.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Volatility {
+    StateRead,
+    Clock,
+    Entropy,
+}
+
+/// A provider declaration, checked for kind compatibility; not authentication of code.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Determinism {
+    Deterministic,
+    Seeded,
+    External,
+    Nondeterministic,
+}
+
 /// One registered node definition version.
 #[derive(Debug, Clone, PartialEq)]
 pub struct NodeDefinition {
@@ -87,6 +104,9 @@ pub struct NodeDefinition {
     pub config_version: u32,
     /// Kind of the projected signature snapshots of this definition's instances.
     pub kind: NodeKind,
+    /// Required for volatile definitions only. Packages may declare Entropy only.
+    pub volatility: Option<Volatility>,
+    pub determinism: Determinism,
     /// Declared suspension behavior. `None` is unresolved for async/iterator definitions.
     pub suspends: Option<Suspends>,
     pub type_params: Vec<TypeParam>,

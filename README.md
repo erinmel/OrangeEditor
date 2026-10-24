@@ -41,3 +41,5 @@ The metadata check enforces the core dependency boundary. The release configurat
 Source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). Measured results are recorded separately from proposed performance targets and unimplemented capabilities.
 
 The initial [orange-runtime](app/crates/orange-runtime) crate supplies versioned deterministic entropy streams and activation-owned consumption epochs. Bound node reads share a sample within an epoch; skipped nodes do not advance their stream. Seeded graph execution, general actors and scheduling remain open.
+
+Fresh registered definitions carry typed volatility/determinism metadata. Publication enforces pure determinism, seeded package entropy and host-owned state/clock classification before future execution lowering.

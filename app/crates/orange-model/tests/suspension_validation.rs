@@ -28,6 +28,13 @@ fn definition(kind: NodeKind, suspends: Option<Suspends>) -> NodeDefinition {
         },
         config_version: 1,
         kind,
+        volatility: (kind == NodeKind::Volatile)
+            .then_some(orange_model::catalog::Volatility::Entropy),
+        determinism: if kind == NodeKind::Volatile {
+            orange_model::catalog::Determinism::Seeded
+        } else {
+            orange_model::catalog::Determinism::Deterministic
+        },
         suspends,
         type_params: vec![],
         ports: Ports::Declared(vec![]),

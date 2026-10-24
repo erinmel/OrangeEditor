@@ -18,6 +18,13 @@ fn definition(kind: NodeKind, ports: Vec<PortDescriptor>) -> NodeDefinition {
         },
         config_version: 1,
         kind,
+        volatility: (kind == NodeKind::Volatile)
+            .then_some(orange_model::catalog::Volatility::Entropy),
+        determinism: if kind == NodeKind::Volatile {
+            orange_model::catalog::Determinism::Seeded
+        } else {
+            orange_model::catalog::Determinism::Deterministic
+        },
         suspends: match kind {
             NodeKind::Async | NodeKind::Iterator => Some(Suspends::Maybe),
             _ => None,

@@ -217,6 +217,8 @@ fn registered_definition_captures_only_its_declared_reference_field() {
             definition: custom.definition,
             config_version: custom.config_version,
             kind: NodeKind::Pure,
+            volatility: None,
+            determinism: orange_model::catalog::Determinism::Deterministic,
             suspends: None,
             type_params: Vec::new(),
             ports: Ports::Declared(Vec::new()),
