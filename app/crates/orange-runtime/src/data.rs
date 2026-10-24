@@ -1,4 +1,6 @@
-use crate::{ActivationEntropy, EntropyError, EntropyLayout, EntropySlot, EntropyStream};
+use crate::{
+    ActivationEntropy, CancelToken, EntropyError, EntropyLayout, EntropySlot, EntropyStream,
+};
 use orange_compiler::{
     ConstantFault, DataNode, DataOperation, DataPlan, DataStability, EntropySource,
     EvaluatedExport, FoldedValue, KernelFault, NodeIx,
@@ -6,10 +8,7 @@ use orange_compiler::{
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::id::NodeId;
 use orange_model::{GraphDocument, Value};
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::Arc;
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy)]
@@ -37,10 +36,11 @@ impl Default for DataLimits {
         }
     }
 }
-#[derive(Debug, Clone, Copy, Default)]
-pub struct DataOptions<'a> {
+/// The activation keeps its own token clone, so it borrows nothing from the host.
+#[derive(Debug, Clone, Default)]
+pub struct DataOptions {
     pub limits: DataLimits,
-    pub cancel: Option<&'a AtomicBool>,
+    pub cancel: Option<CancelToken>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -73,9 +73,8 @@ impl DataError {
         }
     }
 }
-fn checkpoint(cancel: Option<&AtomicBool>) -> Result<(), DataError> {
-    // This flag communicates a stop request only, not related memory publication.
-    if cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+fn checkpoint(cancel: Option<&CancelToken>) -> Result<(), DataError> {
+    if cancel.is_some_and(CancelToken::is_cancelled) {
         Err(DataError::Cancelled)
     } else {
         Ok(())
@@ -88,12 +87,12 @@ fn checkpoint(cancel: Option<&AtomicBool>) -> Result<(), DataError> {
 /// ```compile_fail
 /// let frame = orange_runtime::DataActivation::default();
 /// ```
-pub struct DataActivation<'a> {
+pub struct DataActivation {
     plan: Arc<DataPlan>,
     document_revision: u64,
-    state: Frame<'a>,
+    state: Frame,
 }
-impl std::fmt::Debug for DataActivation<'_> {
+impl std::fmt::Debug for DataActivation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("DataActivation")
             .field("graph", &self.plan.graph_id())
@@ -103,16 +102,16 @@ impl std::fmt::Debug for DataActivation<'_> {
             .finish_non_exhaustive()
     }
 }
-impl<'a> DataActivation<'a> {
+impl DataActivation {
     pub fn start(
         plan: Arc<DataPlan>,
         document: &GraphDocument,
         registry: &RegistrySnapshot,
         seed: u64,
         activation_sequence: u64,
-        options: DataOptions<'a>,
+        options: DataOptions,
     ) -> Result<Self, DataError> {
-        checkpoint(options.cancel)?;
+        checkpoint(options.cancel.as_ref())?;
         // Separate failures retain useful entry diagnostics; active ownership freezes
         // the plan after entry and does not consult later authoring publications.
         if !plan.is_current(document, plan.snapshot()) {
@@ -170,7 +169,7 @@ impl<'a> DataActivation<'a> {
             limits,
             cancel: options.cancel,
         };
-        checkpoint(options.cancel)?;
+        checkpoint(state.cancel.as_ref())?;
         Ok(Self {
             plan,
             document_revision: document.revision(),
@@ -190,7 +189,7 @@ impl<'a> DataActivation<'a> {
         self.document_revision
     }
     fn checkpoint(&mut self) -> Result<(), DataError> {
-        if let Err(error) = checkpoint(self.state.cancel) {
+        if let Err(error) = checkpoint(self.state.cancel.as_ref()) {
             if self.state.epoch.is_some() {
                 self.state.failed = Some(error);
             }
@@ -263,7 +262,7 @@ enum Work {
     Choose(NodeIx),
     Copy { node: NodeIx, input: usize },
 }
-struct Frame<'a> {
+struct Frame {
     scopes: ActivationEntropy,
     entropy_slots: Vec<Option<EntropySlot>>,
     slots: Vec<Option<FoldedValue>>,
@@ -277,9 +276,9 @@ struct Frame<'a> {
     inputs: Vec<Value>,
     outputs: Vec<Value>,
     limits: DataLimits,
-    cancel: Option<&'a AtomicBool>,
+    cancel: Option<CancelToken>,
 }
-impl Frame<'_> {
+impl Frame {
     fn push(&mut self, work: Work) -> Result<(), DataError> {
         if self.work.len() >= self.work_limit {
             return Err(DataError::ResourceLimit);
@@ -385,7 +384,7 @@ impl Frame<'_> {
                 FoldedValue::Fault(fault) => return self.publish_fault(plan, node, fault.clone()),
             }
         }
-        checkpoint(self.cancel)?;
+        checkpoint(self.cancel.as_ref())?;
         let result = match node.operation() {
             DataOperation::Pure(binding) => binding.kernel.fold(&self.inputs, &mut self.outputs),
             DataOperation::Entropy(binding) => {
@@ -396,7 +395,7 @@ impl Frame<'_> {
                 let mut source = ScopedSource {
                     stream: EntropyStream::new(key),
                     remaining: self.limits.max_entropy_draws,
-                    cancel: self.cancel,
+                    cancel: self.cancel.as_ref(),
                     cancelled: false,
                     fault: None,
                 };
@@ -410,7 +409,7 @@ impl Frame<'_> {
             }
             _ => return Err(DataError::KernelContract { node: node.node() }),
         };
-        checkpoint(self.cancel)?;
+        checkpoint(self.cancel.as_ref())?;
         let publication = match result {
             Ok(()) => self.publish_values(plan, node),
             Err(fault) => self.publish_fault(
@@ -482,7 +481,7 @@ impl Frame<'_> {
     fn drive(&mut self, plan: &DataPlan, root: NodeIx) -> Result<(), DataError> {
         self.push(Work::Enter(root))?;
         while let Some(work) = self.work.pop() {
-            checkpoint(self.cancel)?;
+            checkpoint(self.cancel.as_ref())?;
             match work {
                 Work::Enter(index) => {
                     let node = &plan.nodes()[index.index()];
@@ -547,13 +546,13 @@ impl Frame<'_> {
 struct ScopedSource<'a> {
     stream: EntropyStream,
     remaining: usize,
-    cancel: Option<&'a AtomicBool>,
+    cancel: Option<&'a CancelToken>,
     cancelled: bool,
     fault: Option<KernelFault>,
 }
 impl EntropySource for ScopedSource<'_> {
     fn next_u64(&mut self) -> Result<u64, KernelFault> {
-        if self.cancel.is_some_and(|flag| flag.load(Ordering::Relaxed)) {
+        if self.cancel.is_some_and(CancelToken::is_cancelled) {
             self.cancelled = true;
             return Err(KernelFault {
                 code: "core/Cancelled",

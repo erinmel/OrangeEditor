@@ -16,7 +16,7 @@ use serde_json::json;
 use std::sync::Arc;
 use support::*;
 
-fn pull(frame: &mut DataActivation<'_>, index: usize) -> Outcome {
+fn pull(frame: &mut DataActivation, index: usize) -> Outcome {
     let export = frame.export(index).unwrap().unwrap();
     export.outcome.cloned().map_err(|fault| Fault {
         source: fault.source,

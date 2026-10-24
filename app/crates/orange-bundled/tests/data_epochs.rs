@@ -12,13 +12,10 @@ use orange_model::document::{NodeInstance, SignatureSnapshot};
 use orange_model::value::JsonText;
 use orange_model::{GraphDocument, Value, analyze, from_json, to_json};
 use orange_runtime::{
-    DataActivation, DataError, DataLimits, DataOptions, EntropyKey, EntropyStream,
+    CancelToken, DataActivation, DataError, DataLimits, DataOptions, EntropyKey, EntropyStream,
 };
 use serde_json::json;
-use std::sync::{
-    Arc, OnceLock, Weak,
-    atomic::{AtomicBool, Ordering},
-};
+use std::sync::{Arc, OnceLock, Weak, atomic::Ordering};
 use support::*;
 
 #[test]
@@ -118,14 +115,14 @@ fn sample(node: u32, seed: u64, sequence: u64, invocation: u64) -> u64 {
     .next_u64()
     .unwrap()
 }
-fn start<'a>(
+fn start(
     plan: Arc<DataPlan>,
     doc: &GraphDocument,
     snapshot: &RegistrySnapshot,
     seed: u64,
     sequence: u64,
-    options: DataOptions<'a>,
-) -> DataActivation<'a> {
+    options: DataOptions,
+) -> DataActivation {
     DataActivation::start(plan, doc, snapshot, seed, sequence, options).unwrap()
 }
 
@@ -318,7 +315,7 @@ fn draw_limit_is_a_graph_fault_but_operation_and_cancel_limits_are_not_catchable
     );
     limited.begin_epoch().unwrap();
     assert_eq!(limited.export(0), Err(DataError::ResourceLimit));
-    let cancel = AtomicBool::new(false);
+    let cancel = CancelToken::new();
     let mut cancelled = start(
         plan,
         &doc,
@@ -326,14 +323,14 @@ fn draw_limit_is_a_graph_fault_but_operation_and_cancel_limits_are_not_catchable
         0,
         0,
         DataOptions {
-            cancel: Some(&cancel),
+            cancel: Some(cancel.clone()),
             ..Default::default()
         },
     );
     cancelled.begin_epoch().unwrap();
-    cancel.store(true, Ordering::Relaxed);
+    cancel.cancel();
     assert_eq!(cancelled.export(0), Err(DataError::Cancelled));
-    cancel.store(false, Ordering::Relaxed);
+    cancel.clear();
     assert_eq!(cancelled.export(0), Err(DataError::Cancelled));
 }
 
@@ -397,7 +394,7 @@ fn stale_entry_is_rejected_while_active_plan_keeps_its_old_snapshot() {
 enum Mutation {
     WrongType,
     PartialFault(Arc<OnceLock<Weak<JsonText>>>),
-    Cancel(Arc<AtomicBool>, bool),
+    Cancel(CancelToken, bool),
     IgnoreDrawFault { draws: usize, return_fault: bool },
 }
 #[derive(Debug)]
@@ -443,9 +440,9 @@ impl EntropyKernel for MutatedKernel {
                 })
             }
             Mutation::Cancel(flag, ignore_fault) => {
-                flag.store(true, Ordering::Relaxed);
+                flag.cancel();
                 let result = source.next_u64();
-                flag.store(false, Ordering::Relaxed);
+                flag.clear();
                 if *ignore_fault {
                     outputs[0] = Value::U64(42);
                     Ok(())
@@ -463,7 +460,7 @@ fn rejected_epoch_start_aborts_old_reads_and_only_a_successful_start_recovers() 
     let doc = graph(&package, vec![random(1)], vec![], vec![export(1, "value")]);
     let resolver = Counting::new(package);
     let plan = Arc::new(compile(&doc, snapshot.clone(), &resolver));
-    let cancel = AtomicBool::new(false);
+    let cancel = CancelToken::new();
     let mut frame = start(
         plan,
         &doc,
@@ -471,23 +468,23 @@ fn rejected_epoch_start_aborts_old_reads_and_only_a_successful_start_recovers() 
         0,
         0,
         DataOptions {
-            cancel: Some(&cancel),
+            cancel: Some(cancel.clone()),
             ..Default::default()
         },
     );
     // Rejected initial starts neither invent nor consume an epoch.
-    cancel.store(true, Ordering::Relaxed);
+    cancel.cancel();
     assert_eq!(frame.begin_epoch(), Err(DataError::Cancelled));
-    cancel.store(false, Ordering::Relaxed);
+    cancel.clear();
     assert_eq!(frame.export(0), Err(DataError::NoEpoch));
     assert_eq!(frame.begin_epoch(), Ok(0));
     assert_eq!(
         frame.export(0).unwrap().unwrap().outcome,
         Ok(&Value::U64(sample(1, 0, 0, 0)))
     );
-    cancel.store(true, Ordering::Relaxed);
+    cancel.cancel();
     assert_eq!(frame.begin_epoch(), Err(DataError::Cancelled));
-    cancel.store(false, Ordering::Relaxed);
+    cancel.clear();
     assert_eq!(frame.export(0), Err(DataError::Cancelled));
     assert_eq!(frame.export(usize::MAX), Err(DataError::Cancelled));
     assert_eq!(resolver.draws.load(Ordering::Relaxed), 1);
@@ -672,7 +669,7 @@ fn cancellation_observed_inside_stream_cannot_be_turned_into_try_data_even_if_fl
             vec![edge(1, 1, "value", 2, "value")],
             vec![export(2, "result")],
         );
-        let cancel = Arc::new(AtomicBool::new(false));
+        let cancel = CancelToken::new();
         let resolver = Mutated {
             package,
             mode: Mutation::Cancel(cancel.clone(), ignore_fault),
@@ -695,13 +692,13 @@ fn cancellation_observed_inside_stream_cannot_be_turned_into_try_data_even_if_fl
             0,
             0,
             DataOptions {
-                cancel: Some(&cancel),
+                cancel: Some(cancel.clone()),
                 ..Default::default()
             },
         );
         frame.begin_epoch().unwrap();
         assert_eq!(frame.export(0), Err(DataError::Cancelled));
-        assert!(!cancel.load(Ordering::Relaxed));
+        assert!(!cancel.is_cancelled());
         assert_eq!(frame.export(0), Err(DataError::Cancelled));
     }
 }
@@ -891,7 +888,8 @@ fn entry_resource_limits_and_empty_or_missing_exports_have_explicit_results() {
             DataError::ResourceLimit
         );
     }
-    let cancel = AtomicBool::new(true);
+    let cancel = CancelToken::new();
+    cancel.cancel();
     assert_eq!(
         DataActivation::start(
             plan,
@@ -900,7 +898,7 @@ fn entry_resource_limits_and_empty_or_missing_exports_have_explicit_results() {
             0,
             0,
             DataOptions {
-                cancel: Some(&cancel),
+                cancel: Some(cancel.clone()),
                 ..Default::default()
             }
         )
