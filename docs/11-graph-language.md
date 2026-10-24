@@ -500,7 +500,7 @@ Gate, Do Once, Flip Flop and Register store hidden run-scoped slots (Register ma
 
 ## 12. Streams
 
-`core/stream@1<T>` is an affine handle: a stream output may have one consumer edge (`E-STREAM-FANOUT`). It cannot be stored in variables, used as a literal, or exported. Consumers:
+`core/stream@1<T>` is an affine handle: a stream output may have one consumer edge (`E-STREAM-FANOUT`). It cannot be stored in variables, used as a literal, or exported. An export of a stream or handle type, or of a container of them, reports `E-EXPORT-TYPE`. Consumers:
 
 | Node | Kind | Semantics |
 |---|---|---|
@@ -538,7 +538,7 @@ Runtime codes defined by the core: `NumericOverflow`, `DivideByZero`, `Domain`, 
 - **Return coverage (V3b).** For an action or async function with outputs, every exec path from the entry must reach a `core/return` (`E-MISSING-RETURN`, on the node and exec output where a path ends, or on the function when it has no entry or no return). `failed`, `cancelled` and a loop's `body` do not end a path; paths inside a loop body continue the loop; break and continue are terminators; `core/fork` branches are exempt because a return may not appear there. Coverage is unprovable, and the function not accepted, while a reachable node is unresolved.
 - Function declaration edits, target changes and removal re-infer referenced caller components in root and function bodies using typed references in both document states. Missing targets supply no saved type evidence. Calls that cease to have a generic interface clear stale inferred arguments; pins and historical signature data remain unchanged. The originating edit and inferred updates are one undoable transaction.
 - Each call has its own frame and locals. Run variables are shared with the caller's run.
-- A function body has no entries or Watch nodes (`E-ENTRY-IN-FUNCTION`) and no subscriptions (`E-SUBSCRIPTION-IN-FUNCTION`, §10.4). Break and Continue do not cross the boundary. `core/return` MUST NOT appear inside a Fork branch (`E-REGION-ESCAPE`). Every path in an action function with outputs reaches a Return (`E-MISSING-RETURN`). Return cancels any remaining detached strands of the body (`W-DETACH-IN-FUNCTION`).
+- A function body has no entries or Watch nodes (`E-ENTRY-IN-FUNCTION`) and no subscriptions (`E-SUBSCRIPTION-IN-FUNCTION`, §10.4). Break and Continue do not cross the boundary. `core/return` MUST NOT appear inside a Fork branch (`E-REGION-ESCAPE`). Every path in an action function with outputs reaches a Return (`E-MISSING-RETURN`). Return cancels any remaining detached strands of the body (`W-DETACH-IN-FUNCTION`). V4b enforces this as a warning on every `core/fork` with `join: detach` in a function body (strictest reading: the fork may leave a strand running at Return or at the end of the body); the fork stays valid. The documented host entries (`core/on-start`, `on-stop`, `on-manual`, `on-timer`, `on-timeout`, `on-variable-changed`, `on-watch`) report `E-ENTRY-IN-FUNCTION` in a function body even where this core version does not register them yet.
 - The call graph is acyclic (§8.2). There are no macros in v1. "Collapse to function" is an editor refactoring with an interface preview, and groups or frames are presentation only.
 - A package-provided function is a definition whose implementation is a graph, pinned by the package lock like any provider.
 
@@ -585,6 +585,7 @@ Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_
 | Cycles | `E-CYCLE-DATA`, `E-CYCLE-SYNC-CONTROL`, `E-RECURSION`, `E-LOOP-UNBOUNDED`, `W-BUSY-LOOP` |
 | State and concurrency | `E-VARIABLE-SCOPE`, `E-SHARED-VARIABLE-SCOPE`, `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `E-VARIABLE-PERSISTENT`, `E-REGISTER-CONFIG`, `W-CONST-ERROR` |
 | Functions and entries | `E-FUNCTION-KIND`, `E-FUNCTION-BODY-MARKER`, `E-MISSING-RETURN`, `E-ENTRY-IN-FUNCTION`, `E-SUBSCRIPTION-IN-FUNCTION`, `E-ACTIVATION-POLICY`, `W-DETACH-IN-FUNCTION` |
+| Exports and configuration | `E-EXPORT-TARGET`, `E-EXPORT-DUPLICATE`, `E-EXPORT-TYPE`, `E-CONFIG-INVALID`, `E-CONFIG-SCHEMA-UNSUPPORTED` |
 | Function resolution | `E-CALL-TARGET-MISSING`, `E-CALL-TARGET-UNKNOWN`, `E-FUNCTION-INTERFACE`, `E-VARIABLE-UNKNOWN`, `E-EVENT-UNKNOWN`, `E-UPDATE-OPERATION`, `E-UPDATE-UNSUPPORTED`, `E-FUNCTION-METADATA-UNAVAILABLE`, `E-METADATA-STALE`, `E-SUSPENDS-MISSING`, `E-SUSPENDS-INVALID` |
 
 `E-SHARED-VARIABLE-SCOPE` uses the core origin, message key `core/graph-shared-variable-scope`, empty arguments and safe fallback "Shared writes require a workspace variable." It identifies a local/run target of a shared write without exposing configuration values.
