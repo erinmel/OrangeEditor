@@ -73,7 +73,72 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     let mut definitions = core_control_definitions();
     definitions.extend(selection_and_state_definitions());
     definitions.extend(register_definitions());
+    definitions.extend(result_definitions());
     definitions
+}
+
+/// `available_on` outcomes of an execution-sourced output.
+fn on(mut port: PortDescriptor, outcomes: &[&str]) -> PortDescriptor {
+    port.available_on = Some(
+        outcomes
+            .iter()
+            .map(|id| id.parse().expect("intrinsic port id is valid"))
+            .collect(),
+    );
+    port
+}
+
+/// `core/try` and `core/match-result` (11 §13): the only place an error becomes ordinary data.
+/// `try` is a pure node whose input is lazy so its cone's errors are captured; `match-result`
+/// replaces `then` with the `ok`/`err` outcomes and exposes the unwrapped value or error only
+/// after the matching outcome.
+fn result_definitions() -> Vec<NodeDefinition> {
+    vec![
+        generic(
+            definition(
+                "core/try",
+                NodeKind::Pure,
+                None,
+                vec![
+                    PortDescriptor::data_in("value", ty("$T")).lazy(),
+                    PortDescriptor::data_out(
+                        "result",
+                        ty("core/result@1<$T>"),
+                        OutputSource::Computed,
+                    ),
+                ],
+            ),
+            "T",
+            &[],
+        ),
+        generic(
+            definition(
+                "core/match-result",
+                NodeKind::Action,
+                None,
+                vec![
+                    PortDescriptor::exec_in("in"),
+                    PortDescriptor::data_in("result", ty("core/result@1<$T>")),
+                    PortDescriptor::exec_out("ok"),
+                    PortDescriptor::exec_out("err"),
+                    on(
+                        PortDescriptor::data_out("value", ty("$T"), OutputSource::Execution),
+                        &["ok"],
+                    ),
+                    on(
+                        PortDescriptor::data_out(
+                            "error",
+                            ty("core/error@1"),
+                            OutputSource::Execution,
+                        ),
+                        &["err"],
+                    ),
+                ],
+            ),
+            "T",
+            &[],
+        ),
+    ]
 }
 
 /// `core/register`: an anonymous typed state cell (11 §8.4). `store` writes `next` and `reset`

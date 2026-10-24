@@ -182,7 +182,7 @@ const INTRINSICS: [Intrinsic; 41] = [
     rule("core/or", PURE, None),
     rule("core/coalesce", PURE, None),
     rule("core/try", PURE, None),
-    rule("core/match-result", None, None),
+    rule("core/match-result", ACTION, None),
     rule("core/repeat-begin", None, None),
     rule("core/repeat-end", None, None),
     rule("core/map-begin", None, None),

@@ -89,6 +89,40 @@ fn register_feedback_reads_state_not_its_inputs() {
 }
 
 #[test]
+fn try_captures_a_lazy_value_as_a_result() {
+    let signature = resolve("core/try", json!({"T": "core/i64@1"}), json!({}));
+    assert_eq!(signature.kind, NodeKind::Pure);
+    assert_eq!(signature.ports[0].lazy, Some(true));
+    assert_eq!(
+        output(&signature, "result"),
+        (
+            "core/result@1<core/i64@1>".into(),
+            Some(OutputSource::Computed)
+        )
+    );
+}
+
+#[test]
+fn match_result_offers_the_value_or_error_only_on_its_outcome() {
+    let signature = resolve("core/match-result", json!({"T": "core/i64@1"}), json!({}));
+    assert_eq!(exec_out(&signature), ["ok", "err"]);
+    let available = |id: &str| {
+        signature
+            .ports
+            .iter()
+            .find(|port| port.port_id.as_str() == id)
+            .and_then(|port| port.available_on.clone())
+            .unwrap()
+            .iter()
+            .map(|port| port.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(available("value"), ["ok"]);
+    assert_eq!(available("error"), ["err"]);
+    assert_eq!(output(&signature, "value").0, "core/i64@1");
+}
+
+#[test]
 fn state_controls_expose_their_state_outputs() {
     let gate = resolve("core/gate", json!({}), json!({}));
     assert_eq!(exec_in(&gate), ["enter", "open", "close", "toggle"]);
