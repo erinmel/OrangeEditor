@@ -14,7 +14,10 @@ use orange_model::DocIndex;
 use orange_model::catalog::ProviderKey;
 use orange_model::document::Edge;
 use orange_model::inference::{apply_inferred, apply_inferred_indexed};
-use orange_model::validation::validate;
+use orange_model::validation::{
+    ConnectionValidation, validate, validate_availability, validate_exports, validate_nodes,
+    validate_regions,
+};
 use orange_model::{DocCommand, GraphDocument, from_json};
 use serde_json::{Value as Json, json};
 
@@ -37,7 +40,30 @@ fn node_id(n: usize) -> String {
 fn add_node(n: usize) -> Json {
     json!({"id": node_id(n), "definition_id": ADD, "definition_version": 1, "config_version": 1,
         "config": {}, "type_pins": {"T": "core/i64@1"},
+        "type_args": {"T": "core/i64@1"}, "signature": "s-add-i64",
+        "inputs": {"a": {"type": "core/i64@1", "value": "0"},
+            "b": {"type": "core/i64@1", "value": "0"}},
         "provider": {"package": "org.test", "version": "1.0.0", "id": "add"}})
+}
+
+fn add_nodes(chain_length: usize, extra: usize) -> Vec<Json> {
+    (0..chain_length + extra)
+        .map(|n| {
+            let mut node = add_node(n);
+            if n > 0 && n < chain_length {
+                node["inputs"].as_object_mut().unwrap().remove("a");
+            }
+            node
+        })
+        .collect()
+}
+
+fn add_signatures() -> Json {
+    json!({"s-add-i64": {"kind": "pure", "ports": [
+        {"port_id": "a", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "b", "direction": "input", "kind": "data", "type": "core/i64@1"},
+        {"port_id": "sum", "direction": "output", "kind": "data", "type": "core/i64@1", "source": "computed"}
+    ]}})
 }
 
 fn edge_json(n: usize, from: usize, to: usize, port: &str) -> Json {
@@ -47,12 +73,13 @@ fn edge_json(n: usize, from: usize, to: usize, port: &str) -> Json {
 
 /// A chain of `n` `add` nodes plus two isolated nodes `n` and `n + 1`.
 fn chain(n: usize) -> GraphDocument {
-    let nodes: Vec<_> = (0..n + 2).map(add_node).collect();
+    let nodes = add_nodes(n, 2);
     let edges: Vec<_> = (1..n).map(|i| edge_json(i, i - 1, i, "a")).collect();
     from_json(&minimal_document(json!({
         "package_lock": [{"id": "org.test", "version": "1.0.0", "content_digest": DIGEST}],
         "nodes": nodes,
         "edges": edges,
+        "signatures": add_signatures(),
     })))
     .unwrap()
 }
@@ -76,6 +103,9 @@ fn edit_cost_by_document_size() {
     let registry = registry_with_provider(key());
     for n in [1_000usize, 10_000] {
         let doc = chain(n);
+        let report = validate(&doc, &registry);
+        assert!(report.is_valid(), "{:?}", report.diagnostics);
+        assert_eq!(report.resolved.len(), n + 2);
         for (label, from, to) in [("tail of chain", n - 1, n), ("isolated pair", n, n + 1)] {
             let edge: Edge = serde_json::from_value(edge_json(n + 10, from, to, "b")).unwrap();
             let time = best(&doc, |copy| {
@@ -168,5 +198,77 @@ fn validate_cost_by_call_chain_depth() {
             std::hint::black_box(validate(copy, &registry));
         });
         println!("depth={depth:>5} validate: {time:.3?}");
+    }
+}
+
+#[test]
+#[ignore = "release timing; run with --ignored --nocapture"]
+fn export_cone_cost_by_document_size() {
+    let registry = registry_with_provider(key());
+    for n in [1_000usize, 10_000] {
+        let doc = from_json(&minimal_document(json!({
+            "package_lock": [{"id": "org.test", "version": "1.0.0", "content_digest": DIGEST}],
+            "nodes": add_nodes(n, 0),
+            "signatures": add_signatures(),
+            "edges": (1..n).map(|i| edge_json(i, i - 1, i, "a")).collect::<Vec<_>>(),
+            "exports": [{"id": "sum", "node": node_id(n - 1), "port": "sum"}]
+        })))
+        .unwrap();
+        let resolved = validate_nodes(&doc, &registry).resolved;
+        assert_eq!(resolved.len(), n);
+        assert!(validate_exports(&doc, &resolved, &registry).is_empty());
+        let time = best(&doc, |copy| {
+            std::hint::black_box(validate_exports(copy, &resolved, &registry));
+        });
+        println!("n={n:>6} validate_exports (pure chain): {time:.3?}");
+    }
+}
+
+#[test]
+#[ignore = "release timing; run with --ignored --nocapture"]
+fn availability_cost_by_action_chain_size() {
+    let registry = registry_with_provider(key());
+    let variable = "40000000-0000-4000-8000-000000000001";
+    let event = "40000000-0000-4000-8000-000000000002";
+    for n in [200usize, 1_000, 2_000] {
+        let mut nodes = vec![json!({"id":node_id(0),"definition_id":"core/on-event",
+            "definition_version":1,"config_version":1,"config":{"event":event},
+            "activation":{"mode":"queue","capacity":8,"overflow":"drop-oldest","on_fault":"continue","order":0}})];
+        let mut edges = Vec::new();
+        for i in 1..=n {
+            nodes.push(json!({"id":node_id(i),"definition_id":"core/update-variable",
+                "definition_version":1,"config_version":1,"config":{"variable":variable,"operation":"add"}}));
+            for (offset, from_port, to_port) in [
+                (0, "then", "in"),
+                (1, if i == 1 { "payload" } else { "new" }, "value"),
+            ] {
+                edges.push(json!({"id":format!("20000000-0000-4000-8000-{:012}", 2 * i + offset),
+                    "from":{"node":node_id(i - 1),"port":from_port},"to":{"node":node_id(i),"port":to_port}}));
+            }
+        }
+        let doc = from_json(&minimal_document(json!({"nodes":nodes,"edges":edges,
+            "variables":[{"id":variable,"name":"v","type":"core/i64@1","scope":"run"}],
+            "events":[{"id":event,"name":"e","payload":"core/i64@1","scope":"run"}]
+        })))
+        .unwrap();
+        let resolved = validate_nodes(&doc, &registry).resolved;
+        assert_eq!(resolved.len(), n + 1);
+        let connections = ConnectionValidation::default();
+        let regions = validate_regions(&doc, &resolved, &connections, &registry);
+        assert!(regions.is_valid());
+        assert!(
+            validate_availability(&doc, &resolved, &connections, &regions.index, &registry)
+                .is_valid()
+        );
+        let time = best(&doc, |copy| {
+            std::hint::black_box(validate_availability(
+                copy,
+                &resolved,
+                &connections,
+                &regions.index,
+                &registry,
+            ));
+        });
+        println!("n={n:>6} validate_availability (action/data chain): {time:.3?}");
     }
 }

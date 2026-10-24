@@ -5,7 +5,8 @@
 //! accepted, so acceptance has a unique fixed point. [`settle`] reaches it with whole-document
 //! rounds, which alone would cost one round per level of a call chain. [`accept_functions`]
 //! computes the same fixed point first by checking each body once, callee first, so `settle`
-//! normally needs a single round and validation stays linear in the document size.
+//! normally needs a single round, avoiding one whole-document round per call-chain level.
+//! Individual passes and transitive effect summaries have their own costs.
 
 use std::collections::{BTreeMap, BTreeSet};
 

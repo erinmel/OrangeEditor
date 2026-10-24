@@ -7,7 +7,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
 use crate::document::{
-    GraphDocument, GraphExport, OutputSource, PortDirection, PortKind, PortRef, SignatureSnapshot,
+    GraphDocument, OutputSource, PortDirection, PortKind, PortRef, SignatureSnapshot,
 };
 use crate::id::{NodeId, TypeExpr};
 use crate::type_term::TypeTerm;
@@ -30,9 +30,39 @@ pub fn validate_exports(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
+    if document.exports().is_empty() {
+        return Vec::new();
+    }
     let origin = registry.origin();
     let mut diagnostics = Vec::new();
     let mut seen = BTreeSet::new();
+    // Inspect each edge once, rather than scanning every edge at every step of each cone.
+    // State outputs stop a pull: their write inputs do not determine the stored value.
+    let mut incoming: BTreeMap<NodeId, Vec<(NodeId, OutputSource)>> = BTreeMap::new();
+    for edge in document.root().edges.values() {
+        if !document.root().nodes.contains_key(&edge.from.node)
+            || !document.root().nodes.contains_key(&edge.to.node)
+        {
+            continue;
+        }
+        let (Ok(from), Ok(to)) = (
+            lookup_port(document, resolved, &edge.from),
+            lookup_port(document, resolved, &edge.to),
+        ) else {
+            continue;
+        };
+        if from.kind == PortKind::Data
+            && to.kind == PortKind::Data
+            && from.direction == PortDirection::Output
+            && to.direction == PortDirection::Input
+            && let Some(source) = from.source
+        {
+            incoming
+                .entry(edge.to.node)
+                .or_default()
+                .push((edge.from.node, source));
+        }
+    }
     for export in document.exports() {
         let subject = Subject::new(Some(export.node), Some(export.port.clone()), None);
         let mut report = |code| diagnostics.push(Diagnostic::new(code, subject.clone(), origin));
@@ -67,7 +97,7 @@ pub fn validate_exports(
         if !serializable(registry, port.ty.as_ref()) {
             report(DiagnosticCode::ExportType);
         }
-        if crosses_activation(document, resolved, export, port.source) {
+        if crosses_activation(&incoming, export.node, port.source) {
             report(DiagnosticCode::CrossActivation);
         }
     }
@@ -80,7 +110,9 @@ fn serializable(registry: &RegistrySnapshot, ty: Option<&TypeExpr>) -> bool {
     let Some(Ok(term)) = ty.map(TypeTerm::parse) else {
         return false;
     };
-    !term.contains_param()
+    let resource = ty.and_then(|ty| super::streams::resources(ty, registry.types()));
+    !resource.is_some_and(|found| found.handle || found.stream)
+        && !term.contains_param()
         && registry
             .types()
             .supports_term(&term, CapabilityRequest::Constraint(Constraint::Serialize))
@@ -90,9 +122,8 @@ fn serializable(registry: &RegistrySnapshot, ty: Option<&TypeExpr>) -> bool {
 /// Whether the exported value, or anything in its pure/volatile cone, belongs to an
 /// activation (payload, iteration or execution-sourced output).
 fn crosses_activation(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
-    export: &GraphExport,
+    incoming: &BTreeMap<NodeId, Vec<(NodeId, OutputSource)>>,
+    node: NodeId,
     source: Option<OutputSource>,
 ) -> bool {
     let scoped = |source: Option<OutputSource>| {
@@ -104,24 +135,18 @@ fn crosses_activation(
     if scoped(source) {
         return true;
     }
-    let mut visited = BTreeSet::from([export.node]);
-    let mut stack = vec![export.node];
+    if source != Some(OutputSource::Computed) {
+        return false;
+    }
+    let mut visited = BTreeSet::from([node]);
+    let mut stack = vec![node];
     while let Some(node) = stack.pop() {
-        for edge in document.root().edges.values().filter(|e| e.to.node == node) {
-            let (Ok(from), Ok(to)) = (
-                lookup_port(document, resolved, &edge.from),
-                lookup_port(document, resolved, &edge.to),
-            ) else {
-                continue;
-            };
-            if from.kind != PortKind::Data || to.kind != PortKind::Data {
-                continue;
-            }
-            if scoped(from.source) {
+        for &(producer, source) in incoming.get(&node).into_iter().flatten() {
+            if scoped(Some(source)) {
                 return true;
             }
-            if visited.insert(edge.from.node) {
-                stack.push(edge.from.node);
+            if source == OutputSource::Computed && visited.insert(producer) {
+                stack.push(producer);
             }
         }
     }

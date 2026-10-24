@@ -691,3 +691,48 @@ Measured with `cargo test --release -p orange-model --test perf_edit_baseline --
 | 4,000 (11,999) | 8.1 s | 289 ms |
 
 The same run measured the 10,000-node `validate` at 142 ms with the old lookup and 148 ms with the new one, which builds the lookup on first use; the indexed isolated edit stays at 0.10 ms once a document has been looked up. `locate_edge` and `edge` still scan bodies, and `DocIndex::update` uses them per changed edge.
+
+### Security and performance verification (2026-10-23)
+
+Repository review at `65747d2880d2a34056077b299e88c38f763e0ca8`, branch `feat/foundation-core-readiness`, [PR 14](https://github.com/erinmel/OrangeEditor/pull/14). Scope included the model's import/codec, types/constraints, registry/provider identities, inference, transactions/indexes, validation passes and tests, plus dependency inputs, CI/release helpers and product contracts beyond the PR diff. No compiler, executor, concrete host services, package loader, editor or audio implementation exists to qualify.
+
+Corrected existing behavior (FR-12/44/46, NFR-05/08/15; 08/11/12 updated together):
+
+- Sequence availability used counter-sorted ports instead of saved instance order; sparse reordered steps could both reject available values and accept unavailable ones. A regression checks both directions.
+- Config numeric bounds rounded integers to f64. For example, 9007199254740993 passed a maximum of 9007199254740992. Comparisons now retain integer precision and order mixed finite binary64/integer values correctly; regressions include signed/unsigned extremes and fractions. Diagnostics expose no config values.
+- Export analysis followed a register's write inputs when exporting its stored `current` value. State outputs now stop pull dependency traversal, including behind a computed node; activation-dependent computed exports still fail. Root incoming data adjacency replaces a full edge scan per visited node.
+- Availability retained one large reachable-vertex set per producer/outcome group, with quadratic memory even on an action/data chain. Uses are grouped and each set is released after answering its consumers. The control-flow algorithm and Fork join semantics are unchanged; CPU and query-count limits below remain open.
+- Resource storage checks inspected only textual type arguments, so nominal record fields and enum payloads could hide streams or handles. Cycle-safe schema traversal now covers those paths and register checks use the fresh resolved cell type instead of persisted type arguments. Regressions cover recursive records, enum payloads, resource-free cycles and a stale register cache.
+- Direct workspace dependencies now use exact `=version` requirements, enforcing their existing selected pins without upgrading or changing Cargo.lock. Corrected stale config-schema Rustdoc and the unqualified claim that callee-first acceptance made every validation pass linear.
+
+Toolchain and inputs: Rust 1.99.1 (`58cf8f9c3`, LLVM 23.1.1), Cargo 1.99.1 (`5f94df478`), Windows x86_64 MSVC; Node 24.18.0. Workspace default features, no extra feature flags; dependency features include indexmap/serde, serde/derive, serde_json/preserve_order and uuid/serde. Cargo.lock SHA-256 remains `39279fc3c0349b56f062bce50ca6d0d81033e13f9ca47c5f65869adb022a43b4`.
+
+Dependency security: built the CI-selected cargo-deny 0.20.2 with `cargo install --locked --root .artifacts/audit-tools cargo-deny --version 0.20.2`, then ran `.artifacts/audit-tools/bin/cargo-deny.exe --locked check advisories bans licenses sources`. All four checks passed after refreshing [RustSec](https://github.com/RustSec/advisory-db) online to `84d943a6deeb8cc6c6f632531aaf4f1c62275239` (database commit 2026-10-23 16:42:16 +02:00). This is evidence for that snapshot, not future advisories or application security certification. Initial sandbox DNS access failed; the authorized network run succeeded. Targeted private-key, GitHub/OpenAI-token and AWS-access-key pattern scans found no matches in tracked files or the 107 commits reachable through local refs. This was a pattern scan, not credential validation or an exhaustive entropy scan. The model forbids unsafe Rust and currently has no production file/network/process-execution sink; CI/release permission and artifact paths were reviewed without changing them. OS vault, network capability, worker isolation and release-signing enforcement remain later executable evidence.
+
+The Sequence, numeric-bound and register-export regressions failed against the original behavior before fixes. Final checks:
+
+- `cargo test --workspace --locked`: 514 passed (including compile-fail evidence), zero failed; four timing tests ignored by default.
+- `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --locked -- -D warnings`; `$env:RUSTDOCFLAGS='-D warnings'; cargo doc --workspace --no-deps --locked`: passed. Existing OneDrive incremental-cache hard-link warnings fell back to copying; they were not lint failures.
+- `node tools/check-cargo-metadata.mjs --self-test` (8 cases), `node tools/check-cargo-metadata.mjs`, `node --test tools/release.test.mjs` (7 tests), `node tools/release.mjs check`, `git diff --check`: passed. Release configuration remains disabled.
+- `cargo test --release -p orange-model --locked --test perf_edit_baseline -- --ignored --nocapture --test-threads=1`: all four timing probes passed. These report best of five, not p95/p99 qualification.
+
+Performance comparison, same machine and corrected fixtures:
+
+| Workload | Before correction | After correction |
+|---|---|---|
+| Export one 10,000-node pure chain, standalone pass | 43.633 ms | 5.452 ms |
+| Availability, 2,000-action/data chain, standalone pass | 262.947 ms | 203.697 ms |
+| Peak process working set for the availability probe (200/1,000/2,000 actions) | 241.1 MiB | 35.4 MiB |
+
+The availability baseline binary used HEAD's original `availability.rs` with the new identical probe; the edited source was backed up and restored in a `finally` block before subsequent builds. Both probe processes ran the same filtered test with `--ignored --nocapture --test-threads=1`. Peak working set was read from Windows process counters during each run at 15 ms intervals; it includes fixture setup/cloning and the complete probe process, not isolated allocator bytes. Time is best of five; peak memory is one process run per variant. A later full timing run measured availability at 198.942 ms; this is ordinary run variation, not an additional optimization.
+
+Benchmark evidence correction: the older edit baseline supplied no persisted package signatures or required input values and never asserted successful resolution. Its historical `validate` numbers therefore exercised an incomplete graph and cannot establish healthy whole-document validation speed. The probe now supplies signatures, resolved type arguments, pins and required values, and asserts validity and resolved-node count before timing. On that corrected 10,000-node chain: full `validate` 408.622 ms; an indexed isolated connect 0.1164 ms; an indexed connect touching the full generic component 207.952 ms. Callee-chain validation remains separately measured at 11.312/57.293/228.631 ms for depths 200/1,000/4,000. The export probe likewise asserts complete resolution and a diagnostic-free result.
+
+Remaining objective/performance gaps:
+
+- NFR-15 is **not met** by large affected components. Incremental inference still solves the full touched component; declaration-consumer discovery scans the document, connection planning clones it, and changed-edge lookup scans function bodies. The small indexed-edit result alone does not qualify W4/W9.
+- Availability still traverses control flow once per producer/outcome group, so CPU can be quadratic. Shared lazy cones can also grow the discovered query set. Data-cycle construction materializes every input-to-computed-output dependency, region overlap analysis can revisit shared nodes, and transitive function-write summaries can grow with reachable effects. Callee-first acceptance removes repeated whole-document rounds, not those costs.
+- Import has a 64 MiB pre-parse byte cap; 100,000-node/500,000-edge defaults are checked after structural allocation. Type/literal nesting and unification expansion limits exist, but there is no aggregate CPU/allocation/cancellation budget across all validation passes, declarations, metadata and diagnostics. The default import sizes do not promise bounded interactive validation or adversarial-input NFR-08 qualification. A host-facing analysis-budget/cancellation contract and focused stress evidence remain necessary.
+- `StateRules` still lacks compiler constant-folding warnings, so compile readiness remains false. No compiler/runtime, package hot-installation, OS-service, editor/accessibility/audio or release gate is passed. MSRV 1.97.1 and Linux/macOS were not run locally; only 1.99.1 is installed. New local edits have no remote CI evidence until published and checked.
+
+Ignored `.artifacts/security-performance-*.log` files retain local commands/results.

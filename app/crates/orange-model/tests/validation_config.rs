@@ -140,3 +140,69 @@ fn definition_and_config_is_covered() {
             .any(|check| check == ValidationCheck::DefinitionAndConfig)
     );
 }
+
+#[test]
+fn numeric_bounds_preserve_integer_precision_and_mixed_number_order() {
+    for (value, keyword, bound, valid) in [
+        (
+            json!(9_007_199_254_740_993u64),
+            "maximum",
+            json!(9_007_199_254_740_992u64),
+            false,
+        ),
+        (
+            json!(9_007_199_254_740_992u64),
+            "minimum",
+            json!(9_007_199_254_740_993u64),
+            false,
+        ),
+        (json!(u64::MAX), "maximum", json!(u64::MAX - 1), false),
+        (json!(i64::MIN), "minimum", json!(i64::MIN + 1), false),
+        (
+            json!(u64::MAX),
+            "maximum",
+            json!(18_446_744_073_709_551_616.0),
+            true,
+        ),
+        (
+            json!(u64::MAX),
+            "minimum",
+            json!(18_446_744_073_709_551_616.0),
+            false,
+        ),
+        (
+            json!(18_446_744_073_709_551_616.0),
+            "maximum",
+            json!(u64::MAX),
+            false,
+        ),
+        (
+            json!(18_446_744_073_709_551_616.0),
+            "minimum",
+            json!(u64::MAX),
+            true,
+        ),
+        (json!(-1), "minimum", json!(-0.5), false),
+        (json!(0), "maximum", json!(-0.5), false),
+        (json!(0.5), "maximum", json!(0), false),
+        (json!(-0.5), "minimum", json!(-1), true),
+        (
+            json!(i64::MIN),
+            "maximum",
+            json!(-9_223_372_036_854_775_808.0),
+            true,
+        ),
+        (json!(u64::MAX), "minimum", json!(-1), true),
+    ] {
+        let schema = json!({"properties":{"n":{keyword: bound}}});
+        let diagnostics = codes(Some(schema), json!({"n": value}));
+        assert_eq!(
+            diagnostics.is_empty(),
+            valid,
+            "{value} {keyword} {bound}: {diagnostics:?}"
+        );
+        if !valid {
+            assert_eq!(diagnostics, [DiagnosticCode::ConfigInvalid]);
+        }
+    }
+}

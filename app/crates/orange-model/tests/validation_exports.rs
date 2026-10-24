@@ -64,6 +64,41 @@ fn a_state_output_is_exportable() {
 }
 
 #[test]
+fn register_state_exports_do_not_pull_the_next_value_from_an_activation() {
+    let fixture = json!({
+        "events":[{"id":EVENT,"name":"e","payload":"core/i64@1","scope":"run"}],
+        "nodes":[on_event(1), {
+            "id":node_id(2),"definition_id":"core/register","definition_version":1,
+            "config_version":1,"config":{},"type_pins":{"T":"core/i64@1"}
+        }, {
+            "id":node_id(3),"definition_id":"core/select","definition_version":1,
+            "config_version":1,"config":{},"type_pins":{"T":"core/i64@1"},
+            "inputs":{"condition":{"type":"core/bool@1","value":true},
+                "if_false":{"type":"core/i64@1","value":"0"}}
+        }],
+        "edges":[
+            {"id":node_id(10),"from":{"node":node_id(1),"port":"then"},
+                "to":{"node":node_id(2),"port":"store"}},
+            {"id":node_id(11),"from":{"node":node_id(1),"port":"payload"},
+                "to":{"node":node_id(2),"port":"next"}}
+        ],
+        "exports":[export("current", 2, "current"), export("projected", 3, "result")]
+    });
+    for (producer, port, expected) in [
+        (2, "current", vec![]),
+        (1, "payload", vec![DiagnosticCode::CrossActivation]),
+    ] {
+        let mut fixture = fixture.clone();
+        fixture["edges"].as_array_mut().unwrap().push(json!({
+            "id":node_id(12),"from":{"node":node_id(producer),"port":port},
+            "to":{"node":node_id(3),"port":"if_true"}
+        }));
+        let document = from_json(&minimal_document(fixture)).unwrap();
+        assert_eq!(core_codes(&document), expected);
+    }
+}
+
+#[test]
 fn exports_must_name_an_existing_root_data_output() {
     let nodes = json!([get_variable(1), on_event(2)]);
     // Missing node, undeclared port, and a non-data (exec) output.

@@ -1,10 +1,13 @@
 mod common;
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, sync::Arc};
 
 use common::minimal_document;
-use orange_model::catalog::RegistrySnapshot;
+use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
+use orange_model::type_term::TypeTerm;
+use orange_model::types::TypeRegistryBuilder;
 use orange_model::validation::{DiagnosticCode, HostOrigin, validate_streams};
+use orange_model::value::literal_codec::{EnumSchema, FieldSchema, RecordSchema, VariantSchema};
 use orange_model::{GraphDocument, from_json};
 use serde_json::{Value, json};
 
@@ -62,4 +65,101 @@ fn resource_variables_reject_an_initializer_literal() {
     let init = json!({"init": {"type": HANDLE, "value": "x"}});
     let result = codes(HANDLE, "run", init);
     assert_eq!(result, [DiagnosticCode::HandleLiteral]);
+}
+
+fn nominal_registry() -> Arc<RegistrySnapshot> {
+    let term = |text: &str| TypeTerm::parse(&text.parse().unwrap()).unwrap();
+    let mut types = TypeRegistryBuilder::core();
+    types
+        .register_handle_kind("org.resource", &"org.resource/session@1".parse().unwrap())
+        .unwrap();
+    types
+        .register_enum(
+            "org.resource",
+            &"org.resource/choice@1".parse().unwrap(),
+            EnumSchema {
+                variants: vec![
+                    VariantSchema {
+                        variant_id: "stream".into(),
+                        payload: Some(term(STREAM)),
+                    },
+                    VariantSchema {
+                        variant_id: "handle".into(),
+                        payload: Some(term("core/handle@1<org.resource/session@1>")),
+                    },
+                ],
+            },
+        )
+        .unwrap();
+    for (name, payload) in [("packet", "org.resource/choice@1"), ("clean", "core/i64@1")] {
+        let ty = format!("org.resource/{name}@1");
+        types
+            .register_record(
+                "org.resource",
+                &ty.parse().unwrap(),
+                RecordSchema {
+                    fields: vec![
+                        FieldSchema {
+                            field_id: "next".into(),
+                            ty: term(&ty),
+                            optional: true,
+                        },
+                        FieldSchema {
+                            field_id: "payload".into(),
+                            ty: term(payload),
+                            optional: false,
+                        },
+                    ],
+                },
+            )
+            .unwrap();
+    }
+    RegistryBuilder::core(HostOrigin::new("0.1.0", format!("sha256:{}", "b".repeat(64))).unwrap())
+        .types(Arc::new(types.build().unwrap()))
+        .build()
+        .unwrap()
+}
+
+#[test]
+fn recursive_nominal_schemas_cannot_hide_resources_from_storage_rules() {
+    let registry = nominal_registry();
+    let document = from_json(&minimal_document(json!({"variables": [
+        {"id":VAR,"name":"v","type":"org.resource/packet@1","scope":"workspace",
+            "init":{"type":"org.resource/packet@1","value":{}}}
+    ]})))
+    .unwrap();
+    let diagnostics = validate_streams(&document, &BTreeMap::new(), &registry);
+    for code in [
+        DiagnosticCode::StreamStore,
+        DiagnosticCode::HandlePersist,
+        DiagnosticCode::HandleLiteral,
+    ] {
+        assert!(
+            diagnostics.iter().any(|item| item.code == code),
+            "{diagnostics:?}"
+        );
+    }
+    let document = from_json(&minimal_document(json!({"variables": [
+        {"id":VAR,"name":"v","type":"org.resource/clean@1","scope":"workspace"}
+    ]})))
+    .unwrap();
+    assert!(validate_streams(&document, &BTreeMap::new(), &registry).is_empty());
+}
+
+#[test]
+fn registers_check_resources_in_the_fresh_nominal_cell_type() {
+    let registry = nominal_registry();
+    let document = from_json(&minimal_document(json!({"nodes": [{
+        "id":common::node_id(1),"definition_id":"core/register","definition_version":1,
+        "config_version":1,"config":{},"type_pins":{"T":"org.resource/packet@1"},
+        "type_args":{"T":"core/i64@1"}
+    }]})))
+    .unwrap();
+    let report = orange_model::validation::analyze(&document, &registry).into_report();
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|item| item.code == DiagnosticCode::StreamStore)
+    );
 }

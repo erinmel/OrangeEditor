@@ -20,6 +20,8 @@ Priority: **M** required for the foundation 1.0; **S** optional/deferred, not a 
 
 **Core-first delivery sequence.** Finish validation and compilation, then deterministic headless execution for math/logic, seeded random, virtual time, loops, cancellation and resource ownership, with inert in-memory service adapters. Concrete services, package loading and UI remain later bounded slices; early evidence is collected when a public boundary needs it. This sequencing does not remove the foundation UI or services and passes no API/runtime gate by itself. [06](06-quality-and-validation.md) defines verification; the local plan orders delivery.
 
+**Validation review corrections (2026-10-23).** FR-44/46 availability follows persisted Sequence order; FR-12/44 resource storage rules include nominal record fields and enum payloads, including recursive schemas; FR-44 config bounds preserve integer precision; and FR-44/46 exports stop at state outputs while computed cones retain activation checks. NFR-05/08/15 verification and remaining complexity limits are recorded in [10](10-tooling-and-sources.md#security-and-performance-verification-2026-10-23). These corrections add no runtime, compilation-readiness or performance gate claim.
+
 ## Glossary
 
 | Term | Meaning |

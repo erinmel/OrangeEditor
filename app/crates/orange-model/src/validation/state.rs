@@ -5,9 +5,9 @@
 //! such write is the same commutative `update-variable` operation. Min/Max qualify only for
 //! language-owned ordered scalars. A function call writes every run variable its summary
 //! lists; the callee's locals never conflict. Nested regions of a branch belong to it.
-//! Registers have no registered contract, and a register reached by two branches is already
-//! `E-REGION-AMBIGUOUS`. `W-STALE-CAPTURE` needs suspension-aware dataflow and is not
-//! implemented here.
+//! A register reached by two branches is already `E-REGION-AMBIGUOUS`; its storage and
+//! initializer checks use the fresh resolved cell type. `W-STALE-CAPTURE` uses the
+//! conservative dataflow approximation below, rather than proving exact suspension order.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -53,7 +53,7 @@ pub fn validate_state(
 
     let mut diagnostics = validate_declarations(document, registry);
     for (body_ref, body) in document.bodies_with_refs() {
-        validate_registers(body_ref, body, registry, &mut diagnostics);
+        validate_registers(body_ref, body, registry, resolved, &mut diagnostics);
         for node in body.nodes.values() {
             if node
                 .activation
@@ -131,6 +131,7 @@ fn validate_registers(
     body_ref: BodyRef,
     body: &crate::document::GraphBody,
     registry: &RegistrySnapshot,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
     let (origin, types) = (registry.origin(), registry.types().as_ref());
@@ -147,25 +148,17 @@ fn validate_registers(
             subject = subject.with_function(function);
         }
         let mut emit = |code| diagnostics.push(Diagnostic::new(code, subject.clone(), origin));
-        let cell = node
-            .type_args
-            .values()
-            .next()
-            .and_then(|ty| TypeTerm::parse(ty).ok().map(|term| (ty, term)));
-        let mut resource = false;
-        if let Some((_, term)) = &cell {
-            let mut stack = vec![term];
-            while let Some(current) = stack.pop() {
-                if current.core("stream").is_some() {
-                    emit(DiagnosticCode::StreamStore);
-                    resource = true;
-                    break;
-                }
-                resource |= current.core("handle").is_some();
-                if let TypeTerm::Named(named) = current {
-                    stack.extend(&named.args);
-                }
-            }
+        let cell = resolved.get(&node.id).and_then(|signature| {
+            signature
+                .ports
+                .iter()
+                .find(|port| port.port_id.as_str() == "current")?
+                .ty
+                .as_ref()
+        });
+        let resources = cell.and_then(|ty| super::streams::resources(ty, types));
+        if resources.is_some_and(|found| found.stream) {
+            emit(DiagnosticCode::StreamStore);
         }
         if node
             .config
@@ -177,13 +170,13 @@ fn validate_registers(
         let Some(initial) = node.config.get("initial") else {
             continue;
         };
-        if resource {
+        if resources.is_some_and(|found| found.handle || found.stream) {
             emit(DiagnosticCode::HandleLiteral);
             continue;
         }
         let valid = serde_json::from_value::<crate::document::literal::Literal>(initial.clone())
             .is_ok_and(|literal| {
-                cell.as_ref().is_none_or(|(ty, _)| literal.ty == **ty)
+                cell.is_none_or(|ty| literal.ty == *ty)
                     && crate::value::literal_codec::decode(&literal, types).is_ok()
             });
         if !valid {

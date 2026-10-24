@@ -95,7 +95,8 @@ pub struct NodeDefinition {
     pub references: Vec<ReferenceField>,
     /// Core-implemented argument sets. `None`: constraints decide.
     pub specializations: Option<Vec<TypeArgs>>,
-    /// Stored for hosts; not enforced by the model.
+    /// Enforced by validation's versioned config-schema dialect; unsupported constructs
+    /// produce diagnostics rather than silently accepting the configuration.
     pub config_schema: Option<serde_json::Value>,
 }
 

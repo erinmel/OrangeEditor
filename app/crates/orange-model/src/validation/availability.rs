@@ -234,6 +234,14 @@ struct DataEdge<'a> {
     from: PortDescriptor,
 }
 
+enum Requirement {
+    Diagnose(DiagnosticCode),
+    Execution(BTreeSet<PortId>),
+}
+
+type AvailabilityKey = (RegionRoot, NodeId, BTreeSet<PortId>);
+type AvailabilityUses = BTreeMap<AvailabilityKey, BTreeSet<(NodeId, Subject)>>;
+
 #[allow(clippy::too_many_lines)]
 fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityValidation) {
     let Context {
@@ -296,8 +304,7 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
     }
 
     // Consumers: owned exec nodes, reading their data inputs and the cones behind them.
-    let mut cache: BTreeMap<(RegionRoot, NodeId, BTreeSet<PortId>), BTreeSet<Vertex>> =
-        BTreeMap::new();
+    let mut uses = AvailabilityUses::new();
     for consumer in body.nodes.keys() {
         let Some(region) = regions.owners.get(consumer) else {
             continue;
@@ -322,10 +329,7 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
                     stack.push((upstream, direct));
                 }
             }
-            let verdict = verdict(
-                context, &cfg, &roots, &mut cache, item, *consumer, region, &top,
-            );
-            if let Some(code) = verdict {
+            if let Some(requirement) = requirement(context, item, region, &top) {
                 let subject = Subject::new(
                     Some(*consumer),
                     Some(direct.to.port.clone()),
@@ -335,25 +339,45 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
                     Some(function) => subject.with_function(function),
                     None => subject,
                 };
-                result
-                    .diagnostics
-                    .push(Diagnostic::new(code, subject, context.origin));
+                match requirement {
+                    Requirement::Diagnose(code) => {
+                        result
+                            .diagnostics
+                            .push(Diagnostic::new(code, subject, context.origin))
+                    }
+                    Requirement::Execution(outcomes) if roots.contains(&&top) => {
+                        uses.entry((top.clone(), producer, outcomes))
+                            .or_default()
+                            .insert((*consumer, subject));
+                    }
+                    Requirement::Execution(_) => {}
+                }
+            }
+        }
+    }
+
+    // Group queries by producer/outcomes, then discard each reachability set immediately.
+    // Retaining all sets costs quadratic memory even for a simple action/data chain.
+    for ((top, producer, outcomes), consumers) in uses {
+        let reached = cfg.reach_avoiding(&Vertex::Entry(top.node, top.port), producer, &outcomes);
+        for (consumer, subject) in consumers {
+            if reached.contains(&Vertex::Node(consumer)) {
+                result.diagnostics.push(Diagnostic::new(
+                    DiagnosticCode::UnavailableValue,
+                    subject,
+                    context.origin,
+                ));
             }
         }
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-fn verdict(
+fn requirement(
     context: &Context,
-    cfg: &Cfg,
-    roots: &[&RegionRoot],
-    cache: &mut BTreeMap<(RegionRoot, NodeId, BTreeSet<PortId>), BTreeSet<Vertex>>,
     item: &DataEdge,
-    consumer: NodeId,
     region: &RegionRoot,
     top: &RegionRoot,
-) -> Option<DiagnosticCode> {
+) -> Option<Requirement> {
     let regions = context.regions;
     let producer = item.edge.from.node;
     match item.from.source? {
@@ -363,12 +387,12 @@ fn verdict(
                 Some(owner) => top_of(regions, owner) == *top,
                 None => top.node == producer,
             };
-            (!same).then_some(DiagnosticCode::CrossActivation)
+            (!same).then_some(Requirement::Diagnose(DiagnosticCode::CrossActivation))
         }
         OutputSource::Iteration => {
             let owner = regions.owners.get(&producer)?;
             if top_of(regions, owner) != *top {
-                return Some(DiagnosticCode::CrossActivation);
+                return Some(Requirement::Diagnose(DiagnosticCode::CrossActivation));
             }
             let mut current = Some(region.clone());
             while let Some(root) = current {
@@ -380,32 +404,18 @@ fn verdict(
                     .get(&root)
                     .and_then(|found| found.parent.clone());
             }
-            Some(DiagnosticCode::UnavailableValue)
+            Some(Requirement::Diagnose(DiagnosticCode::UnavailableValue))
         }
         OutputSource::Execution => {
             let owner = regions.owners.get(&producer)?;
             if top_of(regions, owner) != *top {
-                return Some(DiagnosticCode::CrossActivation);
-            }
-            if !roots.contains(&top) {
-                return None;
+                return Some(Requirement::Diagnose(DiagnosticCode::CrossActivation));
             }
             let outcomes: BTreeSet<PortId> = item.from.available_on.as_ref().map_or_else(
                 || BTreeSet::from(["then".parse().expect("port id is valid")]),
                 |list| list.iter().cloned().collect(),
             );
-            let reached = cache
-                .entry((top.clone(), producer, outcomes.clone()))
-                .or_insert_with(|| {
-                    cfg.reach_avoiding(
-                        &Vertex::Entry(top.node, top.port.clone()),
-                        producer,
-                        &outcomes,
-                    )
-                });
-            reached
-                .contains(&Vertex::Node(consumer))
-                .then_some(DiagnosticCode::UnavailableValue)
+            Some(Requirement::Execution(outcomes))
         }
     }
 }
@@ -449,10 +459,14 @@ fn build_node(
             return;
         }
         "core/sequence" => {
-            let steps: Vec<_> = ports
-                .iter()
-                .filter(|port| port.port().as_str() == "then")
-                .cloned()
+            let then = "then".parse().expect("port id is valid");
+            let steps: Vec<_> = node
+                .variadic
+                .get(&then)
+                .into_iter()
+                .flat_map(|state| &state.order)
+                .map(|key| PortKey::new(then.clone(), Some(*key)))
+                .filter(|port| ports.contains(port))
                 .collect();
             for (position, port) in steps.iter().enumerate() {
                 let entry = Vertex::Entry(id, port.clone());

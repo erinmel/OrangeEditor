@@ -254,6 +254,27 @@ fn straight_line_and_sequence_steps_dominate() {
 }
 
 #[test]
+fn sequence_availability_follows_persisted_order_instead_of_port_counters() {
+    // Stable counters can be sparse and reordered by insertion. Step #7 runs before #2.
+    for (producer, consumer, expected) in [(3, 4, OK.as_slice()), (4, 3, &UNAVAILABLE)] {
+        let mut steps = sequence(2);
+        steps.json["variadic"] = json!({"then":{"order":[7,2],"next":8}});
+        assert_eq!(
+            codes(
+                vec![entry(1), steps, action(3), action(4)],
+                vec![
+                    exec(1, 1, "then", 2),
+                    exec(2, 2, "then#7", 3),
+                    exec(3, 2, "then#2", 4),
+                    data(4, producer, "out", consumer),
+                ],
+            ),
+            expected,
+        );
+    }
+}
+
+#[test]
 fn consumer_before_the_producer_is_unavailable() {
     let result = codes(
         vec![entry(1), action(2), action(3)],
