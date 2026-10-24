@@ -124,15 +124,19 @@ pub fn apply_inferred(
     apply_inferred_indexed(document, &mut index, edit, registry)
 }
 
-/// [`apply_inferred`] for a caller that keeps a [`DocIndex`] of `document`, which must be
-/// current. The index is updated with the commit and, like the document, unchanged on
-/// error. A small edit costs in proportion to the generic components it touches.
+/// [`apply_inferred`] for a caller that keeps a [`DocIndex`] of `document`. An index that is
+/// not current (the document changed without it, for example by an undo) is rebuilt first.
+/// The index is updated with the commit and, like the document, unchanged on error. A small
+/// edit costs in proportion to the generic components it touches.
 pub fn apply_inferred_indexed(
     document: &mut GraphDocument,
     index: &mut DocIndex,
     edit: impl IntoIterator<Item = DocCommand>,
     registry: &RegistrySnapshot,
 ) -> Result<InferredCommit, TxError> {
+    if !index.is_current(document) {
+        *index = DocIndex::build(document);
+    }
     let plan = plan_in_place(document, index, edit, registry)?;
     let committed = document.apply(plan.commands)?;
     index.update(document, &committed.change_set);

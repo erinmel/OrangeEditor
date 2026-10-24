@@ -194,6 +194,27 @@ fn a_kept_index_matches_the_document_through_commit_failure_and_removal() {
 }
 
 #[test]
+fn a_kept_index_left_stale_by_an_undo_is_rebuilt_before_the_next_edit() {
+    let registry = registry(None);
+    let mut doc = unconnected();
+    let mut index = DocIndex::build(&doc);
+    let edit = vec![connect(data_edge(1, (1, "value"), (2, "a")))];
+    let done = apply_inferred_indexed(&mut doc, &mut index, edit, &registry).unwrap();
+    // The undo bypasses the index, which still holds the edge.
+    let _ = doc.revert(done.committed.inverse).unwrap();
+    assert!(!index.is_current(&doc));
+
+    let edit = vec![connect(data_edge(2, (1, "value"), (2, "b")))];
+    let mut plain = doc.clone();
+    let expected = apply_inferred(&mut plain, edit.clone(), &registry).unwrap();
+    let done = apply_inferred_indexed(&mut doc, &mut index, edit, &registry).unwrap();
+    assert_eq!(done.issues, expected.issues);
+    assert_eq!(content(&doc), content(&plain));
+    assert!(index.is_current(&doc));
+    assert_eq!(index, DocIndex::build(&doc));
+}
+
+#[test]
 fn disconnect_clears_the_stale_side_and_keeps_the_pinned_side() {
     // 2 is pinned to f64 and feeds 3, whose cached binding came from that edge.
     let cached = json!({"type_args": {"T": "core/f64@1"}});
