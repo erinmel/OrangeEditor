@@ -677,6 +677,8 @@ pub enum Instr {
 - Memo bits are grouped by stability class. The `const` class is folded into `consts`, `activation` bits reset per activation, and `epoch` bits reset per `Pull` (O(words)).
 - Each slot has one writer site. Its static type is in `FrameLayout`, so kernels need no tag checks in release builds (debug builds assert).
 
+Native prerequisite (N1a): `orange-bundled::math_definitions()` supplies the ordinary replaceable definition contracts, while `MathPackage::register` adds one exact provider with its scalar specialization table. `MathPackage::resolve` checks that provider/version/digest exists in the supplied snapshot, that the snapshot admits the type arguments, and that the config is supported. Its private `ResolvedKernel` stores the Arc snapshot, ProviderKey, operation, scalar kind and normalized policy enums. `evaluate` accepts declared-order scalar Values and returns one Value or a typed KernelError; it neither validates a graph nor constructs a plan. Successful scalar evaluation contains no dynamic metadata lookups or buffer allocations by construction; no latency/allocation benchmark is implied. Retaining an old binding keeps old metadata alive and never consults a newly published provider default. The host must authenticate build identity and supply fresh resolved graph inputs. The final dense compiler/kernel ABI, source maps and full runtime error envelope remain unimplemented.
+
 ## 10. Runtime structures
 
 ```rust

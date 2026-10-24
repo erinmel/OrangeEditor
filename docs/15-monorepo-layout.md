@@ -42,3 +42,5 @@ The repository bootstrap added no Cargo manifest. WU-00/00b.1 added the root wor
 - Maintainer: `erinmel`, with solo-review mode initially. License selection and artifact-signing identities remain future distribution decisions; this bootstrap does not choose a license for the user.
 
 Architecture ownership is in [02](02-architecture.md) and package isolation/lifecycle in [04](04-expansion-plugins.md). Delivery sequencing and WU task packets are local working artifacts under ignored `.artifacts/`. This document changes source placement, not graph semantics, public package identity or execution rules. ADR-19 records the decision under NFR-14.
+
+N1a adds the second root workspace member, app/crates/orange-bundled, for ordinary product math definitions and privileged native scalar kernels. Its only product dependency is orange-model; no UI, engine, host service or installable-package runtime is linked. Workspace exact dependency pins/MSRV/lints apply. Cargo.lock gains the local member entry without changing external package versions. The metadata policy includes this member in direct/transitive UI/engine checks.

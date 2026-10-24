@@ -2,6 +2,7 @@ import {execFileSync} from 'node:child_process';
 
 const corePackages = new Set([
   'orange-model',
+  'orange-bundled',
   'orange-graph',
   'orange-types',
   'orange-compiler',
@@ -107,6 +108,8 @@ function selfTest() {
   check('transitive core leak is rejected', fixtureMetadata([core, transitive, winit], [core.id], {[core.id]: [transitive.id], [transitive.id]: [winit.id]}), 1);
   check('framework subcrate leak is rejected', fixtureMetadata([core, eguiExtras], [core.id], {[core.id]: [eguiExtras.id]}), 1);
   check('optional core declaration is rejected', fixtureMetadata([makePackage('model 0.0.0', 'orange-model', '0.0.0', [{name: 'egui', req: '=1.0.0', optional: true}]), eframe], ['model 0.0.0'], {}), 1);
+  const bundled = makePackage('bundled 0.0.0', 'orange-bundled', '0.0.0', [{name: 'egui', req: '=1.0.0'}]);
+  check('bundled kernel UI dependency is rejected', fixtureMetadata([core, bundled, eframe], [core.id, bundled.id], {[bundled.id]: [eframe.id]}), 2);
   const mustFail = (label, metadata) => {
     let failed = false;
     try { inspectMetadata(metadata); } catch { failed = true; }
@@ -116,7 +119,7 @@ function selfTest() {
   mustFail('empty workspace', {packages: [], workspace_members: [], resolve: {nodes: []}});
   mustFail('missing orange-model root', fixtureMetadata([app], [app.id], {}));
   mustFail('missing resolve deps', {...fixtureMetadata([core], [core.id], {}), resolve: {nodes: [{id: core.id}]}});
-  console.log('Cargo metadata policy fixtures passed (8 cases).');
+  console.log('Cargo metadata policy fixtures passed (9 cases).');
 }
 
 if (process.argv.includes('--self-test')) {

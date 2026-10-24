@@ -213,6 +213,8 @@ The initial host supports explicit package structural derives for `eq`, `hash`, 
 
 Integer arithmetic config: `int_overflow` = `checked` (default) / `wrapping` / `saturating`. Integer division truncates toward zero. `rem` takes the dividend's sign, and Euclidean `mod` is a separate node. Shifts by ≥ the bit width fail in checked mode. i32/u32 follow the i64 rules. f32 follows the f64 rules and persists as 8-hex-digit `bits`. Mixed-width arithmetic is never implicit.
 
+For the bundled scalar arithmetic, integer zero divisors fail in every overflow mode. Signed MIN/-1 follows the selected overflow policy: error in checked mode, MIN in wrapping mode, MAX in saturating mode. Finite floating arithmetic checks non-finite operands before zero division, then checks the result; explicit `float_policy: ieee` admits native NaN/infinity and division by zero. The stable errors are `core/NonFinite`, `core/DivideByZero` and `core/NumericOverflow`. Precision, signed zero and exact provider choice remain semantic inputs; this kernel implementation does not certify compiler constant folding (03, N1a).
+
 ## 6. Conversions
 
 1. The compiler never converts. Every conversion is a `core/convert` node that names a **converter registry entry**.

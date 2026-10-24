@@ -25,6 +25,8 @@ flowchart TD
   bundled --> model
 ```
 
+Implemented native prerequisite (N1a): `orange-bundled` depends on `orange-model` and publishes ordinary `org.orange.math` definition/provider metadata plus resolved scalar kernels. Resolution checks exact provider/build digest, definition/config version and specialization before execution. A resolved kernel retains its immutable registry snapshot and performs scalar dispatch without parsing or registry lookup. This is not the final compiler/runtime kernel ABI, package loader or service layer; the full crate graph above remains the target architecture.
+
 ## Foundation application and general capabilities
 
 ADR-22 selects a usable basic application as well as reusable libraries. The editor, language and general file/network/input/audio capabilities are foundation deliverables. Concrete capability services stay outside model/compiler/runtime; installing a specialized plugin adds domain-specific nodes and event sources through public contracts. OBS, Twitch, browser-canvas servers and website-specific clients are not host responsibilities or release dependencies.
