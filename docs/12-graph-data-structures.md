@@ -768,3 +768,9 @@ pub trait IteratorKernel {
 | Handle or continuation lookup | O(1) index + generation compare | NFR-02 |
 
 Requirements: FR-05, FR-08, FR-09, FR-44–51. Tests: G-suite in [11 §18](11-graph-language.md), V01/V02/V05 in [06](06-quality-and-validation.md). ADR-06, ADR-13–17 in [08](08-decisions.md).
+
+### E1a concrete subset
+
+orange-compiler::PurePlan is private-construction, immutable and not serializable. It retains source graph/content state/revision, Arc registry snapshot, dense u32 NodeIx/SlotIx, slot types, node/port source maps, incident input EdgeIds, ordered bound steps, export slots and folded values or ConstantFault records. It has no Default or public constructor. All arrays are read-only through public accessors. The source revision is the compilation invocation's revision; freshness uses opaque content-state and registry-generation identities. Undo can restore a prior content identity and make its matching analysis reusable; evidence for the edited state is then stale. Saved type_args are never executable binding evidence.
+
+The provisional PureKernel trait takes Value input/output slices and returns a bounded static KernelFault; PureKernelResolver returns ordered ports and an Arc executable. Trusted implementations promise deterministic, bounded, effect-free behavior. This is the implemented folding subset of the target kernel/ExecutionPlan sketches above, not their final ABI. Slot/operation/admission quotas and cancellation are enforced; constant-byte accounting is conservative retained-value accounting, not a hard allocator or CPU limit. No plan hash, function/control regions, memo epochs or scheduled runtime are supplied yet. Lowering uses O((nodes + edges + ports) log(nodes + edges + ports)) ordered-map/set work and linear retained storage, excluding validation, callback work and value payload size; no throughput/NFR claim is inferred.

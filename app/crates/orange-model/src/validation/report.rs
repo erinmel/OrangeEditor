@@ -147,6 +147,16 @@ pub struct ValidationAnalysis {
 }
 
 impl ValidationAnalysis {
+    /// Read-only identity of the analyzed document content (including undo identity).
+    pub fn document_state(&self) -> u64 {
+        self.document_state
+    }
+
+    /// Read-only identity of the analyzed immutable registry.
+    pub fn registry_generation(&self) -> u64 {
+        self.registry_generation
+    }
+
     /// Whether semantic validation permits the compiler to begin lowering and folding.
     /// Constant evaluation remains required before a completed plan can be published.
     pub fn is_ready_for_lowering(

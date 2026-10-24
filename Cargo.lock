@@ -293,8 +293,18 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 name = "orange-bundled"
 version = "0.0.0"
 dependencies = [
+ "orange-compiler",
  "orange-model",
  "proptest",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
+name = "orange-compiler"
+version = "0.0.0"
+dependencies = [
+ "orange-model",
  "serde_json",
  "thiserror",
 ]

@@ -10,6 +10,9 @@ use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortKey, VariableId};
 /// Stable identifiers for implemented graph validation diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DiagnosticCode {
+    /// Compiler-owned warning: the constant fault remains in the plan.
+    #[serde(rename = "W-CONST-ERROR")]
+    ConstError,
     #[serde(rename = "E-DECLARATION-TYPE")]
     DeclarationType,
     #[serde(rename = "E-ANALYSIS-LIMIT")]
@@ -202,6 +205,7 @@ impl DiagnosticCode {
             Self::VariadicCount => "E-VARIADIC-COUNT",
             Self::LiteralType => "E-LITERAL-TYPE",
             Self::HandleLiteral => "E-HANDLE-LITERAL",
+            Self::ConstError => "W-CONST-ERROR",
             Self::LiteralShadowed => "W-LITERAL-SHADOWED",
             Self::SuspendsMissing => "E-SUSPENDS-MISSING",
             Self::SuspendsInvalid => "E-SUSPENDS-INVALID",
@@ -285,6 +289,7 @@ impl DiagnosticCode {
             Self::VariadicCount => "core/graph-variadic-count",
             Self::LiteralType => "core/graph-literal-type",
             Self::HandleLiteral => "core/graph-handle-literal",
+            Self::ConstError => "core/graph-const-error",
             Self::LiteralShadowed => "core/graph-literal-shadowed",
             Self::SuspendsMissing => "core/graph-suspends-missing",
             Self::SuspendsInvalid => "core/graph-suspends-invalid",
@@ -387,6 +392,7 @@ impl DiagnosticCode {
             }
             Self::LiteralType => "Input literal does not match the declared port type.".into(),
             Self::HandleLiteral => "Handle ports cannot have literals.".into(),
+            Self::ConstError => "The constant expression produces an error.".into(),
             Self::LiteralShadowed => "Input literal is shadowed by a connected edge.".into(),
             Self::SuspendsMissing => "Suspension metadata is required for this node kind.".into(),
             Self::SuspendsInvalid => "Suspension metadata conflicts with the node kind.".into(),
@@ -734,7 +740,8 @@ impl Diagnostic {
         }
         let severity = if matches!(
             code,
-            DiagnosticCode::LiteralShadowed
+            DiagnosticCode::ConstError
+                | DiagnosticCode::LiteralShadowed
                 | DiagnosticCode::Unreachable
                 | DiagnosticCode::BusyLoop
                 | DiagnosticCode::StaleCapture

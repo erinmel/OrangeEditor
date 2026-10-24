@@ -6,6 +6,7 @@
 //! graph compiler, run actor, package installer or sandbox.
 
 mod catalog;
+mod compiler;
 mod conversion;
 mod error;
 mod kernel;
