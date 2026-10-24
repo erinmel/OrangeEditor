@@ -69,11 +69,14 @@ impl Patch {
     pub fn apply(self, document: &mut GraphDocument) -> Result<Patch, TxError> {
         Ok(match self {
             Patch::Node { body, id, entry } => {
+                let present = entry.is_some();
                 let nodes = &mut body_mut(document, body)?.nodes;
+                let old = set_boxed(nodes, id, entry);
+                document.track_nodes(body, [id], present);
                 Patch::Node {
                     body,
                     id,
-                    entry: set_boxed(nodes, id, entry),
+                    entry: old,
                 }
             }
             Patch::Edge { body, id, entry } => {
@@ -92,10 +95,19 @@ impl Patch {
                 id,
                 entry: set_slot(&mut document.events, id, entry),
             },
-            Patch::Function { id, entry } => Patch::Function {
-                id,
-                entry: set_boxed(&mut document.functions, id, entry),
-            },
+            Patch::Function { id, entry } => {
+                let added: Vec<_> = entry
+                    .iter()
+                    .flat_map(|placed| placed.value.body.nodes.keys().copied())
+                    .collect();
+                let old = set_boxed(&mut document.functions, id, entry);
+                let removed = old
+                    .iter()
+                    .flat_map(|placed| placed.value.body.nodes.keys().copied());
+                document.track_nodes(BodyRef::Function(id), removed, false);
+                document.track_nodes(BodyRef::Function(id), added, true);
+                Patch::Function { id, entry: old }
+            }
             Patch::Signature { key, entry } => {
                 let old = set_slot(&mut document.signatures, key.clone(), entry);
                 Patch::Signature { key, entry: old }
