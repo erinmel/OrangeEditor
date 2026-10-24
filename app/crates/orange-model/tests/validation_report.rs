@@ -392,6 +392,7 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::FunctionSummaries,
             ValidationCheck::DefinitionAndConfig,
             ValidationCheck::BodyDomains,
+            ValidationCheck::ContextualContracts,
             ValidationCheck::FunctionRestrictions,
             ValidationCheck::Regions,
             ValidationCheck::DataCycles,
@@ -403,10 +404,7 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
     );
     assert_eq!(
         analysis.missing_checks().collect::<Vec<_>>(),
-        [
-            ValidationCheck::ContextualContracts,
-            ValidationCheck::StateRules,
-        ]
+        [ValidationCheck::StateRules]
     );
     assert!(analysis.is_current(&doc, &registry));
     assert!(!analysis.is_ready_for_compilation(&doc, &registry));
