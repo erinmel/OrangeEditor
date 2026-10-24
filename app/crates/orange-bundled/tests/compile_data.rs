@@ -315,7 +315,7 @@ fn stale_quota_cancellation_and_wrong_entropy_abi_publish_no_data_plan() {
 }
 
 #[test]
-fn state_reads_and_unimplemented_function_calls_never_enter_generic_callbacks() {
+fn state_reads_become_host_inputs_and_function_calls_never_enter_generic_callbacks() {
     let (package, snapshot) = catalog();
     let base = graph(&package, vec![], vec![], vec![]);
     for function_call in [false, true] {
@@ -342,16 +342,19 @@ fn state_reads_and_unimplemented_function_calls_never_enter_generic_callbacks() 
             analysis.report().diagnostics
         );
         let resolver = Counting::new(package.clone());
-        assert!(matches!(
-            compile_data(
-                &doc,
-                snapshot.clone(),
-                &analysis,
-                &resolver,
-                CompileOptions::default()
-            ),
-            Err(CompileError::UnsupportedNode { .. })
-        ));
+        let data = compile_data(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &resolver,
+            CompileOptions::default(),
+        );
+        if function_call {
+            assert!(matches!(data, Err(CompileError::UnsupportedNode { .. })));
+        } else {
+            // Admitted, but nothing exports it, so no input slot is lowered.
+            assert!(data.unwrap().host_inputs().is_empty());
+        }
         assert!(matches!(
             compile_pure(
                 &doc,

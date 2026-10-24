@@ -610,12 +610,23 @@ pub(crate) struct Admission<'a> {
     pub(crate) incoming: Incoming<'a>,
     pub(crate) lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
 }
+/// Fresh definition metadata says the node reads host-owned state.
+pub(crate) fn is_state_read(
+    snapshot: &RegistrySnapshot,
+    node: &orange_model::document::NodeInstance,
+) -> bool {
+    snapshot
+        .definition(&node.definition)
+        .is_some_and(|definition| {
+            definition.volatility == Some(orange_model::catalog::Volatility::StateRead)
+        })
+}
 pub(crate) fn admit<'a>(
     document: &'a GraphDocument,
     snapshot: &RegistrySnapshot,
     analysis: &ValidationAnalysis,
     options: CompileOptions<'_>,
-    allow_entropy: bool,
+    data_plan: bool,
 ) -> Result<Admission<'a>, CompileError> {
     options.checkpoint()?;
     if analysis.document_state() != document.state_id() {
@@ -642,9 +653,18 @@ pub(crate) fn admit<'a>(
             .resolved
             .get(node)
             .ok_or(CompileError::UnsupportedNode { node: *node })?;
-        if sig.kind != NodeKind::Pure {
+        // A data plan reads host state through a single-output input slot.
+        let state_read = data_plan
+            && sig.kind == NodeKind::Volatile
+            && is_state_read(snapshot, &body.nodes[node]);
+        if state_read
+            && !matches!(sig.ports.as_slice(), [port] if port.direction == PortDirection::Output)
+        {
+            return Err(CompileError::UnsupportedNode { node: *node });
+        }
+        if sig.kind != NodeKind::Pure && !state_read {
             let metadata = snapshot.definition(&body.nodes[node].definition);
-            if !allow_entropy
+            if !data_plan
                 || sig.kind != NodeKind::Volatile
                 || !metadata.is_some_and(|definition| {
                     definition.volatility == Some(orange_model::catalog::Volatility::Entropy)
@@ -660,17 +680,22 @@ pub(crate) fn admit<'a>(
         if body.nodes[node].definition.id.is_core()
             && body.nodes[node].definition.id.as_str() != "core/convert"
             && !lazy_nodes.contains_key(node)
+            && !state_read
         {
             return Err(CompileError::UnsupportedNode { node: *node });
         }
+        let output_source = if state_read {
+            OutputSource::State
+        } else {
+            OutputSource::Computed
+        };
         charge(&mut ports, sig.ports.len(), options.limits.max_graph_items)?;
         for port in &sig.ports {
             if port.kind != PortKind::Data
                 || (port.is_lazy() && !lazy_nodes.contains_key(node))
                 || port.is_optional()
                 || port.variadic.is_some()
-                || (port.direction == PortDirection::Output
-                    && port.source != Some(OutputSource::Computed))
+                || (port.direction == PortDirection::Output && port.source != Some(output_source))
             {
                 return Err(CompileError::UnsupportedPort {
                     node: *node,

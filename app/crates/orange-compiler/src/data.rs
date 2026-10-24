@@ -19,11 +19,19 @@ pub enum DataOperation {
     Constant,
     Pure(KernelBinding),
     Entropy(EntropyBinding),
-    Select { when_true: usize, when_false: usize },
+    /// Host-supplied value (DataPlan::host_inputs): a state read today, control-plane
+    /// outputs later. The data plane never evaluates it, only reads its slot.
+    Input,
+    Select {
+        when_true: usize,
+        when_false: usize,
+    },
     And,
     Or,
     Coalesce,
-    Try { boxed: bool },
+    Try {
+        boxed: bool,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -90,6 +98,7 @@ pub struct DataPlan {
     pub(crate) initial: Vec<Option<FoldedValue>>,
     pub(crate) exports: Vec<Export>,
     pub(crate) export_nodes: Vec<NodeIx>,
+    pub(crate) host_inputs: Vec<NodeIx>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) resources: DataResources,
 }
@@ -137,6 +146,10 @@ impl DataPlan {
     }
     pub fn export_node(&self, index: usize) -> Option<NodeIx> {
         self.export_nodes.get(index).copied()
+    }
+    /// Input nodes in plan order. Only inputs some export may demand are present.
+    pub fn host_inputs(&self) -> &[NodeIx] {
+        &self.host_inputs
     }
     pub fn initial_charge(&self) -> Option<usize> {
         let mut bytes = 0usize;

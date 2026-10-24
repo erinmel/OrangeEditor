@@ -1,5 +1,5 @@
 use crate::compile::{
-    ConstantFolder, Incoming, admit, charge, decode, key, port_type, value_bytes,
+    ConstantFolder, Incoming, admit, charge, decode, is_state_read, key, port_type, value_bytes,
 };
 use crate::lazy::Lazy;
 use crate::*;
@@ -266,6 +266,8 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                         boxed: port_type(node_id, &sig.ports[0])?.unboxed_error(),
                     },
                 }
+            } else if is_state_read(&self.plan.snapshot, node) {
+                DataOperation::Input
             } else if sig.kind == NodeKind::Pure {
                 let binding = self
                     .resolver
@@ -313,6 +315,9 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 let slot = self.push(node_id, port, value)?;
                 self.outputs.insert((node_id, key(port)), slot);
                 outputs.push(slot);
+            }
+            if matches!(operation, DataOperation::Input) {
+                self.plan.host_inputs.push(index);
             }
             self.plan.nodes.push(DataNode {
                 index,
@@ -392,6 +397,7 @@ pub fn compile_data(
             initial: vec![],
             exports: vec![],
             export_nodes: vec![],
+            host_inputs: vec![],
             diagnostics: vec![],
             resources: DataResources {
                 slots: 0,

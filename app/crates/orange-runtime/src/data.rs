@@ -63,6 +63,10 @@ pub enum DataError {
     NoEpoch,
     #[error("The activation operation budget is exhausted.")]
     FuelExhausted,
+    #[error("A demanded host input was not supplied in this epoch.")]
+    MissingInput { node: NodeId },
+    #[error("The host input does not exist, has the wrong type or was already supplied.")]
+    InvalidInput { index: usize },
     #[error("A data operation violated its checked contract.")]
     KernelContract { node: NodeId },
     #[error("{0}")]
@@ -77,6 +81,8 @@ impl DataError {
             Self::Cancelled => "core/data-cancelled",
             Self::NoEpoch => "core/data-no-epoch",
             Self::FuelExhausted => "core/data-fuel-exhausted",
+            Self::MissingInput { .. } => "core/data-missing-input",
+            Self::InvalidInput { .. } => "core/data-invalid-input",
             Self::KernelContract { .. } => "core/data-kernel-contract",
             Self::Entropy(error) => error.message_key(),
         }
@@ -234,6 +240,30 @@ impl DataActivation {
         self.state.inputs.clear();
         self.state.outputs.clear();
         Ok(epoch)
+    }
+    /// Supply `plan.host_inputs()[index]` for the current epoch, at most once, before
+    /// or between pulls. A rejected value changes nothing and does not abort the
+    /// epoch. Values never carry over: each epoch needs its own.
+    pub fn set_input(&mut self, index: usize, value: Value) -> Result<(), DataError> {
+        self.checkpoint()?;
+        if let Some(error) = self.state.failed {
+            return Err(error);
+        }
+        if self.state.epoch.is_none() {
+            return Err(DataError::NoEpoch);
+        }
+        let invalid = DataError::InvalidInput { index };
+        let node = self.plan.host_inputs().get(index).ok_or(invalid)?;
+        let node = &self.plan.nodes()[node.index()];
+        let [slot] = node.outputs() else {
+            return Err(DataError::KernelContract { node: node.node() });
+        };
+        if self.state.memo[node.index().index()] == self.state.epoch
+            || self.plan.value_charge(*slot, &value).is_none()
+        {
+            return Err(invalid);
+        }
+        self.state.publish_value(&self.plan, node, value)
     }
     /// Pull one ordered export inside the current explicit epoch. Other pulls in
     /// the same epoch share producers. Borrowed results prevent concurrent mutation.
@@ -517,6 +547,10 @@ impl Frame {
                         || self.memo[index.index()] == self.epoch
                     {
                         continue;
+                    }
+                    // A supplied input is already stamped for this epoch.
+                    if matches!(node.operation(), DataOperation::Input) {
+                        return Err(DataError::MissingInput { node: node.node() });
                     }
                     self.operations = self
                         .operations

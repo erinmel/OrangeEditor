@@ -4,8 +4,9 @@ use seeded_provider::*;
 #[path = "support/data_graph.rs"]
 mod support;
 use orange_compiler::{
-    CompileOptions, DataPlan, EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource,
-    KernelBinding, KernelFault, PureKernelResolver, ResolveError, compile_data,
+    CompileOptions, DataOperation, DataPlan, DataStability, EntropyBinding, EntropyKernel,
+    EntropyKernelResolver, EntropySource, KernelBinding, KernelFault, PureKernelResolver,
+    ResolveError, compile_data,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{NodeInstance, SignatureSnapshot};
@@ -1081,4 +1082,90 @@ fn activation_fuel_spans_epochs_and_exhaustion_is_sticky() {
         DataError::FuelExhausted.message_key(),
         "core/data-fuel-exhausted"
     );
+}
+
+#[test]
+fn state_reads_are_host_inputs_supplied_once_per_epoch_and_only_when_demanded() {
+    let (package, snapshot) = catalog();
+    let get = |n, variable| json!({"id":id(n),"definition_id":"core/get-variable","definition_version":1,"config_version":1,"config":{"variable":id(variable)}});
+    let select = json!({"id":id(3),"definition_id":"core/select","definition_version":1,"config_version":1,"config":{},
+        "type_pins":{"T":"core/u64@1"},"inputs":{"if_false":literal(7)}});
+    let base = graph(
+        &package,
+        vec![get(1, 20), get(2, 21), select, math(4, "add", 0, 1)],
+        vec![
+            edge(1, 1, "value", 3, "condition"),
+            edge(2, 2, "value", 3, "if_true"),
+            edge(3, 3, "result", 4, "a"),
+        ],
+        vec![export(4, "sum"), export(2, "value")],
+    );
+    let mut raw: serde_json::Value = serde_json::from_str(&to_json(&base).unwrap()).unwrap();
+    raw["variables"] = json!([
+        {"id":id(20),"name":"flag","type":"core/bool@1","scope":"run"},
+        {"id":id(21),"name":"state","type":"core/u64@1","scope":"run"}
+    ]);
+    let doc = from_json(&raw.to_string()).unwrap();
+    let resolver = Counting::new(package);
+    let plan = Arc::new(compile(&doc, snapshot.clone(), &resolver));
+    let input = |n: u32| {
+        let node = id(n).parse().unwrap();
+        plan.host_inputs()
+            .iter()
+            .position(|ix| plan.nodes()[ix.index()].node() == node)
+            .unwrap()
+    };
+    let (flag, state) = (input(1), input(2));
+    assert_eq!(plan.host_inputs().len(), 2);
+    for ix in plan.host_inputs() {
+        let node = &plan.nodes()[ix.index()];
+        assert!(matches!(node.operation(), DataOperation::Input));
+        assert_eq!(node.stability(), DataStability::Epoch);
+    }
+    let missing = |n: u32| DataError::MissingInput {
+        node: id(n).parse().unwrap(),
+    };
+    let mut frame = start(plan.clone(), &doc, &snapshot, 0, 0, DataOptions::default());
+    assert_eq!(
+        frame.set_input(flag, Value::Bool(true)),
+        Err(DataError::NoEpoch)
+    );
+    // A demanded input that was never supplied aborts the epoch.
+    frame.begin_epoch().unwrap();
+    assert_eq!(frame.export(0), Err(missing(1)));
+    assert_eq!(frame.export(0), Err(missing(1)));
+    assert_eq!(frame.set_input(flag, Value::Bool(true)), Err(missing(1)));
+    // The inactive arm's input is not demanded, so it may stay unset.
+    frame.begin_epoch().unwrap();
+    frame.set_input(flag, Value::Bool(false)).unwrap();
+    assert_eq!(
+        frame.export(0).unwrap().unwrap().outcome,
+        Ok(&Value::U64(8))
+    );
+    assert_eq!(frame.export(1), Err(missing(2)));
+    // Rejected values change nothing and keep the epoch usable.
+    frame.begin_epoch().unwrap();
+    let invalid = |index| Err(DataError::InvalidInput { index });
+    assert_eq!(frame.set_input(flag, Value::U64(1)), invalid(flag));
+    assert_eq!(frame.set_input(99, Value::Bool(true)), invalid(99));
+    frame.set_input(flag, Value::Bool(true)).unwrap();
+    assert_eq!(frame.set_input(flag, Value::Bool(false)), invalid(flag));
+    frame.set_input(state, Value::U64(41)).unwrap();
+    assert_eq!(
+        frame.export(0).unwrap().unwrap().outcome,
+        Ok(&Value::U64(42))
+    );
+    assert_eq!(
+        frame.export(1).unwrap().unwrap().outcome,
+        Ok(&Value::U64(41))
+    );
+    // Supplied values never carry over into the next epoch.
+    frame.begin_epoch().unwrap();
+    frame.set_input(flag, Value::Bool(true)).unwrap();
+    assert_eq!(frame.export(0), Err(missing(2)));
+    assert_eq!(
+        DataError::InvalidInput { index: 0 }.message_key(),
+        "core/data-invalid-input"
+    );
+    assert_eq!(missing(1).message_key(), "core/data-missing-input");
 }
