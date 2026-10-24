@@ -268,6 +268,8 @@ Consequences:
 
 Unconnected `failed` means unhandled: the strand faults (§13). Reading an output of a node that did not execute is therefore impossible by construction. It is never a stale or default value.
 
+**Current availability validation (V8).** `validate_availability` runs after the region pass in `analyze_with_effects` and reads `ValidationReport.regions`. For every owned exec node it checks each data input and the pure/volatile cone behind it against the leaf producer's `source`: `execution` outputs must be dominated by an `available_on` outcome edge of the producer (default `then`; implicit `error` on `failed`) within the same activation; `payload` outputs need the producing entry's activation; `iteration` outputs need a consumer inside that iterator's `body` region chain, so `completed` after zero iterations is rejected; `computed` and `state` outputs are unrestricted. Sibling Fork branches stay concurrent and only `join: "all"` makes branch values available at `completed`. A producer in another top-level region reports `E-CROSS-ACTIVATION`; otherwise failures report `E-UNAVAILABLE-VALUE` (subject: consumer node, input port, incident edge). Traversal is iterative.
+
 ### 7.3 Diamonds
 
 | Diamond | Rule |
