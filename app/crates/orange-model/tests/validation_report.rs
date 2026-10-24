@@ -134,6 +134,11 @@ fn merged(
     diagnostics.extend(validate_inputs(doc, &nodes.resolved, registry));
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
+    diagnostics.extend(orange_model::validation::validate_exports(
+        doc,
+        &nodes.resolved,
+        registry,
+    ));
     let explained_nodes: std::collections::BTreeSet<_> = diagnostics
         .iter()
         .filter(|item| item.severity == orange_model::validation::Severity::Error)
@@ -390,6 +395,7 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::ControlCycles,
             ValidationCheck::ValueAvailability,
             ValidationCheck::StreamRules,
+            ValidationCheck::EntryPoliciesAndExports,
         ]
     );
     assert_eq!(
@@ -399,7 +405,6 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::ContextualContracts,
             ValidationCheck::Regions,
             ValidationCheck::StateRules,
-            ValidationCheck::EntryPoliciesAndExports,
         ]
     );
     assert!(analysis.is_current(&doc, &registry));

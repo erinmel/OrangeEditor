@@ -11,7 +11,7 @@ use super::nodes::{CallEvidence, validate_nodes_with};
 use super::{
     Diagnostic, FunctionEvidence, FunctionSummary, LeafEffects, Severity, analyze_functions,
     sort_diagnostics, validate_availability, validate_body_domains, validate_connections,
-    validate_control_cycles, validate_data_cycles, validate_inputs, validate_regions,
+    validate_control_cycles, validate_data_cycles, validate_exports, validate_inputs, validate_regions,
     validate_state, validate_streams,
 };
 
@@ -65,6 +65,7 @@ const COVERED_CHECKS: &[ValidationCheck] = &[
     ValidationCheck::ControlCycles,
     ValidationCheck::ValueAvailability,
     ValidationCheck::StreamRules,
+    ValidationCheck::EntryPoliciesAndExports,
 ];
 
 const DOMAIN_ONLY_CHECKS: &[ValidationCheck] = &[ValidationCheck::BodyDomains];
@@ -316,6 +317,7 @@ pub fn analyze_with_effects(
     );
     let mut diagnostics = nodes.diagnostics;
     diagnostics.extend(availability.diagnostics);
+    diagnostics.extend(validate_exports(document, &nodes.resolved, registry));
     diagnostics.extend(input_diagnostics);
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);

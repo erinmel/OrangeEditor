@@ -224,8 +224,8 @@ fn domain_edits_and_undo_change_actual_coverage_and_freshness() {
     let mut document = document(None, None);
     let registry = RegistrySnapshot::core(origin());
     let initial = analyze(&document, &registry);
-    assert_eq!(initial.covered_checks().count(), 9);
-    assert_eq!(initial.missing_checks().count(), 6);
+    assert_eq!(initial.covered_checks().count(), 10);
+    assert_eq!(initial.missing_checks().count(), 5);
     let function_id: FunctionId = FUNCTION.parse().unwrap();
     let mut function = document.functions()[&function_id].clone();
     function
@@ -243,5 +243,5 @@ fn domain_edits_and_undo_change_actual_coverage_and_freshness() {
     let _redo = document.revert(committed.inverse).unwrap();
     assert!(initial.is_current(&document, &registry));
     assert!(!blocked.is_current(&document, &registry));
-    assert_eq!(analyze(&document, &registry).covered_checks().count(), 9);
+    assert_eq!(analyze(&document, &registry).covered_checks().count(), 10);
 }
