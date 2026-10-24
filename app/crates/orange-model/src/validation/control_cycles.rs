@@ -11,6 +11,7 @@ use crate::id::NodeId;
 use super::connections::ConnectionValidation;
 use super::diagnostic::{Diagnostic, DiagnosticCode, Severity, Subject, sort_diagnostics};
 use super::ports::{PortLookupError, lookup_port};
+use super::scope::Scope;
 
 /// Result of checking explicit exec-edge cycles for guaranteed suspension.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -47,6 +48,17 @@ pub fn validate_control_cycles(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
 ) -> ControlCycleValidation {
+    validate_control_cycles_in(document, resolved, connections, registry, Scope::All)
+}
+
+/// [`validate_control_cycles`] over the bodies in `scope`.
+pub(crate) fn validate_control_cycles_in(
+    document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    connections: &ConnectionValidation,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+) -> ControlCycleValidation {
     let origin = registry.origin();
     let mut result = ControlCycleValidation {
         incomplete_nodes: connections.incomplete_nodes.clone(),
@@ -63,7 +75,7 @@ pub fn validate_control_cycles(
             .get(&node)
             .is_some_and(|signature| signature.suspension() == Some(Suspends::Always))
     };
-    for (body_ref, body) in document.bodies_with_refs() {
+    for (body_ref, body) in scope.bodies(document) {
         let function = match body_ref {
             BodyRef::Root => None,
             BodyRef::Function(id) => Some(id),

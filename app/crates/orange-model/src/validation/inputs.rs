@@ -9,6 +9,7 @@ use crate::type_term::TypeTerm;
 use crate::types::{TypeRegistry, TypeResolveError};
 use crate::value::literal_codec;
 
+use super::scope::Scope;
 use super::{Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics};
 
 /// Validates the active value contract for data inputs with current resolved metadata.
@@ -19,11 +20,21 @@ pub fn validate_inputs(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
+    validate_inputs_in(document, resolved, registry, Scope::All)
+}
+
+/// [`validate_inputs`] over the bodies in `scope`.
+pub(crate) fn validate_inputs_in(
+    document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+) -> Vec<Diagnostic> {
     let (types, origin) = (registry.types().as_ref(), registry.origin());
     let mut diagnostics = Vec::new();
     let mut connected = BTreeSet::<(NodeId, PortKey)>::new();
     let mut nodes = BTreeMap::new();
-    for body in document.bodies() {
+    for (_, body) in scope.bodies(document) {
         for node in body.nodes.values() {
             nodes.insert(node.id, node);
         }

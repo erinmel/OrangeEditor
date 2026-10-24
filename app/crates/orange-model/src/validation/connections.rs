@@ -14,6 +14,7 @@ use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
 use super::ports::{PortLookupError, lookup_port};
+use super::scope::Scope;
 
 /// Result of validating the graph's connections using currently available metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -42,12 +43,24 @@ pub fn validate_connections(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> ConnectionValidation {
-    let origin = registry.origin();
     let index = DocIndex::build(document);
+    validate_connections_in(document, resolved, registry, Scope::All, &index)
+}
+
+/// [`validate_connections`] over the bodies in `scope`, with a current `index` of `document`.
+pub(crate) fn validate_connections_in(
+    document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+    index: &DocIndex,
+) -> ConnectionValidation {
+    let origin = registry.origin();
     let mut report = ConnectionValidation::default();
     let mut diagnostics = Vec::new();
-    let mut edges: Vec<_> = document
-        .bodies_with_refs()
+    let mut edges: Vec<_> = scope
+        .bodies(document)
+        .into_iter()
         .flat_map(|(body_ref, body)| body.edges.values().map(move |edge| (body_ref, edge)))
         .collect();
     edges.sort_by_key(|(_, edge)| edge.id);

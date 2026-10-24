@@ -14,6 +14,7 @@ use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
 use super::ports::lookup_port;
+use super::scope::Scope;
 
 /// Result of checking the data-dependency graph using current resolved signatures.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -69,6 +70,17 @@ pub fn validate_data_cycles(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
 ) -> DataCycleValidation {
+    validate_data_cycles_in(document, resolved, connections, registry, Scope::All)
+}
+
+/// [`validate_data_cycles`] over the bodies in `scope`.
+pub(crate) fn validate_data_cycles_in(
+    document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    connections: &ConnectionValidation,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+) -> DataCycleValidation {
     let origin = registry.origin();
     let mut result = DataCycleValidation {
         incomplete_nodes: connections.incomplete_nodes.clone(),
@@ -96,7 +108,7 @@ pub fn validate_data_cycles(
         }
     }
 
-    for (_, body) in document.bodies_with_refs() {
+    for (_, body) in scope.bodies(document) {
         let body_nodes: BTreeSet<_> = body.nodes.keys().copied().collect();
         let mut graph = BTreeMap::<Vertex, BTreeSet<Vertex>>::new();
 

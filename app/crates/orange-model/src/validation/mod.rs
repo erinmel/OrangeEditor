@@ -17,6 +17,7 @@
 //! The individual passes stay public for hosts that run them separately. Contextual variable
 //! and shared-write ports are declaration-owned. Call/interface ports and control cycles remain later slices; [`validate_availability`] checks value availability from the region index, and a valid report is not compile approval.
 
+mod acceptance;
 mod availability;
 mod config;
 mod conformance;
@@ -32,6 +33,7 @@ mod nodes;
 pub(crate) mod ports;
 mod regions;
 mod report;
+mod scope;
 mod state;
 mod streams;
 mod variables;

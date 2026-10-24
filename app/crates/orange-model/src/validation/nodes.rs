@@ -25,6 +25,7 @@ use crate::types::{TypeRegistry, TypeResolveError};
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
+use super::scope::Scope;
 
 /// Results of resolving nodes against immutable host metadata.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -70,18 +71,27 @@ struct NodePass<'a> {
 /// The document is never changed. Intrinsic metadata and provider availability are
 /// declarative host inputs; package code is not loaded or executed.
 pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> NodeValidation {
-    validate_nodes_with(document, registry, &CallEvidence::default())
+    let index = DocIndex::build(document);
+    validate_nodes_with(
+        document,
+        registry,
+        &CallEvidence::default(),
+        Scope::All,
+        &index,
+    )
 }
 
 pub(crate) fn validate_nodes_with(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     calls: &CallEvidence,
+    scope: Scope,
+    index: &DocIndex,
 ) -> NodeValidation {
     let origin = registry.origin();
     let mut report = NodeValidation::default();
     let mut diagnostics = Vec::new();
-    let ids = node_ids(document);
+    let ids = node_ids(document, scope);
     let eligible = resolve_contracts(
         document,
         registry,
@@ -91,11 +101,10 @@ pub(crate) fn validate_nodes_with(
         &mut report,
         &mut diagnostics,
     );
-    let index = DocIndex::build(document);
     let pass = NodePass {
         calls,
         document,
-        index: &index,
+        index,
         registry,
         eligible: &eligible,
         ids: &ids,
@@ -109,10 +118,11 @@ pub(crate) fn validate_nodes_with(
     report
 }
 
-fn node_ids(document: &GraphDocument) -> Vec<NodeId> {
-    let mut ids: Vec<_> = document
-        .bodies()
-        .flat_map(|body| body.nodes.keys().copied())
+fn node_ids(document: &GraphDocument, scope: Scope) -> Vec<NodeId> {
+    let mut ids: Vec<_> = scope
+        .bodies(document)
+        .into_iter()
+        .flat_map(|(_, body)| body.nodes.keys().copied())
         .collect();
     ids.sort();
     ids

@@ -13,6 +13,7 @@ use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
 use super::ports::lookup_port;
+use super::scope::Scope;
 
 /// The exec output port whose targets start a region.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -114,6 +115,17 @@ pub fn validate_regions(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
 ) -> RegionValidation {
+    validate_regions_in(document, resolved, connections, registry, Scope::All)
+}
+
+/// [`validate_regions`] over the bodies in `scope`.
+pub(crate) fn validate_regions_in(
+    document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    connections: &ConnectionValidation,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+) -> RegionValidation {
     let origin = registry.origin();
     let mut result = RegionValidation {
         incomplete_nodes: connections.incomplete_nodes.clone(),
@@ -125,7 +137,7 @@ pub fn validate_regions(
         .filter(|diagnostic| diagnostic.severity == Severity::Error)
         .filter_map(|diagnostic| diagnostic.subject.edge)
         .collect();
-    for (body_ref, body) in document.bodies_with_refs() {
+    for (body_ref, body) in scope.bodies(document) {
         let function = match body_ref {
             BodyRef::Root => None,
             BodyRef::Function(id) => Some(id),
