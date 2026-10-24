@@ -138,6 +138,8 @@ Logical/bitwise Update clarification (V1d, 2026-10-23; FR-12/44/45, ADR-13/15/16
 
 Min/Max conflict clarification (V1b, 2026-10-23; FR-47, ADR-16): package Ord proof establishes eligibility for sequential Update metadata, not commutativity when distinct values compare equal. The same-operation Min/Max Fork exception is limited to language-owned ordered scalar types; package Min/Max writes conflict unless last-writer-wins is explicit. A broader exception requires an executable conformance contract (11 §11.2).
 
+Intrinsic registration clarification (V5, 2026-10-23): switch, gate, do-once, flip-flop, register, try, match-result, select, and, or and coalesce are registered with the port contracts in 11 §8.4. Where 11 names no ports (select, and, or, coalesce) the strictest reading applies: the deciding input is eager and only alternatives are lazy, `and`/`or` take two inputs, `switch` needs at least one `case`. `for-each` and the four zone pairs stay unsupported because their ports and pairing are unspecified, so `E-ZONE-STRUCTURE` is unenforced and the `Regions` coverage is not claimed.
+
 Validation coverage clarification (C4, 2026-10-23): the selected region, cycle and availability rules are not considered checked until their validation passes run. `ValidationReport::is_valid()` remains pass-local; compilation requires fresh analysis with complete required-check coverage.
 
 ## ADR-16 — Nominal types, constrained generics and an explicit converter registry
