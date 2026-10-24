@@ -57,3 +57,43 @@ proptest! {
         }
     }
 }
+
+/// Every node ever seen is located in exactly the body that now holds it, or nowhere.
+fn assert_lookup_current(
+    document: &orange_model::GraphDocument,
+    seen: &mut BTreeSet<orange_model::id::NodeId>,
+) -> Result<(), TestCaseError> {
+    let mut held = std::collections::BTreeMap::new();
+    for (body, nodes) in document.bodies_with_refs() {
+        for id in nodes.nodes.keys() {
+            held.insert(*id, body);
+            seen.insert(*id);
+        }
+    }
+    for id in seen.iter() {
+        prop_assert_eq!(document.locate_node(*id), held.get(id).copied());
+        prop_assert_eq!(document.node(*id).is_some(), held.contains_key(id));
+    }
+    Ok(())
+}
+
+proptest! {
+    #[test]
+    fn node_lookup_follows_edits_and_undo(ops in proptest::collection::vec(op(), 1..24)) {
+        let mut document = empty_document();
+        let mut seen = BTreeSet::new();
+        assert_lookup_current(&document, &mut seen)?;
+        let mut inverses = Vec::new();
+        for op in ops {
+            let Some(command) = command(&document, op) else { continue };
+            if let Ok(committed) = document.apply([command]) {
+                assert_lookup_current(&document, &mut seen)?;
+                inverses.push(committed.inverse);
+            }
+        }
+        while let Some(inverse) = inverses.pop() {
+            let _ = document.revert(inverse).unwrap();
+            assert_lookup_current(&document, &mut seen)?;
+        }
+    }
+}

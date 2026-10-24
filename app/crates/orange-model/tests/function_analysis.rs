@@ -165,6 +165,46 @@ fn asynchronous_kind_cannot_declare_never_suspends() {
 }
 
 #[test]
+fn legacy_function_evidence_keeps_missing_and_sync_suspension_diagnostics() {
+    for (kind, suspends, expected) in [
+        ("async", None, DiagnosticCode::SuspendsMissing),
+        ("action", Some("maybe"), DiagnosticCode::SuspendsInvalid),
+    ] {
+        let doc = document(json!([function(
+            F1,
+            "action",
+            json!([custom_node(N1, "example/task")])
+        )]));
+        let resolved = BTreeMap::from([(N1.parse().unwrap(), snapshot(kind, suspends))]);
+        let effects = BTreeMap::from([(N1.parse().unwrap(), LeafEffects::Known(vec![]))]);
+        let report = analyze(&doc, &resolved, &effects);
+        assert!(report.diagnostics.iter().any(|d| d.code == expected));
+        assert!(!report.summaries.contains_key(&F1.parse().unwrap()));
+    }
+
+    let doc = document(json!([function(
+        F1,
+        "action",
+        json!([custom_node(N1, "example/entry")])
+    )]));
+    let resolved = BTreeMap::from([(N1.parse().unwrap(), snapshot("entry", Some("maybe")))]);
+    let effects = BTreeMap::from([(N1.parse().unwrap(), LeafEffects::Known(vec![]))]);
+    let report = analyze(&doc, &resolved, &effects);
+    assert!(
+        report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::EntryInFunction)
+    );
+    assert!(
+        !report
+            .diagnostics
+            .iter()
+            .any(|d| d.code == DiagnosticCode::SuspendsInvalid)
+    );
+}
+
+#[test]
 fn core_intrinsic_version_mismatch_does_not_use_host_fallback() {
     let doc: GraphDocument = serde_json::from_value(json!({
         "format_version":1,"graph_id":"30000000-0000-4000-8000-000000000001","revision":1,

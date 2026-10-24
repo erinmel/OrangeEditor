@@ -5,7 +5,7 @@
 
 use std::sync::LazyLock;
 
-use super::{ReferenceField, ReferenceKind};
+use super::{EventAccess, ReferenceField, ReferenceKind, VariableAccess};
 use crate::document::{NodeKind, OutputSource, PortDescriptor, SignatureSnapshot, Suspends};
 use crate::id::PortId;
 
@@ -78,6 +78,10 @@ pub(crate) struct Intrinsic {
     pub(crate) summary: Option<(NodeKind, Suspends)>,
     /// Kind of the graph declaration its config names, in the standard field.
     pub(crate) reference: Option<ReferenceKind>,
+    /// How this exact variable intrinsic derives its declaration-owned ports.
+    pub(crate) variable_access: Option<VariableAccess>,
+    /// How this exact event intrinsic derives its declaration-owned ports.
+    pub(crate) event_access: Option<EventAccess>,
     /// Ends its region instead of continuing through `then` (11 §8.3).
     pub(crate) terminator: bool,
 }
@@ -91,7 +95,31 @@ const fn rule(
         id,
         summary,
         reference,
+        variable_access: None,
+        event_access: None,
         terminator: false,
+    }
+}
+
+const fn event_rule(
+    id: &'static str,
+    summary: Option<(NodeKind, Suspends)>,
+    access: EventAccess,
+) -> Intrinsic {
+    Intrinsic {
+        event_access: Some(access),
+        ..rule(id, summary, EVENT)
+    }
+}
+
+const fn variable_rule(
+    id: &'static str,
+    summary: Option<(NodeKind, Suspends)>,
+    access: VariableAccess,
+) -> Intrinsic {
+    Intrinsic {
+        variable_access: Some(access),
+        ..rule(id, summary, VARIABLE)
     }
 }
 
@@ -106,6 +134,7 @@ const PURE: Option<(NodeKind, Suspends)> = Some((NodeKind::Pure, Suspends::Never
 const VOLATILE: Option<(NodeKind, Suspends)> = Some((NodeKind::Volatile, Suspends::Never));
 const ACTION: Option<(NodeKind, Suspends)> = Some((NodeKind::Action, Suspends::Never));
 const ASYNC: Option<(NodeKind, Suspends)> = Some((NodeKind::Async, Suspends::Always));
+const ENTRY: Option<(NodeKind, Suspends)> = Some((NodeKind::Entry, Suspends::Never));
 const ITERATOR: Option<(NodeKind, Suspends)> = Some((NodeKind::Iterator, Suspends::Maybe));
 const VARIABLE: Option<ReferenceKind> = Some(ReferenceKind::Variable);
 const EVENT: Option<ReferenceKind> = Some(ReferenceKind::Event);
@@ -117,13 +146,21 @@ const INTRINSICS: [Intrinsic; 41] = [
     rule("core/function-entry", None, None),
     rule("core/function-outputs", None, None),
     rule("core/return", None, None),
-    rule("core/get-variable", VOLATILE, VARIABLE),
-    rule("core/set-variable", ACTION, VARIABLE),
-    rule("core/update-variable", ACTION, VARIABLE),
-    rule("core/set-shared", None, VARIABLE),
-    rule("core/update-shared", None, VARIABLE),
-    rule("core/on-event", None, EVENT),
-    rule("core/emit", None, EVENT),
+    variable_rule("core/get-variable", VOLATILE, VariableAccess::Read),
+    variable_rule("core/set-variable", ACTION, VariableAccess::Write),
+    variable_rule("core/update-variable", ACTION, VariableAccess::Update),
+    variable_rule(
+        "core/set-shared",
+        Some((NodeKind::Async, Suspends::Maybe)),
+        VariableAccess::WriteShared,
+    ),
+    variable_rule(
+        "core/update-shared",
+        Some((NodeKind::Async, Suspends::Maybe)),
+        VariableAccess::UpdateShared,
+    ),
+    event_rule("core/on-event", ENTRY, EventAccess::Handle),
+    event_rule("core/emit", ACTION, EventAccess::Emit),
     rule("core/branch", ACTION, None),
     rule("core/switch", ACTION, None),
     rule("core/sequence", ACTION, None),
@@ -138,22 +175,22 @@ const INTRINSICS: [Intrinsic; 41] = [
     rule("core/flip-flop", ACTION, None),
     rule("core/yield", ASYNC, None),
     rule("core/wait", ASYNC, None),
-    rule("core/await-event", None, EVENT),
-    rule("core/register", None, None),
+    event_rule("core/await-event", ASYNC, EventAccess::Await),
+    rule("core/register", ACTION, None),
     rule("core/select", PURE, None),
     rule("core/and", PURE, None),
     rule("core/or", PURE, None),
     rule("core/coalesce", PURE, None),
     rule("core/try", PURE, None),
-    rule("core/match-result", None, None),
-    rule("core/repeat-begin", None, None),
-    rule("core/repeat-end", None, None),
-    rule("core/map-begin", None, None),
-    rule("core/map-end", None, None),
-    rule("core/fold-begin", None, None),
-    rule("core/fold-end", None, None),
-    rule("core/filter-begin", None, None),
-    rule("core/filter-end", None, None),
+    rule("core/match-result", ACTION, None),
+    rule("core/repeat-begin", PURE, None),
+    rule("core/repeat-end", PURE, None),
+    rule("core/map-begin", PURE, None),
+    rule("core/map-end", PURE, None),
+    rule("core/fold-begin", PURE, None),
+    rule("core/fold-end", PURE, None),
+    rule("core/filter-begin", PURE, None),
+    rule("core/filter-end", PURE, None),
 ];
 
 /// The intrinsic with this exact ID. Intrinsic status comes from this table, never from the
@@ -164,6 +201,13 @@ pub(crate) fn intrinsic(id: &str) -> Option<&'static Intrinsic> {
 
 pub(crate) fn is_intrinsic(id: &str) -> bool {
     intrinsic(id).is_some()
+}
+
+/// `core/convert` is a host-owned registry special form. It uses entry metadata for ports
+/// and may bind an exact package implementation, so it does not follow ordinary intrinsic
+/// or ordinary package-definition resolution.
+pub(crate) fn is_converter_special_form(id: &str) -> bool {
+    id == "core/convert"
 }
 
 /// The standard config field naming a declaration of `kind`: `/variable`, `/event` or
@@ -230,6 +274,18 @@ mod tests {
                     .collect::<Vec<_>>(),
                 "{id}"
             );
+            let variable_access = match definition.ports {
+                crate::catalog::Ports::Variable(access) => Some(access),
+                crate::catalog::Ports::Declared(_)
+                | crate::catalog::Ports::Event(_)
+                | crate::catalog::Ports::ForEach => None,
+            };
+            assert_eq!(rule.variable_access, variable_access, "{id}");
+            let event_access = match definition.ports {
+                crate::catalog::Ports::Event(access) => Some(access),
+                _ => None,
+            };
+            assert_eq!(rule.event_access, event_access, "{id}");
         }
     }
 

@@ -5,11 +5,15 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::id::{EdgeId, FunctionId, NodeId, PortKey};
+use crate::id::{EdgeId, FunctionId, NodeId, PortKey, VariableId};
 
 /// Stable identifiers for implemented graph validation diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DiagnosticCode {
+    #[serde(rename = "E-DOMAIN-UNSUPPORTED")]
+    DomainUnsupported,
+    #[serde(rename = "E-DOMAIN-ANALYSIS-BLOCKED")]
+    DomainAnalysisBlocked,
     #[serde(rename = "E-METADATA-STALE")]
     MetadataStale,
     #[serde(rename = "E-PORT-UNKNOWN")]
@@ -54,6 +58,8 @@ pub enum DiagnosticCode {
     NoSpecialization,
     #[serde(rename = "E-INPUT-REQUIRED")]
     InputRequired,
+    #[serde(rename = "E-VARIADIC-COUNT")]
+    VariadicCount,
     #[serde(rename = "E-LITERAL-TYPE")]
     LiteralType,
     #[serde(rename = "E-HANDLE-LITERAL")]
@@ -74,20 +80,94 @@ pub enum DiagnosticCode {
     CallTargetUnknown,
     #[serde(rename = "E-FUNCTION-METADATA-UNAVAILABLE")]
     FunctionMetadataUnavailable,
+    #[serde(rename = "E-FUNCTION-INTERFACE")]
+    FunctionInterface,
     #[serde(rename = "E-VARIABLE-UNKNOWN")]
     VariableUnknown,
     #[serde(rename = "E-VARIABLE-SCOPE")]
     VariableScope,
+    #[serde(rename = "E-SHARED-VARIABLE-SCOPE")]
+    SharedVariableScope,
+    #[serde(rename = "E-CYCLE-DATA")]
+    CycleData,
     #[serde(rename = "E-UPDATE-OPERATION")]
     UpdateOperation,
+    #[serde(rename = "E-UPDATE-UNSUPPORTED")]
+    UpdateUnsupported,
     #[serde(rename = "E-ENTRY-IN-FUNCTION")]
     EntryInFunction,
+    #[serde(rename = "E-SUBSCRIPTION-IN-FUNCTION")]
+    SubscriptionInFunction,
+    #[serde(rename = "E-EVENT-UNKNOWN")]
+    EventUnknown,
+    #[serde(rename = "E-ACTIVATION-POLICY")]
+    ActivationPolicy,
+    #[serde(rename = "E-CONVERTER-CONFIG")]
+    ConverterConfig,
+    #[serde(rename = "E-CONVERTER-ENTRY")]
+    ConverterEntry,
+    #[serde(rename = "E-CONVERTER-OPTIONS")]
+    ConverterOptions,
+    #[serde(rename = "E-FUNCTION-BODY-MARKER")]
+    FunctionBodyMarker,
+    #[serde(rename = "E-MISSING-RETURN")]
+    MissingReturn,
+    #[serde(rename = "E-REGION-AMBIGUOUS")]
+    RegionAmbiguous,
+    #[serde(rename = "E-REGION-ESCAPE")]
+    RegionEscape,
+    #[serde(rename = "E-UNAVAILABLE-VALUE")]
+    UnavailableValue,
+    #[serde(rename = "E-CROSS-ACTIVATION")]
+    CrossActivation,
+    #[serde(rename = "E-BREAK-OUTSIDE-LOOP")]
+    BreakOutsideLoop,
+    #[serde(rename = "E-CYCLE-SYNC-CONTROL")]
+    CycleSyncControl,
+    #[serde(rename = "E-LOOP-UNBOUNDED")]
+    LoopUnbounded,
+    #[serde(rename = "E-ZONE-STRUCTURE")]
+    ZoneStructure,
+    #[serde(rename = "E-SWITCH-CASE")]
+    SwitchCase,
+    #[serde(rename = "E-FOR-EACH-MODE")]
+    ForEachMode,
+    #[serde(rename = "W-BUSY-LOOP")]
+    BusyLoop,
+    #[serde(rename = "W-UNREACHABLE")]
+    Unreachable,
+    #[serde(rename = "E-WRITE-CONFLICT")]
+    WriteConflict,
+    #[serde(rename = "E-HANDLE-PERSIST")]
+    HandlePersist,
+    #[serde(rename = "E-STREAM-STORE")]
+    StreamStore,
+    #[serde(rename = "W-STALE-CAPTURE")]
+    StaleCapture,
+    #[serde(rename = "E-VARIABLE-PERSISTENT")]
+    VariablePersistent,
+    #[serde(rename = "E-REGISTER-CONFIG")]
+    RegisterConfig,
+    #[serde(rename = "W-DETACH-IN-FUNCTION")]
+    DetachInFunction,
+    #[serde(rename = "E-EXPORT-TARGET")]
+    ExportTarget,
+    #[serde(rename = "E-EXPORT-DUPLICATE")]
+    ExportDuplicate,
+    #[serde(rename = "E-EXPORT-TYPE")]
+    ExportType,
+    #[serde(rename = "E-CONFIG-INVALID")]
+    ConfigInvalid,
+    #[serde(rename = "E-CONFIG-SCHEMA-UNSUPPORTED")]
+    ConfigSchemaUnsupported,
 }
 
 impl DiagnosticCode {
     /// Stable code used in wire records and assertions.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::DomainUnsupported => "E-DOMAIN-UNSUPPORTED",
+            Self::DomainAnalysisBlocked => "E-DOMAIN-ANALYSIS-BLOCKED",
             Self::MetadataStale => "E-METADATA-STALE",
             Self::PortUnknown => "E-PORT-UNKNOWN",
             Self::PortDirection => "E-PORT-DIRECTION",
@@ -110,6 +190,7 @@ impl DiagnosticCode {
             Self::ConstraintUnsatisfied => "E-CONSTRAINT-UNSATISFIED",
             Self::NoSpecialization => "E-NO-SPECIALIZATION",
             Self::InputRequired => "E-INPUT-REQUIRED",
+            Self::VariadicCount => "E-VARIADIC-COUNT",
             Self::LiteralType => "E-LITERAL-TYPE",
             Self::HandleLiteral => "E-HANDLE-LITERAL",
             Self::LiteralShadowed => "W-LITERAL-SHADOWED",
@@ -120,15 +201,53 @@ impl DiagnosticCode {
             Self::CallTargetMissing => "E-CALL-TARGET-MISSING",
             Self::CallTargetUnknown => "E-CALL-TARGET-UNKNOWN",
             Self::FunctionMetadataUnavailable => "E-FUNCTION-METADATA-UNAVAILABLE",
+            Self::FunctionInterface => "E-FUNCTION-INTERFACE",
             Self::VariableUnknown => "E-VARIABLE-UNKNOWN",
             Self::VariableScope => "E-VARIABLE-SCOPE",
+            Self::SharedVariableScope => "E-SHARED-VARIABLE-SCOPE",
+            Self::CycleData => "E-CYCLE-DATA",
             Self::UpdateOperation => "E-UPDATE-OPERATION",
+            Self::UpdateUnsupported => "E-UPDATE-UNSUPPORTED",
             Self::EntryInFunction => "E-ENTRY-IN-FUNCTION",
+            Self::SubscriptionInFunction => "E-SUBSCRIPTION-IN-FUNCTION",
+            Self::EventUnknown => "E-EVENT-UNKNOWN",
+            Self::ActivationPolicy => "E-ACTIVATION-POLICY",
+            Self::ConverterConfig => "E-CONVERTER-CONFIG",
+            Self::ConverterEntry => "E-CONVERTER-ENTRY",
+            Self::ConverterOptions => "E-CONVERTER-OPTIONS",
+            Self::FunctionBodyMarker => "E-FUNCTION-BODY-MARKER",
+            Self::MissingReturn => "E-MISSING-RETURN",
+            Self::RegionAmbiguous => "E-REGION-AMBIGUOUS",
+            Self::RegionEscape => "E-REGION-ESCAPE",
+            Self::UnavailableValue => "E-UNAVAILABLE-VALUE",
+            Self::CrossActivation => "E-CROSS-ACTIVATION",
+            Self::BreakOutsideLoop => "E-BREAK-OUTSIDE-LOOP",
+            Self::CycleSyncControl => "E-CYCLE-SYNC-CONTROL",
+            Self::LoopUnbounded => "E-LOOP-UNBOUNDED",
+            Self::ZoneStructure => "E-ZONE-STRUCTURE",
+            Self::SwitchCase => "E-SWITCH-CASE",
+            Self::ForEachMode => "E-FOR-EACH-MODE",
+            Self::BusyLoop => "W-BUSY-LOOP",
+            Self::Unreachable => "W-UNREACHABLE",
+            Self::WriteConflict => "E-WRITE-CONFLICT",
+            Self::HandlePersist => "E-HANDLE-PERSIST",
+            Self::StreamStore => "E-STREAM-STORE",
+            Self::StaleCapture => "W-STALE-CAPTURE",
+            Self::VariablePersistent => "E-VARIABLE-PERSISTENT",
+            Self::RegisterConfig => "E-REGISTER-CONFIG",
+            Self::DetachInFunction => "W-DETACH-IN-FUNCTION",
+            Self::ExportTarget => "E-EXPORT-TARGET",
+            Self::ExportDuplicate => "E-EXPORT-DUPLICATE",
+            Self::ExportType => "E-EXPORT-TYPE",
+            Self::ConfigInvalid => "E-CONFIG-INVALID",
+            Self::ConfigSchemaUnsupported => "E-CONFIG-SCHEMA-UNSUPPORTED",
         }
     }
 
     const fn message_key(self) -> &'static str {
         match self {
+            Self::DomainUnsupported => "core/graph-domain-unsupported",
+            Self::DomainAnalysisBlocked => "core/graph-domain-analysis-blocked",
             Self::MetadataStale => "core/graph-metadata-stale",
             Self::PortUnknown => "core/graph-port-unknown",
             Self::PortDirection => "core/graph-port-direction",
@@ -151,6 +270,7 @@ impl DiagnosticCode {
             Self::ConstraintUnsatisfied => "core/graph-constraint-unsatisfied",
             Self::NoSpecialization => "core/graph-no-specialization",
             Self::InputRequired => "core/graph-input-required",
+            Self::VariadicCount => "core/graph-variadic-count",
             Self::LiteralType => "core/graph-literal-type",
             Self::HandleLiteral => "core/graph-handle-literal",
             Self::LiteralShadowed => "core/graph-literal-shadowed",
@@ -161,15 +281,55 @@ impl DiagnosticCode {
             Self::CallTargetMissing => "core/graph-call-target-missing",
             Self::CallTargetUnknown => "core/graph-call-target-unknown",
             Self::FunctionMetadataUnavailable => "core/graph-function-metadata-unavailable",
+            Self::FunctionInterface => "core/graph-function-interface",
             Self::VariableUnknown => "core/graph-variable-unknown",
             Self::VariableScope => "core/graph-variable-scope",
+            Self::SharedVariableScope => "core/graph-shared-variable-scope",
+            Self::CycleData => "core/graph-cycle-data",
             Self::UpdateOperation => "core/graph-update-operation",
+            Self::UpdateUnsupported => "core/graph-update-unsupported",
             Self::EntryInFunction => "core/graph-entry-in-function",
+            Self::SubscriptionInFunction => "core/graph-subscription-in-function",
+            Self::EventUnknown => "core/graph-event-unknown",
+            Self::ActivationPolicy => "core/graph-activation-policy",
+            Self::ConverterConfig => "core/graph-converter-config",
+            Self::ConverterEntry => "core/graph-converter-entry",
+            Self::ConverterOptions => "core/graph-converter-options",
+            Self::FunctionBodyMarker => "core/graph-function-body-marker",
+            Self::MissingReturn => "core/graph-missing-return",
+            Self::RegionAmbiguous => "core/graph-region-ambiguous",
+            Self::RegionEscape => "core/graph-region-escape",
+            Self::UnavailableValue => "core/graph-unavailable-value",
+            Self::CrossActivation => "core/graph-cross-activation",
+            Self::BreakOutsideLoop => "core/graph-break-outside-loop",
+            Self::CycleSyncControl => "core/graph-cycle-sync-control",
+            Self::LoopUnbounded => "core/graph-loop-unbounded",
+            Self::ZoneStructure => "core/graph-zone-structure",
+            Self::SwitchCase => "core/graph-switch-case",
+            Self::ForEachMode => "core/graph-for-each-mode",
+            Self::BusyLoop => "core/graph-busy-loop",
+            Self::Unreachable => "core/graph-unreachable",
+            Self::WriteConflict => "core/graph-write-conflict",
+            Self::HandlePersist => "core/graph-handle-persist",
+            Self::StreamStore => "core/graph-stream-store",
+            Self::StaleCapture => "core/graph-stale-capture",
+            Self::VariablePersistent => "core/graph-variable-persistent",
+            Self::RegisterConfig => "core/graph-register-config",
+            Self::DetachInFunction => "core/graph-detach-in-function",
+            Self::ExportTarget => "core/graph-export-target",
+            Self::ExportDuplicate => "core/graph-export-duplicate",
+            Self::ExportType => "core/graph-export-type",
+            Self::ConfigInvalid => "core/graph-config-invalid",
+            Self::ConfigSchemaUnsupported => "core/graph-config-schema-unsupported",
         }
     }
 
     fn fallback(self, subject: &Subject) -> String {
         match self {
+            Self::DomainUnsupported => "This execution domain is unavailable.".into(),
+            Self::DomainAnalysisBlocked => {
+                "Graph analysis requires supported execution domains.".into()
+            }
             Self::MetadataStale => "Node metadata no longer matches this document.".into(),
             Self::PortUnknown => format!(
                 "Connection references an unknown port{}.",
@@ -207,6 +367,9 @@ impl DiagnosticCode {
                 "Provider does not support the resolved type arguments.".into()
             }
             Self::InputRequired => "Required input has no value.".into(),
+            Self::VariadicCount => {
+                "The number of variadic port instances is outside the allowed range.".into()
+            }
             Self::LiteralType => "Input literal does not match the declared port type.".into(),
             Self::HandleLiteral => "Handle ports cannot have literals.".into(),
             Self::LiteralShadowed => "Input literal is shadowed by a connected edge.".into(),
@@ -221,13 +384,85 @@ impl DiagnosticCode {
             Self::FunctionMetadataUnavailable => {
                 "Function body or leaf semantics are unavailable.".into()
             }
+            Self::FunctionInterface => {
+                "Function interface is malformed: ports must be unique typed data ports using declared type parameters.".into()
+            }
             Self::VariableUnknown => "Variable reference is missing, invalid or undeclared.".into(),
             Self::VariableScope => {
                 "Workspace variables require an asynchronous shared write.".into()
             }
             Self::UpdateOperation => "Variable update requires a supported operation.".into(),
+            Self::SharedVariableScope => "Shared writes require a workspace variable.".into(),
+            Self::CycleData => "Data dependencies contain a cycle.".into(),
+            Self::UpdateUnsupported => {
+                "This variable update operation is not supported by this core version.".into()
+            }
             Self::EntryInFunction => {
                 "Entry and watch nodes are not permitted in a function.".into()
+            }
+            Self::ConverterConfig => {
+                "Converter node uses an unsupported or malformed config.".into()
+            }
+            Self::ConverterEntry => "Converter registry entry is unavailable.".into(),
+            Self::SubscriptionInFunction => {
+                "Subscriptions are not permitted in a function.".into()
+            }
+            Self::EventUnknown => "Event reference is missing, invalid or undeclared.".into(),
+            Self::ActivationPolicy => "Entry activation policy is missing or invalid.".into(),
+            Self::ConverterOptions => "Converter options are invalid or incomplete.".into(),
+            Self::FunctionBodyMarker => {
+                "Function entry, return and output markers do not match the declared interface.".into()
+            }
+            Self::MissingReturn => "A path of this function ends without reaching a return.".into(),
+            Self::RegionAmbiguous => "An execution node is reachable from more than one region.".into(),
+            Self::RegionEscape => "An execution connection leaves its region.".into(),
+            Self::UnavailableValue => {
+                "A value is not available on every path that reaches this input.".into()
+            }
+            Self::CrossActivation => {
+                "A value is read from a different activation than the one that produced it.".into()
+            }
+            Self::BreakOutsideLoop => {
+                "Break and continue need an enclosing loop body in the same function.".into()
+            }
+            Self::CycleSyncControl => "A control cycle needs a node that always suspends.".into(),
+            Self::LoopUnbounded => "A while loop requires a finite positive max_iterations.".into(),
+            Self::ZoneStructure => {
+                "A zone needs a matching begin and end, a pure body and no values leaving it except through the end."
+                    .into()
+            }
+            Self::SwitchCase => {
+                "Switch cases need distinct values of the key's kind.".into()
+            }
+            Self::ForEachMode => "For each mode must be list or map.".into(),
+            Self::BusyLoop => "This control cycle only yields and keeps the CPU busy.".into(),
+            Self::Unreachable => {
+                "Execution node is not reachable from any entry or region root.".into()
+            }
+            Self::WriteConflict => {
+                "Parallel Fork branches write the same variable without a compatible policy.".into()
+            }
+            Self::HandlePersist => {
+                "Handle types cannot be persisted, shared, written as literals or exported.".into()
+            }
+            Self::StreamStore => "Streams cannot be stored in variables or exported.".into(),
+            Self::StaleCapture => {
+                "A value captured before a suspension is written back; use update-variable.".into()
+            }
+            Self::VariablePersistent => "Local variables cannot be persistent.".into(),
+            Self::RegisterConfig => {
+                "Register scope must be run or activation and initial must be a literal of its type."
+                    .into()
+            }
+            Self::DetachInFunction => {
+                "A return cancels the detached strands left by this fork.".into()
+            }
+            Self::ExportTarget => "Export does not name an existing data output port.".into(),
+            Self::ExportDuplicate => "Export identifier is used more than once.".into(),
+            Self::ExportType => "Exported value type cannot be serialized.".into(),
+            Self::ConfigInvalid => "Node configuration does not satisfy its definition schema.".into(),
+            Self::ConfigSchemaUnsupported => {
+                "Definition config schema uses constructs outside the supported dialect.".into()
             }
         }
     }
@@ -258,6 +493,8 @@ pub struct Subject {
     pub port: Option<PortKey>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edge: Option<EdgeId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub variable: Option<VariableId>,
 }
 
 impl Subject {
@@ -267,7 +504,14 @@ impl Subject {
             node,
             port,
             edge,
+            variable: None,
         }
+    }
+
+    /// Adds the declared variable this diagnostic is about.
+    pub const fn with_variable(mut self, variable: VariableId) -> Self {
+        self.variable = Some(variable);
+        self
     }
 
     /// Adds the graph-local function owning this diagnostic subject.
@@ -464,7 +708,14 @@ impl Diagnostic {
         {
             message_args.insert("port".to_owned(), argument);
         }
-        let severity = if code == DiagnosticCode::LiteralShadowed {
+        let severity = if matches!(
+            code,
+            DiagnosticCode::LiteralShadowed
+                | DiagnosticCode::Unreachable
+                | DiagnosticCode::BusyLoop
+                | DiagnosticCode::StaleCapture
+                | DiagnosticCode::DetachInFunction
+        ) {
             Severity::Warning
         } else {
             Severity::Error
@@ -582,5 +833,117 @@ mod tests {
             to_value(diagnostic).unwrap()["message_origin"]["kind"],
             "host"
         );
+    }
+
+    #[test]
+    fn unsupported_update_diagnostic_has_stable_empty_argument_envelope() {
+        let diagnostic = Diagnostic::new(
+            DiagnosticCode::UpdateUnsupported,
+            Subject::default(),
+            &origin(),
+        );
+        assert_eq!(diagnostic.code.as_str(), "E-UPDATE-UNSUPPORTED");
+        assert_eq!(diagnostic.message_key, "core/graph-update-unsupported");
+        assert_eq!(
+            diagnostic.message,
+            "This variable update operation is not supported by this core version."
+        );
+        assert!(diagnostic.message_args.is_empty());
+        let wire = to_value(&diagnostic).unwrap();
+        assert_eq!(wire["code"], "E-UPDATE-UNSUPPORTED");
+        assert_eq!(
+            serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+            DiagnosticCode::UpdateUnsupported
+        );
+        assert_eq!(wire["message_key"], "core/graph-update-unsupported");
+        assert_eq!(wire["message_args"], json!({}));
+    }
+
+    #[test]
+    fn data_cycle_message_keeps_port_paths_out_of_message_arguments() {
+        let diagnostic = Diagnostic::new(DiagnosticCode::CycleData, Subject::default(), &origin());
+        assert_eq!(diagnostic.code.as_str(), "E-CYCLE-DATA");
+        assert_eq!(diagnostic.message_key, "core/graph-cycle-data");
+        assert_eq!(diagnostic.message, "Data dependencies contain a cycle.");
+        assert!(diagnostic.message_args.is_empty());
+        let wire = to_value(&diagnostic).unwrap();
+        assert_eq!(wire["code"], "E-CYCLE-DATA");
+        assert_eq!(
+            serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+            DiagnosticCode::CycleData
+        );
+    }
+
+    #[test]
+    fn shared_variable_scope_has_stable_redacted_message() {
+        let diagnostic = Diagnostic::new(
+            DiagnosticCode::SharedVariableScope,
+            Subject::default(),
+            &origin(),
+        );
+        assert_eq!(diagnostic.code.as_str(), "E-SHARED-VARIABLE-SCOPE");
+        assert_eq!(diagnostic.message_key, "core/graph-shared-variable-scope");
+        assert_eq!(
+            diagnostic.message,
+            "Shared writes require a workspace variable."
+        );
+        assert!(diagnostic.message_args.is_empty());
+        let wire = to_value(&diagnostic).unwrap();
+        assert_eq!(wire["code"], "E-SHARED-VARIABLE-SCOPE");
+        assert_eq!(
+            serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+            DiagnosticCode::SharedVariableScope
+        );
+    }
+
+    #[test]
+    fn variadic_count_diagnostic_has_stable_empty_argument_envelope() {
+        let diagnostic =
+            Diagnostic::new(DiagnosticCode::VariadicCount, Subject::default(), &origin());
+        assert_eq!(diagnostic.code.as_str(), "E-VARIADIC-COUNT");
+        assert_eq!(diagnostic.message_key, "core/graph-variadic-count");
+        assert_eq!(
+            diagnostic.message,
+            "The number of variadic port instances is outside the allowed range."
+        );
+        assert!(diagnostic.message_args.is_empty());
+        let wire = to_value(&diagnostic).unwrap();
+        assert_eq!(wire["code"], "E-VARIADIC-COUNT");
+        assert_eq!(
+            serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+            DiagnosticCode::VariadicCount
+        );
+        assert_eq!(wire["message_key"], "core/graph-variadic-count");
+        assert_eq!(wire["message_args"], json!({}));
+    }
+
+    #[test]
+    fn domain_diagnostics_have_stable_redacted_envelopes() {
+        for (code, expected_code, key, message) in [
+            (
+                DiagnosticCode::DomainUnsupported,
+                "E-DOMAIN-UNSUPPORTED",
+                "core/graph-domain-unsupported",
+                "This execution domain is unavailable.",
+            ),
+            (
+                DiagnosticCode::DomainAnalysisBlocked,
+                "E-DOMAIN-ANALYSIS-BLOCKED",
+                "core/graph-domain-analysis-blocked",
+                "Graph analysis requires supported execution domains.",
+            ),
+        ] {
+            let diagnostic = Diagnostic::new(code, Subject::default(), &origin());
+            assert_eq!(diagnostic.code.as_str(), expected_code);
+            assert_eq!(diagnostic.message_key, key);
+            assert_eq!(diagnostic.message, message);
+            assert!(diagnostic.message_args.is_empty());
+            let wire = to_value(&diagnostic).unwrap();
+            assert_eq!(wire["code"], expected_code);
+            assert_eq!(
+                serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+                code
+            );
+        }
     }
 }

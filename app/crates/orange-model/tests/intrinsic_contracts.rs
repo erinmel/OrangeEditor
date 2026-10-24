@@ -1,0 +1,252 @@
+//! Port, kind and suspension contracts of the registered language intrinsics (11 §8.4).
+
+use orange_model::GraphDocument;
+use orange_model::catalog::RegistrySnapshot;
+use orange_model::document::{NodeKind, OutputSource, PortDirection, PortKind, SignatureSnapshot};
+use orange_model::validation::{HostOrigin, validate_nodes};
+use serde_json::{Value, json};
+
+const NODE: &str = "10000000-0000-4000-8000-000000000001";
+
+/// Resolves one `definition` node (with optional type pins and variadic state) against the
+/// core registry, asserting it is accepted without diagnostics.
+fn resolve(definition: &str, pins: Value, variadic: Value) -> SignatureSnapshot {
+    resolve_config(definition, json!({}), pins, variadic)
+}
+
+fn resolve_config(
+    definition: &str,
+    config: Value,
+    pins: Value,
+    variadic: Value,
+) -> SignatureSnapshot {
+    let doc: GraphDocument = serde_json::from_value(json!({
+        "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-000000000001",
+        "revision": 0,
+        "nodes": [{
+            "id": NODE, "definition_id": definition, "definition_version": 1,
+            "config_version": 1, "config": config, "type_pins": pins, "variadic": variadic
+        }],
+        "edges": [],
+        "signatures": {}
+    }))
+    .unwrap();
+    let origin = HostOrigin::new("0.1.0", format!("sha256:{}", "b".repeat(64))).unwrap();
+    let report = validate_nodes(&doc, &RegistrySnapshot::core(origin));
+    assert!(report.diagnostics.is_empty(), "{definition}: {report:?}");
+    report.resolved[&NODE.parse().unwrap()].clone()
+}
+
+fn ports(signature: &SignatureSnapshot, direction: PortDirection, kind: PortKind) -> Vec<String> {
+    signature
+        .ports
+        .iter()
+        .filter(|port| port.direction == direction && port.kind == kind)
+        .map(|port| port.port_id.as_str().to_owned())
+        .collect()
+}
+
+fn exec_in(signature: &SignatureSnapshot) -> Vec<String> {
+    ports(signature, PortDirection::Input, PortKind::Exec)
+}
+
+fn exec_out(signature: &SignatureSnapshot) -> Vec<String> {
+    ports(signature, PortDirection::Output, PortKind::Exec)
+}
+
+fn output(signature: &SignatureSnapshot, id: &str) -> (String, Option<OutputSource>) {
+    let port = signature
+        .ports
+        .iter()
+        .find(|port| port.port_id.as_str() == id)
+        .unwrap_or_else(|| panic!("no port {id}"));
+    (port.ty.as_ref().unwrap().as_str().to_owned(), port.source)
+}
+
+#[test]
+fn switch_has_case_outcomes_and_a_default_in_the_parent_region() {
+    let signature = resolve(
+        "core/switch",
+        json!({"K": "core/string@1"}),
+        json!({"case": {"order": [0, 1], "next": 2}}),
+    );
+    assert_eq!(signature.kind, NodeKind::Action);
+    assert_eq!(exec_in(&signature), ["in"]);
+    assert_eq!(exec_out(&signature), ["case", "default"]);
+    let case = &signature.ports[2];
+    assert_eq!(case.variadic.map(|range| range.min), Some(1));
+}
+
+#[test]
+fn for_each_ports_follow_the_selected_mode() {
+    let list = resolve_config(
+        "core/for-each",
+        json!({}),
+        json!({"T": "core/string@1"}),
+        json!({}),
+    );
+    assert_eq!(list.kind, NodeKind::Iterator);
+    assert_eq!(output(&list, "element").1, Some(OutputSource::Iteration));
+    assert_eq!(output(&list, "index").0, "core/i64@1");
+    assert!(list.ports.iter().all(|port| port.port_id.as_str() != "key"));
+
+    let map = resolve_config(
+        "core/for-each",
+        json!({"mode": "map"}),
+        json!({"K": "core/string@1", "V": "core/i64@1"}),
+        json!({}),
+    );
+    assert_eq!(output(&map, "key").0, "core/string@1");
+    assert_eq!(output(&map, "value").0, "core/i64@1");
+    assert!(
+        map.ports
+            .iter()
+            .all(|port| port.port_id.as_str() != "element")
+    );
+}
+
+#[test]
+fn an_unknown_for_each_mode_is_rejected() {
+    let doc: GraphDocument = serde_json::from_value(json!({
+        "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-000000000001",
+        "revision": 0,
+        "nodes": [{"id": NODE, "definition_id": "core/for-each", "definition_version": 1,
+            "config_version": 1, "config": {"mode": "set"}}],
+        "edges": [],
+        "signatures": {}
+    }))
+    .unwrap();
+    let origin = HostOrigin::new("0.1.0", format!("sha256:{}", "b".repeat(64))).unwrap();
+    let report = validate_nodes(&doc, &RegistrySnapshot::core(origin));
+    let codes: Vec<_> = report.diagnostics.iter().map(|item| item.code).collect();
+    assert_eq!(
+        codes,
+        [orange_model::validation::DiagnosticCode::ForEachMode]
+    );
+}
+
+#[test]
+fn zone_pairs_are_pure_with_no_exec_ports() {
+    for (definition, pins) in [
+        ("core/repeat-begin", json!({"A": "core/i64@1"})),
+        ("core/repeat-end", json!({"A": "core/i64@1"})),
+        ("core/map-begin", json!({"T": "core/i64@1"})),
+        ("core/map-end", json!({"U": "core/i64@1"})),
+        (
+            "core/fold-begin",
+            json!({"T": "core/i64@1", "A": "core/f64@1"}),
+        ),
+        ("core/fold-end", json!({"A": "core/f64@1"})),
+        ("core/filter-begin", json!({"T": "core/i64@1"})),
+        ("core/filter-end", json!({"T": "core/i64@1"})),
+    ] {
+        let signature = resolve(definition, pins, json!({}));
+        assert_eq!(signature.kind, NodeKind::Pure, "{definition}");
+        assert!(exec_in(&signature).is_empty() && exec_out(&signature).is_empty());
+    }
+}
+
+#[test]
+fn register_feedback_reads_state_not_its_inputs() {
+    let register = resolve("core/register", json!({"T": "core/i64@1"}), json!({}));
+    assert_eq!(exec_in(&register), ["store", "reset"]);
+    assert_eq!(
+        output(&register, "current"),
+        ("core/i64@1".into(), Some(OutputSource::State))
+    );
+    assert_eq!(
+        register
+            .ports
+            .iter()
+            .find(|port| port.port_id.as_str() == "next")
+            .and_then(|port| port.ty.as_ref())
+            .map(|ty| ty.as_str()),
+        Some("core/i64@1")
+    );
+}
+
+#[test]
+fn try_captures_a_lazy_value_as_a_result() {
+    let signature = resolve("core/try", json!({"T": "core/i64@1"}), json!({}));
+    assert_eq!(signature.kind, NodeKind::Pure);
+    assert_eq!(signature.ports[0].lazy, Some(true));
+    assert_eq!(
+        output(&signature, "result"),
+        (
+            "core/result@1<core/i64@1>".into(),
+            Some(OutputSource::Computed)
+        )
+    );
+}
+
+#[test]
+fn match_result_offers_the_value_or_error_only_on_its_outcome() {
+    let signature = resolve("core/match-result", json!({"T": "core/i64@1"}), json!({}));
+    assert_eq!(exec_out(&signature), ["ok", "err"]);
+    let available = |id: &str| {
+        signature
+            .ports
+            .iter()
+            .find(|port| port.port_id.as_str() == id)
+            .and_then(|port| port.available_on.clone())
+            .unwrap()
+            .iter()
+            .map(|port| port.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(available("value"), ["ok"]);
+    assert_eq!(available("error"), ["err"]);
+    assert_eq!(output(&signature, "value").0, "core/i64@1");
+}
+
+#[test]
+fn lazy_pure_nodes_decide_eagerly_and_evaluate_alternatives_lazily() {
+    let lazy_inputs = |signature: &SignatureSnapshot| {
+        signature
+            .ports
+            .iter()
+            .filter(|port| port.lazy == Some(true))
+            .map(|port| port.port_id.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let pins = json!({"T": "core/string@1"});
+    let select = resolve("core/select", pins.clone(), json!({}));
+    assert_eq!(lazy_inputs(&select), ["if_true", "if_false"]);
+    assert_eq!(output(&select, "result").0, "core/string@1");
+    for definition in ["core/and", "core/or"] {
+        let logic = resolve(definition, json!({}), json!({}));
+        assert_eq!(logic.kind, NodeKind::Pure, "{definition}");
+        assert_eq!(lazy_inputs(&logic), ["b"], "{definition}");
+    }
+    let coalesce = resolve("core/coalesce", pins, json!({}));
+    assert_eq!(lazy_inputs(&coalesce), ["fallback"]);
+    assert_eq!(
+        coalesce.ports[0].ty.as_ref().unwrap().as_str(),
+        "core/option@1<core/string@1>"
+    );
+}
+
+#[test]
+fn state_controls_expose_their_state_outputs() {
+    let gate = resolve("core/gate", json!({}), json!({}));
+    assert_eq!(exec_in(&gate), ["enter", "open", "close", "toggle"]);
+    assert_eq!(
+        output(&gate, "is_open"),
+        ("core/bool@1".into(), Some(OutputSource::State))
+    );
+
+    let once = resolve("core/do-once", json!({}), json!({}));
+    assert_eq!(exec_in(&once), ["in", "reset"]);
+    // `then` is the kind's implicit outcome, not a declared port.
+    assert_eq!(once.kind, NodeKind::Action);
+    assert!(exec_out(&once).is_empty());
+
+    let flip = resolve("core/flip-flop", json!({}), json!({}));
+    assert_eq!(exec_out(&flip), ["a", "b"]);
+    assert_eq!(
+        output(&flip, "is_a"),
+        ("core/bool@1".into(), Some(OutputSource::State))
+    );
+}

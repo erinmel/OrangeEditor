@@ -10,13 +10,13 @@
 
 use std::collections::BTreeMap;
 
-use serde_json::{Map, json};
 use thiserror::Error;
 use uuid::Uuid;
 
 use super::{
-    ChoiceReason, ConverterCandidate, ConverterDefinition, ConverterProvider, ConverterRegistry,
-    ExplicitConverterChoice, ResolvedConverter, SelectionOutcome, SelectionRejection,
+    ChoiceReason, ConverterCandidate, ConverterConfig, ConverterDefinition, ConverterProvider,
+    ConverterRegistry, ExplicitConverterChoice, ResolvedConverter, SelectionOutcome,
+    SelectionRejection,
 };
 use crate::catalog::RegistrySnapshot;
 use crate::document::{
@@ -389,13 +389,11 @@ fn convert_node(
     resolved: &ResolvedConverter,
     definition: &ConverterDefinition,
 ) -> (NodeInstance, SignatureSnapshot) {
-    let mut config = Map::new();
-    config.insert("converter".to_owned(), json!(resolved.entry.id));
-    config.insert(
-        "contract_version".to_owned(),
-        json!(resolved.entry.contract_version),
-    );
-    config.insert("options".to_owned(), json!(resolved.options));
+    let config = ConverterConfig {
+        entry: resolved.entry.clone(),
+        options: resolved.options.clone(),
+    }
+    .to_config();
     let provider = match &resolved.provider {
         ConverterProvider::Core => None,
         ConverterProvider::Package(package) => Some(ProviderBinding {

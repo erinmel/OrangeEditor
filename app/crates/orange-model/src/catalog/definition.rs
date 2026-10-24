@@ -48,6 +48,21 @@ pub struct ReferenceField {
 pub enum VariableAccess {
     Read,
     Write,
+    Update,
+    WriteShared,
+    UpdateShared,
+}
+
+/// How an event intrinsic uses its event declaration (11 §8.4, §10.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventAccess {
+    /// `core/on-event`: an entry whose `payload` output carries the declared payload.
+    Handle,
+    /// `core/emit`: an action whose `payload` input carries the declared payload.
+    Emit,
+    /// `core/await-event`: an async with an optional `timeout`, `then`/`timed_out` outcomes
+    /// and a `payload` output available on `then`.
+    Await,
 }
 
 /// Where a definition's ports come from.
@@ -55,8 +70,14 @@ pub enum VariableAccess {
 pub enum Ports {
     /// Fixed ports; data port types may mention `$name` parameters.
     Declared(Vec<PortDescriptor>),
-    /// One `value` port typed by the referenced variable declaration.
+    /// Variable-derived ports: Read has a `value` output, Write has a `value`
+    /// input, and Update has a `value` input plus `old`/`new` outputs. Shared writes
+    /// use the async shared-variable contracts.
     Variable(VariableAccess),
+    /// Event-derived ports: `payload` is typed by the referenced event declaration.
+    Event(EventAccess),
+    /// `core/for-each`: the element ports follow `config.mode` (`list` or `map`, 11 §8.4).
+    ForEach,
 }
 
 /// One registered node definition version.
@@ -106,6 +127,32 @@ impl ReferenceField {
 pub enum ContractError {
     #[error("the referenced variable is missing or not declared")]
     VariableUnknown,
-    #[error("a workspace variable cannot be written from a graph")]
+    #[error("synchronous variable writes cannot target workspace scope")]
     VariableScope,
+    #[error("variable update operation is missing, malformed or unknown")]
+    UpdateOperation,
+    #[error("variable update operation is recognized but not supported by this contract")]
+    UpdateUnsupported,
+    #[error("shared variable writes require a workspace variable")]
+    SharedVariableScope,
+    #[error("variable type has no exact proof for the requested update operation")]
+    UpdateConstraint,
+    #[error("variable type cannot be resolved")]
+    TypeMismatch,
+    #[error("variable type resolution exceeded its resource limit")]
+    TypeComplexity,
+    #[error("the referenced event is missing or not declared")]
+    EventUnknown,
+    #[error("for-each mode is not `list` or `map`")]
+    ForEachMode,
+    #[error("converter config is malformed or uses an unsupported version")]
+    ConverterConfig,
+    #[error("converter entry is unavailable")]
+    ConverterEntry,
+    #[error("converter options are invalid or incomplete")]
+    ConverterOptions,
+    #[error("converter provider is unavailable")]
+    ConverterProvider,
+    #[error("converter package provider has no unique package lock entry")]
+    ConverterPackageLockMissing,
 }

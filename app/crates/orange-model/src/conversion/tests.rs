@@ -1095,3 +1095,29 @@ fn available_partial_choice_survives_an_unavailable_unique_lossless_entry() {
             .contains(&CandidateReason::CheckedPartial)
     );
 }
+
+#[test]
+fn converter_config_round_trips_and_names_its_failure() {
+    let config = ConverterConfig {
+        entry: ConverterKey {
+            id: "core/i32-to-i64".parse().unwrap(),
+            contract_version: 1,
+        },
+        options: BTreeMap::from([("rounding".to_owned(), "nearest".to_owned())]),
+    };
+    let written = config.to_config();
+    assert_eq!(ConverterConfig::from_config(&written), Ok(config));
+
+    let mut no_version = written.clone();
+    no_version.insert("contract_version".to_owned(), serde_json::json!(0));
+    assert_eq!(
+        ConverterConfig::from_config(&no_version),
+        Err(ConverterConfigError::Entry)
+    );
+    let mut bad_options = written;
+    bad_options.insert("options".to_owned(), serde_json::json!({"rounding": 1}));
+    assert_eq!(
+        ConverterConfig::from_config(&bad_options),
+        Err(ConverterConfigError::Options)
+    );
+}

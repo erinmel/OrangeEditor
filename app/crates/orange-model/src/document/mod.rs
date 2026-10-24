@@ -36,6 +36,7 @@ pub use port::{
 };
 
 pub(crate) use graph::fresh_state_id;
+pub(crate) use port::{SuspensionContractIssue, suspension_contract_issue};
 
 use serde_json::{Map, Value as Json};
 
