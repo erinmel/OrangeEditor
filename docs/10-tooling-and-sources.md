@@ -977,3 +977,28 @@ Two proptest properties run 128 cases each: bounded U64 DAGs with four math oper
 cargo test --workspace --locked passed 641 tests, six timing tests ignored. cargo test --release -p orange-bundled --test seeded_equivalence --test reference_equivalence --test data_epochs --locked passed 27 tests. cargo fmt --all --check; cargo clippy --workspace --all-targets --locked -- -D warnings; cargo doc --workspace --no-deps --locked with RUSTDOCFLAGS=-D warnings; dependency metadata guard/nine fixtures and whitespace checks passed. Rust/Cargo1.99.1, LLVM23.1.1, Windows x86_64 MSVC, default features and Node24.18.0 unchanged; known OneDrive hard-link fallback only. Lock SHA-256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152 unchanged. Logs .artifacts/e2g4d-{focused,tests-final,clippy-final,rustdoc-final,release-final}.log.
 
 Supported root-data E2 prerequisite evidence now exists for diamonds, first errors, lazy forms, seeded scopes and nested error capture. This is not every graph family, an independent SHA/IEEE implementation, performance/NFR/allocator qualification, full runtime error envelopes or global G-02 readiness. E3 control/functions and R1–R7 remain open. No production/public API/schema/dependency change, JSON retained, original review unchanged/untracked; local commit only/no push.
+
+### Root-data local timing baseline (E2g4e, 2026-10-24)
+
+Base99386af. Added a manual ignored release-only probe to data_epochs; ordinary CI has no time threshold. Real JSON/registry/native plans contain one Random-u64 followed by zero/63/511 dependent U64 additions. The measured plan uses MathPackage directly, without test counting wrappers. Timed operations are cached export, begin_epoch plus a leaf export, begin_epoch plus the full chain, and frame construction/destruction. Analysis/compilation are outside execution samples. Every size warms actual full execution for ten seconds, followed by30 separate batches per operation. Results below are ns/op quantiles of batch means, not individual event-latency percentiles or throughput confidence intervals. Work/results pass through black_box; raw sorted batch means are in ignored .artifacts/e2g4e-timing-final.log.
+
+Command: cargo test --release -p orange-bundled --test data_epochs root_data_epoch_timing_baseline --locked -- --ignored --exact --nocapture --test-threads=1. Passed1 manual timing test in30.18s. Rust1.99.1/Cargo1.99.1/LLVM23.1.1, x86_64-pc-windows-msvc, default features, optimized Cargo release profile, no debugger. Local Windows NT10.0.26300.0, AMD Ryzen9 9900X3D12-core/24 logical processors. CPU name read from the local hardware registry; CIM access unavailable. No affinity/power/background-load/reference-machine qualification. Earlier exploratory runs used counters or omitted raw samples and are not the baseline below.
+
+| Nodes | Operation | Batch size | Median ns/op | p95 batch mean | p99/max batch mean |
+|---|---|---:|---:|---:|---:|
+|1|Cached export|10000|5.0|6.5|6.5|
+|64|Cached export|10000|6.0|9.5|15.7|
+|512|Cached export|10000|6.0|12.2|13.0|
+|1|Sparse leaf epoch|1000|108.4|169.3|243.5|
+|64|Sparse leaf epoch|1000|114.8|124.4|135.6|
+|512|Sparse leaf epoch|1000|111.8|116.0|132.2|
+|1|Full epoch|100|112.5|1332.0|1426.0|
+|64|Full epoch|100|3060.0|4521.0|5787.0|
+|512|Full epoch|100|25026.5|28535.0|28734.0|
+|1|Frame entry/drop|100|247.0|370.0|396.0|
+|64|Frame entry/drop|100|1532.0|1826.0|1873.0|
+|512|Frame entry/drop|100|7838.5|10494.0|11462.0|
+
+Cached and sparse reads show no material dependence on total chain size in this probe; full traversal and frame initialization increase with demanded/materialized size. No production optimization is justified from these results. In particular, do not extrapolate these small chains to W1/W2 or claim NFR01/04/05 passed. Allocation instrumentation was not executed: source inspection finds preallocated frame work/input/output vectors, but nested Try intentionally allocates error/success boxes and trusted kernels may allocate. A source review is not allocator evidence. The workspace forbids unsafe code, so no custom GlobalAlloc implementation was added to its tests; WPR/xperf are available but no system tracing or instrumentation was started.
+
+cargo test --workspace --locked passed641 tests, seven timing tests ignored (one newly added). Workspace/all-target Clippy with warnings denied, fmt check, no-deps Rustdoc with warnings denied, metadata guard/nine fixtures and whitespace checks passed. Normal runtime regressions remain unchanged. Lock SHA-256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152 unchanged; original review unchanged/untracked. No product behavior/API/schema/dependency change or push. Core control/functions/actors/services and NFR qualification remain open.

@@ -21,6 +21,93 @@ use std::sync::{
 };
 use support::*;
 
+#[test]
+#[ignore = "manual release-only local timing baseline; no NFR threshold"]
+fn root_data_epoch_timing_baseline() {
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+    assert!(
+        !black_box(cfg!(debug_assertions)),
+        "run this timing probe with --release"
+    );
+    fn samples(label: &str, count: usize, mut operation: impl FnMut()) {
+        let mut nanos = Vec::with_capacity(30);
+        for _ in 0..30 {
+            let started = Instant::now();
+            for _ in 0..count {
+                operation();
+            }
+            nanos.push(started.elapsed().as_nanos() as f64 / count as f64);
+        }
+        nanos.sort_by(f64::total_cmp);
+        println!(
+            "{label}: samples=30 batch={count} ns/op median={:.1} p95={:.1} p99={:.1} max={:.1}",
+            (nanos[14] + nanos[15]) / 2.0,
+            nanos[28],
+            nanos[29],
+            nanos[29],
+        );
+        println!("{label}: sorted batch-average ns/op={nanos:?}");
+    }
+    for size in [1_u32, 64, 512] {
+        let (package, snapshot) = catalog();
+        let mut nodes = vec![random(1)];
+        nodes.extend((2..=size).map(|n| math(n, "add", 0, 1)));
+        let edges = (2..=size)
+            .map(|n| edge(n, n - 1, if n == 2 { "value" } else { "sum" }, n, "a"))
+            .collect();
+        let doc = graph(
+            &package,
+            nodes,
+            edges,
+            vec![
+                export(size, if size == 1 { "value" } else { "sum" }),
+                // Distinct export identity for the shared leaf when size == 1.
+                json!({"id":"leaf","node":id(1),"port":"value"}),
+            ],
+        );
+        let analysis = analyze(&doc, &snapshot);
+        let plan = Arc::new(
+            compile_data(
+                &doc,
+                snapshot.clone(),
+                &analysis,
+                &package,
+                CompileOptions::default(),
+            )
+            .unwrap(),
+        );
+        let mut frame = start(plan.clone(), &doc, &snapshot, 17, 9, DataOptions::default());
+        // Ten seconds of actual graph execution per size, separate from samples.
+        let warm = Instant::now();
+        while warm.elapsed() < Duration::from_secs(10) {
+            frame.begin_epoch().unwrap();
+            black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
+        }
+        samples(&format!("nodes={size} cached-export"), 10_000, || {
+            black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
+        });
+        samples(&format!("nodes={size} sparse-epoch-leaf"), 1_000, || {
+            frame.begin_epoch().unwrap();
+            black_box(frame.export(1).unwrap().unwrap().outcome.unwrap());
+        });
+        samples(&format!("nodes={size} full-epoch"), 100, || {
+            frame.begin_epoch().unwrap();
+            black_box(frame.export(0).unwrap().unwrap().outcome.unwrap());
+        });
+        samples(&format!("nodes={size} frame-entry-and-drop"), 100, || {
+            black_box(start(
+                plan.clone(),
+                &doc,
+                &snapshot,
+                17,
+                9,
+                DataOptions::default(),
+            ));
+        });
+    }
+}
+
 fn sample(node: u32, seed: u64, sequence: u64, invocation: u64) -> u64 {
     EntropyStream::new(EntropyKey {
         seed,
