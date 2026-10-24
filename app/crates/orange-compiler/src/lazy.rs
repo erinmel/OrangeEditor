@@ -9,6 +9,7 @@ pub(crate) enum Lazy {
     Select,
     And,
     Or,
+    Coalesce,
 }
 impl Lazy {
     pub(crate) fn resolve(
@@ -19,6 +20,7 @@ impl Lazy {
             "core/select" => Self::Select,
             "core/and" => Self::And,
             "core/or" => Self::Or,
+            "core/coalesce" => Self::Coalesce,
             _ => return Ok(None),
         };
         let bad = || CompileError::KernelContract { node: node.id };
@@ -33,6 +35,7 @@ impl Lazy {
                 ("result", false),
             ],
             Self::And | Self::Or => &[("a", false), ("b", true), ("result", false)],
+            Self::Coalesce => &[("value", false), ("fallback", true), ("result", false)],
         };
         if sig.ports.len() != expected.len() {
             return Err(bad());
@@ -50,7 +53,9 @@ impl Lazy {
                 return Err(bad());
             }
         }
-        if sig.ports[0].ty.as_ref().map(|ty| ty.as_str()) != Some("core/bool@1") {
+        if !matches!(kind, Self::Coalesce)
+            && sig.ports[0].ty.as_ref().map(|ty| ty.as_str()) != Some("core/bool@1")
+        {
             return Err(bad());
         }
         match kind {
@@ -60,17 +65,33 @@ impl Lazy {
             Self::And | Self::Or if sig.ports.iter().any(|p| p.ty != sig.ports[0].ty) => {
                 return Err(bad());
             }
+            Self::Coalesce => {
+                let inner = sig.ports[0].ty.as_ref().and_then(|ty| {
+                    ty.as_str()
+                        .strip_prefix("core/option@1<")
+                        .and_then(|s| s.strip_suffix('>'))
+                });
+                if inner.is_none()
+                    || inner != sig.ports[1].ty.as_ref().map(|ty| ty.as_str())
+                    || sig.ports[1].ty != sig.ports[2].ty
+                {
+                    return Err(bad());
+                }
+            }
             _ => {}
         }
         Ok(Some(kind))
     }
-    pub(crate) fn selected(self, flag: bool) -> Option<&'static str> {
-        match (self, flag) {
-            (Self::Select, true) => Some("if_true"),
-            (Self::Select, false) => Some("if_false"),
-            (Self::And, true) | (Self::Or, false) => Some("b"),
-            _ => None,
-        }
+    pub(crate) fn selected(self, value: &Value) -> Option<Option<&'static str>> {
+        Some(match (self, value) {
+            (Self::Select, Value::Bool(true)) => Some("if_true"),
+            (Self::Select, Value::Bool(false)) => Some("if_false"),
+            (Self::And, Value::Bool(true)) | (Self::Or, Value::Bool(false)) => Some("b"),
+            (Self::And | Self::Or, Value::Bool(_)) => None,
+            (Self::Coalesce, Value::None) => Some("fallback"),
+            (Self::Coalesce, _) => None,
+            _ => return None,
+        })
     }
 }
 
@@ -79,6 +100,7 @@ pub(crate) fn binding(
     inputs: Box<[orange_model::id::PortKey]>,
     outputs: Box<[orange_model::id::PortKey]>,
     faulted: bool,
+    unwrap_option: bool,
 ) -> KernelBinding {
     let index = if faulted {
         None
@@ -89,13 +111,18 @@ pub(crate) fn binding(
     KernelBinding {
         inputs,
         outputs,
-        kernel: Arc::new(Projection { index, arity }),
+        kernel: Arc::new(Projection {
+            index,
+            arity,
+            unwrap_option,
+        }),
     }
 }
 #[derive(Debug)]
 struct Projection {
     index: Option<usize>,
     arity: usize,
+    unwrap_option: bool,
 }
 impl PureKernel for Projection {
     fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
@@ -111,7 +138,10 @@ impl PureKernel for Projection {
             return Err(BAD);
         };
         let value = self.index.and_then(|index| inputs.get(index)).ok_or(BAD)?;
-        *output = value.clone();
+        *output = match value {
+            Value::Some(inner) if self.unwrap_option => inner.as_ref().clone(),
+            _ => value.clone(),
+        };
         Ok(())
     }
 }

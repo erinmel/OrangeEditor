@@ -1,5 +1,5 @@
-//! Checked immutable plans for root-body pure scalar/JSON exports (E1a).
-//! Constant Select/And/Or demands are supported. Control, volatile, other lazy forms,
+//! Checked immutable plans for root-body pure scalar/JSON/option exports.
+//! Constant Select/And/Or/Coalesce demands are supported. Control, volatile, Try/Result,
 //! function and scheduled execution remain separate slices.
 
 mod compile;

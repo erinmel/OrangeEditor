@@ -21,7 +21,9 @@ impl SlotIx {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// Supported scalar/JSON leaves and recursively typed options. Nested option
+/// values follow the model's boxed/unboxed representation, not JSON null.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanType {
     Bool,
     I32,
@@ -31,9 +33,63 @@ pub enum PlanType {
     F32,
     F64,
     Json,
+    Option(Box<PlanType>),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn option_types_preserve_unboxed_and_nested_value_contracts() {
+        let option = PlanType::Option(Box::new(PlanType::I64));
+        assert!(option.accepts(&Value::None));
+        assert!(option.accepts(&Value::I64(7)));
+        assert!(!option.accepts(&Value::Bool(false)));
+        assert!(!option.accepts(&Value::Some(Arc::new(Value::I64(7)))));
+        let nested = PlanType::Option(Box::new(option));
+        assert!(nested.accepts(&Value::None));
+        assert!(nested.accepts(&Value::Some(Arc::new(Value::None))));
+        assert!(nested.accepts(&Value::Some(Arc::new(Value::I64(7)))));
+        assert!(!nested.accepts(&Value::I64(7)));
+        assert!(!nested.accepts(&Value::Some(Arc::new(Value::Bool(false)))));
+        assert!(
+            !nested.accepts(&Value::Err(Arc::new(orange_model::value::NodeError {
+                code: "core/Test".into()
+            })))
+        );
+    }
+
+    #[test]
+    fn option_type_depth_and_unsupported_leaves_are_bounded() {
+        let wrap = |n| format!("{}core/json@1{}", "core/option@1<".repeat(n), ">".repeat(n));
+        assert!(PlanType::parse(&wrap(orange_model::type_term::MAX_NESTING)).is_some());
+        assert!(PlanType::parse(&wrap(orange_model::type_term::MAX_NESTING + 1)).is_none());
+        for invalid in [
+            "core/option@1<core/string@1>",
+            "core/option@1<core/i64@1,core/i64@1>",
+            "core/result@1<core/i64@1>",
+            "core/option@1<$T>",
+            "core/option@2<core/i64@1>",
+        ] {
+            assert!(PlanType::parse(invalid).is_none());
+        }
+    }
 }
 impl PlanType {
     pub(crate) fn parse(ty: &str) -> Option<Self> {
+        Self::parse_depth(ty, 0)
+    }
+    fn parse_depth(ty: &str, depth: usize) -> Option<Self> {
+        if depth > orange_model::type_term::MAX_NESTING {
+            return None;
+        }
+        if let Some(inner) = ty
+            .strip_prefix("core/option@1<")
+            .and_then(|s| s.strip_suffix('>'))
+        {
+            return Self::parse_depth(inner, depth + 1).map(|inner| Self::Option(Box::new(inner)));
+        }
         Some(match ty {
             "core/bool@1" => Self::Bool,
             "core/i32@1" => Self::I32,
@@ -46,7 +102,17 @@ impl PlanType {
             _ => return None,
         })
     }
-    pub(crate) fn accepts(self, value: &Value) -> bool {
+    pub(crate) fn accepts(&self, value: &Value) -> bool {
+        if let Self::Option(inner) = self {
+            return match value {
+                Value::None => true,
+                Value::Some(value) if matches!(inner.as_ref(), Self::Option(_)) => {
+                    inner.accepts(value)
+                }
+                _ if matches!(inner.as_ref(), Self::Option(_)) => false,
+                _ => inner.accepts(value),
+            };
+        }
         matches!(
             (self, value),
             (Self::Bool, Value::Bool(_))

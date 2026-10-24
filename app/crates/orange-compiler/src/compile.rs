@@ -72,6 +72,7 @@ fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<(), CompileEr
 fn value_bytes(value: &Value) -> usize {
     match value {
         Value::Json(text) => text.as_str().len().saturating_add(16),
+        Value::Some(inner) => value_bytes(inner).saturating_add(16),
         _ => 16,
     }
 }
@@ -99,26 +100,50 @@ fn push_slot(
 }
 fn decode(
     literal: &Literal,
-    ty: PlanType,
+    ty: &PlanType,
     snapshot: &RegistrySnapshot,
     remaining: usize,
 ) -> Result<Option<Value>, CompileError> {
-    // Bound payload processing before decoding. Composite and optional types are outside E1a.
-    let size = match &literal.payload {
-        LiteralPayload::Bits(bits) => bits.len(),
-        LiteralPayload::Value(serde_json::Value::String(text)) => text.len(),
-        LiteralPayload::Value(serde_json::Value::Bool(_) | serde_json::Value::Number(_)) => 16,
-        _ => return Ok(None),
-    };
-    if size.saturating_add(16) > remaining {
-        return Err(CompileError::ResourceLimit);
-    }
-    if PlanType::parse(literal.ty.as_str()) != Some(ty) {
+    if PlanType::parse(literal.ty.as_str()).as_ref() != Some(ty) {
         return Ok(None);
+    }
+    let Some(cost) = literal_bytes(&literal.payload, ty) else {
+        return Ok(None);
+    };
+    if cost > remaining {
+        return Err(CompileError::ResourceLimit);
     }
     Ok(literal_codec::decode(literal, snapshot.types().as_ref())
         .ok()
         .filter(|v| ty.accepts(v)))
+}
+fn literal_bytes(payload: &LiteralPayload, ty: &PlanType) -> Option<usize> {
+    // Walk only the supported option envelope and scalar leaf before decoding.
+    // No payload serialization, recursive JSON traversal or unbounded work stack.
+    let mut cost = 16;
+    let mut expected = ty;
+    let mut payload = match payload {
+        LiteralPayload::Bits(bits) => return Some(bits.len().saturating_add(cost)),
+        LiteralPayload::Value(value) => value,
+    };
+    while let PlanType::Option(inner) = expected {
+        let object = payload.as_object().filter(|o| o.len() == 1)?;
+        if object.get("none") == Some(&serde_json::Value::Bool(true)) {
+            return Some(cost);
+        }
+        let some = object.get("some")?;
+        if matches!(inner.as_ref(), PlanType::Option(_)) {
+            cost += 16;
+        }
+        payload = some;
+        expected = inner;
+    }
+    let size = match payload {
+        serde_json::Value::String(text) => text.len(),
+        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 16,
+        _ => return None,
+    };
+    Some(size.saturating_add(cost))
 }
 fn valid_fault(fault: KernelFault) -> bool {
     fn identifier(text: &str) -> bool {
@@ -179,7 +204,7 @@ impl InputContext<'_> {
             let ty = port_type(node, port)?;
             let value = decode(
                 literal,
-                ty,
+                &ty,
                 self.snapshot,
                 self.options
                     .limits
@@ -220,8 +245,8 @@ enum Work {
     },
 }
 
-/// Compile pure scalar/JSON root exports in persisted export and declared input order.
-/// Select/And/Or visit only selected inputs; other supported nodes remain eager.
+/// Compile pure scalar/JSON/option root exports in persisted export and declared input order.
+/// Select/And/Or/Coalesce visit only selected inputs; other supported nodes remain eager.
 /// Semantic analysis must be fresh; no resolver or executable callback runs before this check.
 /// Only reachable pure nodes fold, once each. Errors remain values with producer provenance.
 pub fn compile_pure(
@@ -427,8 +452,9 @@ pub fn compile_pure(
                     context.source(node, &signature.ports[0], &mut plan, &outputs, &mut bytes)?;
                 let selected = match &plan.constants[selector.slot.index()] {
                     FoldedValue::Fault(_) => None,
-                    FoldedValue::Value(Value::Bool(flag)) => lazy_nodes[&node].selected(*flag),
-                    _ => return Err(CompileError::KernelContract { node }),
+                    FoldedValue::Value(value) => lazy_nodes[&node]
+                        .selected(value)
+                        .ok_or(CompileError::KernelContract { node })?,
                 };
                 work.push(Work::Finish {
                     node,
@@ -474,6 +500,8 @@ pub fn compile_pure(
                     plan.constants[choice.selector.slot.index()],
                     FoldedValue::Fault(_)
                 ),
+                matches!(lazy_nodes[&node_id], crate::lazy::Lazy::Coalesce)
+                    && choice.selected.is_none(),
             )
         } else {
             resolver

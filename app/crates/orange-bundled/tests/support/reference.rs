@@ -66,24 +66,30 @@ impl<'a> Reference<'a> {
         {
             assert!(input.variadic.is_none());
             if input.is_lazy() {
-                let Some(Value::Bool(deciding)) = inputs.first() else {
-                    panic!("oracle selector type")
-                };
-                let selected = match node.definition.id.as_str() {
-                    "core/select" => {
-                        if *deciding {
-                            "if_true"
-                        } else {
-                            "if_false"
-                        }
+                if node.definition.id.as_str() == "core/coalesce" {
+                    if !matches!(inputs.first(), Some(Value::None)) {
+                        continue;
                     }
-                    "core/and" if *deciding => "b",
-                    "core/or" if !*deciding => "b",
-                    "core/and" | "core/or" => continue,
-                    _ => panic!("lazy form outside oracle vocabulary"),
-                };
-                if input.port_id.as_str() != selected {
-                    continue;
+                } else {
+                    let Some(Value::Bool(deciding)) = inputs.first() else {
+                        panic!("oracle selector type")
+                    };
+                    let selected = match node.definition.id.as_str() {
+                        "core/select" => {
+                            if *deciding {
+                                "if_true"
+                            } else {
+                                "if_false"
+                            }
+                        }
+                        "core/and" if *deciding => "b",
+                        "core/or" if !*deciding => "b",
+                        "core/and" | "core/or" => continue,
+                        _ => panic!("lazy form outside oracle vocabulary"),
+                    };
+                    if input.port_id.as_str() != selected {
+                        continue;
+                    }
                 }
             }
             let key = PortKey::new(input.port_id.clone(), None);
@@ -144,6 +150,15 @@ impl<'a> Reference<'a> {
 
 fn interpret(node: &NodeInstance, inputs: &[Value]) -> Result<Vec<Value>, &'static str> {
     match node.definition.id.as_str() {
+        "core/coalesce" => {
+            let value = match inputs {
+                [Value::None, fallback] => fallback.clone(),
+                [Value::Some(inner)] => inner.as_ref().clone(),
+                [present] => present.clone(),
+                _ => panic!("oracle coalesce contract"),
+            };
+            return Ok(vec![value]);
+        }
         "core/select" => {
             let [Value::Bool(_), value] = inputs else {
                 panic!("oracle select contract")

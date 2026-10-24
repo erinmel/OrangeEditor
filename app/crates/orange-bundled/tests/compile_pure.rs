@@ -26,6 +26,339 @@ fn integer_literal(value: i64) -> Json {
     json!({"type":"core/i64@1","value":value.to_string()})
 }
 
+fn typed_literal(snapshot: &RegistrySnapshot, ty: &str, value: &Value) -> Json {
+    serde_json::to_value(
+        orange_model::value::literal_codec::encode(
+            &ty.parse().unwrap(),
+            value,
+            snapshot.types().as_ref(),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+fn coalesce_node(n: u32, ty: &str, value: Json, fallback: Json) -> Json {
+    json!({"id":id(n),"definition_id":"core/coalesce","definition_version":1,"config_version":1,
+        "config":{},"type_pins":{"T":ty},"inputs":{"value":value,"fallback":fallback}})
+}
+
+#[test]
+fn coalesce_distinguishes_none_present_scalars_and_json_null_after_roundtrip() {
+    let (package, snapshot) = catalog();
+    let leaves = [
+        ("core/bool@1", Value::Bool(false)),
+        ("core/i32@1", Value::I32(-1)),
+        ("core/i64@1", Value::I64(i64::MIN)),
+        ("core/u32@1", Value::U32(u32::MAX)),
+        ("core/u64@1", Value::U64(u64::MAX)),
+        ("core/f32@1", Value::F32(-0.0)),
+        ("core/f64@1", Value::F64(f64::from_bits(0x7ff8000000000123))),
+        (
+            "core/json@1",
+            Value::Json(Arc::new(
+                orange_model::value::JsonText::new("null".into()).unwrap(),
+            )),
+        ),
+    ];
+    for (ty, value) in leaves {
+        let option = format!("core/option@1<{ty}>");
+        for present in [false, true] {
+            let initial = if present { &value } else { &Value::None };
+            let doc = graph(
+                &package,
+                vec![coalesce_node(
+                    1,
+                    ty,
+                    typed_literal(&snapshot, &option, initial),
+                    typed_literal(&snapshot, ty, &value),
+                )],
+                vec![],
+                vec![export(1, "result")],
+            );
+            let doc = from_json(&to_json(&doc).unwrap()).unwrap();
+            let analysis = analyze(&doc, &snapshot);
+            let expected = reference::Reference::new(&doc, &snapshot, &analysis).exports();
+            let plan = compile(&doc, snapshot.clone(), &package);
+            let result = plan
+                .evaluate(&doc, &snapshot, EvaluationOptions::default())
+                .unwrap()
+                .export(0)
+                .unwrap()
+                .unwrap();
+            assert_eq!(result.outcome, Ok(&value));
+            assert_eq!(expected, [Ok(value.clone())]);
+            assert_eq!(plan.steps()[0].inputs().len(), if present { 1 } else { 2 });
+            assert!(plan.diagnostics().is_empty());
+        }
+    }
+}
+
+#[test]
+fn coalesce_skips_missing_backend_and_propagates_demanded_fallback_fault() {
+    let (package, snapshot) = catalog();
+    for present in [false, true] {
+        let doc = graph(
+            &package,
+            vec![
+                node(1, "divide", 1, 0),
+                coalesce_node(
+                    2,
+                    "core/i64@1",
+                    typed_literal(
+                        &snapshot,
+                        "core/option@1<core/i64@1>",
+                        if present {
+                            &Value::I64(42)
+                        } else {
+                            &Value::None
+                        },
+                    ),
+                    integer_literal(-1),
+                ),
+            ],
+            vec![edge(1, 1, "quotient", 2, "fallback")],
+            vec![export(2, "result")],
+        );
+        let unavailable = GuardResolver {
+            package: package.clone(),
+            trap: id(1).parse().unwrap(),
+            reject: true,
+            calls: AtomicUsize::new(0),
+        };
+        let analysis = analyze(&doc, &snapshot);
+        let result = compile_pure(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &unavailable,
+            CompileOptions::default(),
+        );
+        assert_eq!(
+            unavailable.calls.load(Ordering::Relaxed),
+            usize::from(!present)
+        );
+        assert_eq!(result.is_ok(), present);
+        let plan = compile(&doc, snapshot.clone(), &package);
+        let outcome = &plan.constants()[plan.exports()[0].slot.index()];
+        if present {
+            assert_eq!(outcome, &FoldedValue::Value(Value::I64(42)));
+        } else {
+            let FoldedValue::Fault(fault) = outcome else {
+                panic!("missing fault")
+            };
+            assert_eq!(fault.source, id(1).parse().unwrap());
+            assert_eq!(fault.fault.code, "core/DivideByZero");
+        }
+        assert_eq!(plan.diagnostics().len(), usize::from(!present));
+    }
+}
+
+#[test]
+fn coalesce_selector_fault_is_not_absence_and_shared_exports_fold_once() {
+    let (package, snapshot) = catalog();
+    // A faulting Select supplies an option. Coalesce must neither hide the fault nor
+    // demand its unavailable fallback. Another export can demand that fallback.
+    let option = "core/option@1<core/i64@1>";
+    let none = typed_literal(&snapshot, option, &Value::None);
+    for separate_export in [false, true] {
+        let mut selected = select_node(2, true, option, none.clone(), none.clone());
+        selected["inputs"]["condition"] = json!({"type":"core/bool@1","value":true});
+        let mut exports = vec![export(3, "result"), export(2, "result")];
+        if separate_export {
+            exports.push(export(4, "sum"));
+        }
+        let doc = graph(
+            &package,
+            vec![
+                not_node(1, true),
+                selected,
+                coalesce_node(3, "core/i64@1", none.clone(), integer_literal(0)),
+                node(4, "add", 20, 22),
+            ],
+            vec![
+                edge(1, 1, "result", 2, "condition"),
+                edge(2, 2, "result", 3, "value"),
+                edge(3, 4, "sum", 3, "fallback"),
+            ],
+            exports,
+        );
+        let resolver = GuardResolver {
+            package: package.clone(),
+            trap: id(1).parse().unwrap(),
+            reject: false,
+            calls: AtomicUsize::new(0),
+        };
+        let plan = compile(&doc, snapshot.clone(), &resolver);
+        assert_eq!(
+            resolver.calls.load(Ordering::Relaxed),
+            if separate_export { 2 } else { 1 }
+        );
+        assert_eq!(plan.diagnostics().len(), 1);
+        for export in &plan.exports()[..2] {
+            let FoldedValue::Fault(fault) = &plan.constants()[export.slot.index()] else {
+                panic!("fault lost")
+            };
+            assert_eq!(fault.source, id(1).parse().unwrap());
+        }
+    }
+}
+
+#[test]
+fn nested_some_none_is_present_and_export_type_is_borrowed() {
+    let (package, snapshot) = catalog();
+    let ty = "core/option@1<core/i64@1>";
+    let outer = "core/option@1<core/option@1<core/i64@1>>";
+    for present in [false, true] {
+        let initial = if present {
+            Value::Some(Arc::new(Value::None))
+        } else {
+            Value::None
+        };
+        let expected = if present { Value::None } else { Value::I64(99) };
+        let doc = graph(
+            &package,
+            vec![coalesce_node(
+                1,
+                ty,
+                typed_literal(&snapshot, outer, &initial),
+                typed_literal(&snapshot, ty, &Value::I64(99)),
+            )],
+            vec![],
+            vec![export(1, "result")],
+        );
+        let plan = compile(&doc, snapshot.clone(), &package);
+        let result = plan
+            .evaluate(&doc, &snapshot, EvaluationOptions::default())
+            .unwrap()
+            .export(0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(result.outcome, Ok(&expected));
+        assert_eq!(result.ty, &PlanType::Option(Box::new(PlanType::I64)));
+        assert!(std::ptr::eq(
+            result.ty,
+            &plan.slot_types()[plan.exports()[0].slot.index()]
+        ));
+        let analysis = analyze(&doc, &snapshot);
+        assert_eq!(
+            reference::Reference::new(&doc, &snapshot, &analysis).exports(),
+            [Ok(expected)]
+        );
+    }
+}
+
+#[test]
+fn option_json_payload_budget_is_checked_and_inactive_fallback_is_not_decoded() {
+    let (package, snapshot) = catalog();
+    let small = Value::Json(Arc::new(
+        orange_model::value::JsonText::new("null".into()).unwrap(),
+    ));
+    let large = Value::Json(Arc::new(
+        orange_model::value::JsonText::new(format!("\"{}\"", "x".repeat(100_000))).unwrap(),
+    ));
+    for large_selector in [false, true] {
+        let doc = graph(
+            &package,
+            vec![coalesce_node(
+                1,
+                "core/json@1",
+                typed_literal(
+                    &snapshot,
+                    "core/option@1<core/json@1>",
+                    if large_selector { &large } else { &small },
+                ),
+                typed_literal(&snapshot, "core/json@1", &large),
+            )],
+            vec![],
+            vec![export(1, "result")],
+        );
+        let analysis = analyze(&doc, &snapshot);
+        let options = CompileOptions {
+            limits: orange_compiler::CompileLimits {
+                max_constant_bytes: 96,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = compile_pure(&doc, snapshot.clone(), &analysis, &package, options);
+        if large_selector {
+            assert!(matches!(result, Err(CompileError::ResourceLimit)));
+        } else {
+            assert!(result.is_ok());
+        }
+    }
+}
+
+#[test]
+fn nested_option_boxes_are_charged_to_retained_constant_budget() {
+    let (package, snapshot) = catalog();
+    let ty = "core/option@1<core/option@1<core/i64@1>>";
+    let outer = format!("core/option@1<{ty}>");
+    let present = Value::Some(Arc::new(Value::I64(42)));
+    let selector = Value::Some(Arc::new(present.clone()));
+    let doc = graph(
+        &package,
+        vec![coalesce_node(
+            1,
+            ty,
+            typed_literal(&snapshot, &outer, &selector),
+            typed_literal(&snapshot, ty, &Value::None),
+        )],
+        vec![],
+        vec![export(1, "result")],
+    );
+    let analysis = analyze(&doc, &snapshot);
+    // Selector = 48; result = 32; persisted export ID "out-1" = 5.
+    for budget in [84, 85] {
+        let options = CompileOptions {
+            limits: orange_compiler::CompileLimits {
+                max_constant_bytes: budget,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let result = compile_pure(&doc, snapshot.clone(), &analysis, &package, options);
+        if budget == 84 {
+            assert!(matches!(result, Err(CompileError::ResourceLimit)));
+        } else {
+            assert_eq!(
+                result.unwrap().constants().last(),
+                Some(&FoldedValue::Value(present.clone()))
+            );
+        }
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+    #[test]
+    fn nested_options_coalesce_with_independent_oracle(depth in 1usize..8, present in proptest::bool::ANY,
+        inner_absent in proptest::bool::ANY, number in proptest::num::i64::ANY) {
+        let (package,snapshot)=catalog();
+        let mut ty="core/i64@1".to_owned();
+        let mut value=Value::I64(number);
+        for layer in 0..depth {
+            if layer==0 && inner_absent { value=Value::None; }
+            else if layer>0 {value=Value::Some(Arc::new(value));}
+            ty=format!("core/option@1<{ty}>");
+        }
+        let outer=format!("core/option@1<{ty}>");
+        let initial=if present {Value::Some(Arc::new(value.clone()))} else {Value::None};
+        let mut fallback=Value::I64(number.wrapping_add(1));
+        for _ in 1..depth {fallback=Value::Some(Arc::new(fallback));}
+        let doc=graph(&package,vec![coalesce_node(1,&ty,typed_literal(&snapshot,&outer,&initial),
+            typed_literal(&snapshot,&ty,&fallback))],vec![],vec![export(1,"result")]);
+        let doc=from_json(&to_json(&doc).unwrap()).unwrap();
+        let analysis=analyze(&doc,&snapshot);
+        let expected=reference::Reference::new(&doc,&snapshot,&analysis).exports();
+        let plan=compile(&doc,snapshot.clone(),&package);
+        let result=plan.evaluate(&doc,&snapshot,EvaluationOptions::default()).unwrap().export(0).unwrap().unwrap();
+        let answer=if present {value} else {fallback};
+        proptest::prop_assert_eq!(result.outcome,Ok(&answer));
+        proptest::prop_assert_eq!(expected,vec![Ok(answer)]);
+    }
+}
+
 #[test]
 fn lazy_select_folds_only_chosen_cone_with_original_fault_or_value() {
     let (package, snapshot) = catalog();
@@ -537,7 +870,7 @@ fn checked_evaluation_is_borrowed_pinned_and_does_not_reexecute_kernels() {
         .unwrap();
     let result = evaluation.export(0).unwrap().unwrap();
     assert_eq!(result.id, "out-1");
-    assert_eq!(result.ty, PlanType::I64);
+    assert_eq!(result.ty, &PlanType::I64);
     assert_eq!(result.outcome, Ok(&Value::I64(42)));
     let FoldedValue::Value(constant) = &plan.constants()[plan.exports()[0].slot.index()] else {
         panic!()

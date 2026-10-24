@@ -63,7 +63,8 @@ fn checkpoint(cancel: Option<&AtomicBool>) -> Result<(), EvaluationError> {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct EvaluatedExport<'a> {
     pub id: &'a str,
-    pub ty: PlanType,
+    /// Borrowed type metadata; reading nested options never clones a type tree.
+    pub ty: &'a PlanType,
     pub source: &'a SlotSource,
     pub outcome: Result<&'a Value, &'a ConstantFault>,
 }
@@ -154,7 +155,7 @@ impl<'a> PureEvaluation<'a> {
         };
         Ok(EvaluatedExport {
             id: &export.id,
-            ty: self.plan.types[slot],
+            ty: &self.plan.types[slot],
             source: &self.plan.sources[slot],
             outcome,
         })
