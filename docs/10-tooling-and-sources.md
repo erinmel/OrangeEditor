@@ -677,3 +677,17 @@ Measured once with `cargo test --release -p orange-model --test perf_edit_baseli
 | `validate` | 220 ms | 119 ms |
 
 At 1,000 nodes the isolated edit is 0.04 ms indexed. An edit that touches a 10,000-node generic component still re-solves the whole component; incremental solving and the O(document) declaration-consumer scan remain open, so NFR-15 is not met for such edits.
+
+### Validation cost by call-chain depth (2026-10-23)
+
+Review of PR 14 found that call acceptance reran every validation pass over the whole document once per call-chain level, and that `GraphDocument::locate_node` and `node` scanned every body, so passes cost O(nodes × functions). A depth-200 chain took 2.7 s in a one-off probe at `a843f88`. Functions are now accepted callee first, each body checked once, before one whole-document round (12 §3.2 coverage contract), and the document keeps a node-to-body lookup current through patches.
+
+Measured with `cargo test --release -p orange-model --test perf_edit_baseline -- --ignored --nocapture --test-threads=1` (best of 5; `depth` pure functions, each calling the next; Windows x86_64, Rust 1.99.1). This is not NFR-15 qualification.
+
+| Depth (nodes) | Callee-first only | Plus node lookup |
+|---|---|---|
+| 200 (599) | 31 ms | 11 ms |
+| 1,000 (2,999) | 543 ms | 61 ms |
+| 4,000 (11,999) | 8.1 s | 289 ms |
+
+The same run measured the 10,000-node `validate` at 142 ms with the old lookup and 148 ms with the new one, which builds the lookup on first use; the indexed isolated edit stays at 0.10 ms once a document has been looked up. `locate_edge` and `edge` still scan bodies, and `DocIndex::update` uses them per changed edge.

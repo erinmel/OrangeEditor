@@ -5,17 +5,18 @@
 //! Its [`ValidationReport`] contains sorted, de-duplicated diagnostics, the resolved
 //! signatures, incomplete nodes and functions, and function summaries. It first runs
 //! [`validate_body_domains`]; unsupported domains stop the control passes with only domain
-//! coverage. For supported documents it runs
-//! [`validate_nodes`] once and feeds that resolution to [`validate_inputs`],
-//! [`validate_connections`], [`validate_data_cycles`] and [`analyze_functions`]. Connections fall back to stored
-//! signatures only for package nodes that did not resolve, preserving orphan edges.
+//! coverage. For supported documents it first accepts graph-local functions callee first, so
+//! calls resolve against accepted callees, then runs [`validate_nodes`] once and feeds that
+//! resolution to every later pass. Connections fall back to stored signatures only for
+//! package nodes that did not resolve, preserving orphan edges.
 //! `validate` supplies no leaf effects, so a package action leaf makes its function
 //! incomplete rather than assumed effect-free. No pass changes document
 //! content, revision or state identity, and none loads package code; the host supplies the
 //! immutable catalogue origin.
 //!
 //! The individual passes stay public for hosts that run them separately. Contextual variable
-//! and shared-write ports are declaration-owned. Call/interface ports and control cycles remain later slices; [`validate_availability`] checks value availability from the region index, and a valid report is not compile approval.
+//! and shared-write ports are declaration-owned. A valid report is not compile approval: see
+//! [`ValidationAnalysis::is_ready_for_compilation`].
 
 mod acceptance;
 mod availability;
