@@ -322,6 +322,7 @@ pub fn analyze_with_effects(
     diagnostics.extend(validate_state(
         document,
         registry,
+        &nodes.resolved,
         &regions.index,
         &functions.summaries,
         &leaf_effects,

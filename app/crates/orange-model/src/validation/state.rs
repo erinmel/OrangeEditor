@@ -14,7 +14,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use serde_json::Value;
 
 use crate::catalog::{ReferenceKind, RegistrySnapshot};
-use crate::document::{BodyRef, ConflictPolicy, GraphDocument, NodeInstance, VarScope};
+use crate::document::{
+    BodyRef, ConflictPolicy, GraphDocument, NodeInstance, ReentrancyMode, SignatureSnapshot,
+    VarScope,
+};
 use crate::edit::DeclId;
 use crate::id::{FunctionId, NodeId, VariableId};
 use crate::type_term::TypeTerm;
@@ -31,6 +34,7 @@ type Writes = BTreeMap<VariableId, BTreeSet<WriteOperation>>;
 pub fn validate_state(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     regions: &RegionIndex,
     summaries: &BTreeMap<FunctionId, FunctionSummary>,
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
@@ -47,33 +51,45 @@ pub fn validate_state(
         }
     }
 
-    let mut diagnostics = Vec::new();
+    let mut diagnostics = validate_declarations(document, registry);
     for (body_ref, body) in document.bodies_with_refs() {
         for node in body.nodes.values() {
+            if node
+                .activation
+                .as_ref()
+                .is_some_and(|policy| policy.mode == ReentrancyMode::Parallel)
+            {
+                let mut members = BTreeSet::new();
+                for root in regions.regions.keys().filter(|root| root.node == node.id) {
+                    members.extend(region_members(regions, &children, root));
+                }
+                stale_captures(
+                    body_ref,
+                    body,
+                    document,
+                    registry,
+                    resolved,
+                    &members,
+                    &mut diagnostics,
+                );
+            }
             let Some(roots) = branches.get(&node.id).filter(|roots| roots.len() > 1) else {
                 continue;
             };
             let mut per_branch = Vec::new();
             for root in roots {
                 let mut writes = Writes::new();
-                let mut stack = vec![*root];
-                while let Some(current) = stack.pop() {
-                    let Some(region) = regions.regions.get(current) else {
-                        continue;
-                    };
-                    for member in &region.nodes {
-                        if let Some(member) = body.nodes.get(member) {
-                            collect_writes(
-                                document,
-                                registry,
-                                summaries,
-                                leaf_effects,
-                                member,
-                                &mut writes,
-                            );
-                        }
+                for member in region_members(regions, &children, root) {
+                    if let Some(member) = body.nodes.get(&member) {
+                        collect_writes(
+                            document,
+                            registry,
+                            summaries,
+                            leaf_effects,
+                            member,
+                            &mut writes,
+                        );
                     }
-                    stack.extend(children.get(current).into_iter().flatten().copied());
                 }
                 per_branch.push(writes);
             }
@@ -103,6 +119,23 @@ pub fn validate_state(
     }
     sort_diagnostics(&mut diagnostics);
     diagnostics
+}
+
+/// Nodes owned by a region and all regions nested below it, iteratively.
+fn region_members(
+    regions: &RegionIndex,
+    children: &BTreeMap<&RegionRoot, Vec<&RegionRoot>>,
+    root: &RegionRoot,
+) -> BTreeSet<NodeId> {
+    let mut members = BTreeSet::new();
+    let mut stack = vec![root];
+    while let Some(current) = stack.pop() {
+        if let Some(region) = regions.regions.get(current) {
+            members.extend(region.nodes.iter().copied());
+        }
+        stack.extend(children.get(current).into_iter().flatten().copied());
+    }
+    members
 }
 
 fn compatible(
@@ -203,6 +236,146 @@ fn collect_writes(
                     }
                 }
             }
+        }
+    }
+}
+
+/// Variable declaration rules: a local variable is never persistent, and an initializer must
+/// carry the declared type and decode with the ordinary literal codec. Resource-typed
+/// initializers are reported by `validate_streams` instead.
+pub(super) fn validate_declarations(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+) -> Vec<Diagnostic> {
+    let (origin, types) = (registry.origin(), registry.types().as_ref());
+    let mut diagnostics = Vec::new();
+    for (id, decl) in document.variables() {
+        let subject = Subject::default().with_variable(*id);
+        if decl.persistent && decl.scope == VarScope::Local {
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::VariablePersistent,
+                subject.clone(),
+                origin,
+            ));
+        }
+        let Some(init) = &decl.init else {
+            continue;
+        };
+        let Ok(term) = TypeTerm::parse(&decl.ty) else {
+            continue;
+        };
+        if term.core("handle").is_some() || term.core("stream").is_some() {
+            continue;
+        }
+        if init.ty != decl.ty || crate::value::literal_codec::decode(init, types).is_err() {
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::LiteralType,
+                subject,
+                origin,
+            ));
+        }
+    }
+    diagnostics
+}
+
+/// `W-STALE-CAPTURE` (11 §10.1, strictest reading of "captured before a suspension"): in a
+/// region of a `parallel` entry that contains a possibly suspending node, a `set-variable`
+/// of V whose value depends on a `get-variable` of V through the output of an earlier exec
+/// node (an action or async capture) warns. A direct Get-to-Set path and `update-variable`
+/// are atomic and never warn. Captures through other variables are not tracked.
+fn stale_captures(
+    body_ref: BodyRef,
+    body: &crate::document::GraphBody,
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    members: &BTreeSet<NodeId>,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use crate::document::{NodeKind, Suspends};
+    let suspends = members.iter().any(|node| {
+        resolved
+            .get(node)
+            .is_some_and(|s| s.suspension() != Some(Suspends::Never))
+    });
+    if !suspends {
+        return;
+    }
+    let mut incoming: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for edge in body.edges.values() {
+        incoming
+            .entry(edge.to.node)
+            .or_default()
+            .push(edge.from.node);
+    }
+    let variable_of = |node: &NodeInstance| {
+        (node.provider.is_none() && node.definition.version == 1 && node.config_version == 1)
+            .then(|| super::variables::variable_reference(registry, node).ok())
+            .flatten()
+    };
+    for id in members {
+        let Some(write) = body.nodes.get(id) else {
+            continue;
+        };
+        if write.definition.id.as_str() != "core/set-variable" {
+            continue;
+        }
+        let Some(variable) = variable_of(write) else {
+            continue;
+        };
+        if !document
+            .variables()
+            .get(&variable)
+            .is_some_and(|decl| matches!(decl.scope, VarScope::Local | VarScope::Run))
+        {
+            continue;
+        }
+        let mut seen = BTreeSet::new();
+        let mut stack: Vec<_> = incoming
+            .get(id)
+            .into_iter()
+            .flatten()
+            .map(|n| (*n, false))
+            .collect();
+        let mut stale = false;
+        while let Some((current, crossed)) = stack.pop() {
+            if !seen.insert((current, crossed)) {
+                continue;
+            }
+            let Some(node) = body.nodes.get(&current) else {
+                continue;
+            };
+            if crossed
+                && node.definition.id.as_str() == "core/get-variable"
+                && variable_of(node) == Some(variable)
+            {
+                stale = true;
+                break;
+            }
+            let exec = resolved.get(&current).is_some_and(|s| {
+                matches!(
+                    s.kind,
+                    NodeKind::Action | NodeKind::Async | NodeKind::Iterator
+                )
+            });
+            stack.extend(
+                incoming
+                    .get(&current)
+                    .into_iter()
+                    .flatten()
+                    .map(|n| (*n, crossed || exec)),
+            );
+        }
+        if stale {
+            let mut subject = Subject::new(Some(*id), None, None).with_variable(variable);
+            if let BodyRef::Function(function) = body_ref {
+                subject = subject.with_function(function);
+            }
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::StaleCapture,
+                subject,
+                registry.origin(),
+            ));
         }
     }
 }

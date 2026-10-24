@@ -136,6 +136,10 @@ pub enum DiagnosticCode {
     HandlePersist,
     #[serde(rename = "E-STREAM-STORE")]
     StreamStore,
+    #[serde(rename = "W-STALE-CAPTURE")]
+    StaleCapture,
+    #[serde(rename = "E-VARIABLE-PERSISTENT")]
+    VariablePersistent,
 }
 
 impl DiagnosticCode {
@@ -205,6 +209,8 @@ impl DiagnosticCode {
             Self::WriteConflict => "E-WRITE-CONFLICT",
             Self::HandlePersist => "E-HANDLE-PERSIST",
             Self::StreamStore => "E-STREAM-STORE",
+            Self::StaleCapture => "W-STALE-CAPTURE",
+            Self::VariablePersistent => "E-VARIABLE-PERSISTENT",
         }
     }
 
@@ -273,6 +279,8 @@ impl DiagnosticCode {
             Self::WriteConflict => "core/graph-write-conflict",
             Self::HandlePersist => "core/graph-handle-persist",
             Self::StreamStore => "core/graph-stream-store",
+            Self::StaleCapture => "core/graph-stale-capture",
+            Self::VariablePersistent => "core/graph-variable-persistent",
         }
     }
 
@@ -390,6 +398,10 @@ impl DiagnosticCode {
                 "Handle types cannot be persisted, shared, written as literals or exported.".into()
             }
             Self::StreamStore => "Streams cannot be stored in variables or exported.".into(),
+            Self::StaleCapture => {
+                "A value captured before a suspension is written back; use update-variable.".into()
+            }
+            Self::VariablePersistent => "Local variables cannot be persistent.".into(),
         }
     }
 }
@@ -639,6 +651,7 @@ impl Diagnostic {
             DiagnosticCode::LiteralShadowed
                 | DiagnosticCode::Unreachable
                 | DiagnosticCode::BusyLoop
+                | DiagnosticCode::StaleCapture
         ) {
             Severity::Warning
         } else {

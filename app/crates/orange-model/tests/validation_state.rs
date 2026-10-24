@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{
-    GraphDocument, NodeKind, PortDescriptor, SignatureSnapshot, Suspends,
+    GraphDocument, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot, Suspends,
 };
 use orange_model::from_json;
 use orange_model::id::{FunctionId, NodeId};
@@ -158,6 +158,7 @@ fn conflicts(
     validate_state(
         &doc,
         &registry,
+        &resolved,
         &regions.index,
         &summaries,
         &BTreeMap::new(),
@@ -301,4 +302,145 @@ fn function_call_writes_come_from_the_callee_summary() {
         ),
         [DiagnosticCode::WriteConflict]
     );
+}
+
+fn stale(captured: bool, update_instead: bool, suspending: bool) -> Vec<DiagnosticCode> {
+    let ty = || "core/i64@1".parse().unwrap();
+    let mut entry = entry(1);
+    entry.json["activation"] = json!({"mode":"parallel","max_parallel":2,"capacity":4,
+        "overflow":"drop-oldest","on_fault":"continue","order":0});
+    let mut capture = node(
+        2,
+        "example/action",
+        json!({}),
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::exec_out("then"),
+            PortDescriptor::data_in("x", ty()),
+            PortDescriptor::data_out("out", ty(), OutputSource::Execution),
+        ],
+    );
+    capture.signature.suspends = Some(if suspending {
+        Suspends::Maybe
+    } else {
+        Suspends::Never
+    });
+    let mut get = node(
+        3,
+        "core/get-variable",
+        json!({"variable": VAR}),
+        vec![PortDescriptor::data_out("value", ty(), OutputSource::State)],
+    );
+    get.signature.kind = NodeKind::Volatile;
+    let mut write = if update_instead {
+        update(4, "add")
+    } else {
+        set(4)
+    };
+    write
+        .signature
+        .ports
+        .push(PortDescriptor::data_in("value", ty()));
+    let data = |n: u8, from: u8, from_port: &str, to: u8, to_port: &str| {
+        json!({"id": format!("30000000-0000-4000-8000-{n:012}"),
+            "from": {"node": id(from), "port": from_port},
+            "to": {"node": id(to), "port": to_port}})
+    };
+    let mut edges = vec![wire(1, 1, "then", 2), wire(2, 2, "then", 4)];
+    if captured {
+        edges.push(data(3, 3, "value", 2, "x"));
+        edges.push(data(4, 2, "out", 4, "value"));
+    } else {
+        edges.push(data(3, 3, "value", 4, "value"));
+    }
+    stale_run(vec![entry, capture, get, write], edges)
+}
+
+fn stale_run(nodes: Vec<N>, edges: Vec<Value>) -> Vec<DiagnosticCode> {
+    let doc: GraphDocument = from_json(
+        &json!({
+            "format":"orange.graph","format_version":1,
+            "graph_id":"40000000-0000-4000-8000-000000000001","revision":0,
+            "variables":[{"id":VAR,"name":"v","type":"core/i64@1","scope":"run"}],
+            "nodes": nodes.iter().map(|n| n.json.clone()).collect::<Vec<_>>(),
+            "edges": edges,
+            "signatures":{SIGNATURE:{"kind":"pure","ports":[]}}
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let resolved: BTreeMap<_, _> = nodes.into_iter().map(|n| (n.id, n.signature)).collect();
+    let registry = registry();
+    let regions = validate_regions(&doc, &resolved, &ConnectionValidation::default(), &registry);
+    validate_state(
+        &doc,
+        &registry,
+        &resolved,
+        &regions.index,
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .iter()
+    .map(|d| d.code)
+    .collect()
+}
+
+#[test]
+fn captured_read_written_back_warns_only_when_parallel_and_suspending() {
+    assert_eq!(stale(true, false, true), [DiagnosticCode::StaleCapture]);
+    assert!(
+        stale(false, false, true).is_empty(),
+        "direct get-set is atomic"
+    );
+    assert!(stale(true, false, false).is_empty(), "nothing suspends");
+    assert!(
+        stale(true, true, true).is_empty(),
+        "update-variable is atomic"
+    );
+}
+
+#[test]
+fn local_persistence_and_initializer_agreement_are_declaration_errors() {
+    let decl = |scope: &str, extra: Value| {
+        let mut d = json!({"id": VAR, "name": "v", "type": "core/i64@1", "scope": scope});
+        d.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let doc: GraphDocument = from_json(
+            &json!({
+                "format":"orange.graph","format_version":1,
+                "graph_id":"40000000-0000-4000-8000-000000000001","revision":0,
+                "variables":[d]
+            })
+            .to_string(),
+        )
+        .unwrap();
+        validate_state(
+            &doc,
+            &registry(),
+            &BTreeMap::new(),
+            &Default::default(),
+            &BTreeMap::new(),
+            &BTreeMap::new(),
+        )
+        .iter()
+        .map(|d| d.code)
+        .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        decl("local", json!({"persistent": true})),
+        [DiagnosticCode::VariablePersistent]
+    );
+    assert!(decl("run", json!({"persistent": true})).is_empty());
+    let good = json!({"init": {"type": "core/i64@1", "value": "3"}});
+    assert!(decl("run", good).is_empty());
+    for init in [
+        json!({"type": "core/string@1", "value": "x"}),
+        json!({"type": "core/i64@1", "value": "nope"}),
+    ] {
+        assert_eq!(
+            decl("run", json!({"init": init})),
+            [DiagnosticCode::LiteralType]
+        );
+    }
 }
