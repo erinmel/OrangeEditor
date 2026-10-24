@@ -11,6 +11,53 @@ use std::sync::{
     atomic::{AtomicBool, Ordering},
 };
 use support::*;
+
+#[test]
+fn plan_and_export_debug_are_bounded_metadata_while_values_remain_explicitly_readable() {
+    let (package, snapshot) = catalog();
+    let payload = "PRIVATE_GRAPH_VALUE_".repeat(4096);
+    let selected = json!({"id":id(1),"definition_id":"core/select","definition_version":1,"config_version":1,
+        "config":{},"type_pins":{"T":"core/json@1"},"inputs":{
+            "condition":{"type":"core/bool@1","value":true},
+            "if_true":{"type":"core/json@1","value":serde_json::to_string(&payload).unwrap()},
+            "if_false":{"type":"core/json@1","value":"null"}}});
+    let doc = graph(&package, vec![selected], vec![], vec![export(1, "result")]);
+    let resolver = Counting::new(package);
+    let data = compile(&doc, snapshot.clone(), &resolver);
+    let analysis = analyze(&doc, &snapshot);
+    let pure = compile_pure(
+        &doc,
+        snapshot.clone(),
+        &analysis,
+        &resolver,
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let evaluation = pure
+        .evaluate(
+            &doc,
+            &snapshot,
+            orange_compiler::EvaluationOptions::default(),
+        )
+        .unwrap();
+    let export = evaluation.export(0).unwrap().unwrap();
+    let Value::Json(value) = export.outcome.unwrap() else {
+        panic!("expected JSON")
+    };
+    assert!(value.as_str().contains("PRIVATE_GRAPH_VALUE_"));
+    for debug in [
+        format!("{data:#?}"),
+        format!("{pure:#?}"),
+        format!("{evaluation:#?}"),
+        format!("{export:#?}"),
+    ] {
+        assert!(!debug.contains("PRIVATE_GRAPH_VALUE_"));
+        assert!(
+            debug.len() < 1024,
+            "metadata summary expanded with value size"
+        );
+    }
+}
 #[test]
 fn entropy_is_bound_not_executed_and_constant_islands_fold_once_across_exports() {
     let (package, snapshot) = catalog();

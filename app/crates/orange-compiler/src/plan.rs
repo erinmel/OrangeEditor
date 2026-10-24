@@ -245,11 +245,12 @@ pub struct Export {
 
 /// Checked restricted pure-export plan, with a pinned registry and original source IDs.
 /// It is not approval for control, volatile, function or dynamic epoch execution.
+/// Debug reports metadata/counts without values, registry contents or callbacks.
 ///
 /// ```compile_fail
 /// let plan = orange_compiler::PurePlan::default();
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct PurePlan {
     pub(crate) snapshot: Arc<RegistrySnapshot>,
     pub(crate) graph: GraphId,
@@ -261,6 +262,19 @@ pub struct PurePlan {
     pub(crate) constants: Vec<FoldedValue>,
     pub(crate) exports: Vec<Export>,
     pub(crate) diagnostics: Vec<Diagnostic>,
+}
+impl std::fmt::Debug for PurePlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("PurePlan")
+            .field("graph", &self.graph)
+            .field("revision", &self.revision)
+            .field("registry_generation", &self.snapshot.generation())
+            .field("steps", &self.steps.len())
+            .field("slots", &self.constants.len())
+            .field("exports", &self.exports.len())
+            .field("diagnostics", &self.diagnostics.len())
+            .finish_non_exhaustive()
+    }
 }
 impl PurePlan {
     pub fn snapshot(&self) -> &Arc<RegistrySnapshot> {

@@ -74,11 +74,11 @@ pub struct DataResources {
 
 /// Checked pure/seeded-entropy root exports. No default, public constructor or
 /// deserialization can bypass lowering. This is not a control/function/run plan.
+/// Debug reports metadata/counts without values, registry contents or callbacks.
 ///
 /// ```compile_fail
 /// let plan = orange_compiler::DataPlan::default();
 /// ```
-#[derive(Debug)]
 pub struct DataPlan {
     pub(crate) snapshot: Arc<RegistrySnapshot>,
     pub(crate) graph: GraphId,
@@ -92,6 +92,18 @@ pub struct DataPlan {
     pub(crate) export_nodes: Vec<NodeIx>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) resources: DataResources,
+}
+impl std::fmt::Debug for DataPlan {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("DataPlan")
+            .field("graph", &self.graph)
+            .field("revision", &self.revision)
+            .field("registry_generation", &self.snapshot.generation())
+            .field("resources", &self.resources)
+            .field("exports", &self.exports.len())
+            .field("diagnostics", &self.diagnostics.len())
+            .finish_non_exhaustive()
+    }
 }
 impl DataPlan {
     pub fn snapshot(&self) -> &Arc<RegistrySnapshot> {

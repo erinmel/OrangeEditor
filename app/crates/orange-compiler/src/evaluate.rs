@@ -60,13 +60,29 @@ fn checkpoint(cancel: Option<&AtomicBool>) -> Result<(), EvaluationError> {
 
 /// Borrowed typed result: source identifies the exported port, while a fault retains
 /// its original failing producer. Values remain immutable and owned by the plan.
-#[derive(Debug, Clone, Copy, PartialEq)]
+/// Debug omits the outcome payload; explicit value inspection is host-owned.
+#[derive(Clone, Copy, PartialEq)]
 pub struct EvaluatedExport<'a> {
     pub id: &'a str,
     /// Borrowed type metadata; reading nested options never clones a type tree.
     pub ty: &'a PlanType,
     pub source: &'a SlotSource,
     pub outcome: Result<&'a Value, &'a ConstantFault>,
+}
+impl std::fmt::Debug for EvaluatedExport<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("EvaluatedExport")
+            .field("source", &self.source)
+            .field(
+                "outcome",
+                &if self.outcome.is_ok() {
+                    "value"
+                } else {
+                    "fault"
+                },
+            )
+            .finish_non_exhaustive()
+    }
 }
 
 /// Checked frozen view of pure constants, retaining the plan's pinned registry.
