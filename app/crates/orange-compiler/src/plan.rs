@@ -98,12 +98,15 @@ impl PureStep {
     pub fn node(&self) -> NodeId {
         self.node
     }
+    /// Actual demanded inputs in declaration order; inactive lazy ports are absent.
     pub fn inputs(&self) -> &[InputSource] {
         &self.inputs
     }
     pub fn outputs(&self) -> &[SlotIx] {
         &self.outputs
     }
+    /// Binding specialized to this immutable constant step. Compiler-owned lazy
+    /// projections are not reusable dynamic branch instructions.
     pub fn binding(&self) -> &KernelBinding {
         &self.binding
     }
@@ -115,7 +118,7 @@ pub struct Export {
 }
 
 /// Checked restricted pure-export plan, with a pinned registry and original source IDs.
-/// It is not approval for control, lazy, volatile or function execution.
+/// It is not approval for control, volatile, function or dynamic epoch execution.
 ///
 /// ```compile_fail
 /// let plan = orange_compiler::PurePlan::default();

@@ -1,10 +1,12 @@
 //! Checked immutable plans for root-body pure scalar/JSON exports (E1a).
-//! Control, volatile, lazy, function and scheduled execution remain separate slices.
+//! Constant Select/And/Or demands are supported. Control, volatile, other lazy forms,
+//! function and scheduled execution remain separate slices.
 
 mod compile;
 mod error;
 mod evaluate;
 mod kernel;
+mod lazy;
 mod plan;
 
 pub use compile::{CompileLimits, CompileOptions, compile_pure};

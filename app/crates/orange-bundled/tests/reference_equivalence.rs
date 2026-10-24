@@ -479,6 +479,82 @@ fn floating_converter_nan_bits_ties_loss_and_range_have_known_answers() {
     }
 }
 
+#[test]
+fn lazy_boolean_truth_tables_match_reference_without_package_kernels() {
+    let (package, snapshot) = catalog();
+    for operation in ["core/and", "core/or"] {
+        for a in [false, true] {
+            for b in [false, true] {
+                let node = json!({"id":id(1,1),"definition_id":operation,"definition_version":1,"config_version":1,"config":{},
+            "inputs":{"a":literal(&Value::Bool(a)),"b":literal(&Value::Bool(b))}});
+                let doc = document(
+                    &package,
+                    "core/i64@1",
+                    vec![node],
+                    vec![],
+                    vec![export(0, 1, "result")],
+                );
+                let expected = if operation == "core/and" {
+                    a && b
+                } else {
+                    a || b
+                };
+                assert_eq!(
+                    check(&doc, &package, &snapshot),
+                    [Ok(Value::Bool(expected))]
+                );
+            }
+        }
+    }
+}
+
+fn with_nested_selection(
+    base: &GraphDocument,
+    inner_flag: bool,
+    outer_flag: bool,
+    reverse: bool,
+) -> GraphDocument {
+    let first = base.root().nodes.values().next().unwrap();
+    let last = base.root().nodes.values().last().unwrap();
+    let output_port = |node: &orange_model::document::NodeInstance| {
+        Operation::ALL
+            .into_iter()
+            .find(|op| op.definition_id() == node.definition.id.as_str())
+            .unwrap()
+            .output_port()
+    };
+    let value = first.inputs.values().next().unwrap();
+    let selector = |n, condition| {
+        json!({"id":id(1,n),"definition_id":"core/select","definition_version":1,
+        "config_version":1,"config":{},"type_pins":{"T":value.ty},
+        "inputs":{"condition":literal(&Value::Bool(condition)),"if_true":value,"if_false":value}})
+    };
+    let mut raw: Json = serde_json::from_str(&to_json(base).unwrap()).unwrap();
+    raw["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([selector(1000, inner_flag), selector(1001, outer_flag)]);
+    let wires = [
+        (first.id.to_string(), output_port(first), 1000, "if_true"),
+        (last.id.to_string(), output_port(last), 1000, "if_false"),
+        (id(1, 1000), "result", 1001, "if_true"),
+        (first.id.to_string(), output_port(first), 1001, "if_false"),
+    ];
+    for (i, (source, port, target, input)) in wires.into_iter().enumerate() {
+        raw["edges"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({"id":id(3,1000+i),"from":{"node":source,"port":port},
+            "to":{"node":id(1,target),"port":input}}));
+    }
+    raw["exports"] = json!([export(0, 1001, "result"), export(1, 1000, "result")]);
+    if reverse {
+        raw["nodes"].as_array_mut().unwrap().reverse();
+        raw["edges"].as_array_mut().unwrap().reverse();
+    }
+    from_json(&raw.to_string()).unwrap()
+}
+
 type Recipe = (u8, u64, u64, u8, u8);
 fn dag(
     package: &MathPackage,
@@ -591,5 +667,19 @@ proptest! {
             let reloaded = from_json(&to_json(&doc).unwrap()).unwrap();
             prop_assert_eq!(check(&reloaded,&package,&snapshot),expected);
         }
+    }
+
+    #[test]
+    fn nested_lazy_selects_match_reference_for_numeric_dags(
+        kind in 0_u8..6, mode in 0_u8..3,
+        recipes in prop::collection::vec((any::<u8>(),any::<u64>(),any::<u64>(),any::<u8>(),any::<u8>()),1..17),
+        reverse in any::<bool>(),inner in any::<bool>(),outer in any::<bool>(),
+    ) {
+        let (package,snapshot) = catalog();
+        let base = dag(&package,kind,mode,&recipes,reverse);
+        let doc = with_nested_selection(&base,inner,outer,reverse);
+        let expected = check(&doc,&package,&snapshot);
+        let reloaded = from_json(&to_json(&doc).unwrap()).unwrap();
+        prop_assert_eq!(check(&reloaded,&package,&snapshot),expected);
     }
 }

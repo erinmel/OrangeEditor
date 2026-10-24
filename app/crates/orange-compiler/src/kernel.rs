@@ -24,7 +24,9 @@ pub trait PureKernel: Debug + Send + Sync {
     fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault>;
 }
 
-/// Port order is executable ABI, checked against the fresh signature before folding.
+/// Ordinary executable port order must match the full fresh signature. Compiler-owned
+/// constant lazy steps retain only the demanded port projection, specialized to their
+/// immutable selector. Such a binding is not a general runtime branch instruction.
 #[derive(Debug, Clone)]
 pub struct KernelBinding {
     pub inputs: Box<[PortKey]>,

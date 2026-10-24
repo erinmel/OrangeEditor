@@ -17,6 +17,8 @@ use std::sync::{
 pub struct CompileLimits {
     pub max_graph_items: usize,
     pub max_slots: usize,
+    /// Conservative number of producers in the potential export cone, including
+    /// unselected lazy alternatives, not the number of callbacks actually invoked.
     pub max_fold_operations: usize,
     pub max_constant_bytes: usize,
 }
@@ -138,7 +140,88 @@ fn valid_fault(fault: KernelFault) -> bool {
         && !fault.message.chars().any(char::is_control)
 }
 
-/// Compile eager pure scalar/JSON root exports in persisted export and declared input order.
+type OutputSlots = BTreeMap<(NodeId, PortKey), SlotIx>;
+type Incoming<'a> = BTreeMap<(NodeId, PortKey), &'a orange_model::document::Edge>;
+struct InputContext<'a> {
+    document: &'a GraphDocument,
+    snapshot: &'a RegistrySnapshot,
+    incoming: &'a Incoming<'a>,
+    options: CompileOptions<'a>,
+}
+impl InputContext<'_> {
+    fn source(
+        &self,
+        node: NodeId,
+        port: &PortDescriptor,
+        plan: &mut PurePlan,
+        outputs: &OutputSlots,
+        bytes: &mut usize,
+    ) -> Result<InputSource, CompileError> {
+        self.options.checkpoint()?;
+        let port_key = key(port);
+        let (slot, edge) = if let Some(edge) = self.incoming.get(&(node, port_key.clone())) {
+            let slot = outputs
+                .get(&(edge.from.node, edge.from.port.clone()))
+                .copied()
+                .ok_or(CompileError::ValidationIncomplete)?;
+            (slot, Some(edge.id))
+        } else {
+            let instance = &self.document.root().nodes[&node];
+            let bad = || CompileError::InvalidLiteral {
+                node,
+                port: port_key.clone(),
+            };
+            let literal = instance
+                .inputs
+                .get(&port_key)
+                .or(port.default.as_ref())
+                .ok_or_else(bad)?;
+            let ty = port_type(node, port)?;
+            let value = decode(
+                literal,
+                ty,
+                self.snapshot,
+                self.options
+                    .limits
+                    .max_constant_bytes
+                    .saturating_sub(*bytes),
+            )?
+            .ok_or_else(bad)?;
+            let slot = push_slot(
+                plan,
+                ty,
+                SlotSource {
+                    node,
+                    port: port_key.clone(),
+                },
+                FoldedValue::Value(value),
+                self.options,
+                bytes,
+            )?;
+            (slot, None)
+        };
+        Ok(InputSource {
+            port: port_key,
+            slot,
+            edge,
+        })
+    }
+}
+struct Decision {
+    selector: InputSource,
+    selected: Option<&'static str>,
+}
+enum Work {
+    Enter(NodeId),
+    Choose(NodeId),
+    Finish {
+        node: NodeId,
+        decision: Option<Decision>,
+    },
+}
+
+/// Compile pure scalar/JSON root exports in persisted export and declared input order.
+/// Select/And/Or visit only selected inputs; other supported nodes remain eager.
 /// Semantic analysis must be fresh; no resolver or executable callback runs before this check.
 /// Only reachable pure nodes fold, once each. Errors remain values with producer provenance.
 pub fn compile_pure(
@@ -165,6 +248,7 @@ pub fn compile_pure(
     }
     // Admit all root nodes: no silently omitted side effects or unsupported port semantics.
     let mut ports = 0;
+    let mut lazy_nodes = BTreeMap::new();
     for node in body.nodes.keys() {
         options.checkpoint()?;
         let sig = analysis
@@ -175,10 +259,13 @@ pub fn compile_pure(
         if sig.kind != NodeKind::Pure {
             return Err(CompileError::UnsupportedNode { node: *node });
         }
+        if let Some(kind) = crate::lazy::Lazy::resolve(&body.nodes[node], sig)? {
+            lazy_nodes.insert(*node, kind);
+        }
         charge(&mut ports, sig.ports.len(), options.limits.max_graph_items)?;
         for port in &sig.ports {
             if port.kind != PortKind::Data
-                || port.is_lazy()
+                || (port.is_lazy() && !lazy_nodes.contains_key(node))
                 || port.is_optional()
                 || port.variadic.is_some()
                 || (port.direction == PortDirection::Output
@@ -262,6 +349,11 @@ pub fn compile_pure(
     {
         return Err(CompileError::ResourceLimit);
     }
+    // Potential-cone admission is complete; do not retain its traversal buffers while
+    // building the smaller demanded plan (which may omit entire lazy alternatives).
+    drop(order);
+    drop(active);
+    drop(done);
     let mut plan = PurePlan {
         snapshot: snapshot.clone(),
         graph: document.graph_id(),
@@ -285,26 +377,112 @@ pub fn compile_pure(
     }
     let mut input_values = Vec::new();
     let mut output_values = Vec::new();
-    for node_id in order {
+    let context = InputContext {
+        document,
+        snapshot: &snapshot,
+        incoming: &incoming,
+        options,
+    };
+    let mut completed = BTreeSet::new();
+    let mut work: Vec<_> = document
+        .exports()
+        .iter()
+        .rev()
+        .map(|export| Work::Enter(export.node))
+        .collect();
+    while let Some(task) = work.pop() {
         options.checkpoint()?;
+        let (node_id, decision) = match task {
+            Work::Enter(node) => {
+                if completed.contains(&node) {
+                    continue;
+                }
+                let signature = &analysis.report().resolved[&node];
+                if lazy_nodes.contains_key(&node) {
+                    work.push(Work::Choose(node));
+                    if let Some(edge) = incoming.get(&(node, key(&signature.ports[0]))) {
+                        work.push(Work::Enter(edge.from.node));
+                    }
+                } else {
+                    work.push(Work::Finish {
+                        node,
+                        decision: None,
+                    });
+                    for port in signature
+                        .ports
+                        .iter()
+                        .rev()
+                        .filter(|p| p.direction == PortDirection::Input)
+                    {
+                        if let Some(edge) = incoming.get(&(node, key(port))) {
+                            work.push(Work::Enter(edge.from.node));
+                        }
+                    }
+                }
+                continue;
+            }
+            Work::Choose(node) => {
+                let signature = &analysis.report().resolved[&node];
+                let selector =
+                    context.source(node, &signature.ports[0], &mut plan, &outputs, &mut bytes)?;
+                let selected = match &plan.constants[selector.slot.index()] {
+                    FoldedValue::Fault(_) => None,
+                    FoldedValue::Value(Value::Bool(flag)) => lazy_nodes[&node].selected(*flag),
+                    _ => return Err(CompileError::KernelContract { node }),
+                };
+                work.push(Work::Finish {
+                    node,
+                    decision: Some(Decision { selector, selected }),
+                });
+                if let Some(name) = selected {
+                    let port = signature
+                        .ports
+                        .iter()
+                        .find(|p| p.port_id.as_str() == name)
+                        .ok_or(CompileError::KernelContract { node })?;
+                    if let Some(edge) = incoming.get(&(node, key(port))) {
+                        work.push(Work::Enter(edge.from.node));
+                    }
+                }
+                continue;
+            }
+            Work::Finish { node, decision } => (node, decision),
+        };
         let node = &body.nodes[&node_id];
         let sig = &analysis.report().resolved[&node_id];
         let input_ports: Vec<_> = sig
             .ports
             .iter()
-            .filter(|p| p.direction == PortDirection::Input)
+            .filter(|p| {
+                p.direction == PortDirection::Input
+                    && decision.as_ref().is_none_or(|choice| {
+                        p.port_id.as_str() == choice.selector.port.port().as_str()
+                            || Some(p.port_id.as_str()) == choice.selected
+                    })
+            })
             .collect();
         let output_ports: Vec<_> = sig
             .ports
             .iter()
             .filter(|p| p.direction == PortDirection::Output)
             .collect();
-        let binding = resolver
-            .resolve(document, node, sig, snapshot.clone())
-            .map_err(|error| match error {
-                ResolveError::Unavailable => CompileError::KernelUnavailable { node: node_id },
-                ResolveError::Contract => CompileError::KernelContract { node: node_id },
-            })?;
+        let binding = if let Some(choice) = &decision {
+            crate::lazy::binding(
+                input_ports.iter().map(|p| key(p)).collect(),
+                output_ports.iter().map(|p| key(p)).collect(),
+                matches!(
+                    plan.constants[choice.selector.slot.index()],
+                    FoldedValue::Fault(_)
+                ),
+            )
+        } else {
+            resolver
+                .resolve(document, node, sig, snapshot.clone())
+                .map_err(|error| match error {
+                    ResolveError::Unavailable => CompileError::KernelUnavailable { node: node_id },
+                    ResolveError::Contract => CompileError::KernelContract { node: node_id },
+                })?
+        };
         if !binding
             .inputs
             .iter()
@@ -320,51 +498,13 @@ pub fn compile_pure(
         }
         let mut inputs = Vec::new();
         for port in input_ports {
-            options.checkpoint()?;
-            let port_key = key(port);
-            let (slot, edge) = if let Some(edge) = incoming.get(&(node_id, port_key.clone())) {
-                let slot = outputs
-                    .get(&(edge.from.node, edge.from.port.clone()))
-                    .copied()
-                    .ok_or(CompileError::ValidationIncomplete)?;
-                (slot, Some(edge.id))
+            let prepared = decision
+                .as_ref()
+                .filter(|choice| choice.selector.port.port() == &port.port_id);
+            inputs.push(if let Some(choice) = prepared {
+                choice.selector.clone()
             } else {
-                let literal = node
-                    .inputs
-                    .get(&port_key)
-                    .or(port.default.as_ref())
-                    .ok_or_else(|| CompileError::InvalidLiteral {
-                        node: node_id,
-                        port: port_key.clone(),
-                    })?;
-                let ty = port_type(node_id, port)?;
-                let value = decode(
-                    literal,
-                    ty,
-                    &snapshot,
-                    options.limits.max_constant_bytes.saturating_sub(bytes),
-                )?
-                .ok_or_else(|| CompileError::InvalidLiteral {
-                    node: node_id,
-                    port: port_key.clone(),
-                })?;
-                let slot = push_slot(
-                    &mut plan,
-                    ty,
-                    SlotSource {
-                        node: node_id,
-                        port: port_key.clone(),
-                    },
-                    FoldedValue::Value(value),
-                    options,
-                    &mut bytes,
-                )?;
-                (slot, None)
-            };
-            inputs.push(InputSource {
-                port: port_key,
-                slot,
-                edge,
+                context.source(node_id, port, &mut plan, &outputs, &mut bytes)?
             });
         }
         let inherited = inputs
@@ -437,6 +577,7 @@ pub fn compile_pure(
             outputs: slots.into(),
             binding,
         });
+        completed.insert(node_id);
     }
     for export in document.exports() {
         options.checkpoint()?;

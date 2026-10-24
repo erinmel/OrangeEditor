@@ -64,7 +64,28 @@ impl<'a> Reference<'a> {
             .iter()
             .filter(|p| p.direction == PortDirection::Input)
         {
-            assert!(!input.is_lazy() && input.variadic.is_none());
+            assert!(input.variadic.is_none());
+            if input.is_lazy() {
+                let Some(Value::Bool(deciding)) = inputs.first() else {
+                    panic!("oracle selector type")
+                };
+                let selected = match node.definition.id.as_str() {
+                    "core/select" => {
+                        if *deciding {
+                            "if_true"
+                        } else {
+                            "if_false"
+                        }
+                    }
+                    "core/and" if *deciding => "b",
+                    "core/or" if !*deciding => "b",
+                    "core/and" | "core/or" => continue,
+                    _ => panic!("lazy form outside oracle vocabulary"),
+                };
+                if input.port_id.as_str() != selected {
+                    continue;
+                }
+            }
             let key = PortKey::new(input.port_id.clone(), None);
             let outcome = if let Some(edge) = document
                 .root()
@@ -122,6 +143,24 @@ impl<'a> Reference<'a> {
 }
 
 fn interpret(node: &NodeInstance, inputs: &[Value]) -> Result<Vec<Value>, &'static str> {
+    match node.definition.id.as_str() {
+        "core/select" => {
+            let [Value::Bool(_), value] = inputs else {
+                panic!("oracle select contract")
+            };
+            return Ok(vec![value.clone()]);
+        }
+        "core/and" | "core/or" => {
+            let value = match (node.definition.id.as_str(), inputs) {
+                (_, [Value::Bool(value)]) => *value,
+                ("core/and", [Value::Bool(a), Value::Bool(b)]) => *a && *b,
+                ("core/or", [Value::Bool(a), Value::Bool(b)]) => *a || *b,
+                _ => panic!("oracle short circuit contract"),
+            };
+            return Ok(vec![Value::Bool(value)]);
+        }
+        _ => {}
+    }
     if node.definition.id.as_str() == "core/convert" {
         return conversion(node, inputs);
     }

@@ -17,6 +17,509 @@ use std::sync::{
 #[path = "support/reference.rs"]
 mod reference;
 
+fn select_node(n: u32, condition: bool, ty: &str, if_true: Json, if_false: Json) -> Json {
+    json!({"id":id(n),"definition_id":"core/select","definition_version":1,"config_version":1,
+        "config":{},"type_pins":{"T":ty},"inputs":{"condition":{"type":"core/bool@1","value":condition},
+            "if_true":if_true,"if_false":if_false}})
+}
+fn integer_literal(value: i64) -> Json {
+    json!({"type":"core/i64@1","value":value.to_string()})
+}
+
+#[test]
+fn lazy_select_folds_only_chosen_cone_with_original_fault_or_value() {
+    let (package, snapshot) = catalog();
+    for condition in [true, false] {
+        let select = select_node(
+            3,
+            condition,
+            "core/i64@1",
+            integer_literal(-999),
+            integer_literal(-999),
+        );
+        let doc = graph(
+            &package,
+            vec![select, node(1, "divide", 1, 0), node(2, "add", 20, 22)],
+            vec![
+                edge(1, 2, "sum", 3, "if_true"),
+                edge(2, 1, "quotient", 3, "if_false"),
+            ],
+            vec![export(3, "result")],
+        );
+        let resolver = Counting::new(package.clone());
+        let plan = compile(&doc, snapshot.clone(), &resolver);
+        let actual = plan
+            .evaluate(&doc, &snapshot, EvaluationOptions::default())
+            .unwrap()
+            .export(0)
+            .unwrap()
+            .unwrap();
+        assert_eq!(resolver.resolves.load(Ordering::Relaxed), 1);
+        assert_eq!(resolver.folds.load(Ordering::Relaxed), 1);
+        assert_eq!(plan.steps().len(), 2);
+        assert_eq!(plan.steps()[1].inputs().len(), 2);
+        assert_eq!(
+            plan.steps()[1].inputs()[1].port,
+            if condition { "if_true" } else { "if_false" }
+                .parse()
+                .unwrap()
+        );
+        if condition {
+            assert_eq!(actual.outcome, Ok(&Value::I64(42)));
+            assert!(plan.diagnostics().is_empty());
+        } else {
+            assert_eq!(actual.outcome.unwrap_err().source, id(1).parse().unwrap());
+            assert_eq!(actual.outcome.unwrap_err().fault.code, "core/DivideByZero");
+            assert_eq!(plan.diagnostics().len(), 1);
+        }
+        let analysis = analyze(&doc, &snapshot);
+        let expected = reference::Reference::new(&doc, &snapshot, &analysis).exports();
+        match (&expected[0], actual.outcome) {
+            (Ok(value), Ok(actual)) => assert_eq!(value, actual),
+            (Err(fault), Err(actual)) => assert_eq!(fault.source, actual.source),
+            _ => panic!("oracle selection mismatch"),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct DeliberateFault;
+impl PureKernel for DeliberateFault {
+    fn fold(&self, _: &[Value], _: &mut [Value]) -> Result<(), KernelFault> {
+        Err(KernelFault {
+            code: "core/DeliberateFault",
+            message_key: "core/test-fault",
+            message: "Test kernel failed.",
+        })
+    }
+}
+struct GuardResolver {
+    package: MathPackage,
+    trap: orange_model::id::NodeId,
+    reject: bool,
+    calls: AtomicUsize,
+}
+impl PureKernelResolver for GuardResolver {
+    fn resolve(
+        &self,
+        doc: &GraphDocument,
+        node: &NodeInstance,
+        sig: &SignatureSnapshot,
+        snapshot: Arc<RegistrySnapshot>,
+    ) -> Result<KernelBinding, ResolveError> {
+        self.calls.fetch_add(1, Ordering::Relaxed);
+        if node.id == self.trap && self.reject {
+            return Err(ResolveError::Unavailable);
+        }
+        let mut binding = PureKernelResolver::resolve(&self.package, doc, node, sig, snapshot)?;
+        if node.id == self.trap {
+            binding.kernel = Arc::new(DeliberateFault);
+        }
+        Ok(binding)
+    }
+}
+fn not_node(n: u32, value: bool) -> Json {
+    json!({"id":id(n),"definition_id":"org.orange.math/not","definition_version":1,"config_version":1,
+        "config":{},"signature":"not","provider":{"package":"org.orange.math","version":"0.0.0","id":"native-v1"},
+        "inputs":{"value":{"type":"core/bool@1","value":value}}})
+}
+
+#[test]
+fn unselected_backend_is_not_resolved_and_selector_fault_skips_both_arms() {
+    let (package, snapshot) = catalog();
+    for condition in [true, false] {
+        let doc = graph(
+            &package,
+            vec![
+                node(1, "divide", 1, 0),
+                node(2, "add", 20, 22),
+                select_node(
+                    3,
+                    condition,
+                    "core/i64@1",
+                    integer_literal(0),
+                    integer_literal(0),
+                ),
+            ],
+            vec![
+                edge(1, 2, "sum", 3, "if_true"),
+                edge(2, 1, "quotient", 3, "if_false"),
+            ],
+            vec![export(3, "result")],
+        );
+        let resolver = GuardResolver {
+            package: package.clone(),
+            trap: id(1).parse().unwrap(),
+            reject: true,
+            calls: AtomicUsize::new(0),
+        };
+        let analysis = analyze(&doc, &snapshot);
+        let result = compile_pure(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &resolver,
+            CompileOptions::default(),
+        );
+        if condition {
+            assert!(result.is_ok());
+        } else {
+            assert!(matches!(
+                result,
+                Err(CompileError::KernelUnavailable { .. })
+            ));
+        }
+        assert_eq!(resolver.calls.load(Ordering::Relaxed), 1);
+    }
+    let doc = graph(
+        &package,
+        vec![
+            not_node(1, true),
+            node(2, "add", 20, 22),
+            node(3, "divide", 1, 0),
+            select_node(
+                4,
+                true,
+                "core/i64@1",
+                integer_literal(0),
+                integer_literal(0),
+            ),
+        ],
+        vec![
+            edge(1, 1, "result", 4, "condition"),
+            edge(2, 2, "sum", 4, "if_true"),
+            edge(3, 3, "quotient", 4, "if_false"),
+        ],
+        vec![export(4, "result")],
+    );
+    let resolver = GuardResolver {
+        package,
+        trap: id(1).parse().unwrap(),
+        reject: false,
+        calls: AtomicUsize::new(0),
+    };
+    let plan = compile(&doc, snapshot.clone(), &resolver);
+    assert_eq!(resolver.calls.load(Ordering::Relaxed), 1);
+    assert_eq!(plan.steps().len(), 2);
+    assert_eq!(plan.steps()[1].inputs().len(), 1);
+    let evaluation = plan
+        .evaluate(&doc, &snapshot, EvaluationOptions::default())
+        .unwrap();
+    let fault = evaluation.export(0).unwrap().unwrap().outcome.unwrap_err();
+    assert_eq!(fault.source, id(1).parse().unwrap());
+    assert_eq!(fault.fault.code, "core/DeliberateFault");
+    assert_eq!(plan.diagnostics().len(), 1);
+}
+
+#[test]
+fn and_or_short_circuit_without_resolving_faulty_right_hand_side() {
+    let (package, snapshot) = catalog();
+    for (intrinsic, short_value) in [("core/and", false), ("core/or", true)] {
+        for short in [true, false] {
+            let left = if short { short_value } else { !short_value };
+            let logic = json!({"id":id(2),"definition_id":intrinsic,"definition_version":1,"config_version":1,
+                "config":{},"inputs":{"a":{"type":"core/bool@1","value":left}}});
+            let doc = graph(
+                &package,
+                vec![logic, not_node(1, true)],
+                vec![edge(1, 1, "result", 2, "b")],
+                vec![export(2, "result")],
+            );
+            let resolver = GuardResolver {
+                package: package.clone(),
+                trap: id(1).parse().unwrap(),
+                reject: false,
+                calls: AtomicUsize::new(0),
+            };
+            let plan = compile(&doc, snapshot.clone(), &resolver);
+            let evaluation = plan
+                .evaluate(&doc, &snapshot, EvaluationOptions::default())
+                .unwrap();
+            let outcome = evaluation.export(0).unwrap().unwrap().outcome;
+            if short {
+                assert_eq!(outcome, Ok(&Value::Bool(short_value)));
+                assert!(plan.diagnostics().is_empty());
+            } else {
+                assert_eq!(outcome.unwrap_err().source, id(1).parse().unwrap());
+            }
+            assert_eq!(resolver.calls.load(Ordering::Relaxed), usize::from(!short));
+        }
+    }
+}
+
+#[test]
+fn unselected_json_literal_does_not_consume_decode_or_constant_budget() {
+    let (package, snapshot) = catalog();
+    for selected_small in [true, false] {
+        let large = json!({"type":"core/json@1","value":json!({"padding":"x".repeat(100_000)}).to_string()});
+        let small = json!({"type":"core/json@1","value":"{}"});
+        let doc = graph(
+            &package,
+            vec![select_node(1, selected_small, "core/json@1", small, large)],
+            vec![],
+            vec![export(1, "result")],
+        );
+        let analysis = analyze(&doc, &snapshot);
+        assert!(
+            analysis.is_ready_for_lowering(&doc, &snapshot),
+            "{:?}",
+            analysis.report().diagnostics
+        );
+        let mut options = CompileOptions::default();
+        options.limits.max_constant_bytes = 96;
+        let result = compile_pure(&doc, snapshot.clone(), &analysis, &package, options);
+        if selected_small {
+            let plan = result.unwrap();
+            let evaluation = plan
+                .evaluate(&doc, &snapshot, EvaluationOptions::default())
+                .unwrap();
+            assert!(
+                matches!(evaluation.export(0).unwrap().unwrap().outcome,Ok(Value::Json(text)) if text.as_str() == "{}")
+            );
+            assert_eq!(plan.constants().len(), 3); // selector, chosen literal, result
+        } else {
+            assert!(matches!(result, Err(CompileError::ResourceLimit)));
+        }
+    }
+}
+
+#[test]
+fn nested_lazy_selections_share_values_and_remain_iterative_at_depth() {
+    let (package, snapshot) = catalog();
+    let mut nodes = vec![node(1, "add", 7, 8)];
+    let mut edges = Vec::new();
+    for n in 2..=513 {
+        nodes.push(select_node(
+            n,
+            true,
+            "core/i64@1",
+            integer_literal(0),
+            integer_literal(-1),
+        ));
+        edges.push(edge(
+            n,
+            n - 1,
+            if n == 2 { "sum" } else { "result" },
+            n,
+            "if_true",
+        ));
+    }
+    nodes.reverse();
+    edges.reverse();
+    let doc = graph(
+        &package,
+        nodes,
+        edges,
+        vec![export(513, "result"), export(256, "result")],
+    );
+    let resolver = Counting::new(package);
+    let plan = compile(&doc, snapshot.clone(), &resolver);
+    assert_eq!(plan.steps().len(), 513);
+    assert_eq!(resolver.folds.load(Ordering::Relaxed), 1);
+    let evaluation = plan
+        .evaluate(&doc, &snapshot, EvaluationOptions::default())
+        .unwrap();
+    for export in evaluation.exports() {
+        assert_eq!(export.unwrap().outcome, Ok(&Value::I64(15)));
+    }
+}
+
+#[test]
+fn an_unselected_cone_still_folds_when_requested_by_another_export() {
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![
+            node(1, "divide", 1, 0),
+            node(2, "add", 20, 22),
+            select_node(
+                3,
+                true,
+                "core/i64@1",
+                integer_literal(0),
+                integer_literal(0),
+            ),
+        ],
+        vec![
+            edge(1, 2, "sum", 3, "if_true"),
+            edge(2, 1, "quotient", 3, "if_false"),
+        ],
+        vec![export(3, "result"), export(1, "quotient")],
+    );
+    let resolver = Counting::new(package);
+    let plan = compile(&doc, snapshot.clone(), &resolver);
+    let evaluation = plan
+        .evaluate(&doc, &snapshot, EvaluationOptions::default())
+        .unwrap();
+    assert_eq!(
+        evaluation.export(0).unwrap().unwrap().outcome,
+        Ok(&Value::I64(42))
+    );
+    assert_eq!(
+        evaluation
+            .export(1)
+            .unwrap()
+            .unwrap()
+            .outcome
+            .unwrap_err()
+            .source,
+        id(1).parse().unwrap()
+    );
+    assert_eq!(resolver.folds.load(Ordering::Relaxed), 2);
+    assert_eq!(plan.diagnostics().len(), 1);
+}
+
+#[test]
+fn lazy_preflight_and_unsupported_forms_fail_before_external_resolution() {
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![
+            node(1, "divide", 1, 0),
+            node(2, "add", 20, 22),
+            select_node(
+                3,
+                true,
+                "core/i64@1",
+                integer_literal(0),
+                integer_literal(0),
+            ),
+        ],
+        vec![
+            edge(1, 2, "sum", 3, "if_true"),
+            edge(2, 1, "quotient", 3, "if_false"),
+        ],
+        vec![export(3, "result")],
+    );
+    let analysis = analyze(&doc, &snapshot);
+    let resolver = Counting::new(package.clone());
+    let mut options = CompileOptions::default();
+    options.limits.max_fold_operations = 2;
+    // Admission is conservative over the whole potential cone, not only chosen work.
+    assert!(matches!(
+        compile_pure(&doc, snapshot.clone(), &analysis, &resolver, options),
+        Err(CompileError::ResourceLimit)
+    ));
+    let cancel = AtomicBool::new(true);
+    assert!(matches!(
+        compile_pure(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &resolver,
+            CompileOptions {
+                cancel: Some(&cancel),
+                ..Default::default()
+            }
+        ),
+        Err(CompileError::Cancelled)
+    ));
+    assert_eq!(resolver.resolves.load(Ordering::Relaxed), 0);
+    let unimplemented = json!({"id":id(1),"definition_id":"core/try","definition_version":1,"config_version":1,
+        "config":{},"type_pins":{"T":"core/i64@1"},"inputs":{"value":integer_literal(1)}});
+    let doc = graph(&package, vec![unimplemented], vec![], vec![]);
+    let analysis = analyze(&doc, &snapshot);
+    assert!(
+        analysis.is_ready_for_lowering(&doc, &snapshot),
+        "{:?}",
+        analysis.report().diagnostics
+    );
+    assert!(matches!(
+        compile_pure(
+            &doc,
+            snapshot,
+            &analysis,
+            &resolver,
+            CompileOptions::default()
+        ),
+        Err(CompileError::UnsupportedPort { .. })
+    ));
+    assert_eq!(resolver.resolves.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn cancellation_after_selector_stops_before_arm_resolution() {
+    #[derive(Debug)]
+    struct CancelAfter {
+        inner: Arc<dyn PureKernel>,
+        signal: Arc<AtomicBool>,
+    }
+    impl PureKernel for CancelAfter {
+        fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
+            let result = self.inner.fold(inputs, outputs);
+            self.signal.store(true, Ordering::Relaxed);
+            result
+        }
+    }
+    struct Resolver {
+        package: MathPackage,
+        signal: Arc<AtomicBool>,
+        calls: AtomicUsize,
+    }
+    impl PureKernelResolver for Resolver {
+        fn resolve(
+            &self,
+            doc: &GraphDocument,
+            node: &NodeInstance,
+            sig: &SignatureSnapshot,
+            snapshot: Arc<RegistrySnapshot>,
+        ) -> Result<KernelBinding, ResolveError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            let mut binding = PureKernelResolver::resolve(&self.package, doc, node, sig, snapshot)?;
+            if node.id == id(1).parse().unwrap() {
+                binding.kernel = Arc::new(CancelAfter {
+                    inner: binding.kernel,
+                    signal: self.signal.clone(),
+                });
+            }
+            Ok(binding)
+        }
+    }
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![
+            not_node(1, true),
+            node(2, "add", 20, 22),
+            node(3, "divide", 1, 0),
+            select_node(
+                4,
+                true,
+                "core/i64@1",
+                integer_literal(0),
+                integer_literal(0),
+            ),
+        ],
+        vec![
+            edge(1, 1, "result", 4, "condition"),
+            edge(2, 2, "sum", 4, "if_true"),
+            edge(3, 3, "quotient", 4, "if_false"),
+        ],
+        vec![export(4, "result")],
+    );
+    let analysis = analyze(&doc, &snapshot);
+    let signal = Arc::new(AtomicBool::new(false));
+    let resolver = Resolver {
+        package,
+        signal: signal.clone(),
+        calls: AtomicUsize::new(0),
+    };
+    assert!(matches!(
+        compile_pure(
+            &doc,
+            snapshot,
+            &analysis,
+            &resolver,
+            CompileOptions {
+                cancel: Some(&signal),
+                ..Default::default()
+            }
+        ),
+        Err(CompileError::Cancelled)
+    ));
+    assert_eq!(resolver.calls.load(Ordering::Relaxed), 1);
+}
+
 #[test]
 fn checked_evaluation_is_borrowed_pinned_and_does_not_reexecute_kernels() {
     let (package, snapshot) = catalog();
