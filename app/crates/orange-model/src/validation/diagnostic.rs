@@ -126,6 +126,12 @@ pub enum DiagnosticCode {
     CycleSyncControl,
     #[serde(rename = "E-LOOP-UNBOUNDED")]
     LoopUnbounded,
+    #[serde(rename = "E-ZONE-STRUCTURE")]
+    ZoneStructure,
+    #[serde(rename = "E-SWITCH-CASE")]
+    SwitchCase,
+    #[serde(rename = "E-FOR-EACH-MODE")]
+    ForEachMode,
     #[serde(rename = "W-BUSY-LOOP")]
     BusyLoop,
     #[serde(rename = "W-UNREACHABLE")]
@@ -218,6 +224,9 @@ impl DiagnosticCode {
             Self::BreakOutsideLoop => "E-BREAK-OUTSIDE-LOOP",
             Self::CycleSyncControl => "E-CYCLE-SYNC-CONTROL",
             Self::LoopUnbounded => "E-LOOP-UNBOUNDED",
+            Self::ZoneStructure => "E-ZONE-STRUCTURE",
+            Self::SwitchCase => "E-SWITCH-CASE",
+            Self::ForEachMode => "E-FOR-EACH-MODE",
             Self::BusyLoop => "W-BUSY-LOOP",
             Self::Unreachable => "W-UNREACHABLE",
             Self::WriteConflict => "E-WRITE-CONFLICT",
@@ -295,6 +304,9 @@ impl DiagnosticCode {
             Self::BreakOutsideLoop => "core/graph-break-outside-loop",
             Self::CycleSyncControl => "core/graph-cycle-sync-control",
             Self::LoopUnbounded => "core/graph-loop-unbounded",
+            Self::ZoneStructure => "core/graph-zone-structure",
+            Self::SwitchCase => "core/graph-switch-case",
+            Self::ForEachMode => "core/graph-for-each-mode",
             Self::BusyLoop => "core/graph-busy-loop",
             Self::Unreachable => "core/graph-unreachable",
             Self::WriteConflict => "core/graph-write-conflict",
@@ -415,6 +427,14 @@ impl DiagnosticCode {
             }
             Self::CycleSyncControl => "A control cycle needs a node that always suspends.".into(),
             Self::LoopUnbounded => "A while loop requires a finite positive max_iterations.".into(),
+            Self::ZoneStructure => {
+                "A zone needs a matching begin and end, a pure body and no values leaving it except through the end."
+                    .into()
+            }
+            Self::SwitchCase => {
+                "Switch cases need distinct values of the key's kind.".into()
+            }
+            Self::ForEachMode => "For each mode must be list or map.".into(),
             Self::BusyLoop => "This control cycle only yields and keeps the CPU busy.".into(),
             Self::Unreachable => {
                 "Execution node is not reachable from any entry or region root.".into()

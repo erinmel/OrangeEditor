@@ -76,6 +76,8 @@ pub enum Ports {
     Variable(VariableAccess),
     /// Event-derived ports: `payload` is typed by the referenced event declaration.
     Event(EventAccess),
+    /// `core/for-each`: the element ports follow `config.mode` (`list` or `map`, 11 §8.4).
+    ForEach,
 }
 
 /// One registered node definition version.
@@ -141,6 +143,8 @@ pub enum ContractError {
     TypeComplexity,
     #[error("the referenced event is missing or not declared")]
     EventUnknown,
+    #[error("for-each mode is not `list` or `map`")]
+    ForEachMode,
     #[error("converter config is malformed or uses an unsupported version")]
     ConverterConfig,
     #[error("converter entry is unavailable")]

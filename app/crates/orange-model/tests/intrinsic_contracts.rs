@@ -11,13 +11,22 @@ const NODE: &str = "10000000-0000-4000-8000-000000000001";
 /// Resolves one `definition` node (with optional type pins and variadic state) against the
 /// core registry, asserting it is accepted without diagnostics.
 fn resolve(definition: &str, pins: Value, variadic: Value) -> SignatureSnapshot {
+    resolve_config(definition, json!({}), pins, variadic)
+}
+
+fn resolve_config(
+    definition: &str,
+    config: Value,
+    pins: Value,
+    variadic: Value,
+) -> SignatureSnapshot {
     let doc: GraphDocument = serde_json::from_value(json!({
         "format_version": 1,
         "graph_id": "20000000-0000-4000-8000-000000000001",
         "revision": 0,
         "nodes": [{
             "id": NODE, "definition_id": definition, "definition_version": 1,
-            "config_version": 1, "config": {}, "type_pins": pins, "variadic": variadic
+            "config_version": 1, "config": config, "type_pins": pins, "variadic": variadic
         }],
         "edges": [],
         "signatures": {}
@@ -67,6 +76,76 @@ fn switch_has_case_outcomes_and_a_default_in_the_parent_region() {
     assert_eq!(exec_out(&signature), ["case", "default"]);
     let case = &signature.ports[2];
     assert_eq!(case.variadic.map(|range| range.min), Some(1));
+}
+
+#[test]
+fn for_each_ports_follow_the_selected_mode() {
+    let list = resolve_config(
+        "core/for-each",
+        json!({}),
+        json!({"T": "core/string@1"}),
+        json!({}),
+    );
+    assert_eq!(list.kind, NodeKind::Iterator);
+    assert_eq!(output(&list, "element").1, Some(OutputSource::Iteration));
+    assert_eq!(output(&list, "index").0, "core/i64@1");
+    assert!(list.ports.iter().all(|port| port.port_id.as_str() != "key"));
+
+    let map = resolve_config(
+        "core/for-each",
+        json!({"mode": "map"}),
+        json!({"K": "core/string@1", "V": "core/i64@1"}),
+        json!({}),
+    );
+    assert_eq!(output(&map, "key").0, "core/string@1");
+    assert_eq!(output(&map, "value").0, "core/i64@1");
+    assert!(
+        map.ports
+            .iter()
+            .all(|port| port.port_id.as_str() != "element")
+    );
+}
+
+#[test]
+fn an_unknown_for_each_mode_is_rejected() {
+    let doc: GraphDocument = serde_json::from_value(json!({
+        "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-000000000001",
+        "revision": 0,
+        "nodes": [{"id": NODE, "definition_id": "core/for-each", "definition_version": 1,
+            "config_version": 1, "config": {"mode": "set"}}],
+        "edges": [],
+        "signatures": {}
+    }))
+    .unwrap();
+    let origin = HostOrigin::new("0.1.0", format!("sha256:{}", "b".repeat(64))).unwrap();
+    let report = validate_nodes(&doc, &RegistrySnapshot::core(origin));
+    let codes: Vec<_> = report.diagnostics.iter().map(|item| item.code).collect();
+    assert_eq!(
+        codes,
+        [orange_model::validation::DiagnosticCode::ForEachMode]
+    );
+}
+
+#[test]
+fn zone_pairs_are_pure_with_no_exec_ports() {
+    for (definition, pins) in [
+        ("core/repeat-begin", json!({"A": "core/i64@1"})),
+        ("core/repeat-end", json!({"A": "core/i64@1"})),
+        ("core/map-begin", json!({"T": "core/i64@1"})),
+        ("core/map-end", json!({"U": "core/i64@1"})),
+        (
+            "core/fold-begin",
+            json!({"T": "core/i64@1", "A": "core/f64@1"}),
+        ),
+        ("core/fold-end", json!({"A": "core/f64@1"})),
+        ("core/filter-begin", json!({"T": "core/i64@1"})),
+        ("core/filter-end", json!({"T": "core/i64@1"})),
+    ] {
+        let signature = resolve(definition, pins, json!({}));
+        assert_eq!(signature.kind, NodeKind::Pure, "{definition}");
+        assert!(exec_in(&signature).is_empty() && exec_out(&signature).is_empty());
+    }
 }
 
 #[test]

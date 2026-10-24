@@ -344,6 +344,7 @@ pub(crate) fn contract_code(error: ContractError) -> DiagnosticCode {
         ContractError::UpdateConstraint => DiagnosticCode::ConstraintUnsatisfied,
         ContractError::TypeMismatch => DiagnosticCode::TypeMismatch,
         ContractError::TypeComplexity => DiagnosticCode::TypeComplexity,
+        ContractError::ForEachMode => DiagnosticCode::ForEachMode,
         ContractError::ConverterConfig => DiagnosticCode::ConverterConfig,
         ContractError::ConverterEntry => DiagnosticCode::ConverterEntry,
         ContractError::ConverterOptions => DiagnosticCode::ConverterOptions,

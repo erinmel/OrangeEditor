@@ -183,14 +183,14 @@ const INTRINSICS: [Intrinsic; 41] = [
     rule("core/coalesce", PURE, None),
     rule("core/try", PURE, None),
     rule("core/match-result", ACTION, None),
-    rule("core/repeat-begin", None, None),
-    rule("core/repeat-end", None, None),
-    rule("core/map-begin", None, None),
-    rule("core/map-end", None, None),
-    rule("core/fold-begin", None, None),
-    rule("core/fold-end", None, None),
-    rule("core/filter-begin", None, None),
-    rule("core/filter-end", None, None),
+    rule("core/repeat-begin", PURE, None),
+    rule("core/repeat-end", PURE, None),
+    rule("core/map-begin", PURE, None),
+    rule("core/map-end", PURE, None),
+    rule("core/fold-begin", PURE, None),
+    rule("core/fold-end", PURE, None),
+    rule("core/filter-begin", PURE, None),
+    rule("core/filter-end", PURE, None),
 ];
 
 /// The intrinsic with this exact ID. Intrinsic status comes from this table, never from the
@@ -276,7 +276,9 @@ mod tests {
             );
             let variable_access = match definition.ports {
                 crate::catalog::Ports::Variable(access) => Some(access),
-                crate::catalog::Ports::Declared(_) | crate::catalog::Ports::Event(_) => None,
+                crate::catalog::Ports::Declared(_)
+                | crate::catalog::Ports::Event(_)
+                | crate::catalog::Ports::ForEach => None,
             };
             assert_eq!(rule.variable_access, variable_access, "{id}");
             let event_access = match definition.ports {

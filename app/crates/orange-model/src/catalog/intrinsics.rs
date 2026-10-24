@@ -2,8 +2,10 @@
 //! fixed facts are in `language`.
 
 use super::language::intrinsic_reference;
-use super::{EventAccess, NodeDefinition, Ports, VariableAccess};
-use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, Suspends, TypeParam};
+use super::{ContractError, EventAccess, NodeContract, NodeDefinition, Ports, VariableAccess};
+use crate::document::{
+    DefinitionRef, NodeInstance, NodeKind, OutputSource, PortDescriptor, Suspends, TypeParam,
+};
 use crate::id::TypeExpr;
 
 fn ty(text: &str) -> TypeExpr {
@@ -75,7 +77,141 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     definitions.extend(register_definitions());
     definitions.extend(result_definitions());
     definitions.extend(lazy_pure_definitions());
+    definitions.push(NodeDefinition {
+        ports: Ports::ForEach,
+        ..definition(
+            "core/for-each",
+            NodeKind::Iterator,
+            Some(Suspends::Maybe),
+            Vec::new(),
+        )
+    });
+    definitions.extend(zone_definitions());
     definitions
+}
+
+/// `core/for-each` ports for its `config.mode` (11 §8.4): `list` (default) iterates
+/// `element`, `map` iterates `key` and `value`. Only the type parameters the mode uses exist.
+pub(crate) fn for_each_contract(
+    definition: &NodeDefinition,
+    node: &NodeInstance,
+) -> Result<NodeContract, ContractError> {
+    let param = |name: &str, constraints: &[&str]| TypeParam {
+        name: name.into(),
+        constraints: constraints.iter().map(|text| (*text).to_owned()).collect(),
+        extensions: Default::default(),
+    };
+    let iteration = |id, text| PortDescriptor::data_out(id, ty(text), OutputSource::Iteration);
+    let mode = match node.config.get("mode") {
+        None => "list",
+        Some(value) => value.as_str().ok_or(ContractError::ForEachMode)?,
+    };
+    let (type_params, items, mut element) = match mode {
+        "list" => (
+            vec![param("T", &[])],
+            "core/list@1<$T>",
+            vec![iteration("element", "$T")],
+        ),
+        "map" => (
+            vec![param("K", &["hash", "eq"]), param("V", &[])],
+            "core/map@1<$K,$V>",
+            vec![iteration("key", "$K"), iteration("value", "$V")],
+        ),
+        _ => return Err(ContractError::ForEachMode),
+    };
+    let mut ports = vec![
+        PortDescriptor::exec_in("in"),
+        PortDescriptor::data_in("items", ty(items)),
+        PortDescriptor::exec_out("body"),
+        PortDescriptor::exec_out("completed"),
+        iteration("index", "core/i64@1"),
+    ];
+    ports.append(&mut element);
+    Ok(NodeContract {
+        kind: definition.kind,
+        suspends: definition.suspends,
+        type_params,
+        ports,
+    })
+}
+
+/// Zone begin/end pairs (11 §8.4): pure nodes with no exec ports; the pair carries the items.
+fn zone_definitions() -> Vec<NodeDefinition> {
+    let iteration = |id, text| PortDescriptor::data_out(id, ty(text), OutputSource::Iteration);
+    let computed = |id, text| PortDescriptor::data_out(id, ty(text), OutputSource::Computed);
+    let input = |id, text| PortDescriptor::data_in(id, ty(text));
+    let pure = |id, ports, params: &[&str]| {
+        params
+            .iter()
+            .fold(definition(id, NodeKind::Pure, None, ports), |node, name| {
+                generic(node, name, &[])
+            })
+    };
+    vec![
+        pure(
+            "core/repeat-begin",
+            vec![
+                input("count", "core/i64@1"),
+                input("initial", "$A"),
+                iteration("index", "core/i64@1"),
+                iteration("carried", "$A"),
+            ],
+            &["A"],
+        ),
+        pure(
+            "core/repeat-end",
+            vec![input("next", "$A"), computed("result", "$A")],
+            &["A"],
+        ),
+        pure(
+            "core/map-begin",
+            vec![
+                input("items", "core/list@1<$T>"),
+                iteration("element", "$T"),
+                iteration("index", "core/i64@1"),
+            ],
+            &["T"],
+        ),
+        pure(
+            "core/map-end",
+            vec![input("item", "$U"), computed("result", "core/list@1<$U>")],
+            &["U"],
+        ),
+        pure(
+            "core/fold-begin",
+            vec![
+                input("items", "core/list@1<$T>"),
+                input("initial", "$A"),
+                iteration("element", "$T"),
+                iteration("index", "core/i64@1"),
+                iteration("accumulator", "$A"),
+            ],
+            &["T", "A"],
+        ),
+        pure(
+            "core/fold-end",
+            vec![input("next", "$A"), computed("result", "$A")],
+            &["A"],
+        ),
+        pure(
+            "core/filter-begin",
+            vec![
+                input("items", "core/list@1<$T>"),
+                iteration("element", "$T"),
+                iteration("index", "core/i64@1"),
+            ],
+            &["T"],
+        ),
+        pure(
+            "core/filter-end",
+            vec![
+                input("keep", "core/bool@1"),
+                input("item", "$T"),
+                computed("result", "core/list@1<$T>"),
+            ],
+            &["T"],
+        ),
+    ]
 }
 
 /// `select`, `and`, `or` and `coalesce` (11 §8.4): pure nodes whose lazy inputs are evaluated

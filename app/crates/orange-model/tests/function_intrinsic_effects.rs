@@ -439,7 +439,7 @@ fn provider_bound_core_wait_cannot_fall_back_to_host_intrinsic() {
 }
 
 #[test]
-fn unsupported_reserved_pure_zone_metadata_stays_incomplete() {
+fn a_registered_pure_zone_summarizes_like_any_pure_node() {
     let zone = node(
         "20000000-0000-4000-8000-000000000007",
         "core/repeat-begin",
@@ -448,14 +448,10 @@ fn unsupported_reserved_pure_zone_metadata_stays_incomplete() {
     let doc = document(json!([]), json!([function(CALLER, "pure", json!([zone]))]));
     let report = analyze(&doc);
     let function: FunctionId = CALLER.parse().unwrap();
-    let zone_id: NodeId = "20000000-0000-4000-8000-000000000007".parse().unwrap();
 
-    assert!(report.incomplete_functions.contains(&function));
-    assert!(!report.summaries.contains_key(&function));
-    assert_eq!(
-        diagnostic_subjects(&report, DiagnosticCode::FunctionMetadataUnavailable),
-        vec![zone_id]
-    );
+    assert!(!report.incomplete_functions.contains(&function));
+    assert!(report.summaries.contains_key(&function));
+    assert!(diagnostic_subjects(&report, DiagnosticCode::FunctionMetadataUnavailable).is_empty());
 }
 
 #[test]
