@@ -444,3 +444,64 @@ fn local_persistence_and_initializer_agreement_are_declaration_errors() {
         );
     }
 }
+
+fn register_codes(ty: &str, config: Value) -> Vec<DiagnosticCode> {
+    let mut register = node(
+        2,
+        "core/register",
+        config,
+        vec![PortDescriptor::exec_in("store")],
+    );
+    register.json["type_args"] = json!({"T": ty});
+    let doc: GraphDocument = from_json(
+        &json!({
+            "format":"orange.graph","format_version":1,
+            "graph_id":"40000000-0000-4000-8000-000000000001","revision":0,
+            "nodes":[register.json]
+        })
+        .to_string(),
+    )
+    .unwrap();
+    validate_state(
+        &doc,
+        &registry(),
+        &BTreeMap::new(),
+        &Default::default(),
+        &BTreeMap::new(),
+        &BTreeMap::new(),
+    )
+    .iter()
+    .map(|d| d.code)
+    .collect()
+}
+
+#[test]
+fn register_stream_scope_and_initial_rules() {
+    let i64_ty = "core/i64@1";
+    assert!(register_codes(i64_ty, json!({})).is_empty());
+    assert!(
+        register_codes(
+            i64_ty,
+            json!({"scope":"activation","initial":{"type":i64_ty,"value":"1"}})
+        )
+        .is_empty()
+    );
+    assert_eq!(
+        register_codes(i64_ty, json!({"scope":"workspace"})),
+        [DiagnosticCode::RegisterConfig]
+    );
+    for initial in [
+        json!({"type":"core/string@1","value":"x"}),
+        json!({"type":i64_ty,"value":"nope"}),
+        json!(7),
+    ] {
+        assert_eq!(
+            register_codes(i64_ty, json!({"initial": initial})),
+            [DiagnosticCode::RegisterConfig]
+        );
+    }
+    assert_eq!(
+        register_codes("core/stream@1<core/i64@1>", json!({})),
+        [DiagnosticCode::StreamStore]
+    );
+}

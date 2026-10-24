@@ -63,6 +63,7 @@ const COVERED_CHECKS: &[ValidationCheck] = &[
     ValidationCheck::DataCycles,
     ValidationCheck::ControlCycles,
     ValidationCheck::ValueAvailability,
+    ValidationCheck::StreamRules,
 ];
 
 const DOMAIN_ONLY_CHECKS: &[ValidationCheck] = &[ValidationCheck::BodyDomains];

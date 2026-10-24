@@ -53,6 +53,7 @@ pub fn validate_state(
 
     let mut diagnostics = validate_declarations(document, registry);
     for (body_ref, body) in document.bodies_with_refs() {
+        validate_registers(body_ref, body, registry, &mut diagnostics);
         for node in body.nodes.values() {
             if node
                 .activation
@@ -119,6 +120,76 @@ pub fn validate_state(
     }
     sort_diagnostics(&mut diagnostics);
     diagnostics
+}
+
+/// Register rules (11 §8.4, §12): the cell type may not contain a stream (`E-STREAM-STORE`);
+/// `scope` is absent, `run` or `activation`; `initial`, when present, is a literal of the cell
+/// type that decodes with the ordinary codec and is no handle or stream
+/// (`E-REGISTER-CONFIG`, `E-HANDLE-LITERAL`). Two branches reaching one register are already
+/// `E-REGION-AMBIGUOUS`, so no write-conflict rule is needed.
+fn validate_registers(
+    body_ref: BodyRef,
+    body: &crate::document::GraphBody,
+    registry: &RegistrySnapshot,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let (origin, types) = (registry.origin(), registry.types().as_ref());
+    for node in body.nodes.values() {
+        if node.definition.id.as_str() != "core/register"
+            || node.provider.is_some()
+            || node.definition.version != 1
+            || node.config_version != 1
+        {
+            continue;
+        }
+        let mut subject = Subject::new(Some(node.id), None, None);
+        if let BodyRef::Function(function) = body_ref {
+            subject = subject.with_function(function);
+        }
+        let mut emit = |code| diagnostics.push(Diagnostic::new(code, subject.clone(), origin));
+        let cell = node
+            .type_args
+            .values()
+            .next()
+            .and_then(|ty| TypeTerm::parse(ty).ok().map(|term| (ty, term)));
+        let mut resource = false;
+        if let Some((_, term)) = &cell {
+            let mut stack = vec![term];
+            while let Some(current) = stack.pop() {
+                if current.core("stream").is_some() {
+                    emit(DiagnosticCode::StreamStore);
+                    resource = true;
+                    break;
+                }
+                resource |= current.core("handle").is_some();
+                if let TypeTerm::Named(named) = current {
+                    stack.extend(&named.args);
+                }
+            }
+        }
+        if node
+            .config
+            .get("scope")
+            .is_some_and(|scope| !matches!(scope.as_str(), Some("run" | "activation")))
+        {
+            emit(DiagnosticCode::RegisterConfig);
+        }
+        let Some(initial) = node.config.get("initial") else {
+            continue;
+        };
+        if resource {
+            emit(DiagnosticCode::HandleLiteral);
+            continue;
+        }
+        let valid = serde_json::from_value::<crate::document::literal::Literal>(initial.clone())
+            .is_ok_and(|literal| {
+                cell.as_ref().is_none_or(|(ty, _)| literal.ty == **ty)
+                    && crate::value::literal_codec::decode(&literal, types).is_ok()
+            });
+        if !valid {
+            emit(DiagnosticCode::RegisterConfig);
+        }
+    }
 }
 
 /// Nodes owned by a region and all regions nested below it, iteratively.

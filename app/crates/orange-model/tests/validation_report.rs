@@ -388,6 +388,7 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::DataCycles,
             ValidationCheck::ControlCycles,
             ValidationCheck::ValueAvailability,
+            ValidationCheck::StreamRules,
         ]
     );
     assert_eq!(
@@ -398,7 +399,6 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::FunctionRestrictions,
             ValidationCheck::Regions,
             ValidationCheck::StateRules,
-            ValidationCheck::StreamRules,
             ValidationCheck::EntryPoliciesAndExports,
         ]
     );

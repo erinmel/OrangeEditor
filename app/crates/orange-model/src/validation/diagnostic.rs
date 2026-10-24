@@ -140,6 +140,8 @@ pub enum DiagnosticCode {
     StaleCapture,
     #[serde(rename = "E-VARIABLE-PERSISTENT")]
     VariablePersistent,
+    #[serde(rename = "E-REGISTER-CONFIG")]
+    RegisterConfig,
 }
 
 impl DiagnosticCode {
@@ -211,6 +213,7 @@ impl DiagnosticCode {
             Self::StreamStore => "E-STREAM-STORE",
             Self::StaleCapture => "W-STALE-CAPTURE",
             Self::VariablePersistent => "E-VARIABLE-PERSISTENT",
+            Self::RegisterConfig => "E-REGISTER-CONFIG",
         }
     }
 
@@ -281,6 +284,7 @@ impl DiagnosticCode {
             Self::StreamStore => "core/graph-stream-store",
             Self::StaleCapture => "core/graph-stale-capture",
             Self::VariablePersistent => "core/graph-variable-persistent",
+            Self::RegisterConfig => "core/graph-register-config",
         }
     }
 
@@ -402,6 +406,10 @@ impl DiagnosticCode {
                 "A value captured before a suspension is written back; use update-variable.".into()
             }
             Self::VariablePersistent => "Local variables cannot be persistent.".into(),
+            Self::RegisterConfig => {
+                "Register scope must be run or activation and initial must be a literal of its type."
+                    .into()
+            }
         }
     }
 }
