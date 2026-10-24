@@ -74,7 +74,55 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     definitions.extend(selection_and_state_definitions());
     definitions.extend(register_definitions());
     definitions.extend(result_definitions());
+    definitions.extend(lazy_pure_definitions());
     definitions
+}
+
+/// `select`, `and`, `or` and `coalesce` (11 §8.4): pure nodes whose lazy inputs are evaluated
+/// only when selected. The spec names no ports, so the strict reading is: the deciding input
+/// (`condition`, `a`, `value`) is eager and the alternatives are lazy.
+fn lazy_pure_definitions() -> Vec<NodeDefinition> {
+    let pure = |id, ports| definition(id, NodeKind::Pure, None, ports);
+    let boolean = || ty("core/bool@1");
+    let logic = |id| {
+        pure(
+            id,
+            vec![
+                PortDescriptor::data_in("a", boolean()),
+                PortDescriptor::data_in("b", boolean()).lazy(),
+                PortDescriptor::data_out("result", boolean(), OutputSource::Computed),
+            ],
+        )
+    };
+    vec![
+        generic(
+            pure(
+                "core/select",
+                vec![
+                    PortDescriptor::data_in("condition", boolean()),
+                    PortDescriptor::data_in("if_true", ty("$T")).lazy(),
+                    PortDescriptor::data_in("if_false", ty("$T")).lazy(),
+                    PortDescriptor::data_out("result", ty("$T"), OutputSource::Computed),
+                ],
+            ),
+            "T",
+            &[],
+        ),
+        logic("core/and"),
+        logic("core/or"),
+        generic(
+            pure(
+                "core/coalesce",
+                vec![
+                    PortDescriptor::data_in("value", ty("core/option@1<$T>")),
+                    PortDescriptor::data_in("fallback", ty("$T")).lazy(),
+                    PortDescriptor::data_out("result", ty("$T"), OutputSource::Computed),
+                ],
+            ),
+            "T",
+            &[],
+        ),
+    ]
 }
 
 /// `available_on` outcomes of an execution-sourced output.

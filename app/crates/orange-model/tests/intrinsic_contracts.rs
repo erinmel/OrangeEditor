@@ -123,6 +123,33 @@ fn match_result_offers_the_value_or_error_only_on_its_outcome() {
 }
 
 #[test]
+fn lazy_pure_nodes_decide_eagerly_and_evaluate_alternatives_lazily() {
+    let lazy_inputs = |signature: &SignatureSnapshot| {
+        signature
+            .ports
+            .iter()
+            .filter(|port| port.lazy == Some(true))
+            .map(|port| port.port_id.as_str().to_owned())
+            .collect::<Vec<_>>()
+    };
+    let pins = json!({"T": "core/string@1"});
+    let select = resolve("core/select", pins.clone(), json!({}));
+    assert_eq!(lazy_inputs(&select), ["if_true", "if_false"]);
+    assert_eq!(output(&select, "result").0, "core/string@1");
+    for definition in ["core/and", "core/or"] {
+        let logic = resolve(definition, json!({}), json!({}));
+        assert_eq!(logic.kind, NodeKind::Pure, "{definition}");
+        assert_eq!(lazy_inputs(&logic), ["b"], "{definition}");
+    }
+    let coalesce = resolve("core/coalesce", pins, json!({}));
+    assert_eq!(lazy_inputs(&coalesce), ["fallback"]);
+    assert_eq!(
+        coalesce.ports[0].ty.as_ref().unwrap().as_str(),
+        "core/option@1<core/string@1>"
+    );
+}
+
+#[test]
 fn state_controls_expose_their_state_outputs() {
     let gate = resolve("core/gate", json!({}), json!({}));
     assert_eq!(exec_in(&gate), ["enter", "open", "close", "toggle"]);
