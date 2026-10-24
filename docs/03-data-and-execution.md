@@ -293,3 +293,5 @@ Scoped entropy budget policy: the first host draw-budget/stream exhaustion is re
 ### E3 runtime prerequisites
 
 Owned cancellation: DataOptions carries an optional CancelToken, a cloneable owned stop flag. A DataActivation keeps its own clone and borrows nothing from the host, so a future run actor can own it. cancel and clear change the shared flag; the epoch rules above are unchanged, and clearing still needs an explicit begin_epoch to resume reads. CancelToken::flag lends the same flag to synchronous borrowed APIs such as CompileOptions. It is a flat signal, not the proposed run cancellation tree.
+
+Activation fuel: DataLimits::max_activation_operations (default 10,000,000) bounds the whole activation, alongside the per-epoch max_operations. Each begin_epoch and each node evaluation costs one unit; memoized pulls and constants are free. Fuel never refills. Exhaustion is the infrastructure error FuelExhausted (core/data-fuel-exhausted): Try cannot catch it, and it rejects the current scope and every later epoch start. Bare epoch starts also cost fuel, so a loop that opens one epoch per iteration still ends. fuel_remaining reports what is left.

@@ -1037,3 +1037,47 @@ fn epoch_coalesce_distinguishes_absent_present_and_nested_some_none() {
         }
     }
 }
+
+#[test]
+fn activation_fuel_spans_epochs_and_exhaustion_is_sticky() {
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![random(1), math(2, "add", 0, 1)],
+        vec![edge(1, 1, "value", 2, "a")],
+        vec![export(2, "sum"), export(1, "value")],
+    );
+    let resolver = Counting::new(package);
+    let plan = Arc::new(compile(&doc, snapshot.clone(), &resolver));
+    let options = |fuel| DataOptions {
+        limits: DataLimits {
+            max_activation_operations: fuel,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    // One unit per epoch start and per evaluated node; memoized pulls are free.
+    let mut frame = start(plan.clone(), &doc, &snapshot, 0, 0, options(7));
+    for remaining in [4, 1] {
+        frame.begin_epoch().unwrap();
+        assert!(frame.export(0).unwrap().unwrap().outcome.is_ok());
+        assert!(frame.export(1).unwrap().unwrap().outcome.is_ok());
+        assert_eq!(frame.fuel_remaining(), remaining);
+    }
+    frame.begin_epoch().unwrap();
+    assert_eq!(frame.export(0), Err(DataError::FuelExhausted));
+    assert_eq!(frame.export(1), Err(DataError::FuelExhausted));
+    assert_eq!(frame.begin_epoch(), Err(DataError::FuelExhausted));
+    assert_eq!(frame.export(1), Err(DataError::FuelExhausted));
+    assert_eq!(resolver.draws.load(Ordering::Relaxed), 2);
+    // Empty epochs still burn fuel, so a loop of bare epoch starts ends too.
+    let mut idle = start(plan, &doc, &snapshot, 0, 0, options(2));
+    assert_eq!(idle.begin_epoch(), Ok(0));
+    assert_eq!(idle.begin_epoch(), Ok(1));
+    assert_eq!(idle.begin_epoch(), Err(DataError::FuelExhausted));
+    assert_eq!(idle.export(1), Err(DataError::FuelExhausted));
+    assert_eq!(
+        DataError::FuelExhausted.message_key(),
+        "core/data-fuel-exhausted"
+    );
+}

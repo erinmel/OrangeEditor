@@ -17,7 +17,11 @@ pub struct DataLimits {
     pub max_nodes: usize,
     pub max_exports: usize,
     pub max_work_items: usize,
+    /// Per consumption epoch.
     pub max_operations: usize,
+    /// Fuel for the whole activation: each epoch start and each evaluated node
+    /// costs one unit. Never refilled, so epoch-per-iteration loops still end.
+    pub max_activation_operations: usize,
     pub max_retained_bytes: usize,
     /// Per entropy callback invocation. A request beyond this budget faults the
     /// node even if trusted callback code ignores the source error.
@@ -31,6 +35,8 @@ impl Default for DataLimits {
             max_exports: 100_000,
             max_work_items: 400_001,
             max_operations: 20_000,
+            // About 500 epochs that each evaluate the default maximum node count.
+            max_activation_operations: 10_000_000,
             max_retained_bytes: 16 * 1024 * 1024,
             max_entropy_draws: 1024,
         }
@@ -55,6 +61,8 @@ pub enum DataError {
     Cancelled,
     #[error("No data consumption epoch has begun.")]
     NoEpoch,
+    #[error("The activation operation budget is exhausted.")]
+    FuelExhausted,
     #[error("A data operation violated its checked contract.")]
     KernelContract { node: NodeId },
     #[error("{0}")]
@@ -68,6 +76,7 @@ impl DataError {
             Self::ResourceLimit => "core/data-resource-limit",
             Self::Cancelled => "core/data-cancelled",
             Self::NoEpoch => "core/data-no-epoch",
+            Self::FuelExhausted => "core/data-fuel-exhausted",
             Self::KernelContract { .. } => "core/data-kernel-contract",
             Self::Entropy(error) => error.message_key(),
         }
@@ -161,6 +170,7 @@ impl DataActivation {
             memo: vec![None; resources.nodes],
             epoch: None,
             operations: 0,
+            fuel_used: 0,
             failed: None,
             work: Vec::with_capacity(resources.work_items),
             work_limit: resources.work_items,
@@ -188,6 +198,13 @@ impl DataActivation {
     pub fn document_revision(&self) -> u64 {
         self.document_revision
     }
+    /// Activation fuel left, in operation units. It never refills.
+    pub fn fuel_remaining(&self) -> usize {
+        self.state
+            .limits
+            .max_activation_operations
+            .saturating_sub(self.state.fuel_used)
+    }
     fn checkpoint(&mut self) -> Result<(), DataError> {
         if let Err(error) = checkpoint(self.state.cancel.as_ref()) {
             if self.state.epoch.is_some() {
@@ -201,13 +218,14 @@ impl DataActivation {
     /// overwritten; generation stamps prevent reading them as current results.
     /// A rejected start invalidates any active scope. Clearing cancellation alone
     /// does not restore it; recovery requires a successful explicit start.
+    /// Each start costs one fuel unit; exhausted fuel rejects every later start.
     pub fn begin_epoch(&mut self) -> Result<u64, DataError> {
         self.checkpoint()?;
-        let epoch = self.state.scopes.begin_epoch().map_err(|error| {
-            let error = DataError::from(error);
-            self.state.failed = Some(error);
-            error
-        })?;
+        let epoch = self
+            .state
+            .burn()
+            .and_then(|()| Ok(self.state.scopes.begin_epoch()?))
+            .inspect_err(|error| self.state.failed = Some(*error))?;
         self.state.epoch = Some(epoch);
         self.state.operations = 0;
         self.state.failed = None;
@@ -270,6 +288,7 @@ struct Frame {
     memo: Vec<Option<u64>>,
     epoch: Option<u64>,
     operations: usize,
+    fuel_used: usize,
     failed: Option<DataError>,
     work: Vec<Work>,
     work_limit: usize,
@@ -279,6 +298,14 @@ struct Frame {
     cancel: Option<CancelToken>,
 }
 impl Frame {
+    fn burn(&mut self) -> Result<(), DataError> {
+        self.fuel_used = self
+            .fuel_used
+            .checked_add(1)
+            .filter(|used| *used <= self.limits.max_activation_operations)
+            .ok_or(DataError::FuelExhausted)?;
+        Ok(())
+    }
     fn push(&mut self, work: Work) -> Result<(), DataError> {
         if self.work.len() >= self.work_limit {
             return Err(DataError::ResourceLimit);
@@ -495,6 +522,7 @@ impl Frame {
                         .checked_add(1)
                         .filter(|count| *count <= self.limits.max_operations)
                         .ok_or(DataError::ResourceLimit)?;
+                    self.burn()?;
                     match node.operation() {
                         DataOperation::Pure(_) | DataOperation::Entropy(_) => {
                             self.push(Work::Gather {
