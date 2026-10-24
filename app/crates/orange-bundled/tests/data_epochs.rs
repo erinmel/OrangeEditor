@@ -397,7 +397,8 @@ fn stale_entry_is_rejected_while_active_plan_keeps_its_old_snapshot() {
 enum Mutation {
     WrongType,
     PartialFault(Arc<OnceLock<Weak<JsonText>>>),
-    Cancel(Arc<AtomicBool>),
+    Cancel(Arc<AtomicBool>, bool),
+    IgnoreDrawFault { draws: usize, return_fault: bool },
 }
 #[derive(Debug)]
 struct MutatedKernel(Mutation);
@@ -409,6 +410,24 @@ impl EntropyKernel for MutatedKernel {
         source: &mut dyn EntropySource,
     ) -> Result<(), KernelFault> {
         match &self.0 {
+            Mutation::IgnoreDrawFault {
+                draws,
+                return_fault,
+            } => {
+                for _ in 0..*draws {
+                    let _ = source.next_u64();
+                }
+                outputs[0] = Value::U64(42);
+                if *return_fault {
+                    Err(KernelFault {
+                        code: "core/Domain",
+                        message_key: "core/test-domain",
+                        message: "The operation failed.",
+                    })
+                } else {
+                    Ok(())
+                }
+            }
             Mutation::WrongType => {
                 outputs[0] = Value::Bool(true);
                 Ok(())
@@ -423,11 +442,141 @@ impl EntropyKernel for MutatedKernel {
                     message: "The operation failed.",
                 })
             }
-            Mutation::Cancel(flag) => {
+            Mutation::Cancel(flag, ignore_fault) => {
                 flag.store(true, Ordering::Relaxed);
                 let result = source.next_u64();
                 flag.store(false, Ordering::Relaxed);
-                result.map(|value| outputs[0] = Value::U64(value))
+                if *ignore_fault {
+                    outputs[0] = Value::U64(42);
+                    Ok(())
+                } else {
+                    result.map(|value| outputs[0] = Value::U64(value))
+                }
+            }
+        }
+    }
+}
+
+#[test]
+fn rejected_epoch_start_aborts_old_reads_and_only_a_successful_start_recovers() {
+    let (package, snapshot) = catalog();
+    let doc = graph(&package, vec![random(1)], vec![], vec![export(1, "value")]);
+    let resolver = Counting::new(package);
+    let plan = Arc::new(compile(&doc, snapshot.clone(), &resolver));
+    let cancel = AtomicBool::new(false);
+    let mut frame = start(
+        plan,
+        &doc,
+        &snapshot,
+        0,
+        0,
+        DataOptions {
+            cancel: Some(&cancel),
+            ..Default::default()
+        },
+    );
+    // Rejected initial starts neither invent nor consume an epoch.
+    cancel.store(true, Ordering::Relaxed);
+    assert_eq!(frame.begin_epoch(), Err(DataError::Cancelled));
+    cancel.store(false, Ordering::Relaxed);
+    assert_eq!(frame.export(0), Err(DataError::NoEpoch));
+    assert_eq!(frame.begin_epoch(), Ok(0));
+    assert_eq!(
+        frame.export(0).unwrap().unwrap().outcome,
+        Ok(&Value::U64(sample(1, 0, 0, 0)))
+    );
+    cancel.store(true, Ordering::Relaxed);
+    assert_eq!(frame.begin_epoch(), Err(DataError::Cancelled));
+    cancel.store(false, Ordering::Relaxed);
+    assert_eq!(frame.export(0), Err(DataError::Cancelled));
+    assert_eq!(frame.export(usize::MAX), Err(DataError::Cancelled));
+    assert_eq!(resolver.draws.load(Ordering::Relaxed), 1);
+    assert_eq!(frame.begin_epoch(), Ok(1));
+    assert_eq!(
+        frame.export(0).unwrap().unwrap().outcome,
+        Ok(&Value::U64(sample(1, 0, 0, 1)))
+    );
+    assert_eq!(resolver.draws.load(Ordering::Relaxed), 2);
+}
+
+#[test]
+fn draw_budget_fault_cannot_be_hidden_by_a_downstream_callback() {
+    for (budget, draws, exceeded) in [(0, 0, false), (0, 1, true), (1, 1, false), (1, 3, true)] {
+        for return_fault in [false, true] {
+            let (package, snapshot) = catalog();
+            let attempt = json!({"id":id(2),"definition_id":"core/try","definition_version":1,"config_version":1,"config":{},"type_pins":{"T":"core/u64@1"}});
+            let doc = graph(
+                &package,
+                vec![random(1), attempt],
+                vec![edge(1, 1, "value", 2, "value")],
+                vec![export(2, "result"), export(1, "value")],
+            );
+            let resolver = Mutated {
+                package,
+                mode: Mutation::IgnoreDrawFault {
+                    draws,
+                    return_fault,
+                },
+            };
+            let analysis = analyze(&doc, &snapshot);
+            let plan = Arc::new(
+                compile_data(
+                    &doc,
+                    snapshot.clone(),
+                    &analysis,
+                    &resolver,
+                    CompileOptions::default(),
+                )
+                .unwrap(),
+            );
+            let mut frame = start(
+                plan,
+                &doc,
+                &snapshot,
+                0,
+                0,
+                DataOptions {
+                    limits: DataLimits {
+                        max_entropy_draws: budget,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+            );
+            for _ in 0..2 {
+                frame.begin_epoch().unwrap();
+                let value = frame.export(0).unwrap().unwrap().outcome.unwrap().clone();
+                if exceeded || return_fault {
+                    let Value::Err(error) = value else {
+                        panic!("expected captured fault")
+                    };
+                    assert_eq!(
+                        error.code,
+                        if exceeded {
+                            "core/LimitExceeded"
+                        } else {
+                            "core/Domain"
+                        }
+                    );
+                    assert_eq!(error.node, Some(id(1).parse().unwrap()));
+                    assert_eq!(
+                        frame
+                            .export(1)
+                            .unwrap()
+                            .unwrap()
+                            .outcome
+                            .unwrap_err()
+                            .fault
+                            .code,
+                        error.code
+                    );
+                } else {
+                    assert_eq!(value, Value::U64(42));
+                    assert_eq!(
+                        frame.export(1).unwrap().unwrap().outcome,
+                        Ok(&Value::U64(42))
+                    );
+                }
             }
         }
     }
@@ -514,45 +663,47 @@ fn wrong_output_is_infrastructure_error_and_faulting_callbacks_release_unpublish
 
 #[test]
 fn cancellation_observed_inside_stream_cannot_be_turned_into_try_data_even_if_flag_is_cleared() {
-    let (package, snapshot) = catalog();
-    let attempt = json!({"id":id(2),"definition_id":"core/try","definition_version":1,"config_version":1,"config":{},"type_pins":{"T":"core/u64@1"}});
-    let doc = graph(
-        &package,
-        vec![random(1), attempt],
-        vec![edge(1, 1, "value", 2, "value")],
-        vec![export(2, "result")],
-    );
-    let cancel = Arc::new(AtomicBool::new(false));
-    let resolver = Mutated {
-        package,
-        mode: Mutation::Cancel(cancel.clone()),
-    };
-    let analysis = analyze(&doc, &snapshot);
-    let plan = Arc::new(
-        compile_data(
+    for ignore_fault in [false, true] {
+        let (package, snapshot) = catalog();
+        let attempt = json!({"id":id(2),"definition_id":"core/try","definition_version":1,"config_version":1,"config":{},"type_pins":{"T":"core/u64@1"}});
+        let doc = graph(
+            &package,
+            vec![random(1), attempt],
+            vec![edge(1, 1, "value", 2, "value")],
+            vec![export(2, "result")],
+        );
+        let cancel = Arc::new(AtomicBool::new(false));
+        let resolver = Mutated {
+            package,
+            mode: Mutation::Cancel(cancel.clone(), ignore_fault),
+        };
+        let analysis = analyze(&doc, &snapshot);
+        let plan = Arc::new(
+            compile_data(
+                &doc,
+                snapshot.clone(),
+                &analysis,
+                &resolver,
+                CompileOptions::default(),
+            )
+            .unwrap(),
+        );
+        let mut frame = start(
+            plan,
             &doc,
-            snapshot.clone(),
-            &analysis,
-            &resolver,
-            CompileOptions::default(),
-        )
-        .unwrap(),
-    );
-    let mut frame = start(
-        plan,
-        &doc,
-        &snapshot,
-        0,
-        0,
-        DataOptions {
-            cancel: Some(&cancel),
-            ..Default::default()
-        },
-    );
-    frame.begin_epoch().unwrap();
-    assert_eq!(frame.export(0), Err(DataError::Cancelled));
-    assert!(!cancel.load(Ordering::Relaxed));
-    assert_eq!(frame.export(0), Err(DataError::Cancelled));
+            &snapshot,
+            0,
+            0,
+            DataOptions {
+                cancel: Some(&cancel),
+                ..Default::default()
+            },
+        );
+        frame.begin_epoch().unwrap();
+        assert_eq!(frame.export(0), Err(DataError::Cancelled));
+        assert!(!cancel.load(Ordering::Relaxed));
+        assert_eq!(frame.export(0), Err(DataError::Cancelled));
+    }
 }
 
 #[test]

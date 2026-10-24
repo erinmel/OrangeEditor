@@ -20,6 +20,8 @@ pub struct DataLimits {
     pub max_work_items: usize,
     pub max_operations: usize,
     pub max_retained_bytes: usize,
+    /// Per entropy callback invocation. A request beyond this budget faults the
+    /// node even if trusted callback code ignores the source error.
     pub max_entropy_draws: usize,
 }
 impl Default for DataLimits {
@@ -187,11 +189,26 @@ impl<'a> DataActivation<'a> {
     pub fn document_revision(&self) -> u64 {
         self.document_revision
     }
+    fn checkpoint(&mut self) -> Result<(), DataError> {
+        if let Err(error) = checkpoint(self.state.cancel) {
+            if self.state.epoch.is_some() {
+                self.state.failed = Some(error);
+            }
+            return Err(error);
+        }
+        Ok(())
+    }
     /// Start one consumption scope. Values from older epochs stay charged until
     /// overwritten; generation stamps prevent reading them as current results.
+    /// A rejected start invalidates any active scope. Clearing cancellation alone
+    /// does not restore it; recovery requires a successful explicit start.
     pub fn begin_epoch(&mut self) -> Result<u64, DataError> {
-        checkpoint(self.state.cancel)?;
-        let epoch = self.state.scopes.begin_epoch()?;
+        self.checkpoint()?;
+        let epoch = self.state.scopes.begin_epoch().map_err(|error| {
+            let error = DataError::from(error);
+            self.state.failed = Some(error);
+            error
+        })?;
         self.state.epoch = Some(epoch);
         self.state.operations = 0;
         self.state.failed = None;
@@ -203,12 +220,7 @@ impl<'a> DataActivation<'a> {
     /// Pull one ordered export inside the current explicit epoch. Other pulls in
     /// the same epoch share producers. Borrowed results prevent concurrent mutation.
     pub fn export(&mut self, index: usize) -> Result<Option<EvaluatedExport<'_>>, DataError> {
-        if let Err(error) = checkpoint(self.state.cancel) {
-            if self.state.epoch.is_some() {
-                self.state.failed = Some(error);
-            }
-            return Err(error);
-        }
+        self.checkpoint()?;
         if let Some(error) = self.state.failed {
             return Err(error);
         }
@@ -225,10 +237,7 @@ impl<'a> DataActivation<'a> {
             self.state.failed = Some(error);
             return Err(error);
         }
-        if let Err(error) = checkpoint(self.state.cancel) {
-            self.state.failed = Some(error);
-            return Err(error);
-        }
+        self.checkpoint()?;
         let export = &self.plan.exports()[index];
         let slot = export.slot.index();
         let outcome = match self.state.slots[slot]
@@ -389,6 +398,7 @@ impl Frame<'_> {
                     remaining: self.limits.max_entropy_draws,
                     cancel: self.cancel,
                     cancelled: false,
+                    fault: None,
                 };
                 let result = binding
                     .kernel
@@ -396,7 +406,7 @@ impl Frame<'_> {
                 if source.cancelled {
                     return Err(DataError::Cancelled);
                 }
-                result
+                source.fault.map_or(result, Err)
             }
             _ => return Err(DataError::KernelContract { node: node.node() }),
         };
@@ -539,6 +549,7 @@ struct ScopedSource<'a> {
     remaining: usize,
     cancel: Option<&'a AtomicBool>,
     cancelled: bool,
+    fault: Option<KernelFault>,
 }
 impl EntropySource for ScopedSource<'_> {
     fn next_u64(&mut self) -> Result<u64, KernelFault> {
@@ -550,18 +561,27 @@ impl EntropySource for ScopedSource<'_> {
                 message: "Data evaluation was cancelled.",
             });
         }
+        if let Some(fault) = self.fault {
+            return Err(fault);
+        }
         if self.remaining == 0 {
-            return Err(KernelFault {
+            let fault = KernelFault {
                 code: "core/LimitExceeded",
                 message_key: "core/entropy-draw-limit",
                 message: "The node entropy draw budget is exhausted.",
-            });
+            };
+            self.fault = Some(fault);
+            return Err(fault);
         }
         self.remaining -= 1;
-        self.stream.next_u64().map_err(|_| KernelFault {
-            code: "core/LimitExceeded",
-            message_key: "core/entropy-stream-exhausted",
-            message: "The entropy stream is exhausted.",
+        self.stream.next_u64().map_err(|_| {
+            let fault = KernelFault {
+                code: "core/LimitExceeded",
+                message_key: "core/entropy-stream-exhausted",
+                message: "The entropy stream is exhausted.",
+            };
+            self.fault = Some(fault);
+            fault
         })
     }
 }
