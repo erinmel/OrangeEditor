@@ -36,6 +36,8 @@ fn literal(value: &Value) -> Json {
         Value::U32(v) => json!({"type":"core/u32@1","value":v}),
         Value::U64(v) => json!({"type":"core/u64@1","value":v.to_string()}),
         Value::Bool(v) => json!({"type":"core/bool@1","value":v}),
+        Value::F32(v) => json!({"type":"core/f32@1","bits":format!("{:08x}",v.to_bits())}),
+        Value::F64(v) => json!({"type":"core/f64@1","bits":format!("{:016x}",v.to_bits())}),
         _ => panic!("type outside oracle fixture vocabulary"),
     }
 }
@@ -117,7 +119,18 @@ fn check(
         let export = export.unwrap();
         assert_eq!(export.id, source.id);
         match (export.outcome, outcome) {
-            (Ok(actual), Ok(value)) => assert_eq!(actual, value),
+            (Ok(actual), Ok(value)) => {
+                let producer = &doc.root().nodes[&source.node];
+                if producer.definition.id.as_str() == "core/convert" {
+                    assert_eq!(actual, value); // explicit converters promise exact NaN bits
+                } else {
+                    match (actual, value) {
+                        (Value::F32(a), Value::F32(b)) if a.is_nan() && b.is_nan() => {}
+                        (Value::F64(a), Value::F64(b)) if a.is_nan() && b.is_nan() => {}
+                        _ => assert_eq!(actual, value),
+                    }
+                }
+            }
             (Err(actual), Err(fault)) => {
                 assert_eq!(actual.source, fault.source);
                 assert_eq!(actual.fault.code, fault.code);
@@ -336,6 +349,136 @@ fn boolean_and_integer_converter_results_have_independent_known_answers() {
     }
 }
 
+fn float_conversion(package: &MathPackage, input: &Value, narrow: bool) -> GraphDocument {
+    let (converter, from, to, options) = if narrow {
+        (
+            "core/f64-to-f32",
+            "core/f64@1",
+            "core/f32@1",
+            json!({"rounding":"nearest-even","overflow":"reject"}),
+        )
+    } else {
+        ("core/f32-to-f64", "core/f32@1", "core/f64@1", json!({}))
+    };
+    let base = document(package, "core/i64@1", vec![], vec![], vec![]);
+    let mut raw: Json = serde_json::from_str(&to_json(&base).unwrap()).unwrap();
+    raw["nodes"] = json!([{"id":id(1,1),"definition_id":"core/convert","definition_version":1,"config_version":1,
+        "signature":"convert","config":{"converter":converter,"contract_version":1,"options":options},"inputs":{"value":literal(input)}}]);
+    let mut ports = vec![
+        json!({"port_id":"value","direction":"input","kind":"data","type":from}),
+        json!({"port_id":"result","direction":"output","kind":"data","type":to,"source":"computed"}),
+    ];
+    let mut exports = vec![export(0, 1, "result")];
+    if narrow {
+        ports.push(json!({"port_id":"loss","direction":"output","kind":"data","type":"core/json@1","source":"computed"}));
+        exports.push(export(1, 1, "loss"));
+    }
+    raw["signatures"]["convert"] = json!({"kind":"pure","ports":ports});
+    raw["exports"] = json!(exports);
+    from_json(&raw.to_string()).unwrap()
+}
+
+#[test]
+fn float_policy_order_signed_zero_and_nonfinite_results_match_known_answers() {
+    let (package, snapshot) = catalog();
+    for (policy, op, a, b, value, error) in [
+        (
+            "finite",
+            Operation::Divide,
+            f64::NAN,
+            0.0,
+            None,
+            Some("core/NonFinite"),
+        ),
+        (
+            "finite",
+            Operation::Divide,
+            1.0,
+            -0.0,
+            None,
+            Some("core/DivideByZero"),
+        ),
+        (
+            "finite",
+            Operation::Multiply,
+            f64::MAX,
+            2.0,
+            None,
+            Some("core/NonFinite"),
+        ),
+        ("finite", Operation::Multiply, -0.0, 2.0, Some(-0.0), None),
+        (
+            "ieee",
+            Operation::Divide,
+            1.0,
+            -0.0,
+            Some(f64::NEG_INFINITY),
+            None,
+        ),
+        ("ieee", Operation::Divide, 0.0, 0.0, None, None),
+    ] {
+        let mut node = math_node(1, op, &Value::F64(a), &Value::F64(b), "checked");
+        node["config"]["float_policy"] = json!(policy);
+        let doc = document(
+            &package,
+            "core/f64@1",
+            vec![node],
+            vec![],
+            vec![export(0, 1, op.output_port())],
+        );
+        let result = check(&doc, &package, &snapshot).remove(0);
+        if let Some(code) = error {
+            assert_eq!(result.unwrap_err().code, code);
+        } else if let Some(expected) = value {
+            assert_eq!(result, Ok(Value::F64(expected)));
+        } else {
+            assert!(matches!(result,Ok(Value::F64(v)) if v.is_nan()));
+        }
+    }
+}
+
+#[test]
+fn floating_converter_nan_bits_ties_loss_and_range_have_known_answers() {
+    let (package, snapshot) = catalog();
+    for (source, target) in [
+        (0x8000_0000, 0x8000_0000_0000_0000),
+        (0x7f80_0001, 0x7ff0_0000_2000_0000),
+        (0xff80_0001, 0xfff0_0000_2000_0000),
+    ] {
+        let doc = float_conversion(&package, &Value::F32(f32::from_bits(source)), false);
+        assert_eq!(
+            check(&doc, &package, &snapshot),
+            [Ok(Value::F64(f64::from_bits(target)))]
+        );
+    }
+    for (source, target, lost) in [
+        (0x3ff0_0000_1000_0000, 0x3f80_0000, true), // halfway above 1, ties to even
+        (0x8000_0000_0000_0000, 0x8000_0000, false),
+        (0x7ff8_0000_0000_0000, 0x7fc0_0000, false),
+        (0xfff8_0000_0000_0000, 0xffc0_0000, false),
+        (0x7ff0_0000_0000_0001, 0x7f80_0001, true), // sticky signaling payload
+    ] {
+        let doc = float_conversion(&package, &Value::F64(f64::from_bits(source)), true);
+        let results = check(&doc, &package, &snapshot);
+        assert_eq!(results[0], Ok(Value::F32(f32::from_bits(target))));
+        let Ok(Value::Json(loss)) = &results[1] else {
+            panic!("JSON loss output")
+        };
+        assert_eq!(
+            serde_json::from_str::<Json>(loss.as_str()).unwrap(),
+            json!({"lost":lost})
+        );
+    }
+    let doc = float_conversion(&package, &Value::F64(f64::MAX), true);
+    let results = check(&doc, &package, &snapshot);
+    assert_eq!(results.len(), 2);
+    for result in results {
+        let fault = result.unwrap_err();
+        assert_eq!(fault.source, id(1, 1).parse().unwrap());
+        assert_eq!(fault.code, "core/OutOfRange");
+    }
+}
+
 type Recipe = (u8, u64, u64, u8, u8);
 fn dag(
     package: &MathPackage,
@@ -344,13 +487,29 @@ fn dag(
     recipes: &[Recipe],
     reverse: bool,
 ) -> GraphDocument {
-    let ty = ["core/i32@1", "core/i64@1", "core/u32@1", "core/u64@1"][usize::from(kind)];
+    let ty = [
+        "core/i32@1",
+        "core/i64@1",
+        "core/u32@1",
+        "core/u64@1",
+        "core/f32@1",
+        "core/f64@1",
+    ][usize::from(kind)];
+    let float_policy = if mode == 0 { "finite" } else { "ieee" };
     let mode = ["checked", "wrapping", "saturating"][usize::from(mode)];
     let value = |bits| match kind {
         0 => Value::I32(bits as i32),
         1 => Value::I64(bits as i64),
         2 => Value::U32(bits as u32),
         3 => Value::U64(bits),
+        4 => {
+            let value = f32::from_bits(bits as u32);
+            Value::F32(if value.is_finite() { value } else { 0.0 })
+        }
+        5 => {
+            let value = f64::from_bits(bits);
+            Value::F64(if value.is_finite() { value } else { 0.0 })
+        }
         _ => unreachable!(),
     };
     let operations: Vec<_> = recipes
@@ -362,13 +521,11 @@ fn dag(
     for (i, recipe) in recipes.iter().enumerate() {
         // Earlier dependency indices intentionally have larger UUIDs.
         let n = recipes.len() - i;
-        nodes.push(math_node(
-            n,
-            operations[i],
-            &value(recipe.1),
-            &value(recipe.2),
-            mode,
-        ));
+        let mut node = math_node(n, operations[i], &value(recipe.1), &value(recipe.2), mode);
+        if kind >= 4 {
+            node["config"]["float_policy"] = json!(float_policy);
+        }
+        nodes.push(node);
         for (token, input) in [(recipe.3, "a"), (recipe.4, "b")] {
             if i > 0 && token < 192 {
                 let source = usize::from(token) % i;
@@ -408,5 +565,31 @@ proptest! {
         let saved = to_json(&doc).unwrap();
         let reloaded = from_json(&saved).unwrap();
         prop_assert_eq!(check(&reloaded,&package,&snapshot),expected);
+    }
+
+    #[test]
+    fn bounded_float_dags_match_reference_policy_and_public_results(
+        kind in 4_u8..6, mode in 0_u8..2,
+        recipes in prop::collection::vec((any::<u8>(),any::<u64>(),any::<u64>(),any::<u8>(),any::<u8>()),1..17),
+        reverse in any::<bool>(),
+    ) {
+        let (package,snapshot) = catalog();
+        let doc = dag(&package,kind,mode,&recipes,reverse);
+        let expected = check(&doc,&package,&snapshot);
+        let reloaded = from_json(&to_json(&doc).unwrap()).unwrap();
+        prop_assert_eq!(check(&reloaded,&package,&snapshot),expected);
+    }
+
+    #[test]
+    fn floating_converter_bit_patterns_and_both_outputs_match_reference(
+        source32 in any::<u32>(),source64 in any::<u64>(),
+    ) {
+        let (package,snapshot) = catalog();
+        for doc in [float_conversion(&package,&Value::F32(f32::from_bits(source32)),false),
+            float_conversion(&package,&Value::F64(f64::from_bits(source64)),true)] {
+            let expected = check(&doc,&package,&snapshot);
+            let reloaded = from_json(&to_json(&doc).unwrap()).unwrap();
+            prop_assert_eq!(check(&reloaded,&package,&snapshot),expected);
+        }
     }
 }
