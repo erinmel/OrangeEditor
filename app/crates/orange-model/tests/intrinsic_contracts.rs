@@ -70,6 +70,25 @@ fn switch_has_case_outcomes_and_a_default_in_the_parent_region() {
 }
 
 #[test]
+fn register_feedback_reads_state_not_its_inputs() {
+    let register = resolve("core/register", json!({"T": "core/i64@1"}), json!({}));
+    assert_eq!(exec_in(&register), ["store", "reset"]);
+    assert_eq!(
+        output(&register, "current"),
+        ("core/i64@1".into(), Some(OutputSource::State))
+    );
+    assert_eq!(
+        register
+            .ports
+            .iter()
+            .find(|port| port.port_id.as_str() == "next")
+            .and_then(|port| port.ty.as_ref())
+            .map(|ty| ty.as_str()),
+        Some("core/i64@1")
+    );
+}
+
+#[test]
 fn state_controls_expose_their_state_outputs() {
     let gate = resolve("core/gate", json!({}), json!({}));
     assert_eq!(exec_in(&gate), ["enter", "open", "close", "toggle"]);

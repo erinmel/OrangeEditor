@@ -176,7 +176,7 @@ const INTRINSICS: [Intrinsic; 41] = [
     rule("core/yield", ASYNC, None),
     rule("core/wait", ASYNC, None),
     event_rule("core/await-event", ASYNC, EventAccess::Await),
-    rule("core/register", None, None),
+    rule("core/register", ACTION, None),
     rule("core/select", PURE, None),
     rule("core/and", PURE, None),
     rule("core/or", PURE, None),

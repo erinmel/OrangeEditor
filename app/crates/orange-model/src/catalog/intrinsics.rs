@@ -72,7 +72,29 @@ fn event_definition(
 pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     let mut definitions = core_control_definitions();
     definitions.extend(selection_and_state_definitions());
+    definitions.extend(register_definitions());
     definitions
+}
+
+/// `core/register`: an anonymous typed state cell (11 §8.4). `store` writes `next` and `reset`
+/// restores `initial`; `current` is a volatile read of the cell, so feedback through it adds
+/// no data dependency (11 §8.1). `initial`/`scope` are config the model does not enforce.
+fn register_definitions() -> Vec<NodeDefinition> {
+    vec![generic(
+        definition(
+            "core/register",
+            NodeKind::Action,
+            None,
+            vec![
+                PortDescriptor::exec_in("store"),
+                PortDescriptor::exec_in("reset"),
+                PortDescriptor::data_in("next", ty("$T")),
+                PortDescriptor::data_out("current", ty("$T"), OutputSource::State),
+            ],
+        ),
+        "T",
+        &[],
+    )]
 }
 
 fn core_control_definitions() -> Vec<NodeDefinition> {
