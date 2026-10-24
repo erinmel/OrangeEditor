@@ -72,7 +72,8 @@ fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<(), CompileEr
 fn value_bytes(value: &Value) -> usize {
     match value {
         Value::Json(text) => text.as_str().len().saturating_add(16),
-        Value::Some(inner) => value_bytes(inner).saturating_add(16),
+        Value::Some(inner) | Value::Ok(inner) => value_bytes(inner).saturating_add(16),
+        Value::Err(error) => error.code.len().saturating_add(32),
         _ => 16,
     }
 }
@@ -145,21 +146,21 @@ fn literal_bytes(payload: &LiteralPayload, ty: &PlanType) -> Option<usize> {
     };
     Some(size.saturating_add(cost))
 }
+pub(crate) fn valid_identifier(text: &str) -> bool {
+    let Some((namespace, name)) = text.split_once('/') else {
+        return false;
+    };
+    !namespace.is_empty()
+        && !name.is_empty()
+        && !name.contains('/')
+        && text.len() <= 256
+        && text
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"/-_.".contains(&b))
+}
 fn valid_fault(fault: KernelFault) -> bool {
-    fn identifier(text: &str) -> bool {
-        let Some((namespace, name)) = text.split_once('/') else {
-            return false;
-        };
-        !namespace.is_empty()
-            && !name.is_empty()
-            && !name.contains('/')
-            && text.len() <= 256
-            && text
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"/-_.".contains(&b))
-    }
-    identifier(fault.code)
-        && identifier(fault.message_key)
+    valid_identifier(fault.code)
+        && valid_identifier(fault.message_key)
         && !fault.message.is_empty()
         && fault.message.len() <= 512
         && !fault.message.chars().any(char::is_control)
@@ -245,8 +246,8 @@ enum Work {
     },
 }
 
-/// Compile pure scalar/JSON/option root exports in persisted export and declared input order.
-/// Select/And/Or/Coalesce visit only selected inputs; other supported nodes remain eager.
+/// Compile pure scalar/JSON/option/result root exports in persisted export order.
+/// Select/And/Or/Coalesce visit selected inputs; Try captures graph input faults.
 /// Semantic analysis must be fresh; no resolver or executable callback runs before this check.
 /// Only reachable pure nodes fold, once each. Errors remain values with producer provenance.
 pub fn compile_pure(
@@ -500,8 +501,15 @@ pub fn compile_pure(
                     plan.constants[choice.selector.slot.index()],
                     FoldedValue::Fault(_)
                 ),
-                matches!(lazy_nodes[&node_id], crate::lazy::Lazy::Coalesce)
-                    && choice.selected.is_none(),
+                match lazy_nodes[&node_id] {
+                    crate::lazy::Lazy::Coalesce if choice.selected.is_none() => {
+                        crate::lazy::ProjectionMode::UnwrapOption
+                    }
+                    crate::lazy::Lazy::Try => crate::lazy::ProjectionMode::Result {
+                        boxed: port_type(node_id, &sig.ports[0])?.unboxed_error(),
+                    },
+                    _ => crate::lazy::ProjectionMode::Value,
+                },
             )
         } else {
             resolver
@@ -545,7 +553,15 @@ pub fn compile_pure(
         output_values.clear();
         output_values.resize(output_ports.len(), Value::Unit);
         let fault = if let Some(fault) = inherited {
-            Some(fault)
+            if matches!(lazy_nodes.get(&node_id), Some(crate::lazy::Lazy::Try)) {
+                output_values[0] = Value::Err(Arc::new(orange_model::value::NodeError {
+                    code: fault.fault.code.to_owned(),
+                    node: Some(fault.source),
+                }));
+                None
+            } else {
+                Some(fault)
+            }
         } else {
             for input in &inputs {
                 if let FoldedValue::Value(value) = &plan.constants[input.slot.index()] {

@@ -42,6 +42,271 @@ fn coalesce_node(n: u32, ty: &str, value: Json, fallback: Json) -> Json {
         "config":{},"type_pins":{"T":ty},"inputs":{"value":value,"fallback":fallback}})
 }
 
+fn try_node(n: u32, ty: &str, value: Option<Json>) -> Json {
+    json!({"id":id(n),"definition_id":"core/try","definition_version":1,"config_version":1,
+        "config":{},"type_pins":{"T":ty},"inputs":value.map(|value|json!({"value":value})).unwrap_or(json!({}))})
+}
+fn captured_error(code: &str, source: u32) -> Value {
+    Value::Err(Arc::new(orange_model::value::NodeError {
+        code: code.into(),
+        node: Some(id(source).parse().unwrap()),
+    }))
+}
+
+#[test]
+fn try_captures_graph_faults_without_changing_separately_exported_faults() {
+    let (package, snapshot) = catalog();
+    for fails in [false, true] {
+        let doc = graph(
+            &package,
+            vec![
+                node(1, "divide", 42, if fails { 0 } else { 2 }),
+                try_node(2, "core/i64@1", None),
+                try_node(3, "core/result@1<core/i64@1>", None),
+            ],
+            vec![
+                edge(1, 1, "quotient", 2, "value"),
+                edge(2, 2, "result", 3, "value"),
+            ],
+            vec![
+                export(3, "result"),
+                export(2, "result"),
+                export(1, "quotient"),
+            ],
+        );
+        let resolver = Counting::new(package.clone());
+        let plan = compile(&doc, snapshot.clone(), &resolver);
+        assert_eq!(resolver.folds.load(Ordering::Relaxed), 1);
+        assert_eq!(plan.diagnostics().len(), usize::from(fails));
+        let inner = if fails {
+            captured_error("core/DivideByZero", 1)
+        } else {
+            Value::I64(21)
+        };
+        assert_eq!(
+            plan.constants()[plan.exports()[0].slot.index()],
+            FoldedValue::Value(Value::Ok(Arc::new(inner.clone())))
+        );
+        assert_eq!(
+            plan.constants()[plan.exports()[1].slot.index()],
+            FoldedValue::Value(inner)
+        );
+        if fails {
+            let FoldedValue::Fault(fault) = &plan.constants()[plan.exports()[2].slot.index()]
+            else {
+                panic!("direct fault was removed")
+            };
+            assert_eq!(fault.source, id(1).parse().unwrap());
+        }
+        let analysis = analyze(&doc, &snapshot);
+        let expected = reference::Reference::new(&doc, &snapshot, &analysis).exports();
+        for (actual, expected) in plan
+            .evaluate(&doc, &snapshot, EvaluationOptions::default())
+            .unwrap()
+            .exports()
+            .zip(expected)
+        {
+            match (actual.unwrap().outcome, expected) {
+                (Ok(actual), Ok(expected)) => assert_eq!(actual, &expected),
+                (Err(actual), Err(expected)) => {
+                    assert_eq!(actual.source, expected.source);
+                    assert_eq!(actual.fault.code, expected.code);
+                }
+                _ => panic!("try oracle mismatch"),
+            }
+        }
+    }
+}
+
+#[test]
+fn try_preserves_successful_none_and_result_option_composition() {
+    let (package, snapshot) = catalog();
+    for inner in [
+        "core/i64@1",
+        "core/result@1<core/i64@1>",
+        "core/option@1<core/result@1<core/i64@1>>",
+    ] {
+        let option = format!("core/option@1<{inner}>");
+        let none = typed_literal(&snapshot, &option, &Value::None);
+        let doc = graph(
+            &package,
+            vec![try_node(1, &option, Some(none))],
+            vec![],
+            vec![export(1, "result")],
+        );
+        let plan = compile(&doc, snapshot.clone(), &package);
+        let expected = if inner.starts_with("core/result") {
+            Value::Ok(Arc::new(Value::None))
+        } else {
+            Value::None
+        };
+        assert_eq!(
+            plan.constants()[plan.exports()[0].slot.index()],
+            FoldedValue::Value(expected.clone())
+        );
+        let analysis = analyze(&doc, &snapshot);
+        assert_eq!(
+            reference::Reference::new(&doc, &snapshot, &analysis).exports(),
+            [Ok(expected)]
+        );
+    }
+}
+
+#[test]
+fn try_cannot_capture_admission_cancellation_or_backend_failures() {
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![node(1, "divide", 1, 0), try_node(2, "core/i64@1", None)],
+        vec![edge(1, 1, "quotient", 2, "value")],
+        vec![export(2, "result")],
+    );
+    let analysis = analyze(&doc, &snapshot);
+    for mode in 0..4 {
+        let result = compile_pure(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &Broken {
+                package: package.clone(),
+                mode,
+            },
+            CompileOptions::default(),
+        );
+        if mode == 0 {
+            assert!(matches!(
+                result,
+                Err(CompileError::KernelUnavailable { .. })
+            ));
+        } else {
+            assert!(matches!(result, Err(CompileError::KernelContract { .. })));
+        }
+    }
+    let rejected = GuardResolver {
+        package: package.clone(),
+        trap: id(1).parse().unwrap(),
+        reject: true,
+        calls: AtomicUsize::new(0),
+    };
+    assert!(matches!(
+        compile_pure(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &rejected,
+            CompileOptions::default()
+        ),
+        Err(CompileError::KernelUnavailable { .. })
+    ));
+    let cancel = AtomicBool::new(true);
+    assert_eq!(
+        compile_pure(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &package,
+            CompileOptions {
+                cancel: Some(&cancel),
+                ..Default::default()
+            }
+        )
+        .unwrap_err(),
+        CompileError::Cancelled
+    );
+    assert_eq!(
+        compile_pure(
+            &doc,
+            snapshot,
+            &analysis,
+            &package,
+            CompileOptions {
+                limits: orange_compiler::CompileLimits {
+                    max_constant_bytes: 100,
+                    ..Default::default()
+                },
+                ..Default::default()
+            }
+        )
+        .unwrap_err(),
+        CompileError::ResourceLimit
+    );
+}
+
+#[test]
+fn try_in_an_inactive_arm_does_not_bind_or_warn() {
+    let (package, snapshot) = catalog();
+    let mut selection = select_node(4, true, "core/result@1<core/i64@1>", json!({}), json!({}));
+    selection["inputs"]
+        .as_object_mut()
+        .unwrap()
+        .remove("if_true");
+    selection["inputs"]
+        .as_object_mut()
+        .unwrap()
+        .remove("if_false");
+    let doc = graph(
+        &package,
+        vec![
+            node(1, "divide", 1, 0),
+            try_node(2, "core/i64@1", None),
+            try_node(3, "core/i64@1", Some(integer_literal(42))),
+            selection,
+        ],
+        vec![
+            edge(1, 1, "quotient", 2, "value"),
+            edge(2, 2, "result", 4, "if_false"),
+            edge(3, 3, "result", 4, "if_true"),
+        ],
+        vec![export(4, "result"), export(3, "result")],
+    );
+    let resolver = GuardResolver {
+        package,
+        trap: id(1).parse().unwrap(),
+        reject: true,
+        calls: AtomicUsize::new(0),
+    };
+    let plan = compile(&doc, snapshot, &resolver);
+    assert_eq!(resolver.calls.load(Ordering::Relaxed), 0);
+    assert_eq!(plan.steps().len(), 2);
+    assert!(plan.diagnostics().is_empty());
+    for export in plan.exports() {
+        assert_eq!(
+            plan.constants()[export.slot.index()],
+            FoldedValue::Value(Value::I64(42))
+        );
+    }
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config::with_cases(128))]
+    #[test]
+    fn nested_try_chains_match_independent_reference(a in proptest::num::i64::ANY,b in proptest::num::i64::ANY,depth in 1u32..10) {
+        let (package,snapshot)=catalog();
+        let mut nodes=vec![node(1,"divide",a,b)]; let mut edges=vec![]; let mut exports=vec![export(1,"quotient")];
+        let mut ty="core/i64@1".to_owned();
+        for n in 2..=depth+1 {
+            nodes.push(try_node(n,&ty,None));
+            edges.push(edge(n,n-1,if n==2 {"quotient"} else {"result"},n,"value"));
+            exports.push(export(n,"result"));
+            ty=format!("core/result@1<{ty}>");
+        }
+        nodes.reverse();edges.reverse();exports.reverse();
+        let doc=graph(&package,nodes,edges,exports);
+        let doc=from_json(&to_json(&doc).unwrap()).unwrap();
+        let analysis=analyze(&doc,&snapshot);
+        let expected=reference::Reference::new(&doc,&snapshot,&analysis).exports();
+        let resolver=Counting::new(package);let plan=compile(&doc,snapshot.clone(),&resolver);
+        proptest::prop_assert_eq!(resolver.folds.load(Ordering::Relaxed),1);
+        for (actual,expected) in plan.evaluate(&doc,&snapshot,EvaluationOptions::default()).unwrap().exports().zip(expected) {
+            match (actual.unwrap().outcome,expected) {
+                (Ok(actual),Ok(expected))=>proptest::prop_assert_eq!(actual,&expected),
+                (Err(actual),Err(expected))=>{proptest::prop_assert_eq!(actual.source,expected.source);proptest::prop_assert_eq!(actual.fault.code,expected.code);}
+                _=>proptest::prop_assert!(false,"try oracle mismatch"),
+            }
+        }
+    }
+}
+
 #[test]
 fn coalesce_distinguishes_none_present_scalars_and_json_null_after_roundtrip() {
     let (package, snapshot) = catalog();
@@ -749,7 +1014,7 @@ fn lazy_preflight_and_unsupported_forms_fail_before_external_resolution() {
     ));
     assert_eq!(resolver.resolves.load(Ordering::Relaxed), 0);
     let unimplemented = json!({"id":id(1),"definition_id":"core/try","definition_version":1,"config_version":1,
-        "config":{},"type_pins":{"T":"core/i64@1"},"inputs":{"value":integer_literal(1)}});
+        "config":{},"type_pins":{"T":"core/string@1"},"inputs":{"value":{"type":"core/string@1","value":"unsupported leaf"}}});
     let doc = graph(&package, vec![unimplemented], vec![], vec![]);
     let analysis = analyze(&doc, &snapshot);
     assert!(

@@ -21,8 +21,8 @@ impl SlotIx {
     }
 }
 
-/// Supported scalar/JSON leaves and recursively typed options. Nested option
-/// values follow the model's boxed/unboxed representation, not JSON null.
+/// Supported scalar/JSON leaves and recursively typed options/results. Values
+/// follow the model's boxed/unboxed representation, not JSON null.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanType {
     Bool,
@@ -34,6 +34,7 @@ pub enum PlanType {
     F64,
     Json,
     Option(Box<PlanType>),
+    Result(Box<PlanType>),
 }
 
 #[cfg(test)]
@@ -55,7 +56,8 @@ mod tests {
         assert!(!nested.accepts(&Value::Some(Arc::new(Value::Bool(false)))));
         assert!(
             !nested.accepts(&Value::Err(Arc::new(orange_model::value::NodeError {
-                code: "core/Test".into()
+                code: "core/Test".into(),
+                node: None
             })))
         );
     }
@@ -68,11 +70,45 @@ mod tests {
         for invalid in [
             "core/option@1<core/string@1>",
             "core/option@1<core/i64@1,core/i64@1>",
-            "core/result@1<core/i64@1>",
             "core/option@1<$T>",
             "core/option@2<core/i64@1>",
         ] {
             assert!(PlanType::parse(invalid).is_none());
+        }
+    }
+
+    #[test]
+    fn result_types_validate_error_codes_and_success_boxing() {
+        let error = Value::Err(Arc::new(orange_model::value::NodeError {
+            code: "core/DivideByZero".into(),
+            node: None,
+        }));
+        let scalar = PlanType::Result(Box::new(PlanType::I64));
+        assert!(scalar.accepts(&error));
+        assert!(scalar.accepts(&Value::I64(1)));
+        assert!(!scalar.accepts(&Value::Ok(Arc::new(Value::I64(1)))));
+        let nested = PlanType::Result(Box::new(scalar));
+        assert!(nested.accepts(&Value::Ok(Arc::new(error.clone()))));
+        assert!(!nested.accepts(&Value::I64(1)));
+        assert!(nested.accepts(&error)); // An actual outer Err, not Ok(Err).
+        let optional = PlanType::Result(Box::new(PlanType::Option(Box::new(PlanType::Result(
+            Box::new(PlanType::I64),
+        )))));
+        assert!(optional.accepts(&Value::Ok(Arc::new(Value::None))));
+        assert!(!optional.accepts(&Value::None));
+        let long = format!("core/{}", "x".repeat(257));
+        for code in [
+            "no_namespace",
+            "core/secret\ntext",
+            "core/a/b",
+            long.as_str(),
+        ] {
+            assert!(
+                !nested.accepts(&Value::Err(Arc::new(orange_model::value::NodeError {
+                    code: code.into(),
+                    node: None
+                })))
+            );
         }
     }
 }
@@ -90,6 +126,12 @@ impl PlanType {
         {
             return Self::parse_depth(inner, depth + 1).map(|inner| Self::Option(Box::new(inner)));
         }
+        if let Some(inner) = ty
+            .strip_prefix("core/result@1<")
+            .and_then(|s| s.strip_suffix('>'))
+        {
+            return Self::parse_depth(inner, depth + 1).map(|inner| Self::Result(Box::new(inner)));
+        }
         Some(match ty {
             "core/bool@1" => Self::Bool,
             "core/i32@1" => Self::I32,
@@ -103,6 +145,14 @@ impl PlanType {
         })
     }
     pub(crate) fn accepts(&self, value: &Value) -> bool {
+        if let Self::Result(inner) = self {
+            return match value {
+                Value::Err(error) => crate::compile::valid_identifier(&error.code),
+                Value::Ok(value) if inner.unboxed_error() => inner.accepts(value),
+                _ if inner.unboxed_error() => false,
+                _ => inner.accepts(value),
+            };
+        }
         if let Self::Option(inner) = self {
             return match value {
                 Value::None => true,
@@ -124,6 +174,16 @@ impl PlanType {
                 | (Self::F64, Value::F64(_))
                 | (Self::Json, Value::Json(_))
         )
+    }
+    /// Whether a valid value of this type can carry the Err discriminant directly.
+    pub(crate) fn unboxed_error(&self) -> bool {
+        match self {
+            Self::Result(_) => true,
+            Self::Option(inner) if !matches!(inner.as_ref(), Self::Option(_)) => {
+                inner.unboxed_error()
+            }
+            _ => false,
+        }
     }
 }
 

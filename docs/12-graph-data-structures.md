@@ -568,6 +568,7 @@ pub enum Value {
     Enum { tag: u32, payload: Option<Arc<Value>> },
     None, Some(Arc<Value>),                  // Some is boxed only for nested option<option<T>>
     Err(Arc<NodeError>),                     // only inside result<T>
+    Ok(Arc<Value>),                          // only ambiguous result success payloads
     Json(Arc<JsonRepr>),
     Handle(HandleId),
 }
@@ -578,7 +579,7 @@ pub struct MapRepr { /* insertion-ordered; keys restricted per 11 §5.2 */ }
 pub enum JsonRepr { Null, Bool(bool), Number(NumberText), String(ArcStr), Array(Box<[JsonRepr]>), Object(/* ordered */) }
 ```
 
-- `option<T>` is `None`, or the unboxed `T` value (static types disambiguate). Nesting boxes the inner layer. `result<T>` is `Err(…)` or the unboxed `T`; `result<core/error@1>` boxes. **Missing** exists only as an absent record field or JSON key, never as a free-standing `Value`. Together these make None, missing, JSON null and Error distinct by construction (FR-08).
+- `option<T>` is `None`, or the unboxed `T` value (static types disambiguate). Nesting boxes the inner layer. `result<T>` is `Err(…)` or the unboxed `T`, except a success whose static payload type can carry an unboxed Err uses `Ok(Arc<Value>)`. This includes nested Result, Option<Result>, and core/error; adjacent nested options already hide the inner tag in Some. Box selection is static, including a successful None payload. Thus Ok(Err) cannot collapse into an outer Err. **Missing** exists only as an absent record field or JSON key, never as a free-standing `Value`. Together these make None, missing, JSON null and Error distinct by construction (FR-08).
 - Clone is an `Arc` increment. Mutation-style nodes consume a uniquely owned value or copy on write ([03](03-data-and-execution.md)).
 - Records are addressed by compiled field index, never by name at run time.
 - Secrets are never `Value`s. Brokers hold them ([05](05-services-and-platforms.md)).
@@ -590,7 +591,7 @@ Implementation notes (WU-00/00b.4; Rust spelling only):
 - **Record type:** `RecordRepr::ty` retains canonical `TypeExpr` even with 00c interning. The standalone codec returns freely owned values without retaining a registry snapshot. Migration to a transient key waits for a runtime consumer that owns the matching snapshot for every key use; a detached key must not replace persisted type identity.
 - **Enum tag:** the variant's index in schema order.
 - **JSON:** `Json` holds verbatim JSON text; the structured `JsonRepr` arrives with the JSON node family (05d).
-- **`NodeError`:** carries only its stable code until the WU-03 message contract.
+- **`NodeError`:** carries its stable code and optional original producer node; the full message/activation contract remains WU-03/runtime work.
 - **Equality and hashing** are structural, with floats compared by bit pattern and lists by elements whatever their storage; they are not the language `eq`/`hash` constraints.
 
 ## 8. Registry snapshot

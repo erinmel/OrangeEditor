@@ -65,7 +65,7 @@ impl<'a> Reference<'a> {
             .filter(|p| p.direction == PortDirection::Input)
         {
             assert!(input.variadic.is_none());
-            if input.is_lazy() {
+            if input.is_lazy() && node.definition.id.as_str() != "core/try" {
                 if node.definition.id.as_str() == "core/coalesce" {
                     if !matches!(inputs.first(), Some(Value::None)) {
                         continue;
@@ -117,10 +117,17 @@ impl<'a> Reference<'a> {
             }
         }
         let result = if let Some(fault) = first_fault {
-            Err(fault)
+            if node.definition.id.as_str() == "core/try" {
+                Ok(vec![Value::Err(Arc::new(orange_model::value::NodeError {
+                    code: fault.code.into(),
+                    node: Some(fault.source),
+                }))])
+            } else {
+                Err(fault)
+            }
         } else {
             *self.executions.entry(node_id).or_default() += 1;
-            interpret(node, &inputs).map_err(|code| Fault {
+            interpret(node, &inputs, signature).map_err(|code| Fault {
                 source: node_id,
                 code,
             })
@@ -148,8 +155,30 @@ impl<'a> Reference<'a> {
     }
 }
 
-fn interpret(node: &NodeInstance, inputs: &[Value]) -> Result<Vec<Value>, &'static str> {
+fn interpret(
+    node: &NodeInstance,
+    inputs: &[Value],
+    signature: &orange_model::document::SignatureSnapshot,
+) -> Result<Vec<Value>, &'static str> {
     match node.definition.id.as_str() {
+        "core/try" => {
+            let [value] = inputs else {
+                panic!("oracle try contract")
+            };
+            let term =
+                orange_model::type_term::TypeTerm::parse(signature.ports[0].ty.as_ref().unwrap())
+                    .unwrap();
+            // Independent type walk: adjacent options use Some and hide the Err tag.
+            let exposed = term.core("result").is_some()
+                || term
+                    .core("option")
+                    .is_some_and(|args| args[0].core("result").is_some());
+            return Ok(vec![if exposed {
+                Value::Ok(Arc::new(value.clone()))
+            } else {
+                value.clone()
+            }]);
+        }
         "core/coalesce" => {
             let value = match inputs {
                 [Value::None, fallback] => fallback.clone(),
