@@ -194,6 +194,40 @@ fn a_value_leaving_a_zone_other_than_through_the_end_is_rejected() {
     assert!(result.diagnostics[0].subject.edge.is_some());
 }
 
+fn switch(cases: Value) -> RegionValidation {
+    let mut switch = node(
+        1,
+        "core/switch",
+        NodeKind::Action,
+        json!({"cases": cases}),
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::data_in("key", int()),
+            PortDescriptor::exec_out("case").variadic(1, None),
+            PortDescriptor::exec_out("default"),
+        ],
+    );
+    switch.json["variadic"] = json!({"case": {"order": [0, 1], "next": 2}});
+    run(vec![switch], vec![])
+}
+
+#[test]
+fn switch_cases_must_be_present_distinct_and_of_the_key_kind() {
+    let switch_faults = |cases| {
+        switch(cases)
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::SwitchCase)
+            .count()
+    };
+    assert_eq!(switch_faults(json!({"0": 1, "1": 2})), 0);
+    assert_eq!(switch_faults(json!({"0": 1, "1": 1})), 1);
+    assert_eq!(switch_faults(json!({"0": 1, "1": "two"})), 1);
+    assert_eq!(switch_faults(json!({"0": 1})), 1);
+    assert_eq!(switch_faults(json!({"0": 1, "1": 2, "7": 3})), 1);
+    assert_eq!(switch_faults(json!({})), 1);
+}
+
 #[test]
 fn zones_must_nest_properly() {
     // Zone b's end sits inside zone a's body while its begin is outside it.

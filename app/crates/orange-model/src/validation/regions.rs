@@ -412,6 +412,17 @@ fn check_body(
                 origin,
             ));
         }
+        if definition == "core/switch"
+            && resolved
+                .get(&node.id)
+                .is_some_and(|signature| !switch_cases_valid(node, signature))
+        {
+            result.diagnostics.push(Diagnostic::new(
+                DiagnosticCode::SwitchCase,
+                subject(function, node.id, None, None),
+                origin,
+            ));
+        }
         let regions = regions_of(node.id);
         match definition {
             "core/break" | "core/continue"
@@ -510,6 +521,53 @@ fn check_body(
             result.index.owners.insert(*node, roots[only].clone());
         }
     }
+}
+
+/// `config.cases` of a `core/switch` (11 §8.4): one value for every `case` instance and no
+/// other entries, all distinct, of the JSON kind of the key type (integers, `bool` and
+/// `string`; other key types are only checked for presence and uniqueness).
+fn switch_cases_valid(node: &crate::document::NodeInstance, signature: &SignatureSnapshot) -> bool {
+    let case = "case".parse().expect("port id is valid");
+    let order: &[u16] = node
+        .variadic
+        .get(&case)
+        .map_or(&[], |state| state.order.as_slice());
+    let empty = serde_json::Map::new();
+    let cases = match node.config.get("cases") {
+        None => &empty,
+        Some(value) => match value.as_object() {
+            Some(cases) => cases,
+            None => return false,
+        },
+    };
+    if cases.len() != order.len() {
+        return false;
+    }
+    let key = signature
+        .ports
+        .iter()
+        .find(|port| port.port_id.as_str() == "key")
+        .and_then(|port| port.ty.as_ref())
+        .map(|ty| ty.as_str());
+    let mut seen: Vec<&serde_json::Value> = Vec::new();
+    for instance in order {
+        let Some(value) = cases.get(&instance.to_string()) else {
+            return false;
+        };
+        let kind_ok = match key {
+            Some("core/i32@1" | "core/i64@1" | "core/u32@1" | "core/u64@1") => {
+                value.is_i64() || value.is_u64()
+            }
+            Some("core/bool@1") => value.is_boolean(),
+            Some("core/string@1") => value.is_string(),
+            _ => true,
+        };
+        if !kind_ok || seen.contains(&value) {
+            return false;
+        }
+        seen.push(value);
+    }
+    true
 }
 
 /// The zone family and side of a zone intrinsic (`core/map-begin` is `("map", false)`).
