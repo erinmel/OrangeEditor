@@ -445,6 +445,16 @@ fn check_body(
         }
     }
 
+    check_zones(
+        document,
+        resolved,
+        body,
+        function,
+        error_edges,
+        origin,
+        result,
+    );
+
     // Unreachable exec nodes, except those that unresolved nodes may feed.
     let mut maybe = BTreeSet::new();
     let mut stack: Vec<_> = local_incomplete.iter().copied().collect();
@@ -499,6 +509,170 @@ fn check_body(
         if let [only] = set.iter().copied().collect::<Vec<_>>()[..] {
             result.index.owners.insert(*node, roots[only].clone());
         }
+    }
+}
+
+/// The zone family and side of a zone intrinsic (`core/map-begin` is `("map", false)`).
+fn zone_of(definition: &str) -> Option<(&str, bool)> {
+    let name = definition.strip_prefix("core/")?;
+    let (family, side) = name.split_once('-')?;
+    if !matches!(family, "repeat" | "map" | "fold" | "filter") {
+        return None;
+    }
+    match side {
+        "begin" => Some((family, false)),
+        "end" => Some((family, true)),
+        _ => None,
+    }
+}
+
+/// A data edge: id, source node and port, target node.
+type DataEdge = (EdgeId, NodeId, PortKey, NodeId);
+
+/// Nodes reachable from `start` along `next`, never expanding out of `stop`.
+fn reach(start: NodeId, stop: NodeId, next: &BTreeMap<NodeId, Vec<NodeId>>) -> BTreeSet<NodeId> {
+    let mut seen = BTreeSet::from([start]);
+    let mut stack = vec![start];
+    while let Some(node) = stack.pop() {
+        if node == stop && node != start {
+            continue;
+        }
+        for target in next.get(&node).into_iter().flatten() {
+            if seen.insert(*target) {
+                stack.push(*target);
+            }
+        }
+    }
+    seen
+}
+
+/// Zone pairing, purity, closure and nesting of one body (11 §8.4). The zone body is the
+/// data cone between a begin output and its end input.
+fn check_zones(
+    document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    body: &GraphBody,
+    function: Option<FunctionId>,
+    error_edges: &BTreeSet<EdgeId>,
+    origin: &HostOrigin,
+    result: &mut RegionValidation,
+) {
+    let mut faults: BTreeSet<(NodeId, Option<PortKey>, Option<EdgeId>)> = BTreeSet::new();
+    // (family, zone id) -> (begins, ends)
+    let mut groups: BTreeMap<(String, String), (Vec<NodeId>, Vec<NodeId>)> = BTreeMap::new();
+    for node in body.nodes.values() {
+        let Some((family, end)) = zone_of(node.definition.id.as_str()) else {
+            continue;
+        };
+        match node.config.get("zone").and_then(serde_json::Value::as_str) {
+            Some(zone) if !zone.is_empty() => {
+                let group = groups
+                    .entry((family.to_owned(), zone.to_owned()))
+                    .or_default();
+                if end { &mut group.1 } else { &mut group.0 }.push(node.id);
+            }
+            _ => {
+                faults.insert((node.id, None, None));
+            }
+        }
+    }
+    let mut pairs = Vec::new();
+    for (begins, ends) in groups.values() {
+        if let ([begin], [end]) = (&begins[..], &ends[..]) {
+            pairs.push((*begin, *end));
+        } else {
+            faults.extend(begins.iter().chain(ends).map(|node| (*node, None, None)));
+        }
+    }
+    if pairs.is_empty() {
+        emit_zone_faults(faults, function, origin, result);
+        return;
+    }
+
+    let mut edges: Vec<DataEdge> = Vec::new();
+    for edge in body.edges.values() {
+        if error_edges.contains(&edge.id)
+            || !body.nodes.contains_key(&edge.from.node)
+            || !body.nodes.contains_key(&edge.to.node)
+        {
+            continue;
+        }
+        if let (Ok(from), Ok(to)) = (
+            lookup_port(document, resolved, &edge.from),
+            lookup_port(document, resolved, &edge.to),
+        ) && from.direction == PortDirection::Output
+            && from.kind == PortKind::Data
+            && to.direction == PortDirection::Input
+            && to.kind == PortKind::Data
+        {
+            edges.push((
+                edge.id,
+                edge.from.node,
+                edge.from.port.clone(),
+                edge.to.node,
+            ));
+        }
+    }
+    edges.sort();
+    let mut forward: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    let mut backward: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    for (_, from, _, to) in &edges {
+        forward.entry(*from).or_default().push(*to);
+        backward.entry(*to).or_default().push(*from);
+    }
+
+    let bodies: Vec<BTreeSet<NodeId>> = pairs
+        .iter()
+        .map(|(begin, end)| {
+            let after = reach(*begin, *end, &forward);
+            let before = reach(*end, *begin, &backward);
+            after
+                .intersection(&before)
+                .copied()
+                .filter(|node| node != begin && node != end)
+                .collect()
+        })
+        .collect();
+
+    for ((begin, end), inside) in pairs.iter().zip(&bodies) {
+        for node in inside {
+            let pure = resolved
+                .get(node)
+                .is_none_or(|sig| matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile));
+            if !pure {
+                faults.insert((*node, None, None));
+            }
+        }
+        for (id, from, port, to) in &edges {
+            let source_inside = inside.contains(from) || from == begin;
+            if source_inside && !inside.contains(to) && to != end {
+                faults.insert((*from, Some(port.clone()), Some(*id)));
+            }
+        }
+        for ((other_begin, other_end), _) in pairs.iter().zip(&bodies) {
+            if other_begin == begin {
+                continue;
+            }
+            if inside.contains(other_begin) != inside.contains(other_end) {
+                faults.insert((*other_begin, None, None));
+            }
+        }
+    }
+    emit_zone_faults(faults, function, origin, result);
+}
+
+fn emit_zone_faults(
+    faults: BTreeSet<(NodeId, Option<PortKey>, Option<EdgeId>)>,
+    function: Option<FunctionId>,
+    origin: &HostOrigin,
+    result: &mut RegionValidation,
+) {
+    for (node, port, edge) in faults {
+        result.diagnostics.push(Diagnostic::new(
+            DiagnosticCode::ZoneStructure,
+            subject(function, node, port, edge),
+            origin,
+        ));
     }
 }
 
