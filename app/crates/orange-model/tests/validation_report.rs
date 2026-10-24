@@ -539,7 +539,7 @@ fn a_node_blocked_by_an_unresolved_peer_says_so() {
 
 #[test]
 fn an_intrinsic_this_core_does_not_support_says_so() {
-    for definition in ["core/switch", "core/gate"] {
+    for definition in ["core/for-each", "core/repeat-begin"] {
         let doc = document(
             json!([{"id":NODE,"definition_id":definition,"definition_version":1,
                 "config_version":1,"config":{}}]),

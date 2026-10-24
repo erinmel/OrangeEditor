@@ -3,7 +3,7 @@
 
 use super::language::intrinsic_reference;
 use super::{EventAccess, NodeDefinition, Ports, VariableAccess};
-use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, Suspends};
+use crate::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor, Suspends, TypeParam};
 use crate::id::TypeExpr;
 
 fn ty(text: &str) -> TypeExpr {
@@ -30,6 +30,16 @@ fn definition(
         specializations: None,
         config_schema: None,
     }
+}
+
+/// A generic copy of `base`: parameter `name` with these constraints.
+fn generic(mut base: NodeDefinition, name: &str, constraints: &[&str]) -> NodeDefinition {
+    base.type_params.push(TypeParam {
+        name: name.into(),
+        constraints: constraints.iter().map(|text| (*text).to_owned()).collect(),
+        extensions: Default::default(),
+    });
+    base
 }
 
 /// A variable node: its single `value` port is typed by the referenced declaration.
@@ -60,6 +70,12 @@ fn event_definition(
 
 /// Definitions of the built-in control nodes, at definition and config version 1.
 pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
+    let mut definitions = core_control_definitions();
+    definitions.extend(selection_and_state_definitions());
+    definitions
+}
+
+fn core_control_definitions() -> Vec<NodeDefinition> {
     use NodeKind::{Action, Async, Iterator};
     let exec_in = || PortDescriptor::exec_in("in");
     let sequence_then = PortDescriptor::exec_out("then").variadic(2, None);
@@ -165,6 +181,62 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
             Async,
             Some(Suspends::Always),
             EventAccess::Await,
+        ),
+    ]
+}
+
+/// Switch and the run-scoped state controls (11 §8.4). Their outcome outs replace `then`;
+/// `case`/`default` are ordinary outs of the parent region (11 §7.1).
+fn selection_and_state_definitions() -> Vec<NodeDefinition> {
+    use NodeKind::Action;
+    let bool_state = |id| PortDescriptor::data_out(id, ty("core/bool@1"), OutputSource::State);
+    vec![
+        generic(
+            definition(
+                "core/switch",
+                Action,
+                None,
+                vec![
+                    PortDescriptor::exec_in("in"),
+                    PortDescriptor::data_in("key", ty("$K")),
+                    PortDescriptor::exec_out("case").variadic(1, None),
+                    PortDescriptor::exec_out("default"),
+                ],
+            ),
+            "K",
+            &["eq"],
+        ),
+        definition(
+            "core/gate",
+            Action,
+            None,
+            vec![
+                PortDescriptor::exec_in("enter"),
+                PortDescriptor::exec_in("open"),
+                PortDescriptor::exec_in("close"),
+                PortDescriptor::exec_in("toggle"),
+                bool_state("is_open"),
+            ],
+        ),
+        definition(
+            "core/do-once",
+            Action,
+            None,
+            vec![
+                PortDescriptor::exec_in("in"),
+                PortDescriptor::exec_in("reset"),
+            ],
+        ),
+        definition(
+            "core/flip-flop",
+            Action,
+            None,
+            vec![
+                PortDescriptor::exec_in("in"),
+                PortDescriptor::exec_out("a"),
+                PortDescriptor::exec_out("b"),
+                bool_state("is_a"),
+            ],
         ),
     ]
 }
