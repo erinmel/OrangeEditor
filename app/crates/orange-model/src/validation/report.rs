@@ -11,9 +11,8 @@ use super::nodes::{CallEvidence, validate_nodes_with};
 use super::{
     Diagnostic, FunctionEvidence, FunctionSummary, LeafEffects, Severity, analyze_functions,
     sort_diagnostics, validate_availability, validate_body_domains, validate_config,
-    validate_connections,
-    validate_control_cycles, validate_data_cycles, validate_exports, validate_inputs, validate_regions,
-    validate_state, validate_streams,
+    validate_connections, validate_control_cycles, validate_data_cycles, validate_exports,
+    validate_inputs, validate_regions, validate_state, validate_streams,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
