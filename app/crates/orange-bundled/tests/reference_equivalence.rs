@@ -4,7 +4,7 @@
 mod reference;
 
 use orange_bundled::{MathPackage, Operation, math_definitions};
-use orange_compiler::{CompileOptions, FoldedValue, compile_pure};
+use orange_compiler::{CompileOptions, EvaluationOptions, compile_pure};
 use orange_model::catalog::{Ports, RegistryBuilder, RegistrySnapshot};
 use orange_model::document::NodeKind;
 use orange_model::validation::HostOrigin;
@@ -110,11 +110,15 @@ fn check(
     )
     .unwrap();
     assert_eq!(plan.exports().len(), expected.len());
-    for ((export, source), outcome) in plan.exports().iter().zip(doc.exports()).zip(&expected) {
+    let evaluation = plan
+        .evaluate(doc, snapshot, EvaluationOptions::default())
+        .unwrap();
+    for ((export, source), outcome) in evaluation.exports().zip(doc.exports()).zip(&expected) {
+        let export = export.unwrap();
         assert_eq!(export.id, source.id);
-        match (&plan.constants()[export.slot.index()], outcome) {
-            (FoldedValue::Value(actual), Ok(value)) => assert_eq!(actual, value),
-            (FoldedValue::Fault(actual), Err(fault)) => {
+        match (export.outcome, outcome) {
+            (Ok(actual), Ok(value)) => assert_eq!(actual, value),
+            (Err(actual), Err(fault)) => {
                 assert_eq!(actual.source, fault.source);
                 assert_eq!(actual.fault.code, fault.code);
             }

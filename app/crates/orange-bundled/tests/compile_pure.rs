@@ -3,6 +3,7 @@ use orange_compiler::{
     CompileError, CompileOptions, FoldedValue, KernelBinding, KernelFault, PureKernel,
     PureKernelResolver, ResolveError, compile_pure,
 };
+use orange_compiler::{EvaluationError, EvaluationOptions, PlanType};
 use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
 use orange_model::document::{NodeInstance, NodeKind, SignatureSnapshot};
 use orange_model::validation::{DiagnosticCode, HostOrigin, Severity};
@@ -15,6 +16,168 @@ use std::sync::{
 
 #[path = "support/reference.rs"]
 mod reference;
+
+#[test]
+fn checked_evaluation_is_borrowed_pinned_and_does_not_reexecute_kernels() {
+    let (package, snapshot) = catalog();
+    let mut doc = graph(
+        &package,
+        vec![node(1, "add", 20, 22)],
+        vec![],
+        vec![export(1, "sum")],
+    );
+    let original = doc.clone();
+    let resolver = Counting::new(package);
+    let plan = compile(&doc, snapshot.clone(), &resolver);
+    let evaluation = plan
+        .evaluate(&doc, &snapshot, EvaluationOptions::default())
+        .unwrap();
+    let result = evaluation.export(0).unwrap().unwrap();
+    assert_eq!(result.id, "out-1");
+    assert_eq!(result.ty, PlanType::I64);
+    assert_eq!(result.outcome, Ok(&Value::I64(42)));
+    let FoldedValue::Value(constant) = &plan.constants()[plan.exports()[0].slot.index()] else {
+        panic!()
+    };
+    assert!(std::ptr::eq(result.outcome.unwrap(), constant));
+    assert!(Arc::ptr_eq(evaluation.snapshot(), &snapshot));
+    let change = doc
+        .apply([orange_model::DocCommand::SetLiteral {
+            port: orange_model::document::PortRef {
+                node: id(1).parse().unwrap(),
+                port: "a".parse().unwrap(),
+            },
+            literal: Some(orange_model::document::literal::Literal::value(
+                "core/i64@1".parse().unwrap(),
+                json!("21"),
+            )),
+        }])
+        .unwrap();
+    assert!(matches!(
+        plan.evaluate(&doc, &snapshot, EvaluationOptions::default()),
+        Err(EvaluationError::StaleDocument)
+    ));
+    let (_, new_snapshot) = catalog();
+    assert!(matches!(
+        plan.evaluate(&original, &new_snapshot, EvaluationOptions::default()),
+        Err(EvaluationError::StaleRegistry)
+    ));
+    assert_eq!(
+        evaluation.export(0).unwrap().unwrap().outcome,
+        Ok(&Value::I64(42))
+    );
+    assert_eq!(evaluation.document_revision(), 0);
+    let _ = doc.revert(change.inverse).unwrap();
+    let restored = plan
+        .evaluate(&doc, &snapshot, EvaluationOptions::default())
+        .unwrap();
+    assert_eq!(restored.document_revision(), doc.revision());
+    assert_eq!(restored.source_revision(), 0);
+    assert_eq!(resolver.folds.load(Ordering::Relaxed), 1);
+    assert_eq!(resolver.resolves.load(Ordering::Relaxed), 1);
+}
+
+#[test]
+fn evaluation_keeps_graph_faults_distinct_from_entry_errors() {
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![node(1, "divide", 1, 0), node(2, "add", 0, 1)],
+        vec![edge(1, 1, "quotient", 2, "a")],
+        vec![export(2, "sum")],
+    );
+    let plan = compile(&doc, snapshot.clone(), &package);
+    let evaluation = plan
+        .evaluate(&doc, &snapshot, EvaluationOptions::default())
+        .unwrap();
+    let result = evaluation.exports().next().unwrap().unwrap();
+    assert_eq!(result.source.node, id(2).parse().unwrap());
+    assert_eq!(result.source.port, "sum".parse().unwrap());
+    let fault = result.outcome.unwrap_err();
+    assert_eq!(fault.source, id(1).parse().unwrap());
+    assert_eq!(fault.fault.code, "core/DivideByZero");
+}
+
+#[test]
+fn evaluation_export_limit_and_cancellation_are_checked_at_entry_and_reads() {
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![node(1, "add", 20, 22)],
+        vec![],
+        vec![
+            export(1, "sum"),
+            json!({"id":"second","node":id(1),"port":"sum"}),
+        ],
+    );
+    let plan = compile(&doc, snapshot.clone(), &package);
+    let cancel = AtomicBool::new(true);
+    assert!(matches!(
+        plan.evaluate(
+            &doc,
+            &snapshot,
+            EvaluationOptions {
+                cancel: Some(&cancel),
+                ..Default::default()
+            }
+        ),
+        Err(EvaluationError::Cancelled)
+    ));
+    assert!(matches!(
+        plan.evaluate(
+            &doc,
+            &snapshot,
+            EvaluationOptions {
+                max_exports: 1,
+                ..Default::default()
+            }
+        ),
+        Err(EvaluationError::ResourceLimit)
+    ));
+    cancel.store(false, Ordering::Relaxed);
+    let evaluation = plan
+        .evaluate(
+            &doc,
+            &snapshot,
+            EvaluationOptions {
+                max_exports: 2,
+                cancel: Some(&cancel),
+            },
+        )
+        .unwrap();
+    assert_eq!(evaluation.len(), 2);
+    assert!(!evaluation.is_empty());
+    let mut results = evaluation.exports();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results.next().unwrap().unwrap().id, "out-1");
+    cancel.store(true, Ordering::Relaxed);
+    assert_eq!(results.next().unwrap(), Err(EvaluationError::Cancelled));
+    assert_eq!(evaluation.export(1), Err(EvaluationError::Cancelled));
+    assert_eq!(
+        EvaluationError::Cancelled.message_key(),
+        "core/evaluate-cancelled"
+    );
+}
+
+#[test]
+fn empty_pure_evaluation_and_missing_export_have_explicit_results() {
+    let (package, snapshot) = catalog();
+    let doc = graph(&package, vec![], vec![], vec![]);
+    let plan = compile(&doc, snapshot.clone(), &package);
+    let evaluation = plan
+        .evaluate(
+            &doc,
+            &snapshot,
+            EvaluationOptions {
+                max_exports: 0,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+    assert!(evaluation.is_empty());
+    assert_eq!(evaluation.exports().len(), 0);
+    assert_eq!(evaluation.export(0).unwrap(), None);
+}
 
 fn id(n: u32) -> String {
     format!("10000000-0000-4000-8000-{n:012x}")
