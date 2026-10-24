@@ -23,7 +23,7 @@ pub enum DataOperation {
     And,
     Or,
     Coalesce,
-    Try,
+    Try { boxed: bool },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -89,6 +89,7 @@ pub struct DataPlan {
     pub(crate) sources: Vec<SlotSource>,
     pub(crate) initial: Vec<Option<FoldedValue>>,
     pub(crate) exports: Vec<Export>,
+    pub(crate) export_nodes: Vec<NodeIx>,
     pub(crate) diagnostics: Vec<Diagnostic>,
     pub(crate) resources: DataResources,
 }
@@ -121,6 +122,23 @@ impl DataPlan {
     }
     pub fn exports(&self) -> &[Export] {
         &self.exports
+    }
+    pub fn export_node(&self, index: usize) -> Option<NodeIx> {
+        self.export_nodes.get(index).copied()
+    }
+    pub fn initial_charge(&self) -> Option<usize> {
+        let mut bytes = 0usize;
+        for (index, value) in self.initial.iter().enumerate() {
+            let amount = match value {
+                Some(FoldedValue::Value(value)) => {
+                    self.value_charge(SlotIx(u32::try_from(index).ok()?), value)?
+                }
+                Some(FoldedValue::Fault(fault)) => self.fault_charge(fault)?,
+                None => 0,
+            };
+            bytes = bytes.checked_add(amount)?;
+        }
+        Some(bytes)
     }
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics

@@ -44,6 +44,6 @@ The initial [orange-runtime](app/crates/orange-runtime) crate supplies versioned
 
 Fresh registered definitions carry typed volatility/determinism metadata. Publication enforces pure determinism, seeded package entropy and host-owned state/clock classification before future execution lowering.
 
-MathPackage also registers org.orange.math/random-u64 with a separate trusted entropy binding. It draws from a host-owned stream and cannot run through the pure folder; compiled entropy graph evaluation remains the next integration slice.
+MathPackage also registers org.orange.math/random-u64 with a separate trusted entropy binding. It draws from a host-owned stream and cannot run through the pure folder; DataActivation now evaluates the checked data plan in explicit epochs.
 
-The checked DataPlan compiler now lowers pure/seeded-entropy root data exports to dense typed instructions, folding shared constant islands while leaving entropy unevaluated. Static lazy arms are pruned before binding. The existing PurePlan API remains; dynamic frame execution and seeded graph equivalence are the next integration step.
+The checked DataPlan compiler now lowers pure/seeded-entropy root data exports to dense typed instructions, folding shared constant islands while leaving entropy unevaluated. Static lazy arms are pruned before binding. The existing PurePlan API remains; DataActivation executes these plans; independent multi-epoch graph equivalence and general control/actor execution remain next.

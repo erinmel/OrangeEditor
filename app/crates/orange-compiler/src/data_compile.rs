@@ -262,7 +262,9 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     Lazy::And => DataOperation::And,
                     Lazy::Or => DataOperation::Or,
                     Lazy::Coalesce => DataOperation::Coalesce,
-                    Lazy::Try => DataOperation::Try,
+                    Lazy::Try => DataOperation::Try {
+                        boxed: port_type(node_id, &sig.ports[0])?.unboxed_error(),
+                    },
                 }
             } else if sig.kind == NodeKind::Pure {
                 let binding = self
@@ -389,6 +391,7 @@ pub fn compile_data(
             sources: vec![],
             initial: vec![],
             exports: vec![],
+            export_nodes: vec![],
             diagnostics: vec![],
             resources: DataResources {
                 slots: 0,
@@ -423,6 +426,12 @@ pub fn compile_data(
             id: export.id.clone(),
             slot,
         });
+        state.plan.export_nodes.push(
+            *state
+                .completed
+                .get(&export.node)
+                .ok_or(CompileError::ValidationIncomplete)?,
+        );
     }
     state.plan.diagnostics = state.folder.diagnostics().to_vec();
     orange_model::validation::sort_diagnostics(&mut state.plan.diagnostics);

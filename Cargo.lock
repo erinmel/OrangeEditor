@@ -295,6 +295,7 @@ version = "0.0.0"
 dependencies = [
  "orange-compiler",
  "orange-model",
+ "orange-runtime",
  "proptest",
  "serde_json",
  "thiserror",
@@ -326,6 +327,7 @@ dependencies = [
 name = "orange-runtime"
 version = "0.0.0"
 dependencies = [
+ "orange-compiler",
  "orange-model",
  "sha2",
  "thiserror",

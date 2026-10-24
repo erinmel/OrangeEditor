@@ -16,6 +16,13 @@ pub struct EntropyKey {
     pub activation_sequence: u64,
     pub invocation: u64,
 }
+/// Entropy-specific replay fields. Plan/provider/ingestion/clock records are separate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EntropyReplayMetadata {
+    pub algorithm: &'static str,
+    pub seed: u64,
+    pub activation_sequence: u64,
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum EntropyError {
@@ -152,7 +159,7 @@ impl EntropySlot {
 #[derive(Debug, Clone, Copy)]
 struct NodeState {
     next: Option<u64>,
-    memo: Option<(u64, u64)>,
+    memo: Option<(u64, u64, Option<u64>)>,
 }
 
 /// One activation's counters and epoch cache. Create a new owner per activation.
@@ -167,6 +174,13 @@ pub struct ActivationEntropy {
     nodes: Vec<NodeState>,
 }
 impl ActivationEntropy {
+    pub fn replay_metadata(&self) -> EntropyReplayMetadata {
+        EntropyReplayMetadata {
+            algorithm: ENTROPY_ALGORITHM,
+            seed: self.seed,
+            activation_sequence: self.sequence,
+        }
+    }
     pub fn new(layout: &EntropyLayout, seed: u64, activation_sequence: u64) -> Self {
         Self {
             layout: layout.0.clone(),
@@ -191,27 +205,42 @@ impl ActivationEntropy {
         Ok(epoch)
     }
     pub fn sample(&mut self, slot: &EntropySlot) -> Result<u64, EntropyError> {
+        let key = self.invocation_key(slot)?;
+        if let Some((_, _, Some(value))) = self.nodes[slot.index].memo {
+            return Ok(value);
+        }
+        let value = EntropyStream::new(key).next_u64()?;
+        let epoch = self.epoch.ok_or(EntropyError::NoEpoch)?;
+        self.nodes[slot.index].memo = Some((epoch, key.invocation, Some(value)));
+        Ok(value)
+    }
+    /// Stable invocation identity within an epoch, independent of stream draw count.
+    pub fn invocation_key(&mut self, slot: &EntropySlot) -> Result<EntropyKey, EntropyError> {
         if !Arc::ptr_eq(&self.layout, &slot.layout) {
             return Err(EntropyError::ForeignSlot);
         }
         let epoch = self.epoch.ok_or(EntropyError::NoEpoch)?;
         let state = &mut self.nodes[slot.index];
-        if let Some((sample_epoch, value)) = state.memo
+        if let Some((sample_epoch, invocation, _)) = state.memo
             && sample_epoch == epoch
         {
-            return Ok(value);
+            return Ok(EntropyKey {
+                seed: self.seed,
+                node: slot.node(),
+                activation_sequence: self.sequence,
+                invocation,
+            });
         }
         let invocation = state.next.ok_or(EntropyError::InvocationExhausted)?;
-        let mut stream = EntropyStream::new(EntropyKey {
+        let key = EntropyKey {
             seed: self.seed,
             node: slot.node(),
             activation_sequence: self.sequence,
             invocation,
-        });
-        let value = stream.next_u64()?;
+        };
         state.next = invocation.checked_add(1);
-        state.memo = Some((epoch, value));
-        Ok(value)
+        state.memo = Some((epoch, invocation, None));
+        Ok(key)
     }
 }
 
@@ -319,6 +348,23 @@ mod tests {
         assert_eq!(activation.sample(&b), Ok(first(key(2))));
         assert_eq!(activation.nodes[0].next, Some(2));
         assert_eq!(activation.nodes[1].next, Some(1));
+    }
+    #[test]
+    fn invocation_identity_is_shared_by_all_stream_words_in_one_epoch() {
+        let layout = EntropyLayout::new([node(1)], 1).unwrap();
+        let slot = layout.slot(node(1)).unwrap();
+        let mut owner = ActivationEntropy::new(&layout, 0, 0);
+        owner.begin_epoch().unwrap();
+        let first_key = owner.invocation_key(&slot).unwrap();
+        let mut stream = EntropyStream::new(first_key);
+        for _ in 0..8 {
+            stream.next_u64().unwrap();
+        }
+        assert_eq!(owner.invocation_key(&slot), Ok(first_key));
+        assert_eq!(owner.sample(&slot), Ok(first(first_key)));
+        assert_eq!(owner.nodes[0].next, Some(1));
+        owner.begin_epoch().unwrap();
+        assert_eq!(owner.invocation_key(&slot).unwrap().invocation, 1);
     }
 
     #[test]
