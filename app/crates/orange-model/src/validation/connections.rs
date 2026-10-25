@@ -236,7 +236,7 @@ fn resolve_endpoint(
     origin: &HostOrigin,
     report: &mut ConnectionValidation,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<std::sync::Arc<PortDescriptor>> {
+) -> Option<std::rc::Rc<PortDescriptor>> {
     match resolved.port(endpoint) {
         Ok(port) => Some(port),
         Err(PortLookupError::MissingNode | PortLookupError::UnknownPort) => {

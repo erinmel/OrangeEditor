@@ -397,7 +397,7 @@ fn exec_outputs(
 
 struct DataEdge<'a> {
     edge: &'a Edge,
-    from: std::sync::Arc<PortDescriptor>,
+    from: std::rc::Rc<PortDescriptor>,
 }
 
 enum Requirement {

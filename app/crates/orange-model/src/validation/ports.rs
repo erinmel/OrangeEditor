@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 use std::collections::{BTreeMap, HashMap};
 use std::ops::Deref;
-use std::sync::Arc;
+use std::rc::Rc;
 
 use thiserror::Error;
 
@@ -26,7 +26,11 @@ pub(crate) enum PortLookupError {
 pub(crate) struct PortResolver<'a> {
     document: &'a GraphDocument,
     resolved: &'a BTreeMap<NodeId, SignatureSnapshot>,
-    cache: RefCell<HashMap<PortRef, Result<Arc<PortDescriptor>, PortLookupError>>>,
+    cache: Rc<CachedPorts>,
+}
+pub(crate) struct CachedPorts {
+    state: u64,
+    entries: RefCell<HashMap<PortRef, Result<Rc<PortDescriptor>, PortLookupError>>>,
 }
 impl<'a> PortResolver<'a> {
     pub(crate) fn new(
@@ -36,15 +40,50 @@ impl<'a> PortResolver<'a> {
         Self {
             document,
             resolved,
-            cache: RefCell::default(),
+            cache: Rc::new(CachedPorts {
+                state: document.state_id(),
+                entries: RefCell::default(),
+            }),
         }
     }
-    pub(crate) fn port(&self, port: &PortRef) -> Result<Arc<PortDescriptor>, PortLookupError> {
-        if let Some(result) = self.cache.borrow().get(port) {
+    pub(crate) fn retain(&self) -> Rc<CachedPorts> {
+        self.cache.clone()
+    }
+    /// The orchestrator hands this cache along with the same settled resolution.
+    /// A new acceptance round must construct a fresh resolver instead.
+    pub(crate) fn resume(
+        document: &'a GraphDocument,
+        resolved: &'a BTreeMap<NodeId, SignatureSnapshot>,
+        cache: Rc<CachedPorts>,
+    ) -> Self {
+        assert_eq!(
+            cache.state,
+            document.state_id(),
+            "projection cache document changed"
+        );
+        debug_assert!(
+            cache
+                .entries
+                .borrow()
+                .iter()
+                .all(|(port, cached)| cached.as_deref()
+                    == lookup_port(document, resolved, port).as_ref())
+        );
+        Self {
+            document,
+            resolved,
+            cache,
+        }
+    }
+    pub(crate) fn port(&self, port: &PortRef) -> Result<Rc<PortDescriptor>, PortLookupError> {
+        if let Some(result) = self.cache.entries.borrow().get(port) {
             return result.clone();
         }
-        let result = lookup_port(self.document, self.resolved, port).map(Arc::new);
-        self.cache.borrow_mut().insert(port.clone(), result.clone());
+        let result = lookup_port(self.document, self.resolved, port).map(Rc::new);
+        self.cache
+            .entries
+            .borrow_mut()
+            .insert(port.clone(), result.clone());
         result
     }
 }
@@ -132,7 +171,7 @@ mod tests {
         let ports = PortResolver::new(&doc, &resolved);
         let first = ports.port(&reference("value")).unwrap();
         let again = ports.port(&reference("value")).unwrap();
-        assert!(Arc::ptr_eq(&first, &again));
+        assert!(Rc::ptr_eq(&first, &again));
         assert_eq!(first.as_ref(), &lookup(&doc, &reference("value")).unwrap());
         for _ in 0..2 {
             assert_eq!(
@@ -140,7 +179,7 @@ mod tests {
                 Err(PortLookupError::UnknownPort)
             );
         }
-        assert_eq!(ports.cache.borrow().len(), 2);
+        assert_eq!(ports.cache.entries.borrow().len(), 2);
     }
 
     /// Looks a port up against the core registry's fresh resolution of `doc`.

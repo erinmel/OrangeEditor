@@ -304,6 +304,7 @@ fn run_analysis(
     let Settled {
         passes:
             BodyPasses {
+                projections,
                 nodes,
                 connections,
                 data_cycles,
@@ -316,7 +317,7 @@ fn run_analysis(
         ..
     } = settle(document, registry, &leaf_effects, &index, seed, options)?;
 
-    let ports = super::ports::PortResolver::new(document, &nodes.resolved);
+    let ports = super::ports::PortResolver::resume(document, &nodes.resolved, projections);
     let availability = super::availability::validate_availability_with_ports(
         document,
         &ports,
@@ -443,5 +444,19 @@ fn domain_blocked_analysis(
         document_state: document.state_id(),
         registry_generation: registry.generation(),
         covered: DOMAIN_ONLY_CHECKS,
+    }
+}
+
+#[cfg(test)]
+mod thread_contract {
+    use super::*;
+
+    #[test]
+    fn private_projection_cache_does_not_change_public_thread_boundaries() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<GraphDocument>();
+        send_sync::<RegistrySnapshot>();
+        send_sync::<ValidationReport>();
+        send_sync::<ValidationAnalysis>();
     }
 }
