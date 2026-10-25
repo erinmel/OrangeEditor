@@ -12,6 +12,7 @@
 //! signature keeps `$name` for them. The issues are returned for the caller to report.
 
 use std::collections::BTreeSet;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use super::component::{ComponentInference, InferenceIssue, infer_components};
 use crate::catalog::{RegistrySnapshot, call_interface};
@@ -76,39 +77,55 @@ fn plan_in_place(
     // neighbours are read there, from the change the edit makes.
     let change = document.scratch(commands.clone(), |_, change| change.clone())?;
     let mut touched = touched_before(document, &change, registry);
-    let (updates, issues, change) = document.scratch(commands.clone(), |after, change| {
-        index.update(after, change);
-        let mut updates = Vec::new();
-        let mut issues = Vec::new();
-        touched.extend(touched_after(after, change, registry));
-        touched.retain(|id| after.node(*id).is_some());
-        let mut inferred_nodes = BTreeSet::new();
-        for component in infer_components(after, index, touched.iter().copied(), registry) {
-            inferred_nodes.extend(component.nodes.iter().copied());
-            updates.extend(component_updates(after, registry, &component));
-            issues.extend(component.issues);
-        }
-        // Calls whose function interface disappeared or became concrete are no longer
-        // generic inference nodes. Clear only their stale argument cache; their historical
-        // signature field and all type pins remain untouched.
-        for id in touched
-            .iter()
-            .copied()
-            .filter(|id| !inferred_nodes.contains(id))
-        {
-            let Some(node) = after.node(id) else { continue };
-            if is_function_call(node) && !node.type_args.is_empty() {
-                updates.push(DocCommand::SetTypeArgs {
-                    node: id,
-                    args: Default::default(),
-                });
+    let planned = reset_index_on_unwind(index, |index| {
+        document.scratch(commands.clone(), |after, change| {
+            index.update(after, change);
+            let mut updates = Vec::new();
+            let mut issues = Vec::new();
+            touched.extend(touched_after(after, change, registry));
+            touched.retain(|id| after.node(*id).is_some());
+            let mut inferred_nodes = BTreeSet::new();
+            for component in infer_components(after, index, touched.iter().copied(), registry) {
+                inferred_nodes.extend(component.nodes.iter().copied());
+                updates.extend(component_updates(after, registry, &component));
+                issues.extend(component.issues);
             }
-        }
-        (updates, issues, change.clone())
-    })?;
+            // Calls whose function interface disappeared or became concrete are no longer
+            // generic inference nodes. Clear only their stale argument cache; their historical
+            // signature field and all type pins remain untouched.
+            for id in touched
+                .iter()
+                .copied()
+                .filter(|id| !inferred_nodes.contains(id))
+            {
+                let Some(node) = after.node(id) else { continue };
+                if is_function_call(node) && !node.type_args.is_empty() {
+                    updates.push(DocCommand::SetTypeArgs {
+                        node: id,
+                        args: Default::default(),
+                    });
+                }
+            }
+            (updates, issues, change.clone())
+        })
+    });
+    let (updates, issues, change) = planned?;
     index.update(document, &change.reversed());
     commands.extend(updates);
     Ok(InferencePlan { commands, issues })
+}
+
+/// Runs `plan` with `index`. If it unwinds, `index` may describe trial content under the
+/// document's unchanged state, so it is replaced by one that is never current and the
+/// next indexed edit rebuilds it.
+fn reset_index_on_unwind<R>(index: &mut DocIndex, plan: impl FnOnce(&mut DocIndex) -> R) -> R {
+    match catch_unwind(AssertUnwindSafe(|| plan(&mut *index))) {
+        Ok(result) => result,
+        Err(panic) => {
+            *index = DocIndex::default();
+            resume_unwind(panic)
+        }
+    }
 }
 
 /// Commits `edit` and its inferred updates as one transaction.
@@ -312,4 +329,23 @@ fn component_updates(
 
 fn is_function_call(node: &crate::document::NodeInstance) -> bool {
     node.definition.id.as_str() == "core/call"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_unwinding_plan_leaves_an_index_that_is_never_current() {
+        let document = GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let mut index = DocIndex::build(&document);
+        assert!(index.is_current(&document));
+        assert_eq!(reset_index_on_unwind(&mut index, |_| 7), 7);
+        assert!(index.is_current(&document));
+        let unwound = catch_unwind(AssertUnwindSafe(|| {
+            reset_index_on_unwind(&mut index, |_| -> () { panic!("inference failure") })
+        }));
+        assert!(unwound.is_err());
+        assert!(!index.is_current(&document));
+    }
 }
