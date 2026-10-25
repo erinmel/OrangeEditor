@@ -62,7 +62,7 @@ fn unsupported_control_and_stale_analysis_never_reach_resolvers() {
     let resolver = Counting::new(package.clone());
     let doc = graph(
         &package,
-        vec![core(1, "on-start"), core(2, "yield")],
+        vec![core(1, "on-start"), core(2, "do-once")],
         vec![edge(1, 1, "then", 2, "in")],
         vec![],
     );
@@ -447,6 +447,110 @@ fn sequence_uses_persisted_order_and_does_not_advance_after_unhandled_fault() {
         } else {
             assert_eq!(run.trace().back().unwrap().outcome, ControlOutcome::Failed);
             assert!(run.variable(id(100).parse().unwrap()).is_none());
+        }
+    }
+}
+
+fn wait(n: u32, duration: i64) -> Json {
+    let mut node = core(n, "wait");
+    node["inputs"] = json!({"duration":{"type":"core/duration@1","value":duration.to_string()}});
+    node
+}
+
+#[test]
+fn sequence_waits_for_suspended_child_and_virtual_clock_does_no_inline_work() {
+    use orange_runtime::{ControlOutcome, Run, RunError, RunOptions};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            sequence(2, &[1, 0]),
+            wait(3, 10),
+            set_bool(4, 100, false),
+            set_bool(5, 100, true),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then#1", 3, "in"),
+            edge(3, 3, "then", 4, "in"),
+            edge(4, 2, "then#0", 5, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(false)))],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    let progress = run.pump(200).unwrap();
+    assert!(!progress.ready);
+    assert_eq!(progress.next_wakeup, Some(10));
+    assert_eq!(
+        run.trace().back().unwrap().outcome,
+        ControlOutcome::Suspended
+    );
+    run.advance_to(9).unwrap();
+    run.pump(200).unwrap();
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&orange_model::Value::Bool(false))
+    );
+    let before = run.trace().len();
+    run.advance_to(10).unwrap();
+    assert_eq!(run.trace().len(), before);
+    assert_eq!(run.advance_to(9), Err(RunError::ClockWentBackwards));
+    while run.pump(1).unwrap().ready {}
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&orange_model::Value::Bool(true))
+    );
+    assert_eq!(
+        run.trace()
+            .iter()
+            .filter(|e| e.node.to_string() == id(3) && e.outcome == ControlOutcome::Then)
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn wait_range_faults_and_stopped_timer_cannot_resume() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    for duration in [-1, 0, 10] {
+        let (doc, plan) = compiled(
+            vec![core(1, "on-start"), wait(2, duration), branch(3, true)],
+            vec![edge(1, 1, "then", 2, "in"), edge(2, 2, "then", 3, "in")],
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        let progress = run.pump(200).unwrap();
+        if duration < 0 {
+            assert_eq!(
+                run.trace()
+                    .back()
+                    .unwrap()
+                    .fault
+                    .as_ref()
+                    .unwrap()
+                    .fault
+                    .code,
+                "core/OutOfRange"
+            );
+        } else if duration == 0 {
+            assert_eq!(run.trace().back().unwrap().outcome, ControlOutcome::True);
+        } else {
+            assert_eq!(progress.next_wakeup, Some(10));
+            run.stop().unwrap();
+            assert!(run.advance_to(10).is_err());
+            assert!(run.pump(200).is_err());
         }
     }
 }

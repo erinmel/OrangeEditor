@@ -23,6 +23,10 @@ impl ControlIx {
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
     Entry,
+    Yield,
+    Wait {
+        duration: usize,
+    },
     Sequence {
         steps: Box<[Option<ControlIx>]>,
     },
@@ -171,6 +175,8 @@ pub fn compile_control(
                 | "core/branch"
                 | "core/set-variable"
                 | "core/sequence"
+                | "core/yield"
+                | "core/wait"
         ) || node.definition.version != 1
             || node.config_version != 1
             || node.provider.is_some()
@@ -331,6 +337,17 @@ pub fn compile_control(
                 ControlOperation::Sequence {
                     steps: steps.into(),
                 }
+            }
+            "core/yield" => ControlOperation::Yield,
+            "core/wait" => {
+                let duration = roots.len();
+                roots.push(DemandRoot {
+                    id: format!("{id}/duration"),
+                    node: *id,
+                    port: "duration".parse().unwrap(),
+                    input: true,
+                });
+                ControlOperation::Wait { duration }
             }
             _ => unreachable!("admitted control"),
         };

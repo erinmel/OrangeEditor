@@ -7,7 +7,7 @@ use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{FaultPolicy, VarScope};
 use orange_model::id::{NodeId, VariableId};
 use orange_model::{GraphDocument, Value};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -40,6 +40,8 @@ pub enum ControlOutcome {
     False,
     Failed,
     Step(usize),
+    Suspended,
+    Yielded,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunEvent {
@@ -55,6 +57,7 @@ pub struct RunLimits {
     pub max_trace: usize,
     pub max_state_bytes: usize,
     pub max_region_depth: usize,
+    pub max_timers: usize,
 }
 impl Default for RunLimits {
     fn default() -> Self {
@@ -64,6 +67,7 @@ impl Default for RunLimits {
             max_trace: 1024,
             max_state_bytes: 16 * 1024 * 1024,
             max_region_depth: 1024,
+            max_timers: 1024,
         }
     }
 }
@@ -88,6 +92,8 @@ pub enum RunError {
     ResourceLimit,
     #[error("The process run identity space is exhausted.")]
     IdentityExhausted,
+    #[error("Virtual monotonic time cannot move backwards.")]
+    ClockWentBackwards,
 }
 impl RunError {
     pub const fn message_key(self) -> &'static str {
@@ -96,6 +102,7 @@ impl RunError {
             Self::InvalidState => "core/run-invalid-state",
             Self::ResourceLimit => "core/run-resource-limit",
             Self::IdentityExhausted => "core/run-identity-exhausted",
+            Self::ClockWentBackwards => "core/run-clock-went-backwards",
         }
     }
 }
@@ -111,6 +118,13 @@ struct Activation {
     supplied: usize,
     outputs: Vec<Option<FoldedValue>>,
     stack: Vec<Cursor>,
+    waiting: Option<(u64, ControlIx)>,
+    yielded: bool,
+}
+struct Timer {
+    run: u64,
+    owner: ControlIx,
+    activation: Activation,
 }
 enum Cursor {
     Sequence { owner: ControlIx, next: usize },
@@ -129,6 +143,9 @@ pub struct Run {
     variables: Vec<Option<Value>>,
     state_bytes: usize,
     versions: Vec<u64>,
+    now: u64,
+    next_timer: u64,
+    timers: BTreeMap<(u64, u64), Timer>,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -201,6 +218,8 @@ impl Run {
                 supplied: 0,
                 outputs: vec![None; plan.host_sources().len()],
                 stack: vec![],
+                waiting: None,
+                yielded: false,
             });
         }
         Ok(Self {
@@ -215,6 +234,9 @@ impl Run {
             versions: vec![0; variables.len()],
             variables,
             state_bytes,
+            now: 0,
+            next_timer: 0,
+            timers: BTreeMap::new(),
         })
     }
     pub fn id(&self) -> u64 {
@@ -222,6 +244,20 @@ impl Run {
     }
     pub fn state(&self) -> RunState {
         self.state
+    }
+    pub fn now(&self) -> u64 {
+        self.now
+    }
+    /// Advancing time enqueues no inline graph execution; pump resumes due waits.
+    pub fn advance_to(&mut self, now: u64) -> Result<(), RunError> {
+        if self.state != RunState::Running {
+            return Err(RunError::InvalidState);
+        }
+        if now < self.now {
+            return Err(RunError::ClockWentBackwards);
+        }
+        self.now = now;
+        Ok(())
     }
     pub fn trace(&self) -> &VecDeque<RunEvent> {
         &self.trace
@@ -263,33 +299,80 @@ impl Run {
         let mut remaining = budget.min(available);
         let initial = remaining;
         while remaining > 0 && self.state == RunState::Running {
+            if self
+                .timers
+                .first_key_value()
+                .is_some_and(|((at, _), _)| *at <= self.now)
+            {
+                remaining -= 1;
+                let (_, timer) = self.timers.pop_first().expect("due timer");
+                if timer.run != self.id {
+                    return Err(RunError::InvalidState);
+                }
+                self.record(RunEvent {
+                    activation: timer.activation.sequence,
+                    node: self.plan.as_ref().unwrap().nodes()[timer.owner.index()].node(),
+                    outcome: ControlOutcome::Then,
+                    fault: None,
+                });
+                self.ready.push_back(timer.activation);
+                continue;
+            }
             let Some(mut activation) = self.ready.pop_front() else {
                 break;
             };
             let result = self.execute(&mut activation, &mut remaining);
             if let Err(error) = result {
                 self.ready.clear();
+                self.timers.clear();
                 self.state = RunState::Faulted;
                 return Err(error);
             }
-            if activation.pc.is_some() || !activation.stack.is_empty() {
-                self.ready.push_front(activation);
+            if let Some((at, owner)) = activation.waiting.take() {
+                if self.timers.len() == self.options.limits.max_timers {
+                    self.ready.clear();
+                    self.timers.clear();
+                    self.state = RunState::Faulted;
+                    return Err(RunError::ResourceLimit);
+                }
+                let sequence = self.next_timer;
+                self.next_timer = sequence.checked_add(1).ok_or(RunError::ResourceLimit)?;
+                self.timers.insert(
+                    (at, sequence),
+                    Timer {
+                        run: self.id,
+                        owner,
+                        activation,
+                    },
+                );
+            } else if activation.pc.is_some() || !activation.stack.is_empty() {
+                if activation.yielded {
+                    activation.yielded = false;
+                    self.ready.push_back(activation);
+                } else {
+                    self.ready.push_front(activation);
+                }
             }
         }
         let count = initial - remaining;
         self.operations += count;
         if budget > 0
             && self.operations == self.options.limits.max_operations
-            && !self.ready.is_empty()
+            && (!self.ready.is_empty() || !self.timers.is_empty())
         {
             self.ready.clear();
+            self.timers.clear();
             self.state = RunState::Faulted;
             return Err(RunError::ResourceLimit);
         }
         Ok(RunProgress {
             operations: count,
-            ready: !self.ready.is_empty(),
-            next_wakeup: None,
+            ready: !self.ready.is_empty()
+                || self
+                    .timers
+                    .first_key_value()
+                    .is_some_and(|((at, _), _)| *at <= self.now),
+            next_wakeup: self.timers.first_key_value().map(|((at, _), _)| *at),
         })
     }
     fn execute(&mut self, activation: &mut Activation, budget: &mut usize) -> Result<(), RunError> {
@@ -329,6 +412,43 @@ impl Run {
         }
         let (next, outcome, fault) = match node.operation() {
             ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
+            ControlOperation::Yield => {
+                activation.yielded = true;
+                (node.then(), ControlOutcome::Yielded, None)
+            }
+            ControlOperation::Wait { duration } => {
+                let Some(result) = self.consume(activation, *duration, budget)? else {
+                    return Ok(());
+                };
+                match result {
+                    FoldedValue::Fault(fault) => {
+                        (node.failed(), ControlOutcome::Failed, Some(fault))
+                    }
+                    FoldedValue::Value(Value::Duration(duration)) => {
+                        if let Some(at) = u64::try_from(duration)
+                            .ok()
+                            .and_then(|d| self.now.checked_add(d))
+                        {
+                            activation.waiting = Some((at, ix));
+                            (node.then(), ControlOutcome::Suspended, None)
+                        } else {
+                            (
+                                node.failed(),
+                                ControlOutcome::Failed,
+                                Some(ConstantFault {
+                                    source: node.node(),
+                                    fault: KernelFault {
+                                        code: "core/OutOfRange",
+                                        message_key: "core/wait-out-of-range",
+                                        message: "Wait duration is outside the clock range.",
+                                    },
+                                }),
+                            )
+                        }
+                    }
+                    _ => return Err(DataError::KernelContract { node: node.node() }.into()),
+                }
+            }
             ControlOperation::Sequence { steps } => {
                 if activation.stack.len() == self.options.limits.max_region_depth {
                     return Err(RunError::ResourceLimit);
@@ -499,6 +619,7 @@ impl Run {
             return Err(RunError::InvalidState);
         }
         self.ready.clear();
+        self.timers.clear();
         self.state = RunState::Stopped;
         Ok(())
     }
