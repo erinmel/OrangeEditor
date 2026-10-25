@@ -1,5 +1,5 @@
 //! A host-driven logical actor. No worker thread, OS clock or editor dependency.
-use crate::data::{HostPoll, PreparedData};
+use crate::data::{CleanupScope, HostPoll, PreparedData};
 use crate::{DataActivation, DataError, DataOptions};
 use orange_compiler::{
     ConstantFault, ControlIx, ControlOperation, ControlPlan, FoldedValue, ForkJoin, HostSource,
@@ -125,6 +125,14 @@ pub struct RunProgress {
     pub ready: bool,
     pub next_wakeup: Option<u64>,
 }
+/// Retained owner counts, including reserved On Stop frames. No graph values.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunOwnership {
+    pub activations: usize,
+    pub strands: usize,
+    pub regions: usize,
+    pub timers: usize,
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
     #[error("{0}")]
@@ -233,6 +241,9 @@ struct Strand {
     cleanup_remaining: usize,
 }
 struct ActivationState {
+    cleanup_scope: Option<CleanupScope>,
+    cleanup_remaining: usize,
+    cleanup_deadline: Option<u64>,
     pull_owner: Option<u64>,
     data: DataActivation,
     locals: Vec<Option<Value>>,
@@ -385,6 +396,9 @@ impl Run {
             activations.insert(
                 sequence as u64,
                 ActivationState {
+                    cleanup_scope: None,
+                    cleanup_remaining: options.max_cleanup_operations,
+                    cleanup_deadline: None,
                     pull_owner: None,
                     data: DataActivation::from_prepared(
                         prepared
@@ -483,6 +497,14 @@ impl Run {
     }
     pub fn pending_continuations(&self) -> usize {
         self.timers.len()
+    }
+    pub fn ownership(&self) -> RunOwnership {
+        RunOwnership {
+            activations: self.activations.len(),
+            strands: self.live_strands,
+            regions: self.regions.len(),
+            timers: self.timers.len(),
+        }
     }
     /// IDs written by the last/current segment, once each. No equality comparison,
     /// change notification or Watch delivery is implied by this inspection seam.
@@ -620,13 +642,29 @@ impl Run {
             };
             last = Some(activation.id);
             let mut quantum = if activation.cleanup {
-                remaining.min(activation.cleanup_remaining)
+                remaining
+                    .min(activation.cleanup_remaining)
+                    .min(self.activations[&activation.sequence].cleanup_remaining)
             } else {
                 remaining
             };
-            if quantum == 0 {
+            if quantum == 0
+                || (activation.cleanup
+                    && self.activations[&activation.sequence]
+                        .cleanup_deadline
+                        .is_some_and(|deadline| self.now >= deadline))
+            {
                 self.cleanup_truncated = self.cleanup_truncated.saturating_add(1);
                 remaining -= 1;
+                let shared = self
+                    .activations
+                    .get_mut(&activation.sequence)
+                    .ok_or(RunError::InvalidState)?;
+                if let Some(scope) = shared.cleanup_scope.take() {
+                    shared.data.finish_cleanup(scope);
+                }
+                shared.pull_owner = None;
+                self.retire_strand(activation)?;
                 continue;
             }
             let before = quantum;
@@ -642,20 +680,31 @@ impl Run {
                 .activations
                 .remove(&activation.sequence)
                 .ok_or(RunError::InvalidState)?;
+            if activation.cleanup && shared.cleanup_scope.is_none() {
+                shared.cleanup_scope = Some(shared.data.scoped_cleanup(shared.cleanup_remaining)?);
+            }
             let result = self.execute(&plan, &mut activation, &mut shared, &mut quantum);
-            self.activations.insert(activation.sequence, shared);
             let used = before - quantum;
             remaining -= used;
             if activation.cleanup {
                 activation.cleanup_remaining -= used;
+                shared.cleanup_remaining -= used;
             }
+            if activation.cleanup && (activation.pull.active.is_none() || result.is_err()) {
+                if let Some(scope) = shared.cleanup_scope.take() {
+                    shared.data.finish_cleanup(scope);
+                }
+                shared.pull_owner = None;
+            }
+            self.activations.insert(activation.sequence, shared);
             if let Err(error) = result {
-                self.operations = self.operations.saturating_add(initial - remaining);
                 if activation.cleanup {
                     self.cleanup_truncated = self.cleanup_truncated.saturating_add(1);
+                    self.retire_strand(activation)?;
                     self.finish_if_idle();
-                    return Err(error);
+                    continue;
                 }
+                self.operations = self.operations.saturating_add(initial - remaining);
                 return self.fail(error);
             }
             if self.state == RunState::Faulted {
@@ -1325,49 +1374,16 @@ impl Run {
         self.transition(RunState::Cancelling);
         self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
         self.stop_ready.clear();
-        self.ready.clear();
-        self.regions.clear();
-        self.live_strands = 0;
-        let timers = std::mem::take(&mut self.timers);
-        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
-        for (_, mut timer) in timers {
-            let node = &plan.nodes()[timer.owner.index()];
-            self.record(RunEvent {
-                activation: timer.activation.sequence,
-                node: node.node(),
-                outcome: ControlOutcome::Cancelled,
-                fault: None,
-            });
-            if let Some(target) = node.cancelled() {
-                self.activations
-                    .get_mut(&timer.activation.sequence)
-                    .ok_or(RunError::InvalidState)?
-                    .data
-                    .enter_cleanup(self.options.max_cleanup_operations)?;
-                timer.activation.pc = Some(target);
-                timer.activation.pull.reset();
-                timer.activation.stack.clear();
-                timer.activation.reenter = None;
-                timer.activation.cleanup = true;
-                timer.activation.cleanup_remaining = self.options.max_cleanup_operations;
-                self.regions.insert(
-                    timer.activation.region,
-                    Region {
-                        parent: None,
-                        activation: timer.activation.sequence,
-                        depth: 0,
-                        live: 1,
-                        children: 0,
-                        continuation: None,
-                        kind: RegionKind::Root,
-                    },
-                );
-                self.live_strands += 1;
-                self.ready.push_back(timer.activation);
-            }
+        let roots: Vec<_> = self
+            .regions
+            .iter()
+            .filter(|(_, r)| r.parent.is_none())
+            .map(|(id, _)| *id)
+            .collect();
+        for root in roots {
+            self.cancel_region(root)?;
+            self.complete_regions(root)?;
         }
-        self.activations
-            .retain(|sequence, _| self.regions.values().any(|r| r.activation == *sequence));
         self.finish_if_idle();
         if self.deadline.is_some_and(|d| self.now >= d) {
             self.abort_cleanup();

@@ -41,6 +41,7 @@ impl Run {
         if self.live_strands >= self.options.limits.max_strands
             || self.regions.len() >= self.options.limits.max_regions
             || depth > self.options.limits.max_region_depth
+            || self.next_owner.checked_add(2).is_none()
         {
             return self.fail(RunError::ResourceLimit);
         }
@@ -325,7 +326,17 @@ impl Run {
         let activation = r.activation;
         self.live_strands = self.regions.values().map(|r| r.live).sum();
         if let Some(shared) = self.activations.get_mut(&activation) {
+            if let Some(scope) = shared.cleanup_scope.take() {
+                shared.data.finish_cleanup(scope);
+            }
             shared.pull_owner = None;
+            let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
+            let deadline = self.deadline.map_or(deadline, |old| old.min(deadline));
+            shared.cleanup_deadline = Some(
+                shared
+                    .cleanup_deadline
+                    .map_or(deadline, |old| old.min(deadline)),
+            );
         }
         for strand in cleanup {
             self.ready.push_back(strand);

@@ -13,5 +13,6 @@ pub use entropy::{
     EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,
 };
 pub use run::{
-    ControlOutcome, Run, RunError, RunEvent, RunLimits, RunOptions, RunProgress, RunState, StopMode,
+    ControlOutcome, Run, RunError, RunEvent, RunLimits, RunOptions, RunOwnership, RunProgress,
+    RunState, StopMode,
 };

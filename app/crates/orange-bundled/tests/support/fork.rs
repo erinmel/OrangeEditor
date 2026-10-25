@@ -403,3 +403,151 @@ fn unhandled_fork_failure_cancels_siblings_and_does_not_win_the_join() {
         );
     }
 }
+
+#[test]
+fn shutdown_cleans_every_wait_in_one_activation_and_deadline_or_second_stop_aborts() {
+    use orange_runtime::{RunState, StopMode};
+    for stop in [StopMode::Immediate, StopMode::Graceful] {
+        for abort in [0, 1, 2] {
+            let (doc, plan) = state_plan(
+                vec![
+                    core(1, "on-start"),
+                    fork(2, "all", &[0, 1]),
+                    wait(3, 100),
+                    wait(4, 100),
+                    set_bool(5, 100, true),
+                    set_bool(6, 101, true),
+                ],
+                vec![
+                    edge(1, 1, "then", 2, "in"),
+                    edge(2, 2, "branch#0", 3, "in"),
+                    edge(3, 2, "branch#1", 4, "in"),
+                    edge(4, 3, "cancelled", 5, "in"),
+                    edge(5, 4, "cancelled", 6, "in"),
+                ],
+                (100..102)
+                    .map(|n| variable(n, "run", "core/bool@1", Some(json!(false))))
+                    .collect(),
+            );
+            let options = RunOptions {
+                drain_timeout_ns: 2,
+                cleanup_timeout_ns: 1,
+                ..RunOptions::default()
+            };
+            let mut run =
+                Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+            drain(&mut run, 1);
+            run.request_stop(stop).unwrap();
+            if stop == StopMode::Graceful {
+                run.advance_to(2).unwrap();
+                run.pump(0).unwrap();
+            }
+            if abort == 1 && run.state() != RunState::Stopped {
+                run.stop().unwrap();
+            } else if abort == 2 && run.state() != RunState::Stopped {
+                run.advance_to(run.now() + 1).unwrap();
+                run.pump(0).unwrap();
+            }
+            if run.state() != RunState::Stopped {
+                drain(&mut run, 1);
+            }
+            assert_eq!(run.state(), RunState::Stopped);
+            assert_eq!(run.pending_continuations(), 0);
+            assert_eq!(
+                run.ownership(),
+                orange_runtime::RunOwnership {
+                    activations: 0,
+                    strands: 0,
+                    regions: 0,
+                    timers: 0
+                }
+            );
+            // Graceful expiry has no remaining cleanup deadline.
+            let cleaned = abort == 0 && stop == StopMode::Immediate;
+            assert_eq!(flag(&run, 100), cleaned);
+            assert_eq!(flag(&run, 101), cleaned);
+            run.dispose().unwrap();
+        }
+    }
+}
+
+#[test]
+fn fork_fanout_admission_is_transactional_and_exact_limits_work() {
+    for resource in [0, 1, 2] {
+        let (doc, plan) = compiled(
+            vec![
+                core(1, "on-start"),
+                fork(2, "all", &[0, 1]),
+                branch(3, true),
+                branch(4, false),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "branch#0", 3, "in"),
+                edge(3, 2, "branch#1", 4, "in"),
+            ],
+        );
+        for fits in [false, true] {
+            let mut options = RunOptions::default();
+            match resource {
+                0 => options.limits.max_strands = if fits { 3 } else { 2 },
+                1 => options.limits.max_regions = if fits { 4 } else { 3 },
+                _ => options.limits.max_region_depth = if fits { 2 } else { 1 },
+            }
+            let mut run =
+                Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+            if fits {
+                drain(&mut run, 1);
+            } else {
+                assert_eq!(run.pump(1000), Err(RunError::ResourceLimit));
+                assert!(
+                    !run.trace()
+                        .iter()
+                        .any(|e| e.node.to_string() == id(3) || e.node.to_string() == id(4))
+                );
+                assert_eq!(run.pending_continuations(), 0);
+            }
+        }
+    }
+}
+
+#[test]
+fn race_cleanup_finishes_before_enclosing_sequence_and_preserves_normal_fuel() {
+    for budget in [1, 1000] {
+        let (doc, plan) = state_plan(
+            vec![
+                core(1, "on-start"),
+                sequence(2, &[0, 1]),
+                fork(3, "race", &[0, 1]),
+                wait(4, 100),
+                wait(5, 1),
+                set_bool(6, 100, true),
+                set_bool(7, 101, true),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "then#0", 3, "in"),
+                edge(3, 3, "branch#0", 4, "in"),
+                edge(4, 3, "branch#1", 5, "in"),
+                edge(5, 4, "cancelled", 6, "in"),
+                edge(6, 2, "then#1", 7, "in"),
+            ],
+            (100..102)
+                .map(|n| variable(n, "run", "core/bool@1", Some(json!(false))))
+                .collect(),
+        );
+        let mut options = RunOptions::default();
+        options.data.limits.max_activation_operations = 3;
+        options.max_cleanup_operations = 8;
+        let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+        drain(&mut run, budget);
+        run.advance_to(1).unwrap();
+        drain(&mut run, budget);
+        assert!(flag(&run, 100) && flag(&run, 101));
+        let events: Vec<_> = run.trace().iter().map(|e| e.node.to_string()).collect();
+        assert!(
+            events.iter().position(|n| *n == id(6)).unwrap()
+                < events.iter().position(|n| *n == id(7)).unwrap()
+        );
+    }
+}
