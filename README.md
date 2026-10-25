@@ -49,7 +49,7 @@ The metadata check enforces the core dependency boundary. The release configurat
 - [Graph language](docs/11-graph-language.md), [data structures](docs/12-graph-data-structures.md) and [localization](docs/13-internationalization.md): normative core contracts.
 - [Requirements](docs/01-product-requirements.md), [architecture](docs/02-architecture.md), [expansion packages](docs/04-expansion-plugins.md) and [source layout](docs/15-monorepo-layout.md): product scope and boundaries.
 - [Data/execution](docs/03-data-and-execution.md), [services/platforms](docs/05-services-and-platforms.md), [feasibility probes](docs/09-feasibility-probes.md) and [tooling evidence](docs/10-tooling-and-sources.md): detailed contracts and recorded limitations.
-- [Incremental validation](docs/16-incremental-validation.md): proposed V12 design for NFR-15 edit-time validation and current core status.
+- [Incremental validation](docs/16-incremental-validation.md): implemented analysis session, bounded local caching and the remaining V12/NFR-15 design.
 
 Source: [erinmel/OrangeEditor](https://github.com/erinmel/OrangeEditor). Measured results are recorded separately from proposed performance targets and unimplemented capabilities.
 
@@ -64,3 +64,5 @@ The checked DataPlan compiler lowers pure/seeded-entropy root data exports to de
 The control runtime snapshots only each consumer's potential inputs and publishes them on actual lazy demand. Pending Set pulls retain read-modify-write ownership across host pump slices. Shutdown frames use a separately bounded startup reserve (RunLimits::max_stop_activations), allowing graceful stop at ordinary activation capacity. These guarantees cover the supported control subset; broader core work remains open.
 
 For repeated authoring, plan_edit_indexed and plan_connection_indexed reuse a retained DocIndex and journaled trial edits while preserving the existing read-only planning APIs. Validation shares scoped port projections; runtime activations share immutable preparation while retaining separate values, entropy counters, limits and cancellation. Provider locks and public resolver contracts are unchanged.
+
+`AnalysisSession` keeps validation current through committed edits and undo/redo, with borrowed diagnostic/signature views and a retained index for trial planning. Layout edits preserve semantic evidence without validation work. Semantic edits reuse unchanged configuration and declaration-type results; admission, other validation passes and result publication still inspect the wider document. Work counters distinguish cache computations/hits from input sizes. This is V12a plus bounded V12b work, not completed incremental validation or NFR-15 qualification; no UI dependency or saved-format change is introduced.

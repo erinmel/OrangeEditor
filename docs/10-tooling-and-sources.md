@@ -1356,3 +1356,44 @@ Explicit descriptive timing: `cargo test -p orange-bundled --test core_integrity
 
 Self-review checked every semantic-state consumer in compiler/evaluation entry, preserved whole-content binding for undo/index/edit proposals, checked type-lock validation executes once in combined analysis, and traced cleanup entry failures through activation restoration and normal region retirement. Paste occupancy uses binary UUID keys by typed namespace rather than allocating one UUID string per existing identity. Temporary review reproductions are promoted to durable behavior tests. Final-head remote CI is recorded separately after push; no merge is authorized.
 
+
+## Resilient edit analysis and bounded local reuse — 2026-10-25
+
+PR17's original V12a work was integrated with merged dev `bda93989233e799398a25eefa837c4c8afd9dae4` (PR19). This section supersedes the earlier V12a content-rebind/current-work claims; their test results remain historical evidence for their stated base.
+
+Implemented V12a reliability plus bounded V12b configuration/declaration-type reuse. Committed changes carry journal-owned read-only before/after content and semantic identities, revision lineage, committed/trial status and explicit global invalidation. Session reuse checks every update path, including current cancellation and unchanged effects. Layout retains semantic compiler evidence. A retained optional index supports journaled inference trials; borrowed diagnostics, signature and changed-subject reads avoid per-read whole-report copies. A shared full-analysis pipeline consumes the same local validators as uncached analysis; inputs/resolution/connections and all global passes remain full. No dependency, feature, lockfile or graph/schema-format change occurred. Unfrozen ChangeSet field users must adopt getters; EditStats input cardinalities are distinct from actual LocalWork visits/computations/hits.
+
+Verification environment: Windows `x86_64-pc-windows-msvc`; rustc `1.99.1 (58cf8f9c3 2026-10-13)`; Cargo `1.99.1 (5f94df478 2026-08-27)`; Node `24.18.0`; default features and locked/offline Cargo commands. Declared MSRV remains 1.97.1; local metadata checks are not an MSRV build. Cargo.lock SHA256 is unchanged: `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`.
+
+| Executed command/check | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` | PASS: 770 passed, 14 manual probes ignored, zero failures; 84 result groups including doctests |
+| `cargo test --workspace --release --locked --offline` | PASS: same 770/14/zero failures |
+| Original session properties | PASS: two bounded 64-case edit/rollback/undo/redo properties compare complete analysis with the full oracle; original seven V12a tests retained |
+| New behavior coverage | PASS: immutable edit/undo/trial provenance, foreign/divergent/reloaded/skipped/replayed receipts, all update/cancellation/quota paths, global lock/signature changes, declarations inside functions, cache invalidation/undo/function replacement, borrowed subject views, Send+Sync and payload-safe Debug |
+| `cargo test -p orange-bundled --test analysis_session_embedding --locked --offline` | PASS: two external API tests; already-running plan produces old result 5 after an edit, stale new-run/background compiler inputs are rejected, and new plan produces 23; partial failed editor trials preserve source and analysis/index identities |
+| Cache invalidation mutation | Removing local invalidation makes the public config-edit/full-oracle test FAIL (exit101); restored source passes. This is a test-sensitivity result, not production code or a bypass |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `cargo doc --workspace --no-deps --locked --offline`, `RUSTDOCFLAGS=-Dwarnings` | PASS |
+| `node tools/check-cargo-metadata.mjs --self-test` / normal metadata guard | PASS: nine policy fixtures; core remains UI/engine independent |
+| `node --test tools/release.test.mjs` / `node tools/release.mjs check` | PASS: seven tests; release configuration valid and intentionally disabled |
+| Both `headless_control` and `headless_fork` examples, `--locked --offline` | PASS: total3 at10ns; all10/10, any5/10, race5/5, detach0/10ns |
+| `git diff --check` | PASS |
+
+The complete suite is 32 tests above merged dev: the seven original V12a tests plus 25 additional tests/doctests. The extra ignored probe is run explicitly below. OneDrive incremental-cache hard-link warnings used Cargo's copy fallback; no Rust/Clippy warning was suppressed.
+
+Independent bounded review found and corrected two additional integration issues: domain admission must precede index/local preparation, and a layout fast path must defer an invalid retained index rebuild rather than hide a scan. Regressions cover both. Four previously reproduced stale-session issues are now covered by passing public-consumer tests. Source/effects are not authenticated by analysis; host-owned effects and late worker-publication request identities remain host responsibilities. Native callbacks and individual analysis passes are not wall-clock preemptible.
+
+### Descriptive release probe
+
+Executed `cargo test -p orange-model --test analysis_session_units --release --locked --offline measure_config_unit_reuse -- --ignored --nocapture`. Two valid registered/provider-bound isolated-node fixtures, one boolean config edit per sample, five warmups and 40 measured samples. Full analysis, session update and owned materialization have separate timers; complete oracle equality checks are outside timed sections. No wall-clock assertions.
+
+| Nodes | Full analysis p50 / p95 | Session update p50 / p95 | Owned materialize p50 / p95 |
+|---|---|---|---|
+| 128 | 161.4 / 185.5 microseconds | 125.1 / 151.2 microseconds | 2.8 / 2.9 microseconds |
+| 1024 | 1406.8 / 1496.4 microseconds | 1162.0 / 1213.6 microseconds | 22.5 / 25.8 microseconds |
+
+Each edit computes one configuration unit and reuses127/1023, but still visits128/1024 node IDs and runs full orchestration/global passes once. These are descriptive local fixture distributions, not W4/W9 or NFR-15 evidence, a universal speedup or an allocator/retained-memory measurement. Full admission, global validation, result/change publication scans, broader invalidation indexes, per-pass work instrumentation and V12c–f remain open. Compiler calls may borrow `session.analysis()` directly; owned materialization is needed only when a consumer needs a retained snapshot.
+
+Final remote Linux/macOS/Windows/MSRV, workflow/security and aggregate CI must pass on the actual updated PR head; local checks do not substitute for them. No merge is authorized by this evidence.

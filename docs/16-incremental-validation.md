@@ -1,6 +1,6 @@
 # Incremental validation (V12)
 
-Status: **proposed design**, 2026-10-24. Nothing here is implemented. It targets NFR-15 ([06](06-quality-and-validation.md)) and the incremental rows of [12 §11](12-graph-data-structures.md), and is recorded as ADR-23 in [08](08-decisions.md). It describes the validator as it exists after PR #15; pass names refer to `orange_model::validation`.
+Status: **V12a implemented; bounded V12b caching**, 2026-10-25. `AnalysisSession` retains fresh combined analysis, an optional document index and configuration/declaration-type buckets. Semantic edits still run full admission and all other validation passes; result publication still scans current/previous results. The remaining incremental design targets NFR-15 ([06](06-quality-and-validation.md)) and [12 §11](12-graph-data-structures.md), under ADR-23 in [08](08-decisions.md). Pass names refer to `orange_model::validation`. Neither full V12b nor NFR-15 is complete.
 
 ## 1. Goal
 
@@ -8,7 +8,7 @@ A single semantic edit on the W4 graph (10,000 nodes, 20,000 edges) returns diag
 
 The one correctness rule: **incremental equals full**. After any sequence of committed edits, the session's result equals `analyze(document, registry)` with the same leaf effects and options. That includes diagnostics and their order, resolved signatures, incomplete sets, function summaries, region index, cycle witnesses and coverage. The full pass stays the oracle and the fallback.
 
-Starting point (local release runs, recorded in [10](10-tooling-and-sources.md)), all whole-document and roughly linear:
+Historical starting point (local release runs after PR15, recorded in [10](10-tooling-and-sources.md)), all whole-document and roughly linear:
 
 | Operation on a 10k-node generic chain | Time |
 |---|---|
@@ -29,12 +29,14 @@ The core is **not complete**.
 - The validator for the supported control vocabulary.
 - The pure/data compiler and the root-data runtime with seeded entropy epochs.
 - E3 prerequisites: owned cancellation, activation fuel, frame-scoped entropy and host input slots.
+- Checked Start/Stop, Branch, Sequence, Count/While, Break/Continue, Wait/Yield and Fork all/any/race/detach, with local/run Get/Set and a bounded headless actor on virtual time.
+- V12a analysis sessions and bounded V12b configuration/declaration-type reuse; retained-index planning and borrowed diagnostics/signatures.
 
 **Open:**
 
-- Control and function lowering (E3: Branch, Sequence, Fork, loops, calls).
-- The run actor, scheduler and services (R1–R7).
-- This incremental validator (V12).
+- Function lowering/execution and remaining controls, value types and kernel families.
+- General event ingress/reactivity, resources/services, workspace state and checkpoints (remaining R1–R7).
+- The remaining incremental validator (V12b–f) and NFR-15 measurements.
 - Installed-package lifecycle and migrations.
 
 V12 does not depend on E3 or R1, and they do not depend on it. It can proceed in parallel, provided equivalence with the full pass is kept.
@@ -45,29 +47,31 @@ An `AnalysisSession` lives beside the document, the way a `DocIndex` does today.
 
 | Operation | Contract |
 |---|---|
-| `AnalysisSession::new(document, registry, effects, options)` | Runs the full analysis. Records the document `state_id`, the registry generation and an owned `DocIndex`. |
-| `update(&mut self, document, change: &ChangeSet) -> Result<&EditStats, …>` | Applies one committed transaction. The change must start at the session's recorded state; undo and redo change sets are ordinary changes. A mismatch rebuilds. Layout-only changes return immediately with zero visits. |
-| `diagnostics()`, `diagnostics_for(subject)`, `resolved(node)`, `changed()` | Reads from session state without copying the report. `changed()` lists the subjects whose diagnostics or signatures changed in the last update, for the editor projection. |
-| `index()` | The session's `DocIndex`. Inference planning (`apply_inferred_indexed`) reads it, so the host keeps one index, not two. |
-| `materialize() -> ValidationAnalysis` | Builds the full report, bound to the document state and registry generation like `analyze`. It costs O(document) and serves the compiler, CLI and tests (NFR-04 budget). |
+| `AnalysisSession::new(document, registry, effects, options)` | Runs full admission/domain prerequisites and the combined pipeline. Semantic evidence binds `semantic_state_id`; session lineage also records whole-content identity/revision. The retained index is absent if construction is rejected before indexing. |
+| `update(&mut self, document, registry, change, options) -> &EditStats` | Checks a journal-owned committed receipt's exact before/after identities/revisions. Undo/redo are ordinary commits; missing, foreign, skipped or replayed lineage rebuilds. Current cancellation is checked before every reuse path. Valid layout changes preserve semantic evidence with zero validation-unit visits. |
+| `set_leaf_effects(document, registry, effects, options) -> &EditStats` | Replaces host-trusted effects. Even unchanged effects require current document, registry, limits and cancellation checks before reuse. |
+| `diagnostics()`, `diagnostics_for(subject)`, `resolved(node)`, `analysis()` | Borrow current results without copying the report. Diagnostic subject lookup uses a retained subject index. |
+| `changed_subjects()`, `changed_nodes()` | Borrow diagnostic-list changes (including removals) and added/changed/removed resolved-signature IDs. These sets are computed by scanning current/previous results at publication, not by an O(delta) publication algorithm. |
+| `index()`, `plan_edit(document, commands, registry)` | `index()` borrows the optional retained index. `plan_edit()` owns mutable access for existing journaled inference planning; trial success/failure does not publish analysis. A stale or unwinding planner index rebuilds on a later operation. Planning remains caller-budgeted. |
+| `materialize() -> ValidationAnalysis` | Clones the retained full report, bound to semantic state and registry generation. This is a report-size operation for compiler/CLI/tests; UI readers use borrowed views. |
 
-A rebuild runs the full analysis. It happens when:
+A conservative rebuild runs full analysis without reusing local buckets when:
 
 - the registry generation changes;
-- the leaf effects or options change;
-- the document crosses an admission quota;
-- a domain extension changes;
-- the change does not start at the recorded state;
-- an update was cancelled, so no half-updated state survives;
-- the dirty set exceeds a fraction of the document at which a rebuild is cheaper.
+- the leaf effects or limits change;
+- shared-signature or package-lock metadata changes (`ChangeSet::global_dirty()`);
+- committed content/semantic lineage or revision does not match;
+- the previous result was rejected, cancelled or domain-blocked.
+
+Current cancellation returns the full oracle's cancellation result rather than a reused success. Every semantic analysis performs admission and domain checks; quota/domain failure exposes incomplete evidence, and the next update rebuilds. A dirty-set threshold is a future optimization, not implemented policy.
 
 Each rebuild records its reason in `EditStats`.
 
-`EditStats` reports visit counts: nodes, edges, components, roots, functions, dirty units per pass, and whether and why a rebuild happened. NFR-15 requires these counters next to timing.
+`EditStats::input_nodes/input_edges` are input cardinalities, not total pass visits. `full_analysis_runs` counts full orchestration attempts (including rejection); `index_rebuilt` reports index rebuilding. `local: LocalWork` counts actual current node/declaration visits, configuration/declaration computations and cache hits. Cache assembly still visits current IDs. Other passes' visits, allocations and retained memory are not represented by these counts; broader instrumentation remains required for NFR-15.
 
 ## 4. Dependency model
 
-Every pass result is stored per **unit** and replaced only when that unit is dirty. The table gives each pass's unit, what it reads, and what marks a unit dirty.
+The target stores each pass result per **unit** and replaces it only when dirty. Currently only configuration and variable/event declaration-type results are retained across semantic edits, using the same unit functions as full validation. Changed nodes invalidate config units; function replacement/removal invalidates its owned nodes; changed declarations invalidate their type units. Registry/global metadata or unproven lineage clears local reuse. Inputs have shared unit helpers but are not cached. The table describes the remaining dependency model, not delivered caches for every row.
 
 | Pass | Unit | Reads | Dirty when |
 |---|---|---|---|
@@ -90,7 +94,7 @@ Every pass result is stored per **unit** and replaced only when that unit is dir
 
 ### 5.1 Seeds and propagation
 
-The `ChangeSet` supplies seed nodes, edges and declarations. Propagation follows the order of `run_analysis`:
+The remaining design uses immutable `ChangeSet` node, edge and declaration deltas as seeds. Shared metadata has an explicit conservative global-dirty signal. Future propagation follows the order of `run_analysis`:
 
 1. domains
 2. functions
@@ -138,7 +142,7 @@ Functions keep the callee-first acceptance of `accept_functions`, per function. 
 
 ### 5.6 Diagnostics assembly
 
-Diagnostics are stored in per-unit buckets keyed by (pass, unit). A merged view is kept in `sort_diagnostics` order with a reference count per identical record, which reproduces today's deduplication; an update costs O(Δ log D). The one cross-pass rule is that `E-DEPENDENCY-UNAVAILABLE` is dropped for a node that already has another error. It is kept with a per-node error count and re-evaluated only for nodes whose count changed. Incomplete-node sets aggregate the same way.
+Configuration and declaration-type diagnostics currently have retained unit buckets, while the shared full pipeline assembles, sorts, deduplicates and suppresses explained dependency errors in full. The remaining target stores all diagnostics per (pass, unit), with a merged `sort_diagnostics` view and reference counts per identical record for O(Δ log D) updates. The cross-pass `E-DEPENDENCY-UNAVAILABLE` suppression would use per-node error counts and re-evaluate affected nodes; incomplete sets would aggregate likewise. Neither delta assembly nor these future per-pass buckets are implemented by the current subject/change views.
 
 ## 6. Equivalence, tests and measurement
 
@@ -150,7 +154,7 @@ Diagnostics are stored in per-unit buckets keyed by (pass, unit). A merged view 
 
 ## 7. Memory, limits and cancellation
 
-Session memory is O(nodes + edges): resolved signatures (already part of the report), per-unit diagnostics, reverse indexes and per-body topological orders. It is measured against the NFR-05 W4 budget.
+The target session adds O(nodes + edges) indexes and unit results to the existing report, including future reverse dependencies and per-body topological orders. The current session retains the report, optional DocIndex, configuration/declaration buckets and subject/change views; it has no persistent topological order or general reverse-dependency index. V12f must measure retained memory against the NFR-05 W4 budget; this design states no measured memory gate.
 
 `AnalysisOptions` admission quotas and cooperative cancellation apply to `update`:
 
@@ -160,19 +164,19 @@ Session memory is O(nodes + edges): resolved signatures (already part of the rep
 
 ## 8. Integration
 
-- The editor host keeps the document, the session and the session's index. Every committed `apply`, `revert` or `apply_inferred` passes its `ChangeSet` to `update`.
+- The editor host keeps the document and session. Every committed `apply`, `revert` or `apply_inferred` passes its `ChangeSet` to `update`; `plan_edit()` reuses the session's optional index for trials.
 - Trial edits made with `GraphDocument::scratch` never reach the session; they are rolled back before commit.
-- The compiler keeps requiring a fresh `ValidationAnalysis` from `materialize()`. Compiling from a session view without materializing is a later option.
-- The session is `Send`, so validation can later move off the UI thread without changing results.
+- The compiler requires a fresh `ValidationAnalysis`; `analysis()` already supplies a borrow for immediate compilation. `materialize()` clones an owned snapshot when a worker or retained request needs ownership. Neither route constructs compiler evidence directly from individual cache buckets.
+- The session and published facts are `Send + Sync`; Debug omits payloads. Background hosts must compare semantic state, registry and request/effects/options identity before publishing a result. Older work must not overwrite a newer request. This is a headless core contract, not UI scheduling or bounded interruption within individual passes/trusted kernels.
 
 ## 9. Delivery slices
 
-Each slice is its own PR to `dev` and keeps the full-pass equivalence gate.
+Closely related slices may share a reviewable PR to `dev`; each implemented behavior keeps the full-pass equivalence gate. Current delivery is V12a plus bounded V12b, with conservative full passes elsewhere.
 
 | Slice | Content | Done when |
 |---|---|---|
-| V12a | Session skeleton. `update` always does a full recompute. State binding, rebuild triggers, layout-only no-op, `EditStats`, `materialize` and the oracle harness. | Equivalence property test green; layout edits visit nothing. |
-| V12b | Node-local units: resolution, projection, inputs, config, connections, declaration types. Inference through touched components; diagnostics store and assembly. | Isolated edits visit only their component and edges. |
+| V12a | Implemented session: semantic/content binding, immutable committed provenance, rebuild triggers, layout no-op, retained index/trial adapter, borrowed result/change views, attributed stats and owned materialization. | Full-pass equivalence and freshness/rollback/embedding checks; executed results in 10. |
+| V12b | Partially implemented: configuration and declaration-type buckets with shared validators. Resolution, projection, inputs, connections, inference dependency propagation and delta diagnostics assembly remain full/future work. | Complete only when isolated edits visit only affected components/edges, including orchestration overhead. |
 | V12c | Root-scoped regions, control cycles, availability and state. | Exec edits visit only affected roots. |
 | V12d | Data cycles with a dynamic topological order; export cones. | Data edits visit only their order interval and cones. |
 | V12e | Functions: acceptance, summaries and conformance through the reverse call graph. | Body edits visit the function and its changed callers. |
@@ -184,4 +188,4 @@ Each slice is its own PR to `dev` and keeps the full-pass equivalence gate.
 - Equal cycle witnesses depend on witness selection being independent of discovery order. V12d checks this before relying on it.
 - Function cascades and densely connected generic components can make an edit full-scope. NFR-15 allows this but requires it to be reported.
 - `materialize` is O(document). The editor must not call it per edit; it uses the session reads.
-- Session memory doubles part of the report's footprint until the report is a view over the session; V12f measures it.
+- The session retains configuration/declaration diagnostics alongside the full report, subject indexes and changed-ID sets. These add memory without cloning config/value payloads; V12f must measure retained memory and allocations before any NFR-05 claim.

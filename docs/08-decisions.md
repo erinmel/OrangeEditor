@@ -352,11 +352,11 @@ Review follow-up decision: every activation API that observes cancellation inval
 
 ## ADR-23 — Incremental validation session with the full pass as oracle
 
-**Proposed, 2026-10-24; not implemented.** Validation becomes incremental through an `AnalysisSession` kept beside the document ([16](16-incremental-validation.md)).
+**Partially implemented, 2026-10-25.** `AnalysisSession` is kept beside the document ([16](16-incremental-validation.md)). V12a is implemented with journal-owned change provenance, semantic freshness, a retained optional index and borrowed diagnostic/signature views. Bounded V12b caching reuses configuration and variable/event declaration-type units through the full validator's existing unit functions. Full admission and the other semantic passes remain whole-document; the complete incremental design below remains a target.
 
-- It stores each pass's results per unit (node, edge, generic component, top-level root, body port graph, export, function).
-- It applies each committed `ChangeSet` by recomputing only dirty units, in the existing pass order.
-- It rebuilds fully on registry, effects, options, quota or state mismatch.
+- The target stores each pass's results per unit (node, edge, generic component, top-level root, body port graph, export, function).
+- Implemented configuration/declaration buckets invalidate from immutable committed deltas; other pass-unit invalidation remains future work. Cache refresh and publication still visit current results, so hits do not establish O(delta) updates.
+- Registry, effects, limits, global metadata or identity-lineage mismatches use full analysis. Current cancellation precedes fast-path reuse; cancelled/rejected results cannot supply compiler approval.
 
 Its observable result must equal `analyze` for the same inputs. The full pass remains the test oracle and the fallback, and `materialize()` produces the same `ValidationAnalysis` the compiler requires.
 
@@ -366,7 +366,7 @@ Alternatives:
 - **A general query framework dependency:** adds a pinned dependency and reshapes the public API before the dependency structure is proven.
 - **Per-pass incremental updates without an oracle:** stale results would be silent.
 
-Consequences:
+Remaining incremental consequences:
 
 - Root-scoped region, control-cycle and availability entries.
 - Reverse indexes for declarations, locks and signatures, calls and root ownership.
@@ -374,7 +374,7 @@ Consequences:
 - Visit counters for NFR-15.
 - Session memory measured against NFR-05.
 
-Delivery is the six V12 slices in 16 §9, each a separate PR gated on equivalence.
+Delivery follows the six V12 slices in 16 §9. Closely related slices may share a reviewable PR; each implemented behavior remains gated on full-pass equivalence. `EditStats` attributes full analysis attempts, index rebuilds and local work separately; document cardinalities are not total pass visits. No dependency, saved schema, general domain interface or NFR/API-freeze gate follows from this first cohort.
 
 **Falsification:** W9 edits on the W4 graph that exceed NFR-15 outside reported full-scope cases, or any equivalence failure that cannot be fixed without a full recompute, reject this design for that pass.
 
