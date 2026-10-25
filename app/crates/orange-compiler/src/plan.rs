@@ -292,7 +292,7 @@ impl PurePlan {
         self.revision
     }
     pub fn is_current(&self, doc: &GraphDocument, snapshot: &RegistrySnapshot) -> bool {
-        self.state == doc.state_id() && self.snapshot.generation() == snapshot.generation()
+        self.state == doc.semantic_state_id() && self.snapshot.generation() == snapshot.generation()
     }
     pub fn steps(&self) -> &[PureStep] {
         &self.steps

@@ -6,9 +6,11 @@ use crate::id::{
     EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, VariableId,
 };
 
-/// A textual identifier that violates its syntax rule (12 §2).
+/// An identifier that violates its syntax rule or collides during generation (12 §2).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IdError {
+    #[error("generated {kind} id `{id}` is already occupied")]
+    GeneratedCollision { kind: &'static str, id: String },
     #[error("`{text}` is not a canonical lowercase hyphenated UUID")]
     NonCanonicalUuid { text: String },
     #[error("UUID `{text}` has version {version}; only v4 and v7 are allowed")]
@@ -137,6 +139,8 @@ pub enum PasteError {
 /// A document transaction that was rejected. The document is unchanged.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum TxError {
+    #[error("variadic port `{port}` on node `{node}` has inconsistent counters")]
+    InvalidVariadicState { node: NodeId, port: PortId },
     #[error("a transaction needs at least one command")]
     Empty,
     #[error("node `{0}` already exists")]

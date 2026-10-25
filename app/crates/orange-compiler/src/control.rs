@@ -203,7 +203,7 @@ pub fn compile_control(
     options: CompileOptions<'_>,
 ) -> Result<ControlPlan, CompileError> {
     options.checkpoint()?;
-    if analysis.document_state() != document.state_id() {
+    if analysis.document_state() != document.semantic_state_id() {
         return Err(CompileError::StaleDocument);
     }
     if analysis.registry_generation() != snapshot.generation() {

@@ -683,10 +683,15 @@ impl Run {
                 .get_mut(activation.sequence as usize)
                 .and_then(Option::take)
                 .ok_or(RunError::InvalidState)?;
-            if activation.cleanup && shared.cleanup_scope.is_none() {
-                shared.cleanup_scope = Some(shared.data.scoped_cleanup(shared.cleanup_remaining)?);
-            }
-            let result = self.execute(&plan, &mut activation, &mut shared, &mut quantum);
+            // Entry failure must follow the same restoration/retirement path as execution
+            // failure: the activation has already been checked out of its owner store.
+            let result = (|| {
+                if activation.cleanup && shared.cleanup_scope.is_none() {
+                    shared.cleanup_scope =
+                        Some(shared.data.scoped_cleanup(shared.cleanup_remaining)?);
+                }
+                self.execute(&plan, &mut activation, &mut shared, &mut quantum)
+            })();
             let used = before - quantum;
             remaining -= used;
             if activation.cleanup {

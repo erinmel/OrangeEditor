@@ -323,7 +323,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             snapshot: snapshot.clone(),
             graph: document.graph_id(),
             revision: document.revision(),
-            state: document.state_id(),
+            state: document.semantic_state_id(),
             steps: vec![],
             types: vec![],
             sources: vec![],
@@ -659,7 +659,7 @@ pub(crate) fn admit_roots<'a>(
     controls: &BTreeSet<NodeId>,
 ) -> Result<Admission<'a>, CompileError> {
     options.checkpoint()?;
-    if analysis.document_state() != document.state_id() {
+    if analysis.document_state() != document.semantic_state_id() {
         return Err(CompileError::StaleDocument);
     }
     if analysis.registry_generation() != snapshot.generation() {

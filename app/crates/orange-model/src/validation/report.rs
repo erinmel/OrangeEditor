@@ -147,7 +147,8 @@ pub struct ValidationAnalysis {
 }
 
 impl ValidationAnalysis {
-    /// Read-only identity of the analyzed document content (including undo identity).
+    /// Read-only semantic content identity, restored by undo/redo. Layout edits do not
+    /// invalidate this analysis; compare with [`GraphDocument::semantic_state_id`].
     pub fn document_state(&self) -> u64 {
         self.document_state
     }
@@ -196,7 +197,7 @@ impl ValidationAnalysis {
 
     /// Whether this analysis belongs to the document content and registry snapshot supplied.
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
-        self.document_state == document.state_id()
+        self.document_state == document.semantic_state_id()
             && self.registry_generation == registry.generation()
     }
 
@@ -277,7 +278,7 @@ pub fn analyze_with_options(
                 diagnostics: vec![Diagnostic::new(code, Subject::default(), registry.origin())],
                 ..ValidationReport::default()
             },
-            document_state: document.state_id(),
+            document_state: document.semantic_state_id(),
             registry_generation: registry.generation(),
             covered: &[],
         },
@@ -327,6 +328,7 @@ fn run_analysis(
     );
     options.checkpoint()?;
     let mut diagnostics = nodes.diagnostics;
+    diagnostics.extend(super::inputs::validate_type_locks(document, registry));
     diagnostics.extend(validate_declaration_types(document, registry));
     options.checkpoint()?;
     diagnostics.extend(availability.diagnostics);
@@ -393,7 +395,7 @@ fn run_analysis(
             regions: regions.index,
             control_cycle_paths: control.cycle_paths,
         },
-        document_state: document.state_id(),
+        document_state: document.semantic_state_id(),
         registry_generation: registry.generation(),
         covered: COVERED_CHECKS,
     })
@@ -441,7 +443,7 @@ fn domain_blocked_analysis(
             incomplete_functions,
             ..ValidationReport::default()
         },
-        document_state: document.state_id(),
+        document_state: document.semantic_state_id(),
         registry_generation: registry.generation(),
         covered: DOMAIN_ONLY_CHECKS,
     }

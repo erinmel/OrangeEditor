@@ -135,6 +135,7 @@ pub struct Committed {
 pub struct Inverse {
     applies_to: u64,
     restores: u64,
+    restores_semantic: u64,
     patches: Vec<Patch>,
 }
 
@@ -152,13 +153,7 @@ impl GraphDocument {
         commands: impl IntoIterator<Item = DocCommand>,
     ) -> Result<Committed, TxError> {
         self.check_revision()?;
-        let mut journal = Journal::default();
-        for command in commands {
-            if let Err(error) = journal.command(self, command) {
-                journal.rollback(self);
-                return Err(error);
-            }
-        }
+        let journal = Journal::commands(self, commands)?;
         if journal.is_empty() {
             return Err(TxError::Empty);
         }
@@ -174,13 +169,7 @@ impl GraphDocument {
         observe: impl FnOnce(&Self, &ChangeSet) -> R,
     ) -> Result<R, TxError> {
         self.check_revision()?;
-        let mut journal = Journal::default();
-        for command in commands {
-            if let Err(error) = journal.command(self, command) {
-                journal.rollback(self);
-                return Err(error);
-            }
-        }
+        let mut journal = Journal::commands(self, commands)?;
         if journal.is_empty() {
             return Err(TxError::Empty);
         }
@@ -208,7 +197,7 @@ impl GraphDocument {
                 return Err(error);
             }
         }
-        Ok(journal.commit(self, Some(inverse.restores)))
+        Ok(journal.commit(self, Some((inverse.restores, inverse.restores_semantic))))
     }
 
     /// Checked before any patch so an exhausted counter (a loaded `u64::MAX`) changes nothing.
@@ -229,6 +218,31 @@ struct Journal {
 }
 
 impl Journal {
+    /// All caller-controlled iteration runs inside the transaction's rollback boundary.
+    fn commands(
+        document: &mut GraphDocument,
+        commands: impl IntoIterator<Item = DocCommand>,
+    ) -> Result<Self, TxError> {
+        let mut journal = Self::default();
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            for command in commands {
+                journal.command(document, command)?;
+            }
+            Ok::<(), TxError>(())
+        }));
+        match result {
+            Ok(Ok(())) => Ok(journal),
+            Ok(Err(error)) => {
+                journal.rollback(document);
+                Err(error)
+            }
+            Err(panic) => {
+                journal.rollback(document);
+                resume_unwind(panic)
+            }
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.commands == 0
     }
@@ -250,16 +264,26 @@ impl Journal {
 
     /// Bumps the revision. A new edit gets a fresh content-state identity; an undo or redo
     /// returns to the identity it `restores`.
-    fn commit(mut self, document: &mut GraphDocument, restores: Option<u64>) -> Committed {
+    fn commit(mut self, document: &mut GraphDocument, restores: Option<(u64, u64)>) -> Committed {
         let (from_revision, from_state) = (document.revision, document.state_id);
         document.revision += 1; // checked by `check_revision` before the first patch
-        document.state_id = restores.unwrap_or_else(fresh_state_id);
+        let from_semantic = document.semantic_state_id;
+        let change_set = self.tracker.finish(document, from_revision);
+        document.state_id = restores.map(|state| state.0).unwrap_or_else(fresh_state_id);
+        document.semantic_state_id = restores.map(|state| state.1).unwrap_or_else(|| {
+            if change_set.layout_only {
+                from_semantic
+            } else {
+                fresh_state_id()
+            }
+        });
         self.inverses.reverse();
         Committed {
-            change_set: self.tracker.finish(document, from_revision),
+            change_set,
             inverse: Inverse {
                 applies_to: document.state_id,
                 restores: from_state,
+                restores_semantic: from_semantic,
                 patches: self.inverses,
             },
         }
@@ -357,6 +381,9 @@ impl Journal {
                         order: Vec::new(),
                         next: 0,
                     });
+                    if !state.is_valid() {
+                        return Err(TxError::InvalidVariadicState { node: id, port });
+                    }
                     if at > state.order.len() {
                         return Err(TxError::VariadicPositionOutOfRange {
                             node: id,
@@ -675,6 +702,36 @@ mod tests {
             "definition_version": 1, "config_version": 1, "config": {}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn scratch_rolls_back_when_the_command_iterator_panics() {
+        let mut document =
+            GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let before = (
+            crate::to_json(&document).unwrap(),
+            document.state_id(),
+            document.semantic_state_id(),
+        );
+        let result = catch_unwind(AssertUnwindSafe(|| {
+            let commands = std::iter::once(DocCommand::AddNode {
+                body: BodyRef::Root,
+                node: branch(1),
+            })
+            .chain(std::iter::from_fn(|| -> Option<DocCommand> {
+                panic!("iterator failure")
+            }));
+            document.scratch(commands, |_, _| panic!("observer must not run"))
+        }));
+        assert!(result.is_err());
+        assert_eq!(
+            (
+                crate::to_json(&document).unwrap(),
+                document.state_id(),
+                document.semantic_state_id()
+            ),
+            before
+        );
     }
 
     #[test]
