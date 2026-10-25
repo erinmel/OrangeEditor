@@ -345,3 +345,31 @@ Unfrozen source/API notes: DataOperation::Try now carries its resolved success-b
 E2g4f API diagnostic policy: PurePlan/DataPlan and borrowed evaluation/export Debug are metadata summaries; binding Debug omits callback internals and never invokes downstream formatters. Explicit values remain accessible for host-owned inspection. No trait bound/signature/wire/schema change is required; Debug text is not a stable serialization contract. This bounds default plan logging without inventing a universal Value redaction/credential detector.
 
 Review follow-up decision: every activation API that observes cancellation invalidates an active root-data epoch; cancellation before an initial successful start does not create a scope. The host must explicitly begin a new epoch to recover. Per-invocation entropy exhaustion is a latched host graph fault and cannot be replaced by callback success/error; cancellation retains infrastructure precedence. These corrections preserve existing public signatures and JSON. They do not imply native code containment or a completed actor lifecycle.
+
+## ADR-23 — Incremental validation session with the full pass as oracle
+
+**Proposed, 2026-10-24; not implemented.** Validation becomes incremental through an `AnalysisSession` kept beside the document ([16](16-incremental-validation.md)).
+
+- It stores each pass's results per unit (node, edge, generic component, top-level root, body port graph, export, function).
+- It applies each committed `ChangeSet` by recomputing only dirty units, in the existing pass order.
+- It rebuilds fully on registry, effects, options, quota or state mismatch.
+
+Its observable result must equal `analyze` for the same inputs. The full pass remains the test oracle and the fallback, and `materialize()` produces the same `ValidationAnalysis` the compiler requires.
+
+Alternatives:
+
+- **Constant-factor tuning of whole-document validation:** about 230 ms at 10k nodes after V8 and projection/inference caching; cannot reach NFR-15.
+- **A general query framework dependency:** adds a pinned dependency and reshapes the public API before the dependency structure is proven.
+- **Per-pass incremental updates without an oracle:** stale results would be silent.
+
+Consequences:
+
+- Root-scoped region, control-cycle and availability entries.
+- Reverse indexes for declarations, locks and signatures, calls and root ownership.
+- A dynamic topological order for data cycles.
+- Visit counters for NFR-15.
+- Session memory measured against NFR-05.
+
+Delivery is the six V12 slices in 16 §9, each a separate PR gated on equivalence.
+
+**Falsification:** W9 edits on the W4 graph that exceed NFR-15 outside reported full-scope cases, or any equivalence failure that cannot be fixed without a full recompute, reject this design for that pass.

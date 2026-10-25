@@ -766,7 +766,7 @@ pub trait IteratorKernel {
 
 | Operation | Complexity | Proposed budget |
 |---|---|---|
-| Connect/disconnect validation (kind, fan-in, types, cycle, region, availability) | Affected type component + topological interval + affected region roots | NFR-15: ≤ 2 ms p95 on W4 |
+| Connect/disconnect validation (kind, fan-in, types, cycle, region, availability) | Affected type component + topological interval + affected region roots ([16](16-incremental-validation.md), proposed) | NFR-15: ≤ 2 ms p95 on W4 |
 | Layout edit | O(1) document + editor spatial index | Zero compile or preview work (NFR-04) |
 | Semantic edit compile | Nodes in the affected roots and their dependent functions | NFR-04: ≤ 50 ms p95 |
 | Epoch reset | O(memo words of one program) | Included in NFR-01 |
