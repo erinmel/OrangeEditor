@@ -124,6 +124,7 @@ struct Activation {
     stack: Vec<Cursor>,
     waiting: Option<(u64, ControlIx)>,
     yielded: bool,
+    reenter: Option<(ControlIx, u64)>,
 }
 struct Timer {
     run: u64,
@@ -131,6 +132,10 @@ struct Timer {
     activation: Activation,
 }
 enum Cursor {
+    While {
+        owner: ControlIx,
+        iterations: u64,
+    },
     Sequence {
         owner: ControlIx,
         next: usize,
@@ -232,6 +237,7 @@ impl Run {
                 stack: vec![],
                 waiting: None,
                 yielded: false,
+                reenter: None,
             });
         }
         Ok(Self {
@@ -395,6 +401,11 @@ impl Run {
                 return Ok(());
             };
             match cursor {
+                Cursor::While { owner, iterations } => {
+                    activation.pc = Some(owner);
+                    activation.reenter = Some((owner, iterations));
+                    activation.yielded = true;
+                }
                 Cursor::Count { owner, next, count } => {
                     let node = &plan.nodes()[owner.index()];
                     let ControlOperation::Count {
@@ -458,6 +469,51 @@ impl Run {
         }
         let (next, outcome, fault) = match node.operation() {
             ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
+            ControlOperation::While {
+                condition,
+                body,
+                completed,
+                max_iterations,
+            } => {
+                let iterations = activation
+                    .reenter
+                    .filter(|(owner, _)| *owner == ix)
+                    .map_or(0, |(_, n)| n);
+                let Some(result) = self.consume(activation, *condition, budget)? else {
+                    return Ok(());
+                };
+                match result {
+                    FoldedValue::Fault(fault) => {
+                        (node.failed(), ControlOutcome::Failed, Some(fault))
+                    }
+                    FoldedValue::Value(Value::Bool(false)) => {
+                        (*completed, ControlOutcome::Completed, None)
+                    }
+                    FoldedValue::Value(Value::Bool(true)) if iterations >= *max_iterations => (
+                        node.failed(),
+                        ControlOutcome::Failed,
+                        Some(ConstantFault {
+                            source: node.node(),
+                            fault: KernelFault {
+                                code: "core/LoopBudgetExceeded",
+                                message_key: "core/loop-budget-exceeded",
+                                message: "The loop iteration budget is exhausted.",
+                            },
+                        }),
+                    ),
+                    FoldedValue::Value(Value::Bool(true)) => {
+                        if activation.stack.len() == self.options.limits.max_region_depth {
+                            return Err(RunError::ResourceLimit);
+                        }
+                        activation.stack.push(Cursor::While {
+                            owner: ix,
+                            iterations: iterations + 1,
+                        });
+                        (*body, ControlOutcome::Body, None)
+                    }
+                    _ => return Err(DataError::KernelContract { node: node.node() }.into()),
+                }
+            }
             ControlOperation::Count {
                 count,
                 body,
@@ -505,17 +561,17 @@ impl Run {
                 let position = activation
                     .stack
                     .iter()
-                    .rposition(|c| matches!(c,Cursor::Count {owner:active,..} if *active==owner))
+                    .rposition(|c| matches!(c,Cursor::Count {owner:active,..} | Cursor::While {owner:active,..} if *active==owner))
                     .ok_or(RunError::InvalidState)?;
-                let ControlOperation::Count { completed, .. } =
-                    plan.nodes()[owner.index()].operation()
-                else {
-                    return Err(RunError::InvalidState);
+                let completed = match plan.nodes()[owner.index()].operation() {
+                    ControlOperation::Count { completed, .. }
+                    | ControlOperation::While { completed, .. } => *completed,
+                    _ => return Err(RunError::InvalidState),
                 };
                 if matches!(node.operation(), ControlOperation::Break) {
                     activation.stack.truncate(position);
                     Self::publish_index(&plan, activation, owner, None);
-                    (*completed, ControlOutcome::Break, None)
+                    (completed, ControlOutcome::Break, None)
                 } else {
                     activation.stack.truncate(position + 1);
                     activation.yielded = true;
@@ -632,6 +688,7 @@ impl Run {
             }
         };
         activation.pull = None;
+        activation.reenter = None;
         activation.inputs.clear();
         if let Some(fault) = &fault {
             for (i, source) in plan.host_sources().iter().enumerate() {

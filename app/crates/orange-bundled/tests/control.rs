@@ -707,3 +707,118 @@ fn count_body_waits_before_advancing_iteration_and_accumulates_three() {
         Some(&orange_model::Value::U64(3))
     );
 }
+
+fn while_node(n: u32, condition: bool, limit: u64) -> Json {
+    let mut node = core(n, "while");
+    node["config"] = json!({"max_iterations":limit});
+    node["inputs"] = json!({"condition":{"type":"core/bool@1","value":condition}});
+    node
+}
+
+#[test]
+fn while_rechecks_committed_state_and_enforces_limit_after_last_condition() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    for initial in [false, true] {
+        let (doc, plan) = state_plan(
+            vec![
+                core(1, "on-start"),
+                while_node(2, true, 1),
+                set_bool(3, 100, false),
+                var_node(4, "get-variable", 100),
+                branch(5, true),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "body", 3, "in"),
+                edge(3, 4, "value", 2, "condition"),
+                edge(4, 2, "completed", 5, "in"),
+            ],
+            vec![variable(100, "run", "core/bool@1", Some(json!(initial)))],
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        while run.pump(1).unwrap().ready {}
+        assert_eq!(
+            run.trace()
+                .iter()
+                .filter(|e| e.node.to_string() == id(2) && e.outcome == ControlOutcome::Body)
+                .count(),
+            usize::from(initial)
+        );
+        assert_eq!(run.trace().back().unwrap().node.to_string(), id(5));
+    }
+    let (doc, plan) = compiled(
+        vec![core(1, "on-start"), while_node(2, true, 3)],
+        vec![edge(1, 1, "then", 2, "in")],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(200).unwrap();
+    assert_eq!(
+        run.trace()
+            .iter()
+            .filter(|e| e.outcome == ControlOutcome::Body)
+            .count(),
+        3
+    );
+    assert_eq!(
+        run.trace()
+            .back()
+            .unwrap()
+            .fault
+            .as_ref()
+            .unwrap()
+            .fault
+            .code,
+        "core/LoopBudgetExceeded"
+    );
+}
+
+#[test]
+fn nested_break_exits_inner_while_and_outer_count_keeps_progressing() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    let (doc, plan) = compiled(
+        vec![
+            core(1, "on-start"),
+            count(2, 2),
+            while_node(3, true, 10),
+            core(4, "break"),
+            branch(5, true),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "body", 3, "in"),
+            edge(3, 3, "body", 4, "in"),
+            edge(4, 2, "completed", 5, "in"),
+        ],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    while run.pump(2).unwrap().ready {}
+    assert_eq!(
+        run.trace()
+            .iter()
+            .filter(|e| e.node.to_string() == id(4) && e.outcome == ControlOutcome::Break)
+            .count(),
+        2
+    );
+    assert_eq!(run.trace().back().unwrap().node.to_string(), id(5));
+}

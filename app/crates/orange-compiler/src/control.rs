@@ -23,6 +23,12 @@ impl ControlIx {
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
     Entry,
+    While {
+        condition: usize,
+        body: Option<ControlIx>,
+        completed: Option<ControlIx>,
+        max_iterations: u64,
+    },
     Count {
         count: usize,
         body: Option<ControlIx>,
@@ -192,6 +198,7 @@ pub fn compile_control(
                 | "core/count"
                 | "core/break"
                 | "core/continue"
+                | "core/while"
         ) || node.definition.version != 1
             || node.config_version != 1
             || node.provider.is_some()
@@ -376,6 +383,27 @@ pub fn compile_control(
                     count,
                     body: target("body"),
                     completed: target("completed"),
+                }
+            }
+            "core/while" => {
+                let condition = roots.len();
+                roots.push(DemandRoot {
+                    id: format!("{id}/condition"),
+                    node: *id,
+                    port: "condition".parse().unwrap(),
+                    input: true,
+                });
+                let max_iterations = node
+                    .config
+                    .get("max_iterations")
+                    .and_then(|v| v.as_u64())
+                    .filter(|n| *n > 0)
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                ControlOperation::While {
+                    condition,
+                    body: target("body"),
+                    completed: target("completed"),
+                    max_iterations,
                 }
             }
             "core/break" => ControlOperation::Break,
