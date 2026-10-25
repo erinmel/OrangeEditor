@@ -99,6 +99,73 @@ fn checkpoint(cancel: Option<&CancelToken>) -> Result<(), DataError> {
     }
 }
 
+/// Immutable execution metadata shared by all frames of one retained plan.
+pub(crate) struct PreparedData {
+    plan: Arc<DataPlan>,
+    retained: usize,
+    layout: EntropyLayout,
+    entropy_slots: Box<[Option<EntropySlot>]>,
+    host_indices: Box<[Option<usize>]>,
+}
+impl PreparedData {
+    pub(crate) fn new(plan: Arc<DataPlan>, limits: DataLimits) -> Result<Arc<Self>, DataError> {
+        let resources = plan.resources();
+        Self::check_resources(&plan, limits)?;
+        let retained = plan.initial_charge().ok_or(DataError::ResourceLimit)?;
+        if retained > limits.max_retained_bytes {
+            return Err(DataError::ResourceLimit);
+        }
+        let layout = EntropyLayout::new(
+            plan.nodes()
+                .iter()
+                .filter(|n| matches!(n.operation(), DataOperation::Entropy(_)))
+                .map(|n| n.node()),
+            limits.max_nodes,
+        )?;
+        let entropy_slots = plan
+            .nodes()
+            .iter()
+            .map(|n| {
+                if matches!(n.operation(), DataOperation::Entropy(_)) {
+                    layout.slot(n.node())
+                } else {
+                    None
+                }
+            })
+            .collect::<Box<[_]>>();
+
+        let mut host_indices = vec![None; resources.nodes];
+        for (i, node) in plan.host_inputs().iter().enumerate() {
+            host_indices[node.index()] = Some(i);
+        }
+        Ok(Arc::new(Self {
+            plan,
+            retained,
+            layout,
+            entropy_slots,
+            host_indices: host_indices.into(),
+        }))
+    }
+    fn check_resources(plan: &DataPlan, limits: DataLimits) -> Result<(), DataError> {
+        let resources = plan.resources();
+        if resources.slots > limits.max_slots
+            || resources.nodes > limits.max_nodes
+            || plan.exports().len() > limits.max_exports
+            || resources.work_items > limits.max_work_items
+        {
+            return Err(DataError::ResourceLimit);
+        }
+        Ok(())
+    }
+    fn check_limits(&self, limits: DataLimits) -> Result<(), DataError> {
+        Self::check_resources(&self.plan, limits)?;
+        if self.retained > limits.max_retained_bytes {
+            return Err(DataError::ResourceLimit);
+        }
+        Ok(())
+    }
+}
+
 /// Frozen root-data activation with explicit consumption epochs. This is not a
 /// run actor, event scheduler, control/function frame or host-service context.
 ///
@@ -114,6 +181,17 @@ pub struct DataActivation {
 pub enum DataPoll<'a> {
     Pending,
     Ready(Option<EvaluatedExport<'a>>),
+}
+pub(crate) enum HostPoll<'a> {
+    Pending,
+    Input(usize),
+    Ready(Option<EvaluatedExport<'a>>),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drive {
+    Pending,
+    Input(usize),
+    Ready,
 }
 impl std::fmt::Debug for DataActivation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -159,43 +237,34 @@ impl DataActivation {
         options: DataOptions,
     ) -> Result<Self, DataError> {
         checkpoint(options.cancel.as_ref())?;
+        let prepared = PreparedData::new(plan, options.limits)?;
+        Self::from_prepared(
+            prepared,
+            document_revision,
+            seed,
+            activation_sequence,
+            options,
+        )
+    }
+    pub(crate) fn from_prepared(
+        prepared: Arc<PreparedData>,
+        document_revision: u64,
+        seed: u64,
+        activation_sequence: u64,
+        options: DataOptions,
+    ) -> Result<Self, DataError> {
+        checkpoint(options.cancel.as_ref())?;
+        prepared.check_limits(options.limits)?;
+        let plan = prepared.plan.clone();
         let resources = plan.resources();
         let limits = options.limits;
-        if resources.slots > limits.max_slots
-            || resources.nodes > limits.max_nodes
-            || plan.exports().len() > limits.max_exports
-            || resources.work_items > limits.max_work_items
-        {
-            return Err(DataError::ResourceLimit);
-        }
-        let retained = plan.initial_charge().ok_or(DataError::ResourceLimit)?;
-        if retained > limits.max_retained_bytes {
-            return Err(DataError::ResourceLimit);
-        }
-        let layout = EntropyLayout::new(
-            plan.nodes()
-                .iter()
-                .filter(|n| matches!(n.operation(), DataOperation::Entropy(_)))
-                .map(|n| n.node()),
-            limits.max_nodes,
-        )?;
-        let entropy_slots = plan
-            .nodes()
-            .iter()
-            .map(|n| {
-                if matches!(n.operation(), DataOperation::Entropy(_)) {
-                    layout.slot(n.node())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let retained = prepared.retained;
         // Root data plans have no callee frames.
-        let scopes = ActivationEntropy::new(&layout, seed, activation_sequence, 0);
+        let scopes = ActivationEntropy::new(&prepared.layout, seed, activation_sequence, 0);
         let slots = plan.initial_values().to_vec();
         let state = Frame {
             scopes,
-            entropy_slots,
+            prepared,
             slots,
             retained,
             memo: vec![None; resources.nodes],
@@ -205,14 +274,6 @@ impl DataActivation {
             failed: None,
             work: Vec::with_capacity(resources.work_items),
             pending: None,
-            requested_input: None,
-            host_indices: {
-                let mut indices = vec![None; resources.nodes];
-                for (i, node) in plan.host_inputs().iter().enumerate() {
-                    indices[node.index()] = Some(i);
-                }
-                indices
-            },
             work_limit: resources.work_items,
             inputs: Vec::with_capacity(resources.max_inputs),
             outputs: Vec::with_capacity(resources.max_outputs),
@@ -257,7 +318,6 @@ impl DataActivation {
         self.state.failed = None;
         self.state.epoch = None;
         self.state.pending = None;
-        self.state.requested_input = None;
         self.state.work.clear();
         self.state.inputs.clear();
         self.state.outputs.clear();
@@ -289,7 +349,6 @@ impl DataActivation {
         self.state.failed = None;
         self.state.work.clear();
         self.state.pending = None;
-        self.state.requested_input = None;
         self.state.inputs.clear();
         self.state.outputs.clear();
         Ok(epoch)
@@ -346,24 +405,25 @@ impl DataActivation {
         index: usize,
         budget: &mut usize,
     ) -> Result<DataPoll<'_>, DataError> {
-        self.poll_export_inner(index, budget, false)
+        match self.poll_export_inner(index, budget, false)? {
+            HostPoll::Pending => Ok(DataPoll::Pending),
+            HostPoll::Ready(value) => Ok(DataPoll::Ready(value)),
+            HostPoll::Input(_) => unreachable!("public pulls reject missing inputs"),
+        }
     }
     pub(crate) fn poll_host_export(
         &mut self,
         index: usize,
         budget: &mut usize,
-    ) -> Result<DataPoll<'_>, DataError> {
+    ) -> Result<HostPoll<'_>, DataError> {
         self.poll_export_inner(index, budget, true)
-    }
-    pub(crate) fn take_requested_input(&mut self) -> Option<usize> {
-        self.state.requested_input.take()
     }
     fn poll_export_inner(
         &mut self,
         index: usize,
         budget: &mut usize,
         host: bool,
-    ) -> Result<DataPoll<'_>, DataError> {
+    ) -> Result<HostPoll<'_>, DataError> {
         self.checkpoint()?;
         if let Some(error) = self.state.failed {
             return Err(error);
@@ -372,7 +432,7 @@ impl DataActivation {
             return Err(DataError::NoEpoch);
         }
         let Some(node) = self.plan.export_node(index) else {
-            return Ok(DataPoll::Ready(None));
+            return Ok(HostPoll::Ready(None));
         };
         let driven = self.state.drive(&self.plan, node, budget, host);
         if driven == Err(DataError::PullInProgress) {
@@ -385,8 +445,10 @@ impl DataActivation {
             self.state.failed = Some(error);
             return Err(error);
         }
-        if driven == Ok(false) {
-            return Ok(DataPoll::Pending);
+        match driven {
+            Ok(Drive::Pending) => return Ok(HostPoll::Pending),
+            Ok(Drive::Input(index)) => return Ok(HostPoll::Input(index)),
+            _ => {}
         }
         self.checkpoint()?;
         let export = &self.plan.exports()[index];
@@ -399,7 +461,7 @@ impl DataActivation {
             FoldedValue::Value(value) => Ok(value),
             FoldedValue::Fault(fault) => Err(fault),
         };
-        Ok(DataPoll::Ready(Some(EvaluatedExport {
+        Ok(HostPoll::Ready(Some(EvaluatedExport {
             id: &export.id,
             ty: &self.plan.slot_types()[slot],
             source: &self.plan.slot_sources()[slot],
@@ -416,7 +478,7 @@ enum Work {
 }
 struct Frame {
     scopes: ActivationEntropy,
-    entropy_slots: Vec<Option<EntropySlot>>,
+    prepared: Arc<PreparedData>,
     slots: Vec<Option<FoldedValue>>,
     retained: usize,
     memo: Vec<Option<u64>>,
@@ -426,8 +488,6 @@ struct Frame {
     failed: Option<DataError>,
     work: Vec<Work>,
     pending: Option<NodeIx>,
-    requested_input: Option<usize>,
-    host_indices: Vec<Option<usize>>,
     work_limit: usize,
     inputs: Vec<Value>,
     outputs: Vec<Value>,
@@ -558,7 +618,7 @@ impl Frame {
         let result = match node.operation() {
             DataOperation::Pure(binding) => binding.kernel.fold(&self.inputs, &mut self.outputs),
             DataOperation::Entropy(binding) => {
-                let slot = self.entropy_slots[node.index().index()]
+                let slot = self.prepared.entropy_slots[node.index().index()]
                     .as_ref()
                     .ok_or(DataError::KernelContract { node: node.node() })?;
                 let key = self.scopes.invocation_key(slot)?;
@@ -654,7 +714,7 @@ impl Frame {
         root: NodeIx,
         budget: &mut usize,
         host: bool,
-    ) -> Result<bool, DataError> {
+    ) -> Result<Drive, DataError> {
         match self.pending {
             Some(pending) if pending != root => return Err(DataError::PullInProgress),
             Some(_) => {}
@@ -666,7 +726,7 @@ impl Frame {
         while !self.work.is_empty() {
             checkpoint(self.cancel.as_ref())?;
             if *budget == 0 {
-                return Ok(false);
+                return Ok(Drive::Pending);
             }
             *budget -= 1;
             let work = self.work.pop().expect("nonempty work stack");
@@ -682,9 +742,8 @@ impl Frame {
                     if matches!(node.operation(), DataOperation::Input) {
                         if host {
                             self.push(Work::Enter(index))?;
-                            self.requested_input = self.host_indices[index.index()];
-                            if self.requested_input.is_some() {
-                                return Ok(false);
+                            if let Some(input) = self.prepared.host_indices[index.index()] {
+                                return Ok(Drive::Input(input));
                             }
                         }
                         return Err(DataError::MissingInput { node: node.node() });
@@ -740,7 +799,7 @@ impl Frame {
             }
         }
         self.pending = None;
-        Ok(true)
+        Ok(Drive::Ready)
     }
 }
 

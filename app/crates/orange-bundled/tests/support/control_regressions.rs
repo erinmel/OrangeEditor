@@ -376,3 +376,64 @@ fn review_unrelated_host_input_scaling() {
         );
     }
 }
+
+#[test]
+#[ignore = "manual activation preparation scaling; not NFR acceptance"]
+fn activation_preparation_by_owner_count() {
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+    if cfg!(debug_assertions) {
+        panic!("release only");
+    }
+    for owners in [1u32, 32, 128] {
+        let mut nodes = (1..=owners)
+            .map(|i| core(i, "on-start"))
+            .collect::<Vec<_>>();
+        let mut edges = vec![];
+        for i in 0..512 {
+            nodes.push(var_node(1000 + 2 * i, "get-variable", 100));
+            nodes.push(branch(1001 + 2 * i, true));
+            edges.push(edge(
+                i + 1,
+                1000 + 2 * i,
+                "value",
+                1001 + 2 * i,
+                "condition",
+            ));
+        }
+        let (doc, plan) = state_plan(
+            nodes,
+            edges,
+            vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+        );
+        let start_drop = || {
+            black_box(
+                Run::start(
+                    plan.clone(),
+                    &doc,
+                    plan.data().snapshot(),
+                    1,
+                    RunOptions::default(),
+                )
+                .unwrap(),
+            );
+        };
+        let warmup = Instant::now();
+        while warmup.elapsed() < Duration::from_millis(500) {
+            start_drop();
+        }
+        let mut samples = vec![];
+        for _ in 0..30 {
+            let t = Instant::now();
+            start_drop();
+            samples.push(t.elapsed().as_nanos());
+        }
+        samples.sort();
+        eprintln!(
+            "owners={owners} data_nodes={} median_start_drop_us={:.3} p95_us={:.3}",
+            plan.data().resources().nodes,
+            (samples[14] + samples[15]) as f64 / 2000.,
+            samples[28] as f64 / 1000.
+        );
+    }
+}
