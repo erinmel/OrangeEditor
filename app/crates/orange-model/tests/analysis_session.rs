@@ -50,7 +50,7 @@ fn creation_and_semantic_edits_recompute_to_the_full_result() {
         SessionWork::Rebuild(RebuildReason::Created)
     );
     assert_eq!(
-        (session.stats().nodes_visited, session.stats().edges_visited),
+        (session.stats().input_nodes, session.stats().input_edges),
         (3, 1)
     );
     assert_eq!(session.analysis(), &full(&doc, &registry));
@@ -59,7 +59,7 @@ fn creation_and_semantic_edits_recompute_to_the_full_result() {
     let committed = doc.apply([connect(2, (2, "sum"), (3, "a"))]).unwrap();
     let stats = *session.update(&doc, &registry, &committed.change_set, options());
     assert_eq!(stats.work, SessionWork::Recompute);
-    assert_eq!((stats.nodes_visited, stats.edges_visited), (3, 2));
+    assert_eq!((stats.input_nodes, stats.input_edges), (3, 2));
     assert_eq!(session.materialize(), full(&doc, &registry));
     assert_eq!(
         session.resolved(common::nid(3)),
@@ -89,10 +89,10 @@ fn layout_edits_rebind_without_work_and_stay_ready_for_lowering() {
             value: Some(json!({"x": 40})),
         })])
         .unwrap();
-    assert!(committed.change_set.layout_only);
+    assert!(committed.change_set.layout_only());
     let stats = *session.update(&doc, &registry, &committed.change_set, options());
     assert_eq!(stats.work, SessionWork::None);
-    assert_eq!((stats.nodes_visited, stats.edges_visited), (0, 0));
+    assert_eq!((stats.input_nodes, stats.input_edges), (0, 0));
     assert_eq!(session.analysis().document_state(), before);
     assert_eq!(session.analysis(), &full(&doc, &registry));
     assert_eq!(

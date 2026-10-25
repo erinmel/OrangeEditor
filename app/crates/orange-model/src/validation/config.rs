@@ -10,7 +10,7 @@ use std::cmp::Ordering;
 use serde_json::{Map, Number, Value};
 
 use crate::catalog::RegistrySnapshot;
-use crate::document::{BodyRef, GraphDocument};
+use crate::document::{BodyRef, GraphDocument, NodeInstance};
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, Subject, sort_diagnostics};
 
@@ -202,34 +202,40 @@ fn compare_integer_float(integer: i128, float: f64) -> Ordering {
 /// not judged; otherwise a failing config reports `E-CONFIG-INVALID`. Diagnostics carry no
 /// config values. Nodes whose definition is not in the registry are left to node resolution.
 pub fn validate_config(document: &GraphDocument, registry: &RegistrySnapshot) -> Vec<Diagnostic> {
-    let origin = registry.origin();
     let mut diagnostics = Vec::new();
     for (body_ref, body) in document.bodies_with_refs() {
         for node in body.nodes.values() {
-            // A schema describes exactly its own config version; other versions are a
-            // resolution matter and are not judged against it.
-            let Some(schema) = registry
-                .definition(&node.definition)
-                .filter(|definition| definition.config_version == node.config_version)
-                .and_then(|definition| definition.config_schema.as_ref())
-            else {
-                continue;
-            };
-            let code = if !config_schema_is_supported(schema) {
-                DiagnosticCode::ConfigSchemaUnsupported
-            } else if config_satisfies_schema(&Value::Object(node.config.clone()), schema) {
-                continue;
-            } else {
-                DiagnosticCode::ConfigInvalid
-            };
-            let subject = Subject::new(Some(node.id), None, None);
-            let subject = match body_ref {
-                BodyRef::Root => subject,
-                BodyRef::Function(function) => subject.with_function(function),
-            };
-            diagnostics.push(Diagnostic::new(code, subject, origin));
+            diagnostics.extend(validate_node_config(body_ref, node, registry));
         }
     }
     sort_diagnostics(&mut diagnostics);
     diagnostics
+}
+
+/// The configuration result of exactly one node. Both the full pass and retained
+/// sessions use this function, so cache reuse cannot create a second schema dialect.
+pub(crate) fn validate_node_config(
+    body: BodyRef,
+    node: &NodeInstance,
+    registry: &RegistrySnapshot,
+) -> Option<Diagnostic> {
+    // A schema describes exactly its own config version; other versions are a
+    // resolution matter and are not judged against it.
+    let schema = registry
+        .definition(&node.definition)
+        .filter(|definition| definition.config_version == node.config_version)
+        .and_then(|definition| definition.config_schema.as_ref())?;
+    let code = if !config_schema_is_supported(schema) {
+        DiagnosticCode::ConfigSchemaUnsupported
+    } else if config_satisfies_schema(&Value::Object(node.config.clone()), schema) {
+        return None;
+    } else {
+        DiagnosticCode::ConfigInvalid
+    };
+    let subject = Subject::new(Some(node.id), None, None);
+    let subject = match body {
+        BodyRef::Root => subject,
+        BodyRef::Function(function) => subject.with_function(function),
+    };
+    Some(Diagnostic::new(code, subject, registry.origin()))
 }

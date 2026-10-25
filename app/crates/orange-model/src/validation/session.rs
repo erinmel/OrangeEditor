@@ -1,102 +1,121 @@
-//! Validation kept current beside one document across committed edits (V12a).
-//!
-//! An [`AnalysisSession`] owns the combined analysis of a document and applies each
-//! committed [`ChangeSet`] to it. Its result always equals [`analyze_with_options`] for the
-//! same document, registry, leaf effects and limits; that full pass is the oracle and the
-//! fallback. This first slice recomputes the whole analysis for every semantic change.
-//! Later slices recompute only the units a change dirties, without changing results.
-
-use std::collections::BTreeMap;
-
+//! Headless edit analysis with private freshness evidence and conservative fallbacks.
+use super::local::{LocalValidation, LocalWork};
+use super::{
+    AnalysisLimits, AnalysisOptions, Diagnostic, LeafEffects, Subject, ValidationAnalysis,
+};
 use crate::catalog::RegistrySnapshot;
 use crate::document::{GraphDocument, SignatureSnapshot};
-use crate::edit::ChangeSet;
+use crate::edit::{ChangeSet, DocCommand};
+use crate::error::TxError;
 use crate::id::NodeId;
+use crate::index::DocIndex;
+use crate::inference::{InferencePlan, plan_edit_indexed};
+use std::collections::{BTreeMap, BTreeSet};
 
-use super::{
-    AnalysisLimits, AnalysisOptions, Diagnostic, DiagnosticCode, LeafEffects, ValidationAnalysis,
-    analyze_with_options,
-};
-
-/// What one session update did.
+/// Attributed update work. Input cardinalities are not total pass visits.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub struct EditStats {
     pub work: SessionWork,
-    /// Nodes, across all bodies, whose results were recomputed.
-    pub nodes_visited: usize,
-    /// Edges, across all bodies, whose results were recomputed.
-    pub edges_visited: usize,
+    /// Distinct input nodes when analysis ran; zero for a no-op.
+    pub input_nodes: usize,
+    /// Distinct input edges when analysis ran; zero for a no-op.
+    pub input_edges: usize,
+    /// Full orchestration attempts, including rejection. Global passes remain full.
+    pub full_analysis_runs: usize,
+    pub index_rebuilt: bool,
+    /// Actual node-local validation computations and reused results.
+    pub local: LocalWork,
 }
-
-/// How a session brought its analysis up to date.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum SessionWork {
-    /// Nothing needed recomputing: a layout-only change only rebinds the result to the
-    /// document's new state, and unchanged leaf effects keep the result as it is.
     None,
-    /// The change was applied by recomputing affected results. V12a recomputes all of them.
+    /// Valid semantic edit; admission and global passes still run in full.
     Recompute,
-    /// The session discarded its results and reran the full analysis.
     Rebuild(RebuildReason),
 }
-
-/// Why a session reran the full analysis instead of applying a change.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum RebuildReason {
-    /// The session was just created.
     Created,
-    /// The change does not start at the revision the session analyzed, or does not end at
-    /// the document's current revision.
     StateMismatch,
-    /// The registry is a different snapshot generation.
     RegistryChanged,
-    /// The admission limits differ from the ones the session analyzed with.
     LimitsChanged,
-    /// The host replaced the leaf effects.
     EffectsChanged,
-    /// The previous analysis was cancelled, so its result does not describe the document.
     Stale,
+    Cancelled,
+    GlobalChange,
 }
 
-/// Combined validation of one document, kept current across committed edits.
-///
-/// The host passes every committed change, in commit order: edits, undo and redo alike.
-/// A change the session cannot apply (a skipped change, another registry generation, other
-/// limits) makes it rerun the full analysis, never return a stale result.
-#[derive(Debug, Clone)]
+/// Analysis beside one document. Supply every committed change, including undo/redo.
+/// Missing/foreign receipts rebuild. Layout preserves semantic evidence; semantic
+/// edits reuse proven local units within the same full-analysis pipeline.
+#[derive(Clone)]
 pub struct AnalysisSession {
     analysis: ValidationAnalysis,
     effects: BTreeMap<NodeId, LeafEffects>,
     limits: AnalysisLimits,
     revision: u64,
+    content_state: u64,
     stale: bool,
+    index: Option<DocIndex>,
+    local: LocalValidation,
+    subjects: BTreeMap<Subject, Vec<usize>>,
+    changed_subjects: BTreeSet<Subject>,
+    changed_nodes: BTreeSet<NodeId>,
     stats: EditStats,
 }
-
+impl std::fmt::Debug for AnalysisSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("AnalysisSession")
+            .field("semantic_state", &self.analysis.document_state())
+            .field("registry_generation", &self.analysis.registry_generation())
+            .field("diagnostics", &self.analysis.report().diagnostics.len())
+            .field("stale", &self.stale)
+            .field("stats", &self.stats)
+            .finish_non_exhaustive()
+    }
+}
 impl AnalysisSession {
-    /// Runs the full analysis of `document`.
     pub fn new(
         document: &GraphDocument,
         registry: &RegistrySnapshot,
         effects: BTreeMap<NodeId, LeafEffects>,
         options: AnalysisOptions<'_>,
     ) -> Self {
-        let mut session = Self {
-            analysis: analyze_with_options(document, registry, effects.clone(), options),
+        let mut index = None;
+        let mut local = LocalValidation::default();
+        let (analysis, work, rebuilt) = super::report::analyze_indexed(
+            document,
+            registry,
+            effects.clone(),
+            options,
+            &mut index,
+            &mut local,
+            None,
+        );
+        let subjects = subject_index(&analysis);
+        Self {
+            stale: incomplete(&analysis),
+            changed_subjects: subjects.keys().cloned().collect(),
+            changed_nodes: analysis.report().resolved.keys().copied().collect(),
+            analysis,
             effects,
             limits: options.limits,
             revision: document.revision(),
-            stale: false,
-            stats: full(document, SessionWork::Rebuild(RebuildReason::Created)),
-        };
-        session.stale = cancelled(&session.analysis);
-        session
+            content_state: document.state_id(),
+            index,
+            local,
+            subjects,
+            stats: full(
+                document,
+                SessionWork::Rebuild(RebuildReason::Created),
+                work,
+                rebuilt,
+            ),
+        }
     }
-
-    /// Brings the analysis up to date with `document` after the committed `change`.
     pub fn update(
         &mut self,
         document: &GraphDocument,
@@ -104,36 +123,52 @@ impl AnalysisSession {
         change: &ChangeSet,
         options: AnalysisOptions<'_>,
     ) -> &EditStats {
-        let rebuild = if self.stale {
-            Some(RebuildReason::Stale)
-        } else if registry.generation() != self.analysis.registry_generation() {
-            Some(RebuildReason::RegistryChanged)
-        } else if options.limits != self.limits {
-            Some(RebuildReason::LimitsChanged)
-        } else if change.from_revision != self.revision || change.to_revision != document.revision()
-        {
-            Some(RebuildReason::StateMismatch)
-        } else {
-            None
-        };
-        match rebuild {
-            Some(reason) => self.rerun(document, registry, options, SessionWork::Rebuild(reason)),
-            None if change.layout_only => {
-                // Layout never affects validation (G-36), so only the bound state moves.
-                // Layout preserves the semantic identity already bound to the analysis.
-                self.revision = document.revision();
-                self.stats = EditStats {
-                    work: SessionWork::None,
-                    nodes_visited: 0,
-                    edges_visited: 0,
-                };
+        let reason = self
+            .rebuild_reason(registry, options)
+            .or_else(|| {
+                (!change.is_committed()
+                    || change.from_state() != self.content_state
+                    || change.to_state() != document.state_id()
+                    || change.from_semantic_state() != self.analysis.document_state()
+                    || change.to_semantic_state() != document.semantic_state_id()
+                    || change.from_revision() != self.revision
+                    || change.to_revision() != document.revision())
+                .then_some(RebuildReason::StateMismatch)
+            })
+            .or_else(|| change.global_dirty().then_some(RebuildReason::GlobalChange));
+        if let Some(reason) = reason {
+            self.rerun(
+                document,
+                registry,
+                options,
+                SessionWork::Rebuild(reason),
+                None,
+            );
+        } else if change.layout_only() {
+            if let Some(index) = &mut self.index {
+                if index.state_id() == change.from_state() {
+                    index.update(document, change);
+                } else {
+                    // A failed/foreign trial may invalidate only the index. Defer its
+                    // rebuild instead of hiding a full scan in a layout no-op.
+                    self.index = None;
+                }
             }
-            None => self.rerun(document, registry, options, SessionWork::Recompute),
+            self.local.advance_layout(document, change);
+            self.revision = document.revision();
+            self.content_state = document.state_id();
+            self.no_work();
+        } else {
+            self.rerun(
+                document,
+                registry,
+                options,
+                SessionWork::Recompute,
+                Some(change),
+            );
         }
         &self.stats
     }
-
-    /// Replaces the host's leaf effects, rerunning the analysis if they changed.
     pub fn set_leaf_effects(
         &mut self,
         document: &GraphDocument,
@@ -141,91 +176,195 @@ impl AnalysisSession {
         effects: BTreeMap<NodeId, LeafEffects>,
         options: AnalysisOptions<'_>,
     ) -> &EditStats {
-        if effects == self.effects && !self.stale {
-            self.stats = EditStats {
-                work: SessionWork::None,
-                nodes_visited: 0,
-                edges_visited: 0,
-            };
-        } else {
+        let reason = self
+            .rebuild_reason(registry, options)
+            .or_else(|| {
+                (document.state_id() != self.content_state
+                    || document.revision() != self.revision
+                    || !self.analysis.is_current(document, registry))
+                .then_some(RebuildReason::StateMismatch)
+            })
+            .or_else(|| (effects != self.effects).then_some(RebuildReason::EffectsChanged));
+        if let Some(reason) = reason {
             self.effects = effects;
-            let reason = if self.stale {
-                RebuildReason::Stale
-            } else {
-                RebuildReason::EffectsChanged
-            };
-            self.rerun(document, registry, options, SessionWork::Rebuild(reason));
+            self.rerun(
+                document,
+                registry,
+                options,
+                SessionWork::Rebuild(reason),
+                None,
+            );
+        } else {
+            self.no_work();
         }
         &self.stats
     }
-
+    fn rebuild_reason(
+        &self,
+        registry: &RegistrySnapshot,
+        options: AnalysisOptions<'_>,
+    ) -> Option<RebuildReason> {
+        if options.checkpoint().is_err() {
+            Some(RebuildReason::Cancelled)
+        } else if self.stale {
+            Some(RebuildReason::Stale)
+        } else if registry.generation() != self.analysis.registry_generation() {
+            Some(RebuildReason::RegistryChanged)
+        } else if options.limits != self.limits {
+            Some(RebuildReason::LimitsChanged)
+        } else {
+            None
+        }
+    }
     fn rerun(
         &mut self,
         document: &GraphDocument,
         registry: &RegistrySnapshot,
         options: AnalysisOptions<'_>,
         work: SessionWork,
+        change: Option<&ChangeSet>,
     ) {
-        self.analysis = analyze_with_options(document, registry, self.effects.clone(), options);
+        let (analysis, local, rebuilt) = super::report::analyze_indexed(
+            document,
+            registry,
+            self.effects.clone(),
+            options,
+            &mut self.index,
+            &mut self.local,
+            change,
+        );
+        let subjects = subject_index(&analysis);
+        self.changed_subjects.clear();
+        for subject in self.subjects.keys().chain(subjects.keys()) {
+            let old = self
+                .subjects
+                .get(subject)
+                .into_iter()
+                .flatten()
+                .map(|&i| &self.analysis.report().diagnostics[i]);
+            let new = subjects
+                .get(subject)
+                .into_iter()
+                .flatten()
+                .map(|&i| &analysis.report().diagnostics[i]);
+            if !old.eq(new) {
+                self.changed_subjects.insert(subject.clone());
+            }
+        }
+        self.changed_nodes = self
+            .analysis
+            .report()
+            .resolved
+            .keys()
+            .chain(analysis.report().resolved.keys())
+            .filter(|node| {
+                self.analysis.report().resolved.get(node) != analysis.report().resolved.get(node)
+            })
+            .copied()
+            .collect();
+        self.subjects = subjects;
+        self.stale = incomplete(&analysis);
+        self.analysis = analysis;
         self.limits = options.limits;
         self.revision = document.revision();
-        self.stale = cancelled(&self.analysis);
-        self.stats = full(document, work);
+        self.content_state = document.state_id();
+        self.stats = full(document, work, local, rebuilt);
     }
-
-    /// The current analysis, bound to the document state and registry generation it
-    /// describes, exactly as [`analyze_with_options`] would return it.
+    fn no_work(&mut self) {
+        self.changed_subjects.clear();
+        self.changed_nodes.clear();
+        self.stats = EditStats {
+            work: SessionWork::None,
+            input_nodes: 0,
+            input_edges: 0,
+            full_analysis_runs: 0,
+            index_rebuilt: false,
+            local: LocalWork::default(),
+        };
+    }
+    /// Trial planning through the retained index. No analysis is published on failure.
+    /// An unwinding planner invalidates its index; the next operation rebuilds it.
+    pub fn plan_edit(
+        &mut self,
+        document: &mut GraphDocument,
+        edit: impl IntoIterator<Item = DocCommand>,
+        registry: &RegistrySnapshot,
+    ) -> Result<InferencePlan, TxError> {
+        let index = self.index.get_or_insert_with(|| DocIndex::build(document));
+        plan_edit_indexed(document, index, edit, registry)
+    }
+    /// Absent if construction was rejected before indexing. Check freshness after host edits.
+    pub fn index(&self) -> Option<&DocIndex> {
+        self.index.as_ref()
+    }
     pub fn analysis(&self) -> &ValidationAnalysis {
         &self.analysis
     }
-
-    /// An owned copy of the current analysis, for consumers such as the compiler that need
-    /// one. This copies the whole report; editors should read through the session instead.
+    /// Copies the complete report; UI readers should use the borrowed views.
     pub fn materialize(&self) -> ValidationAnalysis {
         self.analysis.clone()
     }
-
-    /// The current diagnostics, in report order.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.analysis.report().diagnostics
     }
-
-    /// The current semantic projection of `node`, if it resolved completely.
+    pub fn diagnostics_for<'a>(
+        &'a self,
+        subject: &Subject,
+    ) -> impl Iterator<Item = &'a Diagnostic> {
+        self.subjects
+            .get(subject)
+            .into_iter()
+            .flatten()
+            .map(|&i| &self.analysis.report().diagnostics[i])
+    }
+    /// Subjects whose diagnostic lists changed, including removed diagnostics.
+    pub fn changed_subjects(&self) -> &BTreeSet<Subject> {
+        &self.changed_subjects
+    }
+    /// Resolved signatures that appeared, changed or disappeared.
+    pub fn changed_nodes(&self) -> &BTreeSet<NodeId> {
+        &self.changed_nodes
+    }
     pub fn resolved(&self, node: NodeId) -> Option<&SignatureSnapshot> {
         self.analysis.report().resolved.get(&node)
     }
-
-    /// What the most recent creation, update or effects change did.
     pub fn stats(&self) -> &EditStats {
         &self.stats
     }
-
-    /// True if the analysis describes `document` against `registry` and was not cancelled.
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
-        !self.stale
-            && self.analysis.document_state() == document.semantic_state_id()
-            && self.analysis.registry_generation() == registry.generation()
+        !self.stale && self.analysis.is_current(document, registry)
     }
 }
-
-fn full(document: &GraphDocument, work: SessionWork) -> EditStats {
-    let (nodes, edges) = document
-        .bodies()
-        .fold((0usize, 0usize), |(nodes, edges), body| {
-            (nodes + body.nodes.len(), edges + body.edges.len())
-        });
+fn subject_index(analysis: &ValidationAnalysis) -> BTreeMap<Subject, Vec<usize>> {
+    let mut subjects = BTreeMap::<Subject, Vec<usize>>::new();
+    for (i, diagnostic) in analysis.report().diagnostics.iter().enumerate() {
+        subjects
+            .entry(diagnostic.subject.clone())
+            .or_default()
+            .push(i);
+    }
+    subjects
+}
+fn full(
+    document: &GraphDocument,
+    work: SessionWork,
+    local: LocalWork,
+    index_rebuilt: bool,
+) -> EditStats {
+    let (input_nodes, input_edges) = document.bodies().fold((0, 0), |(nodes, edges), body| {
+        (nodes + body.nodes.len(), edges + body.edges.len())
+    });
     EditStats {
         work,
-        nodes_visited: nodes,
-        edges_visited: edges,
+        input_nodes,
+        input_edges,
+        full_analysis_runs: 1,
+        index_rebuilt,
+        local,
     }
 }
-
-/// A cancelled analysis holds only the cancellation diagnostic; it describes no document.
-fn cancelled(analysis: &ValidationAnalysis) -> bool {
-    analysis
-        .report()
-        .diagnostics
-        .iter()
-        .any(|diagnostic| diagnostic.code == DiagnosticCode::AnalysisCancelled)
+fn incomplete(analysis: &ValidationAnalysis) -> bool {
+    !analysis
+        .covered_checks()
+        .any(|check| check == super::ValidationCheck::NodeResolution)
 }

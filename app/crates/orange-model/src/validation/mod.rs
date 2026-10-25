@@ -34,6 +34,7 @@ mod functions;
 mod graph;
 mod inputs;
 mod limits;
+mod local;
 mod nodes;
 pub(crate) mod ports;
 mod regions;
@@ -61,6 +62,7 @@ pub use domains::{DomainValidation, validate_body_domains};
 pub use exports::validate_exports;
 pub use inputs::validate_inputs;
 pub use limits::{AnalysisLimits, AnalysisOptions};
+pub use local::LocalWork;
 pub use nodes::{NodeValidation, validate_nodes};
 pub use regions::{
     Region, RegionIndex, RegionKind, RegionRoot, RegionValidation, validate_regions,

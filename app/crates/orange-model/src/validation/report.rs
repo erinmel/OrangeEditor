@@ -270,19 +270,86 @@ pub fn analyze_with_options(
 ) -> ValidationAnalysis {
     match options
         .admit(document, registry, &leaf_effects)
-        .and_then(|()| run_analysis(document, registry, leaf_effects, &options))
+        .and_then(|()| run_analysis(document, registry, leaf_effects, &options, None))
     {
         Ok(analysis) => analysis,
-        Err(code) => ValidationAnalysis {
-            report: ValidationReport {
-                diagnostics: vec![Diagnostic::new(code, Subject::default(), registry.origin())],
-                ..ValidationReport::default()
-            },
-            document_state: document.semantic_state_id(),
-            registry_generation: registry.generation(),
-            covered: &[],
-        },
+        Err(code) => rejected_analysis(document, registry, code),
     }
+}
+
+fn rejected_analysis(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    code: DiagnosticCode,
+) -> ValidationAnalysis {
+    ValidationAnalysis {
+        report: ValidationReport {
+            diagnostics: vec![Diagnostic::new(code, Subject::default(), registry.origin())],
+            ..ValidationReport::default()
+        },
+        document_state: document.semantic_state_id(),
+        registry_generation: registry.generation(),
+        covered: &[],
+    }
+}
+
+/// The same full pipeline, with a retained index and proven node-local results.
+/// Admission still scans semantic metadata; downstream passes still run in full.
+pub(super) fn analyze_indexed(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    effects: BTreeMap<NodeId, LeafEffects>,
+    options: AnalysisOptions<'_>,
+    index: &mut Option<DocIndex>,
+    local: &mut super::local::LocalValidation,
+    change: Option<&crate::edit::ChangeSet>,
+) -> (ValidationAnalysis, super::local::LocalWork, bool) {
+    if let Err(code) = options.admit(document, registry, &effects) {
+        return (
+            rejected_analysis(document, registry, code),
+            Default::default(),
+            false,
+        );
+    }
+    let domains = validate_body_domains(document, registry.origin());
+    if let Err(code) = options.checkpoint() {
+        return (
+            rejected_analysis(document, registry, code),
+            Default::default(),
+            false,
+        );
+    }
+    if !domains.unsupported_bodies.is_empty() {
+        return (
+            domain_blocked_analysis(document, registry, domains.diagnostics),
+            Default::default(),
+            false,
+        );
+    }
+    let rebuilt = match index {
+        Some(index) if index.is_current(document) => false,
+        _ => {
+            if let (Some(retained), Some(change)) = (&mut *index, change)
+                && retained.state_id() == change.from_state()
+            {
+                retained.update(document, change);
+                false
+            } else {
+                *index = Some(DocIndex::build(document));
+                true
+            }
+        }
+    };
+    let work = local.refresh(document, registry, change);
+    let result = run_supported_analysis(
+        document,
+        registry,
+        effects,
+        &options,
+        index.as_ref().map(|index| (index, &*local)),
+    )
+    .unwrap_or_else(|code| rejected_analysis(document, registry, code));
+    (result, work, rebuilt)
 }
 
 fn run_analysis(
@@ -290,6 +357,7 @@ fn run_analysis(
     registry: &RegistrySnapshot,
     leaf_effects: BTreeMap<NodeId, LeafEffects>,
     options: &AnalysisOptions<'_>,
+    retained: Option<(&DocIndex, &super::local::LocalValidation)>,
 ) -> Result<ValidationAnalysis, DiagnosticCode> {
     let domains = validate_body_domains(document, registry.origin());
     options.checkpoint()?;
@@ -300,8 +368,25 @@ fn run_analysis(
             domains.diagnostics,
         ));
     }
-    let index = DocIndex::build(document);
-    let seed = accept_functions(document, registry, &leaf_effects, &index, options)?;
+    run_supported_analysis(document, registry, leaf_effects, options, retained)
+}
+
+fn run_supported_analysis(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    leaf_effects: BTreeMap<NodeId, LeafEffects>,
+    options: &AnalysisOptions<'_>,
+    retained: Option<(&DocIndex, &super::local::LocalValidation)>,
+) -> Result<ValidationAnalysis, DiagnosticCode> {
+    let built_index;
+    let index = match retained {
+        Some((index, _)) => index,
+        None => {
+            built_index = DocIndex::build(document);
+            &built_index
+        }
+    };
+    let seed = accept_functions(document, registry, &leaf_effects, index, options)?;
     let Settled {
         passes:
             BodyPasses {
@@ -316,7 +401,7 @@ fn run_analysis(
         functions,
         conformance,
         ..
-    } = settle(document, registry, &leaf_effects, &index, seed, options)?;
+    } = settle(document, registry, &leaf_effects, index, seed, options)?;
 
     let ports = super::ports::PortResolver::resume(document, &nodes.resolved, projections);
     let availability = super::availability::validate_availability_with_ports(
@@ -329,14 +414,20 @@ fn run_analysis(
     options.checkpoint()?;
     let mut diagnostics = nodes.diagnostics;
     diagnostics.extend(super::inputs::validate_type_locks(document, registry));
-    diagnostics.extend(validate_declaration_types(document, registry));
+    match retained {
+        Some((_, local)) => diagnostics.extend(local.declaration_diagnostics().cloned()),
+        None => diagnostics.extend(validate_declaration_types(document, registry)),
+    }
     options.checkpoint()?;
     diagnostics.extend(availability.diagnostics);
     diagnostics.extend(super::exports::validate_exports_with_ports(
         document, &ports, registry,
     ));
     options.checkpoint()?;
-    diagnostics.extend(validate_config(document, registry));
+    match retained {
+        Some((_, local)) => diagnostics.extend(local.config_diagnostics().cloned()),
+        None => diagnostics.extend(validate_config(document, registry)),
+    }
     options.checkpoint()?;
     diagnostics.extend(input_diagnostics);
     diagnostics.extend(connections.diagnostics);
