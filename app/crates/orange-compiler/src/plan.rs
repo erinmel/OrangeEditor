@@ -33,6 +33,8 @@ pub enum PlanType {
     F32,
     F64,
     Json,
+    Duration,
+    Error,
     Option(Box<PlanType>),
     Result(Box<PlanType>),
 }
@@ -141,6 +143,8 @@ impl PlanType {
             "core/f32@1" => Self::F32,
             "core/f64@1" => Self::F64,
             "core/json@1" => Self::Json,
+            "core/duration@1" => Self::Duration,
+            "core/error@1" => Self::Error,
             _ => return None,
         })
     }
@@ -173,12 +177,13 @@ impl PlanType {
                 | (Self::F32, Value::F32(_))
                 | (Self::F64, Value::F64(_))
                 | (Self::Json, Value::Json(_))
-        )
+                | (Self::Duration, Value::Duration(_))
+        ) || matches!((self, value), (Self::Error, Value::Err(error)) if crate::compile::valid_identifier(&error.code))
     }
     /// Whether a valid value of this type can carry the Err discriminant directly.
     pub(crate) fn unboxed_error(&self) -> bool {
         match self {
-            Self::Result(_) => true,
+            Self::Result(_) | Self::Error => true,
             Self::Option(inner) if !matches!(inner.as_ref(), Self::Option(_)) => {
                 inner.unboxed_error()
             }

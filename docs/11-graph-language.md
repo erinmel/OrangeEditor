@@ -454,6 +454,8 @@ Under `parallel`, activations interleave at suspension points. Get is re-pulled 
 
 ### 10.2 Entry catalog
 
+Executable-control prerequisite (2026-10-24): `core/on-start@1` and `core/on-stop@1` are registered host-owned Entry definitions with config version 1, no provider or signature, no payload, and the kind-provided `then` output. Their ordinary persisted activation policy is required. This registration does not implement other entries or generic event delivery.
+
 | Entry | Fires | Payload |
 |---|---|---|
 | `core/on-start` | Once, when the run enters Running | — |

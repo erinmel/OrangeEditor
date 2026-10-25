@@ -260,6 +260,7 @@ pub fn compile_pure(
     let Admission {
         incoming,
         lazy_nodes,
+        ..
     } = admit(document, &snapshot, analysis, options, false)?;
     let mut folder = ConstantFolder::new(
         document,
@@ -609,6 +610,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
 pub(crate) struct Admission<'a> {
     pub(crate) incoming: Incoming<'a>,
     pub(crate) lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
+    pub(crate) host_nodes: BTreeSet<NodeId>,
 }
 /// Fresh definition metadata says the node reads host-owned state.
 pub(crate) fn is_state_read(
@@ -646,6 +648,7 @@ pub(crate) fn admit<'a>(
 
 /// Control lowering supplies checked demand roots and a separately admitted set of
 /// host control nodes. Neither source documents nor persisted exports are rewritten.
+#[allow(clippy::too_many_arguments)] // Private checked entry shared by two compiler profiles.
 pub(crate) fn admit_roots<'a>(
     document: &'a GraphDocument,
     snapshot: &RegistrySnapshot,
@@ -817,5 +820,6 @@ pub(crate) fn admit_roots<'a>(
     Ok(Admission {
         incoming,
         lazy_nodes,
+        host_nodes: controls.clone(),
     })
 }

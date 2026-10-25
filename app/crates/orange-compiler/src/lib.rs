@@ -3,6 +3,7 @@
 //! function and scheduled execution remain separate slices.
 
 mod compile;
+mod control;
 mod data;
 mod data_compile;
 mod error;
@@ -12,6 +13,7 @@ mod lazy;
 mod plan;
 
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
+pub use control::{ControlIx, ControlNode, ControlOperation, ControlPlan, compile_control};
 pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
 pub use data_compile::compile_data;
 pub use error::CompileError;
