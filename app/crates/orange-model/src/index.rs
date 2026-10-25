@@ -48,6 +48,10 @@ impl DocIndex {
     /// `change`. Cost is proportional to the change, plus the size of any function body
     /// the transaction replaced or removed.
     pub fn update(&mut self, document: &GraphDocument, change: &ChangeSet) {
+        if self.state != change.from_state() || document.state_id() != change.to_state() {
+            *self = Self::build(document);
+            return;
+        }
         self.state = document.state_id();
         if change.layout_only {
             return;
@@ -90,6 +94,10 @@ impl DocIndex {
     /// when the document changes without [`DocIndex::update`], for example by an undo.
     pub fn is_current(&self, document: &GraphDocument) -> bool {
         self.state == document.state_id()
+    }
+
+    pub(crate) fn state_id(&self) -> u64 {
+        self.state
     }
 
     /// The body holding `node`.

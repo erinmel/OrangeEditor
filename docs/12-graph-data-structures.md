@@ -180,6 +180,8 @@ Compatibility: saved graph format is unchanged. The optional diagnostic `event` 
 
 Whole-content `state_id()` binds edit indexes, connection proposals and undo inverses. The separate transient `semantic_state_id()` binds validation analysis, pure/data/control plans and execution entry. Layout-only transactions advance revision and whole-content identity but preserve semantic identity, so they require no revalidation or recompilation. Semantic transactions allocate both identities; undo/redo restore both exact prior identities. Clones retain them and loads allocate fresh identities. Identity counters are not saved fields and do not change format v1. `ValidationAnalysis::document_state()` now returns semantic identity.
 
+Committed `ChangeSet` evidence has journal-owned construction and read-only getters. It records exact before/after content and semantic identities as well as revisions; consumers must not infer lineage from revisions alone. Node/edge/declaration deltas are borrowed through `nodes()`, `edges()` and `decls()`. `global_dirty()` reports shared-signature/package-lock patches requiring conservative invalidation. `is_committed()` distinguishes ordinary/undo/redo commits from private rolled-back trials. `DocIndex::update` rebuilds on mismatched identity lineage. This tightens the unfrozen Rust API: external field reads become getters and external mutation/construction is disallowed. No saved JSON field changes.
+
 Both ordinary and scratch transactions roll back successfully applied commands if command iteration unwinds; the original panic resumes after restoration. Scratch observation has the same guarantee. This covers unwind-enabled builds, not process aborts. Returned errors preserve content, revision and both identities. Paste checks generated IDs against all target bodies/declarations and earlier generated IDs within each typed identity namespace before constructing keyed maps; collisions return `IdError::GeneratedCollision` rather than truncating copied bodies or replacing declarations. The model does not retry a failing host generator.
 
 
@@ -201,10 +203,7 @@ pub enum DocCommand {
     Layout(LayoutCommand),                                             // move, waypoints, frames, comments, viewport
 }
 pub struct ChangeSet {
-    pub from_revision: u64, pub to_revision: u64,
-    pub layout_only: bool,                    // true → no validation, compile or preview work
-    pub nodes: Delta<NodeId>, pub edges: Delta<EdgeId>, pub decls: Delta<DeclId>,
-    pub affected_roots: SmallVec<[RegionRootRef; 4]>,  // compile scope
+    // Private journal-owned provenance and deltas; exposed through read-only getters.
 }
 ```
 

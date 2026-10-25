@@ -155,7 +155,7 @@ fn layout_preserves_analysis_and_plan_through_undo_redo() {
             value: Some(json!(2)),
         })])
         .unwrap();
-    assert!(layout.change_set.layout_only);
+    assert!(layout.change_set.layout_only());
     assert_ne!(doc.state_id(), content);
     assert_eq!(doc.semantic_state_id(), semantic);
     assert!(analysis.is_ready_for_lowering(&doc, registry));

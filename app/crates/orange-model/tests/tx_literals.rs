@@ -40,13 +40,13 @@ fn disconnect_restores_shadowed_literal() {
     let stored = &document.node(target.node).unwrap().inputs[&target.port];
     assert_eq!(stored, &i64_literal(100), "shadowed literal is kept");
     assert!(
-        connect.change_set.nodes.is_empty(),
+        connect.change_set.nodes().is_empty(),
         "connecting does not touch the node"
     );
     assert_eq!(
         connect
             .change_set
-            .edges
+            .edges()
             .added
             .iter()
             .copied()
@@ -98,7 +98,7 @@ fn clearing_a_literal_is_undoable() {
         }])
         .unwrap();
     assert_eq!(document.active_literal(&target), None);
-    assert!(clear.change_set.nodes.changed.contains(&target.node));
+    assert!(clear.change_set.nodes().changed.contains(&target.node));
     let _ = document.revert(clear.inverse).unwrap();
     assert_eq!(content(&document), before);
 }

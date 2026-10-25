@@ -30,10 +30,10 @@ fn layout_only_transaction_is_flagged_and_undo_removes_created_paths() {
         .apply([set(&["nodes", &n1], Some(json!({"x": 10, "y": 20})))])
         .unwrap();
     let change = &moved.change_set;
-    assert!(change.layout_only, "G-36");
-    assert!(change.nodes.is_empty() && change.edges.is_empty() && change.decls.is_empty());
+    assert!(change.layout_only(), "G-36");
+    assert!(change.nodes().is_empty() && change.edges().is_empty() && change.decls().is_empty());
     assert_eq!(
-        (change.from_revision, change.to_revision),
+        (change.from_revision(), change.to_revision()),
         (revision, revision + 1)
     );
     assert_eq!(document.editor()["nodes"][&n1], json!({"x": 10, "y": 20}));
@@ -64,7 +64,7 @@ fn mixed_transaction_is_not_layout_only() {
             },
         ])
         .unwrap();
-    assert!(!committed.change_set.layout_only);
+    assert!(!committed.change_set.layout_only());
 }
 
 #[test]

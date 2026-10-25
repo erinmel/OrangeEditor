@@ -116,7 +116,7 @@ fn remove_takes_edges_and_literal_and_undo_restores_them() {
             .inputs
             .contains_key(&key("item#0"))
     );
-    assert!(removal.change_set.edges.removed.contains(&eid(1)));
+    assert!(removal.change_set.edges().removed.contains(&eid(1)));
 
     let _ = document.revert(removal.inverse).unwrap();
     assert_eq!(

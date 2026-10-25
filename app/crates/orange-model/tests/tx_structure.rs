@@ -157,11 +157,11 @@ fn remove_nodes_takes_incident_edges_and_undo_restores_order() {
     assert_eq!(document.root().edges.len(), 0, "both edges touched node 2");
     let change = &removal.change_set;
     assert_eq!(
-        change.nodes.removed.iter().copied().collect::<Vec<_>>(),
+        change.nodes().removed.iter().copied().collect::<Vec<_>>(),
         [nid(2)]
     );
-    assert_eq!(change.edges.removed.len(), 2);
-    assert!(!change.layout_only);
+    assert_eq!(change.edges().removed.len(), 2);
+    assert!(!change.layout_only());
 
     let _ = document.revert(removal.inverse).unwrap();
     assert_eq!(
@@ -179,7 +179,7 @@ fn revision_counts_every_committed_transaction_and_redo_works() {
         .apply([DocCommand::Disconnect { edge: eid(1) }])
         .unwrap();
     let after_edit = content(&document);
-    assert_eq!(edited.change_set.to_revision, start + 1);
+    assert_eq!(edited.change_set.to_revision(), start + 1);
 
     let undo = document.revert(edited.inverse).unwrap();
     assert_eq!(document.revision(), start + 2, "undo is a transaction too");
@@ -187,7 +187,7 @@ fn revision_counts_every_committed_transaction_and_redo_works() {
     assert_eq!(content(&document), after_edit);
     assert_eq!(
         redo.change_set
-            .edges
+            .edges()
             .removed
             .iter()
             .copied()
@@ -245,7 +245,7 @@ fn upsert_replaces_in_place_and_reports_decl_deltas() {
     assert!(
         created
             .change_set
-            .decls
+            .decls()
             .added
             .contains(&DeclId::Variable(vid()))
     );
@@ -256,7 +256,7 @@ fn upsert_replaces_in_place_and_reports_decl_deltas() {
     assert!(
         renamed
             .change_set
-            .decls
+            .decls()
             .changed
             .contains(&DeclId::Variable(vid()))
     );
@@ -273,8 +273,8 @@ fn net_deltas_ignore_ids_added_and_removed_together() {
             DocCommand::RemoveNodes { ids: vec![nid(4)] },
         ])
         .unwrap();
-    assert!(committed.change_set.nodes.is_empty());
-    assert!(committed.change_set.edges.is_empty());
+    assert!(committed.change_set.nodes().is_empty());
+    assert!(committed.change_set.edges().is_empty());
 }
 
 #[test]
@@ -296,8 +296,8 @@ fn rebind_changes_only_the_provider() {
         document.node(nid(1)).unwrap().provider.as_ref(),
         Some(&provider)
     );
-    assert_eq!(committed.change_set.nodes.changed.len(), 2);
-    assert!(committed.change_set.edges.is_empty());
+    assert_eq!(committed.change_set.nodes().changed.len(), 2);
+    assert!(committed.change_set.edges().is_empty());
 }
 
 #[test]
@@ -319,7 +319,7 @@ fn put_signature_is_idempotent_rejects_conflicts_and_undoes() {
     let before = content(&document);
     let first = document.apply([put("core/i64@1")]).unwrap();
     let again = document.apply([put("core/i64@1")]).unwrap();
-    assert!(again.change_set.nodes.is_empty() && document.signatures().len() == 1);
+    assert!(again.change_set.nodes().is_empty() && document.signatures().len() == 1);
     assert_rejected(
         &mut document,
         vec![put("core/f64@1")],
