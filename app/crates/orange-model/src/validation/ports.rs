@@ -1,6 +1,9 @@
 //! Shared, read-only resolution of a graph port reference.
 
-use std::collections::BTreeMap;
+use std::cell::RefCell;
+use std::collections::{BTreeMap, HashMap};
+use std::ops::Deref;
+use std::sync::Arc;
 
 use thiserror::Error;
 
@@ -16,6 +19,40 @@ pub(crate) enum PortLookupError {
     MissingMetadata,
     #[error("port is not declared by the node")]
     UnknownPort,
+}
+
+/// One immutable document/resolution scope. Both valid descriptors and lookup
+/// failures are memoized; no cached metadata survives a new analysis invocation.
+pub(crate) struct PortResolver<'a> {
+    document: &'a GraphDocument,
+    resolved: &'a BTreeMap<NodeId, SignatureSnapshot>,
+    cache: RefCell<HashMap<PortRef, Result<Arc<PortDescriptor>, PortLookupError>>>,
+}
+impl<'a> PortResolver<'a> {
+    pub(crate) fn new(
+        document: &'a GraphDocument,
+        resolved: &'a BTreeMap<NodeId, SignatureSnapshot>,
+    ) -> Self {
+        Self {
+            document,
+            resolved,
+            cache: RefCell::default(),
+        }
+    }
+    pub(crate) fn port(&self, port: &PortRef) -> Result<Arc<PortDescriptor>, PortLookupError> {
+        if let Some(result) = self.cache.borrow().get(port) {
+            return result.clone();
+        }
+        let result = lookup_port(self.document, self.resolved, port).map(Arc::new);
+        self.cache.borrow_mut().insert(port.clone(), result.clone());
+        result
+    }
+}
+impl Deref for PortResolver<'_> {
+    type Target = BTreeMap<NodeId, SignatureSnapshot>;
+    fn deref(&self) -> &Self::Target {
+        self.resolved
+    }
 }
 
 /// Look up a concrete port in the node's fresh resolution (`resolved`, from
@@ -87,6 +124,24 @@ mod tests {
     use crate::document::PortKind;
     use crate::validation::{HostOrigin, validate_nodes};
     use serde_json::json;
+
+    #[test]
+    fn projections_share_descriptors_and_preserve_orphan_lookup_failures() {
+        let doc = document("vendor/task", Some("saved"), json!({}));
+        let resolved = BTreeMap::new();
+        let ports = PortResolver::new(&doc, &resolved);
+        let first = ports.port(&reference("value")).unwrap();
+        let again = ports.port(&reference("value")).unwrap();
+        assert!(Arc::ptr_eq(&first, &again));
+        assert_eq!(first.as_ref(), &lookup(&doc, &reference("value")).unwrap());
+        for _ in 0..2 {
+            assert_eq!(
+                ports.port(&reference("absent")),
+                Err(PortLookupError::UnknownPort)
+            );
+        }
+        assert_eq!(ports.cache.borrow().len(), 2);
+    }
 
     /// Looks a port up against the core registry's fresh resolution of `doc`.
     fn lookup(doc: &GraphDocument, port: &PortRef) -> Result<PortDescriptor, PortLookupError> {

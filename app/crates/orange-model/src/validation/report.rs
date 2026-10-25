@@ -11,8 +11,8 @@ use crate::index::DocIndex;
 use super::acceptance::{BodyPasses, Settled, accept_functions, settle};
 use super::{
     AnalysisOptions, Diagnostic, DiagnosticCode, FunctionSummary, LeafEffects, Severity, Subject,
-    sort_diagnostics, validate_availability, validate_body_domains, validate_config,
-    validate_declaration_types, validate_exports, validate_state, validate_streams,
+    sort_diagnostics, validate_body_domains, validate_config, validate_declaration_types,
+    validate_state,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
@@ -316,9 +316,10 @@ fn run_analysis(
         ..
     } = settle(document, registry, &leaf_effects, &index, seed, options)?;
 
-    let availability = validate_availability(
+    let ports = super::ports::PortResolver::new(document, &nodes.resolved);
+    let availability = super::availability::validate_availability_with_ports(
         document,
-        &nodes.resolved,
+        &ports,
         &connections,
         &regions.index,
         registry,
@@ -328,7 +329,9 @@ fn run_analysis(
     diagnostics.extend(validate_declaration_types(document, registry));
     options.checkpoint()?;
     diagnostics.extend(availability.diagnostics);
-    diagnostics.extend(validate_exports(document, &nodes.resolved, registry));
+    diagnostics.extend(super::exports::validate_exports_with_ports(
+        document, &ports, registry,
+    ));
     options.checkpoint()?;
     diagnostics.extend(validate_config(document, registry));
     options.checkpoint()?;
@@ -336,7 +339,9 @@ fn run_analysis(
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
     diagnostics.extend(conformance.diagnostics);
-    diagnostics.extend(validate_streams(document, &nodes.resolved, registry));
+    diagnostics.extend(super::streams::validate_streams_with_ports(
+        document, &ports, registry,
+    ));
     options.checkpoint()?;
     diagnostics.extend(validate_state(
         document,
@@ -375,6 +380,7 @@ fn run_analysis(
     incomplete_nodes.extend(regions.incomplete_nodes);
     incomplete_nodes.extend(control.incomplete_nodes);
     options.checkpoint()?;
+    drop(ports);
     Ok(ValidationAnalysis {
         report: ValidationReport {
             diagnostics,

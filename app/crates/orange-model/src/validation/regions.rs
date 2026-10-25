@@ -12,7 +12,7 @@ use super::connections::ConnectionValidation;
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
-use super::ports::lookup_port;
+use super::ports::PortResolver;
 use super::scope::Scope;
 
 /// The exec output port whose targets start a region.
@@ -115,13 +115,15 @@ pub fn validate_regions(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
 ) -> RegionValidation {
-    validate_regions_in(document, resolved, connections, registry, Scope::All)
+    let ports = PortResolver::new(document, resolved);
+
+    validate_regions_in(document, &ports, connections, registry, Scope::All)
 }
 
 /// [`validate_regions`] over the bodies in `scope`.
 pub(crate) fn validate_regions_in(
     document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    resolved: &PortResolver<'_>,
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     scope: Scope,
@@ -190,7 +192,7 @@ fn is_exec_node(signature: &SignatureSnapshot) -> bool {
 #[allow(clippy::too_many_lines)]
 fn check_body(
     document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    resolved: &PortResolver<'_>,
     body: &GraphBody,
     function: Option<FunctionId>,
     error_edges: &BTreeSet<EdgeId>,
@@ -217,10 +219,7 @@ fn check_body(
             continue;
         }
         raw.entry(edge.from.node).or_default().push(edge.to.node);
-        let (from, to) = (
-            lookup_port(document, resolved, &edge.from),
-            lookup_port(document, resolved, &edge.to),
-        );
+        let (from, to) = (resolved.port(&edge.from), resolved.port(&edge.to));
         match (from, to) {
             (Ok(from), Ok(to))
                 if from.direction == PortDirection::Output
@@ -619,8 +618,8 @@ fn reach(start: NodeId, stop: NodeId, next: &BTreeMap<NodeId, Vec<NodeId>>) -> B
 /// Zone pairing, purity, closure and nesting of one body (11 §8.4). The zone body is the
 /// data cone between a begin output and its end input.
 fn check_zones(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    _document: &GraphDocument,
+    resolved: &PortResolver<'_>,
     body: &GraphBody,
     function: Option<FunctionId>,
     error_edges: &BTreeSet<EdgeId>,
@@ -667,10 +666,8 @@ fn check_zones(
         {
             continue;
         }
-        if let (Ok(from), Ok(to)) = (
-            lookup_port(document, resolved, &edge.from),
-            lookup_port(document, resolved, &edge.to),
-        ) && from.direction == PortDirection::Output
+        if let (Ok(from), Ok(to)) = (resolved.port(&edge.from), resolved.port(&edge.to))
+            && from.direction == PortDirection::Output
             && from.kind == PortKind::Data
             && to.direction == PortDirection::Input
             && to.kind == PortKind::Data

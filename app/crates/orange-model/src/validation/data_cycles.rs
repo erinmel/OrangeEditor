@@ -14,7 +14,7 @@ use super::connections::ConnectionValidation;
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
-use super::ports::lookup_port;
+use super::ports::PortResolver;
 use super::scope::Scope;
 
 /// Result of checking the data-dependency graph using current resolved signatures.
@@ -75,13 +75,15 @@ pub fn validate_data_cycles(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
 ) -> DataCycleValidation {
-    validate_data_cycles_in(document, resolved, connections, registry, Scope::All)
+    let ports = PortResolver::new(document, resolved);
+
+    validate_data_cycles_in(document, &ports, connections, registry, Scope::All)
 }
 
 /// [`validate_data_cycles`] over the bodies in `scope`.
 pub(crate) fn validate_data_cycles_in(
     document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    resolved: &PortResolver<'_>,
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     scope: Scope,
@@ -194,8 +196,8 @@ pub(crate) fn validate_data_cycles_in(
                 mark_incomplete(edge.to.node, origin, &mut result, &mut diagnosed_nodes);
                 continue;
             }
-            let from = lookup_port(document, resolved, &edge.from);
-            let to = lookup_port(document, resolved, &edge.to);
+            let from = resolved.port(&edge.from);
+            let to = resolved.port(&edge.to);
             match (from, to) {
                 (Ok(from), Ok(to))
                     if from.direction == PortDirection::Output

@@ -53,7 +53,8 @@ impl BodyPasses {
         options.checkpoint()?;
         let nodes = validate_nodes_with(document, registry, calls, scope, index);
         options.checkpoint()?;
-        let resolved = &nodes.resolved;
+        let ports = super::ports::PortResolver::new(document, &nodes.resolved);
+        let resolved = &ports;
         let connections = validate_connections_in(document, resolved, registry, scope, index);
         options.checkpoint()?;
         let data_cycles =
@@ -65,6 +66,7 @@ impl BodyPasses {
         options.checkpoint()?;
         let input_diagnostics = validate_inputs_in(document, resolved, registry, scope);
         options.checkpoint()?;
+        drop(ports);
         Ok(Self {
             nodes,
             connections,

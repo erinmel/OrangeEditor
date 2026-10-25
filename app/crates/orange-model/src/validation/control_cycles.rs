@@ -10,7 +10,7 @@ use crate::id::NodeId;
 
 use super::connections::ConnectionValidation;
 use super::diagnostic::{Diagnostic, DiagnosticCode, Severity, Subject, sort_diagnostics};
-use super::ports::{PortLookupError, lookup_port};
+use super::ports::{PortLookupError, PortResolver};
 use super::scope::Scope;
 
 /// Result of checking explicit exec-edge cycles for guaranteed suspension.
@@ -48,13 +48,15 @@ pub fn validate_control_cycles(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
 ) -> ControlCycleValidation {
-    validate_control_cycles_in(document, resolved, connections, registry, Scope::All)
+    let ports = PortResolver::new(document, resolved);
+
+    validate_control_cycles_in(document, &ports, connections, registry, Scope::All)
 }
 
 /// [`validate_control_cycles`] over the bodies in `scope`.
 pub(crate) fn validate_control_cycles_in(
     document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    resolved: &PortResolver<'_>,
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     scope: Scope,
@@ -90,10 +92,7 @@ pub(crate) fn validate_control_cycles_in(
             {
                 continue;
             }
-            match (
-                lookup_port(document, resolved, &edge.from),
-                lookup_port(document, resolved, &edge.to),
-            ) {
+            match (resolved.port(&edge.from), resolved.port(&edge.to)) {
                 (Ok(from), Ok(to))
                     if from.direction == PortDirection::Output
                         && to.direction == PortDirection::Input

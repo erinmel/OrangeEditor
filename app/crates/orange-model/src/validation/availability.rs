@@ -20,7 +20,7 @@ use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
 use super::dominators::DomTree;
-use super::ports::lookup_port;
+use super::ports::PortResolver;
 use super::regions::{RegionIndex, RegionKind, RegionRoot};
 
 /// Result of the availability pass.
@@ -298,6 +298,17 @@ pub fn validate_availability(
     regions: &RegionIndex,
     registry: &RegistrySnapshot,
 ) -> AvailabilityValidation {
+    let ports = PortResolver::new(document, resolved);
+    validate_availability_with_ports(document, &ports, connections, regions, registry)
+}
+
+pub(crate) fn validate_availability_with_ports(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    connections: &ConnectionValidation,
+    regions: &RegionIndex,
+    registry: &RegistrySnapshot,
+) -> AvailabilityValidation {
     let error_edges: BTreeSet<_> = connections
         .diagnostics
         .iter()
@@ -327,7 +338,7 @@ pub fn validate_availability(
 
 struct Context<'a> {
     document: &'a GraphDocument,
-    resolved: &'a BTreeMap<NodeId, SignatureSnapshot>,
+    resolved: &'a PortResolver<'a>,
     regions: &'a RegionIndex,
     error_edges: &'a BTreeSet<EdgeId>,
     origin: &'a HostOrigin,
@@ -386,7 +397,7 @@ fn exec_outputs(
 
 struct DataEdge<'a> {
     edge: &'a Edge,
-    from: PortDescriptor,
+    from: std::sync::Arc<PortDescriptor>,
 }
 
 enum Requirement {
@@ -400,10 +411,7 @@ type AvailabilityUses = BTreeMap<AvailabilityKey, BTreeSet<(NodeId, Subject)>>;
 #[allow(clippy::too_many_lines)]
 fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityValidation) {
     let Context {
-        document,
-        resolved,
-        regions,
-        ..
+        resolved, regions, ..
     } = *context;
     let mut targets: BTreeMap<(NodeId, PortKey), Vec<NodeId>> = BTreeMap::new();
     let mut incoming: BTreeMap<NodeId, Vec<DataEdge>> = BTreeMap::new();
@@ -416,10 +424,7 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
         {
             continue;
         }
-        let (Ok(from), Ok(to)) = (
-            lookup_port(document, resolved, &edge.from),
-            lookup_port(document, resolved, &edge.to),
-        ) else {
+        let (Ok(from), Ok(to)) = (resolved.port(&edge.from), resolved.port(&edge.to)) else {
             continue;
         };
         if from.direction != PortDirection::Output || to.direction != PortDirection::Input {
