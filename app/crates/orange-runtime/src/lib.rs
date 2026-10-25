@@ -6,7 +6,7 @@ mod data;
 mod entropy;
 mod run;
 pub use cancel::CancelToken;
-pub use data::{DataActivation, DataError, DataLimits, DataOptions};
+pub use data::{DataActivation, DataError, DataLimits, DataOptions, DataPoll};
 pub use entropy::{
     ActivationEntropy, ENTROPY_ALGORITHM, EntropyError, EntropyKey, EntropyLayout,
     EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,

@@ -1,5 +1,5 @@
 //! A host-driven logical actor. No worker thread, OS clock or editor dependency.
-use crate::{DataActivation, DataError, DataOptions};
+use crate::{DataActivation, DataError, DataOptions, DataPoll};
 use orange_compiler::{ConstantFault, ControlIx, ControlOperation, ControlPlan};
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::FaultPolicy;
@@ -97,6 +97,7 @@ struct Activation {
     entry: ControlIx,
     pc: Option<ControlIx>,
     data: DataActivation,
+    pull: Option<usize>,
 }
 
 /// Checked control execution. Inspection is explicit; Debug never formats values.
@@ -151,6 +152,7 @@ impl Run {
                     sequence as u64,
                     options.data.clone(),
                 )?,
+                pull: None,
             });
         }
         Ok(Self {
@@ -192,26 +194,36 @@ impl Run {
         if self.state != RunState::Running {
             return Err(RunError::InvalidState);
         }
-        let mut count = 0;
-        while count < budget {
+        let available = self
+            .options
+            .limits
+            .max_operations
+            .saturating_sub(self.operations);
+        let mut remaining = budget.min(available);
+        let initial = remaining;
+        while remaining > 0 && self.state == RunState::Running {
             let Some(mut activation) = self.ready.pop_front() else {
                 break;
             };
-            self.operations = self
-                .operations
-                .checked_add(1)
-                .filter(|n| *n <= self.options.limits.max_operations)
-                .ok_or(RunError::ResourceLimit)?;
-            let result = self.execute(&mut activation);
+            let result = self.execute(&mut activation, &mut remaining);
             if let Err(error) = result {
                 self.ready.clear();
                 self.state = RunState::Faulted;
                 return Err(error);
             }
-            count += 1;
             if activation.pc.is_some() {
                 self.ready.push_back(activation);
             }
+        }
+        let count = initial - remaining;
+        self.operations += count;
+        if budget > 0
+            && self.operations == self.options.limits.max_operations
+            && !self.ready.is_empty()
+        {
+            self.ready.clear();
+            self.state = RunState::Faulted;
+            return Err(RunError::ResourceLimit);
         }
         Ok(RunProgress {
             operations: count,
@@ -219,10 +231,13 @@ impl Run {
             next_wakeup: None,
         })
     }
-    fn execute(&mut self, activation: &mut Activation) -> Result<(), RunError> {
+    fn execute(&mut self, activation: &mut Activation, budget: &mut usize) -> Result<(), RunError> {
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
         let ix = activation.pc.ok_or(RunError::InvalidState)?;
         let node = &plan.nodes()[ix.index()];
+        if activation.pull.is_none() {
+            *budget -= 1;
+        }
         let (next, outcome, fault) = match node.operation() {
             ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
             ControlOperation::Branch {
@@ -230,11 +245,16 @@ impl Run {
                 when_true,
                 when_false,
             } => {
-                activation.data.begin_epoch()?;
-                let result = activation
-                    .data
-                    .export(*condition)?
-                    .ok_or(DataError::KernelContract { node: node.node() })?;
+                if activation.pull.is_none() {
+                    activation.data.begin_epoch()?;
+                    activation.pull = Some(*condition);
+                }
+                let result = match activation.data.poll_export(*condition, budget)? {
+                    DataPoll::Pending => return Ok(()),
+                    DataPoll::Ready(result) => {
+                        result.ok_or(DataError::KernelContract { node: node.node() })?
+                    }
+                };
                 match result.outcome {
                     Ok(Value::Bool(true)) => (*when_true, ControlOutcome::True, None),
                     Ok(Value::Bool(false)) => (*when_false, ControlOutcome::False, None),
@@ -243,6 +263,7 @@ impl Run {
                 }
             }
         };
+        activation.pull = None;
         self.record(RunEvent {
             activation: activation.sequence,
             node: node.node(),

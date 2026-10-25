@@ -157,3 +157,74 @@ fn branch_runtime_matches_source_condition_and_keeps_active_snapshot() {
         assert!(run.pump(1).is_err());
     }
 }
+
+#[test]
+fn one_work_item_segments_preserve_outcomes_and_run_fuel_is_terminal() {
+    use orange_runtime::{Run, RunError, RunOptions, RunState};
+    let (doc, plan) = compiled(
+        vec![core(1, "on-start"), branch(2, true), branch(3, false)],
+        vec![edge(1, 1, "then", 2, "in"), edge(2, 2, "true", 3, "in")],
+    );
+    let mut traces = vec![];
+    for budget in [1, 2, 1024] {
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            99,
+            RunOptions::default(),
+        )
+        .unwrap();
+        while run.pump(budget).unwrap().ready {}
+        traces.push(run.trace().clone());
+    }
+    assert_eq!(traces[0], traces[1]);
+    assert_eq!(traces[1], traces[2]);
+    let mut options = RunOptions::default();
+    options.limits.max_operations = 1;
+    let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 99, options).unwrap();
+    assert_eq!(run.pump(100), Err(RunError::ResourceLimit));
+    assert_eq!(run.state(), RunState::Faulted);
+}
+
+#[test]
+fn suspended_data_pull_keeps_epoch_and_samples_once() {
+    use orange_runtime::{DataActivation, DataOptions, DataPoll};
+    let (package, snapshot) = catalog();
+    let resolver = Counting::new(package.clone());
+    let doc = graph(
+        &package,
+        vec![random(1), math(2, "add", 0, 1)],
+        vec![edge(1, 1, "value", 2, "a")],
+        vec![export(2, "sum")],
+    );
+    let plan = std::sync::Arc::new(compile(&doc, snapshot.clone(), &resolver));
+    let mut frame = DataActivation::start(
+        plan.clone(),
+        &doc,
+        &snapshot,
+        123,
+        0,
+        DataOptions::default(),
+    )
+    .unwrap();
+    frame.begin_epoch().unwrap();
+    assert!(matches!(
+        frame.poll_export(0, &mut 0).unwrap(),
+        DataPoll::Pending
+    ));
+    let got = loop {
+        match frame.poll_export(0, &mut 1).unwrap() {
+            DataPoll::Pending => {}
+            DataPoll::Ready(Some(value)) => break value.outcome.unwrap().clone(),
+            _ => panic!("missing export"),
+        }
+    };
+    assert_eq!(resolver.draws.load(std::sync::atomic::Ordering::Relaxed), 1);
+    assert_eq!(&got, frame.export(0).unwrap().unwrap().outcome.unwrap());
+    assert_eq!(resolver.draws.load(std::sync::atomic::Ordering::Relaxed), 1);
+    let mut direct =
+        DataActivation::start(plan, &doc, &snapshot, 123, 0, DataOptions::default()).unwrap();
+    direct.begin_epoch().unwrap();
+    assert_eq!(&got, direct.export(0).unwrap().unwrap().outcome.unwrap());
+}

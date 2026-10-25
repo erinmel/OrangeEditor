@@ -294,6 +294,8 @@ Scoped entropy budget policy: the first host draw-budget/stream exhaustion is re
 
 ### E3 runtime prerequisites
 
+Bounded scheduling prerequisite (2026-10-24): `DataActivation::poll_export` consumes a caller-owned work-item budget and returns Pending with its stack and epoch retained. A different producer cannot replace a suspended pull (`PullInProgress`); explicit `begin_epoch` abandons the old pull. The synchronous export API drains the same engine. `Run::pump` budgets both control instructions and iterative data work, retaining total run fuel. These are operation bounds, not native callback preemption or measured wall-time guarantees.
+
 First control execution (2026-10-24): `orange-runtime::Run` starts a fresh checked control plan, retains its immutable snapshot and executes exact Entry/Branch outcomes through a host-driven pump. Bounded trace events contain source IDs/outcomes and safe fault provenance. Idle Running remains live until an explicit stop; disposal rejects further execution. Scheduled data safe points, state, structured regions and staged cleanup are subsequent slices, not established by this first executor.
 
 Control lowering preparation (2026-10-24): the compiler now has a private admission/lowering seam for explicit demand roots on the original document. The existing public pure/data entry points retain whole-root admission and saved-export behavior. This internal refactor does not publish a control plan or permit execution of unsupported nodes.

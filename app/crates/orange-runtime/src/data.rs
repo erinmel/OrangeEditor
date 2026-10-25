@@ -67,6 +67,8 @@ pub enum DataError {
     MissingInput { node: NodeId },
     #[error("The host input does not exist, has the wrong type or was already supplied.")]
     InvalidInput { index: usize },
+    #[error("Another data pull is suspended in this epoch.")]
+    PullInProgress,
     #[error("A data operation violated its checked contract.")]
     KernelContract { node: NodeId },
     #[error("{0}")]
@@ -83,6 +85,7 @@ impl DataError {
             Self::FuelExhausted => "core/data-fuel-exhausted",
             Self::MissingInput { .. } => "core/data-missing-input",
             Self::InvalidInput { .. } => "core/data-invalid-input",
+            Self::PullInProgress => "core/data-pull-in-progress",
             Self::KernelContract { .. } => "core/data-kernel-contract",
             Self::Entropy(error) => error.message_key(),
         }
@@ -106,6 +109,11 @@ pub struct DataActivation {
     plan: Arc<DataPlan>,
     document_revision: u64,
     state: Frame,
+}
+/// A suspended pull retains its work stack and current consumption epoch.
+pub enum DataPoll<'a> {
+    Pending,
+    Ready(Option<EvaluatedExport<'a>>),
 }
 impl std::fmt::Debug for DataActivation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -180,6 +188,7 @@ impl DataActivation {
             fuel_used: 0,
             failed: None,
             work: Vec::with_capacity(resources.work_items),
+            pending: None,
             work_limit: resources.work_items,
             inputs: Vec::with_capacity(resources.max_inputs),
             outputs: Vec::with_capacity(resources.max_outputs),
@@ -237,6 +246,7 @@ impl DataActivation {
         self.state.operations = 0;
         self.state.failed = None;
         self.state.work.clear();
+        self.state.pending = None;
         self.state.inputs.clear();
         self.state.outputs.clear();
         Ok(epoch)
@@ -268,6 +278,19 @@ impl DataActivation {
     /// Pull one ordered export inside the current explicit epoch. Other pulls in
     /// the same epoch share producers. Borrowed results prevent concurrent mutation.
     pub fn export(&mut self, index: usize) -> Result<Option<EvaluatedExport<'_>>, DataError> {
+        let mut budget = usize::MAX;
+        match self.poll_export(index, &mut budget)? {
+            DataPoll::Ready(value) => Ok(value),
+            DataPoll::Pending => unreachable!("unbounded budget covers the finite admitted stack"),
+        }
+    }
+    /// Consume at most the supplied number of iterative work items. Pending work
+    /// can resume only at the same producer; no new epoch or entropy draw is implied.
+    pub fn poll_export(
+        &mut self,
+        index: usize,
+        budget: &mut usize,
+    ) -> Result<DataPoll<'_>, DataError> {
         self.checkpoint()?;
         if let Some(error) = self.state.failed {
             return Err(error);
@@ -276,14 +299,21 @@ impl DataActivation {
             return Err(DataError::NoEpoch);
         }
         let Some(node) = self.plan.export_node(index) else {
-            return Ok(None);
+            return Ok(DataPoll::Ready(None));
         };
-        if let Err(error) = self.state.drive(&self.plan, node) {
+        let driven = self.state.drive(&self.plan, node, budget);
+        if driven == Err(DataError::PullInProgress) {
+            return Err(DataError::PullInProgress);
+        }
+        if let Err(error) = driven {
             self.state.work.clear();
             self.state.inputs.clear();
             self.state.outputs.clear();
             self.state.failed = Some(error);
             return Err(error);
+        }
+        if driven == Ok(false) {
+            return Ok(DataPoll::Pending);
         }
         self.checkpoint()?;
         let export = &self.plan.exports()[index];
@@ -296,12 +326,12 @@ impl DataActivation {
             FoldedValue::Value(value) => Ok(value),
             FoldedValue::Fault(fault) => Err(fault),
         };
-        Ok(Some(EvaluatedExport {
+        Ok(DataPoll::Ready(Some(EvaluatedExport {
             id: &export.id,
             ty: &self.plan.slot_types()[slot],
             source: &self.plan.slot_sources()[slot],
             outcome,
-        }))
+        })))
     }
 }
 
@@ -322,6 +352,7 @@ struct Frame {
     fuel_used: usize,
     failed: Option<DataError>,
     work: Vec<Work>,
+    pending: Option<NodeIx>,
     work_limit: usize,
     inputs: Vec<Value>,
     outputs: Vec<Value>,
@@ -542,10 +573,27 @@ impl Frame {
         })?;
         self.pull_input(node, selected)
     }
-    fn drive(&mut self, plan: &DataPlan, root: NodeIx) -> Result<(), DataError> {
-        self.push(Work::Enter(root))?;
-        while let Some(work) = self.work.pop() {
+    fn drive(
+        &mut self,
+        plan: &DataPlan,
+        root: NodeIx,
+        budget: &mut usize,
+    ) -> Result<bool, DataError> {
+        match self.pending {
+            Some(pending) if pending != root => return Err(DataError::PullInProgress),
+            Some(_) => {}
+            None => {
+                self.push(Work::Enter(root))?;
+                self.pending = Some(root);
+            }
+        }
+        while !self.work.is_empty() {
             checkpoint(self.cancel.as_ref())?;
+            if *budget == 0 {
+                return Ok(false);
+            }
+            *budget -= 1;
+            let work = self.work.pop().expect("nonempty work stack");
             match work {
                 Work::Enter(index) => {
                     let node = &plan.nodes()[index.index()];
@@ -608,7 +656,8 @@ impl Frame {
                 }
             }
         }
-        Ok(())
+        self.pending = None;
+        Ok(true)
     }
 }
 
