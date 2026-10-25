@@ -20,8 +20,8 @@ use super::unify::{
 };
 use crate::GraphDocument;
 use crate::catalog::{
-    ProviderKey, RegistrySnapshot, TypeArgs, call_interface, implicit_port, is_function_marker,
-    rigid_params,
+    ProviderKey, RegistrySnapshot, TypeArgs, body_rigid_params, call_interface, implicit_port,
+    is_function_marker, rigid_params,
 };
 use crate::document::{
     GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, SignatureSnapshot, TypeParam,
@@ -97,6 +97,15 @@ impl InferenceIssue {
     /// merely incomplete.
     pub fn is_conflict(&self) -> bool {
         !matches!(self, Self::Ambiguous { .. })
+    }
+
+    /// An argument-check outcome reported for another node with the same check.
+    fn for_node(mut self, id: NodeId) -> Self {
+        if let Self::UnknownType { node, .. } | Self::ConstraintUnsatisfied { node, .. } = &mut self
+        {
+            *node = id;
+        }
+        self
     }
 }
 
@@ -376,6 +385,9 @@ impl Graph<'_> {
                 return result;
             }
         };
+        // A check depends on the parameter's declaration, the solved type and the body's
+        // rigid parameters, never on the node, so equal checks across nodes run once.
+        let mut checked = HashMap::new();
         for &id in &result.nodes {
             let Some(template) = self.generic(id) else {
                 continue;
@@ -383,19 +395,32 @@ impl Graph<'_> {
             let Some((_, node)) = self.node(id) else {
                 continue;
             };
+            let body = self.document.locate_node(id);
             let mut args = BTreeMap::new();
             let mut complete = true;
             for parameter in &template.type_params {
                 let variable = ScopedTypeTerm::Variable(TypeVariable::new(id, &parameter.name));
                 let resolved = unification.resolve(&variable).map_err(InferenceIssue::from);
                 match resolved.map(|term| term.to_concrete_type_term()) {
-                    Ok(Ok(term)) => match check_argument(
-                        types,
-                        id,
-                        parameter,
-                        &term,
-                        rigid_params(self.document, id),
-                    ) {
+                    Ok(Ok(term)) => match checked
+                        .entry((
+                            parameter.name.clone(),
+                            parameter.constraints.clone(),
+                            term,
+                            body,
+                        ))
+                        .or_insert_with_key(|(_, _, term, body)| {
+                            check_argument(
+                                types,
+                                id,
+                                parameter,
+                                term,
+                                body_rigid_params(self.document, *body),
+                            )
+                        })
+                        .clone()
+                        .map_err(|issue| issue.for_node(id))
+                    {
                         Ok(ty) => {
                             args.insert(parameter.name.clone(), ty);
                         }
