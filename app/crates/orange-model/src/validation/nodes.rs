@@ -3,19 +3,20 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use std::borrow::Cow;
+use std::cell::OnceCell;
 
 use crate::catalog::{
     CallInterfaceError, ContractError, NodeContract, ProviderKey, RegistrySnapshot, TypeArgs,
-    call_interface, is_converter_special_form, is_function_marker, is_intrinsic, project_interface,
-    rigid_params,
+    body_rigid_params, call_interface, is_converter_special_form, is_function_marker, is_intrinsic,
+    project_interface,
 };
 use crate::document::{
-    BodyRef, GraphDocument, NodeKind, OutputSource, PortDescriptor, PortKind, PortRef,
-    SignatureSnapshot, Suspends, SuspensionContractIssue,
+    BodyRef, DefinitionRef, GraphDocument, NodeKind, OutputSource, PortDescriptor, PortKind,
+    PortRef, SignatureSnapshot, Suspends, SuspensionContractIssue,
     suspension_contract_issue as classify_suspension_contract,
 };
 use crate::error::IdError;
-use crate::id::{FunctionId, NodeId, PortKey};
+use crate::id::{FunctionId, NodeId, PortId, PortKey, SignatureKey};
 use crate::index::DocIndex;
 use crate::inference::{InferenceIssue, infer_components};
 use crate::signature;
@@ -494,12 +495,26 @@ fn collect_component_args(
     }
 }
 
+/// Port-level failures of one projection, in port order.
+type Projection = Result<SignatureSnapshot, Vec<(PortId, DiagnosticCode)>>;
+
+/// Projections of registry-borrowed contracts, keyed by definition, solved arguments and
+/// body (whose rigid parameters scope type validation). Nodes of one definition with the same
+/// arguments share an entry, and its semantic key once needed, instead of re-parsing every
+/// port type and re-hashing the snapshot. Contextual contracts, built per node from config
+/// or declarations, are projected per node.
+type ProjectionCache =
+    BTreeMap<(DefinitionRef, TypeArgs, Option<BodyRef>), (Projection, OnceCell<SignatureKey>)>;
+
 fn project_nodes(
     pass: &NodePass<'_>,
     mut fresh_args: BTreeMap<NodeId, TypeArgs>,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
+    let mut cache = ProjectionCache::new();
+    // Semantic keys of stored snapshots, by document key: many nodes share one snapshot.
+    let mut stored_keys = BTreeMap::new();
     for id in pass.ids {
         if !pass.eligible.contains(id) || report.incomplete_nodes.contains(id) {
             continue;
@@ -518,41 +533,71 @@ fn project_nodes(
             report.incomplete_nodes.insert(*id);
             continue;
         };
+        let body = pass.document.locate_node(*id);
         let stored = node
             .signature
             .as_ref()
-            .and_then(|key| pass.document.signatures().get(key));
-        if let Some(projected) =
-            project_node(pass, *id, &contract, &args, stored, report, diagnostics)
-        {
-            report.resolved.insert(*id, projected);
+            .and_then(|key| pass.document.signatures().get_key_value(key));
+        let (projection, drifted) = match &contract {
+            Cow::Borrowed(shared) => {
+                let (projection, key) = cache
+                    .entry((node.definition.clone(), args, body))
+                    .or_insert_with_key(|(_, args, body)| {
+                        (project_contract(pass, shared, args, *body), OnceCell::new())
+                    });
+                let drifted = projection.as_ref().is_ok_and(|projected| {
+                    drifted(&mut stored_keys, stored, || {
+                        key.get_or_init(|| signature::semantic_key(projected))
+                            .clone()
+                    })
+                });
+                (projection.clone(), drifted)
+            }
+            Cow::Owned(contextual) => {
+                let projection = project_contract(pass, contextual, &args, body);
+                let drifted = projection.as_ref().is_ok_and(|projected| {
+                    drifted(&mut stored_keys, stored, || {
+                        signature::semantic_key(projected)
+                    })
+                });
+                (projection, drifted)
+            }
+        };
+        match projection {
+            Ok(projected) => {
+                if drifted {
+                    report_drift(pass, *id, report, diagnostics);
+                }
+                report.resolved.insert(*id, projected);
+            }
+            Err(failures) => {
+                for (port, code) in failures {
+                    diagnostics.push(port_type_diagnostic(*id, port, code, pass.origin));
+                }
+                report.incomplete_nodes.insert(*id);
+            }
         }
     }
 }
 
-fn project_node(
+/// Substitutes `args` into `contract` and validates every resulting port type. The first
+/// substitution failure stops; type validation reports every invalid port.
+fn project_contract(
     pass: &NodePass<'_>,
-    id: NodeId,
     contract: &NodeContract,
     args: &TypeArgs,
-    stored: Option<&SignatureSnapshot>,
-    report: &mut NodeValidation,
-    diagnostics: &mut Vec<Diagnostic>,
-) -> Option<SignatureSnapshot> {
+    body: Option<BodyRef>,
+) -> Projection {
     let mut ports = contract.ports.clone();
     for port in &mut ports {
         let Some(ty) = &port.ty else { continue };
         match signature::try_substitute_params(ty, args) {
             Ok(resolved) => port.ty = Some(resolved),
             Err(error) => {
-                diagnostics.push(port_type_diagnostic(
-                    id,
+                return Err(vec![(
                     port.port_id.clone(),
                     substitution_error_code(&error),
-                    pass.origin,
-                ));
-                report.incomplete_nodes.insert(id);
-                return None;
+                )]);
             }
         }
     }
@@ -562,70 +607,80 @@ fn project_node(
         ports,
         &BTreeMap::new(),
     );
-    let rigid: Vec<String> = rigid_params(pass.document, id)
+    let rigid: Vec<String> = body_rigid_params(pass.document, body)
         .iter()
         .map(|param| param.name.to_string())
         .collect();
-    if !validate_projected_types(
-        id,
-        &projected,
-        pass.registry.types(),
-        pass.origin,
-        report,
-        diagnostics,
-        &rigid,
-    ) {
-        return None;
+    let failures = projected_type_failures(&projected, pass.registry.types(), &rigid);
+    if failures.is_empty() {
+        Ok(projected)
+    } else {
+        Err(failures)
     }
-    if stored.is_some_and(|stored| signature::compare(stored, &projected).is_some()) {
-        diagnostics.push(Diagnostic::new(
-            DiagnosticCode::SignatureDrift,
-            Subject::new(Some(id), None, None),
-            pass.origin,
-        ));
-        if pass
-            .document
-            .node(id)
-            .is_some_and(|node| is_converter_special_form(node.definition.id.as_str()))
-        {
-            report.incomplete_nodes.insert(id);
-        }
-    }
-    Some(projected)
 }
 
-fn validate_projected_types(
+/// Whether the stored snapshot differs semantically from the projection, which is exactly
+/// when [`signature::compare`] reports drift. Keys are computed only when a snapshot is stored.
+fn drifted(
+    stored_keys: &mut BTreeMap<SignatureKey, SignatureKey>,
+    stored: Option<(&SignatureKey, &SignatureSnapshot)>,
+    projected_key: impl FnOnce() -> SignatureKey,
+) -> bool {
+    let Some((key, snapshot)) = stored else {
+        return false;
+    };
+    let stored = stored_keys
+        .entry(key.clone())
+        .or_insert_with(|| signature::semantic_key(snapshot));
+    *stored != projected_key()
+}
+
+fn report_drift(
+    pass: &NodePass<'_>,
     id: NodeId,
-    snapshot: &SignatureSnapshot,
-    types: &TypeRegistry,
-    origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
-    rigid: &[String],
-) -> bool {
-    let mut valid = true;
-    for port in &snapshot.ports {
-        let Some(ty) = &port.ty else { continue };
-        let code = match TypeTerm::parse(ty) {
-            Ok(term) => types
-                .validate_scoped(&term, rigid)
-                .err()
-                .map(|error| match error {
-                    TypeResolveError::UnresolvedParameter { .. } => DiagnosticCode::TypeMismatch,
-                    error => resolve_error_code(error),
-                }),
-            Err(IdError::TypeTooDeep { .. }) => Some(DiagnosticCode::TypeComplexity),
-            Err(_) => Some(DiagnosticCode::TypeMismatch),
-        };
-        if let Some(code) = code {
-            diagnostics.push(port_type_diagnostic(id, port.port_id.clone(), code, origin));
-            valid = false;
-        }
-    }
-    if !valid {
+) {
+    diagnostics.push(Diagnostic::new(
+        DiagnosticCode::SignatureDrift,
+        Subject::new(Some(id), None, None),
+        pass.origin,
+    ));
+    if pass
+        .document
+        .node(id)
+        .is_some_and(|node| is_converter_special_form(node.definition.id.as_str()))
+    {
         report.incomplete_nodes.insert(id);
     }
-    valid
+}
+
+fn projected_type_failures(
+    snapshot: &SignatureSnapshot,
+    types: &TypeRegistry,
+    rigid: &[String],
+) -> Vec<(PortId, DiagnosticCode)> {
+    snapshot
+        .ports
+        .iter()
+        .filter_map(|port| {
+            let ty = port.ty.as_ref()?;
+            let code = match TypeTerm::parse(ty) {
+                Ok(term) => types
+                    .validate_scoped(&term, rigid)
+                    .err()
+                    .map(|error| match error {
+                        TypeResolveError::UnresolvedParameter { .. } => {
+                            DiagnosticCode::TypeMismatch
+                        }
+                        error => resolve_error_code(error),
+                    }),
+                Err(IdError::TypeTooDeep { .. }) => Some(DiagnosticCode::TypeComplexity),
+                Err(_) => Some(DiagnosticCode::TypeMismatch),
+            }?;
+            Some((port.port_id.clone(), code))
+        })
+        .collect()
 }
 
 fn port_type_diagnostic(

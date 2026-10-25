@@ -364,3 +364,68 @@ fn combined_template_and_argument_depth_is_a_complexity_diagnostic() {
     assert!(report.resolved.is_empty());
     assert!(report.incomplete_nodes.contains(&NODE.parse().unwrap()));
 }
+
+/// Nodes of one definition with the same arguments share a cached projection; drift and
+/// type failures must still be judged and reported per node.
+#[test]
+fn nodes_sharing_a_projection_keep_their_own_drift_and_type_failures() {
+    let id = |n: u8| format!("10000000-0000-4000-8000-{n:012}");
+    let (good, stale) = (
+        format!("sha256:{}", "1".repeat(64)),
+        format!("sha256:{}", "2".repeat(64)),
+    );
+    let doc = |signatures: &[&str]| -> GraphDocument {
+        let nodes: Vec<Value> = signatures
+            .iter()
+            .enumerate()
+            .map(|(n, signature)| json!({
+                "id": id(n as u8 + 1), "definition_id": "example/value", "definition_version": 1,
+                "config_version": 1, "config": {}, "provider": binding("implementation-a"),
+                "signature": signature
+            }))
+            .collect();
+        serde_json::from_value(json!({
+            "format_version": 1, "graph_id": "20000000-0000-4000-8000-000000000001",
+            "revision": 0, "nodes": nodes, "edges": [],
+            "package_lock": [{"id":"example.pkg","version":"1.0.0","content_digest":DIGEST}],
+            "signatures": {(good.clone()): snapshot("core/i64@1"), (stale.clone()): snapshot("core/i32@1")}
+        }))
+        .unwrap()
+    };
+    let report = validate_nodes(
+        &doc(&[&good, &stale, &good]),
+        &setup("implementation-a").snapshot(),
+    );
+    let drift: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|item| (item.code, item.subject.node.map(|node| node.to_string())))
+        .collect();
+    assert_eq!(drift, vec![(DiagnosticCode::SignatureDrift, Some(id(2)))]);
+    assert_eq!(report.resolved.len(), 3);
+    assert!(report.incomplete_nodes.is_empty());
+
+    // A shared failed projection is reported on every node that uses it.
+    let mut facts = Facts::new(origin());
+    let mut contract = concrete_contract();
+    contract.ports[0].ty = Some("org.unknown/thing@1".parse().unwrap());
+    facts.definition(definition(), contract);
+    facts.provider(definition(), 1, provider("implementation-a", DIGEST));
+    let report = validate_nodes(&doc(&[&good, &good]), &facts.snapshot());
+    let failed: Vec<_> = report
+        .diagnostics
+        .iter()
+        .map(|item| {
+            (
+                item.subject.node.map(|node| node.to_string()),
+                item.subject.port.clone(),
+            )
+        })
+        .collect();
+    assert_eq!(failed.len(), 2, "{:?}", report.diagnostics);
+    assert_eq!(failed[0].0, Some(id(1)));
+    assert_eq!(failed[1].0, Some(id(2)));
+    assert_eq!(report.diagnostics[0].code, report.diagnostics[1].code);
+    assert_eq!(report.incomplete_nodes.len(), 2);
+    assert!(report.resolved.is_empty());
+}
