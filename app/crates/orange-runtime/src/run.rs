@@ -203,15 +203,11 @@ impl PullState {
     }
 }
 
-struct Activation {
+struct Strand {
     sequence: u64,
     entry: ControlIx,
     pc: Option<ControlIx>,
-    data: DataActivation,
     pull: PullState,
-    locals: Vec<Option<Value>>,
-    local_bytes: usize,
-    outputs: Vec<Option<FoldedValue>>,
     stack: Vec<Cursor>,
     waiting: Option<(u64, ControlIx)>,
     yielded: bool,
@@ -219,10 +215,16 @@ struct Activation {
     cleanup: bool,
     cleanup_remaining: usize,
 }
+struct ActivationState {
+    data: DataActivation,
+    locals: Vec<Option<Value>>,
+    local_bytes: usize,
+    outputs: Vec<Option<FoldedValue>>,
+}
 struct Timer {
     run: u64,
     owner: ControlIx,
-    activation: Activation,
+    activation: Strand,
 }
 enum Cursor {
     While {
@@ -250,7 +252,8 @@ pub struct Run {
     plan: Option<Arc<ControlPlan>>,
     options: RunOptions,
     state: RunState,
-    ready: VecDeque<Activation>,
+    ready: VecDeque<Strand>,
+    activations: BTreeMap<u64, ActivationState>,
     trace: VecDeque<RunEvent>,
     trace_dropped: u64,
     operations: usize,
@@ -266,7 +269,7 @@ pub struct Run {
     last_error: Option<RunError>,
     cancel_observed: bool,
     cleanup_truncated: u64,
-    stop_ready: VecDeque<Activation>,
+    stop_ready: VecDeque<Strand>,
     segment_owner: Option<u64>,
     last_segment: Option<u64>,
     segment_indices: Vec<usize>,
@@ -316,6 +319,7 @@ impl Run {
             .checked_add(plan.stops().len())
             .ok_or(RunError::ResourceLimit)?;
         let mut ready = VecDeque::with_capacity(capacity);
+        let mut activations = BTreeMap::new();
         let mut stop_ready = VecDeque::with_capacity(plan.stops().len());
         let layout = StateLayout::new(&plan);
         let mut state_bytes = 0usize;
@@ -353,24 +357,29 @@ impl Run {
             } else {
                 &mut stop_ready
             };
-            queue.push_back(Activation {
+            activations.insert(
+                sequence as u64,
+                ActivationState {
+                    data: DataActivation::from_prepared(
+                        prepared
+                            .as_ref()
+                            .expect("entry capacity was admitted")
+                            .clone(),
+                        document.revision(),
+                        seed,
+                        sequence as u64,
+                        options.data.clone(),
+                    )?,
+                    locals: locals.clone(),
+                    local_bytes,
+                    outputs: vec![None; layout.output_count],
+                },
+            );
+            queue.push_back(Strand {
                 sequence: sequence as u64,
                 entry,
                 pc: Some(entry),
-                data: DataActivation::from_prepared(
-                    prepared
-                        .as_ref()
-                        .expect("entry capacity was admitted")
-                        .clone(),
-                    document.revision(),
-                    seed,
-                    sequence as u64,
-                    options.data.clone(),
-                )?,
                 pull: PullState::default(),
-                locals: locals.clone(),
-                local_bytes,
-                outputs: vec![None; layout.output_count],
                 stack: vec![],
                 waiting: None,
                 yielded: false,
@@ -386,6 +395,7 @@ impl Run {
             options,
             state: RunState::Running,
             ready,
+            activations,
             trace: VecDeque::new(),
             trace_dropped: 0,
             operations: 0,
@@ -564,7 +574,12 @@ impl Run {
                 self.segment_owner = Some(activation.sequence);
                 self.last_segment = Some(activation.sequence);
             }
-            let result = self.execute(&plan, &mut activation, &mut quantum);
+            let mut shared = self
+                .activations
+                .remove(&activation.sequence)
+                .ok_or(RunError::InvalidState)?;
+            let result = self.execute(&plan, &mut activation, &mut shared, &mut quantum);
+            self.activations.insert(activation.sequence, shared);
             let used = before - quantum;
             remaining -= used;
             if activation.cleanup {
@@ -700,12 +715,13 @@ impl Run {
     fn execute(
         &mut self,
         plan: &ControlPlan,
-        activation: &mut Activation,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
         budget: &mut usize,
     ) -> Result<(), RunError> {
         let Some(ix) = activation.pc else {
             *budget -= 1;
-            return self.resume_cursor(plan, activation);
+            return self.resume_cursor(plan, activation, shared);
         };
         let node = &plan.nodes()[ix.index()];
         if activation.pull.active.is_none() {
@@ -728,7 +744,7 @@ impl Run {
                     message: "This operation is not permitted during cancellation cleanup.",
                 },
             };
-            Self::publish_error(plan, &self.layout, activation, ix, &fault);
+            Self::publish_error(plan, &self.layout, shared, ix, &fault);
             self.record(RunEvent {
                 activation: activation.sequence,
                 node: node.node(),
@@ -754,7 +770,7 @@ impl Run {
                     .reenter
                     .filter(|(owner, _)| *owner == ix)
                     .map_or(0, |(_, n)| n);
-                let Some(result) = self.consume(activation, *condition, budget)? else {
+                let Some(result) = self.consume(activation, shared, *condition, budget)? else {
                     return Ok(());
                 };
                 match result {
@@ -794,7 +810,7 @@ impl Run {
                 body,
                 completed,
             } => {
-                let Some(result) = self.consume(activation, *count, budget)? else {
+                let Some(result) = self.consume(activation, shared, *count, budget)? else {
                     return Ok(());
                 };
                 match result {
@@ -825,7 +841,7 @@ impl Run {
                             next: 1,
                             count,
                         });
-                        Self::publish_index(plan, &self.layout, activation, ix, Some(0));
+                        Self::publish_index(plan, &self.layout, shared, ix, Some(0));
                         (*body, ControlOutcome::Body, None)
                     }
                     _ => return Err(DataError::KernelContract { node: node.node() }.into()),
@@ -845,7 +861,7 @@ impl Run {
                 };
                 if matches!(node.operation(), ControlOperation::Break) {
                     activation.stack.truncate(position);
-                    Self::publish_index(plan, &self.layout, activation, owner, None);
+                    Self::publish_index(plan, &self.layout, shared, owner, None);
                     (completed, ControlOutcome::Break, None)
                 } else {
                     activation.stack.truncate(position + 1);
@@ -858,7 +874,7 @@ impl Run {
                 (node.then(), ControlOutcome::Yielded, None)
             }
             ControlOperation::Wait { duration } => {
-                let Some(result) = self.consume(activation, *duration, budget)? else {
+                let Some(result) = self.consume(activation, shared, *duration, budget)? else {
                     return Ok(());
                 };
                 match result {
@@ -908,7 +924,7 @@ impl Run {
                 when_true,
                 when_false,
             } => {
-                let Some(result) = self.consume(activation, *condition, budget)? else {
+                let Some(result) = self.consume(activation, shared, *condition, budget)? else {
                     return Ok(());
                 };
                 match result {
@@ -925,7 +941,7 @@ impl Run {
                 }
             }
             ControlOperation::Set { variable, value } => {
-                let Some(result) = self.consume(activation, *value, budget)? else {
+                let Some(result) = self.consume(activation, shared, *value, budget)? else {
                     return Ok(());
                 };
                 match result {
@@ -935,7 +951,7 @@ impl Run {
                     FoldedValue::Value(value) => {
                         let var = &plan.variables()[*variable];
                         let (store, retained) = if var.scope() == VarScope::Local {
-                            (&mut activation.locals, &mut activation.local_bytes)
+                            (&mut shared.locals, &mut shared.local_bytes)
                         } else {
                             (&mut self.variables, &mut self.state_bytes)
                         };
@@ -968,13 +984,14 @@ impl Run {
                 }
             }
         };
-        self.complete(plan, activation, ix, (next, outcome, fault));
+        self.complete(plan, activation, shared, ix, (next, outcome, fault));
         Ok(())
     }
     fn complete(
         &mut self,
         plan: &ControlPlan,
-        activation: &mut Activation,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
         ix: ControlIx,
         (next, outcome, fault): (Option<ControlIx>, ControlOutcome, Option<ConstantFault>),
     ) {
@@ -982,7 +999,7 @@ impl Run {
         activation.pull.reset();
         activation.reenter = None;
         if let Some(fault) = &fault {
-            Self::publish_error(plan, &self.layout, activation, ix, fault);
+            Self::publish_error(plan, &self.layout, shared, ix, fault);
         }
         self.record(RunEvent {
             activation: activation.sequence,
@@ -1005,7 +1022,8 @@ impl Run {
     fn resume_cursor(
         &mut self,
         plan: &ControlPlan,
-        activation: &mut Activation,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
     ) -> Result<(), RunError> {
         let Some(cursor) = activation.stack.pop() else {
             return Ok(());
@@ -1030,7 +1048,7 @@ impl Run {
                         next: next + 1,
                         count,
                     });
-                    Self::publish_index(plan, &self.layout, activation, owner, Some(next));
+                    Self::publish_index(plan, &self.layout, shared, owner, Some(next));
                     activation.pc = *body;
                     activation.yielded = true;
                     self.record(RunEvent {
@@ -1040,7 +1058,7 @@ impl Run {
                         fault: None,
                     });
                 } else {
-                    Self::publish_index(plan, &self.layout, activation, owner, None);
+                    Self::publish_index(plan, &self.layout, shared, owner, None);
                     activation.pc = *completed;
                     self.record(RunEvent {
                         activation: activation.sequence,
@@ -1074,13 +1092,14 @@ impl Run {
     }
     fn consume(
         &mut self,
-        activation: &mut Activation,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
         root: usize,
         budget: &mut usize,
     ) -> Result<Option<FoldedValue>, RunError> {
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?;
         if activation.pull.active.is_none() {
-            activation.data.begin_epoch()?;
+            shared.data.begin_epoch()?;
             activation.pull.begin(root);
             for &i in plan.inputs_for(root).ok_or(RunError::InvalidState)? {
                 let source = &plan.host_sources()[i];
@@ -1088,7 +1107,7 @@ impl Run {
                     HostSource::Variable(index) => {
                         let var = &plan.variables()[*index];
                         let cell = if var.scope() == VarScope::Local {
-                            &activation.locals[self.layout.variables[*index]]
+                            &shared.locals[self.layout.variables[*index]]
                         } else {
                             &self.variables[self.layout.variables[*index]]
                         };
@@ -1106,7 +1125,7 @@ impl Run {
                         })
                     }
                     HostSource::Error(_) | HostSource::Index(_) => {
-                        self.layout.outputs[i].and_then(|slot| activation.outputs[slot].clone())
+                        self.layout.outputs[i].and_then(|slot| shared.outputs[slot].clone())
                     }
                 };
                 activation.pull.inputs.push(value);
@@ -1136,10 +1155,10 @@ impl Run {
                         node: plan.data().nodes()[plan.data().host_inputs()[index].index()].node(),
                     })
                 })?;
-                activation.data.set_input_outcome(index, value)?;
+                shared.data.set_input_outcome(index, value)?;
                 activation.pull.active.as_mut().expect("active pull").input = None;
             }
-            match activation.data.poll_host_export(root, budget)? {
+            match shared.data.poll_host_export(root, budget)? {
                 HostPoll::Pending => return Ok(None),
                 HostPoll::Input(index) => {
                     activation.pull.active.as_mut().expect("active pull").input = Some(index)
@@ -1157,24 +1176,24 @@ impl Run {
     fn publish_index(
         plan: &ControlPlan,
         layout: &StateLayout,
-        activation: &mut Activation,
+        shared: &mut ActivationState,
         owner: ControlIx,
         index: Option<i64>,
     ) {
         for &i in plan.index_targets(owner) {
-            activation.outputs[layout.outputs[i].expect("checked execution output")] =
+            shared.outputs[layout.outputs[i].expect("checked execution output")] =
                 index.map(|i| FoldedValue::Value(Value::I64(i)));
         }
     }
     fn publish_error(
         plan: &ControlPlan,
         layout: &StateLayout,
-        activation: &mut Activation,
+        shared: &mut ActivationState,
         owner: ControlIx,
         fault: &ConstantFault,
     ) {
         for &i in plan.error_targets(owner) {
-            activation.outputs[layout.outputs[i].expect("checked execution output")] = Some(
+            shared.outputs[layout.outputs[i].expect("checked execution output")] = Some(
                 FoldedValue::Value(Value::Err(Arc::new(orange_model::value::NodeError {
                     code: fault.fault.code.into(),
                     node: Some(fault.source),
@@ -1230,8 +1249,9 @@ impl Run {
                 fault: None,
             });
             if let Some(target) = node.cancelled() {
-                timer
-                    .activation
+                self.activations
+                    .get_mut(&timer.activation.sequence)
+                    .ok_or(RunError::InvalidState)?
                     .data
                     .enter_cleanup(self.options.max_cleanup_operations)?;
                 timer.activation.pc = Some(target);
@@ -1254,6 +1274,7 @@ impl Run {
             return Err(RunError::InvalidState);
         }
         self.plan = None;
+        self.activations.clear();
         self.variables.clear();
         self.layout = StateLayout::default();
         self.versions.clear();
