@@ -74,6 +74,7 @@ impl Run {
         region: u64,
     ) -> Result<Strand, RunError> {
         Ok(Strand {
+            cleanup_deadline: caller.cleanup_deadline,
             fork: None,
             id: self.owner_id()?,
             region,
@@ -312,6 +313,8 @@ impl Run {
                 s.waiting = None;
                 s.yielded = false;
                 s.cleanup = true;
+                let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
+                s.cleanup_deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
                 s.cleanup_remaining = self.options.max_cleanup_operations;
                 cleanup.push(timer.activation);
             }
@@ -335,13 +338,6 @@ impl Run {
                 shared.data.finish_cleanup(scope);
             }
             shared.pull_owner = None;
-            let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
-            let deadline = self.deadline.map_or(deadline, |old| old.min(deadline));
-            shared.cleanup_deadline = Some(
-                shared
-                    .cleanup_deadline
-                    .map_or(deadline, |old| old.min(deadline)),
-            );
         }
         for strand in cleanup {
             self.ready.push_back(strand);

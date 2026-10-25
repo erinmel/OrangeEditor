@@ -800,3 +800,48 @@ fn completed_cleanup_cannot_replenish_surviving_activation_fuel() {
     assert!(!flag(&run, 101));
     assert_eq!(run.ownership().regions, 0);
 }
+
+#[test]
+fn later_cancellations_do_not_inherit_an_expired_prior_cleanup_deadline() {
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            count(2, 2),
+            fork(3, "race", &[0, 1]),
+            wait(4, 2_000_000_000),
+            wait(5, 1_000_000_000),
+            set_bool(6, 100, true),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "body", 3, "in"),
+            edge(3, 3, "branch#0", 4, "in"),
+            edge(4, 3, "branch#1", 5, "in"),
+            edge(5, 4, "cancelled", 6, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(false)))],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    drain(&mut run, 1);
+    for at in [1_000_000_000, 2_000_000_000] {
+        run.advance_to(at).unwrap();
+        drain(&mut run, 1);
+    }
+    assert_eq!(
+        run.trace()
+            .iter()
+            .filter(|e| e.node.to_string() == id(6)
+                && e.outcome == orange_runtime::ControlOutcome::Then)
+            .count(),
+        2
+    );
+    assert_eq!(run.cleanup_truncated(), 0);
+    assert_eq!(run.ownership().regions, 0);
+}

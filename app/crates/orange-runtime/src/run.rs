@@ -223,6 +223,7 @@ impl PullState {
 }
 
 struct Strand {
+    cleanup_deadline: Option<u64>,
     fork: Option<ControlIx>,
     id: u64,
     region: u64,
@@ -243,7 +244,6 @@ struct Strand {
 struct ActivationState {
     cleanup_scope: Option<CleanupScope>,
     cleanup_remaining: usize,
-    cleanup_deadline: Option<u64>,
     pull_owner: Option<u64>,
     data: DataActivation,
     locals: Vec<Option<Value>>,
@@ -396,7 +396,6 @@ impl Run {
             activations.push(Some(Box::new(ActivationState {
                 cleanup_scope: None,
                 cleanup_remaining: options.max_cleanup_operations,
-                cleanup_deadline: None,
                 pull_owner: None,
                 data: DataActivation::from_prepared(
                     prepared
@@ -425,6 +424,7 @@ impl Run {
                 },
             );
             queue.push_back(Strand {
+                cleanup_deadline: None,
                 fork: None,
                 id: sequence as u64,
                 region: sequence as u64,
@@ -651,9 +651,7 @@ impl Run {
             };
             if quantum == 0
                 || (activation.cleanup
-                    && self.activations[activation.sequence as usize]
-                        .as_ref()
-                        .unwrap()
+                    && activation
                         .cleanup_deadline
                         .is_some_and(|deadline| self.now >= deadline))
             {
