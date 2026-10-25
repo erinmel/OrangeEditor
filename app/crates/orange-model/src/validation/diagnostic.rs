@@ -7,486 +7,165 @@ use thiserror::Error;
 
 use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortKey, VariableId};
 
-/// Stable identifiers for implemented graph validation diagnostics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-pub enum DiagnosticCode {
-    /// Compiler-owned warning: the constant fault remains in the plan.
-    #[serde(rename = "W-CONST-ERROR")]
-    ConstError,
-    #[serde(rename = "E-DECLARATION-TYPE")]
-    DeclarationType,
-    #[serde(rename = "E-ANALYSIS-LIMIT")]
-    AnalysisLimit,
-    #[serde(rename = "E-ANALYSIS-CANCELLED")]
-    AnalysisCancelled,
-    #[serde(rename = "E-DOMAIN-UNSUPPORTED")]
-    DomainUnsupported,
-    #[serde(rename = "E-DOMAIN-ANALYSIS-BLOCKED")]
-    DomainAnalysisBlocked,
-    #[serde(rename = "E-METADATA-STALE")]
-    MetadataStale,
-    #[serde(rename = "E-PORT-UNKNOWN")]
-    PortUnknown,
-    #[serde(rename = "E-PORT-DIRECTION")]
-    PortDirection,
-    #[serde(rename = "E-KIND-MISMATCH")]
-    KindMismatch,
-    #[serde(rename = "E-FANIN-DATA")]
-    FaninData,
-    #[serde(rename = "E-FANOUT-EXEC")]
-    FanoutExec,
-    #[serde(rename = "E-FANOUT-EVENT")]
-    FanoutEvent,
-    #[serde(rename = "E-STREAM-FANOUT")]
-    StreamFanout,
-    #[serde(rename = "E-SCOPE-EDGE")]
-    ScopeEdge,
-    #[serde(rename = "E-TYPE-MISMATCH")]
-    TypeMismatch,
-    #[serde(rename = "E-SIGNATURE-MISSING")]
-    SignatureMissing,
-    #[serde(rename = "E-PROVIDER-MISSING")]
-    ProviderMissing,
-    #[serde(rename = "E-PACKAGE-LOCK-MISSING")]
-    PackageLockMissing,
-    #[serde(rename = "E-PROVIDER-UNAVAILABLE")]
-    ProviderUnavailable,
-    #[serde(rename = "E-DEPENDENCY-UNAVAILABLE")]
-    DependencyUnavailable,
-    #[serde(rename = "E-INTRINSIC-UNSUPPORTED")]
-    IntrinsicUnsupported,
-    #[serde(rename = "E-SIGNATURE-DRIFT")]
-    SignatureDrift,
-    #[serde(rename = "E-TYPE-AMBIGUOUS")]
-    TypeAmbiguous,
-    #[serde(rename = "E-TYPE-COMPLEXITY")]
-    TypeComplexity,
-    #[serde(rename = "E-CONSTRAINT-UNSATISFIED")]
-    ConstraintUnsatisfied,
-    #[serde(rename = "E-NO-SPECIALIZATION")]
-    NoSpecialization,
-    #[serde(rename = "E-INPUT-REQUIRED")]
-    InputRequired,
-    #[serde(rename = "E-VARIADIC-COUNT")]
-    VariadicCount,
-    #[serde(rename = "E-LITERAL-TYPE")]
-    LiteralType,
-    #[serde(rename = "E-HANDLE-LITERAL")]
-    HandleLiteral,
-    #[serde(rename = "W-LITERAL-SHADOWED")]
-    LiteralShadowed,
-    #[serde(rename = "E-SUSPENDS-MISSING")]
-    SuspendsMissing,
-    #[serde(rename = "E-SUSPENDS-INVALID")]
-    SuspendsInvalid,
-    #[serde(rename = "E-RECURSION")]
-    Recursion,
-    #[serde(rename = "E-FUNCTION-KIND")]
-    FunctionKind,
-    #[serde(rename = "E-CALL-TARGET-MISSING")]
-    CallTargetMissing,
-    #[serde(rename = "E-CALL-TARGET-UNKNOWN")]
-    CallTargetUnknown,
-    #[serde(rename = "E-FUNCTION-METADATA-UNAVAILABLE")]
-    FunctionMetadataUnavailable,
-    #[serde(rename = "E-FUNCTION-INTERFACE")]
-    FunctionInterface,
-    #[serde(rename = "E-VARIABLE-UNKNOWN")]
-    VariableUnknown,
-    #[serde(rename = "E-VARIABLE-SCOPE")]
-    VariableScope,
-    #[serde(rename = "E-SHARED-VARIABLE-SCOPE")]
-    SharedVariableScope,
-    #[serde(rename = "E-CYCLE-DATA")]
-    CycleData,
-    #[serde(rename = "E-UPDATE-OPERATION")]
-    UpdateOperation,
-    #[serde(rename = "E-UPDATE-UNSUPPORTED")]
-    UpdateUnsupported,
-    #[serde(rename = "E-ENTRY-IN-FUNCTION")]
-    EntryInFunction,
-    #[serde(rename = "E-SUBSCRIPTION-IN-FUNCTION")]
-    SubscriptionInFunction,
-    #[serde(rename = "E-EVENT-UNKNOWN")]
-    EventUnknown,
-    #[serde(rename = "E-ACTIVATION-POLICY")]
-    ActivationPolicy,
-    #[serde(rename = "E-CONVERTER-CONFIG")]
-    ConverterConfig,
-    #[serde(rename = "E-CONVERTER-ENTRY")]
-    ConverterEntry,
-    #[serde(rename = "E-CONVERTER-OPTIONS")]
-    ConverterOptions,
-    #[serde(rename = "E-FUNCTION-BODY-MARKER")]
-    FunctionBodyMarker,
-    #[serde(rename = "E-MISSING-RETURN")]
-    MissingReturn,
-    #[serde(rename = "E-REGION-AMBIGUOUS")]
-    RegionAmbiguous,
-    #[serde(rename = "E-REGION-ESCAPE")]
-    RegionEscape,
-    #[serde(rename = "E-UNAVAILABLE-VALUE")]
-    UnavailableValue,
-    #[serde(rename = "E-CROSS-ACTIVATION")]
-    CrossActivation,
-    #[serde(rename = "E-BREAK-OUTSIDE-LOOP")]
-    BreakOutsideLoop,
-    #[serde(rename = "E-CYCLE-SYNC-CONTROL")]
-    CycleSyncControl,
-    #[serde(rename = "E-LOOP-UNBOUNDED")]
-    LoopUnbounded,
-    #[serde(rename = "E-ZONE-STRUCTURE")]
-    ZoneStructure,
-    #[serde(rename = "E-SWITCH-CASE")]
-    SwitchCase,
-    #[serde(rename = "E-FOR-EACH-MODE")]
-    ForEachMode,
-    #[serde(rename = "W-BUSY-LOOP")]
-    BusyLoop,
-    #[serde(rename = "W-UNREACHABLE")]
-    Unreachable,
-    #[serde(rename = "E-WRITE-CONFLICT")]
-    WriteConflict,
-    #[serde(rename = "E-HANDLE-PERSIST")]
-    HandlePersist,
-    #[serde(rename = "E-STREAM-STORE")]
-    StreamStore,
-    #[serde(rename = "W-STALE-CAPTURE")]
-    StaleCapture,
-    #[serde(rename = "E-VARIABLE-PERSISTENT")]
-    VariablePersistent,
-    #[serde(rename = "E-REGISTER-CONFIG")]
-    RegisterConfig,
-    #[serde(rename = "W-DETACH-IN-FUNCTION")]
-    DetachInFunction,
-    #[serde(rename = "E-EXPORT-TARGET")]
-    ExportTarget,
-    #[serde(rename = "E-EXPORT-DUPLICATE")]
-    ExportDuplicate,
-    #[serde(rename = "E-EXPORT-TYPE")]
-    ExportType,
-    #[serde(rename = "E-CONFIG-INVALID")]
-    ConfigInvalid,
-    #[serde(rename = "E-CONFIG-SCHEMA-UNSUPPORTED")]
-    ConfigSchemaUnsupported,
+/// One declaration owns wire identity, localization, severity and fallback text.
+macro_rules! diagnostics {
+    ($subject:ident; $( $name:ident => ($wire:literal, $key:literal, $severity:ident, $fallback:expr); )*) => {
+        /// Stable identifiers for implemented graph validation diagnostics.
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
+        pub enum DiagnosticCode { $( #[serde(rename = $wire)] $name, )* }
+        impl DiagnosticCode {
+            /// Stable code used in wire records and assertions.
+            pub const fn as_str(self) -> &'static str { match self { $(Self::$name => $wire,)* } }
+            const fn message_key(self) -> &'static str { match self { $(Self::$name => $key,)* } }
+            const fn severity(self) -> Severity { match self { $(Self::$name => Severity::$severity,)* } }
+            fn fallback(self, $subject: &Subject) -> String { match self { $(Self::$name => $fallback,)* } }
+        }
+    };
 }
 
-impl DiagnosticCode {
-    /// Stable code used in wire records and assertions.
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::DeclarationType => "E-DECLARATION-TYPE",
-            Self::AnalysisLimit => "E-ANALYSIS-LIMIT",
-            Self::AnalysisCancelled => "E-ANALYSIS-CANCELLED",
-            Self::DomainUnsupported => "E-DOMAIN-UNSUPPORTED",
-            Self::DomainAnalysisBlocked => "E-DOMAIN-ANALYSIS-BLOCKED",
-            Self::MetadataStale => "E-METADATA-STALE",
-            Self::PortUnknown => "E-PORT-UNKNOWN",
-            Self::PortDirection => "E-PORT-DIRECTION",
-            Self::KindMismatch => "E-KIND-MISMATCH",
-            Self::FaninData => "E-FANIN-DATA",
-            Self::FanoutExec => "E-FANOUT-EXEC",
-            Self::FanoutEvent => "E-FANOUT-EVENT",
-            Self::StreamFanout => "E-STREAM-FANOUT",
-            Self::ScopeEdge => "E-SCOPE-EDGE",
-            Self::TypeMismatch => "E-TYPE-MISMATCH",
-            Self::SignatureMissing => "E-SIGNATURE-MISSING",
-            Self::ProviderMissing => "E-PROVIDER-MISSING",
-            Self::PackageLockMissing => "E-PACKAGE-LOCK-MISSING",
-            Self::ProviderUnavailable => "E-PROVIDER-UNAVAILABLE",
-            Self::DependencyUnavailable => "E-DEPENDENCY-UNAVAILABLE",
-            Self::IntrinsicUnsupported => "E-INTRINSIC-UNSUPPORTED",
-            Self::SignatureDrift => "E-SIGNATURE-DRIFT",
-            Self::TypeAmbiguous => "E-TYPE-AMBIGUOUS",
-            Self::TypeComplexity => "E-TYPE-COMPLEXITY",
-            Self::ConstraintUnsatisfied => "E-CONSTRAINT-UNSATISFIED",
-            Self::NoSpecialization => "E-NO-SPECIALIZATION",
-            Self::InputRequired => "E-INPUT-REQUIRED",
-            Self::VariadicCount => "E-VARIADIC-COUNT",
-            Self::LiteralType => "E-LITERAL-TYPE",
-            Self::HandleLiteral => "E-HANDLE-LITERAL",
-            Self::ConstError => "W-CONST-ERROR",
-            Self::LiteralShadowed => "W-LITERAL-SHADOWED",
-            Self::SuspendsMissing => "E-SUSPENDS-MISSING",
-            Self::SuspendsInvalid => "E-SUSPENDS-INVALID",
-            Self::Recursion => "E-RECURSION",
-            Self::FunctionKind => "E-FUNCTION-KIND",
-            Self::CallTargetMissing => "E-CALL-TARGET-MISSING",
-            Self::CallTargetUnknown => "E-CALL-TARGET-UNKNOWN",
-            Self::FunctionMetadataUnavailable => "E-FUNCTION-METADATA-UNAVAILABLE",
-            Self::FunctionInterface => "E-FUNCTION-INTERFACE",
-            Self::VariableUnknown => "E-VARIABLE-UNKNOWN",
-            Self::VariableScope => "E-VARIABLE-SCOPE",
-            Self::SharedVariableScope => "E-SHARED-VARIABLE-SCOPE",
-            Self::CycleData => "E-CYCLE-DATA",
-            Self::UpdateOperation => "E-UPDATE-OPERATION",
-            Self::UpdateUnsupported => "E-UPDATE-UNSUPPORTED",
-            Self::EntryInFunction => "E-ENTRY-IN-FUNCTION",
-            Self::SubscriptionInFunction => "E-SUBSCRIPTION-IN-FUNCTION",
-            Self::EventUnknown => "E-EVENT-UNKNOWN",
-            Self::ActivationPolicy => "E-ACTIVATION-POLICY",
-            Self::ConverterConfig => "E-CONVERTER-CONFIG",
-            Self::ConverterEntry => "E-CONVERTER-ENTRY",
-            Self::ConverterOptions => "E-CONVERTER-OPTIONS",
-            Self::FunctionBodyMarker => "E-FUNCTION-BODY-MARKER",
-            Self::MissingReturn => "E-MISSING-RETURN",
-            Self::RegionAmbiguous => "E-REGION-AMBIGUOUS",
-            Self::RegionEscape => "E-REGION-ESCAPE",
-            Self::UnavailableValue => "E-UNAVAILABLE-VALUE",
-            Self::CrossActivation => "E-CROSS-ACTIVATION",
-            Self::BreakOutsideLoop => "E-BREAK-OUTSIDE-LOOP",
-            Self::CycleSyncControl => "E-CYCLE-SYNC-CONTROL",
-            Self::LoopUnbounded => "E-LOOP-UNBOUNDED",
-            Self::ZoneStructure => "E-ZONE-STRUCTURE",
-            Self::SwitchCase => "E-SWITCH-CASE",
-            Self::ForEachMode => "E-FOR-EACH-MODE",
-            Self::BusyLoop => "W-BUSY-LOOP",
-            Self::Unreachable => "W-UNREACHABLE",
-            Self::WriteConflict => "E-WRITE-CONFLICT",
-            Self::HandlePersist => "E-HANDLE-PERSIST",
-            Self::StreamStore => "E-STREAM-STORE",
-            Self::StaleCapture => "W-STALE-CAPTURE",
-            Self::VariablePersistent => "E-VARIABLE-PERSISTENT",
-            Self::RegisterConfig => "E-REGISTER-CONFIG",
-            Self::DetachInFunction => "W-DETACH-IN-FUNCTION",
-            Self::ExportTarget => "E-EXPORT-TARGET",
-            Self::ExportDuplicate => "E-EXPORT-DUPLICATE",
-            Self::ExportType => "E-EXPORT-TYPE",
-            Self::ConfigInvalid => "E-CONFIG-INVALID",
-            Self::ConfigSchemaUnsupported => "E-CONFIG-SCHEMA-UNSUPPORTED",
-        }
-    }
-
-    const fn message_key(self) -> &'static str {
-        match self {
-            Self::DeclarationType => "core/graph-declaration-type",
-            Self::AnalysisLimit => "core/graph-analysis-limit",
-            Self::AnalysisCancelled => "core/graph-analysis-cancelled",
-            Self::DomainUnsupported => "core/graph-domain-unsupported",
-            Self::DomainAnalysisBlocked => "core/graph-domain-analysis-blocked",
-            Self::MetadataStale => "core/graph-metadata-stale",
-            Self::PortUnknown => "core/graph-port-unknown",
-            Self::PortDirection => "core/graph-port-direction",
-            Self::KindMismatch => "core/graph-kind-mismatch",
-            Self::FaninData => "core/graph-fanin-data",
-            Self::FanoutExec => "core/graph-fanout-exec",
-            Self::FanoutEvent => "core/graph-fanout-event",
-            Self::StreamFanout => "core/graph-stream-fanout",
-            Self::ScopeEdge => "core/graph-scope-edge",
-            Self::TypeMismatch => "core/graph-type-mismatch",
-            Self::SignatureMissing => "core/graph-signature-missing",
-            Self::ProviderMissing => "core/graph-provider-missing",
-            Self::PackageLockMissing => "core/graph-package-lock-missing",
-            Self::ProviderUnavailable => "core/graph-provider-unavailable",
-            Self::DependencyUnavailable => "core/graph-dependency-unavailable",
-            Self::IntrinsicUnsupported => "core/graph-intrinsic-unsupported",
-            Self::SignatureDrift => "core/graph-signature-drift",
-            Self::TypeAmbiguous => "core/graph-type-ambiguous",
-            Self::TypeComplexity => "core/graph-type-complexity",
-            Self::ConstraintUnsatisfied => "core/graph-constraint-unsatisfied",
-            Self::NoSpecialization => "core/graph-no-specialization",
-            Self::InputRequired => "core/graph-input-required",
-            Self::VariadicCount => "core/graph-variadic-count",
-            Self::LiteralType => "core/graph-literal-type",
-            Self::HandleLiteral => "core/graph-handle-literal",
-            Self::ConstError => "core/graph-const-error",
-            Self::LiteralShadowed => "core/graph-literal-shadowed",
-            Self::SuspendsMissing => "core/graph-suspends-missing",
-            Self::SuspendsInvalid => "core/graph-suspends-invalid",
-            Self::Recursion => "core/graph-recursion",
-            Self::FunctionKind => "core/graph-function-kind",
-            Self::CallTargetMissing => "core/graph-call-target-missing",
-            Self::CallTargetUnknown => "core/graph-call-target-unknown",
-            Self::FunctionMetadataUnavailable => "core/graph-function-metadata-unavailable",
-            Self::FunctionInterface => "core/graph-function-interface",
-            Self::VariableUnknown => "core/graph-variable-unknown",
-            Self::VariableScope => "core/graph-variable-scope",
-            Self::SharedVariableScope => "core/graph-shared-variable-scope",
-            Self::CycleData => "core/graph-cycle-data",
-            Self::UpdateOperation => "core/graph-update-operation",
-            Self::UpdateUnsupported => "core/graph-update-unsupported",
-            Self::EntryInFunction => "core/graph-entry-in-function",
-            Self::SubscriptionInFunction => "core/graph-subscription-in-function",
-            Self::EventUnknown => "core/graph-event-unknown",
-            Self::ActivationPolicy => "core/graph-activation-policy",
-            Self::ConverterConfig => "core/graph-converter-config",
-            Self::ConverterEntry => "core/graph-converter-entry",
-            Self::ConverterOptions => "core/graph-converter-options",
-            Self::FunctionBodyMarker => "core/graph-function-body-marker",
-            Self::MissingReturn => "core/graph-missing-return",
-            Self::RegionAmbiguous => "core/graph-region-ambiguous",
-            Self::RegionEscape => "core/graph-region-escape",
-            Self::UnavailableValue => "core/graph-unavailable-value",
-            Self::CrossActivation => "core/graph-cross-activation",
-            Self::BreakOutsideLoop => "core/graph-break-outside-loop",
-            Self::CycleSyncControl => "core/graph-cycle-sync-control",
-            Self::LoopUnbounded => "core/graph-loop-unbounded",
-            Self::ZoneStructure => "core/graph-zone-structure",
-            Self::SwitchCase => "core/graph-switch-case",
-            Self::ForEachMode => "core/graph-for-each-mode",
-            Self::BusyLoop => "core/graph-busy-loop",
-            Self::Unreachable => "core/graph-unreachable",
-            Self::WriteConflict => "core/graph-write-conflict",
-            Self::HandlePersist => "core/graph-handle-persist",
-            Self::StreamStore => "core/graph-stream-store",
-            Self::StaleCapture => "core/graph-stale-capture",
-            Self::VariablePersistent => "core/graph-variable-persistent",
-            Self::RegisterConfig => "core/graph-register-config",
-            Self::DetachInFunction => "core/graph-detach-in-function",
-            Self::ExportTarget => "core/graph-export-target",
-            Self::ExportDuplicate => "core/graph-export-duplicate",
-            Self::ExportType => "core/graph-export-type",
-            Self::ConfigInvalid => "core/graph-config-invalid",
-            Self::ConfigSchemaUnsupported => "core/graph-config-schema-unsupported",
-        }
-    }
-
-    fn fallback(self, subject: &Subject) -> String {
-        match self {
-            Self::DeclarationType => "Declaration type is invalid or unavailable.".into(),
-            Self::AnalysisLimit => "Graph analysis exceeds the host's admission limits.".into(),
-            Self::AnalysisCancelled => "Graph analysis was cancelled.".into(),
-            Self::DomainUnsupported => "This execution domain is unavailable.".into(),
-            Self::DomainAnalysisBlocked => {
+diagnostics! { subject;
+    ConstError => ("W-CONST-ERROR", "core/graph-const-error", Warning, "The constant expression produces an error.".into());
+    DeclarationType => ("E-DECLARATION-TYPE", "core/graph-declaration-type", Error, "Declaration type is invalid or unavailable.".into());
+    AnalysisLimit => ("E-ANALYSIS-LIMIT", "core/graph-analysis-limit", Error, "Graph analysis exceeds the host's admission limits.".into());
+    AnalysisCancelled => ("E-ANALYSIS-CANCELLED", "core/graph-analysis-cancelled", Error, "Graph analysis was cancelled.".into());
+    DomainUnsupported => ("E-DOMAIN-UNSUPPORTED", "core/graph-domain-unsupported", Error, "This execution domain is unavailable.".into());
+    DomainAnalysisBlocked => ("E-DOMAIN-ANALYSIS-BLOCKED", "core/graph-domain-analysis-blocked", Error, {
                 "Graph analysis requires supported execution domains.".into()
-            }
-            Self::MetadataStale => "Node metadata no longer matches this document.".into(),
-            Self::PortUnknown => format!(
+            });
+    MetadataStale => ("E-METADATA-STALE", "core/graph-metadata-stale", Error, "Node metadata no longer matches this document.".into());
+    PortUnknown => ("E-PORT-UNKNOWN", "core/graph-port-unknown", Error, format!(
                 "Connection references an unknown port{}.",
                 subject.port_suffix()
-            ),
-            Self::PortDirection => {
+            ));
+    PortDirection => ("E-PORT-DIRECTION", "core/graph-port-direction", Error, {
                 "Connection must run from an output port to an input port.".into()
-            }
-            Self::KindMismatch => "Connection ports have incompatible kinds.".into(),
-            Self::FaninData => "Data input has more than one connection.".into(),
-            Self::FanoutExec => "Execution output has more than one connection.".into(),
-            Self::FanoutEvent => "Event output has more than one connection.".into(),
-            Self::StreamFanout => "Stream output has more than one consumer.".into(),
-            Self::ScopeEdge => "Connection crosses graph body scopes.".into(),
-            Self::TypeMismatch => "Connection port types are incompatible.".into(),
-            Self::SignatureMissing => "Node has no stored signature snapshot.".into(),
-            Self::ProviderMissing => "Node has no provider binding.".into(),
-            Self::PackageLockMissing => "Node provider package version is not locked.".into(),
-            Self::ProviderUnavailable => "Node definition or exact provider is unavailable.".into(),
-            Self::DependencyUnavailable => {
+            });
+    KindMismatch => ("E-KIND-MISMATCH", "core/graph-kind-mismatch", Error, "Connection ports have incompatible kinds.".into());
+    FaninData => ("E-FANIN-DATA", "core/graph-fanin-data", Error, "Data input has more than one connection.".into());
+    FanoutExec => ("E-FANOUT-EXEC", "core/graph-fanout-exec", Error, "Execution output has more than one connection.".into());
+    FanoutEvent => ("E-FANOUT-EVENT", "core/graph-fanout-event", Error, "Event output has more than one connection.".into());
+    StreamFanout => ("E-STREAM-FANOUT", "core/graph-stream-fanout", Error, "Stream output has more than one consumer.".into());
+    ScopeEdge => ("E-SCOPE-EDGE", "core/graph-scope-edge", Error, "Connection crosses graph body scopes.".into());
+    TypeMismatch => ("E-TYPE-MISMATCH", "core/graph-type-mismatch", Error, "Connection port types are incompatible.".into());
+    SignatureMissing => ("E-SIGNATURE-MISSING", "core/graph-signature-missing", Error, "Node has no stored signature snapshot.".into());
+    ProviderMissing => ("E-PROVIDER-MISSING", "core/graph-provider-missing", Error, "Node has no provider binding.".into());
+    PackageLockMissing => ("E-PACKAGE-LOCK-MISSING", "core/graph-package-lock-missing", Error, "Node provider package version is not locked.".into());
+    ProviderUnavailable => ("E-PROVIDER-UNAVAILABLE", "core/graph-provider-unavailable", Error, "Node definition or exact provider is unavailable.".into());
+    DependencyUnavailable => ("E-DEPENDENCY-UNAVAILABLE", "core/graph-dependency-unavailable", Error, {
                 "Node cannot be checked because a connected node is unresolved.".into()
-            }
-            Self::IntrinsicUnsupported => {
+            });
+    IntrinsicUnsupported => ("E-INTRINSIC-UNSUPPORTED", "core/graph-intrinsic-unsupported", Error, {
                 "This core version does not support this language intrinsic yet.".into()
-            }
-            Self::SignatureDrift => {
+            });
+    SignatureDrift => ("E-SIGNATURE-DRIFT", "core/graph-signature-drift", Error, {
                 "Stored node signature differs from the resolved definition.".into()
-            }
-            Self::TypeAmbiguous => "A generic node has unresolved type parameters.".into(),
-            Self::TypeComplexity => "Type analysis exceeded its resource limit.".into(),
-            Self::ConstraintUnsatisfied => {
+            });
+    TypeAmbiguous => ("E-TYPE-AMBIGUOUS", "core/graph-type-ambiguous", Error, "A generic node has unresolved type parameters.".into());
+    TypeComplexity => ("E-TYPE-COMPLEXITY", "core/graph-type-complexity", Error, "Type analysis exceeded its resource limit.".into());
+    ConstraintUnsatisfied => ("E-CONSTRAINT-UNSATISFIED", "core/graph-constraint-unsatisfied", Error, {
                 "A type argument does not satisfy its constraint.".into()
-            }
-            Self::NoSpecialization => {
+            });
+    NoSpecialization => ("E-NO-SPECIALIZATION", "core/graph-no-specialization", Error, {
                 "Provider does not support the resolved type arguments.".into()
-            }
-            Self::InputRequired => "Required input has no value.".into(),
-            Self::VariadicCount => {
+            });
+    InputRequired => ("E-INPUT-REQUIRED", "core/graph-input-required", Error, "Required input has no value.".into());
+    VariadicCount => ("E-VARIADIC-COUNT", "core/graph-variadic-count", Error, {
                 "The number of variadic port instances is outside the allowed range.".into()
-            }
-            Self::LiteralType => "Input literal does not match the declared port type.".into(),
-            Self::HandleLiteral => "Handle ports cannot have literals.".into(),
-            Self::ConstError => "The constant expression produces an error.".into(),
-            Self::LiteralShadowed => "Input literal is shadowed by a connected edge.".into(),
-            Self::SuspendsMissing => "Suspension metadata is required for this node kind.".into(),
-            Self::SuspendsInvalid => "Suspension metadata conflicts with the node kind.".into(),
-            Self::Recursion => "Function calls contain a recursion cycle.".into(),
-            Self::FunctionKind => {
+            });
+    LiteralType => ("E-LITERAL-TYPE", "core/graph-literal-type", Error, "Input literal does not match the declared port type.".into());
+    HandleLiteral => ("E-HANDLE-LITERAL", "core/graph-handle-literal", Error, "Handle ports cannot have literals.".into());
+    LiteralShadowed => ("W-LITERAL-SHADOWED", "core/graph-literal-shadowed", Warning, "Input literal is shadowed by a connected edge.".into());
+    SuspendsMissing => ("E-SUSPENDS-MISSING", "core/graph-suspends-missing", Error, "Suspension metadata is required for this node kind.".into());
+    SuspendsInvalid => ("E-SUSPENDS-INVALID", "core/graph-suspends-invalid", Error, "Suspension metadata conflicts with the node kind.".into());
+    Recursion => ("E-RECURSION", "core/graph-recursion", Error, "Function calls contain a recursion cycle.".into());
+    FunctionKind => ("E-FUNCTION-KIND", "core/graph-function-kind", Error, {
                 "Declared function kind differs from the inferred body kind.".into()
-            }
-            Self::CallTargetMissing => "Function call requires a canonical function target.".into(),
-            Self::CallTargetUnknown => "Function call target is not declared in this graph.".into(),
-            Self::FunctionMetadataUnavailable => {
+            });
+    CallTargetMissing => ("E-CALL-TARGET-MISSING", "core/graph-call-target-missing", Error, "Function call requires a canonical function target.".into());
+    CallTargetUnknown => ("E-CALL-TARGET-UNKNOWN", "core/graph-call-target-unknown", Error, "Function call target is not declared in this graph.".into());
+    FunctionMetadataUnavailable => ("E-FUNCTION-METADATA-UNAVAILABLE", "core/graph-function-metadata-unavailable", Error, {
                 "Function body or leaf semantics are unavailable.".into()
-            }
-            Self::FunctionInterface => {
+            });
+    FunctionInterface => ("E-FUNCTION-INTERFACE", "core/graph-function-interface", Error, {
                 "Function interface is malformed: ports must be unique typed data ports using declared type parameters.".into()
-            }
-            Self::VariableUnknown => "Variable reference is missing, invalid or undeclared.".into(),
-            Self::VariableScope => {
+            });
+    VariableUnknown => ("E-VARIABLE-UNKNOWN", "core/graph-variable-unknown", Error, "Variable reference is missing, invalid or undeclared.".into());
+    VariableScope => ("E-VARIABLE-SCOPE", "core/graph-variable-scope", Error, {
                 "Workspace variables require an asynchronous shared write.".into()
-            }
-            Self::UpdateOperation => "Variable update requires a supported operation.".into(),
-            Self::SharedVariableScope => "Shared writes require a workspace variable.".into(),
-            Self::CycleData => "Data dependencies contain a cycle.".into(),
-            Self::UpdateUnsupported => {
+            });
+    SharedVariableScope => ("E-SHARED-VARIABLE-SCOPE", "core/graph-shared-variable-scope", Error, "Shared writes require a workspace variable.".into());
+    CycleData => ("E-CYCLE-DATA", "core/graph-cycle-data", Error, "Data dependencies contain a cycle.".into());
+    UpdateOperation => ("E-UPDATE-OPERATION", "core/graph-update-operation", Error, "Variable update requires a supported operation.".into());
+    UpdateUnsupported => ("E-UPDATE-UNSUPPORTED", "core/graph-update-unsupported", Error, {
                 "This variable update operation is not supported by this core version.".into()
-            }
-            Self::EntryInFunction => {
+            });
+    EntryInFunction => ("E-ENTRY-IN-FUNCTION", "core/graph-entry-in-function", Error, {
                 "Entry and watch nodes are not permitted in a function.".into()
-            }
-            Self::ConverterConfig => {
-                "Converter node uses an unsupported or malformed config.".into()
-            }
-            Self::ConverterEntry => "Converter registry entry is unavailable.".into(),
-            Self::SubscriptionInFunction => {
+            });
+    SubscriptionInFunction => ("E-SUBSCRIPTION-IN-FUNCTION", "core/graph-subscription-in-function", Error, {
                 "Subscriptions are not permitted in a function.".into()
-            }
-            Self::EventUnknown => "Event reference is missing, invalid or undeclared.".into(),
-            Self::ActivationPolicy => "Entry activation policy is missing or invalid.".into(),
-            Self::ConverterOptions => "Converter options are invalid or incomplete.".into(),
-            Self::FunctionBodyMarker => {
+            });
+    EventUnknown => ("E-EVENT-UNKNOWN", "core/graph-event-unknown", Error, "Event reference is missing, invalid or undeclared.".into());
+    ActivationPolicy => ("E-ACTIVATION-POLICY", "core/graph-activation-policy", Error, "Entry activation policy is missing or invalid.".into());
+    ConverterConfig => ("E-CONVERTER-CONFIG", "core/graph-converter-config", Error, {
+                "Converter node uses an unsupported or malformed config.".into()
+            });
+    ConverterEntry => ("E-CONVERTER-ENTRY", "core/graph-converter-entry", Error, "Converter registry entry is unavailable.".into());
+    ConverterOptions => ("E-CONVERTER-OPTIONS", "core/graph-converter-options", Error, "Converter options are invalid or incomplete.".into());
+    FunctionBodyMarker => ("E-FUNCTION-BODY-MARKER", "core/graph-function-body-marker", Error, {
                 "Function entry, return and output markers do not match the declared interface.".into()
-            }
-            Self::MissingReturn => "A path of this function ends without reaching a return.".into(),
-            Self::RegionAmbiguous => "An execution node is reachable from more than one region.".into(),
-            Self::RegionEscape => "An execution connection leaves its region.".into(),
-            Self::UnavailableValue => {
+            });
+    MissingReturn => ("E-MISSING-RETURN", "core/graph-missing-return", Error, "A path of this function ends without reaching a return.".into());
+    RegionAmbiguous => ("E-REGION-AMBIGUOUS", "core/graph-region-ambiguous", Error, "An execution node is reachable from more than one region.".into());
+    RegionEscape => ("E-REGION-ESCAPE", "core/graph-region-escape", Error, "An execution connection leaves its region.".into());
+    UnavailableValue => ("E-UNAVAILABLE-VALUE", "core/graph-unavailable-value", Error, {
                 "A value is not available on every path that reaches this input.".into()
-            }
-            Self::CrossActivation => {
+            });
+    CrossActivation => ("E-CROSS-ACTIVATION", "core/graph-cross-activation", Error, {
                 "A value is read from a different activation than the one that produced it.".into()
-            }
-            Self::BreakOutsideLoop => {
+            });
+    BreakOutsideLoop => ("E-BREAK-OUTSIDE-LOOP", "core/graph-break-outside-loop", Error, {
                 "Break and continue need an enclosing loop body in the same function.".into()
-            }
-            Self::CycleSyncControl => "A control cycle needs a node that always suspends.".into(),
-            Self::LoopUnbounded => "A while loop requires a finite positive max_iterations.".into(),
-            Self::ZoneStructure => {
+            });
+    CycleSyncControl => ("E-CYCLE-SYNC-CONTROL", "core/graph-cycle-sync-control", Error, "A control cycle needs a node that always suspends.".into());
+    LoopUnbounded => ("E-LOOP-UNBOUNDED", "core/graph-loop-unbounded", Error, "A while loop requires a finite positive max_iterations.".into());
+    ZoneStructure => ("E-ZONE-STRUCTURE", "core/graph-zone-structure", Error, {
                 "A zone needs a matching begin and end, a pure body and no values leaving it except through the end."
                     .into()
-            }
-            Self::SwitchCase => {
+            });
+    SwitchCase => ("E-SWITCH-CASE", "core/graph-switch-case", Error, {
                 "Switch cases need distinct values of the key's kind.".into()
-            }
-            Self::ForEachMode => "For each mode must be list or map.".into(),
-            Self::BusyLoop => "This control cycle only yields and keeps the CPU busy.".into(),
-            Self::Unreachable => {
+            });
+    ForEachMode => ("E-FOR-EACH-MODE", "core/graph-for-each-mode", Error, "For each mode must be list or map.".into());
+    BusyLoop => ("W-BUSY-LOOP", "core/graph-busy-loop", Warning, "This control cycle only yields and keeps the CPU busy.".into());
+    Unreachable => ("W-UNREACHABLE", "core/graph-unreachable", Warning, {
                 "Execution node is not reachable from any entry or region root.".into()
-            }
-            Self::WriteConflict => {
+            });
+    WriteConflict => ("E-WRITE-CONFLICT", "core/graph-write-conflict", Error, {
                 "Parallel Fork branches write the same variable without a compatible policy.".into()
-            }
-            Self::HandlePersist => {
+            });
+    HandlePersist => ("E-HANDLE-PERSIST", "core/graph-handle-persist", Error, {
                 "Handle types cannot be persisted, shared, written as literals or exported.".into()
-            }
-            Self::StreamStore => "Streams cannot be stored in variables or exported.".into(),
-            Self::StaleCapture => {
+            });
+    StreamStore => ("E-STREAM-STORE", "core/graph-stream-store", Error, "Streams cannot be stored in variables or exported.".into());
+    StaleCapture => ("W-STALE-CAPTURE", "core/graph-stale-capture", Warning, {
                 "A value captured before a suspension is written back; use update-variable.".into()
-            }
-            Self::VariablePersistent => "Local variables cannot be persistent.".into(),
-            Self::RegisterConfig => {
+            });
+    VariablePersistent => ("E-VARIABLE-PERSISTENT", "core/graph-variable-persistent", Error, "Local variables cannot be persistent.".into());
+    RegisterConfig => ("E-REGISTER-CONFIG", "core/graph-register-config", Error, {
                 "Register scope must be run or activation and initial must be a literal of its type."
                     .into()
-            }
-            Self::DetachInFunction => {
+            });
+    DetachInFunction => ("W-DETACH-IN-FUNCTION", "core/graph-detach-in-function", Warning, {
                 "A return cancels the detached strands left by this fork.".into()
-            }
-            Self::ExportTarget => "Export does not name an existing data output port.".into(),
-            Self::ExportDuplicate => "Export identifier is used more than once.".into(),
-            Self::ExportType => "Exported value type cannot be serialized.".into(),
-            Self::ConfigInvalid => "Node configuration does not satisfy its definition schema.".into(),
-            Self::ConfigSchemaUnsupported => {
+            });
+    ExportTarget => ("E-EXPORT-TARGET", "core/graph-export-target", Error, "Export does not name an existing data output port.".into());
+    ExportDuplicate => ("E-EXPORT-DUPLICATE", "core/graph-export-duplicate", Error, "Export identifier is used more than once.".into());
+    ExportType => ("E-EXPORT-TYPE", "core/graph-export-type", Error, "Exported value type cannot be serialized.".into());
+    ConfigInvalid => ("E-CONFIG-INVALID", "core/graph-config-invalid", Error, "Node configuration does not satisfy its definition schema.".into());
+    ConfigSchemaUnsupported => ("E-CONFIG-SCHEMA-UNSUPPORTED", "core/graph-config-schema-unsupported", Error, {
                 "Definition config schema uses constructs outside the supported dialect.".into()
-            }
-        }
-    }
+            });
 }
 
 impl fmt::Display for DiagnosticCode {
@@ -738,19 +417,7 @@ impl Diagnostic {
         {
             message_args.insert("port".to_owned(), argument);
         }
-        let severity = if matches!(
-            code,
-            DiagnosticCode::ConstError
-                | DiagnosticCode::LiteralShadowed
-                | DiagnosticCode::Unreachable
-                | DiagnosticCode::BusyLoop
-                | DiagnosticCode::StaleCapture
-                | DiagnosticCode::DetachInFunction
-        ) {
-            Severity::Warning
-        } else {
-            Severity::Error
-        };
+        let severity = code.severity();
         Self {
             code,
             severity,
