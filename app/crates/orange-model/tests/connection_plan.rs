@@ -300,3 +300,60 @@ fn implicit_ports_are_exec_or_typed_by_their_kind() {
         Err(ConnectionError::NotADataPort { .. })
     ));
 }
+
+#[test]
+fn indexed_planning_matches_read_only_plans_and_restores_document_and_index() {
+    use orange_model::DocIndex;
+    use orange_model::conversion::plan_connection_indexed;
+    for (from, to) in [("i64", "i64"), ("i32", "i64"), ("f64", "f32")] {
+        let mut doc = pair(from, to);
+        let before = doc.clone();
+        let state = doc.state_id();
+        let expected = plan(&doc, request((1, "value"), (3, "value")));
+        let mut index = DocIndex::default(); // Stale input is repaired on entry.
+        let result = plan_connection_indexed(
+            &mut doc,
+            &mut index,
+            &registry(None),
+            request((1, "value"), (3, "value")),
+            id_source(3),
+        );
+        assert_eq!(result, expected);
+        assert_eq!(doc, before);
+        assert_eq!(doc.state_id(), state);
+        assert_eq!(index, DocIndex::build(&doc));
+    }
+}
+
+#[test]
+fn indexed_planning_preserves_content_on_rejection_and_panicking_identity_source() {
+    use orange_model::DocIndex;
+    use orange_model::conversion::plan_connection_indexed;
+    use std::panic::{AssertUnwindSafe, catch_unwind};
+    let mut doc = pair("i64", "i64");
+    let before = doc.clone();
+    let mut index = DocIndex::build(&doc);
+    let before_index = index.clone();
+    assert!(
+        plan_connection_indexed(
+            &mut doc,
+            &mut index,
+            &registry(None),
+            request((99, "value"), (3, "value")),
+            id_source(3)
+        )
+        .is_err()
+    );
+    let unwound = catch_unwind(AssertUnwindSafe(|| {
+        let _ = plan_connection_indexed(
+            &mut doc,
+            &mut index,
+            &registry(None),
+            request((1, "value"), (3, "value")),
+            || panic!("identity source failure"),
+        );
+    }));
+    assert!(unwound.is_err());
+    assert_eq!(doc, before);
+    assert_eq!(index, before_index);
+}
