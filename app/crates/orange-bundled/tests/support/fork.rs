@@ -551,3 +551,47 @@ fn race_cleanup_finishes_before_enclosing_sequence_and_preserves_normal_fuel() {
         );
     }
 }
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config { cases:96,rng_seed:proptest::test_runner::RngSeed::Fixed(20261025),..proptest::test_runner::Config::default() })]
+    #[test]
+    fn nested_forks_match_independent_future_source_interpreter(
+        outer in 0usize..4, inner in 0usize..4, iterations in 0i64..4,
+        seed in proptest::num::u64::ANY, handled_fault in proptest::bool::ANY, reverse in proptest::bool::ANY,
+    ) {
+        let modes=["all","any","race","detach"];
+        let mut nodes=vec![core(1,"on-start"),count(2,iterations),fork(3,modes[outer],&[7,2]),fork(4,modes[inner],&[5,1]),wait(5,1),wait(6,3),var_node(7,"set-variable",100),wait(8,9),var_node(9,"set-variable",101),set_bool(10,102,true),wait(11,50),set_bool(12,103,true),set_bool(13,104,true),sequence(14,&[2,0]),var_node(16,"get-variable",105),set_bool(17,106,true),random(30),random(31)];
+        let mut edges=vec![edge(1,1,"then",14,"in"),edge(2,14,"then#2",2,"in"),edge(3,14,"then#0",13,"in"),edge(4,2,"body",3,"in"),edge(5,3,"branch#7",5,"in"),edge(6,5,"then",4,"in"),edge(7,3,"branch#2",11,"in"),edge(8,11,"then",12,"in"),edge(9,4,"branch#5",6,"in"),edge(10,6,"then",7,"in"),edge(11,4,"branch#1",8,"in"),edge(12,8,"then",9,"in"),edge(13,4,"completed",10,"in"),edge(14,if handled_fault {16}else{30},"value",7,"value"),edge(15,31,"value",9,"value"),edge(16,7,"failed",17,"in")];
+        if reverse{nodes.reverse();edges.reverse();}
+        let (doc,plan)=state_plan(nodes,edges,vec![variable(100,"run","core/u64@1",Some(json!("0"))),variable(101,"run","core/u64@1",Some(json!("0"))),variable(102,"run","core/bool@1",Some(json!(false))),variable(103,"run","core/bool@1",Some(json!(false))),variable(104,"run","core/bool@1",Some(json!(false))),variable(105,"local","core/u64@1",None),variable(106,"run","core/bool@1",Some(json!(false)))]);
+        let analysis=analyze(&doc,plan.data().snapshot());
+        let oracle=fork_reference::ForkReference::new(&doc,plan.data().snapshot(),&analysis,seed);
+        oracle.run();
+        for budget in [1,7,1000] {
+            let mut run=Run::start(plan.clone(),&doc,plan.data().snapshot(),seed,RunOptions::default()).unwrap();
+            let mut observations=vec![];let mut seen=0;
+            for _ in 0..10000 {
+                let progress=run.pump(budget).unwrap();assert!(progress.operations<=budget);
+                for event in run.trace().iter().skip(seen) {
+                    let definition=doc.root().nodes[&event.node].definition.id.as_str();
+                    let label=match (definition,event.outcome) {
+                        ("core/set-variable",orange_runtime::ControlOutcome::Then)=>Some("then"),
+                        ("core/wait",orange_runtime::ControlOutcome::Then)=>Some("then"),
+                        ("core/wait",orange_runtime::ControlOutcome::Cancelled)=>Some("cancelled"),_=>None,
+                    };
+                    if let Some(label)=label{observations.push((run.now(),event.node,label));}
+                }
+                seen=run.trace().len();
+                if !progress.ready {if let Some(at)=progress.next_wakeup{run.advance_to(at).unwrap();}else{break;}}
+            }
+            for (variable,value) in oracle.vars.borrow().iter() {
+                if doc.variables()[variable].scope==orange_model::document::VarScope::Run{assert_eq!(run.variable(*variable),value.as_ref());}
+            }
+            observations.sort();let mut expected=oracle.observations.borrow().clone();expected.sort();
+            assert_eq!(observations,expected);
+            let mut faults:Vec<_>=run.trace().iter().filter_map(|e|e.fault.as_ref().map(|f|(e.node,f.source,f.fault.code))).collect();
+            faults.sort();let mut expected=oracle.faults.borrow().clone();expected.sort();assert_eq!(faults,expected);
+            assert_eq!(run.ownership().activations,0);assert_eq!(run.ownership().regions,0);
+        }
+    }
+}
