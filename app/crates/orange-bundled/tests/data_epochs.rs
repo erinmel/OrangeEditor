@@ -1169,3 +1169,34 @@ fn state_reads_are_host_inputs_supplied_once_per_epoch_and_only_when_demanded() 
     );
     assert_eq!(missing(1).message_key(), "core/data-missing-input");
 }
+
+#[test]
+fn rejected_host_input_over_the_retained_budget_is_released() {
+    let (package, snapshot) = catalog();
+    let get = json!({"id":id(1),"definition_id":"core/get-variable","definition_version":1,"config_version":1,"config":{"variable":id(20)}});
+    let base = graph(&package, vec![get], vec![], vec![export(1, "value")]);
+    let mut raw: serde_json::Value = serde_json::from_str(&to_json(&base).unwrap()).unwrap();
+    raw["variables"] = json!([{"id":id(20),"name":"blob","type":"core/json@1","scope":"run"}]);
+    let doc = from_json(&raw.to_string()).unwrap();
+    let plan = Arc::new(compile(&doc, snapshot.clone(), &Counting::new(package)));
+    let options = DataOptions {
+        limits: DataLimits {
+            max_retained_bytes: 64,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let mut frame = start(plan, &doc, &snapshot, 0, 0, options);
+    frame.begin_epoch().unwrap();
+    let payload = Arc::new(JsonText::new(format!("\"{}\"", "x".repeat(100))).unwrap());
+    let observer = Arc::downgrade(&payload);
+    assert_eq!(
+        frame.set_input(0, Value::Json(payload)),
+        Err(DataError::ResourceLimit)
+    );
+    // No uncharged copy survives in activation scratch storage.
+    assert!(observer.upgrade().is_none());
+    let small = Value::Json(Arc::new(JsonText::new("1".into()).unwrap()));
+    frame.set_input(0, small.clone()).unwrap();
+    assert_eq!(frame.export(0).unwrap().unwrap().outcome, Ok(&small));
+}

@@ -405,6 +405,12 @@ impl Frame {
         Ok(())
     }
     fn publish_values(&mut self, plan: &DataPlan, node: &DataNode) -> Result<(), DataError> {
+        let published = self.commit_outputs(plan, node);
+        // A rejected publication releases its payloads instead of keeping them uncharged.
+        self.outputs.clear();
+        published
+    }
+    fn commit_outputs(&mut self, plan: &DataPlan, node: &DataNode) -> Result<(), DataError> {
         if self.outputs.len() != node.outputs().len() {
             return Err(DataError::KernelContract { node: node.node() });
         }
