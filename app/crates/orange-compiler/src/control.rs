@@ -23,6 +23,11 @@ impl ControlIx {
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
     Entry,
+    Fork {
+        branches: Box<[Option<ControlIx>]>,
+        completed: Option<ControlIx>,
+        join: ForkJoin,
+    },
     While {
         condition: usize,
         body: Option<ControlIx>,
@@ -52,6 +57,15 @@ pub enum ControlOperation {
         when_true: Option<ControlIx>,
         when_false: Option<ControlIx>,
     },
+}
+
+/// Language-owned structured joins; packages cannot add scheduler policies.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ForkJoin {
+    All,
+    Any,
+    Race,
+    Detach,
 }
 
 pub struct ControlVariable {
@@ -220,6 +234,7 @@ pub fn compile_control(
                 | "core/branch"
                 | "core/set-variable"
                 | "core/sequence"
+                | "core/fork"
                 | "core/yield"
                 | "core/wait"
                 | "core/count"
@@ -356,10 +371,12 @@ pub fn compile_control(
                     value,
                 }
             }
-            "core/sequence" => {
+            "core/sequence" | "core/fork" => {
+                let fork = node.definition.id.as_str() == "core/fork";
+                let port = if fork { "branch" } else { "then" };
                 let state = node
                     .variadic
-                    .get(&"then".parse().expect("fixed port"))
+                    .get(&port.parse().expect("fixed port"))
                     .ok_or(CompileError::ValidationIncomplete)?;
                 let steps = state
                     .order
@@ -368,13 +385,28 @@ pub fn compile_control(
                         adjacency
                             .get(&(
                                 *id,
-                                orange_model::id::PortKey::new("then".parse().unwrap(), Some(*k)),
+                                orange_model::id::PortKey::new(port.parse().unwrap(), Some(*k)),
                             ))
                             .copied()
                     })
                     .collect::<Vec<_>>();
-                ControlOperation::Sequence {
-                    steps: steps.into(),
+                if fork {
+                    let join = match node.config.get("join").and_then(|j| j.as_str()) {
+                        Some("all") => ForkJoin::All,
+                        Some("any") => ForkJoin::Any,
+                        Some("race") => ForkJoin::Race,
+                        Some("detach") => ForkJoin::Detach,
+                        _ => return Err(CompileError::UnsupportedNode { node: *id }),
+                    };
+                    ControlOperation::Fork {
+                        branches: steps.into(),
+                        completed: target("completed"),
+                        join,
+                    }
+                } else {
+                    ControlOperation::Sequence {
+                        steps: steps.into(),
+                    }
                 }
             }
             "core/yield" => ControlOperation::Yield,

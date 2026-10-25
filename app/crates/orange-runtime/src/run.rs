@@ -815,6 +815,7 @@ impl Run {
             return Ok(());
         }
         let (next, outcome, fault) = match node.operation() {
+            ControlOperation::Fork { .. } => return Err(RunError::InvalidState),
             ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
             ControlOperation::While {
                 condition,
