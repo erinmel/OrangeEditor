@@ -168,85 +168,21 @@ fn filtered(graph: &Graph, removed: &dyn Fn(NodeId) -> bool) -> Graph {
     result
 }
 
-struct Frame {
-    node: NodeId,
-    next: Vec<NodeId>,
-    cursor: usize,
-}
-
 fn successors(graph: &Graph, node: NodeId) -> Vec<NodeId> {
     graph.get(&node).into_iter().flatten().copied().collect()
 }
 
-#[allow(clippy::too_many_lines)]
-/// Iterative Tarjan; keeps only components with a cycle (several nodes or a self-loop).
+/// Ordered cyclic components; suspension filtering remains control-specific.
 fn cyclic_components(graph: &Graph) -> Vec<BTreeSet<NodeId>> {
-    let mut index = BTreeMap::<NodeId, usize>::new();
-    let mut low = BTreeMap::<NodeId, usize>::new();
-    let mut on_stack = BTreeSet::new();
-    let mut scc_stack = Vec::new();
-    let mut components = Vec::new();
-    let mut counter = 0;
-    for &start in graph.keys() {
-        if index.contains_key(&start) {
-            continue;
-        }
-        index.insert(start, counter);
-        low.insert(start, counter);
-        counter += 1;
-        on_stack.insert(start);
-        scc_stack.push(start);
-        let mut frames = vec![Frame {
-            node: start,
-            next: successors(graph, start),
-            cursor: 0,
-        }];
-        while let Some(frame) = frames.last_mut() {
-            if let Some(&next) = frame.next.get(frame.cursor) {
-                frame.cursor += 1;
-                let node = frame.node;
-                if let Some(&seen) = index.get(&next) {
-                    if on_stack.contains(&next) {
-                        let value = low[&node].min(seen);
-                        low.insert(node, value);
-                    }
-                } else {
-                    index.insert(next, counter);
-                    low.insert(next, counter);
-                    counter += 1;
-                    on_stack.insert(next);
-                    scc_stack.push(next);
-                    frames.push(Frame {
-                        node: next,
-                        next: successors(graph, next),
-                        cursor: 0,
-                    });
-                }
-                continue;
-            }
-            let node = frame.node;
-            frames.pop();
-            if let Some(parent) = frames.last() {
-                let value = low[&parent.node].min(low[&node]);
-                low.insert(parent.node, value);
-            }
-            if low[&node] == index[&node] {
-                let mut component = BTreeSet::new();
-                while let Some(member) = scc_stack.pop() {
-                    on_stack.remove(&member);
-                    component.insert(member);
-                    if member == node {
-                        break;
-                    }
-                }
-                let cyclic = component.len() > 1
-                    || graph.get(&node).is_some_and(|items| items.contains(&node));
-                if cyclic {
-                    components.push(component);
-                }
-            }
-        }
-    }
+    let mut components: Vec<_> = super::graph::strongly_connected_components(graph)
+        .into_iter()
+        .filter(|component| {
+            component.len() > 1
+                || component
+                    .first()
+                    .is_some_and(|node| graph.get(node).is_some_and(|edges| edges.contains(node)))
+        })
+        .collect();
     components.sort_by_key(|component| component.first().copied());
     components
 }
