@@ -177,6 +177,11 @@ pub struct DataActivation {
     document_revision: u64,
     state: Frame,
 }
+pub(crate) struct CleanupScope {
+    fuel_used: usize,
+    fuel_limit: usize,
+    cancel: Option<CancelToken>,
+}
 /// A suspended pull retains its work stack and current consumption epoch.
 pub enum DataPoll<'a> {
     Pending,
@@ -322,6 +327,26 @@ impl DataActivation {
         self.state.inputs.clear();
         self.state.outputs.clear();
         Ok(())
+    }
+    pub(crate) fn scoped_cleanup(&mut self, fuel: usize) -> Result<CleanupScope, DataError> {
+        let scope = CleanupScope {
+            fuel_used: self.state.fuel_used,
+            fuel_limit: self.state.limits.max_activation_operations,
+            cancel: self.state.cancel.clone(),
+        };
+        self.enter_cleanup(fuel)?;
+        Ok(scope)
+    }
+    pub(crate) fn finish_cleanup(&mut self, scope: CleanupScope) {
+        self.state.fuel_used = scope.fuel_used;
+        self.state.limits.max_activation_operations = scope.fuel_limit;
+        self.state.cancel = scope.cancel;
+        self.state.failed = None;
+        self.state.epoch = None;
+        self.state.pending = None;
+        self.state.work.clear();
+        self.state.inputs.clear();
+        self.state.outputs.clear();
     }
     fn checkpoint(&mut self) -> Result<(), DataError> {
         if let Err(error) = checkpoint(self.state.cancel.as_ref()) {

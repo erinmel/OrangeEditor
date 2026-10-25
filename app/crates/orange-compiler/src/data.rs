@@ -125,7 +125,8 @@ impl DataPlan {
         self.revision
     }
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
-        self.state == document.state_id() && self.snapshot.generation() == registry.generation()
+        self.state == document.semantic_state_id()
+            && self.snapshot.generation() == registry.generation()
     }
     pub fn nodes(&self) -> &[DataNode] {
         &self.nodes

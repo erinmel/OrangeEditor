@@ -20,6 +20,9 @@ use super::{JsonText, ListRepr, MapRepr, RecordRepr, Value};
 use crate::document::literal::{Literal, LiteralPayload};
 use crate::error::{JsonTextError, LiteralError};
 use crate::id::TypeExpr;
+
+/// Exact identity of the structural decoder implemented by this module.
+pub const CODEC_ID: &str = "orange.value.v1";
 use crate::type_term::{MAX_NESTING, NamedTerm, TypeTerm};
 
 /// Record and enum layouts by nominal type, supplied by the registry (12 §5).
@@ -171,8 +174,11 @@ fn value_mismatch(term: &TypeTerm) -> LiteralError {
 }
 
 /// Exactly `N` type arguments, or the type is malformed for its constructor.
-fn args<const N: usize>(term: &TypeTerm, args: &[TypeTerm]) -> Result<[TypeTerm; N], LiteralError> {
-    <[TypeTerm; N]>::try_from(args.to_vec()).map_err(|_| LiteralError::UnknownType {
+fn args<'a, const N: usize>(
+    term: &TypeTerm,
+    args: &'a [TypeTerm],
+) -> Result<&'a [TypeTerm; N], LiteralError> {
+    args.try_into().map_err(|_| LiteralError::UnknownType {
         ty: term.to_string(),
     })
 }
@@ -272,12 +278,12 @@ impl<S: Schemas> Codec<'_, S> {
                 let array = json.as_array().ok_or_else(|| mismatch(term))?;
                 let values = array
                     .iter()
-                    .map(|item| self.decode(item, &element, depth + 1));
-                Value::List(Arc::new(pack(&element, values.collect::<Result<_, _>>()?)))
+                    .map(|item| self.decode(item, element, depth + 1));
+                Value::List(Arc::new(pack(element, values.collect::<Result<_, _>>()?)))
             }
             ("map", items) => {
                 let [key, value] = args(term, items)?;
-                self.schemas.validate_map_key(&key)?;
+                self.schemas.validate_map_key(key)?;
                 let pairs = json.as_array().ok_or_else(|| mismatch(term))?;
                 let mut entries: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
                 let mut keys = HashSet::with_capacity(pairs.len());
@@ -289,11 +295,11 @@ impl<S: Schemas> Codec<'_, S> {
                     else {
                         return Err(mismatch(term));
                     };
-                    let k = self.decode(k, &key, depth + 1)?;
+                    let k = self.decode(k, key, depth + 1)?;
                     if !keys.insert(k.clone()) {
                         return Err(LiteralError::DuplicateMapKey);
                     }
-                    entries.push((k, self.decode(v, &value, depth + 1)?));
+                    entries.push((k, self.decode(v, value, depth + 1)?));
                 }
                 Value::Map(Arc::new(MapRepr {
                     entries: entries.into(),
@@ -308,7 +314,7 @@ impl<S: Schemas> Codec<'_, S> {
                 match (object.get("none"), object.get("some")) {
                     (Some(Json::Bool(true)), None) => Value::None,
                     (None, Some(some)) => {
-                        let value = self.decode(some, &inner, depth + 1)?;
+                        let value = self.decode(some, inner, depth + 1)?;
                         // Only a nested option boxes its inner layer (12 §7).
                         if inner.core("option").is_some() {
                             Value::Some(Arc::new(value))
@@ -438,20 +444,20 @@ impl<S: Schemas> Codec<'_, S> {
                 let [element] = args(term, items)?;
                 let items = list
                     .iter()
-                    .map(|item| self.encode(&item, &element, depth + 1));
+                    .map(|item| self.encode(&item, element, depth + 1));
                 Json::Array(items.collect::<Result<_, _>>()?)
             }
             ("map", items, Value::Map(map)) => {
                 let [key, value] = args(term, items)?;
-                self.schemas.validate_map_key(&key)?;
+                self.schemas.validate_map_key(key)?;
                 let mut seen = HashSet::with_capacity(map.entries.len());
                 let pairs = map.entries.iter().map(|(k, v)| {
                     if !seen.insert(k) {
                         return Err(LiteralError::DuplicateMapKey);
                     }
                     Ok(json!([
-                        self.encode(k, &key, depth + 1)?,
-                        self.encode(v, &value, depth + 1)?
+                        self.encode(k, key, depth + 1)?,
+                        self.encode(v, value, depth + 1)?
                     ]))
                 });
                 Json::Array(pairs.collect::<Result<_, LiteralError>>()?)
@@ -461,10 +467,10 @@ impl<S: Schemas> Codec<'_, S> {
                 match value {
                     Value::None => json!({"none": true}),
                     Value::Some(boxed) if inner.core("option").is_some() => {
-                        json!({"some": self.encode(boxed, &inner, depth + 1)?})
+                        json!({"some": self.encode(boxed, inner, depth + 1)?})
                     }
                     _ if inner.core("option").is_some() => return Err(wrong()),
-                    value => json!({"some": self.encode(value, &inner, depth + 1)?}),
+                    value => json!({"some": self.encode(value, inner, depth + 1)?}),
                 }
             }
             ("result" | "error" | "stream" | "handle", _, _) => {

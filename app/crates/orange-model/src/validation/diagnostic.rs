@@ -70,6 +70,8 @@ diagnostics! { subject;
                 "Provider does not support the resolved type arguments.".into()
             });
     InputRequired => ("E-INPUT-REQUIRED", "core/graph-input-required", Error, "Required input has no value.".into());
+    VariadicIdentity => ("E-VARIADIC-IDENTITY", "core/graph-variadic-identity", Error, "Variadic counters are duplicated or inconsistent with the next counter.".into());
+    TypeCodec => ("E-TYPE-CODEC", "core/graph-type-codec", Error, "A saved type codec is unavailable in the resolved registry.".into());
     VariadicCount => ("E-VARIADIC-COUNT", "core/graph-variadic-count", Error, {
                 "The number of variadic port instances is outside the allowed range.".into()
             });
@@ -593,6 +595,33 @@ mod tests {
             serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
             DiagnosticCode::SharedVariableScope
         );
+    }
+
+    #[test]
+    fn integrity_diagnostics_keep_saved_content_out_of_message_arguments() {
+        for (code, token, key) in [
+            (
+                DiagnosticCode::VariadicIdentity,
+                "E-VARIADIC-IDENTITY",
+                "core/graph-variadic-identity",
+            ),
+            (
+                DiagnosticCode::TypeCodec,
+                "E-TYPE-CODEC",
+                "core/graph-type-codec",
+            ),
+        ] {
+            let diagnostic = Diagnostic::new(code, Subject::default(), &origin());
+            assert_eq!(diagnostic.severity, Severity::Error);
+            let wire = to_value(&diagnostic).unwrap();
+            assert_eq!(wire["code"], token);
+            assert_eq!(wire["message_key"], key);
+            assert_eq!(wire["message_args"], json!({}));
+            assert_eq!(
+                serde_json::from_value::<DiagnosticCode>(wire["code"].clone()).unwrap(),
+                code
+            );
+        }
     }
 
     #[test]

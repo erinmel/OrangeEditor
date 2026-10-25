@@ -477,7 +477,7 @@ pub(crate) fn lower_roots(
             snapshot,
             graph: document.graph_id(),
             revision: document.revision(),
-            state: document.state_id(),
+            state: document.semantic_state_id(),
             nodes: vec![],
             types: vec![],
             sources: vec![],

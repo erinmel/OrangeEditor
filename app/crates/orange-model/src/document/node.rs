@@ -75,6 +75,17 @@ pub struct VariadicState {
     pub next: u16,
 }
 
+impl VariadicState {
+    /// Active counters must be unique and strictly below the never-reused allocator.
+    /// Malformed imports remain editable, but cannot be executed or allocated from.
+    pub fn is_valid(&self) -> bool {
+        let mut seen = std::collections::BTreeSet::new();
+        self.order
+            .iter()
+            .all(|&key| key < self.next && seen.insert(key))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ActivationPolicy {
     pub mode: ReentrancyMode,

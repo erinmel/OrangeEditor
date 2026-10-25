@@ -30,6 +30,8 @@ pub struct GraphDocument {
     /// Identifies the content within this session; see [`GraphDocument::state_id`].
     #[serde(skip, default = "fresh_state_id")]
     pub(crate) state_id: u64,
+    #[serde(skip, default = "fresh_state_id")]
+    pub(crate) semantic_state_id: u64,
     #[serde(default)]
     pub(crate) package_lock: Vec<PackageLockEntry>,
     #[serde(default)]
@@ -91,6 +93,7 @@ impl GraphDocument {
             graph_id,
             revision: 0,
             state_id: fresh_state_id(),
+            semantic_state_id: fresh_state_id(),
             package_lock: Vec::new(),
             type_lock: Vec::new(),
             variables: IndexMap::new(),
@@ -137,6 +140,12 @@ impl GraphDocument {
     /// the identity of the content they return to. Not persisted: each load gets a new one.
     pub fn state_id(&self) -> u64 {
         self.state_id
+    }
+
+    /// Identity of executable content. Layout edits preserve it; semantic edits replace
+    /// it, undo/redo restore it, clones share it and each load gets a fresh identity.
+    pub fn semantic_state_id(&self) -> u64 {
+        self.semantic_state_id
     }
 
     pub fn root(&self) -> &GraphBody {

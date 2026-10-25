@@ -297,6 +297,14 @@ impl Default for TypeRegistry {
 }
 
 impl TypeRegistry {
+    /// Codec implemented by the structural value layer for this registered type.
+    /// Unknown types have no decoder; installing metadata alone never enables a codec.
+    pub fn literal_codec_identity(&self, term: &TypeTerm) -> Option<&'static str> {
+        self.validate(term)
+            .ok()
+            .map(|()| crate::value::literal_codec::CODEC_ID)
+    }
+
     /// Creates a registry containing only v1 core types and constructors.
     pub fn core() -> Self {
         TypeRegistryBuilder::core()
