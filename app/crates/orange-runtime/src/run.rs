@@ -15,6 +15,9 @@ use std::sync::{
 };
 use thiserror::Error;
 
+mod ownership;
+use ownership::{Region, RegionKind};
+
 static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 fn run_identity() -> Result<u64, RunError> {
     let mut old = NEXT_RUN.load(Ordering::Relaxed);
@@ -68,6 +71,10 @@ pub struct RunEvent {
 #[derive(Debug, Clone, Copy)]
 pub struct RunLimits {
     pub max_activations: usize,
+    /// Live strands, including suspended region continuations and stop reserve.
+    pub max_strands: usize,
+    /// Live runtime region instances, including stop reserve.
+    pub max_regions: usize,
     /// Separately reserved On Stop frames, admitted and allocated at startup.
     pub max_stop_activations: usize,
     pub max_operations: usize,
@@ -80,6 +87,8 @@ impl Default for RunLimits {
     fn default() -> Self {
         Self {
             max_activations: 256,
+            max_strands: 4096,
+            max_regions: 8192,
             max_stop_activations: 256,
             max_operations: 10_000_000,
             max_trace: 1024,
@@ -204,6 +213,11 @@ impl PullState {
 }
 
 struct Strand {
+    id: u64,
+    region: u64,
+    enter_body: Option<Option<ControlIx>>,
+    unwind: Option<(u64, bool)>,
+    faulted: bool,
     sequence: u64,
     entry: ControlIx,
     pc: Option<ControlIx>,
@@ -254,6 +268,9 @@ pub struct Run {
     state: RunState,
     ready: VecDeque<Strand>,
     activations: BTreeMap<u64, ActivationState>,
+    regions: BTreeMap<u64, Region>,
+    next_owner: u64,
+    live_strands: usize,
     trace: VecDeque<RunEvent>,
     trace_dropped: u64,
     operations: usize,
@@ -318,6 +335,10 @@ impl Run {
             .len()
             .checked_add(plan.stops().len())
             .ok_or(RunError::ResourceLimit)?;
+        if capacity > options.limits.max_strands || capacity > options.limits.max_regions {
+            return Err(RunError::ResourceLimit);
+        }
+        let mut regions = BTreeMap::new();
         let mut ready = VecDeque::with_capacity(capacity);
         let mut activations = BTreeMap::new();
         let mut stop_ready = VecDeque::with_capacity(plan.stops().len());
@@ -375,7 +396,24 @@ impl Run {
                     outputs: vec![None; layout.output_count],
                 },
             );
+            regions.insert(
+                sequence as u64,
+                Region {
+                    parent: None,
+                    activation: sequence as u64,
+                    depth: 0,
+                    live: 1,
+                    children: 0,
+                    continuation: None,
+                    kind: RegionKind::Root,
+                },
+            );
             queue.push_back(Strand {
+                id: sequence as u64,
+                region: sequence as u64,
+                enter_body: None,
+                unwind: None,
+                faulted: false,
                 sequence: sequence as u64,
                 entry,
                 pc: Some(entry),
@@ -396,6 +434,9 @@ impl Run {
             state: RunState::Running,
             ready,
             activations,
+            regions,
+            next_owner: capacity as u64,
+            live_strands: capacity,
             trace: VecDeque::new(),
             trace_dropped: 0,
             operations: 0,
@@ -554,7 +595,7 @@ impl Run {
             let Some(mut activation) = self.ready.pop_front() else {
                 break;
             };
-            last = Some(activation.sequence);
+            last = Some(activation.id);
             let mut quantum = if activation.cleanup {
                 remaining.min(activation.cleanup_remaining)
             } else {
@@ -566,12 +607,12 @@ impl Run {
                 continue;
             }
             let before = quantum;
-            if self.segment_owner != Some(activation.sequence) {
+            if self.segment_owner != Some(activation.id) {
                 for index in self.segment_indices.drain(..) {
                     self.dirty[index] = false;
                 }
                 self.segment_writes.clear();
-                self.segment_owner = Some(activation.sequence);
+                self.segment_owner = Some(activation.id);
                 self.last_segment = Some(activation.sequence);
             }
             let mut shared = self
@@ -597,6 +638,18 @@ impl Run {
             if self.state == RunState::Faulted {
                 self.cancel_owned()?;
                 break;
+            }
+            if activation.faulted {
+                self.retire_failed(activation)?;
+                continue;
+            }
+            if let Some((region, is_break)) = activation.unwind.take() {
+                self.unwind_loop(activation, region, is_break)?;
+                continue;
+            }
+            if let Some(loop_owner) = activation.enter_body.take() {
+                self.enter_body(activation, loop_owner)?;
+                continue;
             }
             if let Some((at, owner)) = activation.waiting.take() {
                 self.segment_owner = None;
@@ -625,7 +678,7 @@ impl Run {
                     self.ready.push_front(activation);
                 }
             } else {
-                self.segment_owner = None;
+                self.retire_strand(activation)?;
             }
         }
         // A pending Set owns its read/compute/write segment across host slices.
@@ -709,6 +762,9 @@ impl Run {
         self.stop_ready.clear();
         self.ready.clear();
         self.timers.clear();
+        self.regions.clear();
+        self.activations.clear();
+        self.live_strands = 0;
         self.deadline = None;
         self.transition(RunState::Stopped);
     }
@@ -796,6 +852,7 @@ impl Run {
                         if activation.stack.len() == self.options.limits.max_region_depth {
                             return Err(RunError::ResourceLimit);
                         }
+                        activation.enter_body = Some(Some(ix));
                         activation.stack.push(Cursor::While {
                             owner: ix,
                             iterations: iterations + 1,
@@ -836,6 +893,7 @@ impl Run {
                         if activation.stack.len() == self.options.limits.max_region_depth {
                             return Err(RunError::ResourceLimit);
                         }
+                        activation.enter_body = Some(Some(ix));
                         activation.stack.push(Cursor::Count {
                             owner: ix,
                             next: 1,
@@ -849,25 +907,18 @@ impl Run {
             }
             ControlOperation::Break | ControlOperation::Continue => {
                 let owner = node.loop_owner().ok_or(RunError::InvalidState)?;
-                let position = activation
-                    .stack
-                    .iter()
-                    .rposition(|c| matches!(c,Cursor::Count {owner:active,..} | Cursor::While {owner:active,..} if *active==owner))
-                    .ok_or(RunError::InvalidState)?;
-                let completed = match plan.nodes()[owner.index()].operation() {
-                    ControlOperation::Count { completed, .. }
-                    | ControlOperation::While { completed, .. } => *completed,
-                    _ => return Err(RunError::InvalidState),
-                };
-                if matches!(node.operation(), ControlOperation::Break) {
-                    activation.stack.truncate(position);
-                    Self::publish_index(plan, &self.layout, shared, owner, None);
-                    (completed, ControlOutcome::Break, None)
-                } else {
-                    activation.stack.truncate(position + 1);
-                    activation.yielded = true;
-                    (None, ControlOutcome::Continue, None)
-                }
+                let region = self.loop_region(activation.region, owner)?;
+                let is_break = matches!(node.operation(), ControlOperation::Break);
+                activation.unwind = Some((region, is_break));
+                (
+                    None,
+                    if is_break {
+                        ControlOutcome::Break
+                    } else {
+                        ControlOutcome::Continue
+                    },
+                    None,
+                )
             }
             ControlOperation::Yield => {
                 activation.yielded = true;
@@ -910,6 +961,7 @@ impl Run {
                 if activation.stack.len() == self.options.limits.max_region_depth {
                     return Err(RunError::ResourceLimit);
                 }
+                activation.enter_body = Some(None);
                 activation
                     .stack
                     .push(Cursor::Sequence { owner: ix, next: 1 });
@@ -1009,6 +1061,7 @@ impl Run {
         });
         if outcome == ControlOutcome::Failed && next.is_none() {
             activation.stack.clear();
+            activation.faulted = !activation.cleanup;
         }
         if outcome == ControlOutcome::Failed
             && next.is_none()
@@ -1043,6 +1096,7 @@ impl Run {
                     return Err(RunError::InvalidState);
                 };
                 if next < count {
+                    activation.enter_body = Some(Some(owner));
                     activation.stack.push(Cursor::Count {
                         owner,
                         next: next + 1,
@@ -1074,6 +1128,7 @@ impl Run {
                     return Err(RunError::InvalidState);
                 };
                 if next < steps.len() {
+                    activation.enter_body = Some(None);
                     activation.pc = steps[next];
                     activation.stack.push(Cursor::Sequence {
                         owner,
@@ -1238,6 +1293,8 @@ impl Run {
         self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
         self.stop_ready.clear();
         self.ready.clear();
+        self.regions.clear();
+        self.live_strands = 0;
         let timers = std::mem::take(&mut self.timers);
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
         for (_, mut timer) in timers {
@@ -1260,9 +1317,24 @@ impl Run {
                 timer.activation.reenter = None;
                 timer.activation.cleanup = true;
                 timer.activation.cleanup_remaining = self.options.max_cleanup_operations;
+                self.regions.insert(
+                    timer.activation.region,
+                    Region {
+                        parent: None,
+                        activation: timer.activation.sequence,
+                        depth: 0,
+                        live: 1,
+                        children: 0,
+                        continuation: None,
+                        kind: RegionKind::Root,
+                    },
+                );
+                self.live_strands += 1;
                 self.ready.push_back(timer.activation);
             }
         }
+        self.activations
+            .retain(|sequence, _| self.regions.values().any(|r| r.activation == *sequence));
         self.finish_if_idle();
         if self.deadline.is_some_and(|d| self.now >= d) {
             self.abort_cleanup();

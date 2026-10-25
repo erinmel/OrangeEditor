@@ -2,6 +2,8 @@
 mod control_reference;
 #[path = "support/control_regressions.rs"]
 mod control_regressions;
+#[path = "support/fork.rs"]
+mod fork;
 #[path = "support/reference.rs"]
 #[allow(dead_code)]
 mod reference;
