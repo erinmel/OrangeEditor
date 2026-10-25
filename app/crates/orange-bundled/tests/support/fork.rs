@@ -178,3 +178,117 @@ fn fork_shares_activation_local_cells_and_empty_branches_complete() {
         assert_eq!(run.pending_continuations(), 0);
     }
 }
+
+#[test]
+fn any_retains_losers_race_retires_them_and_both_publish_once() {
+    for join in ["any", "race"] {
+        for budget in [1, 9, 1000] {
+            let (doc, plan) = state_plan(
+                vec![
+                    core(1, "on-start"),
+                    sequence(2, &[0, 1]),
+                    fork(3, join, &[0, 1]),
+                    wait(4, 10),
+                    wait(5, 5),
+                    set_bool(6, 100, true),
+                    set_bool(7, 101, true),
+                    set_bool(8, 102, true),
+                    set_bool(9, 103, true),
+                ],
+                vec![
+                    edge(1, 1, "then", 2, "in"),
+                    edge(2, 2, "then#0", 3, "in"),
+                    edge(3, 3, "branch#0", 4, "in"),
+                    edge(4, 3, "branch#1", 5, "in"),
+                    edge(5, 4, "then", 6, "in"),
+                    edge(6, 5, "then", 7, "in"),
+                    edge(7, 3, "completed", 8, "in"),
+                    edge(8, 2, "then#1", 9, "in"),
+                ],
+                (100..104)
+                    .map(|n| variable(n, "run", "core/bool@1", Some(json!(false))))
+                    .collect(),
+            );
+            let mut run = Run::start(
+                plan.clone(),
+                &doc,
+                plan.data().snapshot(),
+                1,
+                RunOptions::default(),
+            )
+            .unwrap();
+            drain(&mut run, budget);
+            assert!(!flag(&run, 102));
+            run.advance_to(5).unwrap();
+            drain(&mut run, budget);
+            assert!(flag(&run, 101) && flag(&run, 102));
+            assert_eq!(flag(&run, 103), join == "race");
+            assert_eq!(run.pending_continuations(), usize::from(join == "any"));
+            run.advance_to(10).unwrap();
+            drain(&mut run, budget);
+            assert_eq!(flag(&run, 100), join == "any");
+            assert!(flag(&run, 103));
+            assert_eq!(
+                run.trace()
+                    .iter()
+                    .filter(|e| e.node.to_string() == id(3)
+                        && e.outcome == orange_runtime::ControlOutcome::Completed)
+                    .count(),
+                1
+            );
+            assert_eq!(
+                run.trace()
+                    .iter()
+                    .filter(|e| e.node.to_string() == id(4)
+                        && e.outcome == orange_runtime::ControlOutcome::Cancelled)
+                    .count(),
+                usize::from(join == "race")
+            );
+        }
+    }
+}
+
+#[test]
+fn first_empty_or_synchronous_race_branch_wins_in_persisted_order() {
+    for empty in [true, false] {
+        let edges = if empty {
+            vec![edge(1, 1, "then", 2, "in"), edge(2, 2, "branch#2", 3, "in")]
+        } else {
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "branch#7", 4, "in"),
+                edge(3, 2, "branch#2", 3, "in"),
+            ]
+        };
+        let (doc, plan) = compiled(
+            vec![
+                core(1, "on-start"),
+                fork(2, "race", &[7, 2]),
+                branch(3, true),
+                branch(4, false),
+            ],
+            edges,
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        drain(&mut run, 1);
+        assert!(
+            !run.trace().iter().any(|e| e.node.to_string() == id(3)),
+            "empty={empty} {:?}",
+            run.trace()
+        );
+        assert_eq!(
+            run.trace()
+                .iter()
+                .filter(|e| e.node.to_string() == id(4))
+                .count(),
+            usize::from(!empty)
+        );
+    }
+}

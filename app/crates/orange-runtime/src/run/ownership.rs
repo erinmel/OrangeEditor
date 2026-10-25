@@ -128,6 +128,10 @@ impl Run {
                     .get_mut(&parent)
                     .ok_or(RunError::InvalidState)?
                     .children -= 1;
+                self.release_first_join(parent)?;
+                if !self.regions.contains_key(&parent) {
+                    return Ok(());
+                }
                 id = parent;
             } else {
                 self.activations.remove(&r.activation);
@@ -149,9 +153,6 @@ impl Run {
         else {
             return Err(RunError::InvalidState);
         };
-        if !matches!(join, ForkJoin::All | ForkJoin::Detach) {
-            return self.fail(RunError::InvalidState);
-        }
         let n = branches.len();
         let depth = self.regions[&caller.region].depth;
         if n > self
@@ -235,6 +236,101 @@ impl Run {
             self.ready.push_front(child);
         }
         self.segment_owner = None;
+        Ok(())
+    }
+    fn release_first_join(&mut self, id: u64) -> Result<(), RunError> {
+        let r = self.regions.get_mut(&id).ok_or(RunError::InvalidState)?;
+        let RegionKind::Join { owner, mode, fired } = &mut r.kind else {
+            return Ok(());
+        };
+        if *fired || !matches!(mode, ForkJoin::Any | ForkJoin::Race) {
+            return Ok(());
+        }
+        *fired = true;
+        let race = *mode == ForkJoin::Race;
+        let owner = *owner;
+        let activation = r.activation;
+        let caller = r.continuation.take();
+        self.record(RunEvent {
+            activation,
+            node: self.plan.as_ref().unwrap().nodes()[owner.index()].node(),
+            outcome: ControlOutcome::Completed,
+            fault: None,
+        });
+        if race {
+            let children: Vec<_> = self
+                .regions
+                .iter()
+                .filter(|(_, r)| r.parent == Some(id))
+                .map(|(id, _)| *id)
+                .collect();
+            for child in children {
+                self.cancel_region(child)?;
+                self.complete_regions(child)?;
+            }
+        }
+        if let Some(caller) = caller {
+            self.ready.push_front(caller);
+        }
+        Ok(())
+    }
+
+    /// Retire normal descendants immediately, retaining cancelled wait cleanup
+    /// in the same region so ancestors still observe its lifetime barrier.
+    pub(super) fn cancel_region(&mut self, root: u64) -> Result<(), RunError> {
+        let ids: std::collections::BTreeSet<_> = self
+            .regions
+            .keys()
+            .copied()
+            .filter(|id| self.descendant(*id, root))
+            .collect();
+        self.ready.retain(|s| !ids.contains(&s.region));
+        let mut cleanup = Vec::new();
+        let timers = std::mem::take(&mut self.timers);
+        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
+        for (key, mut timer) in timers {
+            if !ids.contains(&timer.activation.region) {
+                self.timers.insert(key, timer);
+                continue;
+            }
+            let node = &plan.nodes()[timer.owner.index()];
+            self.record(RunEvent {
+                activation: timer.activation.sequence,
+                node: node.node(),
+                outcome: ControlOutcome::Cancelled,
+                fault: None,
+            });
+            if let Some(target) = node.cancelled() {
+                let s = &mut timer.activation;
+                s.region = root;
+                s.pc = Some(target);
+                s.stack.clear();
+                s.pull.reset();
+                s.reenter = None;
+                s.waiting = None;
+                s.yielded = false;
+                s.cleanup = true;
+                s.cleanup_remaining = self.options.max_cleanup_operations;
+                cleanup.push(timer.activation);
+            }
+        }
+        for id in ids {
+            if id != root {
+                self.regions.remove(&id);
+            }
+        }
+        let r = self.regions.get_mut(&root).ok_or(RunError::InvalidState)?;
+        r.live = cleanup.len();
+        r.children = 0;
+        let activation = r.activation;
+        self.live_strands = self.regions.values().map(|r| r.live).sum();
+        if let Some(shared) = self.activations.get_mut(&activation) {
+            shared.pull_owner = None;
+        }
+        for strand in cleanup {
+            self.ready.push_back(strand);
+        }
+        // Completion is performed by the caller after its own bookkeeping.
         Ok(())
     }
     pub(super) fn loop_region(&self, mut id: u64, owner: ControlIx) -> Result<u64, RunError> {

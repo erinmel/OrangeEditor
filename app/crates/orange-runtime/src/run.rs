@@ -712,7 +712,7 @@ impl Run {
         // Explicit suspension still releases ownership; read-only pulls may rotate.
         if remaining == 0
             && self.ready.front().is_some_and(|a| {
-                Some(a.sequence) == last
+                Some(a.id) == last
                     && !(a.pull.active.is_some()
                         && a.pc.is_some_and(|pc| {
                             matches!(
