@@ -141,10 +141,14 @@ pub fn compile_control(
     for edge in document.root().edges.values() {
         if controls.contains(&edge.to.node) && controls.contains(&edge.from.node) {
             let sig = &analysis.report().resolved[&edge.from.node];
-            if sig
-                .ports
-                .iter()
-                .any(|p| key(p) == edge.from.port && p.kind == PortKind::Exec)
+            if (sig
+                .implicit_ports()
+                .contains(&edge.from.port.port().as_str())
+                && edge.from.port.port().as_str() != "error")
+                || sig
+                    .ports
+                    .iter()
+                    .any(|p| key(p) == edge.from.port && p.kind == PortKind::Exec)
             {
                 adjacency.insert((edge.from.node, edge.from.port.clone()), ids[&edge.to.node]);
             }

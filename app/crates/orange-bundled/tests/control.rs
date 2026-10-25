@@ -90,3 +90,70 @@ fn unsupported_control_and_stale_analysis_never_reach_resolvers() {
         Err(CompileError::StaleDocument)
     ));
 }
+
+fn compiled(
+    nodes: Vec<Json>,
+    edges: Vec<Json>,
+) -> (
+    orange_model::GraphDocument,
+    std::sync::Arc<orange_compiler::ControlPlan>,
+) {
+    let (package, snapshot) = catalog();
+    let doc = graph(&package, nodes, edges, vec![]);
+    let analysis = analyze(&doc, &snapshot);
+    assert!(
+        analysis.is_ready_for_lowering(&doc, &snapshot),
+        "{:?}",
+        analysis.report().diagnostics
+    );
+    let plan = compile_control(
+        &doc,
+        snapshot,
+        &analysis,
+        &package,
+        CompileOptions::default(),
+    )
+    .unwrap();
+    (doc, std::sync::Arc::new(plan))
+}
+
+#[test]
+fn branch_runtime_matches_source_condition_and_keeps_active_snapshot() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions, RunState};
+    for condition in [true, false] {
+        let (doc, plan) = compiled(
+            vec![
+                core(1, "on-start"),
+                branch(2, condition),
+                branch(3, true),
+                branch(4, false),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "true", 3, "in"),
+                edge(3, 2, "false", 4, "in"),
+            ],
+        );
+        let snapshot = plan.data().snapshot().clone();
+        let mut run = Run::start(plan, &doc, &snapshot, 42, RunOptions::default()).unwrap();
+        run.pump(10).unwrap();
+        let visited: Vec<_> = run.trace().iter().map(|e| e.node.to_string()).collect();
+        assert_eq!(
+            visited,
+            vec![id(1), id(2), id(if condition { 3 } else { 4 })]
+        );
+        assert_eq!(
+            run.trace()[1].outcome,
+            if condition {
+                ControlOutcome::True
+            } else {
+                ControlOutcome::False
+            }
+        );
+        assert_eq!(run.state(), RunState::Running);
+        run.stop().unwrap();
+        run.dispose().unwrap();
+        assert_eq!(run.state(), RunState::Disposed);
+        assert!(run.pump(1).is_err());
+    }
+}

@@ -84,8 +84,8 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 .get(&(edge.from.node, edge.from.port.clone()))
                 .ok_or(CompileError::ValidationIncomplete)?;
             let producer = *self
-                .completed
-                .get(&edge.from.node)
+                .writers
+                .get(&(edge.from.node, edge.from.port.clone()))
                 .ok_or(CompileError::ValidationIncomplete)?;
             return Ok(DataInput {
                 source: InputSource {

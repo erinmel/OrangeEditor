@@ -294,6 +294,8 @@ Scoped entropy budget policy: the first host draw-budget/stream exhaustion is re
 
 ### E3 runtime prerequisites
 
+First control execution (2026-10-24): `orange-runtime::Run` starts a fresh checked control plan, retains its immutable snapshot and executes exact Entry/Branch outcomes through a host-driven pump. Bounded trace events contain source IDs/outcomes and safe fault provenance. Idle Running remains live until an explicit stop; disposal rejects further execution. Scheduled data safe points, state, structured regions and staged cleanup are subsequent slices, not established by this first executor.
+
 Control lowering preparation (2026-10-24): the compiler now has a private admission/lowering seam for explicit demand roots on the original document. The existing public pure/data entry points retain whole-root admission and saved-export behavior. This internal refactor does not publish a control plan or permit execution of unsupported nodes.
 
 Checked control plan (E3, 2026-10-24): `compile_control` admits exact registered `core/on-start`, `core/on-stop` and `core/branch` into a private-construction `ControlPlan`. Consumption roots retain the original document state, source ports, registry and providers without adding saved exports. Unsupported root controls fail before backend resolution. `PlanType` additionally represents Duration and Error; Error uses the existing typed `Value::Err` representation, distinct by static type from Result. Control execution and remaining families qualify separately.
