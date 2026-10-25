@@ -135,7 +135,7 @@ Function signature/effect evidence is captured for a document content state and 
 | Node incidence | `HashMap<NodeId, SmallVec<[EdgeId; 8]>>` | Remove node, copy/paste | O(degree) |
 | Data topological order | Dynamic topological order over D ([11 §8.2](11-graph-language.md)); candidate: Pearce–Kelly | Incremental `E-CYCLE-DATA` on connect | Bounded by the affected order interval |
 | Type components | Union-find over generic nodes joined by data edges | Inference scope | Near O(1); a split recomputes one component |
-| Region index | Region root → member exec nodes; dominator tree per root (candidate: Cooper–Harvey–Kennedy iterative) | Availability, Break/Return placement | Recomputed per affected root |
+| Region index | Region root → member exec nodes; dominator tree per root (Cooper–Harvey–Kennedy iterative; used by availability, [11 §7.2](11-graph-language.md)) | Availability, Break/Return placement | Recomputed per affected root |
 | Diagnostics | `Subject (node / edge / port / decl) → Vec<Diagnostic>` | Editor projection | Replaced per validated subject |
 
 The spatial index, edge-path cache and widget state belong to `orange-editor`, not `orange-model` ([02](02-architecture.md)).

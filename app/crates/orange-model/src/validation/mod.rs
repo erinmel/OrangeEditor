@@ -28,6 +28,7 @@ mod data_cycles;
 mod declarations;
 mod diagnostic;
 mod domains;
+mod dominators;
 mod exports;
 mod functions;
 mod inputs;

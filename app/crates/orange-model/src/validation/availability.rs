@@ -19,6 +19,7 @@ use super::connections::ConnectionValidation;
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
+use super::dominators::DomTree;
 use super::ports::lookup_port;
 use super::regions::{RegionIndex, RegionKind, RegionRoot};
 
@@ -132,6 +133,160 @@ impl Cfg {
             }
         }
         seen
+    }
+}
+
+type Outcomes = BTreeSet<PortId>;
+
+/// Answers availability queries for one body without one whole-graph walk per query.
+///
+/// A queried producer is fast when its queried outcome sets are disjoint and all of its
+/// outcome edges leave its own node. Each such set's edges then pass through one group
+/// vertex, so "every path crosses the set" becomes "the group vertex dominates the
+/// consumer", read from one dominator tree per activation root.
+///
+/// Dominators model every join as reachable from any branch. That over-approximates
+/// reachability past a Fork `join: all`, so "dominated" stays exact and a "not dominated"
+/// answer is rechecked with [`Cfg::reach_avoiding`] only when such a join exists. Slow
+/// producers always use that walk, and each walk is cached per query key.
+struct Answers<'a> {
+    cfg: &'a Cfg,
+    ids: BTreeMap<Vertex, u32>,
+    succ: Vec<Vec<u32>>,
+    groups: BTreeMap<NodeId, Vec<(&'a Outcomes, u32)>>,
+    and_joins: bool,
+    trees: BTreeMap<Vertex, DomTree>,
+    walks: BTreeMap<(Vertex, NodeId, Outcomes), BTreeSet<Vertex>>,
+}
+
+impl<'a> Answers<'a> {
+    fn new(cfg: &'a Cfg, queries: impl IntoIterator<Item = (NodeId, &'a Outcomes)>) -> Self {
+        let mut sets: BTreeMap<NodeId, Vec<&'a Outcomes>> = BTreeMap::new();
+        for (producer, outcomes) in queries {
+            let entry = sets.entry(producer).or_default();
+            if !entry.contains(&outcomes) {
+                entry.push(outcomes);
+            }
+        }
+        // Producers with an outcome edge that starts elsewhere (a loop's `completed`, a
+        // sequence step) cannot route all of it through one vertex.
+        let mut foreign = BTreeSet::new();
+        for (from, edges) in &cfg.succ {
+            for (node, _) in edges.iter().filter_map(|(_, label)| label.as_ref()) {
+                if *from != Vertex::Node(*node) {
+                    foreign.insert(*node);
+                }
+            }
+        }
+        let mut answers = Self {
+            cfg,
+            ids: BTreeMap::new(),
+            succ: Vec::new(),
+            groups: BTreeMap::new(),
+            and_joins: cfg
+                .forks
+                .values()
+                .any(|fork| fork.all && !fork.exits.is_empty()),
+            trees: BTreeMap::new(),
+            walks: BTreeMap::new(),
+        };
+        let mut port_group: BTreeMap<(NodeId, &PortId), u32> = BTreeMap::new();
+        for (producer, sets) in sets {
+            let disjoint = sets
+                .iter()
+                .enumerate()
+                .all(|(index, set)| sets[..index].iter().all(|earlier| earlier.is_disjoint(set)));
+            if foreign.contains(&producer) || !disjoint {
+                continue;
+            }
+            for set in sets {
+                let group = answers.fresh();
+                for port in set {
+                    port_group.insert((producer, port), group);
+                }
+                answers
+                    .groups
+                    .entry(producer)
+                    .or_default()
+                    .push((set, group));
+            }
+        }
+        for (from, edges) in &cfg.succ {
+            let from = answers.intern(from);
+            let mut linked = BTreeSet::new();
+            for (to, label) in edges {
+                let to = answers.intern(to);
+                match label
+                    .as_ref()
+                    .and_then(|(node, port)| port_group.get(&(*node, port)))
+                {
+                    Some(group) => {
+                        if linked.insert(*group) {
+                            answers.succ[from as usize].push(*group);
+                        }
+                        answers.succ[*group as usize].push(to);
+                    }
+                    None => answers.succ[from as usize].push(to),
+                }
+            }
+        }
+        for (fork, info) in &cfg.forks {
+            let join = answers.intern(&Vertex::Join(*fork));
+            for exit in &info.exits {
+                let exit = answers.intern(exit);
+                answers.succ[exit as usize].push(join);
+            }
+        }
+        answers
+    }
+
+    fn fresh(&mut self) -> u32 {
+        self.succ.push(Vec::new());
+        (self.succ.len() - 1) as u32
+    }
+
+    fn intern(&mut self, vertex: &Vertex) -> u32 {
+        if let Some(id) = self.ids.get(vertex) {
+            return *id;
+        }
+        let id = self.fresh();
+        self.ids.insert(vertex.clone(), id);
+        id
+    }
+
+    /// True if `consumer` is reachable from `start` without crossing an outcome edge of
+    /// `producer` named in `outcomes`: the value may be read before it exists.
+    fn unavailable(
+        &mut self,
+        start: &Vertex,
+        producer: NodeId,
+        outcomes: &Outcomes,
+        consumer: NodeId,
+    ) -> bool {
+        let group = self
+            .groups
+            .get(&producer)
+            .and_then(|sets| sets.iter().find(|(set, _)| *set == outcomes))
+            .map(|(_, group)| *group);
+        if let (Some(group), Some(begin)) = (group, self.ids.get(start).copied()) {
+            let Self { succ, trees, .. } = self;
+            let tree = trees
+                .entry(start.clone())
+                .or_insert_with(|| DomTree::new(succ, begin));
+            let Some(target) = self.ids.get(&Vertex::Node(consumer)).copied() else {
+                return false;
+            };
+            if !tree.reachable(target) || tree.dominates(group, target) {
+                return false;
+            }
+            if !self.and_joins {
+                return true;
+            }
+        }
+        self.walks
+            .entry((start.clone(), producer, outcomes.clone()))
+            .or_insert_with(|| self.cfg.reach_avoiding(start, producer, outcomes))
+            .contains(&Vertex::Node(consumer))
     }
 }
 
@@ -356,15 +511,18 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
         }
     }
 
-    // Group queries by producer/outcomes, then discard each reachability set immediately.
-    // Retaining all sets costs quadratic memory even for a simple action/data chain.
-    for ((top, producer, outcomes), consumers) in uses {
-        let reached = cfg.reach_avoiding(&Vertex::Entry(top.node, top.port), producer, &outcomes);
+    let mut answers = Answers::new(
+        &cfg,
+        uses.keys()
+            .map(|(_, producer, outcomes)| (*producer, outcomes)),
+    );
+    for ((top, producer, outcomes), consumers) in &uses {
+        let start = Vertex::Entry(top.node, top.port.clone());
         for (consumer, subject) in consumers {
-            if reached.contains(&Vertex::Node(consumer)) {
+            if answers.unavailable(&start, *producer, outcomes, *consumer) {
                 result.diagnostics.push(Diagnostic::new(
                     DiagnosticCode::UnavailableValue,
-                    subject,
+                    subject.clone(),
                     context.origin,
                 ));
             }
@@ -541,5 +699,112 @@ fn build_node(
             let fallback = (!matches!(name, "failed" | "cancelled")).then(|| region_exit.clone());
             cfg.goto(&here, targets, id, port, fallback);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    fn node(n: u32) -> NodeId {
+        format!("10000000-0000-4000-8000-{n:012x}").parse().unwrap()
+    }
+    fn port(name: &str) -> PortId {
+        name.parse().unwrap()
+    }
+
+    /// Outcome-set families a producer may be queried with; the last overlaps.
+    fn families() -> [Vec<Outcomes>; 5] {
+        let set = |names: &[&str]| names.iter().map(|name| port(name)).collect::<Outcomes>();
+        [
+            vec![set(&["then"])],
+            vec![set(&["failed"])],
+            vec![set(&["then"]), set(&["failed"])],
+            vec![set(&["then", "failed"])],
+            vec![set(&["then"]), set(&["then", "failed"])],
+        ]
+    }
+
+    /// Random control-flow graph: `nodes` plain vertices, two forks with two exits each,
+    /// and labeled edges that mostly leave their producer's own node.
+    fn cfg(nodes: u32, all: [bool; 2], edges: &[(u32, u32, u8, u32)]) -> (Cfg, Vertex) {
+        let start = Vertex::Entry(node(999), PortKey::new(port("then"), None));
+        let mut pool = vec![start.clone()];
+        pool.extend((0..nodes).map(|n| Vertex::Node(node(n))));
+        let mut cfg = Cfg::default();
+        for (index, all) in all.into_iter().enumerate() {
+            let fork = node(500 + index as u32);
+            let exits: BTreeSet<_> = (0..2)
+                .map(|k| Vertex::Exit(fork, PortKey::new(port("branch"), Some(k))))
+                .collect();
+            for exit in &exits {
+                cfg.fork_exit.insert(exit.clone(), fork);
+                pool.push(exit.clone());
+            }
+            pool.push(Vertex::Join(fork));
+            cfg.forks.insert(fork, Fork { all, exits });
+        }
+        for (from, to, kind, other) in edges {
+            let from = &pool[*from as usize % pool.len()];
+            let to = pool[*to as usize % pool.len()].clone();
+            let own = match from {
+                Vertex::Node(id) => *id,
+                _ => node(other % nodes),
+            };
+            let label = match kind % 4 {
+                0 => None,
+                1 => Some((own, port("then"))),
+                2 => Some((own, port("failed"))),
+                _ => Some((node(other % nodes), port("then"))),
+            };
+            cfg.add(from.clone(), to, label);
+        }
+        (cfg, start)
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(512))]
+        #[test]
+        fn dominator_answers_match_the_reference_walk(
+            nodes in 1u32..8,
+            all in any::<[bool; 2]>(),
+            edges in prop::collection::vec((0u32..20, 0u32..20, 0u8..4, 0u32..8), 0..32),
+            choice in prop::collection::vec(0usize..5, 8),
+        ) {
+            let (cfg, start) = cfg(nodes, all, &edges);
+            let families = families();
+            let queries: Vec<(NodeId, &Outcomes)> = (0..nodes)
+                .flat_map(|n| families[choice[n as usize]].iter().map(move |set| (node(n), set)))
+                .collect();
+            let mut answers = Answers::new(&cfg, queries.iter().map(|(p, set)| (*p, *set)));
+            for (producer, outcomes) in &queries {
+                let reference = cfg.reach_avoiding(&start, *producer, outcomes);
+                for consumer in (0..nodes).map(node) {
+                    prop_assert_eq!(
+                        answers.unavailable(&start, *producer, outcomes, consumer),
+                        reference.contains(&Vertex::Node(consumer)),
+                        "producer {} outcomes {:?} consumer {}", producer, outcomes, consumer
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn fast_path_covers_disjoint_own_outcomes_and_skips_the_rest() {
+        let (cfg, _) = cfg(
+            3,
+            [false, false],
+            &[(1, 2, 1, 0), (1, 3, 2, 0), (3, 1, 3, 1)],
+        );
+        let then = families()[0][0].clone();
+        let both = families()[3][0].clone();
+        let answers = Answers::new(&cfg, [(node(0), &then), (node(1), &then)]);
+        // Node 0 labels only its own edges; node 2 carries an edge labeled for node 1.
+        assert!(answers.groups.contains_key(&node(0)));
+        assert!(!answers.groups.contains_key(&node(1)));
+        let overlapping = Answers::new(&cfg, [(node(0), &then), (node(0), &both)]);
+        assert!(overlapping.groups.is_empty());
     }
 }
