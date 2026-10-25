@@ -39,6 +39,7 @@ pub enum ControlOutcome {
     True,
     False,
     Failed,
+    Step(usize),
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunEvent {
@@ -53,6 +54,7 @@ pub struct RunLimits {
     pub max_operations: usize,
     pub max_trace: usize,
     pub max_state_bytes: usize,
+    pub max_region_depth: usize,
 }
 impl Default for RunLimits {
     fn default() -> Self {
@@ -61,6 +63,7 @@ impl Default for RunLimits {
             max_operations: 10_000_000,
             max_trace: 1024,
             max_state_bytes: 16 * 1024 * 1024,
+            max_region_depth: 1024,
         }
     }
 }
@@ -107,6 +110,10 @@ struct Activation {
     inputs: Vec<Option<FoldedValue>>,
     supplied: usize,
     outputs: Vec<Option<FoldedValue>>,
+    stack: Vec<Cursor>,
+}
+enum Cursor {
+    Sequence { owner: ControlIx, next: usize },
 }
 
 /// Checked control execution. Inspection is explicit; Debug never formats values.
@@ -193,6 +200,7 @@ impl Run {
                 inputs: vec![],
                 supplied: 0,
                 outputs: vec![None; plan.host_sources().len()],
+                stack: vec![],
             });
         }
         Ok(Self {
@@ -264,7 +272,7 @@ impl Run {
                 self.state = RunState::Faulted;
                 return Err(error);
             }
-            if activation.pc.is_some() {
+            if activation.pc.is_some() || !activation.stack.is_empty() {
                 self.ready.push_front(activation);
             }
         }
@@ -286,13 +294,54 @@ impl Run {
     }
     fn execute(&mut self, activation: &mut Activation, budget: &mut usize) -> Result<(), RunError> {
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
-        let ix = activation.pc.ok_or(RunError::InvalidState)?;
+        let Some(ix) = activation.pc else {
+            *budget -= 1;
+            let Some(cursor) = activation.stack.pop() else {
+                return Ok(());
+            };
+            match cursor {
+                Cursor::Sequence { owner, next } => {
+                    let ControlOperation::Sequence { steps } =
+                        plan.nodes()[owner.index()].operation()
+                    else {
+                        return Err(RunError::InvalidState);
+                    };
+                    if next < steps.len() {
+                        activation.pc = steps[next];
+                        activation.stack.push(Cursor::Sequence {
+                            owner,
+                            next: next + 1,
+                        });
+                        self.record(RunEvent {
+                            activation: activation.sequence,
+                            node: plan.nodes()[owner.index()].node(),
+                            outcome: ControlOutcome::Step(next),
+                            fault: None,
+                        });
+                    }
+                }
+            }
+            return Ok(());
+        };
         let node = &plan.nodes()[ix.index()];
         if activation.pull.is_none() {
             *budget -= 1;
         }
         let (next, outcome, fault) = match node.operation() {
             ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
+            ControlOperation::Sequence { steps } => {
+                if activation.stack.len() == self.options.limits.max_region_depth {
+                    return Err(RunError::ResourceLimit);
+                }
+                activation
+                    .stack
+                    .push(Cursor::Sequence { owner: ix, next: 1 });
+                (
+                    steps.first().copied().flatten(),
+                    ControlOutcome::Step(0),
+                    None,
+                )
+            }
             ControlOperation::Branch {
                 condition,
                 when_true,
@@ -372,6 +421,9 @@ impl Run {
             outcome,
             fault,
         });
+        if outcome == ControlOutcome::Failed && next.is_none() {
+            activation.stack.clear();
+        }
         if outcome == ControlOutcome::Failed
             && next.is_none()
             && plan.nodes()[activation.entry.index()].fault_policy() == FaultPolicy::StopRun

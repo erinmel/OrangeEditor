@@ -23,6 +23,9 @@ impl ControlIx {
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
     Entry,
+    Sequence {
+        steps: Box<[Option<ControlIx>]>,
+    },
     Set {
         variable: usize,
         value: usize,
@@ -163,7 +166,11 @@ pub fn compile_control(
         }
         if !matches!(
             node.definition.id.as_str(),
-            "core/on-start" | "core/on-stop" | "core/branch" | "core/set-variable"
+            "core/on-start"
+                | "core/on-stop"
+                | "core/branch"
+                | "core/set-variable"
+                | "core/sequence"
         ) || node.definition.version != 1
             || node.config_version != 1
             || node.provider.is_some()
@@ -249,7 +256,7 @@ pub fn compile_control(
                 || sig
                     .ports
                     .iter()
-                    .any(|p| key(p) == edge.from.port && p.kind == PortKind::Exec)
+                    .any(|p| p.port_id == *edge.from.port.port() && p.kind == PortKind::Exec)
             {
                 adjacency.insert((edge.from.node, edge.from.port.clone()), ids[&edge.to.node]);
             }
@@ -302,6 +309,27 @@ pub fn compile_control(
                 ControlOperation::Set {
                     variable: variable_nodes[id],
                     value,
+                }
+            }
+            "core/sequence" => {
+                let state = node
+                    .variadic
+                    .get(&"then".parse().expect("fixed port"))
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                let steps = state
+                    .order
+                    .iter()
+                    .map(|k| {
+                        adjacency
+                            .get(&(
+                                *id,
+                                orange_model::id::PortKey::new("then".parse().unwrap(), Some(*k)),
+                            ))
+                            .copied()
+                    })
+                    .collect::<Vec<_>>();
+                ControlOperation::Sequence {
+                    steps: steps.into(),
                 }
             }
             _ => unreachable!("admitted control"),

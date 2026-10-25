@@ -382,3 +382,71 @@ fn local_cells_reset_per_activation_and_run_cells_do_not_leak_across_runs() {
         assert!(run.variable(id(100).parse().unwrap()).is_none());
     }
 }
+
+fn sequence(n: u32, order: &[u16]) -> Json {
+    let mut node = core(n, "sequence");
+    node["variadic"] =
+        json!({"then":{"order":order,"next":order.iter().copied().max().unwrap_or(0)+1}});
+    node
+}
+
+#[test]
+fn sequence_uses_persisted_order_and_does_not_advance_after_unhandled_fault() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    for initialized in [true, false] {
+        let first = if initialized {
+            set_bool(3, 100, false)
+        } else {
+            branch(3, true)
+        };
+        let mut edges = vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then#7", 3, "in"),
+            edge(3, 2, "then#2", 4, "in"),
+            edge(4, 2, "then#5", 5, "in"),
+            edge(5, 6, "value", 5, "condition"),
+        ];
+        if !initialized {
+            edges.push(edge(6, 6, "value", 3, "condition"));
+        }
+        let (doc, plan) = state_plan(
+            vec![
+                core(1, "on-start"),
+                sequence(2, &[7, 2, 5]),
+                first,
+                set_bool(4, 100, true),
+                branch(5, false),
+                var_node(6, "get-variable", 100),
+            ],
+            edges,
+            vec![variable(
+                100,
+                "run",
+                "core/bool@1",
+                if initialized { Some(json!(true)) } else { None },
+            )],
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        while run.pump(1).unwrap().ready {}
+        if initialized {
+            assert_eq!(run.trace().back().unwrap().outcome, ControlOutcome::True);
+            let writes: Vec<_> = run
+                .trace()
+                .iter()
+                .filter(|e| [id(3), id(4)].contains(&e.node.to_string()))
+                .map(|e| e.node.to_string())
+                .collect();
+            assert_eq!(writes, vec![id(3), id(4)]);
+        } else {
+            assert_eq!(run.trace().back().unwrap().outcome, ControlOutcome::Failed);
+            assert!(run.variable(id(100).parse().unwrap()).is_none());
+        }
+    }
+}
