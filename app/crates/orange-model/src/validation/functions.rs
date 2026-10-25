@@ -4,29 +4,24 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
 
-use crate::catalog::{ReferenceKind, RegistrySnapshot, intrinsic, is_intrinsic};
-use crate::document::{GraphDocument, NodeKind, SignatureSnapshot, Suspends, VarScope};
+use crate::catalog::{
+    NodeContract, ReferenceKind, RegistrySnapshot, VariableAccess, intrinsic, is_intrinsic,
+};
+use crate::document::{
+    GraphDocument, NodeKind, SignatureSnapshot, Suspends, SuspensionContractIssue, VarScope,
+    suspension_contract_issue,
+};
 use crate::edit::DeclId;
 use crate::id::{FunctionId, NodeId, VariableId};
+use crate::type_term::TypeTerm;
+use crate::types::TypeResolveError;
+pub use crate::variable::WriteOperation;
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics};
 use super::nodes::NodeValidation;
 
-/// The operation used to write a variable. This remains part of the summary so later
-/// conflict analysis can recognize the documented commutative update exceptions.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub enum WriteOperation {
-    Set,
-    Add,
-    Sub,
-    Min,
-    Max,
-    And,
-    Or,
-    Xor,
-    Append,
-    CompareAndSet,
-}
+/// Graph-local call targets: each function's call nodes and the function each one calls.
+pub(crate) type CallGraph = BTreeMap<FunctionId, BTreeMap<NodeId, FunctionId>>;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct VariableWrite {
@@ -149,8 +144,6 @@ pub fn analyze_functions(
         return result;
     }
 
-    let resolved = &evidence.resolved;
-    let leaf_effects = &evidence.leaf_effects;
     let calls = call_graph(document, registry, &mut result);
     let (cycles, cyclic) = find_cycles(&calls);
     for path in &cycles {
@@ -166,25 +159,123 @@ pub fn analyze_functions(
 
     result.incomplete_functions.extend(cyclic.iter().copied());
     let order = callee_first_order(&calls, &cyclic);
+    let context = SummaryContext {
+        document,
+        resolved: &evidence.resolved,
+        leaf_effects: &evidence.leaf_effects,
+        registry,
+        calls: &calls,
+        cyclic: &cyclic,
+    };
     for function_id in order {
-        let Some(function) = document.functions().get(&function_id) else {
-            continue;
-        };
-        let mut rank = KindRank::Pure;
-        let mut may_suspend = false;
-        let mut complete = !result.incomplete_functions.contains(&function_id);
-        let mut writes = BTreeMap::<VariableId, BTreeSet<WriteOperation>>::new();
+        summarize_function(&context, function_id, &mut result);
+    }
+    result.incomplete_functions.extend(cyclic.iter().copied());
+    result.diagnostics = sort_diagnostics_owned(result.diagnostics);
+    result
+}
 
-        for node in function.body.nodes.values() {
-            let definition = node.definition.id.as_str();
-            if is_intrinsic(definition)
-                && (node.provider.is_some()
-                    || node.definition.version != 1
-                    || node.config_version != 1)
-            {
+/// Inputs shared by every function summarized in one analysis.
+pub(crate) struct SummaryContext<'a> {
+    pub(crate) document: &'a GraphDocument,
+    pub(crate) resolved: &'a BTreeMap<NodeId, SignatureSnapshot>,
+    pub(crate) leaf_effects: &'a BTreeMap<NodeId, LeafEffects>,
+    pub(crate) registry: &'a RegistrySnapshot,
+    pub(crate) calls: &'a CallGraph,
+    pub(crate) cyclic: &'a BTreeSet<FunctionId>,
+}
+
+/// Summarizes one function into `result`. Its callees must already have been summarized,
+/// so callers process functions callee first.
+pub(crate) fn summarize_function(
+    context: &SummaryContext<'_>,
+    function_id: FunctionId,
+    result: &mut FunctionAnalysis,
+) {
+    let SummaryContext {
+        document,
+        resolved,
+        leaf_effects,
+        registry,
+        calls,
+        cyclic,
+    } = *context;
+    let origin = registry.origin();
+    let Some(function) = document.functions().get(&function_id) else {
+        return;
+    };
+    let mut rank = KindRank::Pure;
+    let mut may_suspend = false;
+    let mut complete = !result.incomplete_functions.contains(&function_id);
+    let mut writes = BTreeMap::<VariableId, BTreeSet<WriteOperation>>::new();
+
+    for node in function.body.nodes.values() {
+        let definition = node.definition.id.as_str();
+        // Documented host entries (11 §10) are never allowed in a body, even before this
+        // core version registers their contracts; an unsupported entry must not hide the rule.
+        if UNREGISTERED_HOST_ENTRIES.contains(&definition) {
+            emit_at(
+                result,
+                DiagnosticCode::EntryInFunction,
+                function_id,
+                node.id,
+                origin,
+            );
+            complete = false;
+            continue;
+        }
+        if is_intrinsic(definition)
+            && (node.provider.is_some() || node.definition.version != 1 || node.config_version != 1)
+        {
+            emit_at(
+                result,
+                DiagnosticCode::FunctionMetadataUnavailable,
+                function_id,
+                node.id,
+                origin,
+            );
+            complete = false;
+            continue;
+        }
+        // A function's return (or end) cancels strands a detaching fork left running
+        // (11 §14). The fork stays legal, so this is a warning and not incompleteness.
+        if definition == "core/fork"
+            && node.config.get("join").and_then(serde_json::Value::as_str) == Some("detach")
+        {
+            emit_at(
+                result,
+                DiagnosticCode::DetachInFunction,
+                function_id,
+                node.id,
+                origin,
+            );
+        }
+        if is_marker(node) {
+            continue;
+        }
+        if definition == "core/call" {
+            let Some(callee) = calls
+                .get(&function_id)
+                .and_then(|items| items.get(&node.id))
+            else {
+                complete = false;
+                continue;
+            };
+            let Some(summary) = result.summaries.get(callee) else {
+                complete = false;
+                continue;
+            };
+            rank = rank.max(rank_of(summary.kind));
+            may_suspend |= summary.suspends != Suspends::Never;
+            merge_writes(&mut writes, &summary.run_writes);
+            continue;
+        }
+        if definition == "core/get-variable" {
+            let variable = super::variables::variable_reference(registry, node).ok();
+            if variable.is_none_or(|id| !document.variables().contains_key(&id)) {
                 emit_at(
-                    &mut result,
-                    DiagnosticCode::FunctionMetadataUnavailable,
+                    result,
+                    DiagnosticCode::VariableUnknown,
                     function_id,
                     node.id,
                     origin,
@@ -192,97 +283,24 @@ pub fn analyze_functions(
                 complete = false;
                 continue;
             }
-            if is_marker(node) {
-                continue;
-            }
-            if definition == "core/call" {
-                let Some(callee) = calls
-                    .get(&function_id)
-                    .and_then(|items| items.get(&node.id))
-                else {
-                    complete = false;
-                    continue;
-                };
-                let Some(summary) = result.summaries.get(callee) else {
-                    complete = false;
-                    continue;
-                };
-                rank = rank.max(rank_of(summary.kind));
-                may_suspend |= summary.suspends != Suspends::Never;
-                merge_writes(&mut writes, &summary.run_writes);
-                continue;
-            }
-            if definition == "core/get-variable" {
-                let variable = super::variables::variable_reference(registry, node).ok();
-                if variable.is_none_or(|id| !document.variables().contains_key(&id)) {
-                    emit_at(
-                        &mut result,
-                        DiagnosticCode::VariableUnknown,
-                        function_id,
-                        node.id,
-                        origin,
-                    );
-                    complete = false;
-                    continue;
-                }
-            }
-            if is_intrinsic(definition) && definition != "core/call" {
-                let Some((kind, suspends)) = intrinsic(definition).and_then(|rule| rule.summary)
-                else {
-                    emit_at(
-                        &mut result,
-                        DiagnosticCode::FunctionMetadataUnavailable,
-                        function_id,
-                        node.id,
-                        origin,
-                    );
-                    complete = false;
-                    continue;
-                };
-                rank = rank.max(rank_of(kind));
-                may_suspend |= suspends != Suspends::Never;
-                if is_variable_write(definition) {
-                    match core_variable_write(registry, node, definition) {
-                        Ok(write) => {
-                            if document.variables().get(&write.variable).is_none() {
-                                emit_at(
-                                    &mut result,
-                                    DiagnosticCode::VariableUnknown,
-                                    function_id,
-                                    node.id,
-                                    origin,
-                                );
-                                complete = false;
-                            } else if document.variables()[&write.variable].scope
-                                == VarScope::Workspace
-                            {
-                                emit_at(
-                                    &mut result,
-                                    DiagnosticCode::FunctionMetadataUnavailable,
-                                    function_id,
-                                    node.id,
-                                    origin,
-                                );
-                                complete = false;
-                            } else if document.variables()[&write.variable].scope == VarScope::Run {
-                                writes
-                                    .entry(write.variable)
-                                    .or_default()
-                                    .insert(write.operation);
-                            }
-                        }
-                        Err(code) => {
-                            emit_at(&mut result, code, function_id, node.id, origin);
-                            complete = false;
-                        }
-                    }
-                }
-                continue;
-            }
-
-            let Some(snapshot) = resolved.get(&node.id) else {
+        }
+        if intrinsic(definition).is_some_and(|rule| rule.event_access.is_some())
+            && let Err(error) = registry.contract(document, node)
+        {
+            emit_at(
+                result,
+                super::nodes::contract_code(error),
+                function_id,
+                node.id,
+                origin,
+            );
+            complete = false;
+            continue;
+        }
+        if is_intrinsic(definition) && definition != "core/call" {
+            let Some((kind, suspends)) = intrinsic(definition).and_then(|rule| rule.summary) else {
                 emit_at(
-                    &mut result,
+                    result,
                     DiagnosticCode::FunctionMetadataUnavailable,
                     function_id,
                     node.id,
@@ -291,9 +309,9 @@ pub fn analyze_functions(
                 complete = false;
                 continue;
             };
-            if snapshot.kind == NodeKind::Entry {
+            if kind == NodeKind::Entry {
                 emit_at(
-                    &mut result,
+                    result,
                     DiagnosticCode::EntryInFunction,
                     function_id,
                     node.id,
@@ -302,137 +320,245 @@ pub fn analyze_functions(
                 complete = false;
                 continue;
             }
-            if matches!(snapshot.kind, NodeKind::Async | NodeKind::Iterator)
-                && snapshot.suspension().is_none()
+            rank = rank.max(rank_of(kind));
+            may_suspend |= suspends != Suspends::Never;
+            if let Some(
+                access @ (VariableAccess::Write
+                | VariableAccess::Update
+                | VariableAccess::WriteShared
+                | VariableAccess::UpdateShared),
+            ) = intrinsic(definition).and_then(|rule| rule.variable_access)
             {
-                emit_at(
-                    &mut result,
-                    DiagnosticCode::SuspendsMissing,
-                    function_id,
-                    node.id,
-                    origin,
+                let shared = matches!(
+                    access,
+                    VariableAccess::WriteShared | VariableAccess::UpdateShared
                 );
-                complete = false;
-                continue;
-            }
-            let suspension = snapshot.suspension().unwrap_or(Suspends::Never);
-            if (matches!(snapshot.kind, NodeKind::Async | NodeKind::Iterator)
-                && snapshot.suspends == Some(Suspends::Never))
-                || (!matches!(snapshot.kind, NodeKind::Async | NodeKind::Iterator)
-                    && snapshot.suspends.is_some_and(|s| s != Suspends::Never))
-            {
-                emit_at(
-                    &mut result,
-                    DiagnosticCode::SuspendsInvalid,
-                    function_id,
-                    node.id,
-                    origin,
-                );
-                complete = false;
-                continue;
-            }
-            rank = rank.max(rank_of(snapshot.kind));
-            may_suspend |= suspension != Suspends::Never;
-
-            if matches!(
-                leaf_effects.get(&node.id),
-                Some(LeafEffects::GraphBodyUnavailable)
-            ) {
-                emit_at(
-                    &mut result,
-                    DiagnosticCode::FunctionMetadataUnavailable,
-                    function_id,
-                    node.id,
-                    origin,
-                );
-                complete = false;
-                continue;
-            }
-            if matches!(snapshot.kind, NodeKind::Pure | NodeKind::Volatile)
-                && matches!(leaf_effects.get(&node.id), Some(LeafEffects::Known(items)) if !items.is_empty())
-            {
-                emit_at(
-                    &mut result,
-                    DiagnosticCode::FunctionMetadataUnavailable,
-                    function_id,
-                    node.id,
-                    origin,
-                );
-                complete = false;
-                continue;
-            }
-            match snapshot.kind {
-                NodeKind::Pure | NodeKind::Volatile => {}
-                _ => match leaf_effects.get(&node.id) {
-                    Some(LeafEffects::Known(items)) => {
-                        for item in items {
-                            if document.variables().get(&item.variable).is_none() {
-                                emit_at(
-                                    &mut result,
-                                    DiagnosticCode::VariableUnknown,
-                                    function_id,
-                                    node.id,
-                                    origin,
-                                );
-                                complete = false;
-                            } else if document.variables()[&item.variable].scope == VarScope::Run {
-                                writes
-                                    .entry(item.variable)
-                                    .or_default()
-                                    .insert(item.operation);
-                            }
+                let mut fresh_contract = None;
+                if matches!(
+                    access,
+                    VariableAccess::Update
+                        | VariableAccess::WriteShared
+                        | VariableAccess::UpdateShared
+                ) {
+                    match registry.contract(document, node) {
+                        Ok(Some(contract)) => fresh_contract = Some(contract),
+                        Ok(None) => {
+                            emit_at(
+                                result,
+                                DiagnosticCode::FunctionMetadataUnavailable,
+                                function_id,
+                                node.id,
+                                origin,
+                            );
+                            complete = false;
+                            continue;
+                        }
+                        Err(error) => {
+                            emit_at(
+                                result,
+                                super::nodes::contract_code(error),
+                                function_id,
+                                node.id,
+                                origin,
+                            );
+                            complete = false;
+                            continue;
                         }
                     }
-                    Some(LeafEffects::GraphBodyUnavailable) | None => {
-                        emit_at(
-                            &mut result,
-                            DiagnosticCode::FunctionMetadataUnavailable,
-                            function_id,
-                            node.id,
-                            origin,
-                        );
+                }
+                if access == VariableAccess::WriteShared {
+                    match fresh_contract
+                        .as_deref()
+                        .ok_or(DiagnosticCode::FunctionMetadataUnavailable)
+                        .and_then(|contract| validate_shared_variable_type(registry, contract))
+                    {
+                        Ok(()) => {}
+                        Err(code) => {
+                            emit_at(result, code, function_id, node.id, origin);
+                            complete = false;
+                            continue;
+                        }
+                    }
+                }
+                match core_variable_write(registry, node, access) {
+                    Ok(write) => {
+                        if document.variables().get(&write.variable).is_none() {
+                            emit_at(
+                                result,
+                                DiagnosticCode::VariableUnknown,
+                                function_id,
+                                node.id,
+                                origin,
+                            );
+                            complete = false;
+                        } else if !shared
+                            && document.variables()[&write.variable].scope == VarScope::Workspace
+                        {
+                            emit_at(
+                                result,
+                                DiagnosticCode::FunctionMetadataUnavailable,
+                                function_id,
+                                node.id,
+                                origin,
+                            );
+                            complete = false;
+                        } else if !shared
+                            && document.variables()[&write.variable].scope == VarScope::Run
+                        {
+                            writes
+                                .entry(write.variable)
+                                .or_default()
+                                .insert(write.operation);
+                        }
+                    }
+                    Err(code) => {
+                        emit_at(result, code, function_id, node.id, origin);
                         complete = false;
                     }
-                },
+                }
             }
+            continue;
         }
 
-        let inferred = rank.kind();
-        if complete && function.kind != inferred {
-            emit(
-                &mut result,
-                DiagnosticCode::FunctionKind,
+        let Some(snapshot) = resolved.get(&node.id) else {
+            emit_at(
+                result,
+                DiagnosticCode::FunctionMetadataUnavailable,
                 function_id,
+                node.id,
                 origin,
             );
-        }
-        if !cyclic.contains(&function_id) && complete {
-            result.summaries.insert(
+            complete = false;
+            continue;
+        };
+        if snapshot.kind == NodeKind::Entry {
+            emit_at(
+                result,
+                DiagnosticCode::EntryInFunction,
                 function_id,
-                FunctionSummary {
-                    kind: inferred,
-                    suspends: if may_suspend {
-                        Suspends::Maybe
-                    } else {
-                        Suspends::Never
-                    },
-                    run_writes: writes,
-                },
+                node.id,
+                origin,
             );
-        } else {
-            result.incomplete_functions.insert(function_id);
+            complete = false;
+            continue;
+        }
+        if snapshot.ports.iter().any(|port| {
+            port.kind == crate::document::PortKind::Event
+                && port.direction == crate::document::PortDirection::Output
+        }) {
+            emit_at(
+                result,
+                DiagnosticCode::SubscriptionInFunction,
+                function_id,
+                node.id,
+                origin,
+            );
+            complete = false;
+            continue;
+        }
+        if let Some(issue) = suspension_contract_issue(snapshot.kind, snapshot.suspends) {
+            let code = match issue {
+                SuspensionContractIssue::Missing => DiagnosticCode::SuspendsMissing,
+                SuspensionContractIssue::Invalid(_) => DiagnosticCode::SuspendsInvalid,
+            };
+            emit_at(result, code, function_id, node.id, origin);
+            complete = false;
+            continue;
+        }
+        let suspension = snapshot.suspension().unwrap_or(Suspends::Never);
+        rank = rank.max(rank_of(snapshot.kind));
+        may_suspend |= suspension != Suspends::Never;
+
+        if matches!(
+            leaf_effects.get(&node.id),
+            Some(LeafEffects::GraphBodyUnavailable)
+        ) {
+            emit_at(
+                result,
+                DiagnosticCode::FunctionMetadataUnavailable,
+                function_id,
+                node.id,
+                origin,
+            );
+            complete = false;
+            continue;
+        }
+        if matches!(snapshot.kind, NodeKind::Pure | NodeKind::Volatile)
+            && matches!(leaf_effects.get(&node.id), Some(LeafEffects::Known(items)) if !items.is_empty())
+        {
+            emit_at(
+                result,
+                DiagnosticCode::FunctionMetadataUnavailable,
+                function_id,
+                node.id,
+                origin,
+            );
+            complete = false;
+            continue;
+        }
+        match snapshot.kind {
+            NodeKind::Pure | NodeKind::Volatile => {}
+            _ => match leaf_effects.get(&node.id) {
+                Some(LeafEffects::Known(items)) => {
+                    for item in items {
+                        if document.variables().get(&item.variable).is_none() {
+                            emit_at(
+                                result,
+                                DiagnosticCode::VariableUnknown,
+                                function_id,
+                                node.id,
+                                origin,
+                            );
+                            complete = false;
+                        } else if document.variables()[&item.variable].scope == VarScope::Run {
+                            writes
+                                .entry(item.variable)
+                                .or_default()
+                                .insert(item.operation);
+                        }
+                    }
+                }
+                Some(LeafEffects::GraphBodyUnavailable) | None => {
+                    emit_at(
+                        result,
+                        DiagnosticCode::FunctionMetadataUnavailable,
+                        function_id,
+                        node.id,
+                        origin,
+                    );
+                    complete = false;
+                }
+            },
         }
     }
-    result.incomplete_functions.extend(cyclic.iter().copied());
-    result.diagnostics = sort_diagnostics_owned(result.diagnostics);
-    result
+
+    let inferred = rank.kind();
+    if complete && function.kind != inferred {
+        emit(result, DiagnosticCode::FunctionKind, function_id, origin);
+    }
+    if !cyclic.contains(&function_id) && complete {
+        result.summaries.insert(
+            function_id,
+            FunctionSummary {
+                kind: inferred,
+                suspends: if may_suspend {
+                    Suspends::Maybe
+                } else {
+                    Suspends::Never
+                },
+                run_writes: writes,
+            },
+        );
+    } else {
+        result.incomplete_functions.insert(function_id);
+    }
 }
 
-fn call_graph(
+pub(crate) fn call_graph(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     result: &mut FunctionAnalysis,
-) -> BTreeMap<FunctionId, BTreeMap<NodeId, FunctionId>> {
+) -> CallGraph {
     let origin = registry.origin();
     let mut graph = BTreeMap::new();
     for (id, function) in document.functions() {
@@ -501,40 +627,51 @@ fn is_marker(node: &crate::document::NodeInstance) -> bool {
 fn core_variable_write(
     registry: &RegistrySnapshot,
     node: &crate::document::NodeInstance,
-    definition: &str,
+    access: VariableAccess,
 ) -> Result<VariableWrite, DiagnosticCode> {
     let variable = super::variables::variable_reference(registry, node)?;
-    let operation = if definition == "core/set-variable" {
-        Some(WriteOperation::Set)
-    } else {
-        node.config
+    let operation = match access {
+        VariableAccess::Write | VariableAccess::WriteShared => WriteOperation::Set,
+        VariableAccess::Update | VariableAccess::UpdateShared => node
+            .config
             .get("operation")
             .and_then(Value::as_str)
-            .and_then(parse_operation)
-    }
-    .ok_or(DiagnosticCode::UpdateOperation)?;
+            .and_then(WriteOperation::parse_update)
+            .ok_or(DiagnosticCode::UpdateOperation)?,
+        VariableAccess::Read => return Err(DiagnosticCode::FunctionMetadataUnavailable),
+    };
     Ok(VariableWrite {
         variable,
         operation,
     })
 }
 
-fn is_variable_write(id: &str) -> bool {
-    matches!(id, "core/set-variable" | "core/update-variable")
-}
-fn parse_operation(value: &str) -> Option<WriteOperation> {
-    Some(match value {
-        "add" => WriteOperation::Add,
-        "sub" => WriteOperation::Sub,
-        "min" => WriteOperation::Min,
-        "max" => WriteOperation::Max,
-        "and" => WriteOperation::And,
-        "or" => WriteOperation::Or,
-        "xor" => WriteOperation::Xor,
-        "append" => WriteOperation::Append,
-        "compare-and-set" => WriteOperation::CompareAndSet,
-        _ => return None,
-    })
+fn validate_shared_variable_type(
+    registry: &RegistrySnapshot,
+    contract: &NodeContract,
+) -> Result<(), DiagnosticCode> {
+    let ty = contract
+        .ports
+        .iter()
+        .find(|port| {
+            port.direction == crate::document::PortDirection::Input
+                && port.kind == crate::document::PortKind::Data
+        })
+        .and_then(|port| port.ty.as_ref())
+        .ok_or(DiagnosticCode::FunctionMetadataUnavailable)?;
+    let term = TypeTerm::parse(ty).map_err(|error| match error {
+        crate::error::IdError::TypeTooDeep { .. } => DiagnosticCode::TypeComplexity,
+        _ => DiagnosticCode::TypeMismatch,
+    })?;
+    registry
+        .types()
+        .validate(&term)
+        .map_err(|error| match error {
+            TypeResolveError::TooDeep { .. } | TypeResolveError::DerivationTooDeep { .. } => {
+                DiagnosticCode::TypeComplexity
+            }
+            _ => DiagnosticCode::TypeMismatch,
+        })
 }
 fn rank_of(kind: NodeKind) -> KindRank {
     match kind {
@@ -561,6 +698,17 @@ fn emit(result: &mut FunctionAnalysis, code: DiagnosticCode, id: FunctionId, ori
     ));
 }
 
+/// Host entry identities from the 11 §10 table that the core registry does not yet define.
+const UNREGISTERED_HOST_ENTRIES: &[&str] = &[
+    "core/on-start",
+    "core/on-stop",
+    "core/on-manual",
+    "core/on-timer",
+    "core/on-timeout",
+    "core/on-variable-changed",
+    "core/on-watch",
+];
+
 fn emit_at(
     result: &mut FunctionAnalysis,
     code: DiagnosticCode,
@@ -575,7 +723,7 @@ fn emit_at(
     ));
 }
 
-fn find_cycles(
+pub(crate) fn find_cycles(
     graph: &BTreeMap<FunctionId, BTreeMap<NodeId, FunctionId>>,
 ) -> (Vec<Vec<FunctionId>>, BTreeSet<FunctionId>) {
     let adjacency: BTreeMap<_, Vec<_>> = graph
@@ -706,7 +854,7 @@ fn cycle_witness(
     None
 }
 
-fn callee_first_order(
+pub(crate) fn callee_first_order(
     graph: &BTreeMap<FunctionId, BTreeMap<NodeId, FunctionId>>,
     cyclic: &BTreeSet<FunctionId>,
 ) -> Vec<FunctionId> {

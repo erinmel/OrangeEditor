@@ -24,6 +24,11 @@ fn variable_node(n: u8, operation: &str, variable: Value) -> Value {
         "definition_version":1,"config_version":1,"config":{"variable":variable},
         "type_args":{"T":"core/string@1"}})
 }
+fn update_node(n: u8, variable: Value, operation: Value) -> Value {
+    json!({"id":node_id(n),"definition_id":"core/update-variable",
+        "definition_version":1,"config_version":1,
+        "config":{"variable":variable,"operation":operation}})
+}
 fn document(nodes: Value, variables: Value) -> GraphDocument {
     from_json(&minimal_document(
         json!({"nodes":nodes,"variables":variables}),
@@ -175,7 +180,7 @@ fn get_drives_generic_math_and_set_checks_result() {
             "signatures":{(signature.clone()):{"kind":"pure","ports":[
                 {"port_id":"a","direction":"input","kind":"data","type":"core/i64@1"},
                 {"port_id":"b","direction":"input","kind":"data","type":"core/i64@1"},
-                {"port_id":"sum","direction":"output","kind":"data","type":"core/i64@1"}]}}
+                {"port_id":"sum","direction":"output","kind":"data","type":"core/i64@1","source":"computed"}]}}
         }))).unwrap();
         let before = to_json(&doc).unwrap();
         let report = validate_nodes(&doc, &registry);
@@ -196,6 +201,53 @@ fn get_drives_generic_math_and_set_checks_result() {
         }
         assert_eq!(to_json(&doc).unwrap(), before);
     }
+}
+
+#[test]
+fn update_requires_exact_intrinsic_identity_and_canonical_variable_id() {
+    for (field, value) in [
+        (
+            "provider",
+            json!({"package":"org.test","version":"1.0.0","id":"native"}),
+        ),
+        ("definition_version", json!(2)),
+        ("config_version", json!(2)),
+    ] {
+        let mut node = update_node(1, json!(node_id(10)), json!("add"));
+        node[field] = value;
+        let report = validate(&document(
+            json!([node]),
+            json!([declaration(10, "core/i64@1", "run")]),
+        ));
+        assert_eq!(
+            report.diagnostics[0].code,
+            DiagnosticCode::ProviderUnavailable
+        );
+        assert!(report.resolved.is_empty());
+    }
+
+    let report = validate(&document(
+        json!([update_node(1, json!("not-an-id"), json!("add"))]),
+        json!([declaration(10, "core/i64@1", "run")]),
+    ));
+    assert_eq!(report.diagnostics[0].code, DiagnosticCode::VariableUnknown);
+    assert!(report.resolved.is_empty());
+}
+
+#[test]
+fn update_type_depth_limit_has_complexity_diagnostic() {
+    let depth = 66;
+    let ty = format!(
+        "{}core/i64@1{}",
+        "core/list@1<".repeat(depth),
+        ">".repeat(depth)
+    );
+    let report = validate(&document(
+        json!([update_node(1, json!(node_id(10)), json!("add"))]),
+        json!([declaration(10, &ty, "run")]),
+    ));
+    assert_eq!(report.diagnostics[0].code, DiagnosticCode::TypeComplexity);
+    assert!(report.resolved.is_empty());
 }
 #[test]
 fn declaration_change_recomputes_the_contract() {
@@ -356,4 +408,551 @@ fn registry_computes_variable_contracts_from_the_document() {
     let mut unknown = doc.node(nid(1)).unwrap().clone();
     unknown.definition.id = "acme/unregistered".parse().unwrap();
     assert!(registry.contract(&doc, &unknown).unwrap().is_none());
+}
+
+#[test]
+fn update_add_sub_projects_fresh_exact_action_ports_without_mutation() {
+    let cases = [
+        (1, 10, "core/i64@1", "add"),
+        (2, 11, "core/f64@1", "sub"),
+        (3, 12, "core/duration@1", "add"),
+    ];
+    let doc = document(
+        json!(cases.map(|(node, variable, _, operation)| update_node(
+            node,
+            json!(node_id(variable)),
+            json!(operation)
+        ))),
+        json!([
+            declaration(10, "core/i64@1", "local"),
+            declaration(11, "core/f64@1", "run"),
+            declaration(12, "core/duration@1", "local")
+        ]),
+    );
+    let before = to_json(&doc).unwrap();
+    let revision = doc.revision();
+    let state_id = doc.state_id();
+    let registry = registry();
+    let resolved = validate_nodes(&doc, &registry);
+    assert!(resolved.is_valid(), "{:?}", resolved.diagnostics);
+    assert_eq!(resolved.resolved.len(), cases.len());
+    assert!(
+        doc.signatures().is_empty(),
+        "intrinsic projections are not stored"
+    );
+    for (node, variable, ty, _) in cases {
+        let signature = &resolved.resolved[&nid(node)];
+        assert_eq!(signature.kind, NodeKind::Action);
+        assert_eq!(signature.suspends, Some(Suspends::Never));
+        assert_eq!(
+            signature
+                .ports
+                .iter()
+                .map(|port| port.port_id.as_str())
+                .collect::<Vec<_>>(),
+            ["value", "old", "new"]
+        );
+        assert_eq!(signature.ports[0].direction, PortDirection::Input);
+        assert_eq!(signature.ports[0].ty.as_ref().unwrap().as_str(), ty);
+        for output in &signature.ports[1..] {
+            assert_eq!(output.direction, PortDirection::Output);
+            assert_eq!(output.ty.as_ref().unwrap().as_str(), ty);
+            assert_eq!(output.source, Some(OutputSource::Execution));
+            assert_eq!(output.available_on.as_ref().unwrap()[0].as_str(), "then");
+        }
+        assert_eq!(
+            doc.node(nid(node)).unwrap().config["variable"],
+            node_id(variable)
+        );
+    }
+    assert_eq!(
+        validate_inputs(&doc, &resolved.resolved, &registry)
+            .iter()
+            .map(|diagnostic| diagnostic.code)
+            .collect::<Vec<_>>(),
+        [DiagnosticCode::InputRequired; 3]
+    );
+    let mut supplied = update_node(1, json!(node_id(10)), json!("add"));
+    supplied["inputs"] = json!({"value":{"type":"core/i64@1","value":"7"}});
+    let supplied = document(
+        json!([supplied]),
+        json!([declaration(10, "core/i64@1", "run")]),
+    );
+    let supplied_resolved = validate_nodes(&supplied, &registry);
+    assert!(validate_inputs(&supplied, &supplied_resolved.resolved, &registry).is_empty());
+    assert_eq!(to_json(&doc).unwrap(), before);
+    assert_eq!(doc.revision(), revision);
+    assert_eq!(doc.state_id(), state_id);
+}
+
+#[test]
+fn update_min_max_require_ord_and_keep_the_same_contextual_ports() {
+    let cases = [
+        (1, 10, "core/i64@1", "min"),
+        (2, 11, "core/bool@1", "max"),
+        (3, 12, "core/string@1", "min"),
+        (4, 13, "core/duration@1", "max"),
+        (5, 14, "core/timestamp@1", "min"),
+    ];
+    let doc = document(
+        json!(cases.map(|(node, variable, _, operation)| update_node(
+            node,
+            json!(node_id(variable)),
+            json!(operation)
+        ))),
+        json!([
+            declaration(10, "core/i64@1", "run"),
+            declaration(11, "core/bool@1", "run"),
+            declaration(12, "core/string@1", "local"),
+            declaration(13, "core/duration@1", "run"),
+            declaration(14, "core/timestamp@1", "local")
+        ]),
+    );
+    let before = to_json(&doc).unwrap();
+    let revision = doc.revision();
+    let state_id = doc.state_id();
+    let registry = registry();
+    let resolved = validate_nodes(&doc, &registry);
+    assert!(resolved.is_valid(), "{:?}", resolved.diagnostics);
+    for (node, _, ty, _) in cases {
+        let ports = &resolved.resolved[&nid(node)].ports;
+        assert_eq!(
+            ports
+                .iter()
+                .map(|port| port.port_id.as_str())
+                .collect::<Vec<_>>(),
+            ["value", "old", "new"]
+        );
+        assert_eq!(ports[0].direction, PortDirection::Input);
+        assert_eq!(ports[0].ty.as_ref().unwrap().as_str(), ty);
+        for output in &ports[1..] {
+            assert_eq!(output.direction, PortDirection::Output);
+            assert_eq!(output.ty.as_ref().unwrap().as_str(), ty);
+            assert_eq!(output.source, Some(OutputSource::Execution));
+            assert_eq!(output.available_on.as_ref().unwrap()[0].as_str(), "then");
+        }
+    }
+    assert_eq!(to_json(&doc).unwrap(), before);
+    assert_eq!(doc.revision(), revision);
+    assert_eq!(doc.state_id(), state_id);
+
+    for ty in ["core/f32@1", "core/f64@1"] {
+        let rejected = validate(&document(
+            json!([update_node(1, json!(node_id(20)), json!("min"))]),
+            json!([declaration(20, ty, "run")]),
+        ));
+        assert_eq!(
+            rejected.diagnostics[0].code,
+            DiagnosticCode::ConstraintUnsatisfied
+        );
+        assert!(rejected.resolved.is_empty());
+    }
+}
+
+#[test]
+fn compare_and_set_projects_required_operands_and_execution_results() {
+    let registry = registry();
+    let mut node = update_node(1, json!(node_id(10)), json!("compare-and-set"));
+    for (inputs, expected_codes) in [
+        (json!({}), vec![DiagnosticCode::InputRequired; 2]),
+        (
+            json!({"expected":{"type":"core/i64@1","value":"4"}}),
+            vec![DiagnosticCode::InputRequired],
+        ),
+        (
+            json!({"value":{"type":"core/i64@1","value":"5"}}),
+            vec![DiagnosticCode::InputRequired],
+        ),
+        (
+            json!({"expected":{"type":"core/bool@1","value":true},
+                "value":{"type":"core/i64@1","value":"5"}}),
+            vec![DiagnosticCode::LiteralType],
+        ),
+        (
+            json!({"expected":{"type":"core/i64@1","value":"4"},
+                "value":{"type":"core/i64@1","value":"5"}}),
+            vec![],
+        ),
+    ] {
+        node["inputs"] = inputs;
+        let doc = document(
+            json!([node]),
+            json!([declaration(10, "core/i64@1", "local")]),
+        );
+        let resolved = validate(&doc);
+        assert!(resolved.is_valid(), "{:?}", resolved.diagnostics);
+        let signature = &resolved.resolved[&nid(1)];
+        assert_eq!(signature.kind, NodeKind::Action);
+        assert_eq!(signature.suspends, Some(Suspends::Never));
+        let ports = &signature.ports;
+        assert_eq!(
+            ports.iter().map(|p| p.port_id.as_str()).collect::<Vec<_>>(),
+            ["expected", "value", "old", "new", "exchanged"]
+        );
+        for (index, port) in ports.iter().enumerate() {
+            assert_eq!(
+                port.ty.as_ref().unwrap().as_str(),
+                if index == 4 {
+                    "core/bool@1"
+                } else {
+                    "core/i64@1"
+                }
+            );
+            assert!(port.default.is_none());
+            assert!(!port.optional.unwrap_or(false));
+            assert!(!port.lazy.unwrap_or(false));
+            if index < 2 {
+                assert_eq!(port.direction, PortDirection::Input);
+                assert!(port.source.is_none());
+            } else {
+                assert_eq!(port.direction, PortDirection::Output);
+                assert_eq!(port.source, Some(OutputSource::Execution));
+                assert_eq!(
+                    port.available_on
+                        .as_ref()
+                        .unwrap()
+                        .iter()
+                        .map(|p| p.as_str())
+                        .collect::<Vec<_>>(),
+                    ["then"]
+                );
+            }
+        }
+        assert_eq!(
+            validate_inputs(&doc, &resolved.resolved, &registry)
+                .iter()
+                .map(|d| d.code)
+                .collect::<Vec<_>>(),
+            expected_codes
+        );
+        assert!(doc.signatures().is_empty());
+    }
+}
+
+#[test]
+fn compare_and_set_uses_language_eq_for_scalars_and_aggregates() {
+    for (ty, eligible) in [
+        ("core/i64@1", true),
+        ("core/string@1", true),
+        ("core/list@1<core/i64@1>", true),
+        ("core/option@1<core/bool@1>", true),
+        ("core/map@1<core/string@1,core/i64@1>", true),
+        ("core/f32@1", false),
+        ("core/f64@1", false),
+        ("core/list@1<core/f64@1>", false),
+        ("core/option@1<core/f64@1>", false),
+        ("core/map@1<core/string@1,core/f64@1>", false),
+        ("core/stream@1<core/i64@1>", false),
+    ] {
+        let report = validate(&document(
+            json!([update_node(1, json!(node_id(10)), json!("compare-and-set"))]),
+            json!([declaration(10, ty, "run")]),
+        ));
+        if eligible {
+            assert!(report.is_valid(), "{ty}: {:?}", report.diagnostics);
+            assert_eq!(
+                report.resolved[&nid(1)].ports[0]
+                    .ty
+                    .as_ref()
+                    .unwrap()
+                    .as_str(),
+                ty
+            );
+        } else {
+            assert_eq!(report.diagnostics.len(), 1, "{ty}");
+            assert_eq!(
+                report.diagnostics[0].code,
+                DiagnosticCode::ConstraintUnsatisfied,
+                "{ty}"
+            );
+            assert!(report.resolved.is_empty());
+        }
+    }
+    let workspace = validate(&document(
+        json!([update_node(1, json!(node_id(10)), json!("compare-and-set"))]),
+        json!([declaration(10, "core/i64@1", "workspace")]),
+    ));
+    assert_eq!(workspace.diagnostics[0].code, DiagnosticCode::VariableScope);
+}
+
+#[test]
+fn compare_and_set_connections_use_operand_types_and_boolean_result() {
+    use common::generic::data_edge;
+    use orange_model::validation::validate_connections;
+
+    for (source_type, target_type, valid) in [
+        ("core/i64@1", "core/bool@1", true),
+        ("core/i64@1", "core/i64@1", false),
+        ("core/bool@1", "core/bool@1", false),
+    ] {
+        let doc = from_json(&minimal_document(json!({
+            "variables":[declaration(10,"core/i64@1","run"), declaration(11,target_type,"run"),
+                declaration(12,source_type,"run")],
+            "nodes":[update_node(1,json!(node_id(10)),json!("compare-and-set")),
+                variable_node(2,"get",json!(node_id(12))),
+                variable_node(3,"set",json!(node_id(11)))],
+            "edges":[data_edge(1,(2,"value"),(1,"expected")),
+                data_edge(2,(2,"value"),(1,"value")),
+                data_edge(3,(1,"exchanged"),(3,"value"))]
+        })))
+        .unwrap();
+        let registry = registry();
+        let resolved = validate_nodes(&doc, &registry);
+        let connections = validate_connections(&doc, &resolved.resolved, &registry);
+        if valid {
+            assert!(
+                connections.diagnostics.is_empty(),
+                "{:?}",
+                connections.diagnostics
+            );
+            assert!(validate_inputs(&doc, &resolved.resolved, &registry).is_empty());
+        } else {
+            assert!(
+                connections
+                    .diagnostics
+                    .iter()
+                    .any(|d| d.code == DiagnosticCode::TypeMismatch)
+            );
+        }
+        // This checks connection types, not execution availability or region legality.
+    }
+}
+
+#[test]
+fn update_logical_and_bitwise_require_exact_core_scalar_types() {
+    let registry = registry();
+    for operation in ["and", "or", "xor"] {
+        for ty in ["core/i32@1", "core/i64@1", "core/u32@1", "core/u64@1"] {
+            let doc = document(
+                json!([update_node(1, json!(node_id(10)), json!(operation))]),
+                json!([declaration(10, ty, "run")]),
+            );
+            let before = to_json(&doc).unwrap();
+            let revision = doc.revision();
+            let state_id = doc.state_id();
+            let resolved = validate_nodes(&doc, &registry);
+            assert!(
+                resolved.is_valid(),
+                "{operation} {ty}: {:?}",
+                resolved.diagnostics
+            );
+            let ports = &resolved.resolved[&nid(1)].ports;
+            assert_eq!(
+                ports.iter().map(|p| p.port_id.as_str()).collect::<Vec<_>>(),
+                ["value", "old", "new"]
+            );
+            assert_eq!(ports[0].direction, PortDirection::Input);
+            assert_eq!(ports[0].ty.as_ref().unwrap().as_str(), ty);
+            assert!(ports[0].default.is_none());
+            assert!(!ports[0].optional.unwrap_or(false));
+            for output in &ports[1..] {
+                assert_eq!(output.direction, PortDirection::Output);
+                assert_eq!(output.ty.as_ref().unwrap().as_str(), ty);
+                assert_eq!(output.source, Some(OutputSource::Execution));
+                assert_eq!(output.available_on.as_ref().unwrap()[0].as_str(), "then");
+            }
+            assert_eq!(
+                validate_inputs(&doc, &resolved.resolved, &registry)
+                    .iter()
+                    .map(|d| d.code)
+                    .collect::<Vec<_>>(),
+                [DiagnosticCode::InputRequired]
+            );
+            assert_eq!(to_json(&doc).unwrap(), before);
+            assert_eq!(doc.revision(), revision);
+            assert_eq!(doc.state_id(), state_id);
+        }
+    }
+    for operation in ["and", "or", "xor"] {
+        let report = validate(&document(
+            json!([update_node(1, json!(node_id(10)), json!(operation))]),
+            json!([declaration(10, "core/bool@1", "local")]),
+        ));
+        assert!(report.is_valid(), "{operation}: {:?}", report.diagnostics);
+        assert_eq!(
+            report.resolved[&nid(1)].ports[0]
+                .ty
+                .as_ref()
+                .unwrap()
+                .as_str(),
+            "core/bool@1"
+        );
+    }
+    let rejected = validate(&document(
+        json!([
+            update_node(1, json!(node_id(10)), json!("xor")),
+            update_node(2, json!(node_id(11)), json!("and")),
+            update_node(3, json!(node_id(12)), json!("or"))
+        ]),
+        json!([
+            declaration(10, "core/duration@1", "run"),
+            declaration(11, "core/f64@1", "run"),
+            declaration(12, "core/string@1", "run")
+        ]),
+    ));
+    assert_eq!(rejected.diagnostics.len(), 3);
+    assert!(
+        rejected
+            .diagnostics
+            .iter()
+            .all(|d| d.code == DiagnosticCode::ConstraintUnsatisfied)
+    );
+    assert!(rejected.resolved.is_empty());
+}
+
+#[test]
+fn update_append_accepts_only_core_string_bytes_and_lists() {
+    let registry = registry();
+    for (ty, literal) in [
+        ("core/string@1", json!("hello")),
+        ("core/bytes@1", json!("AP8=")),
+        (
+            "core/list@1<core/f64@1>",
+            json!(["3ff8000000000000", "c000000000000000"]),
+        ),
+    ] {
+        let mut node = update_node(1, json!(node_id(10)), json!("append"));
+        let doc = document(json!([node.clone()]), json!([declaration(10, ty, "run")]));
+        let resolved = validate_nodes(&doc, &registry);
+        assert!(resolved.is_valid(), "{ty}: {:?}", resolved.diagnostics);
+        let ports = &resolved.resolved[&nid(1)].ports;
+        assert_eq!(
+            ports.iter().map(|p| p.port_id.as_str()).collect::<Vec<_>>(),
+            ["value", "old", "new"]
+        );
+        assert_eq!(ports[0].direction, PortDirection::Input);
+        assert_eq!(ports[0].ty.as_ref().unwrap().as_str(), ty);
+        assert!(ports[0].default.is_none());
+        assert!(!ports[0].optional.unwrap_or(false));
+        for output in &ports[1..] {
+            assert_eq!(output.direction, PortDirection::Output);
+            assert_eq!(output.ty.as_ref().unwrap().as_str(), ty);
+            assert_eq!(output.source, Some(OutputSource::Execution));
+            assert_eq!(output.available_on.as_ref().unwrap()[0].as_str(), "then");
+        }
+        assert_eq!(
+            validate_inputs(&doc, &resolved.resolved, &registry)
+                .iter()
+                .map(|d| d.code)
+                .collect::<Vec<_>>(),
+            [DiagnosticCode::InputRequired]
+        );
+        node["inputs"] = json!({"value":{"type":ty,"value":literal}});
+        let supplied = document(json!([node]), json!([declaration(10, ty, "run")]));
+        let supplied_resolved = validate_nodes(&supplied, &registry);
+        assert!(
+            supplied_resolved.is_valid(),
+            "{ty}: {:?}",
+            supplied_resolved.diagnostics
+        );
+        let input_diagnostics = validate_inputs(&supplied, &supplied_resolved.resolved, &registry);
+        assert!(input_diagnostics.is_empty(), "{ty}: {input_diagnostics:?}");
+    }
+
+    for ty in [
+        "core/i64@1",
+        "core/f64@1",
+        "core/map@1<core/string@1,core/i64@1>",
+    ] {
+        let report = validate(&document(
+            json!([update_node(1, json!(node_id(10)), json!("append"))]),
+            json!([declaration(10, ty, "run")]),
+        ));
+        assert_eq!(
+            report.diagnostics[0].code,
+            DiagnosticCode::ConstraintUnsatisfied,
+            "{ty}"
+        );
+        assert!(report.resolved.is_empty());
+    }
+    for ty in ["missing/type@1", "core/list@1<missing/type@1>"] {
+        let report = validate(&document(
+            json!([update_node(1, json!(node_id(10)), json!("append"))]),
+            json!([declaration(10, ty, "run")]),
+        ));
+        assert_eq!(
+            report.diagnostics[0].code,
+            DiagnosticCode::TypeMismatch,
+            "{ty}"
+        );
+        assert!(report.resolved.is_empty());
+    }
+}
+
+#[test]
+fn update_errors_follow_reference_scope_operation_then_type_precedence() {
+    let cases = [
+        ("missing", "run", None, DiagnosticCode::UpdateOperation),
+        (
+            "42",
+            "run",
+            Some(json!(42)),
+            DiagnosticCode::UpdateOperation,
+        ),
+        (
+            "invented",
+            "run",
+            Some(json!("invented")),
+            DiagnosticCode::UpdateOperation,
+        ),
+        (
+            "set",
+            "run",
+            Some(json!("set")),
+            DiagnosticCode::UpdateOperation,
+        ),
+        (
+            "append",
+            "run",
+            Some(json!("append")),
+            DiagnosticCode::ConstraintUnsatisfied,
+        ),
+        (
+            "add",
+            "run",
+            Some(json!("add")),
+            DiagnosticCode::ConstraintUnsatisfied,
+        ),
+        (
+            "add",
+            "run",
+            Some(json!("add")),
+            DiagnosticCode::TypeMismatch,
+        ),
+        (
+            "add",
+            "workspace",
+            Some(json!("min")),
+            DiagnosticCode::VariableScope,
+        ),
+    ];
+    for (name, scope, operation, expected) in cases {
+        let ty = if name == "append" {
+            "core/i64@1"
+        } else {
+            match expected {
+                DiagnosticCode::ConstraintUnsatisfied => "core/bool@1",
+                DiagnosticCode::TypeMismatch => "missing/type@1",
+                _ => "core/i64@1",
+            }
+        };
+        let node = if let Some(operation) = operation {
+            update_node(1, json!(node_id(10)), operation)
+        } else {
+            let mut node = update_node(1, json!(node_id(10)), Value::Null);
+            node["config"].as_object_mut().unwrap().remove("operation");
+            node
+        };
+        let doc = document(json!([node]), json!([declaration(10, ty, scope)]));
+        let report = validate(&doc);
+        assert_eq!(
+            report.diagnostics.len(),
+            1,
+            "{name}: {:?}",
+            report.diagnostics
+        );
+        assert_eq!(report.diagnostics[0].code, expected, "{name}");
+        assert!(report.resolved.is_empty());
+        assert!(report.incomplete_nodes.contains(&nid(1)));
+    }
 }

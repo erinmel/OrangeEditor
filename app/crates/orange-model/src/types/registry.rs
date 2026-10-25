@@ -310,6 +310,40 @@ impl TypeRegistry {
         self.validate_map_constraints(term)
     }
 
+    /// Validates a type expression whose `rigid` parameters are opaque constants, as a
+    /// function's own type parameters are inside its body. Each rigid parameter is checked as
+    /// an unconstrained stand-in (`core/error@1`: no Hash, Eq, handle-kind or other capability),
+    /// so structure, arity and map-key and handle rules stay strict. A parameter outside
+    /// `rigid` is `UnresolvedParameter`.
+    pub fn validate_scoped(
+        &self,
+        term: &TypeTerm,
+        rigid: &[String],
+    ) -> Result<(), TypeResolveError> {
+        fn opaque(term: &TypeTerm, rigid: &[String]) -> Result<TypeTerm, TypeResolveError> {
+            match term {
+                TypeTerm::Param(name) if rigid.contains(name) => Ok(TypeTerm::Named(NamedTerm {
+                    namespace: "core".to_owned(),
+                    name: "error".to_owned(),
+                    major: 1,
+                    args: Vec::new(),
+                })),
+                TypeTerm::Param(name) => {
+                    Err(TypeResolveError::UnresolvedParameter { name: name.clone() })
+                }
+                TypeTerm::Named(named) => Ok(TypeTerm::Named(NamedTerm {
+                    args: named
+                        .args
+                        .iter()
+                        .map(|arg| opaque(arg, rigid))
+                        .collect::<Result<_, _>>()?,
+                    ..named.clone()
+                })),
+            }
+        }
+        self.validate(&opaque(term, rigid)?)
+    }
+
     /// Returns the structural expression for a key, rejecting keys from other registries.
     pub fn expression(&self, key: &TypeKey) -> Result<&TypeTerm, TypeResolveError> {
         if !Arc::ptr_eq(&self.owner, &key.owner) {

@@ -8,7 +8,6 @@
 //! inferred binding cannot act as a pin. The document is never modified; `persist` turns
 //! the result into commands.
 
-use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
@@ -18,7 +17,10 @@ use super::unify::{
     TypeScopeError, TypeVariable, UnificationError, unify,
 };
 use crate::GraphDocument;
-use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs, implicit_port};
+use crate::catalog::{
+    ProviderKey, RegistrySnapshot, TypeArgs, call_interface, implicit_port, is_function_marker,
+    rigid_params,
+};
 use crate::document::{
     GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, SignatureSnapshot, TypeParam,
     TypeParamName,
@@ -108,6 +110,14 @@ pub struct ComponentInference {
     pub issues: Vec<InferenceIssue>,
 }
 
+/// The type variables and contracts used to infer one generic node instance. Function
+/// calls contribute only their declaration-owned type interface; they do not acquire a
+/// synthetic node kind, suspension value, or persisted signature.
+struct GenericTemplate {
+    type_params: Vec<TypeParam>,
+    check_specializations: bool,
+}
+
 /// Infers the generic components that contain or neighbour `touched` nodes.
 ///
 /// `index` must be built for `document`. Touched nodes that are not generic contribute
@@ -161,15 +171,27 @@ impl Graph<'_> {
         Some((body, body.nodes.get(&id)?))
     }
 
-    fn generic(&self, id: NodeId) -> Option<(&NodeInstance, Cow<'_, NodeContract>)> {
+    fn generic(&self, id: NodeId) -> Option<GenericTemplate> {
         let (_, node) = self.node(id)?;
+        if is_function_call(node) {
+            let interface = call_interface(self.document, node, self.registry)
+                .ok()
+                .flatten()?;
+            return (!interface.type_params.is_empty()).then_some(GenericTemplate {
+                type_params: interface.type_params,
+                check_specializations: false,
+            });
+        }
         let contract = self
             .registry
             .contract(self.document, node)
             .ok()
             .flatten()
             .filter(|contract| !contract.type_params.is_empty())?;
-        Some((node, contract))
+        Some(GenericTemplate {
+            type_params: contract.type_params.clone(),
+            check_specializations: true,
+        })
     }
 
     /// True unless the node's exact provider lists its supported argument sets and `args` is
@@ -244,6 +266,25 @@ impl Graph<'_> {
         )
     }
 
+    /// True for a builtin function marker whose `term` mentions only its function's type
+    /// parameters.
+    fn is_rigid_marker(&self, id: NodeId, term: &TypeTerm) -> bool {
+        fn declared(term: &TypeTerm, params: &[TypeParam]) -> bool {
+            match term {
+                TypeTerm::Param(name) => params.iter().any(|param| param.name.as_str() == name),
+                TypeTerm::Named(named) => named.args.iter().all(|arg| declared(arg, params)),
+            }
+        }
+        let Some((_, node)) = self.node(id) else {
+            return false;
+        };
+        is_function_marker(node.definition.id.as_str())
+            && node.provider.is_none()
+            && node.definition.version == 1
+            && node.config_version == 1
+            && declared(term, rigid_params(self.document, id))
+    }
+
     fn port_term(&self, port: &PortRef) -> PortTerm {
         let Some(ty) = self.declared_port(port).and_then(|declared| declared.ty) else {
             return Ok(None);
@@ -251,7 +292,13 @@ impl Graph<'_> {
         let term = parse(port.node, &ty)?;
         let generic = self.generic(port.node).is_some();
         if !generic && term.contains_param() {
-            // An unresolved non-generic snapshot carries no usable evidence.
+            // A function marker's parameters are the function's rigid type constants. Any
+            // other unresolved non-generic snapshot carries no usable evidence.
+            if self.is_rigid_marker(port.node, &term) {
+                return ScopedTypeTerm::from_rigid_template(port.node, &term)
+                    .map(Some)
+                    .map_err(budget_exceeded);
+            }
             return Ok(None);
         }
         ScopedTypeTerm::from_template(port.node, &term)
@@ -280,7 +327,10 @@ impl Graph<'_> {
             }
         };
         for &id in &result.nodes {
-            let Some((node, template)) = self.generic(id) else {
+            let Some(template) = self.generic(id) else {
+                continue;
+            };
+            let Some((_, node)) = self.node(id) else {
                 continue;
             };
             let mut args = BTreeMap::new();
@@ -289,7 +339,13 @@ impl Graph<'_> {
                 let variable = ScopedTypeTerm::Variable(TypeVariable::new(id, &parameter.name));
                 let resolved = unification.resolve(&variable).map_err(InferenceIssue::from);
                 match resolved.map(|term| term.to_concrete_type_term()) {
-                    Ok(Ok(term)) => match check_argument(types, id, parameter, &term) {
+                    Ok(Ok(term)) => match check_argument(
+                        types,
+                        id,
+                        parameter,
+                        &term,
+                        rigid_params(self.document, id),
+                    ) {
                         Ok(ty) => {
                             args.insert(parameter.name.clone(), ty);
                         }
@@ -321,7 +377,7 @@ impl Graph<'_> {
                     }
                 }
             }
-            if complete && !self.specialized(node, &args) {
+            if complete && template.check_specializations && !self.specialized(node, &args) {
                 result.issues.push(InferenceIssue::NoSpecialization {
                     node: id,
                     type_args: args.clone(),
@@ -339,7 +395,10 @@ impl Graph<'_> {
         let mut equations = Vec::new();
         let mut seen_edges = BTreeSet::new();
         for &id in nodes {
-            let Some((node, template)) = self.generic(id) else {
+            let Some((_, node)) = self.node(id) else {
+                continue;
+            };
+            let Some(template) = self.generic(id) else {
                 continue;
             };
             for (parameter, ty) in &node.type_pins {
@@ -407,13 +466,30 @@ pub(crate) fn declared_port(
     port: &PortRef,
 ) -> Option<PortDescriptor> {
     let node = document.node(port.node)?;
+    if is_function_call(node) {
+        return call_interface(document, node, registry)
+            .ok()
+            .flatten()?
+            .ports
+            .into_iter()
+            .find(|declared| declared.port_id == *port.port.port());
+    }
     let snapshot = match registry.contract(document, node) {
-        Ok(Some(contract)) => SignatureSnapshot {
-            kind: contract.kind,
-            suspends: contract.suspends,
-            ports: contract.ports.clone(),
-            extensions: Default::default(),
-        },
+        Ok(Some(contract)) => {
+            let declared = contract
+                .ports
+                .iter()
+                .find(|declared| declared.port_id == *port.port.port());
+            if let Some(declared) = declared {
+                return Some(declared.clone());
+            }
+            SignatureSnapshot {
+                kind: contract.kind,
+                suspends: contract.suspends,
+                ports: contract.ports.clone(),
+                extensions: Default::default(),
+            }
+        }
         Ok(None) => document.signatures().get(node.signature.as_ref()?)?.clone(),
         Err(_) => return None,
     };
@@ -423,6 +499,10 @@ pub(crate) fn declared_port(
         .find(|declared| declared.port_id == *port.port.port())
         .cloned()
         .or_else(|| implicit_port(node.definition.id.as_str(), &snapshot, port.port.port()))
+}
+
+fn is_function_call(node: &NodeInstance) -> bool {
+    node.definition.id.as_str() == "core/call"
 }
 
 fn evidence(evidence: EquationEvidence) -> EquationContext {
@@ -470,13 +550,15 @@ fn check_argument(
     node: NodeId,
     parameter: &TypeParam,
     term: &TypeTerm,
+    rigid: &[TypeParam],
 ) -> Result<TypeExpr, InferenceIssue> {
     let ty: TypeExpr = term
         .to_string()
         .parse()
         .expect("a concrete type term prints as a nonblank type expression");
+    let rigid_names: Vec<String> = rigid.iter().map(|param| param.name.to_string()).collect();
     types
-        .validate(term)
+        .validate_scoped(term, &rigid_names)
         .map_err(|error| InferenceIssue::UnknownType {
             node,
             parameter: parameter.name.clone(),
@@ -491,6 +573,20 @@ fn check_argument(
             constraint: constraint.clone(),
             reason,
         };
+        if term.contains_param() {
+            // A rigid parameter has only the constraints its function declares, matched
+            // exactly; a compound type over rigid parameters is never proven.
+            let declared = matches!(
+                term,
+                TypeTerm::Param(name) if rigid.iter().any(|param| {
+                    param.name.as_str() == name && param.constraints.contains(constraint)
+                })
+            );
+            if declared {
+                continue;
+            }
+            return Err(unsatisfied(None));
+        }
         let Some(request) = capability_request(constraint) else {
             return Err(unsatisfied(None));
         };

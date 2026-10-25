@@ -2,13 +2,14 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::RegistrySnapshot;
+use crate::catalog::{RegistrySnapshot, rigid_params};
 use crate::document::{GraphDocument, PortDescriptor, PortDirection, PortKind, SignatureSnapshot};
 use crate::id::{NodeId, PortKey, TypeExpr};
 use crate::type_term::TypeTerm;
 use crate::types::{TypeRegistry, TypeResolveError};
 use crate::value::literal_codec;
 
+use super::scope::Scope;
 use super::{Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics};
 
 /// Validates the active value contract for data inputs with current resolved metadata.
@@ -19,11 +20,21 @@ pub fn validate_inputs(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
+    validate_inputs_in(document, resolved, registry, Scope::All)
+}
+
+/// [`validate_inputs`] over the bodies in `scope`.
+pub(crate) fn validate_inputs_in(
+    document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+) -> Vec<Diagnostic> {
     let (types, origin) = (registry.types().as_ref(), registry.origin());
     let mut diagnostics = Vec::new();
     let mut connected = BTreeSet::<(NodeId, PortKey)>::new();
     let mut nodes = BTreeMap::new();
-    for body in document.bodies() {
+    for (_, body) in scope.bodies(document) {
         for node in body.nodes.values() {
             nodes.insert(node.id, node);
         }
@@ -36,10 +47,31 @@ pub fn validate_inputs(
         let Some(snapshot) = resolved.get(&node_id) else {
             continue;
         };
+        let rigid: Vec<String> = rigid_params(document, node_id)
+            .iter()
+            .map(|param| param.name.to_string())
+            .collect();
         let mut valid_keys = BTreeSet::new();
         let mut candidates = Vec::new();
 
         for descriptor in &snapshot.ports {
+            if let Some(bounds) = descriptor.variadic {
+                let count = node
+                    .variadic
+                    .get(&descriptor.port_id)
+                    .map_or(0, |state| state.order.len());
+                if count < usize::from(bounds.min)
+                    || bounds.max.is_some_and(|max| count > usize::from(max))
+                {
+                    diagnostics.push(diagnostic(
+                        DiagnosticCode::VariadicCount,
+                        Severity::Error,
+                        node_id,
+                        PortKey::new(descriptor.port_id.clone(), None),
+                        origin,
+                    ));
+                }
+            }
             if descriptor.direction != PortDirection::Input || descriptor.kind != PortKind::Data {
                 continue;
             }
@@ -83,7 +115,7 @@ pub fn validate_inputs(
                 ));
                 continue;
             };
-            let expected_term = match validate_expected_type(expected, types) {
+            let expected_term = match validate_expected_type(expected, types, &rigid) {
                 Ok(term) => term,
                 Err(code) => {
                     diagnostics.push(diagnostic(code, Severity::Error, node_id, key, origin));
@@ -159,17 +191,23 @@ fn is_variadic(port: &PortDescriptor) -> bool {
     port.variadic.is_some()
 }
 
-fn validate_expected_type(ty: &TypeExpr, types: &TypeRegistry) -> Result<TypeTerm, DiagnosticCode> {
+fn validate_expected_type(
+    ty: &TypeExpr,
+    types: &TypeRegistry,
+    rigid: &[String],
+) -> Result<TypeTerm, DiagnosticCode> {
     let term = TypeTerm::parse(ty).map_err(|error| match error {
         crate::error::IdError::TypeTooDeep { .. } => DiagnosticCode::TypeComplexity,
         _ => DiagnosticCode::TypeMismatch,
     })?;
-    types.validate(&term).map_err(|error| match error {
-        TypeResolveError::TooDeep { .. } | TypeResolveError::DerivationTooDeep { .. } => {
-            DiagnosticCode::TypeComplexity
-        }
-        _ => DiagnosticCode::TypeMismatch,
-    })?;
+    types
+        .validate_scoped(&term, rigid)
+        .map_err(|error| match error {
+            TypeResolveError::TooDeep { .. } | TypeResolveError::DerivationTooDeep { .. } => {
+                DiagnosticCode::TypeComplexity
+            }
+            _ => DiagnosticCode::TypeMismatch,
+        })?;
     Ok(term)
 }
 

@@ -56,9 +56,20 @@ impl ScopedTypeTerm {
     /// provisional per-term node budgets before constructing the output tree. Terms are
     /// structural; registry arity and ownership checks come later.
     pub fn from_template(node: NodeId, term: &TypeTerm) -> Result<Self, TypeScopeError> {
+        Self::scoped(node, term, false)
+    }
+
+    /// Like [`Self::from_template`], but every parameter is a *rigid* type: an opaque constant
+    /// that equals only itself, as a function's own `$T` is inside its body (11 §14).
+    pub fn from_rigid_template(node: NodeId, term: &TypeTerm) -> Result<Self, TypeScopeError> {
+        Self::scoped(node, term, true)
+    }
+
+    fn scoped(node: NodeId, term: &TypeTerm, rigid: bool) -> Result<Self, TypeScopeError> {
         fn scope(
             node: NodeId,
             term: &TypeTerm,
+            rigid: bool,
             depth: usize,
             node_count: &mut usize,
         ) -> Result<ScopedTypeTerm, TypeScopeError> {
@@ -72,6 +83,12 @@ impl ScopedTypeTerm {
             }
             *node_count += 1;
             match term {
+                TypeTerm::Param(parameter) if rigid => Ok(ScopedTypeTerm::Named {
+                    namespace: String::new(),
+                    name: parameter.clone(),
+                    major: 0,
+                    args: Vec::new(),
+                }),
                 TypeTerm::Param(parameter) => Ok(ScopedTypeTerm::Variable(TypeVariable::new(
                     node,
                     parameter.clone(),
@@ -83,13 +100,13 @@ impl ScopedTypeTerm {
                     args: named
                         .args
                         .iter()
-                        .map(|arg| scope(node, arg, depth + 1, node_count))
+                        .map(|arg| scope(node, arg, rigid, depth + 1, node_count))
                         .collect::<Result<_, _>>()?,
                 }),
             }
         }
 
-        scope(node, term, 0, &mut 0)
+        scope(node, term, rigid, 0, &mut 0)
     }
 
     /// The variables appearing in this term, before applying a unifier.
@@ -146,6 +163,9 @@ impl ScopedTypeTerm {
                     variable: variable.clone(),
                 }),
                 ScopedTypeTerm::Named {
+                    namespace, name, ..
+                } if namespace.is_empty() => Ok(TypeTerm::Param(name.clone())),
+                ScopedTypeTerm::Named {
                     namespace,
                     name,
                     major,
@@ -170,6 +190,9 @@ impl fmt::Display for ScopedTypeTerm {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             ScopedTypeTerm::Variable(variable) => variable.fmt(f),
+            ScopedTypeTerm::Named {
+                namespace, name, ..
+            } if namespace.is_empty() => write!(f, "${name}"),
             ScopedTypeTerm::Named {
                 namespace,
                 name,

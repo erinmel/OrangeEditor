@@ -2,10 +2,20 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::{NodeContract, ProviderKey, RegistrySnapshot, TypeArgs, is_intrinsic};
-use crate::document::{GraphDocument, PortKind, PortRef, SignatureSnapshot, Suspends};
+use std::borrow::Cow;
+
+use crate::catalog::{
+    CallInterfaceError, ContractError, NodeContract, ProviderKey, RegistrySnapshot, TypeArgs,
+    call_interface, is_converter_special_form, is_function_marker, is_intrinsic, project_interface,
+    rigid_params,
+};
+use crate::document::{
+    BodyRef, GraphDocument, NodeKind, OutputSource, PortDescriptor, PortKind, PortRef,
+    SignatureSnapshot, Suspends, SuspensionContractIssue,
+    suspension_contract_issue as classify_suspension_contract,
+};
 use crate::error::IdError;
-use crate::id::{NodeId, PortKey};
+use crate::id::{FunctionId, NodeId, PortKey};
 use crate::index::DocIndex;
 use crate::inference::{InferenceIssue, infer_components};
 use crate::signature;
@@ -15,6 +25,7 @@ use crate::types::{TypeRegistry, TypeResolveError};
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
+use super::scope::Scope;
 
 /// Results of resolving nodes against immutable host metadata.
 #[derive(Debug, Clone, Default, PartialEq)]
@@ -37,7 +48,17 @@ impl NodeValidation {
     }
 }
 
+/// Accepted executable facts for graph-local callees, produced by the validation pipeline from
+/// complete, conformant function summaries. Standalone node validation supplies none.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct CallEvidence {
+    pub(crate) accepted: BTreeMap<FunctionId, (NodeKind, Suspends)>,
+    /// Whether an unaccepted callee is explained by the function pass rather than unknown.
+    pub(crate) pipeline: bool,
+}
+
 struct NodePass<'a> {
+    calls: &'a CallEvidence,
     document: &'a GraphDocument,
     index: &'a DocIndex,
     registry: &'a RegistrySnapshot,
@@ -50,22 +71,40 @@ struct NodePass<'a> {
 /// The document is never changed. Intrinsic metadata and provider availability are
 /// declarative host inputs; package code is not loaded or executed.
 pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> NodeValidation {
+    let index = DocIndex::build(document);
+    validate_nodes_with(
+        document,
+        registry,
+        &CallEvidence::default(),
+        Scope::All,
+        &index,
+    )
+}
+
+pub(crate) fn validate_nodes_with(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    calls: &CallEvidence,
+    scope: Scope,
+    index: &DocIndex,
+) -> NodeValidation {
     let origin = registry.origin();
     let mut report = NodeValidation::default();
     let mut diagnostics = Vec::new();
-    let ids = node_ids(document);
+    let ids = node_ids(document, scope);
     let eligible = resolve_contracts(
         document,
         registry,
+        calls,
         &ids,
         origin,
         &mut report,
         &mut diagnostics,
     );
-    let index = DocIndex::build(document);
     let pass = NodePass {
+        calls,
         document,
-        index: &index,
+        index,
         registry,
         eligible: &eligible,
         ids: &ids,
@@ -79,10 +118,11 @@ pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> 
     report
 }
 
-fn node_ids(document: &GraphDocument) -> Vec<NodeId> {
-    let mut ids: Vec<_> = document
-        .bodies()
-        .flat_map(|body| body.nodes.keys().copied())
+fn node_ids(document: &GraphDocument, scope: Scope) -> Vec<NodeId> {
+    let mut ids: Vec<_> = scope
+        .bodies(document)
+        .into_iter()
+        .flat_map(|(_, body)| body.nodes.keys().copied())
         .collect();
     ids.sort();
     ids
@@ -91,6 +131,7 @@ fn node_ids(document: &GraphDocument) -> Vec<NodeId> {
 fn resolve_contracts(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
+    calls: &CallEvidence,
     ids: &[NodeId],
     origin: &HostOrigin,
     report: &mut NodeValidation,
@@ -101,7 +142,7 @@ fn resolve_contracts(
         let Some(node) = document.node(*id) else {
             continue;
         };
-        if preflight_node(document, node, registry, origin, report, diagnostics) {
+        if preflight_node(document, node, registry, calls, origin, report, diagnostics) {
             eligible.insert(*id);
         }
     }
@@ -112,10 +153,81 @@ fn preflight_node(
     document: &GraphDocument,
     node: &crate::document::NodeInstance,
     registry: &RegistrySnapshot,
+    calls: &CallEvidence,
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> bool {
+    if node.definition.id.as_str() == "core/call" {
+        let code = match call_interface(document, node, registry) {
+            Err(CallInterfaceError::Identity) => DiagnosticCode::IntrinsicUnsupported,
+            Err(CallInterfaceError::TargetMissing) => DiagnosticCode::CallTargetMissing,
+            Err(CallInterfaceError::TargetUnknown) => DiagnosticCode::CallTargetUnknown,
+            Err(CallInterfaceError::DomainUnsupported) => DiagnosticCode::DomainUnsupported,
+            Err(CallInterfaceError::InvalidInterface) => DiagnosticCode::FunctionInterface,
+            Ok(interface) => {
+                let accepted = interface
+                    .and_then(|interface| calls.accepted.get(&interface.function).copied());
+                if let Some((kind, suspends)) = accepted {
+                    match suspension_contract_issue(kind, call_suspends(kind, suspends)) {
+                        None => return true,
+                        Some(code) => code,
+                    }
+                } else if calls.pipeline {
+                    // The callee's own pass explains why it is not an accepted contract.
+                    DiagnosticCode::DependencyUnavailable
+                } else {
+                    // A type-only interface cannot produce execution metadata alone.
+                    DiagnosticCode::FunctionMetadataUnavailable
+                }
+            }
+        };
+        unresolved(node.id, code, origin, report, diagnostics);
+        return false;
+    }
+    if is_function_marker(node.definition.id.as_str())
+        && node.provider.is_none()
+        && node.definition.version == 1
+        && node.config_version == 1
+    {
+        return match marker_contract(document, node) {
+            Ok(_) => true,
+            Err(code) => {
+                unresolved(node.id, code, origin, report, diagnostics);
+                false
+            }
+        };
+    }
+    if is_converter_special_form(node.definition.id.as_str()) {
+        if node
+            .signature
+            .as_ref()
+            .is_none_or(|key| !document.signatures().contains_key(key))
+        {
+            unresolved(
+                node.id,
+                DiagnosticCode::SignatureMissing,
+                origin,
+                report,
+                diagnostics,
+            );
+            return false;
+        }
+        match registry.converter_contract(document, node) {
+            Ok(contract) => {
+                if let Some(code) = suspension_contract_issue(contract.kind, contract.suspends) {
+                    unresolved(node.id, code, origin, report, diagnostics);
+                    return false;
+                }
+                return true;
+            }
+            Err(error) => {
+                let code = contract_code(error);
+                unresolved(node.id, code, origin, report, diagnostics);
+                return false;
+            }
+        }
+    }
     if is_intrinsic(node.definition.id.as_str()) {
         if node.provider.is_some() {
             unresolved(
@@ -150,7 +262,7 @@ fn preflight_node(
                 return false;
             }
             Err(error) => {
-                let code = super::variables::contract_code(error);
+                let code = contract_code(error);
                 unresolved(node.id, code, origin, report, diagnostics);
                 return false;
             }
@@ -159,6 +271,7 @@ fn preflight_node(
             unresolved(node.id, code, origin, report, diagnostics);
             return false;
         }
+        check_activation(node, contract.kind, true, origin, diagnostics);
         return true;
     }
 
@@ -196,15 +309,22 @@ fn preflight_node(
         );
         return false;
     };
-    let Ok(Some(contract)) = registry.contract(document, node) else {
-        unresolved(
-            node.id,
-            DiagnosticCode::ProviderUnavailable,
-            origin,
-            report,
-            diagnostics,
-        );
-        return false;
+    let contract = match registry.contract(document, node) {
+        Ok(Some(contract)) => contract,
+        Ok(None) => {
+            unresolved(
+                node.id,
+                DiagnosticCode::ProviderUnavailable,
+                origin,
+                report,
+                diagnostics,
+            );
+            return false;
+        }
+        Err(error) => {
+            unresolved(node.id, contract_code(error), origin, report, diagnostics);
+            return false;
+        }
     };
     if let Some(code) = suspension_contract_issue(contract.kind, contract.suspends) {
         unresolved(node.id, code, origin, report, diagnostics);
@@ -220,28 +340,38 @@ fn preflight_node(
         );
         return false;
     }
+    check_activation(node, contract.kind, false, origin, diagnostics);
     true
+}
+
+pub(crate) fn contract_code(error: ContractError) -> DiagnosticCode {
+    match error {
+        ContractError::VariableUnknown => DiagnosticCode::VariableUnknown,
+        ContractError::EventUnknown => DiagnosticCode::EventUnknown,
+        ContractError::VariableScope => DiagnosticCode::VariableScope,
+        ContractError::SharedVariableScope => DiagnosticCode::SharedVariableScope,
+        ContractError::UpdateOperation => DiagnosticCode::UpdateOperation,
+        ContractError::UpdateUnsupported => DiagnosticCode::UpdateUnsupported,
+        ContractError::UpdateConstraint => DiagnosticCode::ConstraintUnsatisfied,
+        ContractError::TypeMismatch => DiagnosticCode::TypeMismatch,
+        ContractError::TypeComplexity => DiagnosticCode::TypeComplexity,
+        ContractError::ForEachMode => DiagnosticCode::ForEachMode,
+        ContractError::ConverterConfig => DiagnosticCode::ConverterConfig,
+        ContractError::ConverterEntry => DiagnosticCode::ConverterEntry,
+        ContractError::ConverterOptions => DiagnosticCode::ConverterOptions,
+        ContractError::ConverterProvider => DiagnosticCode::ProviderUnavailable,
+        ContractError::ConverterPackageLockMissing => DiagnosticCode::PackageLockMissing,
+    }
 }
 
 fn suspension_contract_issue(
     kind: crate::document::NodeKind,
     suspends: Option<Suspends>,
 ) -> Option<DiagnosticCode> {
-    match (kind, suspends) {
-        (crate::document::NodeKind::Async | crate::document::NodeKind::Iterator, None) => {
-            Some(DiagnosticCode::SuspendsMissing)
-        }
-        (
-            crate::document::NodeKind::Async | crate::document::NodeKind::Iterator,
-            Some(Suspends::Never),
-        ) => Some(DiagnosticCode::SuspendsInvalid),
-        (
-            crate::document::NodeKind::Async | crate::document::NodeKind::Iterator,
-            Some(Suspends::Maybe | Suspends::Always),
-        ) => None,
-        (_, Some(Suspends::Maybe | Suspends::Always)) => Some(DiagnosticCode::SuspendsInvalid),
-        _ => None,
-    }
+    classify_suspension_contract(kind, suspends).map(|issue| match issue {
+        SuspensionContractIssue::Missing => DiagnosticCode::SuspendsMissing,
+        SuspensionContractIssue::Invalid(_) => DiagnosticCode::SuspendsInvalid,
+    })
 }
 
 fn infer_fresh_args(
@@ -296,14 +426,7 @@ fn infer_fresh_args(
             );
             continue;
         }
-        collect_component_args(
-            &component,
-            pass.document,
-            pass.registry,
-            pass.eligible,
-            report,
-            &mut fresh_args,
-        );
+        collect_component_args(&component, pass, report, &mut fresh_args);
     }
     fresh_args
 }
@@ -335,20 +458,18 @@ fn report_component_issues(
 
 fn collect_component_args(
     component: &crate::inference::ComponentInference,
-    document: &GraphDocument,
-    registry: &RegistrySnapshot,
-    eligible: &BTreeSet<NodeId>,
+    pass: &NodePass<'_>,
     report: &mut NodeValidation,
     fresh_args: &mut BTreeMap<NodeId, TypeArgs>,
 ) {
     for id in &component.nodes {
-        if !eligible.contains(id) {
+        if !pass.eligible.contains(id) {
             continue;
         }
-        let Some(node) = document.node(*id) else {
+        let Some(node) = pass.document.node(*id) else {
             continue;
         };
-        let Ok(Some(contract)) = registry.contract(document, node) else {
+        let Some(contract) = pass.contract(node) else {
             continue;
         };
         let Some(args) = component.type_args.get(id) else {
@@ -386,7 +507,7 @@ fn project_nodes(
         let Some(node) = pass.document.node(*id) else {
             continue;
         };
-        let Ok(Some(contract)) = pass.registry.contract(pass.document, node) else {
+        let Some(contract) = pass.contract(node) else {
             continue;
         };
         let args = if contract.type_params.is_empty() {
@@ -441,6 +562,10 @@ fn project_node(
         ports,
         &BTreeMap::new(),
     );
+    let rigid: Vec<String> = rigid_params(pass.document, id)
+        .iter()
+        .map(|param| param.name.to_string())
+        .collect();
     if !validate_projected_types(
         id,
         &projected,
@@ -448,6 +573,7 @@ fn project_node(
         pass.origin,
         report,
         diagnostics,
+        &rigid,
     ) {
         return None;
     }
@@ -457,6 +583,13 @@ fn project_node(
             Subject::new(Some(id), None, None),
             pass.origin,
         ));
+        if pass
+            .document
+            .node(id)
+            .is_some_and(|node| is_converter_special_form(node.definition.id.as_str()))
+        {
+            report.incomplete_nodes.insert(id);
+        }
     }
     Some(projected)
 }
@@ -468,13 +601,19 @@ fn validate_projected_types(
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
+    rigid: &[String],
 ) -> bool {
     let mut valid = true;
     for port in &snapshot.ports {
         let Some(ty) = &port.ty else { continue };
         let code = match TypeTerm::parse(ty) {
-            Ok(term) if term.contains_param() => Some(DiagnosticCode::TypeMismatch),
-            Ok(term) => types.validate(&term).err().map(resolve_error_code),
+            Ok(term) => types
+                .validate_scoped(&term, rigid)
+                .err()
+                .map(|error| match error {
+                    TypeResolveError::UnresolvedParameter { .. } => DiagnosticCode::TypeMismatch,
+                    error => resolve_error_code(error),
+                }),
             Err(IdError::TypeTooDeep { .. }) => Some(DiagnosticCode::TypeComplexity),
             Err(_) => Some(DiagnosticCode::TypeMismatch),
         };
@@ -571,6 +710,41 @@ fn port_kind(
         .map(|candidate| candidate.kind)
 }
 
+/// Entry activation metadata (11 §10.1, 12 §6). Strict reading: an entry must persist a
+/// policy (host-owned entries) and no other kind may; `capacity` is at least 1; `max_parallel` is present, at
+/// least 1, exactly for `parallel`; host-owned entries have no backpressure protocol.
+fn check_activation(
+    node: &crate::document::NodeInstance,
+    kind: NodeKind,
+    host_owned: bool,
+    origin: &HostOrigin,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    use crate::document::{OverflowPolicy, ReentrancyMode};
+    let valid = match (&node.activation, kind == NodeKind::Entry) {
+        (None, false) => true,
+        (Some(_), false) => false,
+        // Package entries keep their established tolerance for an absent policy.
+        (None, true) => !host_owned,
+        (Some(policy), true) => {
+            let parallel = policy.mode == ReentrancyMode::Parallel;
+            policy.capacity >= 1
+                && match policy.max_parallel {
+                    Some(max) => parallel && max >= 1,
+                    None => !parallel,
+                }
+                && !(host_owned && policy.overflow == OverflowPolicy::Backpressure)
+        }
+    };
+    if !valid {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::ActivationPolicy,
+            Subject::new(Some(node.id), None, None),
+            origin,
+        ));
+    }
+}
+
 fn unresolved(
     node: NodeId,
     code: DiagnosticCode,
@@ -605,4 +779,101 @@ fn inference_code(issue: &InferenceIssue) -> DiagnosticCode {
         "E-NO-SPECIALIZATION" => DiagnosticCode::NoSpecialization,
         _ => DiagnosticCode::TypeMismatch,
     }
+}
+
+impl NodePass<'_> {
+    /// The execution contract of an eligible node: registry metadata, an accepted call, or a
+    /// function marker derived from its function's declared interface.
+    fn contract(&self, node: &crate::document::NodeInstance) -> Option<Cow<'_, NodeContract>> {
+        match node.definition.id.as_str() {
+            "core/call" => self.call_contract(node).map(Cow::Owned),
+            id if is_function_marker(id) => {
+                marker_contract(self.document, node).ok().map(Cow::Owned)
+            }
+            _ => self.registry.contract(self.document, node).ok().flatten(),
+        }
+    }
+
+    /// Projects an accepted call: kind and suspension from the callee summary, ports from the
+    /// declared interface with a source for each output (the call computes or executes it).
+    fn call_contract(&self, node: &crate::document::NodeInstance) -> Option<NodeContract> {
+        let interface = call_interface(self.document, node, self.registry)
+            .ok()
+            .flatten()?;
+        let (kind, suspends) = *self.calls.accepted.get(&interface.function)?;
+        let source = if matches!(kind, NodeKind::Pure | NodeKind::Volatile) {
+            OutputSource::Computed
+        } else {
+            OutputSource::Execution
+        };
+        let mut ports = interface.ports;
+        for port in &mut ports {
+            if port.direction == crate::document::PortDirection::Output {
+                port.source = Some(source);
+            }
+        }
+        Some(NodeContract {
+            kind,
+            suspends: call_suspends(kind, suspends),
+            type_params: interface.type_params,
+            ports,
+        })
+    }
+}
+
+fn call_suspends(kind: NodeKind, suspends: Suspends) -> Option<Suspends> {
+    matches!(kind, NodeKind::Async | NodeKind::Iterator).then_some(suspends)
+}
+
+/// Ports of a function-structure marker, derived from the owning function's interface.
+///
+/// The entry exposes the declared inputs as data outputs; return and function-outputs accept
+/// the declared outputs as required data inputs (`return` also has the exec `in`). The
+/// declaration is the only type authority, so a marker is never independently generic: the
+/// function's own type parameters stay in the port types as rigid `$T` constants shared by
+/// every marker, and only a call site instantiates them.
+fn marker_contract(
+    document: &GraphDocument,
+    node: &crate::document::NodeInstance,
+) -> Result<NodeContract, DiagnosticCode> {
+    let Some(BodyRef::Function(function)) = document.locate_node(node.id) else {
+        return Err(DiagnosticCode::IntrinsicUnsupported);
+    };
+    let declaration = document
+        .functions()
+        .get(&function)
+        .ok_or(DiagnosticCode::IntrinsicUnsupported)?;
+    let interface =
+        project_interface(declaration).map_err(|_| DiagnosticCode::FunctionInterface)?;
+    let entry = node.definition.id.as_str() == "core/function-entry";
+    let mut ports = Vec::new();
+    for port in interface {
+        let ty = port.ty.expect("projected interface ports are typed");
+        match (entry, port.direction) {
+            (true, crate::document::PortDirection::Input) => {
+                ports.push(PortDescriptor::data_out(
+                    port.port_id.as_str(),
+                    ty,
+                    OutputSource::Computed,
+                ));
+            }
+            (false, crate::document::PortDirection::Output) => {
+                ports.push(PortDescriptor::data_in(port.port_id.as_str(), ty));
+            }
+            _ => {}
+        }
+    }
+    if node.definition.id.as_str() == "core/return" {
+        ports.push(PortDescriptor::exec_in("in"));
+    }
+    Ok(NodeContract {
+        kind: if entry {
+            NodeKind::Entry
+        } else {
+            NodeKind::Pure
+        },
+        suspends: None,
+        type_params: Vec::new(),
+        ports,
+    })
 }

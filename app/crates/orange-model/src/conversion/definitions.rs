@@ -84,6 +84,68 @@ impl fmt::Display for ConverterKey {
     }
 }
 
+/// The persisted config of a `core/convert` node (12 §5): the entry it names and the resolved
+/// policy choices. The one place that config is written and read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConverterConfig {
+    pub entry: ConverterKey,
+    pub options: BTreeMap<String, String>,
+}
+
+/// Why a `core/convert` config does not yield a [`ConverterConfig`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+pub enum ConverterConfigError {
+    #[error("converter entry or contract version is missing or malformed")]
+    Entry,
+    #[error("converter options are missing or not a map of strings")]
+    Options,
+}
+
+impl ConverterConfig {
+    pub fn to_config(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut config = serde_json::Map::new();
+        config.insert("converter".to_owned(), serde_json::json!(self.entry.id));
+        config.insert(
+            "contract_version".to_owned(),
+            serde_json::json!(self.entry.contract_version),
+        );
+        config.insert("options".to_owned(), serde_json::json!(self.options));
+        config
+    }
+
+    /// The entry the config names, read before its options so a caller can check the entry first.
+    pub fn entry_of(
+        config: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<ConverterKey, ConverterConfigError> {
+        let id = config
+            .get("converter")
+            .and_then(serde_json::Value::as_str)
+            .and_then(|text| text.parse().ok())
+            .ok_or(ConverterConfigError::Entry)?;
+        let contract_version = config
+            .get("contract_version")
+            .and_then(serde_json::Value::as_u64)
+            .and_then(|version| u32::try_from(version).ok())
+            .filter(|version| *version > 0)
+            .ok_or(ConverterConfigError::Entry)?;
+        Ok(ConverterKey {
+            id,
+            contract_version,
+        })
+    }
+
+    pub fn from_config(
+        config: &serde_json::Map<String, serde_json::Value>,
+    ) -> Result<Self, ConverterConfigError> {
+        let entry = Self::entry_of(config)?;
+        let options = config
+            .get("options")
+            .and_then(|raw| serde_json::from_value(raw.clone()).ok())
+            .ok_or(ConverterConfigError::Options)?;
+        Ok(Self { entry, options })
+    }
+}
+
 /// A stable namespaced error emitted by a checked or lossy converter.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]

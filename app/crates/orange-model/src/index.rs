@@ -16,6 +16,8 @@ use crate::id::{EdgeId, NodeId};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DocIndex {
+    /// The document content state this index describes; 0 (never a state) for a default index.
+    state: u64,
     nodes: HashMap<NodeId, BodyRef>,
     edges: HashMap<EdgeId, EdgeEntry>,
     incoming: HashMap<PortRef, BTreeSet<EdgeId>>,
@@ -32,7 +34,10 @@ struct EdgeEntry {
 
 impl DocIndex {
     pub fn build(document: &GraphDocument) -> Self {
-        let mut index = Self::default();
+        let mut index = Self {
+            state: document.state_id(),
+            ..Self::default()
+        };
         for (body_ref, body) in document.bodies_with_refs() {
             index.add_body(body_ref, body);
         }
@@ -43,6 +48,7 @@ impl DocIndex {
     /// `change`. Cost is proportional to the change, plus the size of any function body
     /// the transaction replaced or removed.
     pub fn update(&mut self, document: &GraphDocument, change: &ChangeSet) {
+        self.state = document.state_id();
         if change.layout_only {
             return;
         }
@@ -78,6 +84,12 @@ impl DocIndex {
                 self.insert_edge(body, edge);
             }
         }
+    }
+
+    /// Whether this index describes the current content of `document`. An index goes stale
+    /// when the document changes without [`DocIndex::update`], for example by an undo.
+    pub fn is_current(&self, document: &GraphDocument) -> bool {
+        self.state == document.state_id()
     }
 
     /// The body holding `node`.

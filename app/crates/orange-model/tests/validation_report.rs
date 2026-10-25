@@ -7,11 +7,12 @@ use orange_model::catalog::{NodeContract, ProviderKey, RegistrySnapshot};
 use orange_model::document::{DefinitionRef, NodeKind};
 use orange_model::id::{FunctionId, NodeId};
 use orange_model::validation::{
-    Diagnostic, DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, VariableWrite,
-    WriteOperation, analyze_functions, sort_diagnostics, validate, validate_connections,
-    validate_inputs, validate_nodes, validate_with_effects,
+    Diagnostic, DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, ValidationCheck,
+    VariableWrite, WriteOperation, analyze, analyze_functions, analyze_with_effects,
+    sort_diagnostics, validate, validate_connections, validate_data_cycles, validate_inputs,
+    validate_nodes, validate_regions, validate_with_effects,
 };
-use orange_model::{GraphDocument, ValidationReport, to_json};
+use orange_model::{GraphDocument, ValidationReport, from_json, to_json};
 use serde_json::{Value, json};
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -119,22 +120,61 @@ fn merged(
 ) -> ValidationReport {
     let nodes = validate_nodes(doc, registry);
     let connections = validate_connections(doc, &nodes.resolved, registry);
+    let data_cycles = validate_data_cycles(doc, &nodes.resolved, &connections, registry);
+    let regions = validate_regions(doc, &nodes.resolved, &connections, registry);
+    let control = orange_model::validation::validate_control_cycles(
+        doc,
+        &nodes.resolved,
+        &connections,
+        registry,
+    );
     let evidence = FunctionEvidence::from_nodes(doc, &nodes, effects);
     let functions = analyze_functions(doc, &evidence, registry);
     let mut diagnostics: Vec<Diagnostic> = nodes.diagnostics.clone();
     diagnostics.extend(validate_inputs(doc, &nodes.resolved, registry));
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
+    diagnostics.extend(orange_model::validation::validate_exports(
+        doc,
+        &nodes.resolved,
+        registry,
+    ));
+    diagnostics.extend(orange_model::validation::validate_config(doc, registry));
+    let explained_nodes: std::collections::BTreeSet<_> = diagnostics
+        .iter()
+        .filter(|item| item.severity == orange_model::validation::Severity::Error)
+        .filter_map(|item| item.subject.node)
+        .collect();
+    diagnostics.extend(
+        data_cycles
+            .diagnostics
+            .into_iter()
+            .chain(regions.diagnostics)
+            .chain(control.diagnostics)
+            .filter(|item| {
+                item.code != DiagnosticCode::DependencyUnavailable
+                    || item
+                        .subject
+                        .node
+                        .is_none_or(|node| !explained_nodes.contains(&node))
+            }),
+    );
     sort_diagnostics(&mut diagnostics);
     diagnostics.dedup();
     let mut incomplete_nodes = nodes.incomplete_nodes;
     incomplete_nodes.extend(connections.incomplete_nodes);
+    incomplete_nodes.extend(data_cycles.incomplete_nodes);
+    incomplete_nodes.extend(regions.incomplete_nodes);
+    incomplete_nodes.extend(control.incomplete_nodes);
     ValidationReport {
+        regions: regions.index,
         diagnostics,
         resolved: nodes.resolved,
         incomplete_nodes,
         functions: functions.summaries,
         incomplete_functions: functions.incomplete_functions,
+        data_cycle_paths: data_cycles.cycle_paths,
+        control_cycle_paths: control.cycle_paths,
     }
 }
 
@@ -170,6 +210,56 @@ fn assert_explained(report: &ValidationReport) {
 
 fn codes(report: &ValidationReport) -> Vec<DiagnosticCode> {
     report.diagnostics.iter().map(|item| item.code).collect()
+}
+
+#[test]
+fn combined_validation_rejects_data_cycles_and_exposes_concrete_port_witnesses() {
+    let cyclic = document(
+        json!([node(NODE, "example/value", json!({}))]),
+        json!([{
+            "id":"60000000-0000-4000-8000-000000000001",
+            "from":{"node":NODE,"port":"y"},"to":{"node":NODE,"port":"x"}
+        }]),
+        json!([]),
+        json!([]),
+    );
+    let report = assert_equals_passes(&cyclic);
+    assert!(!report.is_valid());
+    assert_eq!(codes(&report), [DiagnosticCode::CycleData]);
+    assert_eq!(report.data_cycle_paths.len(), 1);
+    let path = &report.data_cycle_paths[0];
+    assert_eq!(path.first(), path.last());
+    assert_eq!(path.len(), 3);
+    assert!(path.iter().all(|port| port.node == NODE.parse().unwrap()));
+    assert!(
+        report.incomplete_nodes.is_empty(),
+        "a known invalid cycle is fully analyzed"
+    );
+    let registry = registry();
+    assert!(!analyze(&cyclic, &registry).is_ready_for_compilation(&cyclic, &registry));
+}
+
+#[test]
+fn variable_feedback_has_a_state_boundary_in_combined_validation() {
+    let get = "10000000-0000-4000-8000-000000000003";
+    let set = "10000000-0000-4000-8000-000000000004";
+    let feedback = document(
+        json!([
+            {"id":get,"definition_id":"core/get-variable","definition_version":1,"config_version":1,"config":{"variable":VAR}},
+            node(NODE,"example/value",json!({})),
+            {"id":set,"definition_id":"core/set-variable","definition_version":1,"config_version":1,"config":{"variable":VAR}}
+        ]),
+        json!([
+            {"id":"60000000-0000-4000-8000-000000000001","from":{"node":get,"port":"value"},"to":{"node":NODE,"port":"x"}},
+            {"id":"60000000-0000-4000-8000-000000000002","from":{"node":NODE,"port":"y"},"to":{"node":set,"port":"value"}}
+        ]),
+        run_variable(),
+        json!([]),
+    );
+    let report = assert_equals_passes(&feedback);
+    assert!(report.is_valid(), "{:?}", report.diagnostics);
+    assert!(report.data_cycle_paths.is_empty());
+    // This checks data dependencies; initialization, availability and execution remain separate.
 }
 
 #[test]
@@ -266,6 +356,9 @@ fn a_package_action_leaf_needs_host_supplied_effects() {
     assert!(without.incomplete_functions.contains(&function));
     assert!(codes(&without).contains(&DiagnosticCode::FunctionMetadataUnavailable));
     assert!(!without.is_valid());
+    let partial = analyze(&doc, &registry);
+    assert!(partial.report().incomplete_functions.contains(&function));
+    assert!(!partial.is_ready_for_compilation(&doc, &registry));
 
     let write = VariableWrite {
         variable: VAR.parse().unwrap(),
@@ -273,12 +366,100 @@ fn a_package_action_leaf_needs_host_supplied_effects() {
     };
     let effects = BTreeMap::from([(LEAF.parse().unwrap(), LeafEffects::Known(vec![write]))]);
     let with = validate_with_effects(&doc, &registry, effects.clone());
-    assert_eq!(with, merged(&doc, &registry, effects));
+    assert_eq!(with, merged(&doc, &registry, effects.clone()));
     assert!(with.is_valid(), "{:?}", with.diagnostics);
+    let with_analysis = analyze_with_effects(&doc, &registry, effects.clone());
+    assert_eq!(with_analysis.report(), &with);
+    assert!(!with_analysis.is_ready_for_compilation(&doc, &registry));
     assert_eq!(
         with.functions[&function].run_writes[&VAR.parse().unwrap()],
         [WriteOperation::Add].into()
     );
+}
+
+#[test]
+fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
+    let doc = document(json!([]), json!([]), json!([]), json!([]));
+    let registry = registry();
+    let before = (to_json(&doc).unwrap(), doc.revision(), doc.state_id());
+    let analysis = analyze(&doc, &registry);
+    assert_eq!(
+        analysis.covered_checks().collect::<Vec<_>>(),
+        [
+            ValidationCheck::NodeResolution,
+            ValidationCheck::InputValues,
+            ValidationCheck::Connections,
+            ValidationCheck::FunctionSummaries,
+            ValidationCheck::DefinitionAndConfig,
+            ValidationCheck::BodyDomains,
+            ValidationCheck::ContextualContracts,
+            ValidationCheck::FunctionRestrictions,
+            ValidationCheck::Regions,
+            ValidationCheck::DataCycles,
+            ValidationCheck::ControlCycles,
+            ValidationCheck::ValueAvailability,
+            ValidationCheck::StreamRules,
+            ValidationCheck::EntryPoliciesAndExports,
+        ]
+    );
+    assert_eq!(
+        analysis.missing_checks().collect::<Vec<_>>(),
+        [ValidationCheck::StateRules]
+    );
+    assert!(analysis.is_current(&doc, &registry));
+    assert!(!analysis.is_ready_for_compilation(&doc, &registry));
+    assert_eq!(analysis.report(), &validate(&doc, &registry));
+    assert_eq!(analysis.clone().into_report(), validate(&doc, &registry));
+    assert_eq!(
+        (to_json(&doc).unwrap(), doc.revision(), doc.state_id()),
+        before
+    );
+}
+
+#[test]
+fn analysis_freshness_tracks_content_identity_and_registry_generation() {
+    let doc = document(json!([]), json!([]), json!([]), json!([]));
+    let another_registry = registry();
+    let registry = registry();
+    let analysis = analyze(&doc, &registry);
+    assert!(analysis.is_current(&doc.clone(), &registry));
+
+    let reloaded = from_json(&to_json(&doc).unwrap()).unwrap();
+    assert!(!analysis.is_current(&reloaded, &registry));
+    assert!(!analysis.is_current(&doc, &another_registry));
+
+    let mut edited = doc.clone();
+    let inverse = edited.apply([common::add(99)]).unwrap().inverse;
+    assert!(!analysis.is_current(&edited, &registry));
+    assert!(!analysis.is_ready_for_compilation(&edited, &registry));
+    let _redo = edited.revert(inverse).unwrap();
+    assert!(analysis.is_current(&edited, &registry));
+
+    let mut left = doc.clone();
+    let mut right = doc.clone();
+    let _left_inverse = left.apply([common::add(97)]).unwrap();
+    let _right_inverse = right.apply([common::add(98)]).unwrap();
+    assert_eq!(left.revision(), right.revision());
+    assert_ne!(left.state_id(), right.state_id());
+    let left_analysis = analyze(&left, &registry);
+    assert!(!left_analysis.is_current(&right, &registry));
+}
+
+#[test]
+fn foreign_body_domain_is_never_compile_ready() {
+    let doc = from_json(&common::minimal_document(
+        json!({"domain":"vendor.signal/signal"}),
+    ))
+    .unwrap();
+    let registry = registry();
+    let analysis = analyze(&doc, &registry);
+    assert_eq!(
+        analysis.covered_checks().collect::<Vec<_>>(),
+        [ValidationCheck::BodyDomains]
+    );
+    assert_eq!(analysis.missing_checks().count(), 14);
+    assert!(!analysis.report().is_valid());
+    assert!(!analysis.is_ready_for_compilation(&doc, &registry));
 }
 
 const GET: &str = "20000000-0000-4000-8000-000000000003";
@@ -324,7 +505,11 @@ fn a_mistyped_variable_edge_is_a_type_mismatch() {
         json!([]),
     );
     let report = assert_equals_passes(&doc);
-    assert_eq!(codes(&report), [DiagnosticCode::TypeMismatch]);
+    // The fixture's set-variable action has no entry, so regions also warn it is unreachable.
+    assert_eq!(
+        codes(&report),
+        [DiagnosticCode::Unreachable, DiagnosticCode::TypeMismatch]
+    );
     assert!(report.incomplete_nodes.is_empty());
 }
 
@@ -358,7 +543,7 @@ fn a_node_blocked_by_an_unresolved_peer_says_so() {
 
 #[test]
 fn an_intrinsic_this_core_does_not_support_says_so() {
-    for definition in ["core/call", "core/on-event", "core/switch"] {
+    for definition in ["core/return", "core/function-entry"] {
         let doc = document(
             json!([{"id":NODE,"definition_id":definition,"definition_version":1,
                 "config_version":1,"config":{}}]),

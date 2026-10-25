@@ -2,8 +2,10 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use crate::catalog::RegistrySnapshot;
-use crate::document::{Edge, GraphDocument, PortDescriptor, PortKind, PortRef, SignatureSnapshot};
+use crate::catalog::{RegistrySnapshot, rigid_params};
+use crate::document::{
+    Edge, GraphDocument, PortDescriptor, PortKind, PortRef, SignatureSnapshot, TypeParam,
+};
 use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
@@ -12,6 +14,7 @@ use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
 use super::ports::{PortLookupError, lookup_port};
+use super::scope::Scope;
 
 /// Result of validating the graph's connections using currently available metadata.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -40,12 +43,24 @@ pub fn validate_connections(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> ConnectionValidation {
-    let origin = registry.origin();
     let index = DocIndex::build(document);
+    validate_connections_in(document, resolved, registry, Scope::All, &index)
+}
+
+/// [`validate_connections`] over the bodies in `scope`, with a current `index` of `document`.
+pub(crate) fn validate_connections_in(
+    document: &GraphDocument,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+    index: &DocIndex,
+) -> ConnectionValidation {
+    let origin = registry.origin();
     let mut report = ConnectionValidation::default();
     let mut diagnostics = Vec::new();
-    let mut edges: Vec<_> = document
-        .bodies_with_refs()
+    let mut edges: Vec<_> = scope
+        .bodies(document)
+        .into_iter()
         .flat_map(|(body_ref, body)| body.edges.values().map(move |edge| (body_ref, edge)))
         .collect();
     edges.sort_by_key(|(_, edge)| edge.id);
@@ -130,7 +145,8 @@ pub fn validate_connections(
         }
 
         if from.kind == PortKind::Data {
-            if !(is_concrete(&from) && is_concrete(&to)) {
+            let rigid = rigid_params(document, edge.to.node);
+            if !(is_concrete(&from, rigid) && is_concrete(&to, rigid)) {
                 unchecked_edge(edge, resolved, origin, &mut report, &mut diagnostics);
             } else if from.ty != to.ty {
                 diagnostics.push(Diagnostic::new(
@@ -185,7 +201,8 @@ pub fn validate_connections(
             match port.kind {
                 PortKind::Exec => Some(DiagnosticCode::FanoutExec),
                 PortKind::Event => Some(DiagnosticCode::FanoutEvent),
-                PortKind::Data => match stream_status(&port) {
+                PortKind::Data => match stream_status(&port, rigid_params(document, port_ref.node))
+                {
                     Some(true) => Some(DiagnosticCode::StreamFanout),
                     Some(false) => None,
                     None => {
@@ -235,12 +252,21 @@ fn resolve_endpoint(
     }
 }
 
-/// True when the port's type parses and names no type parameter, so it can be compared.
-fn is_concrete(port: &PortDescriptor) -> bool {
+/// True when every type parameter in the term is rigid in this body.
+fn only_rigid(term: &TypeTerm, rigid: &[TypeParam]) -> bool {
+    match term {
+        TypeTerm::Param(name) => rigid.iter().any(|param| param.name.as_str() == name),
+        TypeTerm::Named(named) => named.args.iter().all(|arg| only_rigid(arg, rigid)),
+    }
+}
+
+/// True when the port's type parses and names no type parameter other than the owning
+/// function's rigid ones, so it can be compared textually.
+fn is_concrete(port: &PortDescriptor, rigid: &[TypeParam]) -> bool {
     port.ty
         .as_ref()
         .and_then(|ty| TypeTerm::parse(ty).ok())
-        .is_some_and(|term| !term.contains_param())
+        .is_some_and(|term| only_rigid(&term, rigid))
 }
 
 /// An edge whose data types cannot be compared leaves both endpoints incomplete. A resolved
@@ -265,12 +291,15 @@ fn unchecked_edge(
     }
 }
 
-fn stream_status(port: &PortDescriptor) -> Option<bool> {
+/// Whether a data output is an affine stream. A bare rigid parameter may be instantiated
+/// with a stream, so it counts as one (strictest reading); other terms over rigid parameters
+/// follow their outer constructor.
+fn stream_status(port: &PortDescriptor, rigid: &[TypeParam]) -> Option<bool> {
     let term = TypeTerm::parse(port.ty.as_ref()?).ok()?;
-    if term.contains_param() {
+    if !only_rigid(&term, rigid) {
         None
     } else {
-        Some(term.core("stream").is_some())
+        Some(matches!(term, TypeTerm::Param(_)) || term.core("stream").is_some())
     }
 }
 

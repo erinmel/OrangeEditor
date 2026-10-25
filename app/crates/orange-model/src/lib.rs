@@ -25,6 +25,7 @@ pub mod type_term;
 pub mod types;
 pub mod validation;
 pub mod value;
+mod variable;
 
 pub use document::codec::{ImportLimits, from_json, from_json_with_limits, to_json};
 pub use document::{BodyRef, GraphDocument};
@@ -33,5 +34,8 @@ pub use error::{
     CodecError, IdError, ImportResource, JsonTextError, LiteralError, PasteError, TxError,
 };
 pub use index::DocIndex;
-pub use validation::{ValidationReport, validate, validate_with_effects};
+pub use validation::{
+    ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
+    required_checks, validate, validate_with_effects,
+};
 pub use value::Value;

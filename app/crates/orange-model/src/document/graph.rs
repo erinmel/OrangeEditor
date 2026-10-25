@@ -1,6 +1,7 @@
 //! Graph storage, body lookup and content identity. Editing is owned by crate::edit.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
+use std::sync::OnceLock;
 
 use indexmap::IndexMap;
 use serde::{Deserialize, Serialize};
@@ -51,6 +52,10 @@ pub struct GraphDocument {
     pub(crate) editor: Map<String, Json>,
     #[serde(flatten)]
     pub(crate) extensions: Extensions,
+    /// The body holding each node: built on the first lookup, then kept current by every
+    /// patch, so lookups stay constant-time across edits. Derived state, never compared.
+    #[serde(skip)]
+    pub(crate) node_bodies: OnceLock<HashMap<NodeId, BodyRef>>,
 }
 
 impl PartialEq for GraphDocument {
@@ -96,6 +101,7 @@ impl GraphDocument {
             exports: Vec::new(),
             editor: Map::new(),
             extensions: Extensions::new(),
+            node_bodies: OnceLock::new(),
         }
     }
 
@@ -184,12 +190,35 @@ impl GraphDocument {
         }
     }
 
-    /// The body holding `node`. Linear in the number of bodies; use [`crate::DocIndex`]
-    /// for repeated lookups over the same document.
+    /// The body holding `node`; constant-time after the first lookup.
     pub fn locate_node(&self, node: NodeId) -> Option<BodyRef> {
-        self.bodies_with_refs()
-            .find(|(_, body)| body.nodes.contains_key(&node))
-            .map(|(body, _)| body)
+        self.node_bodies
+            .get_or_init(|| {
+                self.bodies_with_refs()
+                    .flat_map(|(body_ref, body)| body.nodes.keys().map(move |id| (*id, body_ref)))
+                    .collect()
+            })
+            .get(&node)
+            .copied()
+    }
+
+    /// Records that a patch put `nodes` into `body` (`present`) or took them out of it.
+    pub(crate) fn track_nodes(
+        &mut self,
+        body: BodyRef,
+        nodes: impl IntoIterator<Item = NodeId>,
+        present: bool,
+    ) {
+        let Some(map) = self.node_bodies.get_mut() else {
+            return;
+        };
+        for node in nodes {
+            if present {
+                map.insert(node, body);
+            } else {
+                map.remove(&node);
+            }
+        }
     }
 
     pub fn locate_edge(&self, edge: EdgeId) -> Option<BodyRef> {
@@ -199,7 +228,7 @@ impl GraphDocument {
     }
 
     pub fn node(&self, node: NodeId) -> Option<&NodeInstance> {
-        self.bodies().find_map(|body| body.nodes.get(&node))
+        self.body(self.locate_node(node)?)?.nodes.get(&node)
     }
 
     pub fn edge(&self, edge: EdgeId) -> Option<&Edge> {
