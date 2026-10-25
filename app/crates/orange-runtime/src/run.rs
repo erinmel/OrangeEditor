@@ -28,10 +28,19 @@ fn run_identity() -> Result<u64, RunError> {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum RunState {
+    Created,
+    Starting,
     Running,
+    Draining,
+    Cancelling,
     Faulted,
     Stopped,
     Disposed,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StopMode {
+    Graceful,
+    Immediate,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlOutcome {
@@ -46,6 +55,7 @@ pub enum ControlOutcome {
     Completed,
     Break,
     Continue,
+    Cancelled,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunEvent {
@@ -75,10 +85,24 @@ impl Default for RunLimits {
         }
     }
 }
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone)]
 pub struct RunOptions {
     pub limits: RunLimits,
     pub data: DataOptions,
+    pub drain_timeout_ns: u64,
+    pub cleanup_timeout_ns: u64,
+    pub max_cleanup_operations: usize,
+}
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            limits: RunLimits::default(),
+            data: DataOptions::default(),
+            drain_timeout_ns: 2_000_000_000,
+            cleanup_timeout_ns: 500_000_000,
+            max_cleanup_operations: 1024,
+        }
+    }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunProgress {
@@ -125,6 +149,8 @@ struct Activation {
     waiting: Option<(u64, ControlIx)>,
     yielded: bool,
     reenter: Option<(ControlIx, u64)>,
+    cleanup: bool,
+    cleanup_remaining: usize,
 }
 struct Timer {
     run: u64,
@@ -163,6 +189,16 @@ pub struct Run {
     now: u64,
     next_timer: u64,
     timers: BTreeMap<(u64, u64), Timer>,
+    transitions: Vec<RunState>,
+    deadline: Option<u64>,
+    last_error: Option<RunError>,
+    cancel_observed: bool,
+    cleanup_truncated: u64,
+    seed: u64,
+    document_revision: u64,
+    next_activation: u64,
+    initial_locals: Vec<Option<Value>>,
+    initial_local_bytes: usize,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -182,6 +218,14 @@ impl Run {
         seed: u64,
         options: RunOptions,
     ) -> Result<Self, RunError> {
+        if options
+            .data
+            .cancel
+            .as_ref()
+            .is_some_and(crate::CancelToken::is_cancelled)
+        {
+            return Err(DataError::Cancelled.into());
+        }
         if !plan.data().is_current(document, plan.data().snapshot()) {
             return Err(DataError::StaleDocument.into());
         }
@@ -238,8 +282,11 @@ impl Run {
                 waiting: None,
                 yielded: false,
                 reenter: None,
+                cleanup: false,
+                cleanup_remaining: 0,
             });
         }
+        let next_activation = plan.starts().len() as u64;
         Ok(Self {
             id: run_identity()?,
             plan: Some(plan),
@@ -255,6 +302,16 @@ impl Run {
             now: 0,
             next_timer: 0,
             timers: BTreeMap::new(),
+            transitions: vec![RunState::Created, RunState::Starting, RunState::Running],
+            deadline: None,
+            last_error: None,
+            cancel_observed: false,
+            cleanup_truncated: 0,
+            seed,
+            document_revision: document.revision(),
+            next_activation,
+            initial_locals: locals,
+            initial_local_bytes: local_bytes,
         })
     }
     pub fn id(&self) -> u64 {
@@ -263,12 +320,33 @@ impl Run {
     pub fn state(&self) -> RunState {
         self.state
     }
+    pub fn transitions(&self) -> &[RunState] {
+        &self.transitions
+    }
+    pub fn last_error(&self) -> Option<RunError> {
+        self.last_error
+    }
+    pub fn cleanup_truncated(&self) -> u64 {
+        self.cleanup_truncated
+    }
+    pub fn pending_continuations(&self) -> usize {
+        self.timers.len()
+    }
+    fn transition(&mut self, state: RunState) {
+        if self.state != state {
+            self.state = state;
+            self.transitions.push(state);
+        }
+    }
     pub fn now(&self) -> u64 {
         self.now
     }
     /// Advancing time enqueues no inline graph execution; pump resumes due waits.
     pub fn advance_to(&mut self, now: u64) -> Result<(), RunError> {
-        if self.state != RunState::Running {
+        if !matches!(
+            self.state,
+            RunState::Running | RunState::Draining | RunState::Cancelling
+        ) {
             return Err(RunError::InvalidState);
         }
         if now < self.now {
@@ -306,17 +384,46 @@ impl Run {
     }
     /// Drive at most `budget` control instructions. Idle Running is a live run.
     pub fn pump(&mut self, budget: usize) -> Result<RunProgress, RunError> {
-        if self.state != RunState::Running {
+        if !matches!(
+            self.state,
+            RunState::Running | RunState::Draining | RunState::Cancelling
+        ) {
             return Err(RunError::InvalidState);
         }
-        let available = self
+        let cancelled = self
             .options
-            .limits
-            .max_operations
-            .saturating_sub(self.operations);
+            .data
+            .cancel
+            .as_ref()
+            .is_some_and(crate::CancelToken::is_cancelled);
+        if cancelled && !self.cancel_observed {
+            self.request_stop(StopMode::Immediate)?;
+        }
+        self.cancel_observed = cancelled;
+        if self.deadline.is_some_and(|deadline| self.now >= deadline) {
+            if self.state == RunState::Draining {
+                self.request_stop(StopMode::Immediate)?;
+            } else if self.state == RunState::Cancelling {
+                self.abort_cleanup();
+            }
+        }
+        let available = if self.state == RunState::Cancelling {
+            usize::MAX
+        } else {
+            self.options
+                .limits
+                .max_operations
+                .saturating_sub(self.operations)
+        };
         let mut remaining = budget.min(available);
         let initial = remaining;
-        while remaining > 0 && self.state == RunState::Running {
+        let mut last = None;
+        while remaining > 0
+            && matches!(
+                self.state,
+                RunState::Running | RunState::Draining | RunState::Cancelling
+            )
+        {
             if self
                 .timers
                 .first_key_value()
@@ -325,7 +432,7 @@ impl Run {
                 remaining -= 1;
                 let (_, timer) = self.timers.pop_first().expect("due timer");
                 if timer.run != self.id {
-                    return Err(RunError::InvalidState);
+                    return self.fail(RunError::InvalidState);
                 }
                 self.record(RunEvent {
                     activation: timer.activation.sequence,
@@ -339,22 +446,46 @@ impl Run {
             let Some(mut activation) = self.ready.pop_front() else {
                 break;
             };
-            let result = self.execute(&mut activation, &mut remaining);
+            last = Some(activation.sequence);
+            let mut quantum = if activation.cleanup {
+                remaining.min(activation.cleanup_remaining)
+            } else {
+                remaining
+            };
+            if quantum == 0 {
+                self.cleanup_truncated = self.cleanup_truncated.saturating_add(1);
+                remaining -= 1;
+                continue;
+            }
+            let before = quantum;
+            let result = self.execute(&mut activation, &mut quantum);
+            let used = before - quantum;
+            remaining -= used;
+            if activation.cleanup {
+                activation.cleanup_remaining -= used;
+            }
             if let Err(error) = result {
-                self.ready.clear();
-                self.timers.clear();
-                self.state = RunState::Faulted;
-                return Err(error);
+                self.operations = self.operations.saturating_add(initial - remaining);
+                if activation.cleanup {
+                    self.cleanup_truncated = self.cleanup_truncated.saturating_add(1);
+                    self.finish_if_idle();
+                    return Err(error);
+                }
+                return self.fail(error);
+            }
+            if self.state == RunState::Faulted {
+                self.cancel_owned()?;
+                break;
             }
             if let Some((at, owner)) = activation.waiting.take() {
                 if self.timers.len() == self.options.limits.max_timers {
-                    self.ready.clear();
-                    self.timers.clear();
-                    self.state = RunState::Faulted;
-                    return Err(RunError::ResourceLimit);
+                    return self.fail(RunError::ResourceLimit);
                 }
                 let sequence = self.next_timer;
-                self.next_timer = sequence.checked_add(1).ok_or(RunError::ResourceLimit)?;
+                let Some(next) = sequence.checked_add(1) else {
+                    return self.fail(RunError::ResourceLimit);
+                };
+                self.next_timer = next;
                 self.timers.insert(
                     (at, sequence),
                     Timer {
@@ -372,17 +503,30 @@ impl Run {
                 }
             }
         }
+        // A slice boundary moves an unfinished segment to the ready tail. Other
+        // activations may commit state while its already-captured pull resumes.
+        if remaining == 0
+            && self.ready.front().is_some_and(|a| Some(a.sequence) == last)
+            && let Some(activation) = self.ready.pop_front()
+        {
+            self.ready.push_back(activation);
+        }
         let count = initial - remaining;
-        self.operations += count;
+        self.operations = self.operations.saturating_add(count);
         if budget > 0
+            && self.state != RunState::Cancelling
+            && self.state != RunState::Stopped
             && self.operations == self.options.limits.max_operations
             && (!self.ready.is_empty() || !self.timers.is_empty())
         {
-            self.ready.clear();
-            self.timers.clear();
-            self.state = RunState::Faulted;
-            return Err(RunError::ResourceLimit);
+            return self.fail(RunError::ResourceLimit);
         }
+        self.finish_if_idle();
+        let timer = self.timers.first_key_value().map(|((at, _), _)| *at);
+        let next_wakeup = match (timer, self.deadline) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (a, b) => a.or(b),
+        };
         Ok(RunProgress {
             operations: count,
             ready: !self.ready.is_empty()
@@ -390,8 +534,34 @@ impl Run {
                     .timers
                     .first_key_value()
                     .is_some_and(|((at, _), _)| *at <= self.now),
-            next_wakeup: self.timers.first_key_value().map(|((at, _), _)| *at),
+            next_wakeup,
         })
+    }
+    fn fail<T>(&mut self, error: RunError) -> Result<T, RunError> {
+        self.last_error = Some(error);
+        self.transition(RunState::Faulted);
+        if self.cancel_owned().is_err() {
+            self.abort_cleanup();
+        }
+        Err(error)
+    }
+    fn finish_if_idle(&mut self) {
+        if matches!(self.state, RunState::Draining | RunState::Cancelling)
+            && self.ready.is_empty()
+            && self.timers.is_empty()
+        {
+            self.deadline = None;
+            self.transition(RunState::Stopped);
+        }
+    }
+    fn abort_cleanup(&mut self) {
+        self.cleanup_truncated = self
+            .cleanup_truncated
+            .saturating_add(self.ready.len() as u64);
+        self.ready.clear();
+        self.timers.clear();
+        self.deadline = None;
+        self.transition(RunState::Stopped);
     }
     fn execute(&mut self, activation: &mut Activation, budget: &mut usize) -> Result<(), RunError> {
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
@@ -466,6 +636,37 @@ impl Run {
         let node = &plan.nodes()[ix.index()];
         if activation.pull.is_none() {
             *budget -= 1;
+        }
+        if activation.cleanup
+            && !matches!(
+                node.operation(),
+                ControlOperation::Entry
+                    | ControlOperation::Branch { .. }
+                    | ControlOperation::Sequence { .. }
+                    | ControlOperation::Set { .. }
+            )
+        {
+            let fault = ConstantFault {
+                source: node.node(),
+                fault: KernelFault {
+                    code: "core/Cancelled",
+                    message_key: "core/cleanup-unsafe-node",
+                    message: "This operation is not permitted during cancellation cleanup.",
+                },
+            };
+            Self::publish_error(&plan, activation, ix, &fault);
+            self.record(RunEvent {
+                activation: activation.sequence,
+                node: node.node(),
+                outcome: ControlOutcome::Failed,
+                fault: Some(fault),
+            });
+            activation.pc = node.failed();
+            activation.pull = None;
+            if activation.pc.is_none() {
+                activation.stack.clear();
+            }
+            return Ok(());
         }
         let (next, outcome, fault) = match node.operation() {
             ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
@@ -691,16 +892,7 @@ impl Run {
         activation.reenter = None;
         activation.inputs.clear();
         if let Some(fault) = &fault {
-            for (i, source) in plan.host_sources().iter().enumerate() {
-                if matches!(source, HostSource::Error(owner) if *owner == ix) {
-                    activation.outputs[i] = Some(FoldedValue::Value(Value::Err(Arc::new(
-                        orange_model::value::NodeError {
-                            code: fault.fault.code.into(),
-                            node: Some(fault.source),
-                        },
-                    ))));
-                }
-            }
+            Self::publish_error(&plan, activation, ix, fault);
         }
         self.record(RunEvent {
             activation: activation.sequence,
@@ -713,10 +905,10 @@ impl Run {
         }
         if outcome == ControlOutcome::Failed
             && next.is_none()
+            && !activation.cleanup
             && plan.nodes()[activation.entry.index()].fault_policy() == FaultPolicy::StopRun
         {
-            self.ready.clear();
-            self.state = RunState::Faulted;
+            self.transition(RunState::Faulted);
         }
         activation.pc = next;
         Ok(())
@@ -793,13 +985,129 @@ impl Run {
             }
         }
     }
-    pub fn stop(&mut self) -> Result<(), RunError> {
-        if self.state != RunState::Running && self.state != RunState::Faulted {
-            return Err(RunError::InvalidState);
+    fn publish_error(
+        plan: &ControlPlan,
+        activation: &mut Activation,
+        owner: ControlIx,
+        fault: &ConstantFault,
+    ) {
+        for (i, source) in plan.host_sources().iter().enumerate() {
+            if matches!(source,HostSource::Error(active) if *active==owner) {
+                activation.outputs[i] = Some(FoldedValue::Value(Value::Err(Arc::new(
+                    orange_model::value::NodeError {
+                        code: fault.fault.code.into(),
+                        node: Some(fault.source),
+                    },
+                ))));
+            }
         }
+    }
+    pub fn stop(&mut self) -> Result<(), RunError> {
+        self.request_stop(StopMode::Immediate)
+    }
+    /// Graceful stop starts On Stop once and drains accepted work. Immediate stop
+    /// cancels owned waits; a second stop aborts bounded cancellation cleanup.
+    pub fn request_stop(&mut self, mode: StopMode) -> Result<(), RunError> {
+        match (self.state, mode) {
+            (
+                RunState::Stopped | RunState::Disposed | RunState::Created | RunState::Starting,
+                _,
+            ) => Err(RunError::InvalidState),
+            (RunState::Cancelling, _) => {
+                self.abort_cleanup();
+                Ok(())
+            }
+            (RunState::Draining, StopMode::Graceful) => Err(RunError::InvalidState),
+            (RunState::Running, StopMode::Graceful) => {
+                let deadline = self
+                    .now
+                    .checked_add(self.options.drain_timeout_ns)
+                    .ok_or(RunError::ResourceLimit)?;
+                let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
+                if self
+                    .ready
+                    .len()
+                    .saturating_add(self.timers.len())
+                    .saturating_add(plan.stops().len())
+                    > self.options.limits.max_activations
+                {
+                    return Err(RunError::ResourceLimit);
+                }
+                let mut acquired = Vec::new();
+                let mut sequence = self.next_activation;
+                for entry in plan.stops() {
+                    let next = sequence.checked_add(1).ok_or(RunError::ResourceLimit)?;
+                    acquired.push(Activation {
+                        sequence,
+                        entry: *entry,
+                        pc: Some(*entry),
+                        data: DataActivation::from_frozen(
+                            plan.data().clone(),
+                            self.document_revision,
+                            self.seed,
+                            sequence,
+                            self.options.data.clone(),
+                        )?,
+                        pull: None,
+                        locals: self.initial_locals.clone(),
+                        local_bytes: self.initial_local_bytes,
+                        inputs: vec![],
+                        supplied: 0,
+                        outputs: vec![None; plan.host_sources().len()],
+                        stack: vec![],
+                        waiting: None,
+                        yielded: false,
+                        reenter: None,
+                        cleanup: false,
+                        cleanup_remaining: 0,
+                    });
+                    sequence = next;
+                }
+                self.next_activation = sequence;
+                self.transition(RunState::Draining);
+                self.deadline = Some(deadline);
+                self.ready.extend(acquired);
+                self.finish_if_idle();
+                Ok(())
+            }
+            _ => self.cancel_owned(),
+        }
+    }
+    fn cancel_owned(&mut self) -> Result<(), RunError> {
+        // Cancellation must remain possible at the end of the virtual clock range.
+        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
+        self.transition(RunState::Cancelling);
+        self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
         self.ready.clear();
-        self.timers.clear();
-        self.state = RunState::Stopped;
+        let timers = std::mem::take(&mut self.timers);
+        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
+        for (_, mut timer) in timers {
+            let node = &plan.nodes()[timer.owner.index()];
+            self.record(RunEvent {
+                activation: timer.activation.sequence,
+                node: node.node(),
+                outcome: ControlOutcome::Cancelled,
+                fault: None,
+            });
+            if let Some(target) = node.cancelled() {
+                timer
+                    .activation
+                    .data
+                    .enter_cleanup(self.options.max_cleanup_operations)?;
+                timer.activation.pc = Some(target);
+                timer.activation.pull = None;
+                timer.activation.inputs.clear();
+                timer.activation.stack.clear();
+                timer.activation.reenter = None;
+                timer.activation.cleanup = true;
+                timer.activation.cleanup_remaining = self.options.max_cleanup_operations;
+                self.ready.push_back(timer.activation);
+            }
+        }
+        self.finish_if_idle();
+        if self.deadline.is_some_and(|d| self.now >= d) {
+            self.abort_cleanup();
+        }
         Ok(())
     }
     pub fn dispose(&mut self) -> Result<(), RunError> {
@@ -810,8 +1118,9 @@ impl Run {
         self.variables.clear();
         self.versions.clear();
         self.state_bytes = 0;
+        self.initial_locals.clear();
         self.trace.clear();
-        self.state = RunState::Disposed;
+        self.transition(RunState::Disposed);
         Ok(())
     }
 }

@@ -242,7 +242,7 @@ pub fn compile_control(
         if declaration.scope == VarScope::Workspace {
             return Err(CompileError::UnsupportedNode { node: node.id });
         }
-        if !variable_ids.contains_key(&id) {
+        if let std::collections::btree_map::Entry::Vacant(entry) = variable_ids.entry(id) {
             let ty = PlanType::parse(declaration.ty.as_str())
                 .ok_or(CompileError::UnsupportedNode { node: node.id })?;
             let initial = if let Some(literal) = &declaration.init {
@@ -263,7 +263,7 @@ pub fn compile_control(
                 initial.as_ref().map_or(16, value_bytes),
                 options.limits.max_constant_bytes,
             )?;
-            variable_ids.insert(id, variables.len());
+            entry.insert(variables.len());
             variables.push(ControlVariable {
                 id,
                 scope: declaration.scope,

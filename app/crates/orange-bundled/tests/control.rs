@@ -184,7 +184,9 @@ fn one_work_item_segments_preserve_outcomes_and_run_fuel_is_terminal() {
     options.limits.max_operations = 1;
     let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 99, options).unwrap();
     assert_eq!(run.pump(100), Err(RunError::ResourceLimit));
-    assert_eq!(run.state(), RunState::Faulted);
+    assert_eq!(run.state(), RunState::Stopped);
+    assert!(run.transitions().contains(&RunState::Faulted));
+    assert_eq!(run.last_error(), Some(RunError::ResourceLimit));
 }
 
 #[test]
@@ -821,4 +823,248 @@ fn nested_break_exits_inner_while_and_outer_count_keeps_progressing() {
         2
     );
     assert_eq!(run.trace().back().unwrap().node.to_string(), id(5));
+}
+
+#[test]
+fn graceful_stop_runs_on_stop_once_then_drains_waiting_work() {
+    use orange_runtime::{Run, RunOptions, RunState, StopMode};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            wait(2, 100),
+            set_bool(3, 100, false),
+            core(4, "on-stop"),
+            set_bool(5, 100, true),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then", 3, "in"),
+            edge(3, 4, "then", 5, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(false)))],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(300).unwrap();
+    run.request_stop(StopMode::Graceful).unwrap();
+    assert!(run.request_stop(StopMode::Graceful).is_err());
+    run.pump(300).unwrap();
+    assert_eq!(run.state(), RunState::Draining);
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&orange_model::Value::Bool(true))
+    );
+    run.advance_to(100).unwrap();
+    run.pump(300).unwrap();
+    assert_eq!(run.state(), RunState::Stopped);
+    assert_eq!(run.pending_continuations(), 0);
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&orange_model::Value::Bool(false))
+    );
+    assert_eq!(
+        run.trace()
+            .iter()
+            .filter(|e| e.node.to_string() == id(4))
+            .count(),
+        1
+    );
+    assert_eq!(
+        run.transitions(),
+        &[
+            RunState::Created,
+            RunState::Starting,
+            RunState::Running,
+            RunState::Draining,
+            RunState::Stopped
+        ]
+    );
+}
+
+#[test]
+fn immediate_stop_routes_cancelled_to_bounded_cleanup_and_second_stop_aborts() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions, RunState};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            wait(2, 100),
+            set_bool(3, 100, false),
+            core(4, "on-stop"),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "cancelled", 3, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+    );
+    for abort in [false, true] {
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        run.pump(300).unwrap();
+        run.stop().unwrap();
+        assert_eq!(run.state(), RunState::Cancelling);
+        assert_eq!(run.pending_continuations(), 0);
+        if abort {
+            run.stop().unwrap();
+        } else {
+            while run.pump(1).unwrap().ready {}
+        }
+        assert_eq!(run.state(), RunState::Stopped);
+        assert_eq!(
+            run.variable(id(100).parse().unwrap()),
+            Some(&orange_model::Value::Bool(abort))
+        );
+        assert_eq!(
+            run.trace()
+                .iter()
+                .filter(|e| e.outcome == ControlOutcome::Cancelled)
+                .count(),
+            1
+        );
+        assert!(!run.trace().iter().any(|e| e.node.to_string() == id(4)));
+        assert!(run.advance_to(100).is_err());
+    }
+}
+
+#[test]
+fn cleanup_rejects_new_waits_and_deadlines_retire_all_owners() {
+    use orange_runtime::{Run, RunOptions, RunState, StopMode};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            wait(2, 100),
+            wait(3, 200),
+            set_bool(4, 100, false),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "cancelled", 3, "in"),
+            edge(3, 3, "failed", 4, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(300).unwrap();
+    run.stop().unwrap();
+    run.pump(300).unwrap();
+    assert_eq!(run.state(), RunState::Stopped);
+    assert_eq!(run.pending_continuations(), 0);
+    assert!(run.trace().iter().any(|e| {
+        e.fault
+            .as_ref()
+            .is_some_and(|f| f.fault.code == "core/Cancelled")
+    }));
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&orange_model::Value::Bool(false))
+    );
+    let options = RunOptions {
+        drain_timeout_ns: 5,
+        ..RunOptions::default()
+    };
+    let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+    run.pump(300).unwrap();
+    run.request_stop(StopMode::Graceful).unwrap();
+    run.advance_to(5).unwrap();
+    run.pump(300).unwrap();
+    assert_eq!(run.state(), RunState::Stopped);
+    assert_eq!(run.pending_continuations(), 0);
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&orange_model::Value::Bool(true))
+    );
+    assert!(run.cleanup_truncated() > 0);
+}
+
+#[test]
+fn cancellation_flag_is_observed_once_and_cleanup_has_a_separate_budget() {
+    use orange_runtime::{CancelToken, Run, RunOptions, RunState};
+    let (doc, plan) = state_plan(
+        vec![core(1, "on-start"), wait(2, 100), set_bool(3, 100, false)],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "cancelled", 3, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+    );
+    for fuel in [0, 20] {
+        let token = CancelToken::default();
+        let mut options = RunOptions::default();
+        options.data.cancel = Some(token.clone());
+        options.max_cleanup_operations = fuel;
+        let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+        run.pump(300).unwrap();
+        token.cancel();
+        while run.pump(1).unwrap().ready {}
+        assert_eq!(run.state(), RunState::Stopped);
+        assert_eq!(
+            run.variable(id(100).parse().unwrap()),
+            Some(&orange_model::Value::Bool(fuel == 0))
+        );
+        if fuel == 0 {
+            assert!(run.cleanup_truncated() > 0);
+        }
+    }
+}
+
+#[test]
+fn failed_output_is_typed_data_with_original_producer_and_dispose_releases_plan() {
+    use orange_runtime::{Run, RunOptions};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            branch(2, true),
+            var_node(3, "get-variable", 100),
+            var_node(4, "set-variable", 101),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 3, "value", 2, "condition"),
+            edge(3, 2, "failed", 4, "in"),
+            edge(4, 2, "error", 4, "value"),
+        ],
+        vec![
+            variable(100, "run", "core/bool@1", None),
+            variable(101, "run", "core/error@1", None),
+        ],
+    );
+    let weak = std::sync::Arc::downgrade(&plan);
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(300).unwrap();
+    let Some(orange_model::Value::Err(error)) = run.variable(id(101).parse().unwrap()) else {
+        panic!("missing typed error");
+    };
+    assert_eq!(error.code, "core/UninitializedVariable");
+    assert_eq!(error.node, Some(id(3).parse().unwrap()));
+    drop(plan);
+    assert!(weak.upgrade().is_some());
+    run.stop().unwrap();
+    run.dispose().unwrap();
+    assert!(weak.upgrade().is_none());
 }

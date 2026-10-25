@@ -143,6 +143,22 @@ impl DataActivation {
         if plan.snapshot().generation() != registry.generation() {
             return Err(DataError::StaleRegistry);
         }
+        Self::from_frozen(
+            plan,
+            document.revision(),
+            seed,
+            activation_sequence,
+            options,
+        )
+    }
+    pub(crate) fn from_frozen(
+        plan: Arc<DataPlan>,
+        document_revision: u64,
+        seed: u64,
+        activation_sequence: u64,
+        options: DataOptions,
+    ) -> Result<Self, DataError> {
+        checkpoint(options.cancel.as_ref())?;
         let resources = plan.resources();
         let limits = options.limits;
         if resources.slots > limits.max_slots
@@ -198,7 +214,7 @@ impl DataActivation {
         checkpoint(state.cancel.as_ref())?;
         Ok(Self {
             plan,
-            document_revision: document.revision(),
+            document_revision,
             state,
         })
     }
@@ -220,6 +236,23 @@ impl DataActivation {
             .limits
             .max_activation_operations
             .saturating_sub(self.state.fuel_used)
+    }
+    /// A run-owned cancellation transition reserves distinct bounded cleanup fuel.
+    /// Preserve entropy identities; ordinary callers cannot revive failed epochs.
+    pub(crate) fn enter_cleanup(&mut self, fuel: usize) -> Result<(), DataError> {
+        self.state.limits.max_activation_operations = self
+            .state
+            .fuel_used
+            .checked_add(fuel)
+            .ok_or(DataError::FuelExhausted)?;
+        self.state.cancel = None;
+        self.state.failed = None;
+        self.state.epoch = None;
+        self.state.pending = None;
+        self.state.work.clear();
+        self.state.inputs.clear();
+        self.state.outputs.clear();
+        Ok(())
     }
     fn checkpoint(&mut self) -> Result<(), DataError> {
         if let Err(error) = checkpoint(self.state.cancel.as_ref()) {
