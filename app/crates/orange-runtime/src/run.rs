@@ -67,6 +67,8 @@ pub struct RunEvent {
 #[derive(Debug, Clone, Copy)]
 pub struct RunLimits {
     pub max_activations: usize,
+    /// Separately reserved On Stop frames, admitted and allocated at startup.
+    pub max_stop_activations: usize,
     pub max_operations: usize,
     pub max_trace: usize,
     pub max_state_bytes: usize,
@@ -77,6 +79,7 @@ impl Default for RunLimits {
     fn default() -> Self {
         Self {
             max_activations: 256,
+            max_stop_activations: 256,
             max_operations: 10_000_000,
             max_trace: 1024,
             max_state_bytes: 16 * 1024 * 1024,
@@ -143,7 +146,7 @@ struct Activation {
     locals: Vec<Option<Value>>,
     local_bytes: usize,
     inputs: Vec<Option<FoldedValue>>,
-    supplied: usize,
+    pending_input: Option<usize>,
     outputs: Vec<Option<FoldedValue>>,
     stack: Vec<Cursor>,
     waiting: Option<(u64, ControlIx)>,
@@ -198,11 +201,7 @@ pub struct Run {
     last_error: Option<RunError>,
     cancel_observed: bool,
     cleanup_truncated: u64,
-    seed: u64,
-    document_revision: u64,
-    next_activation: u64,
-    initial_locals: Vec<Option<Value>>,
-    initial_local_bytes: usize,
+    stop_ready: VecDeque<Activation>,
     segment_owner: Option<u64>,
     last_segment: Option<u64>,
     segment_indices: Vec<usize>,
@@ -241,10 +240,18 @@ impl Run {
         if registry.generation() != plan.data().snapshot().generation() {
             return Err(DataError::StaleRegistry.into());
         }
-        if plan.starts().len() > options.limits.max_activations {
+        if plan.starts().len() > options.limits.max_activations
+            || plan.stops().len() > options.limits.max_stop_activations
+        {
             return Err(RunError::ResourceLimit);
         }
-        let mut ready = VecDeque::new();
+        let capacity = plan
+            .starts()
+            .len()
+            .checked_add(plan.stops().len())
+            .ok_or(RunError::ResourceLimit)?;
+        let mut ready = VecDeque::with_capacity(capacity);
+        let mut stop_ready = VecDeque::with_capacity(plan.stops().len());
         let mut state_bytes = 0usize;
         let mut local_bytes = 0usize;
         let mut variables = Vec::new();
@@ -268,8 +275,19 @@ impl Run {
                 None
             });
         }
-        for (sequence, entry) in plan.starts().iter().copied().enumerate() {
-            ready.push_back(Activation {
+        for (sequence, entry) in plan
+            .starts()
+            .iter()
+            .chain(plan.stops())
+            .copied()
+            .enumerate()
+        {
+            let queue = if sequence < plan.starts().len() {
+                &mut ready
+            } else {
+                &mut stop_ready
+            };
+            queue.push_back(Activation {
                 sequence: sequence as u64,
                 entry,
                 pc: Some(entry),
@@ -285,7 +303,7 @@ impl Run {
                 locals: locals.clone(),
                 local_bytes,
                 inputs: vec![],
-                supplied: 0,
+                pending_input: None,
                 outputs: vec![None; plan.host_sources().len()],
                 stack: vec![],
                 waiting: None,
@@ -295,7 +313,6 @@ impl Run {
                 cleanup_remaining: 0,
             });
         }
-        let next_activation = plan.starts().len() as u64;
         let variable_count = variables.len();
         Ok(Self {
             id: run_identity()?,
@@ -317,11 +334,7 @@ impl Run {
             last_error: None,
             cancel_observed: false,
             cleanup_truncated: 0,
-            seed,
-            document_revision: document.revision(),
-            next_activation,
-            initial_locals: locals,
-            initial_local_bytes: local_bytes,
+            stop_ready,
             segment_owner: None,
             last_segment: None,
             segment_indices: vec![],
@@ -412,16 +425,7 @@ impl Run {
         ) {
             return Err(RunError::InvalidState);
         }
-        let cancelled = self
-            .options
-            .data
-            .cancel
-            .as_ref()
-            .is_some_and(crate::CancelToken::is_cancelled);
-        if cancelled && !self.cancel_observed {
-            self.request_stop(StopMode::Immediate)?;
-        }
-        self.cancel_observed = cancelled;
+        self.observe_cancellation()?;
         if self.deadline.is_some_and(|deadline| self.now >= deadline) {
             if self.state == RunState::Draining {
                 self.request_stop(StopMode::Immediate)?;
@@ -446,6 +450,10 @@ impl Run {
                 RunState::Running | RunState::Draining | RunState::Cancelling
             )
         {
+            self.observe_cancellation()?;
+            if self.state == RunState::Stopped {
+                break;
+            }
             if self
                 .timers
                 .first_key_value()
@@ -537,10 +545,19 @@ impl Run {
                 self.segment_owner = None;
             }
         }
-        // A slice boundary moves an unfinished segment to the ready tail. Other
-        // activations may commit state while its already-captured pull resumes.
+        // A pending Set owns its read/compute/write segment across host slices.
+        // Explicit suspension still releases ownership; read-only pulls may rotate.
         if remaining == 0
-            && self.ready.front().is_some_and(|a| Some(a.sequence) == last)
+            && self.ready.front().is_some_and(|a| {
+                Some(a.sequence) == last
+                    && !(a.pull.is_some()
+                        && a.pc.is_some_and(|pc| {
+                            matches!(
+                                self.plan.as_ref().unwrap().nodes()[pc.index()].operation(),
+                                ControlOperation::Set { .. }
+                            )
+                        }))
+            })
             && let Some(activation) = self.ready.pop_front()
         {
             self.ready.push_back(activation);
@@ -572,6 +589,19 @@ impl Run {
             next_wakeup,
         })
     }
+    fn observe_cancellation(&mut self) -> Result<(), RunError> {
+        let cancelled = self
+            .options
+            .data
+            .cancel
+            .as_ref()
+            .is_some_and(crate::CancelToken::is_cancelled);
+        if cancelled && !self.cancel_observed {
+            self.request_stop(StopMode::Immediate)?;
+        }
+        self.cancel_observed = cancelled;
+        Ok(())
+    }
     fn fail<T>(&mut self, error: RunError) -> Result<T, RunError> {
         self.last_error = Some(error);
         self.transition(RunState::Faulted);
@@ -593,6 +623,7 @@ impl Run {
         self.cleanup_truncated = self
             .cleanup_truncated
             .saturating_add(self.ready.len() as u64);
+        self.stop_ready.clear();
         self.ready.clear();
         self.timers.clear();
         self.deadline = None;
@@ -963,9 +994,10 @@ impl Run {
         if activation.pull.is_none() {
             activation.data.begin_epoch()?;
             activation.pull = Some(root);
-            activation.supplied = 0;
+            activation.pending_input = None;
             activation.inputs.clear();
-            for (i, source) in plan.host_sources().iter().enumerate() {
+            for &i in plan.inputs_for(root).ok_or(RunError::InvalidState)? {
+                let source = &plan.host_sources()[i];
                 let value = match source {
                     HostSource::Variable(index) => {
                         let var = &plan.variables()[*index];
@@ -992,25 +1024,39 @@ impl Run {
                 activation.inputs.push(value);
             }
         }
-        while activation.supplied < activation.inputs.len() {
-            if *budget == 0 {
+        loop {
+            if let Some(index) = activation.pending_input {
+                if *budget == 0 {
+                    return Ok(None);
+                }
+                *budget -= 1;
+                let offset = plan
+                    .inputs_for(root)
+                    .ok_or(RunError::InvalidState)?
+                    .binary_search(&index)
+                    .map_err(|_| RunError::InvalidState)?;
+                let value = activation.inputs[offset].clone().ok_or_else(|| {
+                    RunError::Data(DataError::MissingInput {
+                        node: plan.data().nodes()[plan.data().host_inputs()[index].index()].node(),
+                    })
+                })?;
+                activation.data.set_input_outcome(index, value)?;
+                activation.pending_input = None;
+            }
+            match activation.data.poll_host_export(root, budget)? {
+                DataPoll::Pending => {}
+                DataPoll::Ready(Some(value)) => {
+                    return Ok(Some(match value.outcome {
+                        Ok(value) => FoldedValue::Value(value.clone()),
+                        Err(fault) => FoldedValue::Fault(fault.clone()),
+                    }));
+                }
+                DataPoll::Ready(None) => return Err(RunError::InvalidState),
+            }
+            activation.pending_input = activation.data.take_requested_input();
+            if activation.pending_input.is_none() {
                 return Ok(None);
             }
-            *budget -= 1;
-            if let Some(value) = &activation.inputs[activation.supplied] {
-                activation
-                    .data
-                    .set_input_outcome(activation.supplied, value.clone())?;
-            }
-            activation.supplied += 1;
-        }
-        match activation.data.poll_export(root, budget)? {
-            DataPoll::Pending => Ok(None),
-            DataPoll::Ready(Some(value)) => Ok(Some(match value.outcome {
-                Ok(value) => FoldedValue::Value(value.clone()),
-                Err(fault) => FoldedValue::Fault(fault.clone()),
-            })),
-            DataPoll::Ready(None) => Err(RunError::InvalidState),
         }
     }
     fn publish_index(
@@ -1019,10 +1065,8 @@ impl Run {
         owner: ControlIx,
         index: Option<i64>,
     ) {
-        for (i, source) in plan.host_sources().iter().enumerate() {
-            if matches!(source,HostSource::Index(active) if *active==owner) {
-                activation.outputs[i] = index.map(|i| FoldedValue::Value(Value::I64(i)));
-            }
+        for &i in plan.index_targets(owner) {
+            activation.outputs[i] = index.map(|i| FoldedValue::Value(Value::I64(i)));
         }
     }
     fn publish_error(
@@ -1031,15 +1075,13 @@ impl Run {
         owner: ControlIx,
         fault: &ConstantFault,
     ) {
-        for (i, source) in plan.host_sources().iter().enumerate() {
-            if matches!(source,HostSource::Error(active) if *active==owner) {
-                activation.outputs[i] = Some(FoldedValue::Value(Value::Err(Arc::new(
-                    orange_model::value::NodeError {
-                        code: fault.fault.code.into(),
-                        node: Some(fault.source),
-                    },
-                ))));
-            }
+        for &i in plan.error_targets(owner) {
+            activation.outputs[i] = Some(FoldedValue::Value(Value::Err(Arc::new(
+                orange_model::value::NodeError {
+                    code: fault.fault.code.into(),
+                    node: Some(fault.source),
+                },
+            ))));
         }
     }
     pub fn stop(&mut self) -> Result<(), RunError> {
@@ -1063,50 +1105,9 @@ impl Run {
                     .now
                     .checked_add(self.options.drain_timeout_ns)
                     .ok_or(RunError::ResourceLimit)?;
-                let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
-                if self
-                    .ready
-                    .len()
-                    .saturating_add(self.timers.len())
-                    .saturating_add(plan.stops().len())
-                    > self.options.limits.max_activations
-                {
-                    return Err(RunError::ResourceLimit);
-                }
-                let mut acquired = Vec::new();
-                let mut sequence = self.next_activation;
-                for entry in plan.stops() {
-                    let next = sequence.checked_add(1).ok_or(RunError::ResourceLimit)?;
-                    acquired.push(Activation {
-                        sequence,
-                        entry: *entry,
-                        pc: Some(*entry),
-                        data: DataActivation::from_frozen(
-                            plan.data().clone(),
-                            self.document_revision,
-                            self.seed,
-                            sequence,
-                            self.options.data.clone(),
-                        )?,
-                        pull: None,
-                        locals: self.initial_locals.clone(),
-                        local_bytes: self.initial_local_bytes,
-                        inputs: vec![],
-                        supplied: 0,
-                        outputs: vec![None; plan.host_sources().len()],
-                        stack: vec![],
-                        waiting: None,
-                        yielded: false,
-                        reenter: None,
-                        cleanup: false,
-                        cleanup_remaining: 0,
-                    });
-                    sequence = next;
-                }
-                self.next_activation = sequence;
                 self.transition(RunState::Draining);
                 self.deadline = Some(deadline);
-                self.ready.extend(acquired);
+                self.ready.append(&mut self.stop_ready);
                 self.finish_if_idle();
                 Ok(())
             }
@@ -1118,6 +1119,7 @@ impl Run {
         let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
         self.transition(RunState::Cancelling);
         self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
+        self.stop_ready.clear();
         self.ready.clear();
         let timers = std::mem::take(&mut self.timers);
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
@@ -1158,7 +1160,7 @@ impl Run {
         self.variables.clear();
         self.versions.clear();
         self.state_bytes = 0;
-        self.initial_locals.clear();
+        self.stop_ready.clear();
         self.dirty.clear();
         self.segment_indices.clear();
         self.segment_writes.clear();

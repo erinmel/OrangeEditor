@@ -130,6 +130,9 @@ pub struct ControlPlan {
     pub(crate) stops: Box<[ControlIx]>,
     pub(crate) variables: Box<[ControlVariable]>,
     pub(crate) host_sources: Box<[HostSource]>,
+    root_inputs: Box<[Arc<[usize]>]>,
+    index_targets: Box<[Box<[usize]>]>,
+    error_targets: Box<[Box<[usize]>]>,
 }
 impl std::fmt::Debug for ControlPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -159,6 +162,17 @@ impl ControlPlan {
     /// Parallel to data().host_inputs(), resolved once outside execution.
     pub fn host_sources(&self) -> &[HostSource] {
         &self.host_sources
+    }
+    /// Potential inputs for one consumer, in host-input index order. Lazy arms
+    /// remain potential here; the runtime publishes only actual data demands.
+    pub fn inputs_for(&self, root: usize) -> Option<&[usize]> {
+        self.root_inputs.get(root).map(AsRef::as_ref)
+    }
+    pub fn index_targets(&self, owner: ControlIx) -> &[usize] {
+        &self.index_targets[owner.index()]
+    }
+    pub fn error_targets(&self, owner: ControlIx) -> &[usize] {
+        &self.error_targets[owner.index()]
     }
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
         self.data.is_current(document, registry)
@@ -541,6 +555,71 @@ pub fn compile_control(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut index_targets = vec![Vec::new(); nodes.len()];
+    let mut error_targets = vec![Vec::new(); nodes.len()];
+    let host_indices: BTreeMap<_, _> = data
+        .host_inputs()
+        .iter()
+        .enumerate()
+        .map(|(i, n)| (n.index(), i))
+        .collect();
+    for (i, source) in host_sources.iter().enumerate() {
+        match source {
+            HostSource::Index(owner) => index_targets[owner.index()].push(i),
+            HostSource::Error(owner) => error_targets[owner.index()].push(i),
+            HostSource::Variable(_) => {}
+        }
+    }
+    let empty: Arc<[usize]> = Arc::from([]);
+    let mut dependencies: Vec<Arc<[usize]>> = Vec::with_capacity(data.nodes().len());
+    let mut projection_items = 0;
+    for node in data.nodes() {
+        options.checkpoint()?;
+        let inputs = if let Some(index) = host_indices.get(&node.index().index()) {
+            charge(&mut projection_items, 1, options.limits.max_graph_items)?;
+            Arc::from([*index])
+        } else {
+            let producers: Vec<_> = node
+                .inputs()
+                .iter()
+                .filter_map(|i| i.producer)
+                .map(|i| {
+                    dependencies
+                        .get(i.index())
+                        .cloned()
+                        .ok_or(CompileError::ValidationIncomplete)
+                })
+                .collect::<Result<_, _>>()?;
+            if let Some(first) = producers
+                .first()
+                .filter(|first| producers.iter().all(|p| p.as_ref() == first.as_ref()))
+            {
+                first.clone()
+            } else if producers.is_empty() {
+                empty.clone()
+            } else {
+                let mut union = BTreeSet::new();
+                for producer in producers {
+                    for index in producer.iter().copied() {
+                        options.checkpoint()?;
+                        if union.insert(index) {
+                            charge(&mut projection_items, 1, options.limits.max_graph_items)?;
+                        }
+                    }
+                }
+                Arc::from(union.into_iter().collect::<Vec<_>>())
+            }
+        };
+        dependencies.push(inputs);
+    }
+    let root_inputs = (0..data.exports().len())
+        .map(|root| {
+            data.export_node(root)
+                .and_then(|n| dependencies.get(n.index()))
+                .cloned()
+                .ok_or(CompileError::ValidationIncomplete)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(ControlPlan {
         data: Arc::new(data),
         nodes: nodes.into(),
@@ -548,5 +627,14 @@ pub fn compile_control(
         stops: stops.into(),
         variables: variables.into(),
         host_sources: host_sources.into(),
+        root_inputs: root_inputs.into(),
+        index_targets: index_targets
+            .into_iter()
+            .map(Vec::into_boxed_slice)
+            .collect(),
+        error_targets: error_targets
+            .into_iter()
+            .map(Vec::into_boxed_slice)
+            .collect(),
     })
 }

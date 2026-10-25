@@ -205,6 +205,14 @@ impl DataActivation {
             failed: None,
             work: Vec::with_capacity(resources.work_items),
             pending: None,
+            requested_input: None,
+            host_indices: {
+                let mut indices = vec![None; resources.nodes];
+                for (i, node) in plan.host_inputs().iter().enumerate() {
+                    indices[node.index()] = Some(i);
+                }
+                indices
+            },
             work_limit: resources.work_items,
             inputs: Vec::with_capacity(resources.max_inputs),
             outputs: Vec::with_capacity(resources.max_outputs),
@@ -249,6 +257,7 @@ impl DataActivation {
         self.state.failed = None;
         self.state.epoch = None;
         self.state.pending = None;
+        self.state.requested_input = None;
         self.state.work.clear();
         self.state.inputs.clear();
         self.state.outputs.clear();
@@ -280,6 +289,7 @@ impl DataActivation {
         self.state.failed = None;
         self.state.work.clear();
         self.state.pending = None;
+        self.state.requested_input = None;
         self.state.inputs.clear();
         self.state.outputs.clear();
         Ok(epoch)
@@ -336,6 +346,24 @@ impl DataActivation {
         index: usize,
         budget: &mut usize,
     ) -> Result<DataPoll<'_>, DataError> {
+        self.poll_export_inner(index, budget, false)
+    }
+    pub(crate) fn poll_host_export(
+        &mut self,
+        index: usize,
+        budget: &mut usize,
+    ) -> Result<DataPoll<'_>, DataError> {
+        self.poll_export_inner(index, budget, true)
+    }
+    pub(crate) fn take_requested_input(&mut self) -> Option<usize> {
+        self.state.requested_input.take()
+    }
+    fn poll_export_inner(
+        &mut self,
+        index: usize,
+        budget: &mut usize,
+        host: bool,
+    ) -> Result<DataPoll<'_>, DataError> {
         self.checkpoint()?;
         if let Some(error) = self.state.failed {
             return Err(error);
@@ -346,7 +374,7 @@ impl DataActivation {
         let Some(node) = self.plan.export_node(index) else {
             return Ok(DataPoll::Ready(None));
         };
-        let driven = self.state.drive(&self.plan, node, budget);
+        let driven = self.state.drive(&self.plan, node, budget, host);
         if driven == Err(DataError::PullInProgress) {
             return Err(DataError::PullInProgress);
         }
@@ -398,6 +426,8 @@ struct Frame {
     failed: Option<DataError>,
     work: Vec<Work>,
     pending: Option<NodeIx>,
+    requested_input: Option<usize>,
+    host_indices: Vec<Option<usize>>,
     work_limit: usize,
     inputs: Vec<Value>,
     outputs: Vec<Value>,
@@ -623,6 +653,7 @@ impl Frame {
         plan: &DataPlan,
         root: NodeIx,
         budget: &mut usize,
+        host: bool,
     ) -> Result<bool, DataError> {
         match self.pending {
             Some(pending) if pending != root => return Err(DataError::PullInProgress),
@@ -649,6 +680,13 @@ impl Frame {
                     }
                     // A supplied input is already stamped for this epoch.
                     if matches!(node.operation(), DataOperation::Input) {
+                        if host {
+                            self.push(Work::Enter(index))?;
+                            self.requested_input = self.host_indices[index.index()];
+                            if self.requested_input.is_some() {
+                                return Ok(false);
+                            }
+                        }
                         return Err(DataError::MissingInput { node: node.node() });
                     }
                     self.operations = self

@@ -377,3 +377,5 @@ Consequences:
 Delivery is the six V12 slices in 16 §9, each a separate PR gated on equivalence.
 
 **Falsification:** W9 edits on the W4 graph that exceed NFR-15 outside reported full-scope cases, or any equivalence failure that cannot be fixed without a full recompute, reject this design for that pass.
+
+PR #18 control review decision (2026-10-24; ADR-21 core boundary): preserve read-modify-write atomicity by retaining a pending Set action across internal work slices, rather than retrying seeded computations. Reserve bounded On Stop frame capacity at startup separately from normal activations, rather than rejecting graceful stop when admitted work saturates ordinary capacity. Host input publication follows actual lazy demand over consumer-specific frozen snapshots. These choices apply only to the supported headless control subset and do not qualify general event/resource/package lifecycles. Contracts and regression evidence are in 03, 11, 12 and 10.
