@@ -1030,3 +1030,18 @@ Base 6e2d56b. Four slices close gaps that E3 control and function lowering would
 Breaking public changes: DataOptions and DataActivation lose their lifetime parameter; ActivationEntropy::new takes max_frames; EntropyKey has a frame field; DataError and DataOperation gain variants. Graph JSON, dependencies, features and Cargo.lock are unchanged.
 
 cargo test --workspace --locked --offline passed 650 tests, seven timing tests ignored. Release runs of data_epochs, seeded_equivalence and compile_data passed 28 tests, one timing probe ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs and its nine-fixture self-test, and git diff --check passed. rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock SHA-256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152 unchanged. No MSRV, other-OS or timing run. Not yet built: control lowering, Execution/Payload/Iteration sources, function frames in plans, the run actor and a cancellation tree. Local commits only, no push.
+
+### Deep-analysis fixes (2026-10-24)
+
+Base e577291. Four confirmed defects were fixed:
+
+- A runtime publication rejected by the retained-byte limit no longer keeps its value alive in scratch storage.
+- `Fragment::paste` drops top-level edges whose endpoints the fragment lacks, instead of panicking (paste.rs remap index).
+- Graph loading rejects repeated JSON object keys at any depth with `CodecError::DuplicateKey`, after the version gate. Before this, serde silently kept the last value.
+- `GraphDocument::scratch` rolls back during unwinding, and inference planning then resets its kept DocIndex.
+
+Each regression test was confirmed to fail without its fix, except the paste test: the panic was reproduced by an earlier probe that has since been removed.
+
+The duplicate-key scan runs inside the existing envelope pass. Objects of up to 16 keys use a short list before a hash set. One local release run of perf_codec measured 10k-node load at 53.6 ms before and 58.9 ms after; save was unchanged. That is a single run, not a qualified measurement.
+
+cargo test --workspace --locked --offline passed 656 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock SHA-256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152 is unchanged. Public change: the new CodecError::DuplicateKey variant. Local commits only, no push.
