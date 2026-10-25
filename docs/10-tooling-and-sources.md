@@ -1217,3 +1217,56 @@ The remaining size difference includes startup/frame preparation; this does not 
 Also repeated `cargo test -p orange-bundled --release --locked --test control headless_control_timing_baseline -- --ignored --nocapture`: the existing Count-1000 Get/Add/Set probe includes start/run/stop/dispose, tracing disabled, 10-second warmup, 30 samples of eight runs. Updated counted work is 9,003 items/run because actual host demand/resume is explicit. Batch means: median 213443.8 ns/run, p95 229200.0, maximum 230287.5. The previous section's 8,004-item figure describes the earlier candidate only. Both explicitly invoked probes passed.
 
 Public source compatibility: unfrozen RunLimits adds max_stop_activations (default 256); exhaustive struct literals need the new field. Public DataPoll and missing-input errors keep their behavior. No persisted graph/schema changes. Full core, host/package/service, UI and API freeze gates remain open.
+
+## Whole-codebase reuse qualification — 2026-10-24
+
+The review of `3203195` expanded beyond PR #18 to the model, registry/type/edit/inference/validation paths, compiler, runtime, bundled-provider boundaries and repository tooling. The eight identified changes are implemented on the same topic branch:
+
+| Area | Implemented change and retained contract |
+|---|---|
+| Connection planning | Additive `plan_edit_indexed` and `plan_connection_indexed` reuse a retained index and journaled trial edits. Existing read-only APIs remain available. Equivalence cases cover direct/converter/selection outcomes; rejection and a panicking identity source preserve content/index. Freshness, shadowed literals, imported conflicts and exact provider selection remain unchanged. |
+| Validation projections | Scoped memoization shares successful descriptors and lookup failures through body passes and final analysis checks. The settled resolution hands off its cache; new rounds/invocations create fresh scopes. Private Rc sharing avoids locks/atomic reference counts. Public document, registry and analysis types still satisfy Send + Sync. |
+| Graph algorithms | Data, control and function analysis use one private ordered iterative SCC primitive. Each caller keeps its own legality and witness rules. A 64-case bounded graph property compares partitions against independent mutual reachability; existing deep/cycle/function cases remain green. |
+| Diagnostics | One declaration generates enum/serde identity, stable codes, translation keys, severity and safe fallback text. Existing order, wire values and redacted argument behavior are preserved. |
+| Activation cells | Separate dense run/local layouts remove cross-owner placeholders. Only Index/Error projections allocate execution-output cells. Stable plan indices map to these private layouts; disposal releases them. |
+| Runtime preparation | One checked immutable prepared data layout/initial charge is shared by a run's frames. Mutable values, memos, entropy counters, fuel, limits and cancellation remain activation-owned. Frame admission and pinned running providers remain intact. |
+| Compiler bookkeeping | Output slots and producers share one entry keyed by original node/port; traversal storage is reused across roots. A small helper constructs control input roots. Implicit Error and loop-index projections retain distinct writers. |
+| Executor structure | Explicit private HostPoll input demand replaces the side channel; PullState groups consumer/frozen-input/pending-publication state and reuses capacity. Cursor resume and action completion have separate helpers. Public DataPoll, pump(1), Set atomicity, lazy demand and original fault provenance remain unchanged. |
+
+Environment: Windows x86_64 MSVC, rustc 1.99.1 (58cf8f9c3 2026-10-13), Cargo 1.99.1 (5f94df478 2026-08-27), Node.js 24.18.0, default features. MSRV remains 1.97.1. No dependencies/features/graph format/schema versions changed. Cargo.lock SHA-256 remains `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`.
+
+| Executed command | Result |
+|---|---|
+| `cargo test --workspace --locked` | PASS: 712 tests, 11 manual probes ignored |
+| `cargo test --workspace --release --locked` | PASS: 712 tests, 11 manual probes ignored |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | PASS |
+| `cargo doc --workspace --no-deps --locked` with `RUSTDOCFLAGS=-D warnings` | PASS; environment restored |
+| `node --test tools/release.test.mjs` | PASS: 7 tests |
+| `node tools/check-cargo-metadata.mjs --self-test` | PASS: 9 fixtures |
+| `node tools/check-cargo-metadata.mjs` / `--msrv` | PASS: core boundary / declared MSRV metadata |
+| `cargo run -p orange-bundled --example headless_control --locked` | PASS: `total=3; virtual_time_ns=10` |
+| `git diff --check` | PASS |
+
+Windows incremental-cache hard-link warnings fell back to copying; the recorded commands exited successfully. Local metadata success is not an MSRV build. Rust 1.97.1, Linux/macOS and dependency/security qualification require remote CI on the final head. Earlier green checks do not qualify these changes. No merge is included.
+
+### Measured reuse and limits
+
+Explicit release probes, with compilation/fixture construction excluded:
+
+| Probe | Previous candidate | Current candidate |
+|---|---:|---:|
+| Plan one wire between isolated nodes beside 10,000 unrelated chain nodes, read-only API median | 63.625 ms | 35.653 ms |
+| Same request, new retained-index API median | unavailable | 36.2 µs |
+| Start/drop 128 activations over 512 data nodes, median | 2.427 ms | 0.372 ms |
+| Whole validation of 10,000-node chain, best of five | 332.014 ms | 322.913 ms |
+
+Connection command: `cargo test -p orange-model --release --locked --test perf_edit_baseline isolated_connection_planning_by_document_size -- --ignored --nocapture`. Three warmups and 15 samples per mode/size. For 100/1,000/10,000 unrelated nodes, read-only medians are 348.6/3037.2/35652.5 µs and indexed medians 63.0/36.0/36.2 µs. Current p95 at 10,000 is 40569.3/45.6 µs respectively. Old read-only review medians were 600.1/5412.7/63624.9 µs under the same construction/timing method. Plans are Ready and the final document/index equal their original/fresh state.
+
+Startup command: `cargo test -p orange-bundled --release --locked --test control activation_preparation_by_owner_count -- --ignored --nocapture`. Start/frame preparation and drop are timed; drive/explicit stop/dispose are excluded. Each size warms up 500 ms and records 30 runs. Medians for 1/32/128 owners are 2.4/50.1/372.3 µs, p95 2.6/484.4/1776.4 µs. Previous medians were 2.8/104.4/2427.1 µs. In the 128×512 shape, sharing two immutable lookup arrays and removing unused execution cells eliminates approximately 6.5 MiB of repeated/unused vector payload before additional layout overhead. This is a representation calculation using measured Rust type sizes, not an allocator or process RSS measurement.
+
+To avoid comparing historical validation numbers from a different run, the existing `edit_cost_by_document_size` probe was also built from an isolated tracked-source archive of `3203195`, with the same toolchain/lockfile and a separate target directory. Old/new whole-validation best-of-five times are 20.855/22.426 ms at 1,000 and 332.014/322.913 ms at 10,000 nodes. These small differences and other local run variation establish no general validation speedup. Whole-component inference, whole-document validation and V12/NFR-15 work remain open.
+
+Repeated existing release probes also pass: Count-1000 Get/Add/Set uses 9,003 work items, with 10-second warmup and 30 batches of eight start/run/stop/dispose operations; median 215237.5 ns/run, p95 236337.5, max 251262.5. The unrelated-host-input probe remains exactly 3,003 work items at 0/64/512 unrelated inputs, with medians 111.2/103.9/105.95 µs. Its one-second warmup/30 runs include start/drive/drop and exclude explicit stop/dispose. These local timings do not qualify NFR, allocation, tail-latency or platform gates.
+
+The independent source interpreters remain separate from compiler/runtime helpers. Four crate boundaries remain deliberate: model, compiler, runtime and bundled providers. No full core, SDK/package/service, UI, release or public API freeze gate is claimed.

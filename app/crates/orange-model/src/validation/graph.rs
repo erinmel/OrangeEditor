@@ -66,3 +66,36 @@ pub(super) fn strongly_connected_components<T: Ord + Clone>(
     }
     components
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use proptest::prelude::*;
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn partitions_match_independent_mutual_reachability(
+            count in 1u8..9, edges in prop::collection::vec((0u8..8,0u8..8),0..48)
+        ) {
+            let mut graph: BTreeMap<_, BTreeSet<_>> = (0..count).map(|v|(v,BTreeSet::new())).collect();
+            for (from,to) in edges { graph.get_mut(&(from%count)).unwrap().insert(to%count); }
+            let components = strongly_connected_components(&graph);
+            let reaches = |from,to| {
+                let mut pending=vec![from]; let mut seen=BTreeSet::new();
+                while let Some(v)=pending.pop() {
+                    if v==to { return true; }
+                    if seen.insert(v) { pending.extend(graph[&v].iter().copied()); }
+                }
+                false
+            };
+            for from in 0..count {
+                prop_assert_eq!(components.iter().filter(|c|c.contains(&from)).count(),1);
+                for to in 0..count {
+                    let together = components.iter().any(|c|c.contains(&from)&&c.contains(&to));
+                    prop_assert_eq!(together,reaches(from,to)&&reaches(to,from));
+                }
+            }
+        }
+    }
+}

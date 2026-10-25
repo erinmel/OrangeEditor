@@ -9,10 +9,10 @@ use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortKey, VariableId};
 
 /// One declaration owns wire identity, localization, severity and fallback text.
 macro_rules! diagnostics {
-    ($subject:ident; $( $name:ident => ($wire:literal, $key:literal, $severity:ident, $fallback:expr); )*) => {
+    ($subject:ident; $( $(#[$meta:meta])* $name:ident => ($wire:literal, $key:literal, $severity:ident, $fallback:expr); )*) => {
         /// Stable identifiers for implemented graph validation diagnostics.
         #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-        pub enum DiagnosticCode { $( #[serde(rename = $wire)] $name, )* }
+        pub enum DiagnosticCode { $( $(#[$meta])* #[serde(rename = $wire)] $name, )* }
         impl DiagnosticCode {
             /// Stable code used in wire records and assertions.
             pub const fn as_str(self) -> &'static str { match self { $(Self::$name => $wire,)* } }
@@ -24,6 +24,7 @@ macro_rules! diagnostics {
 }
 
 diagnostics! { subject;
+    /// Compiler-owned warning: the constant fault remains in the plan.
     ConstError => ("W-CONST-ERROR", "core/graph-const-error", Warning, "The constant expression produces an error.".into());
     DeclarationType => ("E-DECLARATION-TYPE", "core/graph-declaration-type", Error, "Declaration type is invalid or unavailable.".into());
     AnalysisLimit => ("E-ANALYSIS-LIMIT", "core/graph-analysis-limit", Error, "Graph analysis exceeds the host's admission limits.".into());
