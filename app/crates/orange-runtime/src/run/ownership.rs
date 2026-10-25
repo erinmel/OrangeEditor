@@ -135,7 +135,7 @@ impl Run {
                 }
                 id = parent;
             } else {
-                self.activations.remove(&r.activation);
+                self.activations[r.activation as usize] = None;
                 return Ok(());
             }
         }
@@ -259,16 +259,9 @@ impl Run {
             fault: None,
         });
         if race {
-            let children: Vec<_> = self
-                .regions
-                .iter()
-                .filter(|(_, r)| r.parent == Some(id))
-                .map(|(id, _)| *id)
-                .collect();
-            for child in children {
-                self.cancel_region(child)?;
-                self.complete_regions(child)?;
-            }
+            // One subtree walk retires all losers. Cancelling each sibling
+            // separately would rescan the same ownership tree quadratically.
+            self.cancel_region(id)?;
         }
         if let Some(caller) = caller {
             self.ready.push_front(caller);
@@ -285,7 +278,15 @@ impl Run {
             .copied()
             .filter(|id| self.descendant(*id, root))
             .collect();
-        self.ready.retain(|s| !ids.contains(&s.region));
+        self.ready.retain(|s| {
+            if ids.contains(&s.region) {
+                self.cleanup_truncated =
+                    self.cleanup_truncated.saturating_add(u64::from(s.cleanup));
+                false
+            } else {
+                true
+            }
+        });
         let mut cleanup = Vec::new();
         let timers = std::mem::take(&mut self.timers);
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
@@ -325,7 +326,11 @@ impl Run {
         r.children = 0;
         let activation = r.activation;
         self.live_strands = self.regions.values().map(|r| r.live).sum();
-        if let Some(shared) = self.activations.get_mut(&activation) {
+        if let Some(shared) = self
+            .activations
+            .get_mut(activation as usize)
+            .and_then(Option::as_mut)
+        {
             if let Some(scope) = shared.cleanup_scope.take() {
                 shared.data.finish_cleanup(scope);
             }
@@ -390,7 +395,8 @@ impl Run {
             };
             let shared = self
                 .activations
-                .get_mut(&strand.sequence)
+                .get_mut(strand.sequence as usize)
+                .and_then(Option::as_mut)
                 .ok_or(RunError::InvalidState)?;
             Self::publish_index(
                 self.plan.as_ref().unwrap(),

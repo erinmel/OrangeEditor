@@ -282,7 +282,7 @@ pub struct Run {
     options: RunOptions,
     state: RunState,
     ready: VecDeque<Strand>,
-    activations: BTreeMap<u64, ActivationState>,
+    activations: Vec<Option<Box<ActivationState>>>,
     regions: BTreeMap<u64, Region>,
     next_owner: u64,
     live_strands: usize,
@@ -355,7 +355,7 @@ impl Run {
         }
         let mut regions = BTreeMap::new();
         let mut ready = VecDeque::with_capacity(capacity);
-        let mut activations = BTreeMap::new();
+        let mut activations = Vec::with_capacity(capacity);
         let mut stop_ready = VecDeque::with_capacity(plan.stops().len());
         let layout = StateLayout::new(&plan);
         let mut state_bytes = 0usize;
@@ -393,28 +393,25 @@ impl Run {
             } else {
                 &mut stop_ready
             };
-            activations.insert(
-                sequence as u64,
-                ActivationState {
-                    cleanup_scope: None,
-                    cleanup_remaining: options.max_cleanup_operations,
-                    cleanup_deadline: None,
-                    pull_owner: None,
-                    data: DataActivation::from_prepared(
-                        prepared
-                            .as_ref()
-                            .expect("entry capacity was admitted")
-                            .clone(),
-                        document.revision(),
-                        seed,
-                        sequence as u64,
-                        options.data.clone(),
-                    )?,
-                    locals: locals.clone(),
-                    local_bytes,
-                    outputs: vec![None; layout.output_count],
-                },
-            );
+            activations.push(Some(Box::new(ActivationState {
+                cleanup_scope: None,
+                cleanup_remaining: options.max_cleanup_operations,
+                cleanup_deadline: None,
+                pull_owner: None,
+                data: DataActivation::from_prepared(
+                    prepared
+                        .as_ref()
+                        .expect("entry capacity was admitted")
+                        .clone(),
+                    document.revision(),
+                    seed,
+                    sequence as u64,
+                    options.data.clone(),
+                )?,
+                locals: locals.clone(),
+                local_bytes,
+                outputs: vec![None; layout.output_count],
+            })));
             regions.insert(
                 sequence as u64,
                 Region {
@@ -500,7 +497,7 @@ impl Run {
     }
     pub fn ownership(&self) -> RunOwnership {
         RunOwnership {
-            activations: self.activations.len(),
+            activations: self.activations.iter().flatten().count(),
             strands: self.live_strands,
             regions: self.regions.len(),
             timers: self.timers.len(),
@@ -626,7 +623,8 @@ impl Run {
             if let Some(front) = self.ready.front()
                 && let Some(owner) = self
                     .activations
-                    .get(&front.sequence)
+                    .get(front.sequence as usize)
+                    .and_then(Option::as_ref)
                     .and_then(|a| a.pull_owner)
                 && owner != front.id
                 && let Some(position) = self
@@ -642,15 +640,20 @@ impl Run {
             };
             last = Some(activation.id);
             let mut quantum = if activation.cleanup {
-                remaining
-                    .min(activation.cleanup_remaining)
-                    .min(self.activations[&activation.sequence].cleanup_remaining)
+                remaining.min(activation.cleanup_remaining).min(
+                    self.activations[activation.sequence as usize]
+                        .as_ref()
+                        .unwrap()
+                        .cleanup_remaining,
+                )
             } else {
                 remaining
             };
             if quantum == 0
                 || (activation.cleanup
-                    && self.activations[&activation.sequence]
+                    && self.activations[activation.sequence as usize]
+                        .as_ref()
+                        .unwrap()
                         .cleanup_deadline
                         .is_some_and(|deadline| self.now >= deadline))
             {
@@ -658,7 +661,8 @@ impl Run {
                 remaining -= 1;
                 let shared = self
                     .activations
-                    .get_mut(&activation.sequence)
+                    .get_mut(activation.sequence as usize)
+                    .and_then(Option::as_mut)
                     .ok_or(RunError::InvalidState)?;
                 if let Some(scope) = shared.cleanup_scope.take() {
                     shared.data.finish_cleanup(scope);
@@ -678,7 +682,8 @@ impl Run {
             }
             let mut shared = self
                 .activations
-                .remove(&activation.sequence)
+                .get_mut(activation.sequence as usize)
+                .and_then(Option::take)
                 .ok_or(RunError::InvalidState)?;
             if activation.cleanup && shared.cleanup_scope.is_none() {
                 shared.cleanup_scope = Some(shared.data.scoped_cleanup(shared.cleanup_remaining)?);
@@ -696,7 +701,7 @@ impl Run {
                 }
                 shared.pull_owner = None;
             }
-            self.activations.insert(activation.sequence, shared);
+            self.activations[activation.sequence as usize] = Some(shared);
             if let Err(error) = result {
                 if activation.cleanup {
                     self.cleanup_truncated = self.cleanup_truncated.saturating_add(1);

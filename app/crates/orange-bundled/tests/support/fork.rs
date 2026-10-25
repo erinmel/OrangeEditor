@@ -595,3 +595,97 @@ proptest::proptest! {
         }
     }
 }
+
+#[test]
+#[ignore = "manual release Fork scaling; not an NFR or RSS acceptance gate"]
+fn fork_owner_scaling() {
+    use std::time::{Duration, Instant};
+    for join in ["all", "race"] {
+        for width in [1, 16, 128] {
+            let mut nodes = vec![
+                core(1, "on-start"),
+                fork(2, join, &(0..width).collect::<Vec<_>>()),
+            ];
+            let mut edges = vec![edge(1, 1, "then", 2, "in")];
+            for n in 0..width {
+                nodes.push(wait(n + 3, if n == 0 { 1 } else { 2 }));
+                edges.push(edge(n + 2, 2, &format!("branch#{n}"), n + 3, "in"));
+            }
+            let (doc, plan) = compiled(nodes, edges);
+            let execute = || {
+                let mut options = RunOptions::default();
+                options.limits.max_trace = 0;
+                let mut run =
+                    Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+                let mut operations = 0;
+                loop {
+                    let progress = run.pump(100000).unwrap();
+                    operations += progress.operations;
+                    if !progress.ready {
+                        break;
+                    }
+                }
+                let peak = run.ownership();
+                run.advance_to(1).unwrap();
+                loop {
+                    let progress = run.pump(100000).unwrap();
+                    operations += progress.operations;
+                    if !progress.ready {
+                        if let Some(at) = progress.next_wakeup {
+                            run.advance_to(at).unwrap();
+                        } else {
+                            break;
+                        }
+                    }
+                }
+                assert_eq!(run.ownership().regions, 0);
+                run.stop().unwrap();
+                run.dispose().unwrap();
+                (operations, peak)
+            };
+            let warmup = Instant::now();
+            while warmup.elapsed() < Duration::from_millis(500) {
+                std::hint::black_box(execute());
+            }
+            let mut samples = vec![];
+            for _ in 0..30 {
+                let start = Instant::now();
+                for _ in 0..8 {
+                    std::hint::black_box(execute());
+                }
+                samples.push(start.elapsed().as_nanos() as f64 / 8.0);
+            }
+            samples.sort_by(f64::total_cmp);
+            let (operations, peak) = execute();
+            eprintln!(
+                "Fork join={join} width={width}; 500ms warmup; 30x8 runs; lifecycle included; ns/run median={} p95={} max={}; work={operations}; owners={peak:?}",
+                samples[15], samples[28], samples[29]
+            );
+        }
+    }
+}
+
+#[test]
+fn repeated_forks_retire_owners_without_growing_live_capacity() {
+    fn send_sync<T: Send + Sync>() {}
+    send_sync::<Run>();
+    let (doc, plan) = compiled(
+        vec![core(1, "on-start"), count(2, 10000), fork(3, "all", &[0])],
+        vec![edge(1, 1, "then", 2, "in"), edge(2, 2, "body", 3, "in")],
+    );
+    let mut options = RunOptions::default();
+    options.limits.max_strands = 3;
+    options.limits.max_regions = 4;
+    options.limits.max_trace = 0;
+    let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+    drain(&mut run, 13);
+    assert_eq!(
+        run.ownership(),
+        orange_runtime::RunOwnership {
+            activations: 0,
+            strands: 0,
+            regions: 0,
+            timers: 0
+        }
+    );
+}
