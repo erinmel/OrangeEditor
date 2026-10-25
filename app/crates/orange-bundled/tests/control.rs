@@ -554,3 +554,156 @@ fn wait_range_faults_and_stopped_timer_cannot_resume() {
         }
     }
 }
+
+fn count(n: u32, times: i64) -> Json {
+    let mut node = core(n, "count");
+    node["inputs"] = json!({"count":{"type":"core/i64@1","value":times.to_string()}});
+    node
+}
+
+#[test]
+fn count_captures_count_and_publishes_fresh_indices_with_zero_and_negative_cases() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    for times in [-1, 0, 1, 3] {
+        let (doc, plan) = state_plan(
+            vec![
+                core(1, "on-start"),
+                count(2, times),
+                var_node(3, "set-variable", 100),
+                branch(4, true),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "body", 3, "in"),
+                edge(3, 2, "index", 3, "value"),
+                edge(4, 2, "completed", 4, "in"),
+            ],
+            vec![variable(100, "run", "core/i64@1", None)],
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        while run.pump(1).unwrap().ready {}
+        assert_eq!(
+            run.variable(id(100).parse().unwrap()).cloned(),
+            if times > 0 {
+                Some(orange_model::Value::I64(times - 1))
+            } else {
+                None
+            }
+        );
+        if times < 0 {
+            assert_eq!(
+                run.trace()
+                    .back()
+                    .unwrap()
+                    .fault
+                    .as_ref()
+                    .unwrap()
+                    .fault
+                    .code,
+                "core/OutOfRange"
+            );
+        } else {
+            assert_eq!(run.trace().back().unwrap().outcome, ControlOutcome::True);
+        }
+    }
+}
+
+#[test]
+fn break_and_continue_retire_remaining_sequence_steps_inside_loop_body() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    for control in ["break", "continue"] {
+        let (doc, plan) = state_plan(
+            vec![
+                core(1, "on-start"),
+                count(2, 3),
+                sequence(3, &[0, 1]),
+                core(4, control),
+                set_bool(5, 100, false),
+                branch(6, true),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "body", 3, "in"),
+                edge(3, 3, "then#0", 4, "in"),
+                edge(4, 3, "then#1", 5, "in"),
+                edge(5, 2, "completed", 6, "in"),
+            ],
+            vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        run.pump(300).unwrap();
+        assert_eq!(
+            run.variable(id(100).parse().unwrap()),
+            Some(&orange_model::Value::Bool(true))
+        );
+        assert_eq!(
+            run.trace()
+                .iter()
+                .filter(|e| e.node.to_string() == id(2) && e.outcome == ControlOutcome::Body)
+                .count(),
+            if control == "break" { 1 } else { 3 }
+        );
+        assert_eq!(run.trace().back().unwrap().node.to_string(), id(6));
+    }
+}
+
+#[test]
+fn count_body_waits_before_advancing_iteration_and_accumulates_three() {
+    use orange_runtime::{Run, RunOptions};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            count(2, 3),
+            wait(3, 5),
+            var_node(4, "get-variable", 100),
+            math(5, "add", 0, 1),
+            var_node(6, "set-variable", 100),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "body", 3, "in"),
+            edge(3, 3, "then", 6, "in"),
+            edge(4, 4, "value", 5, "a"),
+            edge(5, 5, "sum", 6, "value"),
+        ],
+        vec![variable(100, "run", "core/u64@1", Some(json!("0")))],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    for iteration in 0..3 {
+        let progress = run.pump(300).unwrap();
+        assert_eq!(progress.next_wakeup, Some((iteration + 1) * 5));
+        assert_eq!(
+            run.variable(id(100).parse().unwrap()),
+            Some(&orange_model::Value::U64(iteration))
+        );
+        run.advance_to((iteration + 1) * 5).unwrap();
+        // Use one item to deliver the completion; body execution remains scheduled.
+        run.pump(1).unwrap();
+    }
+    run.pump(300).unwrap();
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&orange_model::Value::U64(3))
+    );
+}

@@ -23,6 +23,13 @@ impl ControlIx {
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
     Entry,
+    Count {
+        count: usize,
+        body: Option<ControlIx>,
+        completed: Option<ControlIx>,
+    },
+    Break,
+    Continue,
     Yield,
     Wait {
         duration: usize,
@@ -68,6 +75,7 @@ impl ControlVariable {
 pub enum HostSource {
     Variable(usize),
     Error(ControlIx),
+    Index(ControlIx),
 }
 
 #[derive(Debug, Clone)]
@@ -78,6 +86,7 @@ pub struct ControlNode {
     pub(crate) failed: Option<ControlIx>,
     pub(crate) cancelled: Option<ControlIx>,
     pub(crate) fault_policy: FaultPolicy,
+    pub(crate) loop_owner: Option<ControlIx>,
 }
 impl ControlNode {
     pub fn node(&self) -> NodeId {
@@ -97,6 +106,9 @@ impl ControlNode {
     }
     pub fn fault_policy(&self) -> FaultPolicy {
         self.fault_policy
+    }
+    pub fn loop_owner(&self) -> Option<ControlIx> {
+        self.loop_owner
     }
 }
 
@@ -177,6 +189,9 @@ pub fn compile_control(
                 | "core/sequence"
                 | "core/yield"
                 | "core/wait"
+                | "core/count"
+                | "core/break"
+                | "core/continue"
         ) || node.definition.version != 1
             || node.config_version != 1
             || node.provider.is_some()
@@ -349,6 +364,22 @@ pub fn compile_control(
                 });
                 ControlOperation::Wait { duration }
             }
+            "core/count" => {
+                let count = roots.len();
+                roots.push(DemandRoot {
+                    id: format!("{id}/count"),
+                    node: *id,
+                    port: "count".parse().unwrap(),
+                    input: true,
+                });
+                ControlOperation::Count {
+                    count,
+                    body: target("body"),
+                    completed: target("completed"),
+                }
+            }
+            "core/break" => ControlOperation::Break,
+            "core/continue" => ControlOperation::Continue,
             _ => unreachable!("admitted control"),
         };
         for port in analysis.report().resolved[id]
@@ -373,6 +404,12 @@ pub fn compile_control(
                 .activation
                 .as_ref()
                 .map_or(FaultPolicy::Continue, |a| a.on_fault),
+            loop_owner: analysis
+                .report()
+                .regions
+                .loop_of(*id)
+                .and_then(|r| ids.get(&r.node))
+                .copied(),
         });
     }
     starts.sort_by_key(|i| {
@@ -433,11 +470,18 @@ pub fn compile_control(
         .iter()
         .map(|ix| {
             let node = &data.nodes()[ix.index()];
-            if let Some(variable) = variable_nodes.get(&node.node()) {
+            if document.root().nodes[&node.node()].definition.id.as_str() == "core/get-variable"
+                && let Some(variable) = variable_nodes.get(&node.node())
+            {
                 return Ok(HostSource::Variable(*variable));
             }
             let source = &data.slot_sources()[node.outputs()[0].index()];
             match source.port.port().as_str() {
+                "index" => ids
+                    .get(&source.node)
+                    .copied()
+                    .map(HostSource::Index)
+                    .ok_or(CompileError::ValidationIncomplete),
                 "error" => ids
                     .get(&source.node)
                     .copied()

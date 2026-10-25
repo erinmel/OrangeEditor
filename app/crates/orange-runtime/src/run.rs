@@ -42,6 +42,10 @@ pub enum ControlOutcome {
     Step(usize),
     Suspended,
     Yielded,
+    Body,
+    Completed,
+    Break,
+    Continue,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunEvent {
@@ -127,7 +131,15 @@ struct Timer {
     activation: Activation,
 }
 enum Cursor {
-    Sequence { owner: ControlIx, next: usize },
+    Sequence {
+        owner: ControlIx,
+        next: usize,
+    },
+    Count {
+        owner: ControlIx,
+        next: i64,
+        count: i64,
+    },
 }
 
 /// Checked control execution. Inspection is explicit; Debug never formats values.
@@ -383,6 +395,40 @@ impl Run {
                 return Ok(());
             };
             match cursor {
+                Cursor::Count { owner, next, count } => {
+                    let node = &plan.nodes()[owner.index()];
+                    let ControlOperation::Count {
+                        body, completed, ..
+                    } = node.operation()
+                    else {
+                        return Err(RunError::InvalidState);
+                    };
+                    if next < count {
+                        activation.stack.push(Cursor::Count {
+                            owner,
+                            next: next + 1,
+                            count,
+                        });
+                        Self::publish_index(&plan, activation, owner, Some(next));
+                        activation.pc = *body;
+                        activation.yielded = true;
+                        self.record(RunEvent {
+                            activation: activation.sequence,
+                            node: node.node(),
+                            outcome: ControlOutcome::Body,
+                            fault: None,
+                        });
+                    } else {
+                        Self::publish_index(&plan, activation, owner, None);
+                        activation.pc = *completed;
+                        self.record(RunEvent {
+                            activation: activation.sequence,
+                            node: node.node(),
+                            outcome: ControlOutcome::Completed,
+                            fault: None,
+                        });
+                    }
+                }
                 Cursor::Sequence { owner, next } => {
                     let ControlOperation::Sequence { steps } =
                         plan.nodes()[owner.index()].operation()
@@ -412,6 +458,70 @@ impl Run {
         }
         let (next, outcome, fault) = match node.operation() {
             ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
+            ControlOperation::Count {
+                count,
+                body,
+                completed,
+            } => {
+                let Some(result) = self.consume(activation, *count, budget)? else {
+                    return Ok(());
+                };
+                match result {
+                    FoldedValue::Fault(fault) => {
+                        (node.failed(), ControlOutcome::Failed, Some(fault))
+                    }
+                    FoldedValue::Value(Value::I64(count)) if count < 0 => (
+                        node.failed(),
+                        ControlOutcome::Failed,
+                        Some(ConstantFault {
+                            source: node.node(),
+                            fault: KernelFault {
+                                code: "core/OutOfRange",
+                                message_key: "core/count-out-of-range",
+                                message: "Loop count must be nonnegative.",
+                            },
+                        }),
+                    ),
+                    FoldedValue::Value(Value::I64(0)) => {
+                        (*completed, ControlOutcome::Completed, None)
+                    }
+                    FoldedValue::Value(Value::I64(count)) => {
+                        if activation.stack.len() == self.options.limits.max_region_depth {
+                            return Err(RunError::ResourceLimit);
+                        }
+                        activation.stack.push(Cursor::Count {
+                            owner: ix,
+                            next: 1,
+                            count,
+                        });
+                        Self::publish_index(&plan, activation, ix, Some(0));
+                        (*body, ControlOutcome::Body, None)
+                    }
+                    _ => return Err(DataError::KernelContract { node: node.node() }.into()),
+                }
+            }
+            ControlOperation::Break | ControlOperation::Continue => {
+                let owner = node.loop_owner().ok_or(RunError::InvalidState)?;
+                let position = activation
+                    .stack
+                    .iter()
+                    .rposition(|c| matches!(c,Cursor::Count {owner:active,..} if *active==owner))
+                    .ok_or(RunError::InvalidState)?;
+                let ControlOperation::Count { completed, .. } =
+                    plan.nodes()[owner.index()].operation()
+                else {
+                    return Err(RunError::InvalidState);
+                };
+                if matches!(node.operation(), ControlOperation::Break) {
+                    activation.stack.truncate(position);
+                    Self::publish_index(&plan, activation, owner, None);
+                    (*completed, ControlOutcome::Break, None)
+                } else {
+                    activation.stack.truncate(position + 1);
+                    activation.yielded = true;
+                    (None, ControlOutcome::Continue, None)
+                }
+            }
             ControlOperation::Yield => {
                 activation.yielded = true;
                 (node.then(), ControlOutcome::Yielded, None)
@@ -588,7 +698,7 @@ impl Run {
                             }),
                         })
                     }
-                    HostSource::Error(_) => activation.outputs[i].clone(),
+                    HostSource::Error(_) | HostSource::Index(_) => activation.outputs[i].clone(),
                 };
                 activation.inputs.push(value);
             }
@@ -612,6 +722,18 @@ impl Run {
                 Err(fault) => FoldedValue::Fault(fault.clone()),
             })),
             DataPoll::Ready(None) => Err(RunError::InvalidState),
+        }
+    }
+    fn publish_index(
+        plan: &ControlPlan,
+        activation: &mut Activation,
+        owner: ControlIx,
+        index: Option<i64>,
+    ) {
+        for (i, source) in plan.host_sources().iter().enumerate() {
+            if matches!(source,HostSource::Index(active) if *active==owner) {
+                activation.outputs[i] = index.map(|i| FoldedValue::Value(Value::I64(i)));
+            }
         }
     }
     pub fn stop(&mut self) -> Result<(), RunError> {
