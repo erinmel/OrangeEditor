@@ -800,3 +800,59 @@ fn compare_and_set_outputs_reinfer_consumers_and_keep_the_boolean_output() {
         assert_eq!(content(&doc), after);
     }
 }
+
+/// Two nodes of one definition in one component, solved to different arguments, must not
+/// share a projected signature.
+#[test]
+fn same_definition_nodes_in_one_component_keep_distinct_signatures() {
+    use common::generic::{core_converters, port, registry_builder};
+    use orange_model::catalog::{Determinism, NodeDefinition, Ports};
+    use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+    let param = |name: &str| serde_json::from_value(json!({"name": name})).unwrap();
+    let registry = registry_builder(core_converters(), None)
+        .definition(NodeDefinition {
+            definition: DefinitionRef {
+                id: "org.test/pair".parse().unwrap(),
+                version: 1,
+            },
+            config_version: 1,
+            kind: NodeKind::Pure,
+            volatility: None,
+            determinism: Determinism::Deterministic,
+            suspends: None,
+            type_params: vec![param("T"), param("U")],
+            ports: Ports::Declared(vec![
+                port("x", "input", "$T"),
+                PortDescriptor::data_out("y", "$U".parse().unwrap(), OutputSource::Computed),
+            ]),
+            references: Vec::new(),
+            specializations: None,
+            config_schema: None,
+        })
+        .build()
+        .unwrap();
+    let pair = |n: u8, out: &str| {
+        json!({"id": node_id(n), "definition_id": "org.test/pair", "definition_version": 1,
+            "config_version": 1, "config": {}, "type_pins": {"U": out}})
+    };
+    let mut doc = document(
+        vec![
+            typed_source(1, "i64"),
+            pair(2, "core/f64@1"),
+            pair(3, "core/i32@1"),
+        ],
+        vec![],
+    );
+    let done = apply_inferred(
+        &mut doc,
+        [
+            connect(data_edge(1, (1, "value"), (2, "x"))),
+            connect(data_edge(2, (2, "y"), (3, "x"))),
+        ],
+        &registry,
+    )
+    .unwrap();
+    assert!(done.issues.is_empty(), "{:?}", done.issues);
+    assert_eq!(signature_types(&doc, 2), ["core/i64@1", "core/f64@1"]);
+    assert_eq!(signature_types(&doc, 3), ["core/f64@1", "core/i32@1"]);
+}

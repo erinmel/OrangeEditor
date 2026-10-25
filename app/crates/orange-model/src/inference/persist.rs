@@ -11,15 +11,16 @@
 //! representable document. It simply gets no `type_args` for the affected parameters, and its
 //! signature keeps `$name` for them. The issues are returned for the caller to report.
 
-use std::collections::BTreeSet;
+use std::borrow::Cow;
+use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use super::component::{ComponentInference, InferenceIssue, infer_components};
-use crate::catalog::{RegistrySnapshot, call_interface};
-use crate::document::GraphDocument;
+use crate::catalog::{RegistrySnapshot, TypeArgs, call_interface};
+use crate::document::{DefinitionRef, GraphDocument, SignatureSnapshot};
 use crate::edit::{ChangeSet, Committed, DeclId, DocCommand};
 use crate::error::TxError;
-use crate::id::{EdgeId, NodeId};
+use crate::id::{EdgeId, NodeId, SignatureKey};
 use crate::index::DocIndex;
 use crate::signature::{project_with_suspension, semantic_key};
 
@@ -285,6 +286,10 @@ fn component_updates(
     component: &ComponentInference,
 ) -> Vec<DocCommand> {
     let mut commands = Vec::new();
+    // Nodes of one registry-declared definition with the same arguments share one projected
+    // snapshot and semantic key; contextual contracts are projected per node.
+    let mut projected: BTreeMap<(DefinitionRef, TypeArgs), (SignatureSnapshot, SignatureKey)> =
+        BTreeMap::new();
     for &id in &component.nodes {
         let Some(node) = document.node(id) else {
             continue;
@@ -306,13 +311,23 @@ fn component_updates(
             continue;
         };
         let args = component.type_args.get(&id).cloned().unwrap_or_default();
-        let snapshot = project_with_suspension(
-            template.kind,
-            template.suspends,
-            template.ports.iter().cloned(),
-            &args,
-        );
-        let key = semantic_key(&snapshot);
+        let project = || {
+            let snapshot = project_with_suspension(
+                template.kind,
+                template.suspends,
+                template.ports.iter().cloned(),
+                &args,
+            );
+            let key = semantic_key(&snapshot);
+            (snapshot, key)
+        };
+        let (snapshot, key) = match &template {
+            Cow::Borrowed(_) => projected
+                .entry((node.definition.clone(), args.clone()))
+                .or_insert_with(project)
+                .clone(),
+            Cow::Owned(_) => project(),
+        };
         if node.type_args != args {
             commands.push(DocCommand::SetTypeArgs { node: id, args });
         }
