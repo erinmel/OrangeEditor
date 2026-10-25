@@ -1172,3 +1172,48 @@ One native release probe, default features, seed 42, a 1,000-iteration Count acc
 Sorted batch means (ns/run): 210150, 210525, 210875, 211250, 211475, 211912.5, 212312.5, 212325, 212337.5, 212587.5, 212700, 212700, 212775, 212862.5, 212962.5, 213275, 213325, 213350, 213650, 213812.5, 213950, 214375, 214387.5, 214450, 214500, 214512.5, 214825, 215075, 215812.5, 216437.5.
 
 The supported headless cohort is qualified locally, not the complete E3/R1/R3 rows, general core completion, G2 API freeze, installed-package lifecycle, concrete services, editor or release gates.
+
+## PR #18 review corrections and verification (2026-10-24)
+
+The deep review at `62a115c` reproduced five defects/policy gaps in debug and release. Corrections at `9b958af` and `c035fa2` retain the supported subset and leave the PR unmerged:
+
+| Finding | Correction and durable regression |
+|---|---|
+| Unrelated host inputs could exhaust data retention in an inactive path; execution scanned every input per consumer | Shared per-consumer dependency projections, bounded metadata and demand-only publication. Regressions cover an inactive control arm, an inactive dynamic Select arm at pump budgets 1/1000, projection admission, existing snapshot interleaving and original fault/index provenance. |
+| Control-only Yield cycles ignored cancellation until run fuel exhaustion | Check the cancellation signal at every control/timer safe point. A concurrent cancellation during a two-million-item pump now stops successfully; existing cleanup/second-stop tests remain green. |
+| Two Get/Add/Set activations lost an increment at pump(1) | A pending Set retains scheduling ownership across internal data slices without retrying entropy. Both pump(1) and pump(1024) produce total 2. Read-only snapshot interleaving remains supported. |
+| Initializers and constants each spent the entire configured retention pool | One combined compile budget, with remaining allowance passed to data lowering. A 356-byte plan rejects a 256-byte limit and accepts 512. |
+| Saturated ordinary activation capacity rejected graceful stop | Separate bounded shutdown capacity, frames and ready storage reserved at startup. Tests cover a waiting run at normal capacity, actual On Stop mutation/drain, insufficient shutdown reserve rejection at start, and no On Stop execution on immediate stop. |
+
+Selected local environment: Windows x86_64 MSVC, rustc 1.99.1 (58cf8f9c3 2026-10-13), cargo 1.99.1 (5f94df478 2026-08-27), Node.js 24.18.0, default features. MSRV remains 1.97.1. Cargo.lock is unchanged, SHA-256 `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`; no dependencies or features added.
+
+| Executed command | Result |
+|---|---|
+| `cargo test --workspace --locked` | PASS: 707 passed, 9 manual timing tests ignored |
+| `cargo test -p orange-bundled -p orange-compiler -p orange-runtime --release --locked` | PASS: 161 passed, 3 manual timing tests ignored |
+| `cargo test -p orange-bundled --test control --locked` | PASS: 38 passed, 2 manual timing tests ignored; includes eight added behavior regressions |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | PASS |
+| `cargo doc --workspace --no-deps --locked` with `RUSTDOCFLAGS=-D warnings` | PASS; caller environment restored |
+| `node tools/check-cargo-metadata.mjs --self-test` | PASS: 9 fixtures |
+| `node tools/check-cargo-metadata.mjs` / `--msrv` | PASS: boundary / declared MSRV metadata |
+| `cargo run -p orange-bundled --example headless_control --locked` | PASS: `total=3; virtual_time_ns=10` |
+| `git diff --check` | PASS |
+
+The incremental filesystem cache emitted hard-link warnings and successfully copied files; these commands passed. Local Rust 1.97.1, Linux/macOS execution and security/dependency CI require remote checks on the new candidate. Earlier green CI on `62a115c` does not qualify these corrections.
+
+### Repeated local scaling and control probes
+
+Executed `cargo test -p orange-bundled --release --locked --test control review_unrelated_host_input_scaling -- --ignored --nocapture`. Count performs 1,000 literal bool writes, with 0/64/512 unrelated Get/Branch pairs. Compilation excluded; start/frame preparation, drive and drop included; explicit stop/dispose excluded; tracing disabled. Each size warms up one second and records 30 individual runs. All sizes now consume exactly 3,003 work items; the probe asserts this.
+
+| Unrelated inputs | Before median µs | After median µs | After p95 µs |
+|---|---:|---:|---:|
+| 0 | 103.6 | 107.8 | 109.8 |
+| 64 | 1797.5 | 111.4 | 112.4 |
+| 512 | 13633.5 | 123.7 | 139.8 |
+
+The remaining size difference includes startup/frame preparation; this does not establish zero allocation, fixed RSS, tail latency or an NFR/platform gate.
+
+Also repeated `cargo test -p orange-bundled --release --locked --test control headless_control_timing_baseline -- --ignored --nocapture`: the existing Count-1000 Get/Add/Set probe includes start/run/stop/dispose, tracing disabled, 10-second warmup, 30 samples of eight runs. Updated counted work is 9,003 items/run because actual host demand/resume is explicit. Batch means: median 213443.8 ns/run, p95 229200.0, maximum 230287.5. The previous section's 8,004-item figure describes the earlier candidate only. Both explicitly invoked probes passed.
+
+Public source compatibility: unfrozen RunLimits adds max_stop_activations (default 256); exhaustive struct literals need the new field. Public DataPoll and missing-input errors keep their behavior. No persisted graph/schema changes. Full core, host/package/service, UI and API freeze gates remain open.
