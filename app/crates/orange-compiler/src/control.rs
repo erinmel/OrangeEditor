@@ -278,7 +278,9 @@ pub fn compile_control(
         variable_nodes.insert(node.id, variable_ids[&id]);
     }
     let mut adjacency = BTreeMap::new();
+    let mut producers = BTreeMap::new();
     for edge in document.root().edges.values() {
+        producers.insert((edge.to.node, edge.to.port.clone()), edge.from.node);
         if controls.contains(&edge.to.node) && controls.contains(&edge.from.node) {
             let sig = &analysis.report().resolved[&edge.from.node];
             if (sig
@@ -474,12 +476,7 @@ pub fn compile_control(
         .iter()
         .filter_map(|r| {
             if r.input {
-                document
-                    .root()
-                    .edges
-                    .values()
-                    .find(|e| e.to.node == r.node && e.to.port == r.port)
-                    .map(|e| e.from.node)
+                producers.get(&(r.node, r.port.clone())).copied()
             } else {
                 Some(r.node)
             }
