@@ -255,6 +255,11 @@ impl DataActivation {
     /// or between pulls. A rejected value changes nothing and does not abort the
     /// epoch. Values never carry over: each epoch needs its own.
     pub fn set_input(&mut self, index: usize, value: Value) -> Result<(), DataError> {
+        self.set_input_outcome(index, FoldedValue::Value(value))
+    }
+    /// Trusted host/control input publication. A graph fault stays a fault rather
+    /// than being mistaken for a missing infrastructure input or an ordinary Err.
+    pub fn set_input_outcome(&mut self, index: usize, value: FoldedValue) -> Result<(), DataError> {
         self.checkpoint()?;
         if let Some(error) = self.state.failed {
             return Err(error);
@@ -269,11 +274,18 @@ impl DataActivation {
             return Err(DataError::KernelContract { node: node.node() });
         };
         if self.state.memo[node.index().index()] == self.state.epoch
-            || self.plan.value_charge(*slot, &value).is_none()
+            || match &value {
+                FoldedValue::Value(value) => self.plan.value_charge(*slot, value),
+                FoldedValue::Fault(fault) => self.plan.fault_charge(fault),
+            }
+            .is_none()
         {
             return Err(invalid);
         }
-        self.state.publish_value(&self.plan, node, value)
+        match value {
+            FoldedValue::Value(value) => self.state.publish_value(&self.plan, node, value),
+            FoldedValue::Fault(fault) => self.state.publish_fault(&self.plan, node, fault),
+        }
     }
     /// Pull one ordered export inside the current explicit epoch. Other pulls in
     /// the same epoch share producers. Borrowed results prevent concurrent mutation.

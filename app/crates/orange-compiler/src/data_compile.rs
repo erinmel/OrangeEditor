@@ -153,9 +153,22 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     }
                     let sig = &analysis.report().resolved[&node];
                     if self.host_nodes.contains(&node) {
-                        for port in sig.ports.iter().filter(|p| {
-                            p.kind == PortKind::Data && p.direction == PortDirection::Output
-                        }) {
+                        let mut ports: Vec<_> = sig
+                            .ports
+                            .iter()
+                            .filter(|p| {
+                                p.kind == PortKind::Data && p.direction == PortDirection::Output
+                            })
+                            .cloned()
+                            .collect();
+                        if sig.implicit_ports().contains(&"error") {
+                            ports.push(PortDescriptor::data_out(
+                                "error",
+                                "core/error@1".parse().expect("fixed type"),
+                                orange_model::document::OutputSource::Execution,
+                            ));
+                        }
+                        for port in &ports {
                             let slot = self.push(node, port, None)?;
                             let index = NodeIx(
                                 u32::try_from(self.plan.nodes.len())

@@ -107,6 +107,8 @@ Priority: **M** required for the foundation 1.0; **S** optional/deferred, not a 
 
 ## Workflows and boundaries
 
+E3 control execution trace (2026-10-24; FR-04/08/12/14/16/44-47): checked Start/Stop/Branch plans and bounded data safe points now support headless local/run Get/Set execution for the admitted plan types, with initializer validation, consumption snapshots and original uninitialized-read fault identity. This supersedes older claims that all mutation execution is absent, only for these Get/Set operations. Update/shared state, full structured execution, events/resources and qualification remain separate slices. Exact evidence is recorded in 10 when the integrated PR candidate is qualified.
+
 1. **Logic and reuse:** declare a typed variable → calculate/branch/loop → Get/Set → inspect → save selected logic as a callable node → export/import and obtain the same outputs with the same seed and locks.
 2. **Trigger:** configure a key combination on its node, or press its test button → enqueue an activation → inspect the payload. Plugin events later use the same path; editing a binding never executes effects.
 3. **Automation:** file watch or timer → bounded read → transform → HTTP request or WebSocket send → typed success/failure handling. MQTT is a conditional adapter, not an assumption that all IoT protocols ship.

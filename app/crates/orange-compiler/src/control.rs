@@ -1,12 +1,13 @@
 //! Checked root control plans. The model owns language validation; this compiler
 //! additionally admits only the executable vocabulary implemented by the runtime.
-use crate::compile::{admit_roots, key, port_type};
+use crate::compile::{admit_roots, charge, decode, key, port_type, value_bytes};
 use crate::data_compile::{DemandRoot, lower_roots};
 use crate::*;
 use orange_model::GraphDocument;
+use orange_model::Value;
 use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{FaultPolicy, NodeKind, PortDirection, PortKind};
-use orange_model::id::NodeId;
+use orange_model::document::{FaultPolicy, NodeKind, PortDirection, PortKind, VarScope};
+use orange_model::id::{NodeId, VariableId};
 use orange_model::validation::ValidationAnalysis;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
@@ -22,11 +23,44 @@ impl ControlIx {
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
     Entry,
+    Set {
+        variable: usize,
+        value: usize,
+    },
     Branch {
         condition: usize,
         when_true: Option<ControlIx>,
         when_false: Option<ControlIx>,
     },
+}
+
+pub struct ControlVariable {
+    id: VariableId,
+    scope: VarScope,
+    ty: PlanType,
+    initial: Option<Value>,
+}
+impl ControlVariable {
+    pub fn id(&self) -> VariableId {
+        self.id
+    }
+    pub fn scope(&self) -> VarScope {
+        self.scope
+    }
+    pub fn ty(&self) -> &PlanType {
+        &self.ty
+    }
+    pub fn initial(&self) -> Option<&Value> {
+        self.initial.as_ref()
+    }
+    pub fn charge(&self, value: &Value) -> Option<usize> {
+        self.ty.accepts(value).then(|| value_bytes(value))
+    }
+}
+#[derive(Debug, Clone, Copy)]
+pub enum HostSource {
+    Variable(usize),
+    Error(ControlIx),
 }
 
 #[derive(Debug, Clone)]
@@ -65,6 +99,8 @@ pub struct ControlPlan {
     pub(crate) nodes: Box<[ControlNode]>,
     pub(crate) starts: Box<[ControlIx]>,
     pub(crate) stops: Box<[ControlIx]>,
+    pub(crate) variables: Box<[ControlVariable]>,
+    pub(crate) host_sources: Box<[HostSource]>,
 }
 impl std::fmt::Debug for ControlPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -87,6 +123,13 @@ impl ControlPlan {
     }
     pub fn stops(&self) -> &[ControlIx] {
         &self.stops
+    }
+    pub fn variables(&self) -> &[ControlVariable] {
+        &self.variables
+    }
+    /// Parallel to data().host_inputs(), resolved once outside execution.
+    pub fn host_sources(&self) -> &[HostSource] {
+        &self.host_sources
     }
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
         self.data.is_current(document, registry)
@@ -120,7 +163,7 @@ pub fn compile_control(
         }
         if !matches!(
             node.definition.id.as_str(),
-            "core/on-start" | "core/on-stop" | "core/branch"
+            "core/on-start" | "core/on-stop" | "core/branch" | "core/set-variable"
         ) || node.definition.version != 1
             || node.config_version != 1
             || node.provider.is_some()
@@ -137,6 +180,64 @@ pub fn compile_control(
         .enumerate()
         .map(|(i, id)| (*id, ControlIx(i)))
         .collect();
+    let mut variables = Vec::new();
+    let mut variable_ids = BTreeMap::new();
+    let mut variable_nodes = BTreeMap::new();
+    let mut bytes = 0;
+    for node in document.root().nodes.values() {
+        options.checkpoint()?;
+        if crate::compile::is_state_read(&snapshot, node)
+            && node.definition.id.as_str() != "core/get-variable"
+        {
+            return Err(CompileError::UnsupportedNode { node: node.id });
+        }
+        if !matches!(
+            node.definition.id.as_str(),
+            "core/get-variable" | "core/set-variable"
+        ) {
+            continue;
+        }
+        let id: VariableId = node
+            .config
+            .get("variable")
+            .and_then(|v| v.as_str())
+            .and_then(|s| s.parse().ok())
+            .ok_or(CompileError::ValidationIncomplete)?;
+        let declaration = &document.variables()[&id];
+        if declaration.scope == VarScope::Workspace {
+            return Err(CompileError::UnsupportedNode { node: node.id });
+        }
+        if !variable_ids.contains_key(&id) {
+            let ty = PlanType::parse(declaration.ty.as_str())
+                .ok_or(CompileError::UnsupportedNode { node: node.id })?;
+            let initial = if let Some(literal) = &declaration.init {
+                Some(
+                    decode(
+                        literal,
+                        &ty,
+                        &snapshot,
+                        options.limits.max_constant_bytes.saturating_sub(bytes),
+                    )?
+                    .ok_or(CompileError::UnsupportedNode { node: node.id })?,
+                )
+            } else {
+                None
+            };
+            charge(
+                &mut bytes,
+                initial.as_ref().map_or(16, value_bytes),
+                options.limits.max_constant_bytes,
+            )?;
+            variable_ids.insert(id, variables.len());
+            variables.push(ControlVariable {
+                id,
+                scope: declaration.scope,
+                ty,
+                initial,
+            });
+        }
+        variable_nodes.insert(node.id, variable_ids[&id]);
+    }
     let mut adjacency = BTreeMap::new();
     for edge in document.root().edges.values() {
         if controls.contains(&edge.to.node) && controls.contains(&edge.from.node) {
@@ -188,6 +289,19 @@ pub fn compile_control(
                     condition,
                     when_true: target("true"),
                     when_false: target("false"),
+                }
+            }
+            "core/set-variable" => {
+                let value = roots.len();
+                roots.push(DemandRoot {
+                    id: format!("{id}/value"),
+                    node: *id,
+                    port: "value".parse().unwrap(),
+                    input: true,
+                });
+                ControlOperation::Set {
+                    variable: variable_nodes[id],
+                    value,
                 }
             }
             _ => unreachable!("admitted control"),
@@ -269,10 +383,31 @@ pub fn compile_control(
     let data = lower_roots(
         document, snapshot, analysis, resolver, options, admission, &roots,
     )?;
+    let host_sources = data
+        .host_inputs()
+        .iter()
+        .map(|ix| {
+            let node = &data.nodes()[ix.index()];
+            if let Some(variable) = variable_nodes.get(&node.node()) {
+                return Ok(HostSource::Variable(*variable));
+            }
+            let source = &data.slot_sources()[node.outputs()[0].index()];
+            match source.port.port().as_str() {
+                "error" => ids
+                    .get(&source.node)
+                    .copied()
+                    .map(HostSource::Error)
+                    .ok_or(CompileError::ValidationIncomplete),
+                _ => Err(CompileError::UnsupportedNode { node: source.node }),
+            }
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(ControlPlan {
         data: Arc::new(data),
         nodes: nodes.into(),
         starts: starts.into(),
         stops: stops.into(),
+        variables: variables.into(),
+        host_sources: host_sources.into(),
     })
 }

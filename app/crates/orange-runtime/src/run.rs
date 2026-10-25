@@ -1,9 +1,11 @@
 //! A host-driven logical actor. No worker thread, OS clock or editor dependency.
 use crate::{DataActivation, DataError, DataOptions, DataPoll};
-use orange_compiler::{ConstantFault, ControlIx, ControlOperation, ControlPlan};
+use orange_compiler::{
+    ConstantFault, ControlIx, ControlOperation, ControlPlan, FoldedValue, HostSource, KernelFault,
+};
 use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::FaultPolicy;
-use orange_model::id::NodeId;
+use orange_model::document::{FaultPolicy, VarScope};
+use orange_model::id::{NodeId, VariableId};
 use orange_model::{GraphDocument, Value};
 use std::collections::VecDeque;
 use std::sync::{
@@ -50,6 +52,7 @@ pub struct RunLimits {
     pub max_activations: usize,
     pub max_operations: usize,
     pub max_trace: usize,
+    pub max_state_bytes: usize,
 }
 impl Default for RunLimits {
     fn default() -> Self {
@@ -57,6 +60,7 @@ impl Default for RunLimits {
             max_activations: 256,
             max_operations: 10_000_000,
             max_trace: 1024,
+            max_state_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -98,6 +102,11 @@ struct Activation {
     pc: Option<ControlIx>,
     data: DataActivation,
     pull: Option<usize>,
+    locals: Vec<Option<Value>>,
+    local_bytes: usize,
+    inputs: Vec<Option<FoldedValue>>,
+    supplied: usize,
+    outputs: Vec<Option<FoldedValue>>,
 }
 
 /// Checked control execution. Inspection is explicit; Debug never formats values.
@@ -110,6 +119,9 @@ pub struct Run {
     trace: VecDeque<RunEvent>,
     trace_dropped: u64,
     operations: usize,
+    variables: Vec<Option<Value>>,
+    state_bytes: usize,
+    versions: Vec<u64>,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -139,6 +151,29 @@ impl Run {
             return Err(RunError::ResourceLimit);
         }
         let mut ready = VecDeque::new();
+        let mut state_bytes = 0usize;
+        let mut local_bytes = 0usize;
+        let mut variables = Vec::new();
+        let mut locals = Vec::new();
+        for var in plan.variables() {
+            let value = var.initial().cloned();
+            let bytes = value.as_ref().and_then(|v| var.charge(v)).unwrap_or(16);
+            let (cell, total) = if var.scope() == VarScope::Local {
+                (None, &mut local_bytes)
+            } else {
+                (value.clone(), &mut state_bytes)
+            };
+            *total = total
+                .checked_add(bytes)
+                .filter(|n| *n <= options.limits.max_state_bytes)
+                .ok_or(RunError::ResourceLimit)?;
+            variables.push(cell);
+            locals.push(if var.scope() == VarScope::Local {
+                value
+            } else {
+                None
+            });
+        }
         for (sequence, entry) in plan.starts().iter().copied().enumerate() {
             ready.push_back(Activation {
                 sequence: sequence as u64,
@@ -153,6 +188,11 @@ impl Run {
                     options.data.clone(),
                 )?,
                 pull: None,
+                locals: locals.clone(),
+                local_bytes,
+                inputs: vec![],
+                supplied: 0,
+                outputs: vec![None; plan.host_sources().len()],
             });
         }
         Ok(Self {
@@ -164,6 +204,9 @@ impl Run {
             trace: VecDeque::new(),
             trace_dropped: 0,
             operations: 0,
+            versions: vec![0; variables.len()],
+            variables,
+            state_bytes,
         })
     }
     pub fn id(&self) -> u64 {
@@ -177,6 +220,16 @@ impl Run {
     }
     pub fn trace_dropped(&self) -> u64 {
         self.trace_dropped
+    }
+    /// Explicit run-state inspection; activation-local cells are not shared.
+    pub fn variable(&self, id: VariableId) -> Option<&Value> {
+        let index = self
+            .plan
+            .as_ref()?
+            .variables()
+            .iter()
+            .position(|v| v.id() == id && v.scope() == VarScope::Run)?;
+        self.variables[index].as_ref()
     }
     fn record(&mut self, event: RunEvent) {
         if self.options.limits.max_trace == 0 {
@@ -212,7 +265,7 @@ impl Run {
                 return Err(error);
             }
             if activation.pc.is_some() {
-                self.ready.push_back(activation);
+                self.ready.push_front(activation);
             }
         }
         let count = initial - remaining;
@@ -245,25 +298,74 @@ impl Run {
                 when_true,
                 when_false,
             } => {
-                if activation.pull.is_none() {
-                    activation.data.begin_epoch()?;
-                    activation.pull = Some(*condition);
-                }
-                let result = match activation.data.poll_export(*condition, budget)? {
-                    DataPoll::Pending => return Ok(()),
-                    DataPoll::Ready(result) => {
-                        result.ok_or(DataError::KernelContract { node: node.node() })?
-                    }
+                let Some(result) = self.consume(activation, *condition, budget)? else {
+                    return Ok(());
                 };
-                match result.outcome {
-                    Ok(Value::Bool(true)) => (*when_true, ControlOutcome::True, None),
-                    Ok(Value::Bool(false)) => (*when_false, ControlOutcome::False, None),
-                    Err(fault) => (node.failed(), ControlOutcome::Failed, Some(fault.clone())),
+                match result {
+                    FoldedValue::Value(Value::Bool(true)) => {
+                        (*when_true, ControlOutcome::True, None)
+                    }
+                    FoldedValue::Value(Value::Bool(false)) => {
+                        (*when_false, ControlOutcome::False, None)
+                    }
+                    FoldedValue::Fault(fault) => {
+                        (node.failed(), ControlOutcome::Failed, Some(fault))
+                    }
                     _ => return Err(DataError::KernelContract { node: node.node() }.into()),
+                }
+            }
+            ControlOperation::Set { variable, value } => {
+                let Some(result) = self.consume(activation, *value, budget)? else {
+                    return Ok(());
+                };
+                match result {
+                    FoldedValue::Fault(fault) => {
+                        (node.failed(), ControlOutcome::Failed, Some(fault))
+                    }
+                    FoldedValue::Value(value) => {
+                        let var = &plan.variables()[*variable];
+                        let (store, retained) = if var.scope() == VarScope::Local {
+                            (&mut activation.locals, &mut activation.local_bytes)
+                        } else {
+                            (&mut self.variables, &mut self.state_bytes)
+                        };
+                        let old = store[*variable]
+                            .as_ref()
+                            .and_then(|v| var.charge(v))
+                            .unwrap_or(16);
+                        let new = var
+                            .charge(&value)
+                            .ok_or(DataError::KernelContract { node: node.node() })?;
+                        let bytes = retained
+                            .checked_sub(old)
+                            .and_then(|b| b.checked_add(new))
+                            .filter(|b| *b <= self.options.limits.max_state_bytes)
+                            .ok_or(RunError::ResourceLimit)?;
+                        let version = self.versions[*variable]
+                            .checked_add(1)
+                            .ok_or(RunError::ResourceLimit)?;
+                        *retained = bytes;
+                        store[*variable] = Some(value);
+                        self.versions[*variable] = version;
+                        (node.then(), ControlOutcome::Then, None)
+                    }
                 }
             }
         };
         activation.pull = None;
+        activation.inputs.clear();
+        if let Some(fault) = &fault {
+            for (i, source) in plan.host_sources().iter().enumerate() {
+                if matches!(source, HostSource::Error(owner) if *owner == ix) {
+                    activation.outputs[i] = Some(FoldedValue::Value(Value::Err(Arc::new(
+                        orange_model::value::NodeError {
+                            code: fault.fault.code.into(),
+                            node: Some(fault.source),
+                        },
+                    ))));
+                }
+            }
+        }
         self.record(RunEvent {
             activation: activation.sequence,
             node: node.node(),
@@ -280,6 +382,66 @@ impl Run {
         activation.pc = next;
         Ok(())
     }
+    fn consume(
+        &mut self,
+        activation: &mut Activation,
+        root: usize,
+        budget: &mut usize,
+    ) -> Result<Option<FoldedValue>, RunError> {
+        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?;
+        if activation.pull.is_none() {
+            activation.data.begin_epoch()?;
+            activation.pull = Some(root);
+            activation.supplied = 0;
+            activation.inputs.clear();
+            for (i, source) in plan.host_sources().iter().enumerate() {
+                let value = match source {
+                    HostSource::Variable(index) => {
+                        let var = &plan.variables()[*index];
+                        let cell = if var.scope() == VarScope::Local {
+                            &activation.locals[*index]
+                        } else {
+                            &self.variables[*index]
+                        };
+                        Some(match cell {
+                            Some(value) => FoldedValue::Value(value.clone()),
+                            None => FoldedValue::Fault(ConstantFault {
+                                source: plan.data().nodes()[plan.data().host_inputs()[i].index()]
+                                    .node(),
+                                fault: KernelFault {
+                                    code: "core/UninitializedVariable",
+                                    message_key: "core/uninitialized-variable",
+                                    message: "The variable has not been initialized.",
+                                },
+                            }),
+                        })
+                    }
+                    HostSource::Error(_) => activation.outputs[i].clone(),
+                };
+                activation.inputs.push(value);
+            }
+        }
+        while activation.supplied < activation.inputs.len() {
+            if *budget == 0 {
+                return Ok(None);
+            }
+            *budget -= 1;
+            if let Some(value) = &activation.inputs[activation.supplied] {
+                activation
+                    .data
+                    .set_input_outcome(activation.supplied, value.clone())?;
+            }
+            activation.supplied += 1;
+        }
+        match activation.data.poll_export(root, budget)? {
+            DataPoll::Pending => Ok(None),
+            DataPoll::Ready(Some(value)) => Ok(Some(match value.outcome {
+                Ok(value) => FoldedValue::Value(value.clone()),
+                Err(fault) => FoldedValue::Fault(fault.clone()),
+            })),
+            DataPoll::Ready(None) => Err(RunError::InvalidState),
+        }
+    }
     pub fn stop(&mut self) -> Result<(), RunError> {
         if self.state != RunState::Running && self.state != RunState::Faulted {
             return Err(RunError::InvalidState);
@@ -293,6 +455,9 @@ impl Run {
             return Err(RunError::InvalidState);
         }
         self.plan = None;
+        self.variables.clear();
+        self.versions.clear();
+        self.state_bytes = 0;
         self.trace.clear();
         self.state = RunState::Disposed;
         Ok(())

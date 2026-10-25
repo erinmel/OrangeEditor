@@ -228,3 +228,157 @@ fn suspended_data_pull_keeps_epoch_and_samples_once() {
     direct.begin_epoch().unwrap();
     assert_eq!(&got, direct.export(0).unwrap().unwrap().outcome.unwrap());
 }
+
+fn state_plan(
+    nodes: Vec<Json>,
+    edges: Vec<Json>,
+    variables: Vec<Json>,
+) -> (
+    orange_model::GraphDocument,
+    std::sync::Arc<orange_compiler::ControlPlan>,
+) {
+    let (package, snapshot) = catalog();
+    let source = graph(&package, nodes, edges, vec![]);
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&source).unwrap()).unwrap();
+    raw["variables"] = json!(variables);
+    let doc = from_json(&raw.to_string()).unwrap();
+    let analysis = analyze(&doc, &snapshot);
+    assert!(
+        analysis.is_ready_for_lowering(&doc, &snapshot),
+        "{:?}",
+        analysis.report().diagnostics
+    );
+    let plan = compile_control(
+        &doc,
+        snapshot,
+        &analysis,
+        &package,
+        CompileOptions::default(),
+    )
+    .unwrap();
+    (doc, std::sync::Arc::new(plan))
+}
+fn variable(n: u32, scope: &str, ty: &str, init: Option<Json>) -> Json {
+    let mut v = json!({"id":id(n),"name":"sensitive display name","type":ty,"scope":scope});
+    if let Some(value) = init {
+        v["init"] = json!({"type":ty,"value":value});
+    }
+    v
+}
+fn var_node(n: u32, name: &str, var: u32) -> Json {
+    let mut node = core(n, name);
+    node["config"] = json!({"variable":id(var)});
+    node
+}
+fn set_bool(n: u32, var: u32, value: bool) -> Json {
+    let mut node = var_node(n, "set-variable", var);
+    node["inputs"] = json!({"value":{"type":"core/bool@1","value":value}});
+    node
+}
+
+#[test]
+fn run_get_observes_committed_set_and_uninitialized_read_routes_original_fault() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            set_bool(2, 100, false),
+            var_node(3, "get-variable", 100),
+            branch(4, true),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then", 4, "in"),
+            edge(3, 3, "value", 4, "condition"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    while run.pump(1).unwrap().ready {}
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&orange_model::Value::Bool(false))
+    );
+    assert_eq!(run.trace().back().unwrap().outcome, ControlOutcome::False);
+    assert!(!format!("{run:?}").contains("sensitive"));
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            branch(2, true),
+            var_node(3, "get-variable", 100),
+            branch(4, true),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 3, "value", 2, "condition"),
+            edge(3, 2, "failed", 4, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", None)],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(100).unwrap();
+    let event = &run.trace()[1];
+    assert_eq!(event.outcome, ControlOutcome::Failed);
+    assert_eq!(event.fault.as_ref().unwrap().source, id(3).parse().unwrap());
+    assert_eq!(
+        event.fault.as_ref().unwrap().fault.code,
+        "core/UninitializedVariable"
+    );
+    assert_eq!(run.trace().back().unwrap().node, id(4).parse().unwrap());
+}
+
+#[test]
+fn local_cells_reset_per_activation_and_run_cells_do_not_leak_across_runs() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            set_bool(2, 100, false),
+            branch(3, true),
+            var_node(4, "get-variable", 100),
+            core(5, "on-start"),
+            branch(6, true),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then", 3, "in"),
+            edge(3, 4, "value", 3, "condition"),
+            edge(4, 5, "then", 6, "in"),
+            edge(5, 4, "value", 6, "condition"),
+        ],
+        vec![variable(100, "local", "core/bool@1", Some(json!(true)))],
+    );
+    for _ in 0..2 {
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        run.pump(200).unwrap();
+        let outcomes: Vec<_> = run
+            .trace()
+            .iter()
+            .filter(|e| [id(3), id(6)].contains(&e.node.to_string()))
+            .map(|e| e.outcome)
+            .collect();
+        assert_eq!(outcomes, vec![ControlOutcome::False, ControlOutcome::True]);
+        assert!(run.variable(id(100).parse().unwrap()).is_none());
+    }
+}
