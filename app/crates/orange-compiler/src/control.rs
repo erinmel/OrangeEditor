@@ -184,6 +184,15 @@ pub fn compile_control(
     if !analysis.is_ready_for_lowering(document, &snapshot) {
         return Err(CompileError::ValidationIncomplete);
     }
+    // Reject cheap count failures before decoding initializers or building tables.
+    let mut graph_items = 0;
+    for count in [
+        document.root().nodes.len(),
+        document.root().edges.len(),
+        document.exports().len(),
+    ] {
+        charge(&mut graph_items, count, options.limits.max_graph_items)?;
+    }
     let mut controls = BTreeSet::new();
     for node in document.root().nodes.values() {
         let sig = &analysis.report().resolved[&node.id];
@@ -482,17 +491,29 @@ pub fn compile_control(
             }
         })
         .collect();
+    let mut data_options = options;
+    data_options.limits.max_constant_bytes = options
+        .limits
+        .max_constant_bytes
+        .checked_sub(bytes)
+        .ok_or(CompileError::ResourceLimit)?;
     let admission = admit_roots(
         document,
         &snapshot,
         analysis,
-        options,
+        data_options,
         true,
         &root_nodes,
         &controls,
     )?;
     let data = lower_roots(
-        document, snapshot, analysis, resolver, options, admission, &roots,
+        document,
+        snapshot,
+        analysis,
+        resolver,
+        data_options,
+        admission,
+        &roots,
     )?;
     let host_sources = data
         .host_inputs()
