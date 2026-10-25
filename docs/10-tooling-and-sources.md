@@ -1317,3 +1317,27 @@ Fork scaling uses 500 ms warmup per shape, 30 batches of eight full lifecycles, 
 | race / 128 | 34025.0 | 42512.5 | 261 | 1 / 129 / 130 / 128 |
 
 These measurements confirm one retained evaluator/activation, rather than one per branch, and complete owner retirement; they do not measure process memory or guarantee tail latency. Fan-out, region traversal and trusted native callbacks are bounded by admission/ownership limits rather than wall-clock preemption. Final PR CI and self-review remain required. Functions/other controls, events/reactivity, general resources/services, shared state/checkpoints, domains/API evolution and incremental/NFR work remain open.
+
+## Whole-codebase review fixes (2026-10-25)
+
+Implementation `d6041a1` fixes all seven reproduced findings: duplicate/inconsistent variadic counters, ignored explicit codec locks, transaction-iterator unwind, paste generator collisions, cleanup-scope entry ownership loss, layout-only executable invalidation, and recursive literal type-argument cloning. Contracts and FR/ADR trace are updated in 01/03/08/11/12. Unknown saved state remains round-trippable; invalid semantic state cannot publish an executable plan. Explicit codec locks, including unused ones, must resolve; absent format-v1 locks retain the existing structural codec default. No new dependency, crate, feature or saved schema field is introduced. `Cargo.lock` SHA-256 remains `e20eacb56cec10f874aa8c3869d5ab93b34831229a74b91332433db5f5267152`.
+
+Environment: Windows x86_64-pc-windows-msvc, selected rustup Rust/Cargo 1.99.1, default features, Node 24.18.0, unchanged lockfile. Declared MSRV is 1.97.1; local results are not an MSRV/cross-platform build claim. Commands executed on the corrected source:
+
+| Command/check | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` | PASS: 738 passed, 13 ignored, zero failures, including doctests |
+| `cargo test --workspace --release --locked --offline` | PASS: 738 passed, 13 ignored, zero failures, including doctests |
+| `cargo test -p orange-bundled --test core_integrity --locked --offline` | PASS: eight behavior regressions; one manual timing probe ignored |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS; only Cargo's existing OneDrive hard-link fallback notices |
+| `cargo fmt --all --check`; `git diff --check` | PASS |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --offline` (PowerShell environment equivalent) | PASS |
+| `node tools/check-cargo-metadata.mjs --self-test`; `node tools/check-cargo-metadata.mjs` | PASS: nine policy fixtures and core dependency boundary |
+| `node --test tools/release.test.mjs`; `node tools/release.mjs check` | PASS: seven tests; packaging remains intentionally disabled |
+| `cargo run -p orange-bundled --example headless_control --locked --offline`; corresponding `headless_fork` example | PASS: total 3 at 10 ns; all 10/10, any 5/10, race 5/5, detach 0/10 ns |
+
+Ten added ordinary regressions cover malformed Sequence/Fork identities and atomic insertion rejection, supported/unsupported codec locks and exact saved-payload preservation, ordinary/scratch iterator unwind, generated function-body/target collisions, cleanup entry fuel overflow with zero retained activation/strand/region owners, and semantic/layout freshness through undo/redo and pure evaluation. Existing scalar/aggregate codec properties and independent source/runtime oracles also pass. The stopped-run pump rejection is retained. The cleanup overflow path records one truncated cleanup rather than losing its checked-out activation.
+
+Explicit descriptive timing: `cargo test -p orange-bundled --test core_integrity --release --locked --offline measure_nested_none_literal_decoding -- --ignored --nocapture`. The probe decodes and drops 10,000 outer None values in a list of nested option types, with three warmups and five timed samples per type depth. Before the fix, recorded medians at depths 1/32/63 were 1,066/25,631/50,646 µs. Borrowing type arguments instead of cloning them yields 151/157/161 µs (sample maxima 152/157/163 µs). Type parsing remains in each decode; no timing assertion, allocator count, cross-OS comparison, general runtime speedup or NFR pass is claimed.
+
+Self-review checked every semantic-state consumer in compiler/evaluation entry, preserved whole-content binding for undo/index/edit proposals, checked type-lock validation executes once in combined analysis, and traced cleanup entry failures through activation restoration and normal region retirement. Paste occupancy uses binary UUID keys by typed namespace rather than allocating one UUID string per existing identity. Temporary review reproductions are promoted to durable behavior tests. Final-head remote CI is recorded separately after push; no merge is authorized.
