@@ -132,6 +132,8 @@ Renaming display text does not change stable definition, port, field or variant 
 
 ## Compiler
 
+The structured-concurrency cohort implements Fork on the same logical actor. Child strands share activation locals, data fuel and entropy identities; they retain separate control positions. One pending data consumption owns that activation's evaluator until it publishes or fails, while other activations can interleave across host slices. This conservative scheduling keeps its prologue frozen and does not open replacement sibling epochs. All/detach region accounting distinguishes publishing `completed` from retiring the enclosing region: detached descendants still keep a Sequence step or loop body alive.
+
 1. Parse envelope with size/depth checks; resolve exact package/type/provider locks against a registry snapshot.
 2. Validate schemas, signature snapshots, required inputs, the port connection matrix and cardinality ([11 §4](11-graph-language.md)), resource ownership and capability availability.
 3. Check persisted `type_args` against constraints, and specialize generic types; reject implicit conversions and illegal data/exec/event connections ([11 §5–6](11-graph-language.md)).

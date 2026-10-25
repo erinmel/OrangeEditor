@@ -3,7 +3,15 @@ use super::*;
 
 pub(super) enum RegionKind {
     Root,
-    Body { loop_owner: Option<ControlIx> },
+    Body {
+        loop_owner: Option<ControlIx>,
+    },
+    Branch,
+    Join {
+        owner: ControlIx,
+        mode: ForkJoin,
+        fired: bool,
+    },
 }
 pub(super) struct Region {
     pub parent: Option<u64>,
@@ -65,6 +73,7 @@ impl Run {
         region: u64,
     ) -> Result<Strand, RunError> {
         Ok(Strand {
+            fork: None,
             id: self.owner_id()?,
             region,
             sequence: caller.sequence,
@@ -98,6 +107,19 @@ impl Run {
                 return Ok(());
             }
             let r = self.regions.remove(&id).unwrap();
+            if let RegionKind::Join {
+                owner,
+                fired: false,
+                ..
+            } = r.kind
+            {
+                self.record(RunEvent {
+                    activation: r.activation,
+                    node: self.plan.as_ref().unwrap().nodes()[owner.index()].node(),
+                    outcome: ControlOutcome::Completed,
+                    fault: None,
+                });
+            }
             if let Some(caller) = r.continuation {
                 self.ready.push_front(caller);
             }
@@ -112,6 +134,108 @@ impl Run {
                 return Ok(());
             }
         }
+    }
+    pub(super) fn spawn_fork(
+        &mut self,
+        mut caller: Strand,
+        owner: ControlIx,
+    ) -> Result<(), RunError> {
+        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
+        let ControlOperation::Fork {
+            branches,
+            completed,
+            join,
+        } = plan.nodes()[owner.index()].operation()
+        else {
+            return Err(RunError::InvalidState);
+        };
+        if !matches!(join, ForkJoin::All | ForkJoin::Detach) {
+            return self.fail(RunError::InvalidState);
+        }
+        let n = branches.len();
+        let depth = self.regions[&caller.region].depth;
+        if n > self
+            .options
+            .limits
+            .max_strands
+            .saturating_sub(self.live_strands)
+            || n.checked_add(1).is_none_or(|count| {
+                count
+                    > self
+                        .options
+                        .limits
+                        .max_regions
+                        .saturating_sub(self.regions.len())
+            })
+            || depth.saturating_add(2) > self.options.limits.max_region_depth
+            || u64::try_from(n)
+                .ok()
+                .and_then(|n| n.checked_mul(2))
+                .and_then(|n| n.checked_add(1))
+                .and_then(|n| self.next_owner.checked_add(n))
+                .is_none()
+        {
+            return self.fail(RunError::ResourceLimit);
+        }
+        let group = self.owner_id()?;
+        let mut children = Vec::with_capacity(n);
+        for target in branches {
+            let region = self.owner_id()?;
+            let mut child = self.child_strand(&caller, region)?;
+            child.pc = *target;
+            self.regions.insert(
+                region,
+                Region {
+                    parent: Some(group),
+                    activation: caller.sequence,
+                    depth: depth + 2,
+                    live: 1,
+                    children: 0,
+                    continuation: None,
+                    kind: RegionKind::Branch,
+                },
+            );
+            children.push(child);
+        }
+        caller.pc = *completed;
+        self.regions.get_mut(&caller.region).unwrap().children += 1;
+        let parent = caller.region;
+        let activation = caller.sequence;
+        let detach = *join == ForkJoin::Detach;
+        let continuation = if detach {
+            self.record(RunEvent {
+                activation,
+                node: plan.nodes()[owner.index()].node(),
+                outcome: ControlOutcome::Completed,
+                fault: None,
+            });
+            self.ready.push_front(caller);
+            None
+        } else {
+            Some(caller)
+        };
+        self.regions.insert(
+            group,
+            Region {
+                parent: Some(parent),
+                activation,
+                depth: depth + 1,
+                live: 0,
+                children: n,
+                continuation,
+                kind: RegionKind::Join {
+                    owner,
+                    mode: *join,
+                    fired: detach,
+                },
+            },
+        );
+        self.live_strands += n;
+        for child in children.into_iter().rev() {
+            self.ready.push_front(child);
+        }
+        self.segment_owner = None;
+        Ok(())
     }
     pub(super) fn loop_region(&self, mut id: u64, owner: ControlIx) -> Result<u64, RunError> {
         loop {

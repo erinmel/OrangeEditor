@@ -2,7 +2,8 @@
 use crate::data::{HostPoll, PreparedData};
 use crate::{DataActivation, DataError, DataOptions};
 use orange_compiler::{
-    ConstantFault, ControlIx, ControlOperation, ControlPlan, FoldedValue, HostSource, KernelFault,
+    ConstantFault, ControlIx, ControlOperation, ControlPlan, FoldedValue, ForkJoin, HostSource,
+    KernelFault,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{FaultPolicy, VarScope};
@@ -48,6 +49,7 @@ pub enum StopMode {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlOutcome {
+    Forked,
     Then,
     True,
     False,
@@ -213,6 +215,7 @@ impl PullState {
 }
 
 struct Strand {
+    fork: Option<ControlIx>,
     id: u64,
     region: u64,
     enter_body: Option<Option<ControlIx>>,
@@ -230,6 +233,7 @@ struct Strand {
     cleanup_remaining: usize,
 }
 struct ActivationState {
+    pull_owner: Option<u64>,
     data: DataActivation,
     locals: Vec<Option<Value>>,
     local_bytes: usize,
@@ -381,6 +385,7 @@ impl Run {
             activations.insert(
                 sequence as u64,
                 ActivationState {
+                    pull_owner: None,
                     data: DataActivation::from_prepared(
                         prepared
                             .as_ref()
@@ -409,6 +414,7 @@ impl Run {
                 },
             );
             queue.push_back(Strand {
+                fork: None,
                 id: sequence as u64,
                 region: sequence as u64,
                 enter_body: None,
@@ -592,6 +598,23 @@ impl Run {
                 self.ready.push_back(timer.activation);
                 continue;
             }
+            // One pending consumption owns the shared activation evaluator.
+            // Other activations can interleave; sibling strands cannot open a
+            // replacement epoch or reset activation entropy/fuel under it.
+            if let Some(front) = self.ready.front()
+                && let Some(owner) = self
+                    .activations
+                    .get(&front.sequence)
+                    .and_then(|a| a.pull_owner)
+                && owner != front.id
+                && let Some(position) = self
+                    .ready
+                    .iter()
+                    .position(|s| s.sequence == front.sequence && s.id == owner)
+            {
+                let owner = self.ready.remove(position).unwrap();
+                self.ready.push_front(owner);
+            }
             let Some(mut activation) = self.ready.pop_front() else {
                 break;
             };
@@ -641,6 +664,10 @@ impl Run {
             }
             if activation.faulted {
                 self.retire_failed(activation)?;
+                continue;
+            }
+            if let Some(owner) = activation.fork.take() {
+                self.spawn_fork(activation, owner)?;
                 continue;
             }
             if let Some((region, is_break)) = activation.unwind.take() {
@@ -815,7 +842,10 @@ impl Run {
             return Ok(());
         }
         let (next, outcome, fault) = match node.operation() {
-            ControlOperation::Fork { .. } => return Err(RunError::InvalidState),
+            ControlOperation::Fork { .. } => {
+                activation.fork = Some(ix);
+                (None, ControlOutcome::Forked, None)
+            }
             ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
             ControlOperation::While {
                 condition,
@@ -1049,6 +1079,7 @@ impl Run {
         (next, outcome, fault): (Option<ControlIx>, ControlOutcome, Option<ConstantFault>),
     ) {
         let node = &plan.nodes()[ix.index()];
+        shared.pull_owner = None;
         activation.pull.reset();
         activation.reenter = None;
         if let Some(fault) = &fault {
@@ -1156,6 +1187,7 @@ impl Run {
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?;
         if activation.pull.active.is_none() {
             shared.data.begin_epoch()?;
+            shared.pull_owner = Some(activation.id);
             activation.pull.begin(root);
             for &i in plan.inputs_for(root).ok_or(RunError::InvalidState)? {
                 let source = &plan.host_sources()[i];

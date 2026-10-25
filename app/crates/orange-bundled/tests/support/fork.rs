@@ -58,3 +58,123 @@ fn root_ownership_is_admitted_before_publishing_a_run() {
         ));
     }
 }
+
+fn drain(run: &mut Run, budget: usize) {
+    for _ in 0..100_000 {
+        if !run.pump(budget).unwrap().ready {
+            return;
+        }
+    }
+    panic!("run did not reach a suspension or completion");
+}
+fn flag(run: &Run, n: u32) -> bool {
+    run.variable(id(n).parse().unwrap()) == Some(&orange_model::Value::Bool(true))
+}
+
+#[test]
+fn all_and_detach_keep_enclosing_sequence_alive_until_every_descendant_ends() {
+    for join in ["all", "detach"] {
+        for budget in [1, 7, 1000] {
+            let (doc, plan) = state_plan(
+                vec![
+                    core(1, "on-start"),
+                    sequence(2, &[0, 1]),
+                    fork(3, join, &[7, 2]),
+                    wait(4, 10),
+                    wait(5, 5),
+                    set_bool(6, 100, true),
+                    set_bool(7, 101, true),
+                    set_bool(8, 102, true),
+                    set_bool(9, 103, true),
+                ],
+                vec![
+                    edge(1, 1, "then", 2, "in"),
+                    edge(2, 2, "then#0", 3, "in"),
+                    edge(3, 3, "branch#7", 4, "in"),
+                    edge(4, 3, "branch#2", 5, "in"),
+                    edge(5, 4, "then", 6, "in"),
+                    edge(6, 5, "then", 7, "in"),
+                    edge(7, 3, "completed", 8, "in"),
+                    edge(8, 2, "then#1", 9, "in"),
+                ],
+                (100..104)
+                    .map(|n| variable(n, "run", "core/bool@1", Some(json!(false))))
+                    .collect(),
+            );
+            let mut run = Run::start(
+                plan.clone(),
+                &doc,
+                plan.data().snapshot(),
+                1,
+                RunOptions::default(),
+            )
+            .unwrap();
+            drain(&mut run, budget);
+            assert_eq!(flag(&run, 102), join == "detach");
+            assert!(!flag(&run, 103));
+            assert_eq!(run.pending_continuations(), 2);
+            run.advance_to(5).unwrap();
+            drain(&mut run, budget);
+            assert!(flag(&run, 101));
+            assert!(!flag(&run, 100));
+            assert!(!flag(&run, 103));
+            run.advance_to(10).unwrap();
+            drain(&mut run, budget);
+            assert!((100..104).all(|n| flag(&run, n)));
+            assert_eq!(
+                run.trace()
+                    .iter()
+                    .filter(|e| e.node.to_string() == id(3)
+                        && e.outcome == orange_runtime::ControlOutcome::Completed)
+                    .count(),
+                1
+            );
+        }
+    }
+}
+
+#[test]
+fn fork_shares_activation_local_cells_and_empty_branches_complete() {
+    for join in ["all", "detach"] {
+        let mut read = branch(6, false);
+        read.as_object_mut().unwrap().remove("inputs");
+        let (doc, plan) = state_plan(
+            vec![
+                core(1, "on-start"),
+                fork(2, join, &[8, 2, 5]),
+                set_bool(3, 100, true),
+                wait(4, 1),
+                var_node(5, "get-variable", 100),
+                read,
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "branch#8", 3, "in"),
+                edge(3, 2, "branch#2", 4, "in"),
+                edge(4, 4, "then", 6, "in"),
+                edge(5, 5, "value", 6, "condition"),
+            ],
+            vec![variable(100, "local", "core/bool@1", Some(json!(false)))],
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        drain(&mut run, 1);
+        run.advance_to(1).unwrap();
+        drain(&mut run, 1);
+        assert_eq!(
+            run.trace()
+                .iter()
+                .find(|e| e.node.to_string() == id(6))
+                .unwrap()
+                .outcome,
+            orange_runtime::ControlOutcome::True
+        );
+        assert_eq!(run.pending_continuations(), 0);
+    }
+}
