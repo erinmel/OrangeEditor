@@ -29,6 +29,12 @@ enum Task {
         selection: Option<Selection>,
     },
 }
+#[derive(Clone, Copy)]
+struct ProducedOutput {
+    slot: SlotIx,
+    producer: NodeIx,
+}
+
 struct Lowering<'a, R: EntropyKernelResolver> {
     document: &'a GraphDocument,
     analysis: &'a ValidationAnalysis,
@@ -39,8 +45,8 @@ struct Lowering<'a, R: EntropyKernelResolver> {
     folder: ConstantFolder<'a, R>,
     plan: DataPlan,
     completed: BTreeMap<NodeId, NodeIx>,
-    outputs: BTreeMap<(NodeId, PortKey), SlotIx>,
-    writers: BTreeMap<(NodeId, PortKey), NodeIx>,
+    outputs: BTreeMap<(NodeId, PortKey), ProducedOutput>,
+    work: Vec<Task>,
     bytes: usize,
     host_nodes: &'a std::collections::BTreeSet<NodeId>,
 }
@@ -79,12 +85,8 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         self.options.checkpoint()?;
         let port_key = key(port);
         if let Some(edge) = self.incoming.get(&(node, port_key.clone())) {
-            let slot = *self
+            let ProducedOutput { slot, producer } = *self
                 .outputs
-                .get(&(edge.from.node, edge.from.port.clone()))
-                .ok_or(CompileError::ValidationIncomplete)?;
-            let producer = *self
-                .writers
                 .get(&(edge.from.node, edge.from.port.clone()))
                 .ok_or(CompileError::ValidationIncomplete)?;
             return Ok(DataInput {
@@ -143,7 +145,8 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
     fn lower(&mut self, root: NodeId) -> Result<(), CompileError> {
         let analysis = self.analysis;
         let document = self.document;
-        let mut work = vec![Task::Enter(root)];
+        let mut work = std::mem::take(&mut self.work);
+        work.push(Task::Enter(root));
         while let Some(task) = work.pop() {
             self.options.checkpoint()?;
             let (node_id, selection) = match task {
@@ -174,8 +177,13 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                                 u32::try_from(self.plan.nodes.len())
                                     .map_err(|_| CompileError::ResourceLimit)?,
                             );
-                            self.outputs.insert((node, key(port)), slot);
-                            self.writers.insert((node, key(port)), index);
+                            self.outputs.insert(
+                                (node, key(port)),
+                                ProducedOutput {
+                                    slot,
+                                    producer: index,
+                                },
+                            );
                             self.plan.host_inputs.push(index);
                             self.plan.nodes.push(DataNode {
                                 index,
@@ -353,8 +361,13 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     None
                 };
                 let slot = self.push(node_id, port, value)?;
-                self.outputs.insert((node_id, key(port)), slot);
-                self.writers.insert((node_id, key(port)), index);
+                self.outputs.insert(
+                    (node_id, key(port)),
+                    ProducedOutput {
+                        slot,
+                        producer: index,
+                    },
+                );
                 outputs.push(slot);
             }
             if matches!(operation, DataOperation::Input) {
@@ -374,6 +387,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             });
             self.completed.insert(node_id, index);
         }
+        self.work = work;
         Ok(())
     }
 }
@@ -483,7 +497,7 @@ pub(crate) fn lower_roots(
         },
         completed: BTreeMap::new(),
         outputs: BTreeMap::new(),
-        writers: BTreeMap::new(),
+        work: Vec::new(),
         bytes: 0,
         host_nodes: &admission.host_nodes,
     };
@@ -499,8 +513,8 @@ pub(crate) fn lower_roots(
         let (slot, producer) = if export.input {
             if let Some(edge) = admission.incoming.get(&(export.node, export.port.clone())) {
                 state.lower(edge.from.node)?;
-                let slot = state.outputs[&(edge.from.node, edge.from.port.clone())];
-                let producer = state.writers[&(edge.from.node, edge.from.port.clone())];
+                let ProducedOutput { slot, producer } =
+                    state.outputs[&(edge.from.node, edge.from.port.clone())];
                 (slot, producer)
             } else {
                 let port = analysis.report().resolved[&export.node]
@@ -525,11 +539,10 @@ pub(crate) fn lower_roots(
             }
         } else {
             state.lower(export.node)?;
-            let slot = *state
+            let ProducedOutput { slot, producer } = *state
                 .outputs
                 .get(&(export.node, export.port.clone()))
                 .ok_or(CompileError::ValidationIncomplete)?;
-            let producer = state.writers[&(export.node, export.port.clone())];
             (slot, producer)
         };
         state.plan.exports.push(Export {

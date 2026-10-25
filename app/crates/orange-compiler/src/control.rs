@@ -342,13 +342,7 @@ pub fn compile_control(
                 ControlOperation::Entry
             }
             "core/branch" => {
-                let condition = roots.len();
-                roots.push(DemandRoot {
-                    id: format!("{id}/condition"),
-                    node: *id,
-                    port: "condition".parse().unwrap(),
-                    input: true,
-                });
+                let condition = input_root(&mut roots, *id, "condition");
                 ControlOperation::Branch {
                     condition,
                     when_true: target("true"),
@@ -356,13 +350,7 @@ pub fn compile_control(
                 }
             }
             "core/set-variable" => {
-                let value = roots.len();
-                roots.push(DemandRoot {
-                    id: format!("{id}/value"),
-                    node: *id,
-                    port: "value".parse().unwrap(),
-                    input: true,
-                });
+                let value = input_root(&mut roots, *id, "value");
                 ControlOperation::Set {
                     variable: variable_nodes[id],
                     value,
@@ -391,23 +379,11 @@ pub fn compile_control(
             }
             "core/yield" => ControlOperation::Yield,
             "core/wait" => {
-                let duration = roots.len();
-                roots.push(DemandRoot {
-                    id: format!("{id}/duration"),
-                    node: *id,
-                    port: "duration".parse().unwrap(),
-                    input: true,
-                });
+                let duration = input_root(&mut roots, *id, "duration");
                 ControlOperation::Wait { duration }
             }
             "core/count" => {
-                let count = roots.len();
-                roots.push(DemandRoot {
-                    id: format!("{id}/count"),
-                    node: *id,
-                    port: "count".parse().unwrap(),
-                    input: true,
-                });
+                let count = input_root(&mut roots, *id, "count");
                 ControlOperation::Count {
                     count,
                     body: target("body"),
@@ -415,13 +391,7 @@ pub fn compile_control(
                 }
             }
             "core/while" => {
-                let condition = roots.len();
-                roots.push(DemandRoot {
-                    id: format!("{id}/condition"),
-                    node: *id,
-                    port: "condition".parse().unwrap(),
-                    input: true,
-                });
+                let condition = input_root(&mut roots, *id, "condition");
                 let max_iterations = node
                     .config
                     .get("max_iterations")
@@ -637,4 +607,15 @@ pub fn compile_control(
             .map(Vec::into_boxed_slice)
             .collect(),
     })
+}
+
+fn input_root(roots: &mut Vec<DemandRoot>, node: NodeId, port: &str) -> usize {
+    let index = roots.len();
+    roots.push(DemandRoot {
+        id: format!("{node}/{port}"),
+        node,
+        port: port.parse().expect("fixed input port"),
+        input: true,
+    });
+    index
 }
