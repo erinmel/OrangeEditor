@@ -1045,3 +1045,22 @@ Each regression test was confirmed to fail without its fix, except the paste tes
 The duplicate-key scan runs inside the existing envelope pass. Objects of up to 16 keys use a short list before a hash set. One local release run of perf_codec measured 10k-node load at 53.6 ms before and 58.9 ms after; save was unchanged. That is a single run, not a qualified measurement.
 
 cargo test --workspace --locked --offline passed 656 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock SHA-256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152 is unchanged. Public change: the new CodecError::DuplicateKey variant. Local commits only, no push.
+
+### Dominator-based availability (2026-10-24)
+
+Base 6d45a07. validate_availability now answers reads from one Cooper–Harvey–Kennedy dominator tree per activation root ([11 §7.2](11-graph-language.md)) instead of one reachability walk per producer and outcome set. The walk remains the reference and the fallback. A property test (512 random control-flow graphs with all/any forks, foreign labels and overlapping outcome sets) checks that the two agree. The new DomTree is checked against brute-force vertex-removal reachability. Two deliberate mutants were rejected by the property test: inverted dominance, and skipping the join-all recheck. Their shrunk seeds are kept in proptest-regressions.
+
+New document-level tests cover a 100-action chain (all available, then one premature read) and a premature read after a `join: all` Fork. The ignored perf_edit_baseline timing now goes up to 16,000 actions. One local release run of validate_availability on the action/data chain:
+
+| Actions | Before | After |
+|---|---|---|
+| 1,000 | 60.5 ms | 6.2 ms |
+| 2,000 | 256.9 ms | 13.5 ms |
+| 4,000 | 1,139 ms | 29.2 ms |
+| 16,000 | not run | 128.5 ms |
+
+The 4,000 "before" value comes from the deep-analysis probe, not this test. These are single runs, not NFR evidence.
+
+cargo test --workspace --locked --offline passed 663 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged. Diagnostics and public signatures are unchanged.
+
+Remaining limits: the control-flow graph still uses BTree vertices with string port keys (about 8 µs per action at 16,000), validation is still whole-document, and NFR-15 is not met. Local commits only, no push.

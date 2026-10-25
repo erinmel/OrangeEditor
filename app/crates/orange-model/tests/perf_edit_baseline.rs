@@ -311,7 +311,7 @@ fn availability_cost_by_action_chain_size() {
     let registry = registry_with_provider(key());
     let variable = "40000000-0000-4000-8000-000000000001";
     let event = "40000000-0000-4000-8000-000000000002";
-    for n in [200usize, 1_000, 2_000] {
+    for n in [200usize, 1_000, 2_000, 4_000, 16_000] {
         let mut nodes = vec![json!({"id":node_id(0),"definition_id":"core/on-event",
             "definition_version":1,"config_version":1,"config":{"event":event},
             "activation":{"mode":"queue","capacity":8,"overflow":"drop-oldest","on_fault":"continue","order":0}})];
