@@ -1092,3 +1092,43 @@ One local release run of perf_edit_baseline::edit_cost_by_document_size on the g
 These are single runs, not NFR evidence. The remaining node-pass cost is generic inference (about 14 µs per node at 10k) and per-node work for contextual contracts.
 
 cargo test --workspace --locked --offline passed 665 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged. Diagnostics, plans and public signatures are unchanged. Local commits only, no push.
+
+### Inference speedups (2026-10-24)
+
+Base 619b2dc. Temporary phase timers (since removed) on the 10,000-node generic add chain:
+
+| Phase | Time |
+|---|---|
+| Component search | 25.5 ms |
+| Equation building | 40.8 ms |
+| Unification | 26.1 ms |
+| Argument resolution | 17.8 ms |
+
+Inside those phases, `data_edges`, `port_term`, `declared_port` and `generic` dominated, because every data edge was resolved from both ends in the search and again in equation building. A first attempt that memoized port descriptors and terms per port was reverted: cloning the cached values cost as much as recomputing them.
+
+The kept changes:
+
+- Each data edge, with its endpoint terms and variable-link flag, is resolved once per call and keyed by EdgeId, and node templates are shared through Rc (e6ab6b6).
+- The unifier borrows equation context instead of cloning it per applied term and argument (01ff474).
+- Solved-argument checks are shared by parameter declaration, solved type and body, and a failure is retargeted to each node (f8079a9).
+
+Mutation checks against the full model suite:
+
+- Skipping the retarget: caught.
+- Dropping the solved type from the check key: caught.
+- Letting every edge link variables: survived the existing suite. A new test now pins that concrete edges at a generic node stay with the validator.
+
+One local release run of perf_edit_baseline::edit_cost_by_document_size:
+
+| Step | Size | Before | After |
+|---|---|---|---|
+| validate_nodes | 1,000 | 14.7 ms | 7.8 ms |
+| validate_nodes | 10,000 | 167.2 ms | 98.7 ms |
+| validate | 1,000 | 26.4 ms | 17.4 ms |
+| validate | 10,000 | 340.6 ms | 230.8 ms |
+| apply_inferred_indexed connect, tail of chain | 10,000 | 176.6 ms | 110.2 ms |
+| apply_inferred_indexed connect, isolated pair | 10,000 | 105 µs | 97 µs |
+
+These are single runs, not NFR evidence. Whole-document validation and whole-component re-inference on edits remain, so NFR-15 is still unmet.
+
+cargo test --workspace --locked --offline passed 667 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged. Inference results, issues and public signatures are unchanged. Local commits only, no push.
