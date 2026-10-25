@@ -127,6 +127,21 @@ Projection caching (2026-10-24; NFR-15): within one node pass, nodes whose regis
 
 Inference likewise resolves each node template and each data edge (both endpoint terms and whether either mentions a variable) once per `infer_components` call, shared by the component search and equation building. The unifier borrows equation context and clones it only into an error. Argument checks are shared across nodes with the same parameter declaration, solved type and body, and a failed check is reported under each node's own ID. Edges whose ends are both concrete still never become inference evidence, even at a generic node; they are the validator's to check.
 
+Analysis session (V12a, 2026-10-24; NFR-15). `validation::AnalysisSession` keeps the combined analysis of one document across committed edits.
+
+- **Lifecycle:** `new` runs `analyze_with_options`. `update(document, registry, change, options)` takes every committed `ChangeSet` in commit order, edits and undo/redo alike.
+- **Invariant:** the session's `analysis()` always equals `analyze_with_options` for the same document, registry, leaf effects and limits.
+- **Layout-only changes** rebind the unchanged result to the new content state and visit nothing.
+- **Semantic changes** recompute. In V12a that recompute covers the whole document; later V12 slices recompute only dirty units with the same results.
+- **Rebuilds:** the session reruns the full analysis, and `EditStats` reports why (`RebuildReason`), when:
+  - the change does not run from the analyzed revision to the document's current one;
+  - the registry generation changes;
+  - the limits change;
+  - the host replaces the leaf effects;
+  - the previous analysis was cancelled. A cancelled result is never reused or rebound.
+- **Counts:** `EditStats` also reports the nodes and edges visited.
+- **Reads:** `materialize()` returns an owned `ValidationAnalysis` for the compiler. `diagnostics()`, `resolved(node)` and `analysis()` read without copying. `ValidationAnalysis` is now `PartialEq`.
+
 Declaration-driven inference invalidation (C2): `plan_edit` compares declaration IDs and contents across the before/after documents. For each added, changed or removed variable declaration it scans typed `RegistrySnapshot::references` over nodes in every body in both states, then seeds the referenced consumers and their incident edge endpoints into existing component inference. This correctness-first scan handles reference removal/config replacement and cases where a removed Get can no longer expose a contextual port; stale cached `type_args` never seed inference. Updates stay in the declaration edit's single transaction, preserving pins and leaving unrelated components untouched. The scan cost is temporary implementation overhead; no reverse reference index is persisted and NFR-15 is unmeasured.
 
 

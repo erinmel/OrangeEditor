@@ -138,7 +138,7 @@ impl ValidationReport {
 ///     registry_generation: 0,
 /// };
 /// ```
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct ValidationAnalysis {
     report: ValidationReport,
     document_state: u64,
@@ -147,6 +147,12 @@ pub struct ValidationAnalysis {
 }
 
 impl ValidationAnalysis {
+    /// Binds an unchanged result to a new content state of the same semantic document,
+    /// as after a layout-only edit.
+    pub(crate) fn rebind(&mut self, document_state: u64) {
+        self.document_state = document_state;
+    }
+
     /// Read-only identity of the analyzed document content (including undo identity).
     pub fn document_state(&self) -> u64 {
         self.document_state

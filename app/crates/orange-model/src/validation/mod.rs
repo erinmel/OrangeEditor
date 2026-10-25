@@ -38,6 +38,7 @@ pub(crate) mod ports;
 mod regions;
 mod report;
 mod scope;
+mod session;
 mod state;
 mod streams;
 mod variables;
@@ -67,6 +68,7 @@ pub use report::{
     ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
     analyze_with_options, required_checks, validate, validate_with_effects,
 };
+pub use session::{AnalysisSession, EditStats, RebuildReason, SessionWork};
 pub use state::validate_state;
 pub use streams::validate_streams;
 
