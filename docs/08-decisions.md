@@ -233,6 +233,10 @@ The core must therefore be strong and general on its own, and expandable without
 Validation boundary clarification (C4, 2026-10-23; ADR-21): the reusable core exposes `ValidationAnalysis` with private freshness evidence and actual versus required coverage. A downstream host or future compiler cannot treat a partial control-domain report as approval; unknown domains need explicit host support and checks. Supplied leaf effects remain host-trusted facts.
 ## ADR-22 — Usable node editor foundation and bounded general capabilities
 
+Headless lifecycle clarification (2026-10-24; ADR-14/15/21): the supported control actor is driven by an embedding host's bounded pump and monotonic virtual time. No OS executor is required. Cancellation reserves separate bounded cleanup fuel while retaining the activation's entropy identities; this internal transition does not make failed data epochs resumable by ordinary callers. Branch/Sequence are safe structural cleanup traversal and Set is the currently executable cleanup-safe action; new waits, loops and generic effects are rejected in cleanup. Timers are run-owned, monotonically identified and retired once. Native callbacks remain trusted and cannot be preempted by operation quotas. No G2/API freeze or platform timing guarantee follows.
+
+E3 implementation note (2026-10-24, ADR-15/21): checked control plans retain original document/registry identity and lower explicit consumption roots internally rather than editing graphs or inserting persisted exports. On Start/Stop now have registered host Entry definitions. Duration and Error become supported executable plan leaves for virtual waits and failed outcomes; existing graph JSON and value layouts stay unchanged. These unfrozen Rust enums gain variants; downstream exhaustive matches must adopt them. This is not a full control/runtime or API-freeze gate.
+
 **Selected by the user, 2026-10-22.** Deliver a strong, expandable and usable basic node editor application, its reusable Rust graph libraries, and its separate extensible egui UI. Specialized products are built from this foundation. This is not a library-only delivery and does not require bundled OBS/Twitch or browser-canvas integrations. This decision supersedes earlier scope statements in ADR-09–12/21, FR priorities in 01 and the local delivery plan; existing graph invariants remain intact.
 
 **Required foundation:** logic/math; typed variables with declaration/Get/Set/Update authoring; enums and matching; structured branching/loops/time; import/export/save/recovery; versioned typed graphs saved as specialized callable nodes; manual/test-button and configurable key/combination triggers; bounded file editing/watch, HTTP/HTTPS and WebSocket services; basic selected-device audio playback/input, RMS/peak levels and above/below-threshold events with zero or continuous hold duration. UI configuration is reachable on the node and through accessible controls. File/network/input/audio code stays outside model/compiler/runtime.
@@ -345,3 +349,39 @@ Unfrozen source/API notes: DataOperation::Try now carries its resolved success-b
 E2g4f API diagnostic policy: PurePlan/DataPlan and borrowed evaluation/export Debug are metadata summaries; binding Debug omits callback internals and never invokes downstream formatters. Explicit values remain accessible for host-owned inspection. No trait bound/signature/wire/schema change is required; Debug text is not a stable serialization contract. This bounds default plan logging without inventing a universal Value redaction/credential detector.
 
 Review follow-up decision: every activation API that observes cancellation invalidates an active root-data epoch; cancellation before an initial successful start does not create a scope. The host must explicitly begin a new epoch to recover. Per-invocation entropy exhaustion is a latched host graph fault and cannot be replaced by callback success/error; cancellation retains infrastructure precedence. These corrections preserve existing public signatures and JSON. They do not imply native code containment or a completed actor lifecycle.
+
+## ADR-23 — Incremental validation session with the full pass as oracle
+
+**Proposed, 2026-10-24; not implemented.** Validation becomes incremental through an `AnalysisSession` kept beside the document ([16](16-incremental-validation.md)).
+
+- It stores each pass's results per unit (node, edge, generic component, top-level root, body port graph, export, function).
+- It applies each committed `ChangeSet` by recomputing only dirty units, in the existing pass order.
+- It rebuilds fully on registry, effects, options, quota or state mismatch.
+
+Its observable result must equal `analyze` for the same inputs. The full pass remains the test oracle and the fallback, and `materialize()` produces the same `ValidationAnalysis` the compiler requires.
+
+Alternatives:
+
+- **Constant-factor tuning of whole-document validation:** about 230 ms at 10k nodes after V8 and projection/inference caching; cannot reach NFR-15.
+- **A general query framework dependency:** adds a pinned dependency and reshapes the public API before the dependency structure is proven.
+- **Per-pass incremental updates without an oracle:** stale results would be silent.
+
+Consequences:
+
+- Root-scoped region, control-cycle and availability entries.
+- Reverse indexes for declarations, locks and signatures, calls and root ownership.
+- A dynamic topological order for data cycles.
+- Visit counters for NFR-15.
+- Session memory measured against NFR-05.
+
+Delivery is the six V12 slices in 16 §9, each a separate PR gated on equivalence.
+
+**Falsification:** W9 edits on the W4 graph that exceed NFR-15 outside reported full-scope cases, or any equivalence failure that cannot be fixed without a full recompute, reject this design for that pass.
+
+PR #18 control review decision (2026-10-24; ADR-21 core boundary): preserve read-modify-write atomicity by retaining a pending Set action across internal work slices, rather than retrying seeded computations. Reserve bounded On Stop frame capacity at startup separately from normal activations, rather than rejecting graceful stop when admitted work saturates ordinary capacity. Host input publication follows actual lazy demand over consumer-specific frozen snapshots. These choices apply only to the supported headless control subset and do not qualify general event/resource/package lifecycles. Contracts and regression evidence are in 03, 11, 12 and 10.
+
+Core reuse amendment (2026-10-24; ADR-01/15/21): retain four dependency boundaries for the model, compiler, runtime and bundled providers. Share private graph mechanics, immutable projections and prepared metadata inside those boundaries; keep language legality, provider selection and mutable activation ownership explicit. Add indexed authoring entry points while preserving read-only APIs and journal rollback/freshness. No new external dependency, generic plugin execution path, overridable language intrinsic, implicit provider fallback or persisted format is introduced. 12 documents the representations; 10 records executed checks and measured limits.
+
+Structured concurrency amendment (2026-10-25; ADR-14/15/21): represent live dynamic region ownership explicitly so a Fork join notification cannot prematurely retire its parent. Activation locals, entropy and fuel stay shared across sibling strands. One pending data consumption owns the activation evaluator until publication/failure, preserving the standalone public data API and frozen prologue without locks or duplicate per-strand data frames. Cleanup borrows a separate bounded fuel scope and restores surviving normal fuel; race cancellation retires one losing subtree rather than rescanning every sibling. General resources, functions and events remain separate cohorts; no new dependency, graph schema, package scheduling authority or full gate is adopted.
+
+Core integrity review corrections (2026-10-25; ADR-07/15/16/20/21): retain malformed imported values/counters for repair, but reject inconsistent variadic identities and unresolved explicit codec locks before lowering. Query actual registered decoder capability; do not reinterpret unknown codec versions using the current decoder. Separate semantic freshness from edit/undo freshness so presentation edits preserve execution plans. Share an unwind rollback boundary across ordinary and scratch command iteration; fail paste on generated identity collisions before keyed collection. Cleanup entry errors restore activation ownership before retirement, and literal aggregates borrow type arguments. These are correctness/performance corrections within the existing subset; format v1, package overrides and public resolver interfaces remain unchanged. New unfrozen Rust surfaces are the semantic identity and codec capability accessors, codec identity constant, diagnostic/error variants and variadic invariant query. Contracts are in 03/11/12 and evidence in 10.

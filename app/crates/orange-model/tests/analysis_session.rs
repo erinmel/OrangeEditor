@@ -93,7 +93,7 @@ fn layout_edits_rebind_without_work_and_stay_ready_for_lowering() {
     let stats = *session.update(&doc, &registry, &committed.change_set, options());
     assert_eq!(stats.work, SessionWork::None);
     assert_eq!((stats.nodes_visited, stats.edges_visited), (0, 0));
-    assert_ne!(session.analysis().document_state(), before);
+    assert_eq!(session.analysis().document_state(), before);
     assert_eq!(session.analysis(), &full(&doc, &registry));
     assert_eq!(
         session.analysis().is_ready_for_lowering(&doc, &registry),

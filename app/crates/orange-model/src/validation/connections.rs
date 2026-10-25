@@ -13,7 +13,7 @@ use crate::type_term::TypeTerm;
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
-use super::ports::{PortLookupError, lookup_port};
+use super::ports::{PortLookupError, PortResolver};
 use super::scope::Scope;
 
 /// Result of validating the graph's connections using currently available metadata.
@@ -44,13 +44,15 @@ pub fn validate_connections(
     registry: &RegistrySnapshot,
 ) -> ConnectionValidation {
     let index = DocIndex::build(document);
-    validate_connections_in(document, resolved, registry, Scope::All, &index)
+    let ports = PortResolver::new(document, resolved);
+
+    validate_connections_in(document, &ports, registry, Scope::All, &index)
 }
 
 /// [`validate_connections`] over the bodies in `scope`, with a current `index` of `document`.
 pub(crate) fn validate_connections_in(
     document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    resolved: &PortResolver<'_>,
     registry: &RegistrySnapshot,
     scope: Scope,
     index: &DocIndex,
@@ -167,7 +169,7 @@ pub(crate) fn validate_connections_in(
         if edge_ids.len() <= 1 {
             continue;
         }
-        let Ok(port) = lookup_port(document, resolved, &port_ref) else {
+        let Ok(port) = resolved.port(&port_ref) else {
             continue;
         };
         if port.direction == crate::document::PortDirection::Input && port.kind == PortKind::Data {
@@ -192,7 +194,7 @@ pub(crate) fn validate_connections_in(
         if edge_ids.len() <= 1 {
             continue;
         }
-        let Ok(port) = lookup_port(document, resolved, &port_ref) else {
+        let Ok(port) = resolved.port(&port_ref) else {
             continue;
         };
         let code = if port.direction != crate::document::PortDirection::Output {
@@ -227,15 +229,15 @@ pub(crate) fn validate_connections_in(
 }
 
 fn resolve_endpoint(
-    document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    _document: &GraphDocument,
+    resolved: &PortResolver<'_>,
     endpoint: &PortRef,
     edge: EdgeId,
     origin: &HostOrigin,
     report: &mut ConnectionValidation,
     diagnostics: &mut Vec<Diagnostic>,
-) -> Option<PortDescriptor> {
-    match lookup_port(document, resolved, endpoint) {
+) -> Option<std::rc::Rc<PortDescriptor>> {
+    match resolved.port(endpoint) {
         Ok(port) => Some(port),
         Err(PortLookupError::MissingNode | PortLookupError::UnknownPort) => {
             diagnostics.push(Diagnostic::new(
@@ -274,7 +276,7 @@ fn is_concrete(port: &PortDescriptor, rigid: &[TypeParam]) -> bool {
 /// node resolution.
 fn unchecked_edge(
     edge: &Edge,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    resolved: &PortResolver<'_>,
     origin: &HostOrigin,
     report: &mut ConnectionValidation,
     diagnostics: &mut Vec<Diagnostic>,

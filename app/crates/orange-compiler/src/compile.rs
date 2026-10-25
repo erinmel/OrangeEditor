@@ -260,6 +260,7 @@ pub fn compile_pure(
     let Admission {
         incoming,
         lazy_nodes,
+        ..
     } = admit(document, &snapshot, analysis, options, false)?;
     let mut folder = ConstantFolder::new(
         document,
@@ -322,7 +323,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             snapshot: snapshot.clone(),
             graph: document.graph_id(),
             revision: document.revision(),
-            state: document.state_id(),
+            state: document.semantic_state_id(),
             steps: vec![],
             types: vec![],
             sources: vec![],
@@ -609,6 +610,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
 pub(crate) struct Admission<'a> {
     pub(crate) incoming: Incoming<'a>,
     pub(crate) lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
+    pub(crate) host_nodes: BTreeSet<NodeId>,
 }
 /// Fresh definition metadata says the node reads host-owned state.
 pub(crate) fn is_state_read(
@@ -628,8 +630,36 @@ pub(crate) fn admit<'a>(
     options: CompileOptions<'_>,
     data_plan: bool,
 ) -> Result<Admission<'a>, CompileError> {
+    let roots: Vec<_> = document
+        .exports()
+        .iter()
+        .map(|export| export.node)
+        .collect();
+    admit_roots(
+        document,
+        snapshot,
+        analysis,
+        options,
+        data_plan,
+        &roots,
+        &BTreeSet::new(),
+    )
+}
+
+/// Control lowering supplies checked demand roots and a separately admitted set of
+/// host control nodes. Neither source documents nor persisted exports are rewritten.
+#[allow(clippy::too_many_arguments)] // Private checked entry shared by two compiler profiles.
+pub(crate) fn admit_roots<'a>(
+    document: &'a GraphDocument,
+    snapshot: &RegistrySnapshot,
+    analysis: &ValidationAnalysis,
+    options: CompileOptions<'_>,
+    data_plan: bool,
+    roots: &[NodeId],
+    controls: &BTreeSet<NodeId>,
+) -> Result<Admission<'a>, CompileError> {
     options.checkpoint()?;
-    if analysis.document_state() != document.state_id() {
+    if analysis.document_state() != document.semantic_state_id() {
         return Err(CompileError::StaleDocument);
     }
     if analysis.registry_generation() != snapshot.generation() {
@@ -653,6 +683,10 @@ pub(crate) fn admit<'a>(
             .resolved
             .get(node)
             .ok_or(CompileError::UnsupportedNode { node: *node })?;
+        if controls.contains(node) {
+            charge(&mut ports, sig.ports.len(), options.limits.max_graph_items)?;
+            continue;
+        }
         // A data plan reads host state through a single-output input slot.
         let state_read = data_plan
             && sig.kind == NodeKind::Volatile
@@ -716,8 +750,8 @@ pub(crate) fn admit<'a>(
     let mut active = BTreeSet::new();
     let mut order = Vec::new();
     let mut stack = Vec::new();
-    for export in document.exports() {
-        stack.push((export.node, false));
+    for root in roots {
+        stack.push((*root, false));
         while let Some((node, exit)) = stack.pop() {
             options.checkpoint()?;
             if exit {
@@ -736,6 +770,9 @@ pub(crate) fn admit<'a>(
                 return Err(CompileError::ResourceLimit);
             }
             stack.push((node, true));
+            if controls.contains(&node) {
+                continue;
+            }
             let sig = analysis
                 .report()
                 .resolved
@@ -783,5 +820,6 @@ pub(crate) fn admit<'a>(
     Ok(Admission {
         incoming,
         lazy_nodes,
+        host_nodes: controls.clone(),
     })
 }

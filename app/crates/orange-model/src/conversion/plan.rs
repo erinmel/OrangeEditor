@@ -29,7 +29,7 @@ use crate::error::{IdError, TxError};
 use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 use crate::index::DocIndex;
 use crate::inference::component::declared_port;
-use crate::inference::{ComponentInference, InferenceIssue, infer_components, plan_edit};
+use crate::inference::{ComponentInference, InferenceIssue, infer_components, plan_edit_indexed};
 use crate::signature::{SignatureSubstitutionError, semantic_key, try_substitute_params};
 use crate::type_term::TypeTerm;
 
@@ -141,8 +141,28 @@ pub fn plan_connection(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     request: ConnectionRequest,
+    new_id: impl FnMut() -> Uuid,
+) -> Result<ConnectionOutcome, ConnectionError> {
+    let mut scratch = document.clone();
+    let mut index = DocIndex::build(&scratch);
+    plan_connection_indexed(&mut scratch, &mut index, registry, request, new_id)
+}
+
+/// Plans using a retained index and journaled trial edits instead of document copies.
+/// Public read-only planning remains available through plan_connection. This method
+/// restores document content/revision/identity and the index before returning.
+/// Stale indexes rebuild on entry; an unwind restores the document and invalidates
+/// the index so its next indexed operation rebuilds it.
+pub fn plan_connection_indexed(
+    document: &mut GraphDocument,
+    index: &mut DocIndex,
+    registry: &RegistrySnapshot,
+    request: ConnectionRequest,
     mut new_id: impl FnMut() -> Uuid,
 ) -> Result<ConnectionOutcome, ConnectionError> {
+    if !index.is_current(document) {
+        *index = DocIndex::build(document);
+    }
     let ConnectionRequest { from, to, choice } = request;
     let converters = registry.converters();
     let body = document
@@ -162,7 +182,6 @@ pub fn plan_connection(
     endpoint_type(document, registry, &from, PortDirection::Output, &[])?;
     endpoint_type(document, registry, &to, PortDirection::Input, &[])?;
 
-    let index = DocIndex::build(document);
     let replaced: Vec<EdgeId> = index.incoming(&to).collect();
     for &id in &replaced {
         if document.edge(id).is_some_and(|edge| edge.from == from) {
@@ -175,36 +194,28 @@ pub fn plan_connection(
         .map(|&edge| DocCommand::Disconnect { edge })
         .collect();
     // Analyze selection against the evidence that survives the replacement. The literal
-    // is removed only on this scratch copy: the accepted edit preserves it, shadowed.
-    let (from_type, to_type) = {
-        let mut selection_document = document.clone();
-        let _ = selection_document.apply(edit.iter().cloned().chain([DocCommand::SetLiteral {
+    // is removed only inside the journaled trial: the accepted edit preserves it, shadowed.
+    let (from_type, to_type) = crate::inference::persist::scratch_indexed(
+        document,
+        index,
+        edit.iter().cloned().chain([DocCommand::SetLiteral {
             port: to.clone(),
             literal: None,
-        }]))?;
-        let components = infer_components(
-            &selection_document,
-            &DocIndex::build(&selection_document),
-            [from.node, to.node],
-            registry,
-        );
-        (
-            endpoint_type(
-                &selection_document,
-                registry,
-                &from,
-                PortDirection::Output,
-                &components,
-            )?,
-            endpoint_type(
-                &selection_document,
-                registry,
-                &to,
-                PortDirection::Input,
-                &components,
-            )?,
-        )
-    };
+        }]),
+        |selection, index, _| {
+            let components = infer_components(selection, index, [from.node, to.node], registry);
+            Ok::<_, ConnectionError>((
+                endpoint_type(
+                    selection,
+                    registry,
+                    &from,
+                    PortDirection::Output,
+                    &components,
+                )?,
+                endpoint_type(selection, registry, &to, PortDirection::Input, &components)?,
+            ))
+        },
+    )??;
     let wire = match select(converters, &from_type, &to_type, choice) {
         Ok(wire) => wire,
         Err(outcome) => return Ok(outcome),
@@ -255,9 +266,9 @@ pub fn plan_connection(
         }
     };
 
-    let inferred = plan_edit(document, edit, registry)?;
+    let inferred = plan_edit_indexed(document, index, edit, registry)?;
     if inferred.issues.iter().any(InferenceIssue::is_conflict) {
-        let already_broken = infer_components(document, &index, [from.node, to.node], registry)
+        let already_broken = infer_components(document, index, [from.node, to.node], registry)
             .iter()
             .any(|component| component.issues.iter().any(InferenceIssue::is_conflict));
         if !already_broken {

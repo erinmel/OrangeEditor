@@ -110,7 +110,7 @@ impl PurePlan {
         options: EvaluationOptions<'a>,
     ) -> Result<PureEvaluation<'a>, EvaluationError> {
         checkpoint(options.cancel)?;
-        if self.state != document.state_id() {
+        if self.state != document.semantic_state_id() {
             return Err(EvaluationError::StaleDocument);
         }
         if self.snapshot.generation() != registry.generation() {

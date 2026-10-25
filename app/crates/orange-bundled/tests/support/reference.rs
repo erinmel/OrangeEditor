@@ -27,6 +27,7 @@ pub struct Reference<'a> {
     seed: u64,
     sequence: u64,
     invocations: BTreeMap<NodeId, u64>,
+    host: BTreeMap<(NodeId, PortKey), Outcome>,
     pub executions: BTreeMap<NodeId, usize>,
 }
 impl<'a> Reference<'a> {
@@ -57,6 +58,7 @@ impl<'a> Reference<'a> {
             seed,
             sequence,
             invocations: BTreeMap::new(),
+            host: BTreeMap::new(),
             executions: BTreeMap::new(),
         };
         reference.begin_epoch();
@@ -66,6 +68,15 @@ impl<'a> Reference<'a> {
     // is checked separately by resolver/callback counters, not this slow evaluator.
     pub fn begin_epoch(&mut self) {
         self.cache.clear();
+        self.host.clear();
+    }
+    #[allow(dead_code)] // Used by the independent control oracle, not pure-only suites.
+    pub fn supply(&mut self, node: NodeId, port: PortKey, value: Outcome) {
+        self.host.insert((node, port), value);
+    }
+    #[allow(dead_code)]
+    pub fn source(&mut self, node: NodeId, port: &PortKey) -> Outcome {
+        self.pull(node, port, 0)
     }
     pub fn exports(&mut self) -> Vec<Outcome> {
         (0..self.document.exports().len())
@@ -78,6 +89,9 @@ impl<'a> Reference<'a> {
     }
     fn pull(&mut self, node_id: NodeId, port_key: &PortKey, depth: usize) -> Outcome {
         assert!(depth <= 64, "test oracle depth exceeded");
+        if let Some(value) = self.host.get(&(node_id, port_key.clone())) {
+            return value.clone();
+        }
         if let Some(outputs) = self.cache.get(&node_id) {
             return outputs[port_key].clone();
         }
@@ -243,9 +257,10 @@ fn interpret(
                     .unwrap();
             // Independent type walk: adjacent options use Some and hide the Err tag.
             let exposed = term.core("result").is_some()
-                || term
-                    .core("option")
-                    .is_some_and(|args| args[0].core("result").is_some());
+                || term.core("error").is_some()
+                || term.core("option").is_some_and(|args| {
+                    args[0].core("result").is_some() || args[0].core("error").is_some()
+                });
             return Ok(vec![if exposed {
                 Value::Ok(Arc::new(value.clone()))
             } else {

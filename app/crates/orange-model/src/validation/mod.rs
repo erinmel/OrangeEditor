@@ -31,6 +31,7 @@ mod domains;
 mod dominators;
 mod exports;
 mod functions;
+mod graph;
 mod inputs;
 mod limits;
 mod nodes;

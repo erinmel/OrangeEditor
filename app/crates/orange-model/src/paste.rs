@@ -181,7 +181,7 @@ impl Fragment {
 
     /// Commands that paste the fragment into `body` of `target` as one transaction. New IDs
     /// come from `new_id`, which must produce v4 or v7 UUIDs; the model itself has no source
-    /// of randomness.
+    /// of randomness. Occupied or repeated generated IDs are rejected without retries.
     pub fn paste(
         &self,
         target: &GraphDocument,
@@ -189,6 +189,23 @@ impl Fragment {
         mut new_id: impl FnMut() -> Uuid,
     ) -> Result<Paste, IdError> {
         let mut remap = Remap::default();
+        for body in target.bodies() {
+            for id in body.nodes.keys() {
+                remap.reserve(*id);
+            }
+            for id in body.edges.keys() {
+                remap.reserve(*id);
+            }
+        }
+        for id in target.variables().keys() {
+            remap.reserve(*id);
+        }
+        for id in target.events().keys() {
+            remap.reserve(*id);
+        }
+        for id in target.functions().keys() {
+            remap.reserve(*id);
+        }
         let variables: Vec<VariableDecl> = self
             .variables
             .iter()
@@ -304,12 +321,15 @@ impl Fragment {
 /// cannot redirect a field to the wrong declaration kind.
 #[derive(Default)]
 struct Remap {
+    occupied: HashSet<(&'static str, Uuid)>,
     references: HashMap<(ReferenceKind, String), String>,
     nodes: HashMap<NodeId, NodeId>,
 }
 
 /// UUID-backed ID types the remap can create.
 trait FreshId: Copy + std::fmt::Display {
+    const KIND: &'static str;
+    fn uuid(self) -> Uuid;
     fn from_uuid(uuid: Uuid) -> Result<Self, IdError>;
     const REFERENCE_KIND: Option<ReferenceKind>;
 }
@@ -317,6 +337,8 @@ trait FreshId: Copy + std::fmt::Display {
 macro_rules! fresh_id {
     ($($ty:ty => $kind:expr),+) => {$(
         impl FreshId for $ty {
+            const KIND: &'static str = stringify!($ty);
+            fn uuid(self) -> Uuid { self.as_uuid() }
             fn from_uuid(uuid: Uuid) -> Result<Self, IdError> {
                 <$ty>::from_uuid(uuid)
             }
@@ -333,12 +355,21 @@ fresh_id!(
 );
 
 impl Remap {
+    fn reserve<T: FreshId>(&mut self, id: T) {
+        self.occupied.insert((T::KIND, id.uuid()));
+    }
     fn fresh<T: FreshId>(
         &mut self,
         old: T,
         new_id: &mut impl FnMut() -> Uuid,
     ) -> Result<T, IdError> {
         let new = T::from_uuid(new_id())?;
+        if !self.occupied.insert((T::KIND, new.uuid())) {
+            return Err(IdError::GeneratedCollision {
+                kind: T::KIND,
+                id: new.to_string(),
+            });
+        }
         if let Some(kind) = T::REFERENCE_KIND {
             self.references
                 .insert((kind, old.to_string()), new.to_string());

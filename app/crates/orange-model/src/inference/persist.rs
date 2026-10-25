@@ -61,7 +61,40 @@ pub fn plan_edit(
 ) -> Result<InferencePlan, TxError> {
     let mut scratch = document.clone();
     let mut index = DocIndex::build(&scratch);
-    plan_in_place(&mut scratch, &mut index, edit, registry)
+    plan_edit_indexed(&mut scratch, &mut index, edit, registry)
+}
+
+/// Plans against a retained index without cloning the whole document.
+/// Stale indexes rebuild on entry. Trial edits restore document content, revision
+/// and identity. An unwinding observer invalidates the index before resuming panic.
+pub fn plan_edit_indexed(
+    document: &mut GraphDocument,
+    index: &mut DocIndex,
+    edit: impl IntoIterator<Item = DocCommand>,
+    registry: &RegistrySnapshot,
+) -> Result<InferencePlan, TxError> {
+    if !index.is_current(document) {
+        *index = DocIndex::build(document);
+    }
+    plan_in_place(document, index, edit, registry)
+}
+
+/// Reusable trial-edit boundary. The document journal rolls back before the
+/// original index is restored; unwinds cannot leave a falsely current index.
+pub(crate) fn scratch_indexed<R>(
+    document: &mut GraphDocument,
+    index: &mut DocIndex,
+    commands: impl IntoIterator<Item = DocCommand>,
+    observe: impl FnOnce(&GraphDocument, &DocIndex, &ChangeSet) -> R,
+) -> Result<R, TxError> {
+    reset_index_on_unwind(index, |index| {
+        let result = document.scratch(commands, |after, change| {
+            index.update(after, change);
+            (observe(after, index, change), change.clone())
+        })?;
+        index.update(document, &result.1.reversed());
+        Ok(result.0)
+    })
 }
 
 /// Plans `edit` against `document` by applying it, reading the result and undoing it, so
@@ -78,40 +111,36 @@ fn plan_in_place(
     // neighbours are read there, from the change the edit makes.
     let change = document.scratch(commands.clone(), |_, change| change.clone())?;
     let mut touched = touched_before(document, &change, registry);
-    let planned = reset_index_on_unwind(index, |index| {
-        document.scratch(commands.clone(), |after, change| {
-            index.update(after, change);
-            let mut updates = Vec::new();
-            let mut issues = Vec::new();
-            touched.extend(touched_after(after, change, registry));
-            touched.retain(|id| after.node(*id).is_some());
-            let mut inferred_nodes = BTreeSet::new();
-            for component in infer_components(after, index, touched.iter().copied(), registry) {
-                inferred_nodes.extend(component.nodes.iter().copied());
-                updates.extend(component_updates(after, registry, &component));
-                issues.extend(component.issues);
+    let planned = scratch_indexed(document, index, commands.clone(), |after, index, change| {
+        let mut updates = Vec::new();
+        let mut issues = Vec::new();
+        touched.extend(touched_after(after, change, registry));
+        touched.retain(|id| after.node(*id).is_some());
+        let mut inferred_nodes = BTreeSet::new();
+        for component in infer_components(after, index, touched.iter().copied(), registry) {
+            inferred_nodes.extend(component.nodes.iter().copied());
+            updates.extend(component_updates(after, registry, &component));
+            issues.extend(component.issues);
+        }
+        // Calls whose function interface disappeared or became concrete are no longer
+        // generic inference nodes. Clear only their stale argument cache; their historical
+        // signature field and all type pins remain untouched.
+        for id in touched
+            .iter()
+            .copied()
+            .filter(|id| !inferred_nodes.contains(id))
+        {
+            let Some(node) = after.node(id) else { continue };
+            if is_function_call(node) && !node.type_args.is_empty() {
+                updates.push(DocCommand::SetTypeArgs {
+                    node: id,
+                    args: Default::default(),
+                });
             }
-            // Calls whose function interface disappeared or became concrete are no longer
-            // generic inference nodes. Clear only their stale argument cache; their historical
-            // signature field and all type pins remain untouched.
-            for id in touched
-                .iter()
-                .copied()
-                .filter(|id| !inferred_nodes.contains(id))
-            {
-                let Some(node) = after.node(id) else { continue };
-                if is_function_call(node) && !node.type_args.is_empty() {
-                    updates.push(DocCommand::SetTypeArgs {
-                        node: id,
-                        args: Default::default(),
-                    });
-                }
-            }
-            (updates, issues, change.clone())
-        })
+        }
+        (updates, issues)
     });
-    let (updates, issues, change) = planned?;
-    index.update(document, &change.reversed());
+    let (updates, issues) = planned?;
     commands.extend(updates);
     Ok(InferencePlan { commands, issues })
 }

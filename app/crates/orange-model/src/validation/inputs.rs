@@ -20,7 +20,34 @@ pub fn validate_inputs(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
-    validate_inputs_in(document, resolved, registry, Scope::All)
+    let mut diagnostics = validate_inputs_in(document, resolved, registry, Scope::All);
+    diagnostics.extend(validate_type_locks(document, registry));
+    sort_diagnostics(&mut diagnostics);
+    diagnostics
+}
+
+/// Exact codec locks are prerequisites for interpreting saved values. Absence retains
+/// the format-v1 structural codec default; explicit unsupported locks never fall back.
+pub(crate) fn validate_type_locks(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+) -> Vec<Diagnostic> {
+    let (types, origin) = (registry.types().as_ref(), registry.origin());
+    let mut diagnostics = Vec::new();
+    for lock in document.type_lock() {
+        let compatible = TypeTerm::parse(&lock.ty)
+            .ok()
+            .and_then(|term| types.literal_codec_identity(&term))
+            == Some(lock.codec.as_str());
+        if !compatible {
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::TypeCodec,
+                Subject::default(),
+                origin,
+            ));
+        }
+    }
+    diagnostics
 }
 
 /// [`validate_inputs`] over the bodies in `scope`.
@@ -53,6 +80,18 @@ pub(crate) fn validate_inputs_in(
             .collect();
         let mut valid_keys = BTreeSet::new();
         let mut candidates = Vec::new();
+
+        for (port, state) in &node.variadic {
+            if !state.is_valid() {
+                diagnostics.push(diagnostic(
+                    DiagnosticCode::VariadicIdentity,
+                    Severity::Error,
+                    node_id,
+                    PortKey::new(port.clone(), None),
+                    origin,
+                ));
+            }
+        }
 
         for descriptor in &snapshot.ports {
             if let Some(bounds) = descriptor.variadic {

@@ -740,54 +740,14 @@ pub(crate) fn find_cycles(
             )
         })
         .collect();
-    let mut visited = BTreeSet::new();
-    let mut finish = Vec::with_capacity(graph.len());
-    for start in graph.keys().copied() {
-        if visited.contains(&start) {
-            continue;
-        }
-        visited.insert(start);
-        let mut stack = vec![(start, 0usize)];
-        while let Some((current, cursor)) = stack.last_mut() {
-            let next = adjacency
-                .get(current)
-                .and_then(|edges| edges.get(*cursor))
-                .copied();
-            if let Some(next) = next {
-                *cursor += 1;
-                if visited.insert(next) {
-                    stack.push((next, 0));
-                }
-            } else {
-                let (done, _) = stack.pop().expect("nonempty traversal stack");
-                finish.push(done);
-            }
-        }
-    }
-    let mut reverse: BTreeMap<FunctionId, BTreeSet<FunctionId>> =
-        graph.keys().map(|id| (*id, BTreeSet::new())).collect();
-    for (from, targets) in &adjacency {
-        for to in targets {
-            reverse.entry(*to).or_default().insert(*from);
-        }
-    }
-    visited.clear();
+    let ordered = adjacency
+        .iter()
+        .map(|(id, edges)| (*id, edges.iter().copied().collect()))
+        .collect();
     let mut witnesses = Vec::new();
     let mut cyclic = BTreeSet::new();
-    for start in finish.into_iter().rev() {
-        if !visited.insert(start) {
-            continue;
-        }
-        let mut component = BTreeSet::new();
-        let mut stack = vec![start];
-        while let Some(current) = stack.pop() {
-            component.insert(current);
-            for next in reverse.get(&current).into_iter().flatten() {
-                if visited.insert(*next) {
-                    stack.push(*next);
-                }
-            }
-        }
+    for component in super::graph::strongly_connected_components(&ordered) {
+        let start = *component.first().expect("components are nonempty");
         let is_cycle = component.len() > 1
             || adjacency
                 .get(&start)

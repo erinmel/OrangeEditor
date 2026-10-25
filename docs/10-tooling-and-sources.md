@@ -1146,3 +1146,213 @@ Evidence:
 cargo test --workspace --locked --offline passed 674 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged.
 
 Public additions: AnalysisSession, EditStats, SessionWork and RebuildReason (the last three `#[non_exhaustive]`), plus `PartialEq` on ValidationAnalysis. No timing claim: V12a does not change edit cost.
+
+## Structured headless control verification — 2026-10-24
+
+Integrated work on `core/headless-control-runtime`, based directly on fetched dev `1a901281f6bdf8fb274a6064a35335d4822800ef`. The selected E3/R1 cohort implements checked Start/Stop/Branch/Sequence/Count/While/Break/Continue/Wait/Yield and local/run Get/Set execution, bounded resumable data/control work, virtual time, staged drain/cancel/dispose and narrow timer-continuation ownership. General events, Fork/functions, affine resources and service adapters are not implemented by this cohort. V12a implementation remains on its own branch; no topic commits were copied.
+
+Environment: rustc 1.99.1 (58cf8f9c3, LLVM 23.1.1), Cargo 1.99.1 (5f94df478), Windows x86_64 MSVC, default features, Node.js 24.18.0. Reported OS kernel: Microsoft Windows NT 10.0.26300.0; 24 available logical processors. CPU model enumeration through CIM was unavailable, so this is not named-hardware qualification. Toolchain/features/external dependency versions are unchanged. Cargo.lock SHA-256 remains `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`. The configured human Git author was retained; no generated attribution trailers were added.
+
+| Executed command/check | Result |
+|---|---|
+| `cargo test --workspace --locked` | PASS: 699 tests, 8 manual timing tests ignored; includes checked-construction compile-fail tests |
+| `cargo test -p orange-bundled -p orange-compiler -p orange-runtime --release --locked` | PASS: 153 tests, 2 manual timing tests ignored |
+| `cargo test -p orange-bundled --release --locked --test control headless_control_timing_baseline -- --ignored --nocapture` | PASS: one explicitly invoked local timing probe |
+| `cargo run -p orange-bundled --example headless_control --locked` | PASS: `total=3; virtual_time_ns=10`; Count accumulation, virtual Wait, Branch, graceful stop and dispose |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | PASS |
+| `cargo doc --workspace --no-deps --locked`, with `RUSTDOCFLAGS=-D warnings` | PASS; caller environment restored |
+| `node tools/check-cargo-metadata.mjs --self-test` | PASS: nine policy fixtures |
+| `node tools/check-cargo-metadata.mjs` | PASS: core dependency boundary |
+| `node tools/check-cargo-metadata.mjs --msrv` | PASS: declares 1.97.1; this is metadata, not an MSRV build |
+| `git diff --check` | PASS |
+
+Only Rust 1.99.1 is installed locally. Rust 1.97.1 compilation, Linux/macOS execution and full dependency/security CI are not claimed by local checks; repository CI owns those checks on the PR. The Windows incremental cache emitted hard-link warnings and successfully copied files instead; the recorded commands exited successfully. No dependency, feature, lockfile, graph JSON or schema-version changes were needed.
+
+### Behavior and review evidence
+
+Thirty focused control tests pass. A test-only independent source interpreter scans saved edges and uses lexical regions; it never reads compiler blocks/slots, runtime cursors or native kernels. Ninety-six generated nested Count/While/Sequence/Branch/Wait/state/seeded cases use proptest 1.12.0 with fixed runner seed 20261024 at work budgets 1, 3 and 64. The fixed-seed API was checked in the installed versioned `proptest-1.12.0/src/test_runner/config.rs` release source. The oracle shares fresh validation metadata, the model literal codec and the versioned entropy stream primitive anchored by prior external vectors. It is not an independent validator, IEEE implementation or cryptographic proof.
+
+Known answers cover zero/negative Count, fresh indices, nested Break/Continue, initial-false While, exact iteration bounds, suspended Sequence/loop bodies, source/storage/presentation invariance, stale entry versus pinned active snapshots, original Get fault provenance, Error as data versus successful Try, shared-state snapshots across interleaved data safe points, wait-completion/stop ordering at the same time, cleanup entropy continuity, stop-run fault policy, cleanup rejection/fuel/deadline/second cancellation, zero-time wait-cycle fuel, 512 nested iterative regions and fail-closed depth limits. Explicit disposal releases the plan; late time/execution operations are rejected. Segment inspection reports written IDs only; Eq/change notifications and Watch dispatch remain R2b work.
+
+Self-review followed compiler admission and original-document demand roots, implicit/variadic outcome resolution, source writers, input-fault publication, actor ownership, epoch resume, loop cursor lifetimes, timer retirement, every stop path and default Debug/inspection. A producer index replaces repeated edge scans in control demand admission. The example uses public consumer APIs and actual bundled provider metadata. Independent oracle tests supplement self-review and are not independent human approval.
+
+The embedding host serializes commands through exclusive `&mut Run` methods and drives pump/time advancement; no redundant command queue, worker thread or OS clock was introduced. Idle Running remains live; virtual deadlines require the host to advance time. Native callbacks cannot be preempted, and configured retained-value limits are not hard process RSS guarantees. Start still conservatively requires exact document/registry state; semantic plan reuse after layout-only edits belongs to later incremental work. Public Rust enums/types are unfrozen; PlanType gains Duration/Error, DataError gains PullInProgress, and the new control/run surfaces require downstream source review before API freeze.
+
+### Local control timing baseline
+
+One native release probe, default features, seed 42, a 1,000-iteration Count accumulating a u64 through Get/Add/Set. Compilation is excluded; start/frame preparation, run, stop and dispose are included. Tracing is disabled. Ten-second warmup, 30 samples, 8 whole runs per sample; each run uses 8,004 counted work items. Batch-mean ns/run: median 213118.8 (about 213 microseconds), p95 215812.5, maximum 216437.5. This is not a tail-latency, allocation, cross-OS, NFR-02/05/15 or throughput-concurrency qualification.
+
+Sorted batch means (ns/run): 210150, 210525, 210875, 211250, 211475, 211912.5, 212312.5, 212325, 212337.5, 212587.5, 212700, 212700, 212775, 212862.5, 212962.5, 213275, 213325, 213350, 213650, 213812.5, 213950, 214375, 214387.5, 214450, 214500, 214512.5, 214825, 215075, 215812.5, 216437.5.
+
+The supported headless cohort is qualified locally, not the complete E3/R1/R3 rows, general core completion, G2 API freeze, installed-package lifecycle, concrete services, editor or release gates.
+
+## PR #18 review corrections and verification (2026-10-24)
+
+The deep review at `62a115c` reproduced five defects/policy gaps in debug and release. Corrections at `9b958af` and `c035fa2` retain the supported subset and leave the PR unmerged:
+
+| Finding | Correction and durable regression |
+|---|---|
+| Unrelated host inputs could exhaust data retention in an inactive path; execution scanned every input per consumer | Shared per-consumer dependency projections, bounded metadata and demand-only publication. Regressions cover an inactive control arm, an inactive dynamic Select arm at pump budgets 1/1000, projection admission, existing snapshot interleaving and original fault/index provenance. |
+| Control-only Yield cycles ignored cancellation until run fuel exhaustion | Check the cancellation signal at every control/timer safe point. A concurrent cancellation during a two-million-item pump now stops successfully; existing cleanup/second-stop tests remain green. |
+| Two Get/Add/Set activations lost an increment at pump(1) | A pending Set retains scheduling ownership across internal data slices without retrying entropy. Both pump(1) and pump(1024) produce total 2. Read-only snapshot interleaving remains supported. |
+| Initializers and constants each spent the entire configured retention pool | One combined compile budget, with remaining allowance passed to data lowering. A 356-byte plan rejects a 256-byte limit and accepts 512. |
+| Saturated ordinary activation capacity rejected graceful stop | Separate bounded shutdown capacity, frames and ready storage reserved at startup. Tests cover a waiting run at normal capacity, actual On Stop mutation/drain, insufficient shutdown reserve rejection at start, and no On Stop execution on immediate stop. |
+
+Selected local environment: Windows x86_64 MSVC, rustc 1.99.1 (58cf8f9c3 2026-10-13), cargo 1.99.1 (5f94df478 2026-08-27), Node.js 24.18.0, default features. MSRV remains 1.97.1. Cargo.lock is unchanged, SHA-256 `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`; no dependencies or features added.
+
+| Executed command | Result |
+|---|---|
+| `cargo test --workspace --locked` | PASS: 707 passed, 9 manual timing tests ignored |
+| `cargo test -p orange-bundled -p orange-compiler -p orange-runtime --release --locked` | PASS: 161 passed, 3 manual timing tests ignored |
+| `cargo test -p orange-bundled --test control --locked` | PASS: 38 passed, 2 manual timing tests ignored; includes eight added behavior regressions |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | PASS |
+| `cargo doc --workspace --no-deps --locked` with `RUSTDOCFLAGS=-D warnings` | PASS; caller environment restored |
+| `node tools/check-cargo-metadata.mjs --self-test` | PASS: 9 fixtures |
+| `node tools/check-cargo-metadata.mjs` / `--msrv` | PASS: boundary / declared MSRV metadata |
+| `cargo run -p orange-bundled --example headless_control --locked` | PASS: `total=3; virtual_time_ns=10` |
+| `git diff --check` | PASS |
+
+The incremental filesystem cache emitted hard-link warnings and successfully copied files; these commands passed. Local Rust 1.97.1, Linux/macOS execution and security/dependency CI require remote checks on the new candidate. Earlier green CI on `62a115c` does not qualify these corrections.
+
+### Repeated local scaling and control probes
+
+Executed `cargo test -p orange-bundled --release --locked --test control review_unrelated_host_input_scaling -- --ignored --nocapture`. Count performs 1,000 literal bool writes, with 0/64/512 unrelated Get/Branch pairs. Compilation excluded; start/frame preparation, drive and drop included; explicit stop/dispose excluded; tracing disabled. Each size warms up one second and records 30 individual runs. All sizes now consume exactly 3,003 work items; the probe asserts this.
+
+| Unrelated inputs | Before median µs | After median µs | After p95 µs |
+|---|---:|---:|---:|
+| 0 | 103.6 | 107.8 | 109.8 |
+| 64 | 1797.5 | 111.4 | 112.4 |
+| 512 | 13633.5 | 123.7 | 139.8 |
+
+The remaining size difference includes startup/frame preparation; this does not establish zero allocation, fixed RSS, tail latency or an NFR/platform gate.
+
+Also repeated `cargo test -p orange-bundled --release --locked --test control headless_control_timing_baseline -- --ignored --nocapture`: the existing Count-1000 Get/Add/Set probe includes start/run/stop/dispose, tracing disabled, 10-second warmup, 30 samples of eight runs. Updated counted work is 9,003 items/run because actual host demand/resume is explicit. Batch means: median 213443.8 ns/run, p95 229200.0, maximum 230287.5. The previous section's 8,004-item figure describes the earlier candidate only. Both explicitly invoked probes passed.
+
+Public source compatibility: unfrozen RunLimits adds max_stop_activations (default 256); exhaustive struct literals need the new field. Public DataPoll and missing-input errors keep their behavior. No persisted graph/schema changes. Full core, host/package/service, UI and API freeze gates remain open.
+
+## Whole-codebase reuse qualification — 2026-10-24
+
+The review of `3203195` expanded beyond PR #18 to the model, registry/type/edit/inference/validation paths, compiler, runtime, bundled-provider boundaries and repository tooling. The eight identified changes are implemented on the same topic branch:
+
+| Area | Implemented change and retained contract |
+|---|---|
+| Connection planning | Additive `plan_edit_indexed` and `plan_connection_indexed` reuse a retained index and journaled trial edits. Existing read-only APIs remain available. Equivalence cases cover direct/converter/selection outcomes; rejection and a panicking identity source preserve content/index. Freshness, shadowed literals, imported conflicts and exact provider selection remain unchanged. |
+| Validation projections | Scoped memoization shares successful descriptors and lookup failures through body passes and final analysis checks. The settled resolution hands off its cache; new rounds/invocations create fresh scopes. Private Rc sharing avoids locks/atomic reference counts. Public document, registry and analysis types still satisfy Send + Sync. |
+| Graph algorithms | Data, control and function analysis use one private ordered iterative SCC primitive. Each caller keeps its own legality and witness rules. A 64-case bounded graph property compares partitions against independent mutual reachability; existing deep/cycle/function cases remain green. |
+| Diagnostics | One declaration generates enum/serde identity, stable codes, translation keys, severity and safe fallback text. Existing order, wire values and redacted argument behavior are preserved. |
+| Activation cells | Separate dense run/local layouts remove cross-owner placeholders. Only Index/Error projections allocate execution-output cells. Stable plan indices map to these private layouts; disposal releases them. |
+| Runtime preparation | One checked immutable prepared data layout/initial charge is shared by a run's frames. Mutable values, memos, entropy counters, fuel, limits and cancellation remain activation-owned. Frame admission and pinned running providers remain intact. |
+| Compiler bookkeeping | Output slots and producers share one entry keyed by original node/port; traversal storage is reused across roots. A small helper constructs control input roots. Implicit Error and loop-index projections retain distinct writers. |
+| Executor structure | Explicit private HostPoll input demand replaces the side channel; PullState groups consumer/frozen-input/pending-publication state and reuses capacity. Cursor resume and action completion have separate helpers. Public DataPoll, pump(1), Set atomicity, lazy demand and original fault provenance remain unchanged. |
+
+Environment: Windows x86_64 MSVC, rustc 1.99.1 (58cf8f9c3 2026-10-13), Cargo 1.99.1 (5f94df478 2026-08-27), Node.js 24.18.0, default features. MSRV remains 1.97.1. No dependencies/features/graph format/schema versions changed. Cargo.lock SHA-256 remains `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`.
+
+| Executed command | Result |
+|---|---|
+| `cargo test --workspace --locked` | PASS: 712 tests, 11 manual probes ignored |
+| `cargo test --workspace --release --locked` | PASS: 712 tests, 11 manual probes ignored |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | PASS |
+| `cargo doc --workspace --no-deps --locked` with `RUSTDOCFLAGS=-D warnings` | PASS; environment restored |
+| `node --test tools/release.test.mjs` | PASS: 7 tests |
+| `node tools/check-cargo-metadata.mjs --self-test` | PASS: 9 fixtures |
+| `node tools/check-cargo-metadata.mjs` / `--msrv` | PASS: core boundary / declared MSRV metadata |
+| `cargo run -p orange-bundled --example headless_control --locked` | PASS: `total=3; virtual_time_ns=10` |
+| `git diff --check` | PASS |
+
+Windows incremental-cache hard-link warnings fell back to copying; the recorded commands exited successfully. Local metadata success is not an MSRV build. Rust 1.97.1, Linux/macOS and dependency/security qualification require remote CI on the final head. Earlier green checks do not qualify these changes. No merge is included.
+
+### Measured reuse and limits
+
+Explicit release probes, with compilation/fixture construction excluded:
+
+| Probe | Previous candidate | Current candidate |
+|---|---:|---:|
+| Plan one wire between isolated nodes beside 10,000 unrelated chain nodes, read-only API median | 63.625 ms | 35.653 ms |
+| Same request, new retained-index API median | unavailable | 36.2 µs |
+| Start/drop 128 activations over 512 data nodes, median | 2.427 ms | 0.372 ms |
+| Whole validation of 10,000-node chain, best of five | 332.014 ms | 322.913 ms |
+
+Connection command: `cargo test -p orange-model --release --locked --test perf_edit_baseline isolated_connection_planning_by_document_size -- --ignored --nocapture`. Three warmups and 15 samples per mode/size. For 100/1,000/10,000 unrelated nodes, read-only medians are 348.6/3037.2/35652.5 µs and indexed medians 63.0/36.0/36.2 µs. Current p95 at 10,000 is 40569.3/45.6 µs respectively. Old read-only review medians were 600.1/5412.7/63624.9 µs under the same construction/timing method. Plans are Ready and the final document/index equal their original/fresh state.
+
+Startup command: `cargo test -p orange-bundled --release --locked --test control activation_preparation_by_owner_count -- --ignored --nocapture`. Start/frame preparation and drop are timed; drive/explicit stop/dispose are excluded. Each size warms up 500 ms and records 30 runs. Medians for 1/32/128 owners are 2.4/50.1/372.3 µs, p95 2.6/484.4/1776.4 µs. Previous medians were 2.8/104.4/2427.1 µs. In the 128×512 shape, sharing two immutable lookup arrays and removing unused execution cells eliminates approximately 6.5 MiB of repeated/unused vector payload before additional layout overhead. This is a representation calculation using measured Rust type sizes, not an allocator or process RSS measurement.
+
+To avoid comparing historical validation numbers from a different run, the existing `edit_cost_by_document_size` probe was also built from an isolated tracked-source archive of `3203195`, with the same toolchain/lockfile and a separate target directory. Old/new whole-validation best-of-five times are 20.855/22.426 ms at 1,000 and 332.014/322.913 ms at 10,000 nodes. These small differences and other local run variation establish no general validation speedup. Whole-component inference, whole-document validation and V12/NFR-15 work remain open.
+
+Repeated existing release probes also pass: Count-1000 Get/Add/Set uses 9,003 work items, with 10-second warmup and 30 batches of eight start/run/stop/dispose operations; median 215237.5 ns/run, p95 236337.5, max 251262.5. The unrelated-host-input probe remains exactly 3,003 work items at 0/64/512 unrelated inputs, with medians 111.2/103.9/105.95 µs. Its one-second warmup/30 runs include start/drive/drop and exclude explicit stop/dispose. These local timings do not qualify NFR, allocation, tail-latency or platform gates.
+
+The independent source interpreters remain separate from compiler/runtime helpers. Four crate boundaries remain deliberate: model, compiler, runtime and bundled providers. No full core, SDK/package/service, UI, release or public API freeze gate is claimed.
+
+
+## Structured Fork concurrency qualification — 2026-10-25
+
+Base: squash-merged PR18, 104bbadac0ecc973036dcd2a2959f88bde026349. Behavior source after review: 05866c1 on core/structured-concurrency; subsequent delivery documentation/example does not change runtime behavior. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default workspace features; Node 24.18.0. MSRV remains 1.97.1. Cargo.lock SHA256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152 is unchanged; no dependency, feature, crate or persisted graph schema changes.
+
+### Executed local verification
+
+| Command / check | Result |
+|---|---|
+| cargo test --workspace --locked --offline | PASS: 728 tests, 12 manual probes ignored |
+| cargo test --workspace --release --locked --offline | PASS: 728 tests, 12 manual probes ignored |
+| cargo fmt --all --check | PASS |
+| cargo clippy --workspace --all-targets --locked --offline -- -D warnings | PASS |
+| cargo doc --workspace --no-deps --locked --offline, RUSTDOCFLAGS=-Dwarnings | PASS; prior environment restored |
+| node tools/check-cargo-metadata.mjs | PASS: core dependency boundary |
+| node tools/check-cargo-metadata.mjs --self-test | PASS: 9 policy fixtures |
+| node tools/check-cargo-metadata.mjs --msrv | PASS: declared 1.97.1 metadata; not a local MSRV build |
+| node --test tools/release.test.mjs | PASS: 7 tests |
+| cargo run -p orange-bundled --example headless_control --locked --offline | PASS: total=3; virtual_time_ns=10 |
+| cargo run -p orange-bundled --example headless_fork --locked --offline | PASS: join notification / final owner retirement at all 10/10 ns, any 5/10 ns, race 5/5 ns, detach 0/10 ns |
+| git diff --check | PASS |
+
+Windows incremental-cache hard-link warnings fell back to copying. Rust 1.97.1, Linux/macOS and dependency-security checks require final-head remote CI; local metadata/lint success does not substitute. The PR records that head-specific result. No merge or full core/API/NFR gate is included.
+
+The control suite has 54 ordinary tests and four ignored timing probes. Sixteen new ordinary tests cover checked Fork order/admission, all four joins, nested region lifetime, shared activation locals, fail-fast, loop cancellation, equal-time wait/stop races, fuel preservation, owner retirement and per-operation cleanup deadlines. A 10,000-iteration Fork test stays within three live strand/continuation frames and four regions. The new independent source interpreter uses ordinary Rust futures with a small bounded executor, scans saved edges and never reads production IR, cursors or ownership/join helpers. Its 96 fixed-seed cases (20261025) run at budgets 1/7/1000, comparing final state, timestamped observable outcomes and handled-fault provenance for nested Fork/Sequence/Count/Wait, seeded data and reversed storage. The earlier independent control/data oracles remain intact. Generated competing deadlines are deliberately separated; equal-time and stop ordering have focused known answers. Shared model validation/literal codecs and externally anchored entropy primitives are explicit independence limitations.
+
+Review added regressions proving that completed cleanup cannot replenish the surviving activation's ordinary data fuel, and that a later race does not inherit an expired prior cleanup deadline. Cleanup has a non-refilling activation work reserve; each cancelled operation owns a deadline capped by the run drain deadline. Epochs/entropy remain activation-owned. One pending data pull serializes sibling consumption while other activations can interleave; this avoids copying mutable evaluator state and preserves frozen prologues.
+
+### Measured costs and optimizations
+
+Commands explicitly invoked with --ignored --nocapture: cargo test -p orange-bundled --test control --release --locked --offline headless_control_timing_baseline, and the same command selecting fork::fork_owner_scaling. Fixture construction/compilation are excluded. These are local probe distributions, not allocator/RSS or wall-time acceptance gates.
+
+The existing Count-1000 Get/Add/Set probe includes start, execution, stop and disposal, with trace off, 10-second warmup and 30 batches of eight. Both base and current execute 9,003 work items. A tracked-source archive of 104bbad built into a separate target directory with the same toolchain/lock yields median 214212.5 ns/run, p95 225550.0, max 228700.0. The initial concurrency implementation measured median 431275.0 ns/run. Replacing per-item map removal/reinsertion with indexed boxed shared activation frames reduced the cost; cancelling a race subtree in one pass also avoids per-sibling rescans. A tested alternative boxing each region continuation did not help and was not retained. Final reviewed source measures median 292562.5 ns/run, p95 311775.0, max 313025.0. The final median is about 37% above the merged base, reflecting additional ownership bookkeeping. No general speedup or NFR success is claimed; further optimization must preserve the new equivalence/ownership evidence.
+
+Fork scaling uses 500 ms warmup per shape, 30 batches of eight full lifecycles, trace off, and virtual waits at 1 ns for the first branch / 2 ns for others:
+
+| Join / width | Median ns/run | p95 ns/run | Work items | Retained owners at suspension: activations / frames / regions / timers |
+|---|---:|---:|---:|---|
+| all / 1 | 937.5 | 950.0 | 7 | 1 / 2 / 3 / 1 |
+| all / 16 | 5112.5 | 5987.5 | 67 | 1 / 17 / 18 / 16 |
+| all / 128 | 45150.0 | 56037.5 | 515 | 1 / 129 / 130 / 128 |
+| race / 1 | 1537.5 | 1900.0 | 7 | 1 / 2 / 3 / 1 |
+| race / 16 | 6025.0 | 6987.5 | 37 | 1 / 17 / 18 / 16 |
+| race / 128 | 34025.0 | 42512.5 | 261 | 1 / 129 / 130 / 128 |
+
+These measurements confirm one retained evaluator/activation, rather than one per branch, and complete owner retirement; they do not measure process memory or guarantee tail latency. Fan-out, region traversal and trusted native callbacks are bounded by admission/ownership limits rather than wall-clock preemption. Final PR CI and self-review remain required. Functions/other controls, events/reactivity, general resources/services, shared state/checkpoints, domains/API evolution and incremental/NFR work remain open.
+
+## Whole-codebase review fixes (2026-10-25)
+
+Implementation `d6041a1` fixes all seven reproduced findings: duplicate/inconsistent variadic counters, ignored explicit codec locks, transaction-iterator unwind, paste generator collisions, cleanup-scope entry ownership loss, layout-only executable invalidation, and recursive literal type-argument cloning. Contracts and FR/ADR trace are updated in 01/03/08/11/12. Unknown saved state remains round-trippable; invalid semantic state cannot publish an executable plan. Explicit codec locks, including unused ones, must resolve; absent format-v1 locks retain the existing structural codec default. No new dependency, crate, feature or saved schema field is introduced. `Cargo.lock` SHA-256 remains `e20eacb56cec10f874aa8c3869d5ab93b34831229a74b91332433db5f5267152`.
+
+Environment: Windows x86_64-pc-windows-msvc, selected rustup Rust/Cargo 1.99.1, default features, Node 24.18.0, unchanged lockfile. Declared MSRV is 1.97.1; local results are not an MSRV/cross-platform build claim. Commands executed on the corrected source:
+
+| Command/check | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` | PASS: 738 passed, 13 ignored, zero failures, including doctests |
+| `cargo test --workspace --release --locked --offline` | PASS: 738 passed, 13 ignored, zero failures, including doctests |
+| `cargo test -p orange-bundled --test core_integrity --locked --offline` | PASS: eight behavior regressions; one manual timing probe ignored |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS; only Cargo's existing OneDrive hard-link fallback notices |
+| `cargo fmt --all --check`; `git diff --check` | PASS |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --offline` (PowerShell environment equivalent) | PASS |
+| `node tools/check-cargo-metadata.mjs --self-test`; `node tools/check-cargo-metadata.mjs` | PASS: nine policy fixtures and core dependency boundary |
+| `node --test tools/release.test.mjs`; `node tools/release.mjs check` | PASS: seven tests; packaging remains intentionally disabled |
+| `cargo run -p orange-bundled --example headless_control --locked --offline`; corresponding `headless_fork` example | PASS: total 3 at 10 ns; all 10/10, any 5/10, race 5/5, detach 0/10 ns |
+
+Ten added ordinary regressions cover malformed Sequence/Fork identities and atomic insertion rejection, supported/unsupported codec locks and exact saved-payload preservation, ordinary/scratch iterator unwind, generated function-body/target collisions, cleanup entry fuel overflow with zero retained activation/strand/region owners, and semantic/layout freshness through undo/redo and pure evaluation. Existing scalar/aggregate codec properties and independent source/runtime oracles also pass. The stopped-run pump rejection is retained. The cleanup overflow path records one truncated cleanup rather than losing its checked-out activation.
+
+Explicit descriptive timing: `cargo test -p orange-bundled --test core_integrity --release --locked --offline measure_nested_none_literal_decoding -- --ignored --nocapture`. The probe decodes and drops 10,000 outer None values in a list of nested option types, with three warmups and five timed samples per type depth. Before the fix, recorded medians at depths 1/32/63 were 1,066/25,631/50,646 µs. Borrowing type arguments instead of cloning them yields 151/157/161 µs (sample maxima 152/157/163 µs). Type parsing remains in each decode; no timing assertion, allocator count, cross-OS comparison, general runtime speedup or NFR pass is claimed.
+
+Self-review checked every semantic-state consumer in compiler/evaluation entry, preserved whole-content binding for undo/index/edit proposals, checked type-lock validation executes once in combined analysis, and traced cleanup entry failures through activation restoration and normal region retirement. Paste occupancy uses binary UUID keys by typed namespace rather than allocating one UUID string per existing identity. Temporary review reproductions are promoted to durable behavior tests. Final-head remote CI is recorded separately after push; no merge is authorized.
+

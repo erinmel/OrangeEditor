@@ -355,6 +355,8 @@ fn core_control_definitions() -> Vec<NodeDefinition> {
     let sequence_then = PortDescriptor::exec_out("then").variadic(2, None);
     let fork_branch = PortDescriptor::exec_out("branch").variadic(1, None);
     vec![
+        definition("core/on-start", NodeKind::Entry, None, vec![]),
+        definition("core/on-stop", NodeKind::Entry, None, vec![]),
         definition(
             "core/branch",
             Action,

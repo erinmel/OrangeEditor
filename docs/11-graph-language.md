@@ -129,6 +129,7 @@ Order: connected edge → instance literal → definition default → `None` for
 
 ### 4.5 Variadic and dynamic ports
 
+- Active variadic counters must be unique and strictly below `next`; holes and reordered counters are valid. Duplicate counters or an inconsistent allocator report `E-VARIADIC-IDENTITY` on the node and base port and block lowering. Imports preserve malformed state for repair. Insert rejects inconsistent state atomically rather than allocating an existing identity. Exhaustion continues to fail without wrapping.
 - A finite definition range includes both endpoints; `min == max` and `0..0` are valid, and `max: null` remains unbounded. Registry publication checks that `min` does not exceed a finite `max`. Validation checks each resolved variadic port against its node's persisted instance count (`order.len()`, absent state counts as zero), for input and output ports alike. Counts below `min` or above a finite `max` report `E-VARIADIC-COUNT` on the node and base port. Keys, next-counter values, connected edges and literals do not change the count. Unresolved nodes are skipped until metadata resolution succeeds.
 - Variadic instance ports use stable keys `item#k`. `k` is a per-node counter that is never reused, so inserting an item in the middle does not rewrite edges. Order is the persisted instance order, not `k`.
 - Ports that depend on config or type arguments (record split, gRPC method fields) come from a **declarative port template** that the host evaluates. No guest code runs to compute ports, which keeps the "opening a document executes nothing" rule ([03](03-data-and-execution.md)).
@@ -247,6 +248,8 @@ A **region** is a set of exec nodes executed by one structured construct. Roots:
 - Branch, Switch, Gate and async outcomes do not create regions. Their outs stay in the parent region, so they may merge again (exec fan-in).
 - A **region instance completes** when every strand inside it has ended, including nested Fork strands. Structured concurrency: nothing outlives its region instance, except subscriptions owned by the run (§10.4).
 - Unreachable exec nodes → `W-UNREACHABLE`; they belong to no region and are not compiled.
+
+**Fork execution cohort (2026-10-25).** The headless compiler/runtime now execute explicit all/any/race/detach joins under the existing rules, including nested Sequence/loop ownership, sibling fail-fast, Break/Continue and bounded cancellation cleanup. Branch starts use persisted variadic order. Join notification is distinct from enclosing region retirement. Exact-limit admission, equal-time outcome races, activation-local sharing, aggregate fuel and source-oracle tests are recorded in [10](10-tooling-and-sources.md). This implements the bounded Fork cohort; functions, other controls, general events/resources/services and full-core gates remain open.
 
 **Current region validation (V6).** `validate_regions` walks each body's valid exec and event-to-exec edges iteratively from the roots: exec outputs of `Entry`-kind nodes (including `core/function-entry`), event outputs, `core/sequence` `then#k`, `core/fork` `branch#k` and iterator `body`. A region is keyed by its root output port and records its parent, innermost enclosing loop body, loop depth and owned nodes; nodes reached by several regions get no owner. Where the regions reaching a node are nested, the edges that leave the owning region report `E-REGION-ESCAPE` (subject: source node, port, edge); otherwise the node reports `E-REGION-AMBIGUOUS`. Only the first node where a fault starts is reported, not its downstream cascade. `core/return` inside a Fork branch reports `E-REGION-ESCAPE`. `core/break`/`core/continue` without an enclosing loop body in the same body report `E-BREAK-OUTSIDE-LOOP`. `core/while` without a positive integer `max_iterations` reports `E-LOOP-UNBOUNDED` (G-27). Unreachable resolved exec nodes report `W-UNREACHABLE`, except nodes downstream of an unresolved node. The index is exposed as `ValidationReport.regions`. The same pass reports `E-ZONE-STRUCTURE` for zone pairing, purity, closure and nesting and `E-SWITCH-CASE` for `core/switch` case values (§8.4 "For-each and zone contracts"). Every rule of this section is now enforced, so `Regions` is in the covered checks; run-time region completion remains execution work.
 
@@ -450,9 +453,11 @@ Every entry has an `activation` policy ([12 §6](12-graph-data-structures.md)):
 | `on_fault` | `continue` / `stop-run` |
 | `order` | Handler order (O8) |
 
-Under `parallel`, activations interleave at suspension points. Get is re-pulled at every consumption, so a read-modify-write is atomic unless a value was explicitly captured (in a local or action output) before a suspension. Then `W-STALE-CAPTURE` warns and suggests `core/update-variable`.
+Under `parallel`, activations interleave at suspension points. Get is re-pulled at every consumption, so a read-modify-write is atomic unless a value was explicitly captured (in a local or action output) before a suspension. Then `W-STALE-CAPTURE` warns and suggests `core/update-variable`. An internal host work-budget boundary during a Set input pull is not a graph suspension: the supported executor retains that action's scheduling ownership until commit/failure, while still returning control to the host and observing cancellation. Consumer state snapshots remain frozen across such slices; inactive lazy inputs are not published into data slots.
 
 ### 10.2 Entry catalog
+
+Executable-control prerequisite (2026-10-24): `core/on-start@1` and `core/on-stop@1` are registered host-owned Entry definitions with config version 1, no provider or signature, no payload, and the kind-provided `then` output. Their ordinary persisted activation policy is required. This registration does not implement other entries or generic event delivery.
 
 | Entry | Fires | Payload |
 |---|---|---|
@@ -593,13 +598,15 @@ Compile diagnostics are `E-` (blocks compiling the affected region) or `W-` (com
 
 Diagnostics also carry `message_origin`, `message_key`, typed redacted `message_args` and safe English fallback per [13](13-internationalization.md); suggested-fix text is translatable while its command ID stays stable. Existing codes and severity never depend on locale. Golden expectations assert codes, subject IDs, arguments and fix IDs, excluding rendered prose. Package catalogue failures use the separate host/package diagnostic codes in 13, not graph compilation errors.
 
+`E-VARIADIC-IDENTITY` and `E-TYPE-CODEC` are errors with core origin, message keys `core/graph-variadic-identity` and `core/graph-type-codec`, and empty redacted message arguments. The former identifies the node/base port; the latter identifies the document because locks are document-wide. Unsupported codec locks are preserved but block lowering, including when the locked type is unused (12 §6.1).
+
 `E-VARIADIC-COUNT` uses the core origin, message key `core/graph-variadic-count`, empty message arguments and safe fallback "The number of variadic port instances is outside the allowed range." The subject identifies the node and base port. Saved out-of-range state remains editable; validation does not rewrite it.
 
 All variable and event declarations require concrete, well-formed types available in the current registry, even when unused or without an initializer. `E-DECLARATION-TYPE` identifies a declaration whose syntax, identity, arity, parameter scope or type constraints fail; resource depth failures retain `E-TYPE-COMPLEXITY`. Combined analysis may stop before semantic checks with global `E-ANALYSIS-LIMIT` or `E-ANALYSIS-CANCELLED`. Neither failure supplies readiness evidence. Exact admission and diagnostic-envelope contracts are in [12 §3.2](12-graph-data-structures.md) and [13 §2](13-internationalization.md).
 
 | Group | Codes |
 |---|---|
-| Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-VARIADIC-COUNT`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
+| Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-VARIADIC-COUNT`, `E-VARIADIC-IDENTITY`, `E-TYPE-CODEC`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
 | Resolution | `E-DOMAIN-UNSUPPORTED`, `E-DOMAIN-ANALYSIS-BLOCKED`, `E-SIGNATURE-MISSING`, `E-PROVIDER-MISSING`, `E-PACKAGE-LOCK-MISSING`, `E-PROVIDER-UNAVAILABLE`, `E-DEPENDENCY-UNAVAILABLE`, `E-INTRINSIC-UNSUPPORTED`, `E-CONVERTER-CONFIG`, `E-CONVERTER-ENTRY`, `E-CONVERTER-OPTIONS` |
 | Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-TYPE-COMPLEXITY`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
 | Regions and availability | `E-REGION-AMBIGUOUS`, `E-REGION-ESCAPE`, `E-UNAVAILABLE-VALUE`, `E-CROSS-ACTIVATION`, `E-BREAK-OUTSIDE-LOOP`, `E-ZONE-STRUCTURE`, `E-SWITCH-CASE`, `E-FOR-EACH-MODE`, `W-UNREACHABLE` |

@@ -120,7 +120,7 @@ impl AnalysisSession {
             Some(reason) => self.rerun(document, registry, options, SessionWork::Rebuild(reason)),
             None if change.layout_only => {
                 // Layout never affects validation (G-36), so only the bound state moves.
-                self.analysis.rebind(document.state_id());
+                // Layout preserves the semantic identity already bound to the analysis.
                 self.revision = document.revision();
                 self.stats = EditStats {
                     work: SessionWork::None,
@@ -203,7 +203,7 @@ impl AnalysisSession {
     /// True if the analysis describes `document` against `registry` and was not cancelled.
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
         !self.stale
-            && self.analysis.document_state() == document.state_id()
+            && self.analysis.document_state() == document.semantic_state_id()
             && self.analysis.registry_generation() == registry.generation()
     }
 }

@@ -141,7 +141,9 @@ const EVENT: Option<ReferenceKind> = Some(ReferenceKind::Event);
 const FUNCTION: Option<ReferenceKind> = Some(ReferenceKind::Function);
 
 /// Every intrinsic of format v1, in the order of 11 §8.4, §11 and §14.
-const INTRINSICS: [Intrinsic; 41] = [
+const INTRINSICS: [Intrinsic; 43] = [
+    rule("core/on-start", ENTRY, None),
+    rule("core/on-stop", ENTRY, None),
     rule("core/call", None, FUNCTION),
     rule("core/function-entry", None, None),
     rule("core/function-outputs", None, None),

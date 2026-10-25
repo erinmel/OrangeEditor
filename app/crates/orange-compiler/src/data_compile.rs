@@ -1,11 +1,12 @@
 use crate::compile::{
-    ConstantFolder, Incoming, admit, charge, decode, is_state_read, key, port_type, value_bytes,
+    Admission, ConstantFolder, Incoming, admit, charge, decode, is_state_read, key, port_type,
+    value_bytes,
 };
 use crate::lazy::Lazy;
 use crate::*;
 use orange_model::GraphDocument;
 use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{NodeKind, PortDescriptor, PortDirection};
+use orange_model::document::{NodeKind, PortDescriptor, PortDirection, PortKind};
 use orange_model::id::{NodeId, PortKey};
 use orange_model::validation::ValidationAnalysis;
 use std::collections::BTreeMap;
@@ -28,6 +29,12 @@ enum Task {
         selection: Option<Selection>,
     },
 }
+#[derive(Clone, Copy)]
+struct ProducedOutput {
+    slot: SlotIx,
+    producer: NodeIx,
+}
+
 struct Lowering<'a, R: EntropyKernelResolver> {
     document: &'a GraphDocument,
     analysis: &'a ValidationAnalysis,
@@ -38,8 +45,10 @@ struct Lowering<'a, R: EntropyKernelResolver> {
     folder: ConstantFolder<'a, R>,
     plan: DataPlan,
     completed: BTreeMap<NodeId, NodeIx>,
-    outputs: BTreeMap<(NodeId, PortKey), SlotIx>,
+    outputs: BTreeMap<(NodeId, PortKey), ProducedOutput>,
+    work: Vec<Task>,
     bytes: usize,
+    host_nodes: &'a std::collections::BTreeSet<NodeId>,
 }
 impl<R: EntropyKernelResolver> Lowering<'_, R> {
     fn push(
@@ -76,13 +85,9 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         self.options.checkpoint()?;
         let port_key = key(port);
         if let Some(edge) = self.incoming.get(&(node, port_key.clone())) {
-            let slot = *self
+            let ProducedOutput { slot, producer } = *self
                 .outputs
                 .get(&(edge.from.node, edge.from.port.clone()))
-                .ok_or(CompileError::ValidationIncomplete)?;
-            let producer = *self
-                .completed
-                .get(&edge.from.node)
                 .ok_or(CompileError::ValidationIncomplete)?;
             return Ok(DataInput {
                 source: InputSource {
@@ -140,7 +145,8 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
     fn lower(&mut self, root: NodeId) -> Result<(), CompileError> {
         let analysis = self.analysis;
         let document = self.document;
-        let mut work = vec![Task::Enter(root)];
+        let mut work = std::mem::take(&mut self.work);
+        work.push(Task::Enter(root));
         while let Some(task) = work.pop() {
             self.options.checkpoint()?;
             let (node_id, selection) = match task {
@@ -149,6 +155,48 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                         continue;
                     }
                     let sig = &analysis.report().resolved[&node];
+                    if self.host_nodes.contains(&node) {
+                        let mut ports: Vec<_> = sig
+                            .ports
+                            .iter()
+                            .filter(|p| {
+                                p.kind == PortKind::Data && p.direction == PortDirection::Output
+                            })
+                            .cloned()
+                            .collect();
+                        if sig.implicit_ports().contains(&"error") {
+                            ports.push(PortDescriptor::data_out(
+                                "error",
+                                "core/error@1".parse().expect("fixed type"),
+                                orange_model::document::OutputSource::Execution,
+                            ));
+                        }
+                        for port in &ports {
+                            let slot = self.push(node, port, None)?;
+                            let index = NodeIx(
+                                u32::try_from(self.plan.nodes.len())
+                                    .map_err(|_| CompileError::ResourceLimit)?,
+                            );
+                            self.outputs.insert(
+                                (node, key(port)),
+                                ProducedOutput {
+                                    slot,
+                                    producer: index,
+                                },
+                            );
+                            self.plan.host_inputs.push(index);
+                            self.plan.nodes.push(DataNode {
+                                index,
+                                node,
+                                stability: DataStability::Epoch,
+                                inputs: Box::new([]),
+                                outputs: Box::new([slot]),
+                                operation: DataOperation::Input,
+                            });
+                            self.completed.insert(node, index);
+                        }
+                        continue;
+                    }
                     if self.lazy.contains_key(&node) {
                         work.push(Task::Choose(node));
                         self.dependencies(node, [key(&sig.ports[0])], &mut work);
@@ -313,7 +361,13 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     None
                 };
                 let slot = self.push(node_id, port, value)?;
-                self.outputs.insert((node_id, key(port)), slot);
+                self.outputs.insert(
+                    (node_id, key(port)),
+                    ProducedOutput {
+                        slot,
+                        producer: index,
+                    },
+                );
                 outputs.push(slot);
             }
             if matches!(operation, DataOperation::Input) {
@@ -333,6 +387,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             });
             self.completed.insert(node_id, index);
         }
+        self.work = work;
         Ok(())
     }
 }
@@ -369,6 +424,38 @@ pub fn compile_data(
     options: CompileOptions<'_>,
 ) -> Result<DataPlan, CompileError> {
     let admission = admit(document, &snapshot, analysis, options, true)?;
+    let roots: Vec<_> = document
+        .exports()
+        .iter()
+        .map(|export| DemandRoot {
+            id: export.id.clone(),
+            node: export.node,
+            port: export.port.clone(),
+            input: false,
+        })
+        .collect();
+    lower_roots(
+        document, snapshot, analysis, resolver, options, admission, &roots,
+    )
+}
+
+pub(crate) struct DemandRoot {
+    pub(crate) id: String,
+    pub(crate) node: NodeId,
+    pub(crate) port: PortKey,
+    pub(crate) input: bool,
+}
+
+#[allow(clippy::too_many_arguments)] // Private original-document lowering seam.
+pub(crate) fn lower_roots(
+    document: &GraphDocument,
+    snapshot: Arc<RegistrySnapshot>,
+    analysis: &ValidationAnalysis,
+    resolver: &impl EntropyKernelResolver,
+    options: CompileOptions<'_>,
+    admission: Admission<'_>,
+    roots: &[DemandRoot],
+) -> Result<DataPlan, CompileError> {
     let folder = ConstantFolder::new(
         document,
         analysis,
@@ -390,7 +477,7 @@ pub fn compile_data(
             snapshot,
             graph: document.graph_id(),
             revision: document.revision(),
-            state: document.state_id(),
+            state: document.semantic_state_id(),
             nodes: vec![],
             types: vec![],
             sources: vec![],
@@ -410,34 +497,59 @@ pub fn compile_data(
         },
         completed: BTreeMap::new(),
         outputs: BTreeMap::new(),
+        work: Vec::new(),
         bytes: 0,
+        host_nodes: &admission.host_nodes,
     };
-    for export in document.exports() {
+    for export in roots {
         charge(
             &mut state.bytes,
             export.id.len(),
             options.limits.max_constant_bytes,
         )?;
     }
-    for export in document.exports() {
-        state.lower(export.node)?;
-    }
-    for export in document.exports() {
+    for export in roots {
         options.checkpoint()?;
-        let slot = *state
-            .outputs
-            .get(&(export.node, export.port.clone()))
-            .ok_or(CompileError::ValidationIncomplete)?;
+        let (slot, producer) = if export.input {
+            if let Some(edge) = admission.incoming.get(&(export.node, export.port.clone())) {
+                state.lower(edge.from.node)?;
+                let ProducedOutput { slot, producer } =
+                    state.outputs[&(edge.from.node, edge.from.port.clone())];
+                (slot, producer)
+            } else {
+                let port = analysis.report().resolved[&export.node]
+                    .ports
+                    .iter()
+                    .find(|p| key(p) == export.port)
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                let input = state.input(export.node, port)?;
+                let index = NodeIx(
+                    u32::try_from(state.plan.nodes.len())
+                        .map_err(|_| CompileError::ResourceLimit)?,
+                );
+                state.plan.nodes.push(DataNode {
+                    index,
+                    node: export.node,
+                    stability: DataStability::Const,
+                    inputs: Box::new([]),
+                    outputs: Box::new([input.source.slot]),
+                    operation: DataOperation::Constant,
+                });
+                (input.source.slot, index)
+            }
+        } else {
+            state.lower(export.node)?;
+            let ProducedOutput { slot, producer } = *state
+                .outputs
+                .get(&(export.node, export.port.clone()))
+                .ok_or(CompileError::ValidationIncomplete)?;
+            (slot, producer)
+        };
         state.plan.exports.push(Export {
             id: export.id.clone(),
             slot,
         });
-        state.plan.export_nodes.push(
-            *state
-                .completed
-                .get(&export.node)
-                .ok_or(CompileError::ValidationIncomplete)?,
-        );
+        state.plan.export_nodes.push(producer);
     }
     state.plan.diagnostics = state.folder.diagnostics().to_vec();
     orange_model::validation::sort_diagnostics(&mut state.plan.diagnostics);

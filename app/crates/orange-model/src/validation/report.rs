@@ -11,8 +11,8 @@ use crate::index::DocIndex;
 use super::acceptance::{BodyPasses, Settled, accept_functions, settle};
 use super::{
     AnalysisOptions, Diagnostic, DiagnosticCode, FunctionSummary, LeafEffects, Severity, Subject,
-    sort_diagnostics, validate_availability, validate_body_domains, validate_config,
-    validate_declaration_types, validate_exports, validate_state, validate_streams,
+    sort_diagnostics, validate_body_domains, validate_config, validate_declaration_types,
+    validate_state,
 };
 
 /// A validation pass or contract category that must be covered before compilation can be ready.
@@ -147,13 +147,8 @@ pub struct ValidationAnalysis {
 }
 
 impl ValidationAnalysis {
-    /// Binds an unchanged result to a new content state of the same semantic document,
-    /// as after a layout-only edit.
-    pub(crate) fn rebind(&mut self, document_state: u64) {
-        self.document_state = document_state;
-    }
-
-    /// Read-only identity of the analyzed document content (including undo identity).
+    /// Read-only semantic content identity, restored by undo/redo. Layout edits do not
+    /// invalidate this analysis; compare with [`GraphDocument::semantic_state_id`].
     pub fn document_state(&self) -> u64 {
         self.document_state
     }
@@ -202,7 +197,7 @@ impl ValidationAnalysis {
 
     /// Whether this analysis belongs to the document content and registry snapshot supplied.
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
-        self.document_state == document.state_id()
+        self.document_state == document.semantic_state_id()
             && self.registry_generation == registry.generation()
     }
 
@@ -283,7 +278,7 @@ pub fn analyze_with_options(
                 diagnostics: vec![Diagnostic::new(code, Subject::default(), registry.origin())],
                 ..ValidationReport::default()
             },
-            document_state: document.state_id(),
+            document_state: document.semantic_state_id(),
             registry_generation: registry.generation(),
             covered: &[],
         },
@@ -310,6 +305,7 @@ fn run_analysis(
     let Settled {
         passes:
             BodyPasses {
+                projections,
                 nodes,
                 connections,
                 data_cycles,
@@ -322,19 +318,23 @@ fn run_analysis(
         ..
     } = settle(document, registry, &leaf_effects, &index, seed, options)?;
 
-    let availability = validate_availability(
+    let ports = super::ports::PortResolver::resume(document, &nodes.resolved, projections);
+    let availability = super::availability::validate_availability_with_ports(
         document,
-        &nodes.resolved,
+        &ports,
         &connections,
         &regions.index,
         registry,
     );
     options.checkpoint()?;
     let mut diagnostics = nodes.diagnostics;
+    diagnostics.extend(super::inputs::validate_type_locks(document, registry));
     diagnostics.extend(validate_declaration_types(document, registry));
     options.checkpoint()?;
     diagnostics.extend(availability.diagnostics);
-    diagnostics.extend(validate_exports(document, &nodes.resolved, registry));
+    diagnostics.extend(super::exports::validate_exports_with_ports(
+        document, &ports, registry,
+    ));
     options.checkpoint()?;
     diagnostics.extend(validate_config(document, registry));
     options.checkpoint()?;
@@ -342,7 +342,9 @@ fn run_analysis(
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
     diagnostics.extend(conformance.diagnostics);
-    diagnostics.extend(validate_streams(document, &nodes.resolved, registry));
+    diagnostics.extend(super::streams::validate_streams_with_ports(
+        document, &ports, registry,
+    ));
     options.checkpoint()?;
     diagnostics.extend(validate_state(
         document,
@@ -381,6 +383,7 @@ fn run_analysis(
     incomplete_nodes.extend(regions.incomplete_nodes);
     incomplete_nodes.extend(control.incomplete_nodes);
     options.checkpoint()?;
+    drop(ports);
     Ok(ValidationAnalysis {
         report: ValidationReport {
             diagnostics,
@@ -392,7 +395,7 @@ fn run_analysis(
             regions: regions.index,
             control_cycle_paths: control.cycle_paths,
         },
-        document_state: document.state_id(),
+        document_state: document.semantic_state_id(),
         registry_generation: registry.generation(),
         covered: COVERED_CHECKS,
     })
@@ -440,8 +443,22 @@ fn domain_blocked_analysis(
             incomplete_functions,
             ..ValidationReport::default()
         },
-        document_state: document.state_id(),
+        document_state: document.semantic_state_id(),
         registry_generation: registry.generation(),
         covered: DOMAIN_ONLY_CHECKS,
+    }
+}
+
+#[cfg(test)]
+mod thread_contract {
+    use super::*;
+
+    #[test]
+    fn private_projection_cache_does_not_change_public_thread_boundaries() {
+        fn send_sync<T: Send + Sync>() {}
+        send_sync::<GraphDocument>();
+        send_sync::<RegistrySnapshot>();
+        send_sync::<ValidationReport>();
+        send_sync::<ValidationAnalysis>();
     }
 }

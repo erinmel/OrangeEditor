@@ -229,6 +229,64 @@ fn edit_cost_by_document_size() {
     }
 }
 
+#[test]
+#[ignore = "manual connection planning comparison; not NFR acceptance"]
+fn isolated_connection_planning_by_document_size() {
+    use orange_model::conversion::{
+        ConnectionOutcome, ConnectionRequest, plan_connection, plan_connection_indexed,
+    };
+    if cfg!(debug_assertions) {
+        panic!("release only");
+    }
+    let registry = registry_with_provider(key());
+    for n in [100usize, 1_000, 10_000] {
+        let mut doc = chain(n);
+        let before = doc.clone();
+        let mut index = DocIndex::build(&doc);
+        let request = ConnectionRequest {
+            from: serde_json::from_value(json!({"node":node_id(n),"port":"sum"})).unwrap(),
+            to: serde_json::from_value(json!({"node":node_id(n+1),"port":"b"})).unwrap(),
+            choice: None,
+        };
+        let identity = uuid::Uuid::parse_str("20000000-0000-4000-8000-999999999999").unwrap();
+        for indexed in [false, true] {
+            let mut run = || {
+                let result = if indexed {
+                    plan_connection_indexed(
+                        &mut doc,
+                        &mut index,
+                        &registry,
+                        request.clone(),
+                        || identity,
+                    )
+                } else {
+                    plan_connection(&doc, &registry, request.clone(), || identity)
+                }
+                .unwrap();
+                assert!(matches!(result, ConnectionOutcome::Ready(_)));
+                std::hint::black_box(result);
+            };
+            for _ in 0..3 {
+                run();
+            }
+            let mut samples = vec![];
+            for _ in 0..15 {
+                let start = Instant::now();
+                run();
+                samples.push(start.elapsed().as_nanos());
+            }
+            samples.sort();
+            eprintln!(
+                "unrelated={n} indexed={indexed} median_us={:.3} p95_us={:.3}",
+                samples[7] as f64 / 1000.,
+                samples[14] as f64 / 1000.
+            );
+        }
+        assert_eq!(doc, before);
+        assert_eq!(index, DocIndex::build(&doc));
+    }
+}
+
 fn function_id(n: usize) -> String {
     format!("30000000-0000-4000-8000-{n:012}")
 }
