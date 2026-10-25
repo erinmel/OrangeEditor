@@ -1,6 +1,6 @@
 //! Checked data epochs and host-driven structured control with virtual time.
 //! Run owns bounded scheduling, local/run cells and staged stop/disposal for the
-//! admitted subset. Fork/functions, events and general host resources remain open.
+//! admitted subset. Fork joins are supported; functions, events and general host resources remain open.
 
 mod cancel;
 mod data;

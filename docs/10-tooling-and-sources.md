@@ -1270,3 +1270,50 @@ To avoid comparing historical validation numbers from a different run, the exist
 Repeated existing release probes also pass: Count-1000 Get/Add/Set uses 9,003 work items, with 10-second warmup and 30 batches of eight start/run/stop/dispose operations; median 215237.5 ns/run, p95 236337.5, max 251262.5. The unrelated-host-input probe remains exactly 3,003 work items at 0/64/512 unrelated inputs, with medians 111.2/103.9/105.95 µs. Its one-second warmup/30 runs include start/drive/drop and exclude explicit stop/dispose. These local timings do not qualify NFR, allocation, tail-latency or platform gates.
 
 The independent source interpreters remain separate from compiler/runtime helpers. Four crate boundaries remain deliberate: model, compiler, runtime and bundled providers. No full core, SDK/package/service, UI, release or public API freeze gate is claimed.
+
+
+## Structured Fork concurrency qualification — 2026-10-25
+
+Base: squash-merged PR18, 104bbadac0ecc973036dcd2a2959f88bde026349. Behavior source after review: 05866c1 on core/structured-concurrency; subsequent delivery documentation/example does not change runtime behavior. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default workspace features; Node 24.18.0. MSRV remains 1.97.1. Cargo.lock SHA256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152 is unchanged; no dependency, feature, crate or persisted graph schema changes.
+
+### Executed local verification
+
+| Command / check | Result |
+|---|---|
+| cargo test --workspace --locked --offline | PASS: 728 tests, 12 manual probes ignored |
+| cargo test --workspace --release --locked --offline | PASS: 728 tests, 12 manual probes ignored |
+| cargo fmt --all --check | PASS |
+| cargo clippy --workspace --all-targets --locked --offline -- -D warnings | PASS |
+| cargo doc --workspace --no-deps --locked --offline, RUSTDOCFLAGS=-Dwarnings | PASS; prior environment restored |
+| node tools/check-cargo-metadata.mjs | PASS: core dependency boundary |
+| node tools/check-cargo-metadata.mjs --self-test | PASS: 9 policy fixtures |
+| node tools/check-cargo-metadata.mjs --msrv | PASS: declared 1.97.1 metadata; not a local MSRV build |
+| node --test tools/release.test.mjs | PASS: 7 tests |
+| cargo run -p orange-bundled --example headless_control --locked --offline | PASS: total=3; virtual_time_ns=10 |
+| cargo run -p orange-bundled --example headless_fork --locked --offline | PASS: join notification / final owner retirement at all 10/10 ns, any 5/10 ns, race 5/5 ns, detach 0/10 ns |
+| git diff --check | PASS |
+
+Windows incremental-cache hard-link warnings fell back to copying. Rust 1.97.1, Linux/macOS and dependency-security checks require final-head remote CI; local metadata/lint success does not substitute. The PR records that head-specific result. No merge or full core/API/NFR gate is included.
+
+The control suite has 54 ordinary tests and four ignored timing probes. Sixteen new ordinary tests cover checked Fork order/admission, all four joins, nested region lifetime, shared activation locals, fail-fast, loop cancellation, equal-time wait/stop races, fuel preservation, owner retirement and per-operation cleanup deadlines. A 10,000-iteration Fork test stays within three live strand/continuation frames and four regions. The new independent source interpreter uses ordinary Rust futures with a small bounded executor, scans saved edges and never reads production IR, cursors or ownership/join helpers. Its 96 fixed-seed cases (20261025) run at budgets 1/7/1000, comparing final state, timestamped observable outcomes and handled-fault provenance for nested Fork/Sequence/Count/Wait, seeded data and reversed storage. The earlier independent control/data oracles remain intact. Generated competing deadlines are deliberately separated; equal-time and stop ordering have focused known answers. Shared model validation/literal codecs and externally anchored entropy primitives are explicit independence limitations.
+
+Review added regressions proving that completed cleanup cannot replenish the surviving activation's ordinary data fuel, and that a later race does not inherit an expired prior cleanup deadline. Cleanup has a non-refilling activation work reserve; each cancelled operation owns a deadline capped by the run drain deadline. Epochs/entropy remain activation-owned. One pending data pull serializes sibling consumption while other activations can interleave; this avoids copying mutable evaluator state and preserves frozen prologues.
+
+### Measured costs and optimizations
+
+Commands explicitly invoked with --ignored --nocapture: cargo test -p orange-bundled --test control --release --locked --offline headless_control_timing_baseline, and the same command selecting fork::fork_owner_scaling. Fixture construction/compilation are excluded. These are local probe distributions, not allocator/RSS or wall-time acceptance gates.
+
+The existing Count-1000 Get/Add/Set probe includes start, execution, stop and disposal, with trace off, 10-second warmup and 30 batches of eight. Both base and current execute 9,003 work items. A tracked-source archive of 104bbad built into a separate target directory with the same toolchain/lock yields median 214212.5 ns/run, p95 225550.0, max 228700.0. The initial concurrency implementation measured median 431275.0 ns/run. Replacing per-item map removal/reinsertion with indexed boxed shared activation frames reduced the cost; cancelling a race subtree in one pass also avoids per-sibling rescans. A tested alternative boxing each region continuation did not help and was not retained. Final reviewed source measures median 292562.5 ns/run, p95 311775.0, max 313025.0. The final median is about 37% above the merged base, reflecting additional ownership bookkeeping. No general speedup or NFR success is claimed; further optimization must preserve the new equivalence/ownership evidence.
+
+Fork scaling uses 500 ms warmup per shape, 30 batches of eight full lifecycles, trace off, and virtual waits at 1 ns for the first branch / 2 ns for others:
+
+| Join / width | Median ns/run | p95 ns/run | Work items | Retained owners at suspension: activations / frames / regions / timers |
+|---|---:|---:|---:|---|
+| all / 1 | 937.5 | 950.0 | 7 | 1 / 2 / 3 / 1 |
+| all / 16 | 5112.5 | 5987.5 | 67 | 1 / 17 / 18 / 16 |
+| all / 128 | 45150.0 | 56037.5 | 515 | 1 / 129 / 130 / 128 |
+| race / 1 | 1537.5 | 1900.0 | 7 | 1 / 2 / 3 / 1 |
+| race / 16 | 6025.0 | 6987.5 | 37 | 1 / 17 / 18 / 16 |
+| race / 128 | 34025.0 | 42512.5 | 261 | 1 / 129 / 130 / 128 |
+
+These measurements confirm one retained evaluator/activation, rather than one per branch, and complete owner retirement; they do not measure process memory or guarantee tail latency. Fan-out, region traversal and trusted native callbacks are bounded by admission/ownership limits rather than wall-clock preemption. Final PR CI and self-review remain required. Functions/other controls, events/reactivity, general resources/services, shared state/checkpoints, domains/API evolution and incremental/NFR work remain open.
