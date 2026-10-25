@@ -174,6 +174,10 @@ enum Cursor {
 }
 
 /// Checked control execution. Inspection is explicit; Debug never formats values.
+///
+/// ```compile_fail
+/// let run = orange_runtime::Run::default();
+/// ```
 pub struct Run {
     id: u64,
     plan: Option<Arc<ControlPlan>>,
@@ -199,6 +203,11 @@ pub struct Run {
     next_activation: u64,
     initial_locals: Vec<Option<Value>>,
     initial_local_bytes: usize,
+    segment_owner: Option<u64>,
+    last_segment: Option<u64>,
+    segment_indices: Vec<usize>,
+    segment_writes: Vec<VariableId>,
+    dirty: Vec<bool>,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -287,6 +296,7 @@ impl Run {
             });
         }
         let next_activation = plan.starts().len() as u64;
+        let variable_count = variables.len();
         Ok(Self {
             id: run_identity()?,
             plan: Some(plan),
@@ -312,6 +322,11 @@ impl Run {
             next_activation,
             initial_locals: locals,
             initial_local_bytes: local_bytes,
+            segment_owner: None,
+            last_segment: None,
+            segment_indices: vec![],
+            segment_writes: vec![],
+            dirty: vec![false; variable_count],
         })
     }
     pub fn id(&self) -> u64 {
@@ -331,6 +346,12 @@ impl Run {
     }
     pub fn pending_continuations(&self) -> usize {
         self.timers.len()
+    }
+    /// IDs written by the last/current segment, once each. No equality comparison,
+    /// change notification or Watch delivery is implied by this inspection seam.
+    pub fn segment_writes(&self) -> Option<(u64, &[VariableId])> {
+        self.last_segment
+            .map(|owner| (owner, self.segment_writes.as_slice()))
     }
     fn transition(&mut self, state: RunState) {
         if self.state != state {
@@ -458,6 +479,14 @@ impl Run {
                 continue;
             }
             let before = quantum;
+            if self.segment_owner != Some(activation.sequence) {
+                for index in self.segment_indices.drain(..) {
+                    self.dirty[index] = false;
+                }
+                self.segment_writes.clear();
+                self.segment_owner = Some(activation.sequence);
+                self.last_segment = Some(activation.sequence);
+            }
             let result = self.execute(&mut activation, &mut quantum);
             let used = before - quantum;
             remaining -= used;
@@ -478,6 +507,7 @@ impl Run {
                 break;
             }
             if let Some((at, owner)) = activation.waiting.take() {
+                self.segment_owner = None;
                 if self.timers.len() == self.options.limits.max_timers {
                     return self.fail(RunError::ResourceLimit);
                 }
@@ -496,11 +526,14 @@ impl Run {
                 );
             } else if activation.pc.is_some() || !activation.stack.is_empty() {
                 if activation.yielded {
+                    self.segment_owner = None;
                     activation.yielded = false;
                     self.ready.push_back(activation);
                 } else {
                     self.ready.push_front(activation);
                 }
+            } else {
+                self.segment_owner = None;
             }
         }
         // A slice boundary moves an unfinished segment to the ready tail. Other
@@ -511,6 +544,7 @@ impl Run {
         {
             self.ready.push_back(activation);
         }
+        self.segment_owner = None;
         let count = initial - remaining;
         self.operations = self.operations.saturating_add(count);
         if budget > 0
@@ -883,6 +917,11 @@ impl Run {
                         *retained = bytes;
                         store[*variable] = Some(value);
                         self.versions[*variable] = version;
+                        if !self.dirty[*variable] {
+                            self.dirty[*variable] = true;
+                            self.segment_indices.push(*variable);
+                            self.segment_writes.push(var.id());
+                        }
                         (node.then(), ControlOutcome::Then, None)
                     }
                 }
@@ -1119,6 +1158,11 @@ impl Run {
         self.versions.clear();
         self.state_bytes = 0;
         self.initial_locals.clear();
+        self.dirty.clear();
+        self.segment_indices.clear();
+        self.segment_writes.clear();
+        self.segment_owner = None;
+        self.last_segment = None;
         self.trace.clear();
         self.transition(RunState::Disposed);
         Ok(())

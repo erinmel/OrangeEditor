@@ -1,3 +1,8 @@
+#[path = "support/control_reference.rs"]
+mod control_reference;
+#[path = "support/reference.rs"]
+#[allow(dead_code)]
+mod reference;
 #[path = "support/data_graph.rs"]
 #[allow(dead_code)]
 mod support;
@@ -135,7 +140,28 @@ fn branch_runtime_matches_source_condition_and_keeps_active_snapshot() {
             ],
         );
         let snapshot = plan.data().snapshot().clone();
-        let mut run = Run::start(plan, &doc, &snapshot, 42, RunOptions::default()).unwrap();
+        let mut run = Run::start(plan.clone(), &doc, &snapshot, 42, RunOptions::default()).unwrap();
+        let replacement = from_json(&orange_model::to_json(&doc).unwrap()).unwrap();
+        assert!(matches!(
+            Run::start(
+                plan.clone(),
+                &replacement,
+                &snapshot,
+                42,
+                RunOptions::default()
+            ),
+            Err(orange_runtime::RunError::Data(
+                orange_runtime::DataError::StaleDocument
+            ))
+        ));
+        let (_, new_snapshot) = catalog();
+        assert!(matches!(
+            Run::start(plan, &doc, &new_snapshot, 42, RunOptions::default()),
+            Err(orange_runtime::RunError::Data(
+                orange_runtime::DataError::StaleRegistry
+            ))
+        ));
+        // The already active run continues against its original retained snapshot.
         run.pump(10).unwrap();
         let visited: Vec<_> = run.trace().iter().map(|e| e.node.to_string()).collect();
         assert_eq!(
@@ -1067,4 +1093,356 @@ fn failed_output_is_typed_data_with_original_producer_and_dispose_releases_plan(
     run.stop().unwrap();
     run.dispose().unwrap();
     assert!(weak.upgrade().is_none());
+}
+
+fn compare_source_control(
+    doc: &orange_model::GraphDocument,
+    plan: std::sync::Arc<orange_compiler::ControlPlan>,
+    seed: u64,
+    budget: usize,
+) {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    let analysis = analyze(doc, plan.data().snapshot());
+    let mut oracle =
+        control_reference::ControlReference::new(doc, plan.data().snapshot(), &analysis, seed);
+    oracle.run(seed);
+    let mut run = Run::start(
+        plan.clone(),
+        doc,
+        plan.data().snapshot(),
+        seed,
+        RunOptions::default(),
+    )
+    .unwrap();
+    for step in 0..20_000 {
+        assert!(step < 19_999, "bounded test driver");
+        let progress = run.pump(budget).unwrap();
+        if !progress.ready {
+            if let Some(at) = progress.next_wakeup {
+                run.advance_to(at).unwrap();
+            } else {
+                break;
+            }
+        }
+    }
+    for (id, value) in &oracle.variables {
+        if doc.variables()[id].scope == orange_model::document::VarScope::Run {
+            assert_eq!(run.variable(*id), value.as_ref());
+        }
+    }
+    let observations: Vec<_> = run
+        .trace()
+        .iter()
+        .filter_map(|e| {
+            let definition = doc.root().nodes[&e.node].definition.id.as_str();
+            if matches!(
+                definition,
+                "core/on-start" | "core/on-stop" | "core/sequence" | "core/count" | "core/while"
+            ) && e.outcome != ControlOutcome::Failed
+            {
+                return None;
+            }
+            let label = match e.outcome {
+                ControlOutcome::Then => "then",
+                ControlOutcome::True => "true",
+                ControlOutcome::False => "false",
+                ControlOutcome::Failed => "failed",
+                ControlOutcome::Suspended => "suspended",
+                ControlOutcome::Yielded => "yielded",
+                ControlOutcome::Break => "break",
+                ControlOutcome::Continue => "continue",
+                _ => return None,
+            };
+            Some((e.node, label))
+        })
+        .collect();
+    assert_eq!(observations, oracle.observations);
+    let faults: Vec<_> = run
+        .trace()
+        .iter()
+        .filter_map(|e| e.fault.as_ref().map(|f| (e.node, f.source, f.fault.code)))
+        .collect();
+    assert_eq!(faults, oracle.faults);
+    assert_eq!(run.now(), oracle.now);
+}
+
+proptest::proptest! {
+    #![proptest_config(proptest::test_runner::Config { cases:96, rng_seed:proptest::test_runner::RngSeed::Fixed(20261024), ..proptest::test_runner::Config::default() })]
+    #[test]
+    fn nested_seeded_control_matches_independent_source_interpreter(
+        outer in 0i64..5, inner in 0i64..5, selected in proptest::bool::ANY,
+        continue_body in proptest::bool::ANY, delay in 0i64..4, seed in proptest::num::u64::ANY,
+        reverse_storage in proptest::bool::ANY,
+    ) {
+        let mut nodes=vec![core(1,"on-start"),sequence(2,&[7,2]),count(3,outer),sequence(4,&[0,1,2]),count(5,inner),math(6,"add",0,0),var_node(7,"get-variable",100),random(8),branch(9,selected),var_node(10,"set-variable",100),core(11,if continue_body {"continue"} else {"break"}),while_node(12,true,1),set_bool(13,101,true),var_node(14,"get-variable",101),sequence(15,&[1,0]),wait(16,delay),set_bool(17,101,false),branch(18,true)];
+        let mut edges=vec![edge(1,1,"then",2,"in"),edge(2,2,"then#7",3,"in"),edge(3,2,"then#2",18,"in"),edge(4,3,"body",4,"in"),edge(5,4,"then#0",13,"in"),edge(6,4,"then#1",5,"in"),edge(7,4,"then#2",12,"in"),edge(8,5,"body",9,"in"),edge(9,9,"true",10,"in"),edge(10,9,"false",11,"in"),edge(11,7,"value",6,"a"),edge(12,8,"value",6,"b"),edge(13,6,"sum",10,"value"),edge(14,14,"value",12,"condition"),edge(15,12,"body",15,"in"),edge(16,15,"then#1",16,"in"),edge(17,15,"then#0",17,"in")];
+        if reverse_storage {nodes.reverse();edges.reverse();}
+        let (doc,plan)=state_plan(nodes,edges,vec![variable(100,"run","core/u64@1",Some(json!("0"))),variable(101,"run","core/bool@1",Some(json!(false)))]);
+        for budget in [1,3,64] {compare_source_control(&doc,plan.clone(),seed,budget);}
+    }
+}
+
+#[test]
+fn fault_and_loop_limit_known_answers_match_source_oracle() {
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            branch(2, true),
+            var_node(3, "get-variable", 100),
+            var_node(4, "set-variable", 101),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 3, "value", 2, "condition"),
+            edge(3, 2, "failed", 4, "in"),
+            edge(4, 2, "error", 4, "value"),
+        ],
+        vec![
+            variable(100, "run", "core/bool@1", None),
+            variable(101, "run", "core/error@1", None),
+        ],
+    );
+    for budget in [1, 64] {
+        compare_source_control(&doc, plan.clone(), 5, budget);
+    }
+    let (doc, plan) = compiled(
+        vec![core(1, "on-start"), while_node(2, true, 3)],
+        vec![edge(1, 1, "then", 2, "in")],
+    );
+    compare_source_control(&doc, plan, 7, 1);
+}
+
+#[test]
+fn state_snapshot_survives_another_activation_writing_between_data_safe_points() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            branch(2, true),
+            var_node(3, "get-variable", 100),
+            core(4, "on-start"),
+            set_bool(5, 100, false),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 3, "value", 2, "condition"),
+            edge(3, 4, "then", 5, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(1).unwrap();
+    run.pump(1).unwrap();
+    run.pump(1).unwrap();
+    run.pump(200).unwrap();
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&orange_model::Value::Bool(false))
+    );
+    assert_eq!(
+        run.trace()
+            .iter()
+            .find(|e| e.node.to_string() == id(2))
+            .unwrap()
+            .outcome,
+        ControlOutcome::True
+    );
+}
+
+#[test]
+fn stop_run_fault_policy_cancels_suspended_sibling_then_cleans_it_up() {
+    use orange_runtime::{Run, RunOptions, RunState};
+    let mut entry = core(3, "on-start");
+    entry["activation"]["on_fault"] = json!("stop-run");
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            wait(2, 100),
+            entry,
+            branch(4, true),
+            var_node(5, "get-variable", 100),
+            set_bool(6, 101, false),
+            core(7, "on-stop"),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 3, "then", 4, "in"),
+            edge(3, 5, "value", 4, "condition"),
+            edge(4, 2, "cancelled", 6, "in"),
+        ],
+        vec![
+            variable(100, "run", "core/bool@1", None),
+            variable(101, "run", "core/bool@1", Some(json!(true))),
+        ],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(300).unwrap();
+    assert_eq!(run.state(), RunState::Cancelling);
+    run.pump(300).unwrap();
+    assert_eq!(run.state(), RunState::Stopped);
+    assert_eq!(
+        run.variable(id(101).parse().unwrap()),
+        Some(&orange_model::Value::Bool(false))
+    );
+    assert_eq!(run.pending_continuations(), 0);
+    assert!(run.transitions().contains(&RunState::Faulted));
+    assert!(!run.trace().iter().any(|e| e.node.to_string() == id(7)));
+}
+
+#[test]
+fn segment_write_ids_are_unique_and_wait_cycles_cannot_bypass_run_fuel() {
+    use orange_runtime::{Run, RunError, RunOptions, RunState};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            sequence(2, &[0, 1]),
+            set_bool(3, 100, true),
+            set_bool(4, 100, false),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then#0", 3, "in"),
+            edge(3, 2, "then#1", 4, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(false)))],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(300).unwrap();
+    assert_eq!(
+        run.segment_writes(),
+        Some((0, [id(100).parse().unwrap()].as_slice()))
+    );
+    let (doc, plan) = compiled(
+        vec![core(1, "on-start"), wait(2, 0), branch(3, true)],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then", 3, "in"),
+            edge(3, 3, "true", 2, "in"),
+        ],
+    );
+    let mut options = RunOptions::default();
+    options.limits.max_operations = 30;
+    let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+    assert_eq!(run.pump(300), Err(RunError::ResourceLimit));
+    assert_eq!(run.state(), RunState::Stopped);
+    assert_eq!(run.pending_continuations(), 0);
+}
+
+#[test]
+fn deep_control_regions_are_iterative_and_depth_limits_fail_closed() {
+    use orange_runtime::{Run, RunError, RunOptions, RunState};
+    let mut nodes = vec![core(1, "on-start")];
+    let mut edges = vec![edge(1, 1, "then", 2, "in")];
+    for n in 2..514 {
+        nodes.push(sequence(n, &[0, 1]));
+        if n < 513 {
+            edges.push(edge(n, n, "then#0", n + 1, "in"));
+        }
+    }
+    let (doc, plan) = compiled(nodes, edges);
+    for limit in [128, 1024] {
+        let mut options = RunOptions::default();
+        options.limits.max_region_depth = limit;
+        let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+        if limit == 128 {
+            assert_eq!(run.pump(10_000), Err(RunError::ResourceLimit));
+            assert_eq!(run.state(), RunState::Stopped);
+        } else {
+            while run.pump(17).unwrap().ready {}
+            assert_eq!(run.state(), RunState::Running);
+        }
+    }
+}
+
+#[test]
+fn storage_and_presentation_changes_preserve_control_results_after_round_trip() {
+    let (doc, plan) = state_plan(
+        vec![core(1, "on-start"), count(2, 3), set_bool(3, 100, false)],
+        vec![edge(1, 1, "then", 2, "in"), edge(2, 2, "body", 3, "in")],
+        vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+    );
+    compare_source_control(&doc, plan, 1, 1);
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&doc).unwrap()).unwrap();
+    raw["nodes"].as_array_mut().unwrap().reverse();
+    raw["edges"].as_array_mut().unwrap().reverse();
+    raw["variables"][0]["name"] = json!("متغير 日本語");
+    raw["presentation_locale"] = json!("ar");
+    let restored = from_json(&raw.to_string()).unwrap();
+    let (package, snapshot) = catalog();
+    let analysis = analyze(&restored, &snapshot);
+    let plan = std::sync::Arc::new(
+        compile_control(
+            &restored,
+            snapshot,
+            &analysis,
+            &package,
+            CompileOptions::default(),
+        )
+        .unwrap(),
+    );
+    compare_source_control(&restored, plan, 1, 64);
+}
+
+#[test]
+fn error_as_data_inside_successful_try_is_not_an_outer_failure() {
+    use orange_runtime::{Run, RunOptions};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            branch(2, true),
+            var_node(3, "get-variable", 100),
+            var_node(4, "set-variable", 101),
+            core(5, "try"),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 3, "value", 2, "condition"),
+            edge(3, 2, "failed", 4, "in"),
+            edge(4, 2, "error", 5, "value"),
+            edge(5, 5, "result", 4, "value"),
+        ],
+        vec![
+            variable(100, "run", "core/bool@1", None),
+            variable(101, "run", "core/result@1<core/error@1>", None),
+        ],
+    );
+    compare_source_control(&doc, plan.clone(), 1, 1);
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(300).unwrap();
+    let Some(orange_model::Value::Ok(inner)) = run.variable(id(101).parse().unwrap()) else {
+        panic!("expected a boxed success");
+    };
+    let orange_model::Value::Err(error) = inner.as_ref() else {
+        panic!("expected an error value as data");
+    };
+    assert_eq!(error.code, "core/UninitializedVariable");
+    assert_eq!(error.node, Some(id(3).parse().unwrap()));
 }

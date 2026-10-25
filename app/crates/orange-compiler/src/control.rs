@@ -119,6 +119,10 @@ impl ControlNode {
 }
 
 /// Private checked construction, no serde/default bypass. Debug omits payloads.
+///
+/// ```compile_fail
+/// let plan = orange_compiler::ControlPlan::default();
+/// ```
 pub struct ControlPlan {
     pub(crate) data: Arc<DataPlan>,
     pub(crate) nodes: Box<[ControlNode]>,
