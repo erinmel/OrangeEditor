@@ -1,5 +1,6 @@
 use crate::compile::{
-    ConstantFolder, Incoming, admit, charge, decode, is_state_read, key, port_type, value_bytes,
+    Admission, ConstantFolder, Incoming, admit, charge, decode, is_state_read, key, port_type,
+    value_bytes,
 };
 use crate::lazy::Lazy;
 use crate::*;
@@ -369,6 +370,37 @@ pub fn compile_data(
     options: CompileOptions<'_>,
 ) -> Result<DataPlan, CompileError> {
     let admission = admit(document, &snapshot, analysis, options, true)?;
+    let roots: Vec<_> = document
+        .exports()
+        .iter()
+        .map(|export| DemandRoot {
+            id: export.id.clone(),
+            node: export.node,
+            port: export.port.clone(),
+            input: false,
+        })
+        .collect();
+    lower_roots(
+        document, snapshot, analysis, resolver, options, admission, &roots,
+    )
+}
+
+pub(crate) struct DemandRoot {
+    pub(crate) id: String,
+    pub(crate) node: NodeId,
+    pub(crate) port: PortKey,
+    pub(crate) input: bool,
+}
+
+pub(crate) fn lower_roots(
+    document: &GraphDocument,
+    snapshot: Arc<RegistrySnapshot>,
+    analysis: &ValidationAnalysis,
+    resolver: &impl EntropyKernelResolver,
+    options: CompileOptions<'_>,
+    admission: Admission<'_>,
+    roots: &[DemandRoot],
+) -> Result<DataPlan, CompileError> {
     let folder = ConstantFolder::new(
         document,
         analysis,
@@ -412,17 +444,23 @@ pub fn compile_data(
         outputs: BTreeMap::new(),
         bytes: 0,
     };
-    for export in document.exports() {
+    for export in roots {
         charge(
             &mut state.bytes,
             export.id.len(),
             options.limits.max_constant_bytes,
         )?;
     }
-    for export in document.exports() {
+    for export in roots {
+        if export.input {
+            return Err(CompileError::UnsupportedPort {
+                node: export.node,
+                port: export.port.clone(),
+            });
+        }
         state.lower(export.node)?;
     }
-    for export in document.exports() {
+    for export in roots {
         options.checkpoint()?;
         let slot = *state
             .outputs
