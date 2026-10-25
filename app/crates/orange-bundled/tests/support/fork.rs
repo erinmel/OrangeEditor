@@ -689,3 +689,114 @@ fn repeated_forks_retire_owners_without_growing_live_capacity() {
         }
     );
 }
+
+#[test]
+fn equal_time_race_and_stop_choose_each_wait_outcome_once() {
+    for budget in [1, 1000] {
+        for stop_first in [false, true] {
+            let (doc, plan) = state_plan(
+                vec![
+                    core(1, "on-start"),
+                    fork(2, "race", &[0, 1]),
+                    wait(3, 1),
+                    wait(4, 1),
+                    set_bool(5, 100, true),
+                    set_bool(6, 101, true),
+                ],
+                vec![
+                    edge(1, 1, "then", 2, "in"),
+                    edge(2, 2, "branch#0", 3, "in"),
+                    edge(3, 2, "branch#1", 4, "in"),
+                    edge(4, 3, "then", 5, "in"),
+                    edge(5, 4, "then", 6, "in"),
+                ],
+                (100..102)
+                    .map(|n| variable(n, "run", "core/bool@1", Some(json!(false))))
+                    .collect(),
+            );
+            let mut run = Run::start(
+                plan.clone(),
+                &doc,
+                plan.data().snapshot(),
+                1,
+                RunOptions::default(),
+            )
+            .unwrap();
+            drain(&mut run, budget);
+            run.advance_to(1).unwrap();
+            if stop_first {
+                run.stop().unwrap();
+            } else {
+                drain(&mut run, budget);
+            }
+            assert_eq!(
+                usize::from(flag(&run, 100)) + usize::from(flag(&run, 101)),
+                usize::from(!stop_first)
+            );
+            for node in [3, 4] {
+                assert_eq!(
+                    run.trace()
+                        .iter()
+                        .filter(|e| e.node.to_string() == id(node)
+                            && matches!(
+                                e.outcome,
+                                orange_runtime::ControlOutcome::Then
+                                    | orange_runtime::ControlOutcome::Cancelled
+                            ))
+                        .count(),
+                    1
+                );
+            }
+            assert_eq!(run.pending_continuations(), 0);
+        }
+    }
+}
+
+#[test]
+fn completed_cleanup_cannot_replenish_surviving_activation_fuel() {
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            sequence(2, &[0, 1]),
+            fork(3, "race", &[0, 1]),
+            wait(4, 100),
+            wait(5, 1),
+            set_bool(6, 100, true),
+            set_bool(7, 101, true),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then#0", 3, "in"),
+            edge(3, 3, "branch#0", 4, "in"),
+            edge(4, 3, "branch#1", 5, "in"),
+            edge(5, 4, "cancelled", 6, "in"),
+            edge(6, 2, "then#1", 7, "in"),
+        ],
+        (100..102)
+            .map(|n| variable(n, "run", "core/bool@1", Some(json!(false))))
+            .collect(),
+    );
+    let mut options = RunOptions::default();
+    options.data.limits.max_activation_operations = 2;
+    let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+    drain(&mut run, 1);
+    run.advance_to(1).unwrap();
+    let mut error = None;
+    for _ in 0..100 {
+        match run.pump(1) {
+            Ok(p) if p.ready => {}
+            Ok(_) => break,
+            Err(e) => {
+                error = Some(e);
+                break;
+            }
+        }
+    }
+    assert_eq!(
+        error,
+        Some(RunError::Data(orange_runtime::DataError::FuelExhausted))
+    );
+    assert!(flag(&run, 100));
+    assert!(!flag(&run, 101));
+    assert_eq!(run.ownership().regions, 0);
+}
