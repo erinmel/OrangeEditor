@@ -222,6 +222,10 @@ fn edit_cost_by_document_size() {
             std::hint::black_box(validate(copy, &registry));
         });
         println!("n={n:>6} validate: {time:.3?}");
+        let time = best(&doc, |copy| {
+            std::hint::black_box(validate_nodes(copy, &registry));
+        });
+        println!("n={n:>6} validate_nodes: {time:.3?}");
     }
 }
 

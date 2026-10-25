@@ -1064,3 +1064,31 @@ The 4,000 "before" value comes from the deep-analysis probe, not this test. Thes
 cargo test --workspace --locked --offline passed 663 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged. Diagnostics and public signatures are unchanged.
 
 Remaining limits: the control-flow graph still uses BTree vertices with string port keys (about 8 µs per action at 16,000), validation is still whole-document, and NFR-15 is not met. Local commits only, no push.
+
+### Projection caching (2026-10-24)
+
+Base f4036f6. The node pass and edit persistence now share projections among nodes of one registry-declared definition with equal solved arguments (and, for validation, the same body) ([12](12-graph-data-structures.md), projection caching). The node pass also decides drift by comparing semantic keys, hashing each stored snapshot once per document key instead of twice per node.
+
+Profiling (temporary instrumentation, since removed) showed that the projection loop spent most of its time in `signature::compare`, which computes two canonical-JSON SHA-256 keys per node. Caching the projection alone gave about 10%.
+
+New regressions:
+
+- Three nodes sharing a projection report drift only on the node with a stale snapshot, and a shared failed projection is reported on each node.
+- Two nodes of one two-parameter definition in one component keep distinct signatures.
+
+Removing the arguments from either cache key fails tests. The edit-path mutant survived the existing suite until the second test was added.
+
+One local release run of perf_edit_baseline::edit_cost_by_document_size on the generic add chain:
+
+| Step | Size | Before | After |
+|---|---|---|---|
+| validate_nodes | 1,000 | 29.1 ms | 14.7 ms |
+| validate_nodes | 10,000 | 312.5 ms | 167.2 ms |
+| validate | 1,000 | 42.2 ms | 26.4 ms |
+| validate | 10,000 | 486.3 ms | 340.6 ms |
+| apply_inferred_indexed connect, tail of chain | 10,000 | 251.9 ms | 176.6 ms |
+| apply_inferred_indexed connect, isolated pair | 10,000 | 120 µs | 105 µs |
+
+These are single runs, not NFR evidence. The remaining node-pass cost is generic inference (about 14 µs per node at 10k) and per-node work for contextual contracts.
+
+cargo test --workspace --locked --offline passed 665 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged. Diagnostics, plans and public signatures are unchanged. Local commits only, no push.
