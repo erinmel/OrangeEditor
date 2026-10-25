@@ -1,0 +1,8 @@
+# Seeds for failure cases proptest has generated in the past. It is
+# automatically read and these particular cases re-run before any
+# novel cases are generated.
+#
+# It is recommended to check this file in to source control so that
+# everyone who runs the test benefits from these saved cases.
+cc 158a61bfd0b0e15a9abe4236437767f278a6168843024fd2e0e5e616ca1fb417 # shrinks to ops = [Add(NodeInstance { id: NodeId(00000000-0000-4000-8000-000000000000), definition: DefinitionRef { id: DefinitionId("core/branch"), version: 1 }, config_version: 0, config: {"level": String("info")}, type_args: {}, type_pins: {}, provider: None, signature: None, inputs: {}, variadic: {}, activation: None, extensions: {} }), Layout(0, -767917669)]
+cc 6381b50d66baa91c3a83ff657a92cb3b9c9305a0e9f4915e477df9430cdd09ee # shrinks to ops = [Layout(0, 0)]
