@@ -61,6 +61,8 @@ pub fn registry_builder(
             definition: add_definition(),
             config_version: 1,
             kind: NodeKind::Pure,
+            volatility: None,
+            determinism: orange_model::catalog::Determinism::Deterministic,
             suspends: None,
             type_params: vec![
                 serde_json::from_value::<TypeParam>(json!({"name": "T", "constraints": ["num"]}))

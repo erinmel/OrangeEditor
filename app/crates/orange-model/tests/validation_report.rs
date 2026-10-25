@@ -131,6 +131,9 @@ fn merged(
     let evidence = FunctionEvidence::from_nodes(doc, &nodes, effects);
     let functions = analyze_functions(doc, &evidence, registry);
     let mut diagnostics: Vec<Diagnostic> = nodes.diagnostics.clone();
+    diagnostics.extend(orange_model::validation::validate_declaration_types(
+        doc, registry,
+    ));
     diagnostics.extend(validate_inputs(doc, &nodes.resolved, registry));
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
@@ -386,6 +389,7 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
     assert_eq!(
         analysis.covered_checks().collect::<Vec<_>>(),
         [
+            ValidationCheck::DeclarationTypes,
             ValidationCheck::NodeResolution,
             ValidationCheck::InputValues,
             ValidationCheck::Connections,
@@ -398,13 +402,14 @@ fn analysis_reports_actual_coverage_and_legacy_wrappers_keep_the_same_report() {
             ValidationCheck::DataCycles,
             ValidationCheck::ControlCycles,
             ValidationCheck::ValueAvailability,
+            ValidationCheck::StateRules,
             ValidationCheck::StreamRules,
             ValidationCheck::EntryPoliciesAndExports,
         ]
     );
     assert_eq!(
         analysis.missing_checks().collect::<Vec<_>>(),
-        [ValidationCheck::StateRules]
+        [ValidationCheck::ConstantEvaluation]
     );
     assert!(analysis.is_current(&doc, &registry));
     assert!(!analysis.is_ready_for_compilation(&doc, &registry));
@@ -426,12 +431,14 @@ fn analysis_freshness_tracks_content_identity_and_registry_generation() {
 
     let reloaded = from_json(&to_json(&doc).unwrap()).unwrap();
     assert!(!analysis.is_current(&reloaded, &registry));
+    assert!(!analysis.is_ready_for_lowering(&reloaded, &registry));
     assert!(!analysis.is_current(&doc, &another_registry));
 
     let mut edited = doc.clone();
     let inverse = edited.apply([common::add(99)]).unwrap().inverse;
     assert!(!analysis.is_current(&edited, &registry));
     assert!(!analysis.is_ready_for_compilation(&edited, &registry));
+    assert!(!analysis.is_ready_for_lowering(&edited, &registry));
     let _redo = edited.revert(inverse).unwrap();
     assert!(analysis.is_current(&edited, &registry));
 
@@ -457,7 +464,7 @@ fn foreign_body_domain_is_never_compile_ready() {
         analysis.covered_checks().collect::<Vec<_>>(),
         [ValidationCheck::BodyDomains]
     );
-    assert_eq!(analysis.missing_checks().count(), 14);
+    assert_eq!(analysis.missing_checks().count(), 16);
     assert!(!analysis.report().is_valid());
     assert!(!analysis.is_ready_for_compilation(&doc, &registry));
 }

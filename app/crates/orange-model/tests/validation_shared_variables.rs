@@ -297,6 +297,8 @@ fn package_definitions_can_reuse_async_shared_metadata_without_core_effect_autho
         },
         config_version: 1,
         kind: NodeKind::Async,
+        volatility: None,
+        determinism: orange_model::catalog::Determinism::Deterministic,
         suspends: Some(Suspends::Maybe),
         type_params: Vec::new(),
         ports: Ports::Variable(VariableAccess::WriteShared),

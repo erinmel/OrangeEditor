@@ -4,7 +4,8 @@
 //! The static type disambiguates: `option<T>` is `None` or the unboxed `T`, and only a
 //! nested option boxes its inner layer in `Some`. Missing exists only as an absent record
 //! field. JSON null exists only inside `Json`. Together these keep None, missing, JSON null
-//! and Error distinct by construction (FR-08). Secrets are never values.
+//! and Error distinct by construction (FR-08). Result successes box only when their
+//! payload can itself carry the Err tag. Secrets are never values.
 
 mod base64;
 pub mod literal_codec;
@@ -50,6 +51,9 @@ pub enum Value {
     Some(Arc<Value>),
     /// Only inside `result<T>`.
     Err(Arc<NodeError>),
+    /// Successful result whose payload could otherwise be mistaken for outer Err.
+    /// Ordinary result successes remain unboxed (12 §7).
+    Ok(Arc<Value>),
     Json(Arc<JsonText>),
     Handle(HandleId),
 }
@@ -195,11 +199,13 @@ pub struct HandleId {
 }
 
 /// Structured node error (`core/error@1`). The message fields of 12 §6.2 arrive with the
-/// WU-03 contracts; a value only needs the stable code.
+/// WU-03 contracts; constant capture retains stable code and producer identity.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct NodeError {
     /// Stable namespaced code, such as `core/NumericOverflow`.
     pub code: String,
+    /// Original producer when known; absent for a detached host-created error.
+    pub node: Option<crate::id::NodeId>,
 }
 
 impl PartialEq for Value {
@@ -229,7 +235,7 @@ impl PartialEq for Value {
                     payload: pb,
                 },
             ) => a == b && pa == pb,
-            (Some(a), Some(b)) => a == b,
+            (Some(a), Some(b)) | (Ok(a), Ok(b)) => a == b,
             (Err(a), Err(b)) => a == b,
             (Json(a), Json(b)) => a == b,
             (Handle(a), Handle(b)) => a == b,
@@ -261,7 +267,7 @@ impl Hash for Value {
             Map(v) => v.hash(state),
             Record(v) => v.hash(state),
             Enum { tag, payload } => (tag, payload).hash(state),
-            Some(v) => v.hash(state),
+            Some(v) | Ok(v) => v.hash(state),
             Err(v) => v.hash(state),
             Json(v) => v.hash(state),
             Handle(v) => v.hash(state),
@@ -373,5 +379,21 @@ mod tests {
         );
         assert_ne!(hash_of(&Value::F64(0.0)), hash_of(&Value::F64(-0.0)));
         assert_ne!(hash_of(&Value::I64(1)), hash_of(&Value::Duration(1)));
+    }
+
+    #[test]
+    fn nested_result_success_retains_its_own_tag_and_error_identity() {
+        let error = Value::Err(Arc::new(NodeError {
+            code: "core/DivideByZero".into(),
+            node: None,
+        }));
+        let success = Value::Ok(Arc::new(error.clone()));
+        let copy = success.clone();
+        assert_eq!(success, copy);
+        assert_eq!(hash_of(&success), hash_of(&copy));
+        assert_ne!(success, error);
+        assert_ne!(hash_of(&success), hash_of(&error));
+        assert_ne!(success, Value::Some(Arc::new(error)));
+        assert!(size_of::<Value>() <= 16);
     }
 }

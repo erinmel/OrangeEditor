@@ -97,6 +97,42 @@ fn input_output(source: OutputSource) -> SignatureSnapshot {
 }
 
 #[test]
+fn wide_computation_returns_a_closed_witness_using_only_real_ports() {
+    let ports: Vec<_> = (0..512)
+        .flat_map(|i| {
+            [
+                PortDescriptor::data_in(
+                    format!("input{i}").as_str(),
+                    "core/i64@1".parse().unwrap(),
+                ),
+                PortDescriptor::data_out(
+                    format!("output{i}").as_str(),
+                    "core/i64@1".parse().unwrap(),
+                    OutputSource::Computed,
+                ),
+            ]
+        })
+        .collect();
+    let doc = document(
+        vec![node(A)],
+        vec![edge(1, A, "output511", A, "input511")],
+        vec![],
+    );
+    let signatures = resolved(vec![(A, signature(ports))]);
+    let result = check(&doc, &signatures, &ConnectionValidation::default());
+    assert_eq!(result.cycle_paths.len(), 1);
+    assert_eq!(result.cycle_paths[0].len(), 3);
+    let path = &result.cycle_paths[0];
+    assert_eq!(path.first(), path.last());
+    assert!(path.iter().all(|p| {
+        p.node == A.parse().unwrap()
+            && ["input511", "output511"]
+                .iter()
+                .any(|id| p.port == port(id, None))
+    }));
+}
+
+#[test]
 fn computed_self_dependency_reports_closed_port_path() {
     let doc = document(
         vec![node(A)],

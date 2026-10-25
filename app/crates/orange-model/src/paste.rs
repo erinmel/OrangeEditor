@@ -35,7 +35,7 @@ use crate::signature::semantic_key;
 pub struct Fragment {
     /// In source body order.
     pub nodes: Vec<NodeInstance>,
-    /// Only edges with both endpoints among `nodes`.
+    /// Only edges with both endpoints among `nodes`; paste drops any other edge.
     pub edges: Vec<Edge>,
     pub variables: Vec<VariableDecl>,
     pub events: Vec<EventDecl>,
@@ -226,7 +226,10 @@ impl Fragment {
             });
         }
         let nodes = remap.nodes(&self.nodes, &mut new_id)?;
-        let edges = remap.edges(&self.edges, &mut new_id)?;
+        // Fields are public, so a hand-built fragment may hold edges to nodes it lacks,
+        // including nodes of its own function bodies.
+        let members: HashSet<NodeId> = self.nodes.iter().map(|node| node.id).collect();
+        let edges = remap.edges(&self.edges, |id| members.contains(id), &mut new_id)?;
 
         // Rewrite references only after every new ID is known.
         let signature_keys: HashMap<&SignatureKey, SignatureKey> = self
@@ -358,14 +361,17 @@ impl Remap {
             .collect()
     }
 
-    /// Edges must be remapped after their endpoint nodes.
-    fn edges(
+    /// Edges must be remapped after their endpoint nodes. Edges with an endpoint outside
+    /// `members` (original IDs) are dropped: pasted content starts consistent.
+    fn edges<'e>(
         &mut self,
-        edges: &[Edge],
+        edges: impl IntoIterator<Item = &'e Edge>,
+        members: impl Fn(&NodeId) -> bool,
         new_id: &mut impl FnMut() -> Uuid,
     ) -> Result<Vec<Edge>, IdError> {
         edges
-            .iter()
+            .into_iter()
+            .filter(|edge| members(&edge.from.node) && members(&edge.to.node))
             .map(|edge| {
                 let mut edge = edge.clone();
                 edge.id = self.fresh(edge.id, new_id)?;
@@ -376,23 +382,19 @@ impl Remap {
             .collect()
     }
 
-    /// Orphan edges of a copied function body are dropped: pasted content starts consistent.
+    /// Orphan edges of a copied function body are dropped, as at the top level.
     fn body(
         &mut self,
         body: &GraphBody,
         new_id: &mut impl FnMut() -> Uuid,
     ) -> Result<GraphBody, IdError> {
         let nodes: Vec<NodeInstance> = body.nodes.values().cloned().collect();
-        let edges: Vec<Edge> = body
-            .edges
-            .values()
-            .filter(|edge| {
-                body.nodes.contains_key(&edge.from.node) && body.nodes.contains_key(&edge.to.node)
-            })
-            .cloned()
-            .collect();
         let nodes = self.nodes(&nodes, new_id)?;
-        let edges = self.edges(&edges, new_id)?;
+        let edges = self.edges(
+            body.edges.values(),
+            |id| body.nodes.contains_key(id),
+            new_id,
+        )?;
         Ok(GraphBody {
             nodes: nodes.into_iter().map(|node| (node.id, node)).collect(),
             edges: edges.into_iter().map(|edge| (edge.id, edge)).collect(),

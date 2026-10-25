@@ -87,6 +87,10 @@ pub enum CodecError {
     UnsupportedVersion { found: u32 },
     #[error("duplicate {kind} id `{id}` across graph bodies")]
     DuplicateId { kind: &'static str, id: String },
+    /// A JSON object repeats a key, at any depth. `key` is the first repeat in document
+    /// order, cut to 64 characters.
+    #[error("duplicate JSON object key {key:?}")]
+    DuplicateKey { key: String },
     #[error("duplicate {kind} lock identity `{identity}`")]
     DuplicateLock {
         kind: &'static str,

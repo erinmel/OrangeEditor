@@ -119,6 +119,8 @@ fn registry_with_access(
             .definition(NodeDefinition {
                 definition: definition.clone(),
                 config_version: 1,
+                volatility: None,
+                determinism: orange_model::catalog::Determinism::Deterministic,
                 kind: if shared {
                     orange_model::document::NodeKind::Async
                 } else {

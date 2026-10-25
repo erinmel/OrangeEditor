@@ -346,19 +346,19 @@ pub fn unify(
                 context: Some(Box::new(equation.context.clone())),
             });
         }
-        variables.extend(equation.left.variables());
-        variables.extend(equation.right.variables());
+        equation.left.collect_variables(&mut variables);
+        equation.right.collect_variables(&mut variables);
     }
 
     let mut solver = Solver::default();
     for equation in equations {
-        solver.equate(equation.left, equation.right, equation.context)?;
+        solver.equate(equation.left, equation.right, &equation.context)?;
     }
 
     let mut normalized = BTreeMap::new();
     for variable in variables {
         let resolved = solver.apply(&ScopedTypeTerm::Variable(variable.clone()), 0, None)?;
-        if resolved != ScopedTypeTerm::Variable(variable.clone()) {
+        if !matches!(&resolved, ScopedTypeTerm::Variable(same) if *same == variable) {
             normalized.insert(variable, resolved);
         }
     }
@@ -377,10 +377,10 @@ impl Solver {
         &mut self,
         left: ScopedTypeTerm,
         right: ScopedTypeTerm,
-        context: EquationContext,
+        context: &EquationContext,
     ) -> Result<(), UnificationError> {
-        let left = self.apply(&left, 0, Some(context.clone()))?;
-        let right = self.apply(&right, 0, Some(context.clone()))?;
+        let left = self.apply(&left, 0, Some(context))?;
+        let right = self.apply(&right, 0, Some(context))?;
         match (left, right) {
             (ScopedTypeTerm::Variable(left), ScopedTypeTerm::Variable(right)) => {
                 self.bind_variables(left, right);
@@ -420,11 +420,11 @@ impl Solver {
                             major: right_major,
                             args: right_args,
                         }),
-                        context: Box::new(context),
+                        context: Box::new(context.clone()),
                     });
                 }
                 for (left, right) in left_args.into_iter().zip(right_args) {
-                    self.equate(left, right, context.clone())?;
+                    self.equate(left, right, context)?;
                 }
                 Ok(())
             }
@@ -448,16 +448,16 @@ impl Solver {
         &mut self,
         variable: TypeVariable,
         term: ScopedTypeTerm,
-        context: EquationContext,
+        context: &EquationContext,
     ) -> Result<(), UnificationError> {
-        if term == ScopedTypeTerm::Variable(variable.clone()) {
+        if matches!(&term, ScopedTypeTerm::Variable(same) if *same == variable) {
             return Ok(());
         }
         if occurs_in(&variable, &term) {
             return Err(UnificationError::OccursCheck {
                 variable,
                 term: Box::new(term),
-                context: Box::new(context),
+                context: Box::new(context.clone()),
             });
         }
         self.bindings.insert(variable, term);
@@ -468,7 +468,7 @@ impl Solver {
         &mut self,
         term: &ScopedTypeTerm,
         depth: usize,
-        context: Option<EquationContext>,
+        context: Option<&EquationContext>,
     ) -> Result<ScopedTypeTerm, UnificationError> {
         let mut lookup = |variable: &TypeVariable| self.lookup_and_compress(variable);
         apply_bindings(term, depth, context, &mut 0, &mut lookup)
@@ -508,13 +508,13 @@ impl Solver {
 fn apply_bindings(
     term: &ScopedTypeTerm,
     depth: usize,
-    context: Option<EquationContext>,
+    context: Option<&EquationContext>,
     expanded_nodes: &mut usize,
     lookup: &mut impl FnMut(&TypeVariable) -> Option<ScopedTypeTerm>,
 ) -> Result<ScopedTypeTerm, UnificationError> {
     if depth > MAX_NESTING {
         return Err(UnificationError::TooDeep {
-            context: context.map(Box::new),
+            context: context.cloned().map(Box::new),
         });
     }
     match term {
@@ -523,7 +523,8 @@ fn apply_bindings(
             loop {
                 match lookup(&current) {
                     Some(ScopedTypeTerm::Variable(next)) if next != current => current = next,
-                    Some(bound) if bound != ScopedTypeTerm::Variable(current.clone()) => {
+                    Some(bound) if !matches!(&bound, ScopedTypeTerm::Variable(same) if *same == current) =>
+                    {
                         return apply_bindings(&bound, depth, context, expanded_nodes, lookup);
                     }
                     Some(_) | None => {
@@ -546,9 +547,7 @@ fn apply_bindings(
                 major: *major,
                 args: args
                     .iter()
-                    .map(|arg| {
-                        apply_bindings(arg, depth + 1, context.clone(), expanded_nodes, lookup)
-                    })
+                    .map(|arg| apply_bindings(arg, depth + 1, context, expanded_nodes, lookup))
                     .collect::<Result<_, _>>()?,
             })
         }
@@ -557,12 +556,12 @@ fn apply_bindings(
 
 fn charge_expanded_node(
     expanded_nodes: &mut usize,
-    context: &Option<EquationContext>,
+    context: &Option<&EquationContext>,
 ) -> Result<(), UnificationError> {
     if *expanded_nodes == MAX_EXPANDED_TYPE_NODES {
         return Err(UnificationError::ExpansionLimit {
             max_nodes: MAX_EXPANDED_TYPE_NODES,
-            context: context.clone().map(Box::new),
+            context: context.map(|context| Box::new(context.clone())),
         });
     }
     *expanded_nodes += 1;

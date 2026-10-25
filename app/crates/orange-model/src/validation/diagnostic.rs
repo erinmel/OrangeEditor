@@ -5,11 +5,20 @@ use std::fmt;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::id::{EdgeId, FunctionId, NodeId, PortKey, VariableId};
+use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, PortKey, VariableId};
 
 /// Stable identifiers for implemented graph validation diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 pub enum DiagnosticCode {
+    /// Compiler-owned warning: the constant fault remains in the plan.
+    #[serde(rename = "W-CONST-ERROR")]
+    ConstError,
+    #[serde(rename = "E-DECLARATION-TYPE")]
+    DeclarationType,
+    #[serde(rename = "E-ANALYSIS-LIMIT")]
+    AnalysisLimit,
+    #[serde(rename = "E-ANALYSIS-CANCELLED")]
+    AnalysisCancelled,
     #[serde(rename = "E-DOMAIN-UNSUPPORTED")]
     DomainUnsupported,
     #[serde(rename = "E-DOMAIN-ANALYSIS-BLOCKED")]
@@ -166,6 +175,9 @@ impl DiagnosticCode {
     /// Stable code used in wire records and assertions.
     pub const fn as_str(self) -> &'static str {
         match self {
+            Self::DeclarationType => "E-DECLARATION-TYPE",
+            Self::AnalysisLimit => "E-ANALYSIS-LIMIT",
+            Self::AnalysisCancelled => "E-ANALYSIS-CANCELLED",
             Self::DomainUnsupported => "E-DOMAIN-UNSUPPORTED",
             Self::DomainAnalysisBlocked => "E-DOMAIN-ANALYSIS-BLOCKED",
             Self::MetadataStale => "E-METADATA-STALE",
@@ -193,6 +205,7 @@ impl DiagnosticCode {
             Self::VariadicCount => "E-VARIADIC-COUNT",
             Self::LiteralType => "E-LITERAL-TYPE",
             Self::HandleLiteral => "E-HANDLE-LITERAL",
+            Self::ConstError => "W-CONST-ERROR",
             Self::LiteralShadowed => "W-LITERAL-SHADOWED",
             Self::SuspendsMissing => "E-SUSPENDS-MISSING",
             Self::SuspendsInvalid => "E-SUSPENDS-INVALID",
@@ -246,6 +259,9 @@ impl DiagnosticCode {
 
     const fn message_key(self) -> &'static str {
         match self {
+            Self::DeclarationType => "core/graph-declaration-type",
+            Self::AnalysisLimit => "core/graph-analysis-limit",
+            Self::AnalysisCancelled => "core/graph-analysis-cancelled",
             Self::DomainUnsupported => "core/graph-domain-unsupported",
             Self::DomainAnalysisBlocked => "core/graph-domain-analysis-blocked",
             Self::MetadataStale => "core/graph-metadata-stale",
@@ -273,6 +289,7 @@ impl DiagnosticCode {
             Self::VariadicCount => "core/graph-variadic-count",
             Self::LiteralType => "core/graph-literal-type",
             Self::HandleLiteral => "core/graph-handle-literal",
+            Self::ConstError => "core/graph-const-error",
             Self::LiteralShadowed => "core/graph-literal-shadowed",
             Self::SuspendsMissing => "core/graph-suspends-missing",
             Self::SuspendsInvalid => "core/graph-suspends-invalid",
@@ -326,6 +343,9 @@ impl DiagnosticCode {
 
     fn fallback(self, subject: &Subject) -> String {
         match self {
+            Self::DeclarationType => "Declaration type is invalid or unavailable.".into(),
+            Self::AnalysisLimit => "Graph analysis exceeds the host's admission limits.".into(),
+            Self::AnalysisCancelled => "Graph analysis was cancelled.".into(),
             Self::DomainUnsupported => "This execution domain is unavailable.".into(),
             Self::DomainAnalysisBlocked => {
                 "Graph analysis requires supported execution domains.".into()
@@ -372,6 +392,7 @@ impl DiagnosticCode {
             }
             Self::LiteralType => "Input literal does not match the declared port type.".into(),
             Self::HandleLiteral => "Handle ports cannot have literals.".into(),
+            Self::ConstError => "The constant expression produces an error.".into(),
             Self::LiteralShadowed => "Input literal is shadowed by a connected edge.".into(),
             Self::SuspendsMissing => "Suspension metadata is required for this node kind.".into(),
             Self::SuspendsInvalid => "Suspension metadata conflicts with the node kind.".into(),
@@ -495,6 +516,8 @@ pub struct Subject {
     pub edge: Option<EdgeId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub variable: Option<VariableId>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event: Option<EventDeclId>,
 }
 
 impl Subject {
@@ -505,12 +528,19 @@ impl Subject {
             port,
             edge,
             variable: None,
+            event: None,
         }
     }
 
     /// Adds the declared variable this diagnostic is about.
     pub const fn with_variable(mut self, variable: VariableId) -> Self {
         self.variable = Some(variable);
+        self
+    }
+
+    /// Adds the declared event this diagnostic is about.
+    pub const fn with_event(mut self, event: EventDeclId) -> Self {
+        self.event = Some(event);
         self
     }
 
@@ -710,7 +740,8 @@ impl Diagnostic {
         }
         let severity = if matches!(
             code,
-            DiagnosticCode::LiteralShadowed
+            DiagnosticCode::ConstError
+                | DiagnosticCode::LiteralShadowed
                 | DiagnosticCode::Unreachable
                 | DiagnosticCode::BusyLoop
                 | DiagnosticCode::StaleCapture

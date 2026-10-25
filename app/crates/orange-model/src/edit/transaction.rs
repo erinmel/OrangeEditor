@@ -7,6 +7,7 @@
 //! a transaction (FR-03).
 
 use std::collections::BTreeMap;
+use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
 use serde_json::Value as Json;
 
@@ -184,9 +185,11 @@ impl GraphDocument {
             return Err(TxError::Empty);
         }
         let change = std::mem::take(&mut journal.tracker).finish(self, self.revision);
-        let result = observe(self, &change);
+        // Roll back even if `observe` panics: a caller that catches the unwind must not
+        // keep trial content under the document's unchanged state identity.
+        let result = catch_unwind(AssertUnwindSafe(|| observe(self, &change)));
         journal.rollback(self);
-        Ok(result)
+        Ok(result.unwrap_or_else(|panic| resume_unwind(panic)))
     }
 
     /// Undoes (or, with a redo inverse, redoes) a committed transaction.
@@ -658,4 +661,70 @@ fn check_function_body(document: &GraphDocument, decl: &FunctionDecl) -> Result<
         .edges
         .values()
         .try_for_each(|edge| edge_body(edge, local).map(|_| ()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::BodyRef;
+    use crate::document::NodeInstance;
+
+    fn branch(n: u8) -> NodeInstance {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("10000000-0000-4000-8000-{n:012}"), "definition_id": "core/branch",
+            "definition_version": 1, "config_version": 1, "config": {}
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn scratch_rolls_back_when_the_observer_panics() {
+        let mut document =
+            GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let _ = document
+            .apply([DocCommand::AddNode {
+                body: BodyRef::Root,
+                node: branch(1),
+            }])
+            .unwrap();
+        let before = (
+            crate::to_json(&document).unwrap(),
+            document.revision,
+            document.state_id,
+        );
+        let unwound = catch_unwind(AssertUnwindSafe(|| {
+            document.scratch(
+                [DocCommand::AddNode {
+                    body: BodyRef::Root,
+                    node: branch(2),
+                }],
+                |trial, _| {
+                    assert_eq!(trial.root().nodes.len(), 2);
+                    panic!("observer failure")
+                },
+            )
+        }));
+        assert!(unwound.is_err());
+        assert_eq!(
+            (
+                crate::to_json(&document).unwrap(),
+                document.revision,
+                document.state_id
+            ),
+            before
+        );
+        // The restored document still edits and undoes normally.
+        let committed = document
+            .apply([DocCommand::AddNode {
+                body: BodyRef::Root,
+                node: branch(2),
+            }])
+            .unwrap();
+        let _ = document.revert(committed.inverse).unwrap();
+        assert_eq!(document.root().nodes.len(), 1);
+        assert_eq!(
+            document.state_id, before.2,
+            "undo restores the original state"
+        );
+    }
 }

@@ -61,6 +61,13 @@ impl Facts {
                 definition,
                 config_version: 1,
                 kind: contract.kind,
+                volatility: (contract.kind == orange_model::document::NodeKind::Volatile)
+                    .then_some(orange_model::catalog::Volatility::Entropy),
+                determinism: if contract.kind == orange_model::document::NodeKind::Volatile {
+                    orange_model::catalog::Determinism::Seeded
+                } else {
+                    orange_model::catalog::Determinism::Deterministic
+                },
                 suspends: contract.suspends,
                 type_params: contract.type_params,
                 ports: Ports::Declared(contract.ports),

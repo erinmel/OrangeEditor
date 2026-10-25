@@ -205,7 +205,12 @@ pub(crate) fn is_function_marker(id: &str) -> bool {
 /// parameters, or none for a root-body node. Inside a body they are opaque constants, equal
 /// only to themselves; each call site of the function instantiates them afresh (11 section 14).
 pub(crate) fn rigid_params(document: &GraphDocument, node: crate::id::NodeId) -> &[TypeParam] {
-    match document.locate_node(node) {
+    body_rigid_params(document, document.locate_node(node))
+}
+
+/// [`rigid_params`] for every node of `body`; a missing body has none.
+pub(crate) fn body_rigid_params(document: &GraphDocument, body: Option<BodyRef>) -> &[TypeParam] {
+    match body {
         Some(BodyRef::Function(id)) => document
             .functions()
             .get(&id)

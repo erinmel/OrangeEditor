@@ -1,0 +1,20 @@
+[package]
+name = "orange-bundled"
+description = "OrangeEditor bundled native scalar kernels and their public registry metadata"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orange-compiler = { path = "../orange-compiler", version = "=0.0.0" }
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+orange-runtime = { path = "../orange-runtime", version = "=0.0.0" }
+proptest.workspace = true
+
+[lints]
+workspace = true

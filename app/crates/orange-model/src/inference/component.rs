@@ -8,7 +8,9 @@
 //! inferred binding cannot act as a pin. The document is never modified; `persist` turns
 //! the result into commands.
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::cell::RefCell;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::rc::Rc;
 
 use thiserror::Error;
 
@@ -18,8 +20,8 @@ use super::unify::{
 };
 use crate::GraphDocument;
 use crate::catalog::{
-    ProviderKey, RegistrySnapshot, TypeArgs, call_interface, implicit_port, is_function_marker,
-    rigid_params,
+    ProviderKey, RegistrySnapshot, TypeArgs, body_rigid_params, call_interface, implicit_port,
+    is_function_marker, rigid_params,
 };
 use crate::document::{
     GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, SignatureSnapshot, TypeParam,
@@ -96,6 +98,15 @@ impl InferenceIssue {
     pub fn is_conflict(&self) -> bool {
         !matches!(self, Self::Ambiguous { .. })
     }
+
+    /// An argument-check outcome reported for another node with the same check.
+    fn for_node(mut self, id: NodeId) -> Self {
+        if let Self::UnknownType { node, .. } | Self::ConstraintUnsatisfied { node, .. } = &mut self
+        {
+            *node = id;
+        }
+        self
+    }
 }
 
 /// The inference result for one connected generic component.
@@ -134,6 +145,8 @@ pub fn infer_components(
         document,
         index,
         registry,
+        templates: RefCell::default(),
+        edges: RefCell::default(),
     };
     let mut seeds = BTreeSet::new();
     for node in touched {
@@ -156,14 +169,31 @@ pub fn infer_components(
     components
 }
 
+/// The document and registry are fixed for one inference call, so each node's template and
+/// each data edge are resolved once. The component search meets every edge from both ends
+/// and equation building reads it again.
 struct Graph<'a> {
     document: &'a GraphDocument,
     index: &'a DocIndex,
     registry: &'a RegistrySnapshot,
+    templates: RefCell<HashMap<NodeId, Option<Rc<GenericTemplate>>>>,
+    /// `None` records an incident edge that does not join two data ports.
+    edges: RefCell<HashMap<EdgeId, Option<Rc<DataEdge>>>>,
 }
 
 /// A port's type as seen by inference: scoped to its node when generic, concrete otherwise.
 type PortTerm = Result<Option<ScopedTypeTerm>, InferenceIssue>;
+
+/// A data edge with the inference terms of both endpoints.
+struct DataEdge {
+    id: EdgeId,
+    from: PortRef,
+    to: PortRef,
+    from_term: PortTerm,
+    to_term: PortTerm,
+    /// Either end's term mentions a type variable, so the edge joins a component.
+    links_variables: bool,
+}
 
 impl Graph<'_> {
     fn node(&self, id: NodeId) -> Option<(&GraphBody, &NodeInstance)> {
@@ -171,7 +201,16 @@ impl Graph<'_> {
         Some((body, body.nodes.get(&id)?))
     }
 
-    fn generic(&self, id: NodeId) -> Option<GenericTemplate> {
+    fn generic(&self, id: NodeId) -> Option<Rc<GenericTemplate>> {
+        if let Some(found) = self.templates.borrow().get(&id) {
+            return found.clone();
+        }
+        let template = self.resolve_template(id).map(Rc::new);
+        self.templates.borrow_mut().insert(id, template.clone());
+        template
+    }
+
+    fn resolve_template(&self, id: NodeId) -> Option<GenericTemplate> {
         let (_, node) = self.node(id)?;
         if is_function_call(node) {
             let interface = call_interface(self.document, node, self.registry)
@@ -213,9 +252,13 @@ impl Graph<'_> {
     /// Generic nodes joined to `id` by a data edge whose type mentions a parameter.
     fn generic_neighbours(&self, id: NodeId) -> BTreeSet<NodeId> {
         let mut neighbours = BTreeSet::new();
-        for (_, from, to) in self.data_edges(id) {
-            let other = if from.node == id { to.node } else { from.node };
-            if self.generic(other).is_some() && self.edge_links_variables(&from, &to) {
+        for edge in self.data_edges(id) {
+            let other = if edge.from.node == id {
+                edge.to.node
+            } else {
+                edge.from.node
+            };
+            if self.generic(other).is_some() && edge.links_variables {
                 neighbours.insert(other);
             }
         }
@@ -237,18 +280,40 @@ impl Graph<'_> {
     }
 
     /// Incident edges of `id` that connect data ports, sorted by edge ID.
-    fn data_edges(&self, id: NodeId) -> Vec<(EdgeId, PortRef, PortRef)> {
+    fn data_edges(&self, id: NodeId) -> Vec<Rc<DataEdge>> {
         let Some((body, _)) = self.node(id) else {
             return Vec::new();
         };
-        let edges: Vec<_> = self
-            .index
+        self.index
             .incident(id)
-            .filter_map(|edge_id| body.edges.get(&edge_id))
+            .filter_map(|edge| self.data_edge(body, edge))
+            .collect()
+    }
+
+    fn data_edge(&self, body: &GraphBody, id: EdgeId) -> Option<Rc<DataEdge>> {
+        if let Some(found) = self.edges.borrow().get(&id) {
+            return found.clone();
+        }
+        let resolved = body
+            .edges
+            .get(&id)
             .filter(|edge| self.is_data_port(&edge.from) && self.is_data_port(&edge.to))
-            .map(|edge| (edge.id, edge.from.clone(), edge.to.clone()))
-            .collect();
-        edges
+            .map(|edge| {
+                let (from_term, to_term) = (self.port_term(&edge.from), self.port_term(&edge.to));
+                let links_variables = [&from_term, &to_term]
+                    .into_iter()
+                    .any(|term| matches!(term, Ok(Some(term)) if !term.variables().is_empty()));
+                Rc::new(DataEdge {
+                    id,
+                    from: edge.from.clone(),
+                    to: edge.to.clone(),
+                    from_term,
+                    to_term,
+                    links_variables,
+                })
+            });
+        self.edges.borrow_mut().insert(id, resolved.clone());
+        resolved
     }
 
     fn is_data_port(&self, port: &PortRef) -> bool {
@@ -258,12 +323,6 @@ impl Graph<'_> {
 
     fn declared_port(&self, port: &PortRef) -> Option<PortDescriptor> {
         declared_port(self.document, self.registry, port)
-    }
-
-    fn edge_links_variables(&self, from: &PortRef, to: &PortRef) -> bool {
-        [from, to].into_iter().any(
-            |port| matches!(self.port_term(port), Ok(Some(term)) if !term.variables().is_empty()),
-        )
     }
 
     /// True for a builtin function marker whose `term` mentions only its function's type
@@ -326,6 +385,9 @@ impl Graph<'_> {
                 return result;
             }
         };
+        // A check depends on the parameter's declaration, the solved type and the body's
+        // rigid parameters, never on the node, so equal checks across nodes run once.
+        let mut checked = HashMap::new();
         for &id in &result.nodes {
             let Some(template) = self.generic(id) else {
                 continue;
@@ -333,19 +395,32 @@ impl Graph<'_> {
             let Some((_, node)) = self.node(id) else {
                 continue;
             };
+            let body = self.document.locate_node(id);
             let mut args = BTreeMap::new();
             let mut complete = true;
             for parameter in &template.type_params {
                 let variable = ScopedTypeTerm::Variable(TypeVariable::new(id, &parameter.name));
                 let resolved = unification.resolve(&variable).map_err(InferenceIssue::from);
                 match resolved.map(|term| term.to_concrete_type_term()) {
-                    Ok(Ok(term)) => match check_argument(
-                        types,
-                        id,
-                        parameter,
-                        &term,
-                        rigid_params(self.document, id),
-                    ) {
+                    Ok(Ok(term)) => match checked
+                        .entry((
+                            parameter.name.clone(),
+                            parameter.constraints.clone(),
+                            term,
+                            body,
+                        ))
+                        .or_insert_with_key(|(_, _, term, body)| {
+                            check_argument(
+                                types,
+                                id,
+                                parameter,
+                                term,
+                                body_rigid_params(self.document, *body),
+                            )
+                        })
+                        .clone()
+                        .map_err(|issue| issue.for_node(id))
+                    {
                         Ok(ty) => {
                             args.insert(parameter.name.clone(), ty);
                         }
@@ -436,21 +511,25 @@ impl Graph<'_> {
                     ));
                 }
             }
-            for (edge, from, to) in self.data_edges(id) {
-                if !seen_edges.insert(edge) {
+            for edge in self.data_edges(id) {
+                if !seen_edges.insert(edge.id) {
                     continue;
                 }
-                let (Some(left), Some(right)) = (self.port_term(&from)?, self.port_term(&to)?)
+                let (Some(left), Some(right)) = (edge.from_term.clone()?, edge.to_term.clone()?)
                 else {
                     continue;
                 };
-                if left.variables().is_empty() && right.variables().is_empty() {
+                if !edge.links_variables {
                     continue; // concrete connection checks belong to the validator
                 }
                 equations.push(TypeEquation::new(
                     left,
                     right,
-                    evidence(EquationEvidence::Edge { edge, from, to }),
+                    evidence(EquationEvidence::Edge {
+                        edge: edge.id,
+                        from: edge.from.clone(),
+                        to: edge.to.clone(),
+                    }),
                 ));
             }
         }

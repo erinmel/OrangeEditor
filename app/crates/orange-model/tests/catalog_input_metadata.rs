@@ -22,6 +22,8 @@ fn definition(ports: Vec<PortDescriptor>, params: &[&str]) -> NodeDefinition {
         },
         config_version: 1,
         kind: NodeKind::Action,
+        volatility: None,
+        determinism: orange_model::catalog::Determinism::Deterministic,
         suspends: None,
         type_params: params
             .iter()

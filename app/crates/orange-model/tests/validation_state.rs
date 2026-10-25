@@ -452,7 +452,7 @@ fn register_codes(ty: &str, config: Value) -> Vec<DiagnosticCode> {
         config,
         vec![PortDescriptor::exec_in("store")],
     );
-    register.json["type_args"] = json!({"T": ty});
+    register.json["type_pins"] = json!({"T": ty});
     let doc: GraphDocument = from_json(
         &json!({
             "format":"orange.graph","format_version":1,
@@ -462,10 +462,13 @@ fn register_codes(ty: &str, config: Value) -> Vec<DiagnosticCode> {
         .to_string(),
     )
     .unwrap();
+    let registry = registry();
+    let resolved = orange_model::validation::validate_nodes(&doc, &registry).resolved;
+    assert_eq!(resolved.len(), 1);
     validate_state(
         &doc,
-        &registry(),
-        &BTreeMap::new(),
+        &registry,
+        &resolved,
         &Default::default(),
         &BTreeMap::new(),
         &BTreeMap::new(),

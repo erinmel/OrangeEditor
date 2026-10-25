@@ -5,7 +5,9 @@
 //! reported (`E-CONFIG-SCHEMA-UNSUPPORTED`) instead of being ignored, so an unrecognized
 //! dialect can never silently accept a configuration.
 
-use serde_json::{Map, Value};
+use std::cmp::Ordering;
+
+use serde_json::{Map, Number, Value};
 
 use crate::catalog::RegistrySnapshot;
 use crate::document::{BodyRef, GraphDocument};
@@ -119,15 +121,15 @@ fn satisfies(value: &Value, schema: &Map<String, Value>) -> bool {
     {
         return false;
     }
-    if let Some(number) = value.as_f64() {
+    if let Some(number) = value.as_number() {
         let below = schema
             .get("minimum")
-            .and_then(Value::as_f64)
-            .is_some_and(|min| number < min);
+            .and_then(Value::as_number)
+            .is_some_and(|min| compare_numbers(number, min) == Ordering::Less);
         let above = schema
             .get("maximum")
-            .and_then(Value::as_f64)
-            .is_some_and(|max| number > max);
+            .and_then(Value::as_number)
+            .is_some_and(|max| compare_numbers(number, max) == Ordering::Greater);
         if below || above {
             return false;
         }
@@ -159,6 +161,38 @@ fn satisfies(value: &Value, schema: &Map<String, Value>) -> bool {
                 .is_none_or(|member| child.as_object().is_some_and(|c| satisfies(member, c)))
         })
     })
+}
+
+/// JSON retains signed/unsigned 64-bit integers separately from binary64 numbers. Never
+/// round an integer to f64 before comparing a bound (adjacent integers above 2^53 merge).
+fn compare_numbers(left: &Number, right: &Number) -> Ordering {
+    let integer = |number: &Number| {
+        number
+            .as_i64()
+            .map(i128::from)
+            .or_else(|| number.as_u64().map(i128::from))
+    };
+    match (integer(left), integer(right)) {
+        (Some(left), Some(right)) => left.cmp(&right),
+        (Some(left), None) => compare_integer_float(left, right.as_f64().expect("JSON number")),
+        (None, Some(right)) => {
+            compare_integer_float(right, left.as_f64().expect("JSON number")).reverse()
+        }
+        (None, None) => left
+            .as_f64()
+            .expect("JSON number")
+            .partial_cmp(&right.as_f64().expect("JSON number"))
+            .expect("JSON numbers are finite"),
+    }
+}
+
+fn compare_integer_float(integer: i128, float: f64) -> Ordering {
+    // All JSON integers fit strictly inside i128. A saturating cast of a float outside
+    // i128's range therefore orders correctly too. Within range, truncation is exact;
+    // only a fractional part can break a tie (including negative fractions and -0.0).
+    integer
+        .cmp(&(float as i128))
+        .then_with(|| 0.0f64.partial_cmp(&float.fract()).expect("finite number"))
 }
 
 /// Validates every node's `config` against its resolved definition's `config_schema`.

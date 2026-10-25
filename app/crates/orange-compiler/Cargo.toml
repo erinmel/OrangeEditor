@@ -1,0 +1,15 @@
+[package]
+name = "orange-compiler"
+description = "OrangeEditor checked pure export plan compiler"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

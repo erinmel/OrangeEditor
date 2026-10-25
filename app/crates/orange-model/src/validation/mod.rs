@@ -25,11 +25,14 @@ mod conformance;
 mod connections;
 mod control_cycles;
 mod data_cycles;
+mod declarations;
 mod diagnostic;
 mod domains;
+mod dominators;
 mod exports;
 mod functions;
 mod inputs;
+mod limits;
 mod nodes;
 pub(crate) mod ports;
 mod regions;
@@ -51,16 +54,18 @@ pub use config::{
 pub use connections::{ConnectionValidation, validate_connections};
 pub use control_cycles::{ControlCycleValidation, validate_control_cycles};
 pub use data_cycles::{DataCycleValidation, validate_data_cycles};
+pub use declarations::validate_declaration_types;
 pub use domains::{DomainValidation, validate_body_domains};
 pub use exports::validate_exports;
 pub use inputs::validate_inputs;
+pub use limits::{AnalysisLimits, AnalysisOptions};
 pub use nodes::{NodeValidation, validate_nodes};
 pub use regions::{
     Region, RegionIndex, RegionKind, RegionRoot, RegionValidation, validate_regions,
 };
 pub use report::{
     ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
-    required_checks, validate, validate_with_effects,
+    analyze_with_options, required_checks, validate, validate_with_effects,
 };
 pub use state::validate_state;
 pub use streams::validate_streams;

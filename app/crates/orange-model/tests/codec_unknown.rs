@@ -34,6 +34,35 @@ fn unknown_keys_survive_at_every_level() {
 }
 
 #[test]
+fn envelope_position_does_not_change_extensions_or_nested_format_fields() {
+    let source = minimal_document(json!({
+        "x_first":{"format":"embedded-data","integer":18446744073709551615_u64},
+        "x_second":{"z":1,"a":2}
+    }));
+    let baseline = from_json(&source).unwrap();
+    let mut fields = parse_json(&source).as_object().unwrap().clone();
+    let tag = fields.shift_remove("format").unwrap();
+    let fields: Vec<_> = fields.into_iter().collect();
+    for position in [0, 3, fields.len()] {
+        let mut reordered = fields.clone();
+        reordered.insert(position, ("format".to_owned(), tag.clone()));
+        let reordered = serde_json::Value::Object(reordered.into_iter().collect()).to_string();
+        let loaded = from_json(&reordered).unwrap();
+        assert_eq!(loaded, baseline);
+        assert!(!loaded.extensions().contains_key("format"));
+        assert_eq!(
+            loaded
+                .extensions()
+                .keys()
+                .map(String::as_str)
+                .collect::<Vec<_>>(),
+            ["x_first", "x_second"]
+        );
+        assert_eq!(to_json(&loaded).unwrap(), to_json(&baseline).unwrap());
+    }
+}
+
+#[test]
 fn unresolved_package_node_keeps_signature_snapshot() {
     let source = minimal_document(json!({
         "package_lock": [{"id": "org.example.gone", "version": "2.0.0", "content_digest": "sha256:00"}],

@@ -34,6 +34,19 @@ use crate::variable::WriteOperation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RegistryError {
+    #[error("definition `{definition}` has incompatible volatility metadata")]
+    VolatilityKind { definition: DefinitionId },
+    #[error("package definition `{definition}` may declare only entropy volatility")]
+    VolatilityAuthority { definition: DefinitionId },
+    #[error("definition `{definition}` has incompatible determinism metadata")]
+    DeterminismKind { definition: DefinitionId },
+    #[error("state/clock definition `{definition}` cannot declare data input `{port}`")]
+    VolatileDataInput {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error("state/clock definition `{definition}` has an input-bearing port template")]
+    VolatilePortTemplate { definition: DefinitionId },
     #[error("duplicate definition `{}@{}`", .0.id, .0.version)]
     DuplicateDefinition(DefinitionRef),
     #[error("duplicate provider `{}/{}`", .0.package, .0.id)]
@@ -59,6 +72,11 @@ pub enum RegistryError {
     },
     #[error("pure definition `{definition}` cannot declare execution port `{port}`")]
     PureExecutionPort {
+        definition: DefinitionId,
+        port: PortId,
+    },
+    #[error("volatile definition `{definition}` cannot declare execution port `{port}`")]
+    VolatileExecutionPort {
         definition: DefinitionId,
         port: PortId,
     },
@@ -270,6 +288,7 @@ impl RegistryBuilder {
             check_definition(&definition, intrinsic)?;
             check_default_literals(&definition, &self.types)?;
             super::availability::check_availability(&definition)?;
+            check_execution(&definition, intrinsic)?;
             let versions = definitions
                 .entry(definition.definition.id.clone())
                 .or_default();
@@ -309,6 +328,113 @@ impl RegistryBuilder {
             definitions,
             providers,
         }))
+    }
+}
+
+fn check_execution(definition: &NodeDefinition, intrinsic: bool) -> Result<(), RegistryError> {
+    use super::{Determinism, Volatility};
+    let id = &definition.definition.id;
+    if (definition.kind == NodeKind::Volatile) != definition.volatility.is_some() {
+        return Err(RegistryError::VolatilityKind {
+            definition: id.clone(),
+        });
+    }
+    if !intrinsic
+        && matches!(
+            definition.volatility,
+            Some(Volatility::StateRead | Volatility::Clock)
+        )
+    {
+        return Err(RegistryError::VolatilityAuthority {
+            definition: id.clone(),
+        });
+    }
+    if (definition.kind == NodeKind::Pure && definition.determinism != Determinism::Deterministic)
+        || (definition.volatility == Some(Volatility::Entropy)
+            && definition.determinism != Determinism::Seeded)
+    {
+        return Err(RegistryError::DeterminismKind {
+            definition: id.clone(),
+        });
+    }
+    if matches!(
+        definition.volatility,
+        Some(Volatility::StateRead | Volatility::Clock)
+    ) {
+        match &definition.ports {
+            Ports::Declared(ports) => {
+                for port in ports {
+                    if port.direction == PortDirection::Input && port.kind == PortKind::Data {
+                        return Err(RegistryError::VolatileDataInput {
+                            definition: id.clone(),
+                            port: port.port_id.clone(),
+                        });
+                    }
+                }
+            }
+            Ports::Variable(VariableAccess::Read) => {}
+            _ => {
+                return Err(RegistryError::VolatilePortTemplate {
+                    definition: id.clone(),
+                });
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod execution_tests {
+    use super::*;
+    use crate::catalog::{Determinism, Volatility};
+    fn reader(class: Volatility, ports: Ports) -> NodeDefinition {
+        NodeDefinition {
+            definition: DefinitionRef {
+                id: "core/read-test".parse().unwrap(),
+                version: 1,
+            },
+            config_version: 1,
+            kind: NodeKind::Volatile,
+            volatility: Some(class),
+            determinism: Determinism::Deterministic,
+            suspends: None,
+            type_params: vec![],
+            ports,
+            references: vec![],
+            specializations: None,
+            config_schema: None,
+        }
+    }
+    #[test]
+    fn host_state_and_clock_readers_reject_input_bearing_port_contracts() {
+        for class in [Volatility::StateRead, Volatility::Clock] {
+            let invalid = reader(
+                class,
+                Ports::Declared(vec![PortDescriptor::data_in(
+                    "value",
+                    "core/i64@1".parse().unwrap(),
+                )]),
+            );
+            assert!(matches!(
+                check_execution(&invalid, true),
+                Err(RegistryError::VolatileDataInput { .. })
+            ));
+            let valid = reader(
+                class,
+                Ports::Declared(vec![PortDescriptor::data_out(
+                    "value",
+                    "core/i64@1".parse().unwrap(),
+                    OutputSource::State,
+                )]),
+            );
+            assert!(check_execution(&valid, true).is_ok());
+            for ports in [Ports::ForEach, Ports::Variable(VariableAccess::Write)] {
+                assert!(matches!(
+                    check_execution(&reader(class, ports), true),
+                    Err(RegistryError::VolatilePortTemplate { .. })
+                ));
+            }
+        }
     }
 }
 
@@ -541,6 +667,12 @@ fn check_kind_ports(
 ) -> Result<(), RegistryError> {
     if definition.kind == NodeKind::Pure && port.kind == PortKind::Exec {
         return Err(RegistryError::PureExecutionPort {
+            definition: definition.definition.id.clone(),
+            port: port.port_id.clone(),
+        });
+    }
+    if definition.kind == NodeKind::Volatile && port.kind == PortKind::Exec {
+        return Err(RegistryError::VolatileExecutionPort {
             definition: definition.definition.id.clone(),
             port: port.port_id.clone(),
         });
@@ -1085,6 +1217,8 @@ mod tests {
             definition: dref(id),
             config_version: 1,
             kind: NodeKind::Pure,
+            volatility: None,
+            determinism: super::super::Determinism::Deterministic,
             suspends: None,
             type_params: params
                 .iter()
@@ -1134,6 +1268,10 @@ mod tests {
         ] {
             let mut valid = definition("acme/sync", &[], vec![]);
             valid.kind = kind;
+            if kind == NodeKind::Volatile {
+                valid.volatility = Some(super::super::Volatility::Entropy);
+                valid.determinism = super::super::Determinism::Seeded;
+            }
             assert!(build(builder().definition(valid)).is_ok(), "{kind:?}");
         }
         for kind in [NodeKind::Async, NodeKind::Iterator] {
@@ -1414,6 +1552,9 @@ mod tests {
                 )],
             );
             definition.kind = kind;
+            if kind == NodeKind::Volatile {
+                definition.volatility = Some(super::super::Volatility::StateRead);
+            }
             if kind == NodeKind::Iterator {
                 definition.suspends = Some(crate::document::Suspends::Maybe);
             }

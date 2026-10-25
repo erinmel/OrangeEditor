@@ -800,3 +800,135 @@ fn compare_and_set_outputs_reinfer_consumers_and_keep_the_boolean_output() {
         assert_eq!(content(&doc), after);
     }
 }
+
+/// Two nodes of one definition in one component, solved to different arguments, must not
+/// share a projected signature.
+#[test]
+fn same_definition_nodes_in_one_component_keep_distinct_signatures() {
+    use common::generic::{core_converters, port, registry_builder};
+    use orange_model::catalog::{Determinism, NodeDefinition, Ports};
+    use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+    let param = |name: &str| serde_json::from_value(json!({"name": name})).unwrap();
+    let registry = registry_builder(core_converters(), None)
+        .definition(NodeDefinition {
+            definition: DefinitionRef {
+                id: "org.test/pair".parse().unwrap(),
+                version: 1,
+            },
+            config_version: 1,
+            kind: NodeKind::Pure,
+            volatility: None,
+            determinism: Determinism::Deterministic,
+            suspends: None,
+            type_params: vec![param("T"), param("U")],
+            ports: Ports::Declared(vec![
+                port("x", "input", "$T"),
+                PortDescriptor::data_out("y", "$U".parse().unwrap(), OutputSource::Computed),
+            ]),
+            references: Vec::new(),
+            specializations: None,
+            config_schema: None,
+        })
+        .build()
+        .unwrap();
+    let pair = |n: u8, out: &str| {
+        json!({"id": node_id(n), "definition_id": "org.test/pair", "definition_version": 1,
+            "config_version": 1, "config": {}, "type_pins": {"U": out}})
+    };
+    let mut doc = document(
+        vec![
+            typed_source(1, "i64"),
+            pair(2, "core/f64@1"),
+            pair(3, "core/i32@1"),
+        ],
+        vec![],
+    );
+    let done = apply_inferred(
+        &mut doc,
+        [
+            connect(data_edge(1, (1, "value"), (2, "x"))),
+            connect(data_edge(2, (2, "y"), (3, "x"))),
+        ],
+        &registry,
+    )
+    .unwrap();
+    assert!(done.issues.is_empty(), "{:?}", done.issues);
+    assert_eq!(signature_types(&doc, 2), ["core/i64@1", "core/f64@1"]);
+    assert_eq!(signature_types(&doc, 3), ["core/f64@1", "core/i32@1"]);
+}
+
+/// Nodes whose arguments fail the same check each report the failure under their own ID.
+#[test]
+fn a_shared_failed_argument_check_names_every_node() {
+    let mut doc = document(
+        vec![
+            add(3, json!({"type_pins": {"T": "core/bool@1"}})),
+            add(4, json!({})),
+        ],
+        vec![],
+    );
+    let issues = commit(&mut doc, vec![connect(data_edge(1, (3, "sum"), (4, "a")))]).unwrap();
+    let nodes: Vec<_> = issues
+        .iter()
+        .map(|issue| match issue {
+            InferenceIssue::ConstraintUnsatisfied {
+                node, constraint, ..
+            } => {
+                assert_eq!(constraint, "num");
+                *node
+            }
+            other => panic!("unexpected issue {other:?}"),
+        })
+        .collect();
+    assert_eq!(nodes, [nid(3), nid(4)]);
+}
+
+/// An edge whose ends are both concrete is the validator's to check, even at a generic node:
+/// inference reports no conflict for it and solves the node from its other evidence.
+#[test]
+fn concrete_edges_at_a_generic_node_are_left_to_the_validator() {
+    use common::generic::{core_converters, port, registry_builder};
+    use orange_model::catalog::{Determinism, NodeDefinition, Ports};
+    use orange_model::document::{DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+    let registry = registry_builder(core_converters(), None)
+        .definition(NodeDefinition {
+            definition: DefinitionRef {
+                id: "org.test/scale".parse().unwrap(),
+                version: 1,
+            },
+            config_version: 1,
+            kind: NodeKind::Pure,
+            volatility: None,
+            determinism: Determinism::Deterministic,
+            suspends: None,
+            type_params: vec![serde_json::from_value(json!({"name": "T"})).unwrap()],
+            ports: Ports::Declared(vec![
+                port("x", "input", "$T"),
+                port("factor", "input", "core/i64@1"),
+                PortDescriptor::data_out("y", "$T".parse().unwrap(), OutputSource::Computed),
+            ]),
+            references: Vec::new(),
+            specializations: None,
+            config_schema: None,
+        })
+        .build()
+        .unwrap();
+    let scale = json!({"id": node_id(3), "definition_id": "org.test/scale",
+        "definition_version": 1, "config_version": 1, "config": {}});
+    let mut doc = document(
+        vec![typed_source(1, "i32"), typed_source(2, "f64"), scale],
+        vec![],
+    );
+    let done = apply_inferred(
+        &mut doc,
+        [
+            connect(data_edge(1, (1, "value"), (3, "x"))),
+            // f64 into an i64 port: a concrete mismatch, not inference evidence.
+            connect(data_edge(2, (2, "value"), (3, "factor"))),
+        ],
+        &registry,
+    )
+    .unwrap();
+    assert!(done.issues.is_empty(), "{:?}", done.issues);
+    assert_eq!(type_arg(&doc, 3).as_deref(), Some("core/i32@1"));
+}

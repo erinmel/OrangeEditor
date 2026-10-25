@@ -254,6 +254,27 @@ fn straight_line_and_sequence_steps_dominate() {
 }
 
 #[test]
+fn sequence_availability_follows_persisted_order_instead_of_port_counters() {
+    // Stable counters can be sparse and reordered by insertion. Step #7 runs before #2.
+    for (producer, consumer, expected) in [(3, 4, OK.as_slice()), (4, 3, &UNAVAILABLE)] {
+        let mut steps = sequence(2);
+        steps.json["variadic"] = json!({"then":{"order":[7,2],"next":8}});
+        assert_eq!(
+            codes(
+                vec![entry(1), steps, action(3), action(4)],
+                vec![
+                    exec(1, 1, "then", 2),
+                    exec(2, 2, "then#7", 3),
+                    exec(3, 2, "then#2", 4),
+                    data(4, producer, "out", consumer),
+                ],
+            ),
+            expected,
+        );
+    }
+}
+
+#[test]
 fn consumer_before_the_producer_is_unavailable() {
     let result = codes(
         vec![entry(1), action(2), action(3)],
@@ -414,4 +435,54 @@ fn values_do_not_cross_activations() {
         ],
     );
     assert_eq!(result, CROSS);
+}
+
+#[test]
+fn long_action_chains_check_each_read_against_its_own_producer() {
+    // 100 actions, each reading its predecessor's output: all dominated.
+    let nodes = || {
+        [entry(1)]
+            .into_iter()
+            .chain((2..=101u8).map(action))
+            .collect()
+    };
+    let mut edges = vec![];
+    for n in 2..=101u8 {
+        edges.push(exec(n - 1, n - 1, "then", n));
+        if n > 2 {
+            edges.push(data(100 + n, n - 1, "out", n));
+        }
+    }
+    assert_eq!(codes(nodes(), edges.clone()), OK);
+    // Node 50 instead reads node 80's value, produced later in the chain.
+    let premature = edges
+        .iter()
+        .position(|edge| edge["to"]["node"] == id(50) && edge["to"]["port"] == "v");
+    edges[premature.unwrap()] = data(150, 80, "out", 50);
+    assert_eq!(codes(nodes(), edges), UNAVAILABLE);
+}
+
+#[test]
+fn a_join_all_elsewhere_still_reports_a_premature_read_after_it() {
+    let nodes = vec![
+        entry(1),
+        fork(2, "all"),
+        action(3),
+        action(4),
+        action(5),
+        action(6),
+        action(7),
+    ];
+    let edges = vec![
+        exec(1, 1, "then", 2),
+        exec(2, 2, "branch#0", 3),
+        exec(3, 2, "branch#1", 4),
+        exec(4, 2, "completed", 5),
+        exec(5, 5, "then", 6),
+        exec(6, 6, "then", 7),
+        // Available only through the all-join; then a read of a later action's value.
+        data(7, 3, "out", 5),
+        data(8, 7, "out", 6),
+    ];
+    assert_eq!(codes(nodes, edges), UNAVAILABLE);
 }

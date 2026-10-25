@@ -38,25 +38,29 @@ impl DataCycleValidation {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-struct Vertex {
-    node: NodeId,
-    port: PortKey,
+enum Vertex {
+    // Keep real ports first so deterministic witnesses begin at a visible port.
+    Port { node: NodeId, port: PortKey },
+    Computation(NodeId),
 }
 
 impl From<&PortRef> for Vertex {
     fn from(value: &PortRef) -> Self {
-        Self {
+        Self::Port {
             node: value.node,
             port: value.port.clone(),
         }
     }
 }
 
-impl From<Vertex> for PortRef {
-    fn from(value: Vertex) -> Self {
-        Self {
-            node: value.node,
-            port: value.port,
+impl Vertex {
+    fn port_ref(&self) -> Option<PortRef> {
+        match self {
+            Self::Port { node, port } => Some(PortRef {
+                node: *node,
+                port: port.clone(),
+            }),
+            Self::Computation(_) => None,
         }
     }
 }
@@ -153,9 +157,24 @@ pub(crate) fn validate_data_cycles_in(
                 })
                 .flat_map(|port| concrete_vertices(node.id, node, port))
                 .collect();
-            for input in &inputs {
-                for output in &outputs {
-                    add_edge(&mut graph, input.clone(), output.clone());
+            // A private hub represents the complete input-to-computed-output relation
+            // using O(inputs + outputs) edges rather than O(inputs * outputs).
+            if inputs.len().saturating_mul(outputs.len())
+                <= inputs.len().saturating_add(outputs.len())
+            {
+                // Narrow computations are already linear; avoid adding a hub there.
+                for input in &inputs {
+                    for output in &outputs {
+                        add_edge(&mut graph, input.clone(), output.clone());
+                    }
+                }
+            } else {
+                let hub = Vertex::Computation(node.id);
+                for input in inputs {
+                    add_edge(&mut graph, input, hub.clone());
+                }
+                for output in outputs {
+                    add_edge(&mut graph, hub.clone(), output);
                 }
             }
         }
@@ -242,13 +261,13 @@ fn concrete_vertices(
             .get(&descriptor.port_id)
             .into_iter()
             .flat_map(|state| state.order.iter().copied())
-            .map(|key| Vertex {
+            .map(|key| Vertex::Port {
                 node,
                 port: PortKey::new(descriptor.port_id.clone(), Some(key)),
             })
             .collect()
     } else {
-        vec![Vertex {
+        vec![Vertex::Port {
             node,
             port: PortKey::new(descriptor.port_id.clone(), None),
         }]
@@ -363,9 +382,11 @@ fn cycle_witness(
                     let begin = stack.iter().position(|(item, _, _)| item == &next)?;
                     let mut path: Vec<_> = stack[begin..]
                         .iter()
-                        .map(|(item, _, _)| PortRef::from(item.clone()))
+                        .filter_map(|(item, _, _)| item.port_ref())
                         .collect();
-                    path.push(PortRef::from(next));
+                    // A back edge can target the internal hub. Close the projected
+                    // cycle at its first real port, never expose a synthetic vertex.
+                    path.push(path.first()?.clone());
                     return Some(path);
                 }
                 Some(Color::Black) => {}

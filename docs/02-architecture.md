@@ -1,6 +1,6 @@
 # Architecture and ownership
 
-`orange-model` is an implemented Cargo package; the other crate boundaries below are proposed. Separate a crate when dependency/lifetime/testing boundaries justify it; internal modules may start together to avoid unnecessary build overhead. Dependency arrows mean compile-time use. The project uses no game engine (ADR-02): the selected editor UI is egui, hosted by eframe in the desktop app, and core crates have no UI, window or engine dependency. Downstream products add engines, scenes and other domains in their own crates (ADR-21).
+`orange-model`, `orange-compiler` (restricted pure/entropy data plans), `orange-bundled` (native scalar operations/conversions) and `orange-runtime` (root data epochs and entropy) are implemented Cargo packages; the remaining boundaries below are proposed. Separate a crate when dependency/lifetime/testing boundaries justify it; internal modules may start together to avoid unnecessary build overhead. Dependency arrows mean compile-time use. The project uses no game engine (ADR-02): the selected editor UI is egui, hosted by eframe in the desktop app, and core crates have no UI, window or engine dependency. Downstream products add engines, scenes and other domains in their own crates (ADR-21).
 
 Physical source placement follows [15](15-monorepo-layout.md): application libraries under `app/crates`, desktop/CLI under `app/apps`, installable expansions under `plugins`, and exported public SDK artifacts under `sdk`. These folders share one repository while preserving the dependency/runtime boundaries below. No Cargo members are created by the source-layout decision.
 
@@ -24,6 +24,8 @@ flowchart TD
   bundled[orange-bundled] --> api
   bundled --> model
 ```
+
+Implemented native prerequisite (N1a): `orange-bundled` depends on `orange-model` and publishes ordinary `org.orange.math` definition/provider metadata plus resolved scalar kernels. Resolution checks exact provider/build digest, definition/config version and specialization before execution. A resolved kernel retains its immutable registry snapshot and performs scalar dispatch without parsing or registry lookup. This is not the final compiler/runtime kernel ABI, package loader or service layer; the full crate graph above remains the target architecture.
 
 ## Foundation application and general capabilities
 
@@ -113,3 +115,5 @@ All product-owned visible and accessible text follows [13](13-internationalizati
 7. `orange-model` and `orange-compiler` own the graph language in [11](11-graph-language.md). Packages extend it only through the surface in [11 §16](11-graph-language.md), never by adding port kinds, control intrinsics or scheduling rules.
 
 Associated requirements: FR-01–07, FR-34–41, FR-44–51. Validation and consequences: [03](03-data-and-execution.md), [04](04-expansion-plugins.md), [06](06-quality-and-validation.md), [11](11-graph-language.md), [12](12-graph-data-structures.md), [13](13-internationalization.md), ADR-01/02/03/08/13–17 in [08](08-decisions.md).
+
+E1a dependency boundary: orange-compiler depends on orange-model and exposes trusted PureKernelResolver/PureKernel interfaces; orange-bundled depends on orange-compiler to implement them. The compiler has no dependency on the concrete bundled provider, UI, host services or guest loader. The native adapter resolves exact provider locks from the document and types from fresh signatures, never cached type_args. PurePlan retains an Arc snapshot and immutable executable bindings. The diagram remains the broader target; these provisional pure-fold interfaces do not freeze the final runtime/component ABI.
