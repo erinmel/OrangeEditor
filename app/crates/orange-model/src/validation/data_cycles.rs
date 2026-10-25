@@ -1,5 +1,6 @@
 //! Port-level data-dependency cycle validation (11 §8.2).
 
+use super::graph::strongly_connected_components;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
@@ -13,7 +14,7 @@ use super::connections::ConnectionValidation;
 use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
-use super::ports::lookup_port;
+use super::ports::PortResolver;
 use super::scope::Scope;
 
 /// Result of checking the data-dependency graph using current resolved signatures.
@@ -74,13 +75,15 @@ pub fn validate_data_cycles(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
 ) -> DataCycleValidation {
-    validate_data_cycles_in(document, resolved, connections, registry, Scope::All)
+    let ports = PortResolver::new(document, resolved);
+
+    validate_data_cycles_in(document, &ports, connections, registry, Scope::All)
 }
 
 /// [`validate_data_cycles`] over the bodies in `scope`.
 pub(crate) fn validate_data_cycles_in(
     document: &GraphDocument,
-    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    resolved: &PortResolver<'_>,
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     scope: Scope,
@@ -193,8 +196,8 @@ pub(crate) fn validate_data_cycles_in(
                 mark_incomplete(edge.to.node, origin, &mut result, &mut diagnosed_nodes);
                 continue;
             }
-            let from = lookup_port(document, resolved, &edge.from);
-            let to = lookup_port(document, resolved, &edge.to);
+            let from = resolved.port(&edge.from);
+            let to = resolved.port(&edge.to);
             match (from, to) {
                 (Ok(from), Ok(to))
                     if from.direction == PortDirection::Output
@@ -277,72 +280,6 @@ fn concrete_vertices(
 fn add_edge(graph: &mut BTreeMap<Vertex, BTreeSet<Vertex>>, from: Vertex, to: Vertex) {
     graph.entry(from.clone()).or_default().insert(to.clone());
     graph.entry(to).or_default();
-}
-
-fn strongly_connected_components(
-    graph: &BTreeMap<Vertex, BTreeSet<Vertex>>,
-) -> Vec<BTreeSet<Vertex>> {
-    let mut visited = BTreeSet::new();
-    let mut finish = Vec::with_capacity(graph.len());
-    for start in graph.keys() {
-        if visited.contains(start) {
-            continue;
-        }
-        visited.insert(start.clone());
-        let neighbors: Vec<_> = graph
-            .get(start)
-            .into_iter()
-            .flat_map(|items| items.iter().cloned())
-            .collect();
-        let mut stack = vec![(start.clone(), neighbors, 0_usize)];
-        while let Some((vertex, neighbors, cursor)) = stack.last_mut() {
-            if *cursor >= neighbors.len() {
-                finish.push(vertex.clone());
-                stack.pop();
-                continue;
-            }
-            let next = neighbors[*cursor].clone();
-            *cursor += 1;
-            if visited.insert(next.clone()) {
-                let next_neighbors: Vec<_> = graph
-                    .get(&next)
-                    .into_iter()
-                    .flat_map(|items| items.iter().cloned())
-                    .collect();
-                stack.push((next, next_neighbors, 0));
-            }
-        }
-    }
-
-    let mut reverse = BTreeMap::<Vertex, BTreeSet<Vertex>>::new();
-    for (from, neighbors) in graph {
-        reverse.entry(from.clone()).or_default();
-        for to in neighbors {
-            reverse.entry(to.clone()).or_default().insert(from.clone());
-        }
-    }
-
-    visited.clear();
-    let mut components = Vec::new();
-    for start in finish.into_iter().rev() {
-        if !visited.insert(start.clone()) {
-            continue;
-        }
-        let mut component = BTreeSet::new();
-        let mut stack = vec![start];
-        while let Some(vertex) = stack.pop() {
-            component.insert(vertex.clone());
-            if let Some(neighbors) = reverse.get(&vertex) {
-                for neighbor in neighbors.iter().rev() {
-                    if visited.insert(neighbor.clone()) {
-                        stack.push(neighbor.clone());
-                    }
-                }
-            }
-        }
-        components.push(component);
-    }
-    components
 }
 
 fn cycle_witness(

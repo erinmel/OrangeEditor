@@ -33,6 +33,7 @@ type Accepted = BTreeMap<FunctionId, (NodeKind, Suspends)>;
 
 /// Results of the body-local passes that decide whether a body is complete.
 pub(crate) struct BodyPasses {
+    pub(crate) projections: std::rc::Rc<super::ports::CachedPorts>,
     pub(crate) nodes: NodeValidation,
     pub(crate) connections: ConnectionValidation,
     pub(crate) data_cycles: DataCycleValidation,
@@ -53,7 +54,8 @@ impl BodyPasses {
         options.checkpoint()?;
         let nodes = validate_nodes_with(document, registry, calls, scope, index);
         options.checkpoint()?;
-        let resolved = &nodes.resolved;
+        let ports = super::ports::PortResolver::new(document, &nodes.resolved);
+        let resolved = &ports;
         let connections = validate_connections_in(document, resolved, registry, scope, index);
         options.checkpoint()?;
         let data_cycles =
@@ -65,7 +67,10 @@ impl BodyPasses {
         options.checkpoint()?;
         let input_diagnostics = validate_inputs_in(document, resolved, registry, scope);
         options.checkpoint()?;
+        let projections = ports.retain();
+        drop(ports);
         Ok(Self {
+            projections,
             nodes,
             connections,
             data_cycles,

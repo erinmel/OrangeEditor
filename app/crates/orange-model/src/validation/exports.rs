@@ -14,7 +14,7 @@ use crate::type_term::TypeTerm;
 use crate::types::{CapabilityRequest, Constraint};
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, Subject, sort_diagnostics};
-use super::ports::{PortLookupError, lookup_port};
+use super::ports::{PortLookupError, PortResolver};
 
 /// Validates `GraphDocument::exports` against fresh resolved signatures.
 ///
@@ -28,6 +28,15 @@ use super::ports::{PortLookupError, lookup_port};
 pub fn validate_exports(
     document: &GraphDocument,
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    registry: &RegistrySnapshot,
+) -> Vec<Diagnostic> {
+    let ports = PortResolver::new(document, resolved);
+    validate_exports_with_ports(document, &ports, registry)
+}
+
+pub(crate) fn validate_exports_with_ports(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
     if document.exports().is_empty() {
@@ -45,10 +54,7 @@ pub fn validate_exports(
         {
             continue;
         }
-        let (Ok(from), Ok(to)) = (
-            lookup_port(document, resolved, &edge.from),
-            lookup_port(document, resolved, &edge.to),
-        ) else {
+        let (Ok(from), Ok(to)) = (resolved.port(&edge.from), resolved.port(&edge.to)) else {
             continue;
         };
         if from.kind == PortKind::Data
@@ -81,7 +87,7 @@ pub fn validate_exports(
             node: export.node,
             port: export.port.clone(),
         };
-        let port = match lookup_port(document, resolved, &endpoint) {
+        let port = match resolved.port(&endpoint) {
             Ok(port) if port.direction == PortDirection::Output && port.kind == PortKind::Data => {
                 port
             }

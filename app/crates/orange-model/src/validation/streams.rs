@@ -16,7 +16,7 @@ use crate::types::TypeRegistry;
 use crate::value::literal_codec::Schemas;
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, Subject, sort_diagnostics};
-use super::ports::lookup_port;
+use super::ports::PortResolver;
 
 #[derive(Default, Clone, Copy)]
 pub(super) struct Resources {
@@ -61,6 +61,15 @@ pub fn validate_streams(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
+    let ports = PortResolver::new(document, resolved);
+    validate_streams_with_ports(document, &ports, registry)
+}
+
+pub(crate) fn validate_streams_with_ports(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    registry: &RegistrySnapshot,
+) -> Vec<Diagnostic> {
     let origin = registry.origin();
     let mut diagnostics = Vec::new();
     for (id, decl) in document.variables() {
@@ -95,7 +104,7 @@ pub fn validate_streams(
             node: export.node,
             port: export.port.clone(),
         };
-        let Ok(descriptor) = lookup_port(document, resolved, &port) else {
+        let Ok(descriptor) = resolved.port(&port) else {
             continue;
         };
         let Some(found) = descriptor

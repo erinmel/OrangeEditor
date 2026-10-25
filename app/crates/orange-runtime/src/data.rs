@@ -67,6 +67,8 @@ pub enum DataError {
     MissingInput { node: NodeId },
     #[error("The host input does not exist, has the wrong type or was already supplied.")]
     InvalidInput { index: usize },
+    #[error("Another data pull is suspended in this epoch.")]
+    PullInProgress,
     #[error("A data operation violated its checked contract.")]
     KernelContract { node: NodeId },
     #[error("{0}")]
@@ -83,6 +85,7 @@ impl DataError {
             Self::FuelExhausted => "core/data-fuel-exhausted",
             Self::MissingInput { .. } => "core/data-missing-input",
             Self::InvalidInput { .. } => "core/data-invalid-input",
+            Self::PullInProgress => "core/data-pull-in-progress",
             Self::KernelContract { .. } => "core/data-kernel-contract",
             Self::Entropy(error) => error.message_key(),
         }
@@ -92,6 +95,73 @@ fn checkpoint(cancel: Option<&CancelToken>) -> Result<(), DataError> {
     if cancel.is_some_and(CancelToken::is_cancelled) {
         Err(DataError::Cancelled)
     } else {
+        Ok(())
+    }
+}
+
+/// Immutable execution metadata shared by all frames of one retained plan.
+pub(crate) struct PreparedData {
+    plan: Arc<DataPlan>,
+    retained: usize,
+    layout: EntropyLayout,
+    entropy_slots: Box<[Option<EntropySlot>]>,
+    host_indices: Box<[Option<usize>]>,
+}
+impl PreparedData {
+    pub(crate) fn new(plan: Arc<DataPlan>, limits: DataLimits) -> Result<Arc<Self>, DataError> {
+        let resources = plan.resources();
+        Self::check_resources(&plan, limits)?;
+        let retained = plan.initial_charge().ok_or(DataError::ResourceLimit)?;
+        if retained > limits.max_retained_bytes {
+            return Err(DataError::ResourceLimit);
+        }
+        let layout = EntropyLayout::new(
+            plan.nodes()
+                .iter()
+                .filter(|n| matches!(n.operation(), DataOperation::Entropy(_)))
+                .map(|n| n.node()),
+            limits.max_nodes,
+        )?;
+        let entropy_slots = plan
+            .nodes()
+            .iter()
+            .map(|n| {
+                if matches!(n.operation(), DataOperation::Entropy(_)) {
+                    layout.slot(n.node())
+                } else {
+                    None
+                }
+            })
+            .collect::<Box<[_]>>();
+
+        let mut host_indices = vec![None; resources.nodes];
+        for (i, node) in plan.host_inputs().iter().enumerate() {
+            host_indices[node.index()] = Some(i);
+        }
+        Ok(Arc::new(Self {
+            plan,
+            retained,
+            layout,
+            entropy_slots,
+            host_indices: host_indices.into(),
+        }))
+    }
+    fn check_resources(plan: &DataPlan, limits: DataLimits) -> Result<(), DataError> {
+        let resources = plan.resources();
+        if resources.slots > limits.max_slots
+            || resources.nodes > limits.max_nodes
+            || plan.exports().len() > limits.max_exports
+            || resources.work_items > limits.max_work_items
+        {
+            return Err(DataError::ResourceLimit);
+        }
+        Ok(())
+    }
+    fn check_limits(&self, limits: DataLimits) -> Result<(), DataError> {
+        Self::check_resources(&self.plan, limits)?;
+        if self.retained > limits.max_retained_bytes {
+            return Err(DataError::ResourceLimit);
+        }
         Ok(())
     }
 }
@@ -106,6 +176,22 @@ pub struct DataActivation {
     plan: Arc<DataPlan>,
     document_revision: u64,
     state: Frame,
+}
+/// A suspended pull retains its work stack and current consumption epoch.
+pub enum DataPoll<'a> {
+    Pending,
+    Ready(Option<EvaluatedExport<'a>>),
+}
+pub(crate) enum HostPoll<'a> {
+    Pending,
+    Input(usize),
+    Ready(Option<EvaluatedExport<'a>>),
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Drive {
+    Pending,
+    Input(usize),
+    Ready,
 }
 impl std::fmt::Debug for DataActivation {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -135,43 +221,50 @@ impl DataActivation {
         if plan.snapshot().generation() != registry.generation() {
             return Err(DataError::StaleRegistry);
         }
+        Self::from_frozen(
+            plan,
+            document.revision(),
+            seed,
+            activation_sequence,
+            options,
+        )
+    }
+    pub(crate) fn from_frozen(
+        plan: Arc<DataPlan>,
+        document_revision: u64,
+        seed: u64,
+        activation_sequence: u64,
+        options: DataOptions,
+    ) -> Result<Self, DataError> {
+        checkpoint(options.cancel.as_ref())?;
+        let prepared = PreparedData::new(plan, options.limits)?;
+        Self::from_prepared(
+            prepared,
+            document_revision,
+            seed,
+            activation_sequence,
+            options,
+        )
+    }
+    pub(crate) fn from_prepared(
+        prepared: Arc<PreparedData>,
+        document_revision: u64,
+        seed: u64,
+        activation_sequence: u64,
+        options: DataOptions,
+    ) -> Result<Self, DataError> {
+        checkpoint(options.cancel.as_ref())?;
+        prepared.check_limits(options.limits)?;
+        let plan = prepared.plan.clone();
         let resources = plan.resources();
         let limits = options.limits;
-        if resources.slots > limits.max_slots
-            || resources.nodes > limits.max_nodes
-            || plan.exports().len() > limits.max_exports
-            || resources.work_items > limits.max_work_items
-        {
-            return Err(DataError::ResourceLimit);
-        }
-        let retained = plan.initial_charge().ok_or(DataError::ResourceLimit)?;
-        if retained > limits.max_retained_bytes {
-            return Err(DataError::ResourceLimit);
-        }
-        let layout = EntropyLayout::new(
-            plan.nodes()
-                .iter()
-                .filter(|n| matches!(n.operation(), DataOperation::Entropy(_)))
-                .map(|n| n.node()),
-            limits.max_nodes,
-        )?;
-        let entropy_slots = plan
-            .nodes()
-            .iter()
-            .map(|n| {
-                if matches!(n.operation(), DataOperation::Entropy(_)) {
-                    layout.slot(n.node())
-                } else {
-                    None
-                }
-            })
-            .collect();
+        let retained = prepared.retained;
         // Root data plans have no callee frames.
-        let scopes = ActivationEntropy::new(&layout, seed, activation_sequence, 0);
+        let scopes = ActivationEntropy::new(&prepared.layout, seed, activation_sequence, 0);
         let slots = plan.initial_values().to_vec();
         let state = Frame {
             scopes,
-            entropy_slots,
+            prepared,
             slots,
             retained,
             memo: vec![None; resources.nodes],
@@ -180,6 +273,7 @@ impl DataActivation {
             fuel_used: 0,
             failed: None,
             work: Vec::with_capacity(resources.work_items),
+            pending: None,
             work_limit: resources.work_items,
             inputs: Vec::with_capacity(resources.max_inputs),
             outputs: Vec::with_capacity(resources.max_outputs),
@@ -189,7 +283,7 @@ impl DataActivation {
         checkpoint(state.cancel.as_ref())?;
         Ok(Self {
             plan,
-            document_revision: document.revision(),
+            document_revision,
             state,
         })
     }
@@ -211,6 +305,23 @@ impl DataActivation {
             .limits
             .max_activation_operations
             .saturating_sub(self.state.fuel_used)
+    }
+    /// A run-owned cancellation transition reserves distinct bounded cleanup fuel.
+    /// Preserve entropy identities; ordinary callers cannot revive failed epochs.
+    pub(crate) fn enter_cleanup(&mut self, fuel: usize) -> Result<(), DataError> {
+        self.state.limits.max_activation_operations = self
+            .state
+            .fuel_used
+            .checked_add(fuel)
+            .ok_or(DataError::FuelExhausted)?;
+        self.state.cancel = None;
+        self.state.failed = None;
+        self.state.epoch = None;
+        self.state.pending = None;
+        self.state.work.clear();
+        self.state.inputs.clear();
+        self.state.outputs.clear();
+        Ok(())
     }
     fn checkpoint(&mut self) -> Result<(), DataError> {
         if let Err(error) = checkpoint(self.state.cancel.as_ref()) {
@@ -237,6 +348,7 @@ impl DataActivation {
         self.state.operations = 0;
         self.state.failed = None;
         self.state.work.clear();
+        self.state.pending = None;
         self.state.inputs.clear();
         self.state.outputs.clear();
         Ok(epoch)
@@ -245,6 +357,11 @@ impl DataActivation {
     /// or between pulls. A rejected value changes nothing and does not abort the
     /// epoch. Values never carry over: each epoch needs its own.
     pub fn set_input(&mut self, index: usize, value: Value) -> Result<(), DataError> {
+        self.set_input_outcome(index, FoldedValue::Value(value))
+    }
+    /// Trusted host/control input publication. A graph fault stays a fault rather
+    /// than being mistaken for a missing infrastructure input or an ordinary Err.
+    pub fn set_input_outcome(&mut self, index: usize, value: FoldedValue) -> Result<(), DataError> {
         self.checkpoint()?;
         if let Some(error) = self.state.failed {
             return Err(error);
@@ -259,15 +376,54 @@ impl DataActivation {
             return Err(DataError::KernelContract { node: node.node() });
         };
         if self.state.memo[node.index().index()] == self.state.epoch
-            || self.plan.value_charge(*slot, &value).is_none()
+            || match &value {
+                FoldedValue::Value(value) => self.plan.value_charge(*slot, value),
+                FoldedValue::Fault(fault) => self.plan.fault_charge(fault),
+            }
+            .is_none()
         {
             return Err(invalid);
         }
-        self.state.publish_value(&self.plan, node, value)
+        match value {
+            FoldedValue::Value(value) => self.state.publish_value(&self.plan, node, value),
+            FoldedValue::Fault(fault) => self.state.publish_fault(&self.plan, node, fault),
+        }
     }
     /// Pull one ordered export inside the current explicit epoch. Other pulls in
     /// the same epoch share producers. Borrowed results prevent concurrent mutation.
     pub fn export(&mut self, index: usize) -> Result<Option<EvaluatedExport<'_>>, DataError> {
+        let mut budget = usize::MAX;
+        match self.poll_export(index, &mut budget)? {
+            DataPoll::Ready(value) => Ok(value),
+            DataPoll::Pending => unreachable!("unbounded budget covers the finite admitted stack"),
+        }
+    }
+    /// Consume at most the supplied number of iterative work items. Pending work
+    /// can resume only at the same producer; no new epoch or entropy draw is implied.
+    pub fn poll_export(
+        &mut self,
+        index: usize,
+        budget: &mut usize,
+    ) -> Result<DataPoll<'_>, DataError> {
+        match self.poll_export_inner(index, budget, false)? {
+            HostPoll::Pending => Ok(DataPoll::Pending),
+            HostPoll::Ready(value) => Ok(DataPoll::Ready(value)),
+            HostPoll::Input(_) => unreachable!("public pulls reject missing inputs"),
+        }
+    }
+    pub(crate) fn poll_host_export(
+        &mut self,
+        index: usize,
+        budget: &mut usize,
+    ) -> Result<HostPoll<'_>, DataError> {
+        self.poll_export_inner(index, budget, true)
+    }
+    fn poll_export_inner(
+        &mut self,
+        index: usize,
+        budget: &mut usize,
+        host: bool,
+    ) -> Result<HostPoll<'_>, DataError> {
         self.checkpoint()?;
         if let Some(error) = self.state.failed {
             return Err(error);
@@ -276,14 +432,23 @@ impl DataActivation {
             return Err(DataError::NoEpoch);
         }
         let Some(node) = self.plan.export_node(index) else {
-            return Ok(None);
+            return Ok(HostPoll::Ready(None));
         };
-        if let Err(error) = self.state.drive(&self.plan, node) {
+        let driven = self.state.drive(&self.plan, node, budget, host);
+        if driven == Err(DataError::PullInProgress) {
+            return Err(DataError::PullInProgress);
+        }
+        if let Err(error) = driven {
             self.state.work.clear();
             self.state.inputs.clear();
             self.state.outputs.clear();
             self.state.failed = Some(error);
             return Err(error);
+        }
+        match driven {
+            Ok(Drive::Pending) => return Ok(HostPoll::Pending),
+            Ok(Drive::Input(index)) => return Ok(HostPoll::Input(index)),
+            _ => {}
         }
         self.checkpoint()?;
         let export = &self.plan.exports()[index];
@@ -296,12 +461,12 @@ impl DataActivation {
             FoldedValue::Value(value) => Ok(value),
             FoldedValue::Fault(fault) => Err(fault),
         };
-        Ok(Some(EvaluatedExport {
+        Ok(HostPoll::Ready(Some(EvaluatedExport {
             id: &export.id,
             ty: &self.plan.slot_types()[slot],
             source: &self.plan.slot_sources()[slot],
             outcome,
-        }))
+        })))
     }
 }
 
@@ -313,7 +478,7 @@ enum Work {
 }
 struct Frame {
     scopes: ActivationEntropy,
-    entropy_slots: Vec<Option<EntropySlot>>,
+    prepared: Arc<PreparedData>,
     slots: Vec<Option<FoldedValue>>,
     retained: usize,
     memo: Vec<Option<u64>>,
@@ -322,6 +487,7 @@ struct Frame {
     fuel_used: usize,
     failed: Option<DataError>,
     work: Vec<Work>,
+    pending: Option<NodeIx>,
     work_limit: usize,
     inputs: Vec<Value>,
     outputs: Vec<Value>,
@@ -452,7 +618,7 @@ impl Frame {
         let result = match node.operation() {
             DataOperation::Pure(binding) => binding.kernel.fold(&self.inputs, &mut self.outputs),
             DataOperation::Entropy(binding) => {
-                let slot = self.entropy_slots[node.index().index()]
+                let slot = self.prepared.entropy_slots[node.index().index()]
                     .as_ref()
                     .ok_or(DataError::KernelContract { node: node.node() })?;
                 let key = self.scopes.invocation_key(slot)?;
@@ -542,10 +708,28 @@ impl Frame {
         })?;
         self.pull_input(node, selected)
     }
-    fn drive(&mut self, plan: &DataPlan, root: NodeIx) -> Result<(), DataError> {
-        self.push(Work::Enter(root))?;
-        while let Some(work) = self.work.pop() {
+    fn drive(
+        &mut self,
+        plan: &DataPlan,
+        root: NodeIx,
+        budget: &mut usize,
+        host: bool,
+    ) -> Result<Drive, DataError> {
+        match self.pending {
+            Some(pending) if pending != root => return Err(DataError::PullInProgress),
+            Some(_) => {}
+            None => {
+                self.push(Work::Enter(root))?;
+                self.pending = Some(root);
+            }
+        }
+        while !self.work.is_empty() {
             checkpoint(self.cancel.as_ref())?;
+            if *budget == 0 {
+                return Ok(Drive::Pending);
+            }
+            *budget -= 1;
+            let work = self.work.pop().expect("nonempty work stack");
             match work {
                 Work::Enter(index) => {
                     let node = &plan.nodes()[index.index()];
@@ -556,6 +740,12 @@ impl Frame {
                     }
                     // A supplied input is already stamped for this epoch.
                     if matches!(node.operation(), DataOperation::Input) {
+                        if host {
+                            self.push(Work::Enter(index))?;
+                            if let Some(input) = self.prepared.host_indices[index.index()] {
+                                return Ok(Drive::Input(input));
+                            }
+                        }
                         return Err(DataError::MissingInput { node: node.node() });
                     }
                     self.operations = self
@@ -608,7 +798,8 @@ impl Frame {
                 }
             }
         }
-        Ok(())
+        self.pending = None;
+        Ok(Drive::Ready)
     }
 }
 

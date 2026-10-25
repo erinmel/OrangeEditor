@@ -450,9 +450,11 @@ Every entry has an `activation` policy ([12 §6](12-graph-data-structures.md)):
 | `on_fault` | `continue` / `stop-run` |
 | `order` | Handler order (O8) |
 
-Under `parallel`, activations interleave at suspension points. Get is re-pulled at every consumption, so a read-modify-write is atomic unless a value was explicitly captured (in a local or action output) before a suspension. Then `W-STALE-CAPTURE` warns and suggests `core/update-variable`.
+Under `parallel`, activations interleave at suspension points. Get is re-pulled at every consumption, so a read-modify-write is atomic unless a value was explicitly captured (in a local or action output) before a suspension. Then `W-STALE-CAPTURE` warns and suggests `core/update-variable`. An internal host work-budget boundary during a Set input pull is not a graph suspension: the supported executor retains that action's scheduling ownership until commit/failure, while still returning control to the host and observing cancellation. Consumer state snapshots remain frozen across such slices; inactive lazy inputs are not published into data slots.
 
 ### 10.2 Entry catalog
+
+Executable-control prerequisite (2026-10-24): `core/on-start@1` and `core/on-stop@1` are registered host-owned Entry definitions with config version 1, no provider or signature, no payload, and the kind-provided `then` output. Their ordinary persisted activation policy is required. This registration does not implement other entries or generic event delivery.
 
 | Entry | Fires | Payload |
 |---|---|---|
