@@ -353,21 +353,6 @@ impl Run {
             id = parent;
         }
     }
-    pub(super) fn discard_region(&mut self, root: u64) {
-        let ids: std::collections::BTreeSet<_> = self
-            .regions
-            .keys()
-            .copied()
-            .filter(|id| self.descendant(*id, root))
-            .collect();
-        self.ready.retain(|s| !ids.contains(&s.region));
-        self.timers
-            .retain(|_, t| !ids.contains(&t.activation.region));
-        for id in ids {
-            self.regions.remove(&id);
-        }
-        self.live_strands = self.regions.values().map(|r| r.live).sum();
-    }
     pub(super) fn unwind_loop(
         &mut self,
         strand: Strand,
@@ -385,9 +370,6 @@ impl Run {
             } => owner,
             _ => return Err(RunError::InvalidState),
         };
-        let parent = self.regions[&region].parent.ok_or(RunError::InvalidState)?;
-        self.discard_region(region);
-        self.regions.get_mut(&parent).unwrap().children -= 1;
         if is_break {
             caller.stack.pop().ok_or(RunError::InvalidState)?;
             caller.pc = match self.plan.as_ref().unwrap().nodes()[owner.index()].operation() {
@@ -409,16 +391,16 @@ impl Run {
         } else {
             caller.yielded = true;
         }
-        self.ready.push_front(caller);
-        Ok(())
+        self.regions.get_mut(&region).unwrap().continuation = Some(caller);
+        self.cancel_region(region)?;
+        self.complete_regions(region)
     }
     pub(super) fn retire_failed(&mut self, strand: Strand) -> Result<(), RunError> {
         let mut root = strand.region;
         while let Some(parent) = self.regions[&root].parent {
             root = parent;
         }
-        self.discard_region(root);
-        self.activations.remove(&strand.sequence);
-        Ok(())
+        self.cancel_region(root)?;
+        self.complete_regions(root)
     }
 }

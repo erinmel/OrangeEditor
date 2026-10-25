@@ -292,3 +292,114 @@ fn first_empty_or_synchronous_race_branch_wins_in_persisted_order() {
         );
     }
 }
+
+#[test]
+fn fork_loop_terminators_cancel_the_complete_body_before_advancing() {
+    for join in ["all", "any", "race", "detach"] {
+        for terminator in ["break", "continue"] {
+            for budget in [1, 1000] {
+                let mut loop_node = core(2, "count");
+                loop_node["inputs"] = json!({"count":{"type":"core/i64@1","value":"2"}});
+                let (doc, plan) = state_plan(
+                    vec![
+                        core(1, "on-start"),
+                        loop_node,
+                        fork(3, join, &[0, 1]),
+                        wait(4, 100),
+                        core(5, terminator),
+                        set_bool(6, 100, true),
+                        set_bool(7, 101, true),
+                        branch(8, true),
+                    ],
+                    vec![
+                        edge(1, 1, "then", 2, "in"),
+                        edge(2, 2, "body", 3, "in"),
+                        edge(3, 3, "branch#0", 4, "in"),
+                        edge(4, 3, "branch#1", 5, "in"),
+                        edge(5, 4, "cancelled", 6, "in"),
+                        edge(6, 4, "then", 8, "in"),
+                        edge(7, 2, "completed", 7, "in"),
+                    ],
+                    (100..102)
+                        .map(|n| variable(n, "run", "core/bool@1", Some(json!(false))))
+                        .collect(),
+                );
+                let mut run = Run::start(
+                    plan.clone(),
+                    &doc,
+                    plan.data().snapshot(),
+                    1,
+                    RunOptions::default(),
+                )
+                .unwrap();
+                drain(&mut run, budget);
+                assert!(flag(&run, 100) && flag(&run, 101));
+                assert_eq!(run.pending_continuations(), 0);
+                assert_eq!(
+                    run.trace()
+                        .iter()
+                        .filter(|e| e.node.to_string() == id(4)
+                            && e.outcome == orange_runtime::ControlOutcome::Cancelled)
+                        .count(),
+                    if terminator == "break" { 1 } else { 2 }
+                );
+                assert!(!run.trace().iter().any(|e| e.node.to_string() == id(8)));
+                run.advance_to(100).unwrap();
+                drain(&mut run, budget);
+                assert!(!run.trace().iter().any(|e| e.node.to_string() == id(8)));
+            }
+        }
+    }
+}
+
+#[test]
+fn unhandled_fork_failure_cancels_siblings_and_does_not_win_the_join() {
+    for join in ["all", "any", "race", "detach"] {
+        let mut consumer = branch(5, false);
+        consumer.as_object_mut().unwrap().remove("inputs");
+        let (doc, plan) = state_plan(
+            vec![
+                core(1, "on-start"),
+                fork(2, join, &[0, 1]),
+                wait(3, 100),
+                var_node(4, "get-variable", 101),
+                consumer,
+                set_bool(6, 100, true),
+                branch(7, true),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "branch#0", 3, "in"),
+                edge(3, 2, "branch#1", 5, "in"),
+                edge(4, 4, "value", 5, "condition"),
+                edge(5, 3, "cancelled", 6, "in"),
+                edge(6, 2, "completed", 7, "in"),
+            ],
+            vec![
+                variable(100, "run", "core/bool@1", Some(json!(false))),
+                variable(101, "local", "core/bool@1", None),
+            ],
+        );
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        drain(&mut run, 1);
+        assert!(flag(&run, 100));
+        assert_eq!(run.pending_continuations(), 0);
+        assert_eq!(run.state(), orange_runtime::RunState::Running);
+        assert!(!run.trace().iter().any(|e| e.node.to_string() == id(7)));
+        assert_eq!(
+            run.trace()
+                .iter()
+                .filter(|e| e.node.to_string() == id(2)
+                    && e.outcome == orange_runtime::ControlOutcome::Completed)
+                .count(),
+            usize::from(join == "detach")
+        );
+    }
+}

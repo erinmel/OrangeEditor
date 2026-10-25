@@ -136,6 +136,8 @@ The structured-concurrency cohort implements Fork on the same logical actor. Chi
 
 Any releases its completed continuation once after the first complete branch region and retains the other children. Race releases it once while logically cancelling the losing regions and retiring their timer identities. Connected cancelled paths retain bounded cleanup ownership, so the enclosing region still waits for them. Ready-queue rotation uses strand identity, while local cells, entropy identity and trace activation identity remain shared.
 
+Break/Continue locate the current dynamic loop-body instance through the region ancestry, cancel every nested sibling and timer, then release the loop continuation after bounded cleanup. An unhandled strand error applies activation fail-fast even with the default continue entry policy: siblings are cancelled, while the run can remain live. A failure is never an ordinary any/race winner. Handled failed routes keep their existing graph error provenance.
+
 1. Parse envelope with size/depth checks; resolve exact package/type/provider locks against a registry snapshot.
 2. Validate schemas, signature snapshots, required inputs, the port connection matrix and cardinality ([11 §4](11-graph-language.md)), resource ownership and capability availability.
 3. Check persisted `type_args` against constraints, and specialize generic types; reject implicit conversions and illegal data/exec/event connections ([11 §5–6](11-graph-language.md)).
