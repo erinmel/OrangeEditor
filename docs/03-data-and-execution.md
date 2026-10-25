@@ -1,5 +1,7 @@
 # Data, compilation and execution contracts
 
+Current executable scope (2026-10-24): checked root data plus the bounded headless control/runtime subset in "E3 runtime prerequisites" below. Earlier named slice checkpoints retain their historical limitations; they are not statements that the later control runtime is absent. Fork/functions, general events/resources/services and full qualification remain open.
+
 This is the proposed v1 contract baseline. JSON examples are documentation, not executed schemas. **Graph semantics are normative in [11](11-graph-language.md)** (node kinds, ports, types, conversions, regions, cycles, ordering, events, state) and **layouts are normative in [12](12-graph-data-structures.md)**. This document keeps the value policy, persistence, compiler pipeline and run lifecycle. On conflict, 11/12 govern and this document must be corrected. IDs use a constrained ASCII namespace (`org.orange.math/add-i64`) and immutable UUID instance/member IDs where user-created; examples shorten instance IDs to `n1`, `v1` for readability. Display labels may change without changing IDs. Definition version, configuration version, codec version, graph format, provider/package version and host API version are separate compatibility axes.
 
 ## Value and type model

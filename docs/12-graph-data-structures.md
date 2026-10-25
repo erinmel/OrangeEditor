@@ -630,7 +630,9 @@ Explicit proof registrations (00c.2b) carry `ConstraintImplementationRef`: the e
 
 ## 9. Execution plan IR
 
-Illustrative IR. The exact encoding is fixed in WU-00e, while the separation into pull programs, control blocks and dense slots is a contract. The compiler must require current analysis with full successful required-check coverage. Current `ValidationAnalysis` is intentionally never compile-ready; its missing checks are not compiler approval (see §3.2).
+Illustrative full IR. The exact encoding is fixed in WU-00e, while the separation into pull programs, control blocks and dense slots is a contract. Lowering requires fresh successful semantic evidence through `is_ready_for_lowering`; the compiler additionally owns constant evaluation, preserved faults and executable-vocabulary proof before publishing its checked plan. The model's general `is_ready_for_compilation` remains false and is not an alternate approval path (see §3.2). The full IR below is not an implementation inventory.
+
+Concrete control subset (2026-10-24): `ControlPlan` privately owns a frozen `DataPlan`, dense `ControlIx` adjacency, source node IDs, ordered Sequence targets, Count/While metadata, declaration-owned variable layouts and a pre-resolved host-input source table. Consumption roots use original document ports without adding saved exports. Runtime input slots project Get, loop indices and failed-output Error values; control admission checks their region/outcome availability first. Unfrozen `PlanType` adds Duration/Error; no saved JSON/schema version changes. Unsupported executable families fail closed before resolver callbacks.
 
 ```rust
 pub struct ExecutionPlan {
@@ -689,6 +691,8 @@ pub enum Instr {
 Native prerequisite (N1a): `orange-bundled::math_definitions()` supplies the ordinary replaceable definition contracts, while `MathPackage::register` adds one exact provider with its scalar specialization table. `MathPackage::resolve` checks that provider/version/digest exists in the supplied snapshot, that the snapshot admits the type arguments, and that the config is supported. Its private `ResolvedKernel` stores the Arc snapshot, ProviderKey, operation, scalar kind and normalized policy enums. `evaluate` accepts declared-order scalar Values and returns one Value or a typed KernelError; it neither validates a graph nor constructs a plan. Successful scalar evaluation contains no dynamic metadata lookups or buffer allocations by construction; no latency/allocation benchmark is implied. Retaining an old binding keeps old metadata alive and never consults a newly published provider default. The host must authenticate build identity and supply fresh resolved graph inputs. The final dense compiler/kernel ABI, source maps and full runtime error envelope remain unimplemented.
 
 ## 10. Runtime structures
+
+Concrete supported actor (2026-10-24): `Run` owns ready activations (one strand per activation in this subset), iterative Sequence/loop cursors, run cells, activation-local cells and bounded resumable data frames. Virtual timers own suspended activations and a non-reused insertion sequence under a process-unique run ID. Host methods take exclusive `&mut Run`, so stop/time commands are serialized at pump boundaries without a redundant command queue. R2 adds the general bounded event/completion inbox later. Operation slices rotate unfinished activations to the ready tail; state inputs are captured at epoch start and remain immutable across interleaving. State-store, data-frame, activation, timer, depth, trace and cleanup limits are explicit; they are not a measured RSS or callback-preemption guarantee. Segment inspection returns unique written variable IDs, not R2b notifications. The full structures below remain illustrative for Fork/resources/services not yet implemented.
 
 ```rust
 pub struct Run {

@@ -1117,6 +1117,7 @@ fn compare_source_control(
     for step in 0..20_000 {
         assert!(step < 19_999, "bounded test driver");
         let progress = run.pump(budget).unwrap();
+        assert!(progress.operations <= budget);
         if !progress.ready {
             if let Some(at) = progress.next_wakeup {
                 run.advance_to(at).unwrap();
@@ -1445,4 +1446,187 @@ fn error_as_data_inside_successful_try_is_not_an_outer_failure() {
     };
     assert_eq!(error.code, "core/UninitializedVariable");
     assert_eq!(error.node, Some(id(3).parse().unwrap()));
+}
+
+#[test]
+#[ignore = "manual release control timing; no NFR or allocation threshold"]
+fn headless_control_timing_baseline() {
+    use orange_runtime::{Run, RunOptions};
+    use std::hint::black_box;
+    use std::time::{Duration, Instant};
+    assert!(
+        !black_box(cfg!(debug_assertions)),
+        "run this probe with --release"
+    );
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            count(2, 1000),
+            var_node(3, "get-variable", 100),
+            math(4, "add", 0, 1),
+            var_node(5, "set-variable", 100),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "body", 5, "in"),
+            edge(3, 3, "value", 4, "a"),
+            edge(4, 4, "sum", 5, "value"),
+        ],
+        vec![variable(100, "run", "core/u64@1", Some(json!("0")))],
+    );
+    let options = RunOptions {
+        limits: orange_runtime::RunLimits {
+            max_trace: 0,
+            ..Default::default()
+        },
+        ..Default::default()
+    };
+    let execute = || {
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            42,
+            options.clone(),
+        )
+        .unwrap();
+        let mut operations = 0;
+        loop {
+            let progress = run.pump(1024).unwrap();
+            operations += progress.operations;
+            if !progress.ready {
+                break;
+            }
+        }
+        assert_eq!(
+            run.variable(id(100).parse().unwrap()),
+            Some(&orange_model::Value::U64(1000))
+        );
+        run.stop().unwrap();
+        run.dispose().unwrap();
+        black_box(operations)
+    };
+    let warmup = Instant::now();
+    while warmup.elapsed() < Duration::from_secs(10) {
+        black_box(execute());
+    }
+    let mut samples = vec![];
+    let mut operations = 0;
+    for _ in 0..30 {
+        let start = Instant::now();
+        for _ in 0..8 {
+            operations = execute();
+        }
+        samples.push(start.elapsed().as_nanos() as f64 / 8.0);
+    }
+    samples.sort_by(f64::total_cmp);
+    println!(
+        "Count1000 release: warmup=10s samples=30 batch=8; start/run/stop/dispose included; trace disabled; operations/run={operations}; ns/run median={:.1} p95={:.1} max={:.1}",
+        (samples[14] + samples[15]) / 2.0,
+        samples[28],
+        samples[29]
+    );
+    println!("sorted batch means ns/run={samples:?}");
+}
+
+#[test]
+fn cleanup_preserves_entropy_invocations_instead_of_restarting_the_stream() {
+    use orange_runtime::{EntropyKey, EntropyStream, FrameId, Run, RunOptions};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            sequence(2, &[0, 1]),
+            var_node(3, "set-variable", 100),
+            wait(4, 100),
+            var_node(5, "set-variable", 101),
+            random(7),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then#0", 3, "in"),
+            edge(3, 2, "then#1", 4, "in"),
+            edge(4, 4, "cancelled", 5, "in"),
+            edge(5, 7, "value", 3, "value"),
+            edge(6, 7, "value", 5, "value"),
+        ],
+        vec![
+            variable(100, "run", "core/u64@1", None),
+            variable(101, "run", "core/u64@1", None),
+        ],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        42,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.pump(300).unwrap();
+    run.stop().unwrap();
+    run.pump(300).unwrap();
+    for (invocation, var) in [(0, 100), (1, 101)] {
+        let mut stream = EntropyStream::new(EntropyKey {
+            seed: 42,
+            frame: FrameId::ROOT,
+            node: id(7).parse().unwrap(),
+            activation_sequence: 0,
+            invocation,
+        });
+        assert_eq!(
+            run.variable(id(var).parse().unwrap()),
+            Some(&orange_model::Value::U64(stream.next_u64().unwrap()))
+        );
+    }
+}
+
+#[test]
+fn wait_completion_and_stop_choose_one_outcome_at_the_same_virtual_time() {
+    use orange_runtime::{ControlOutcome, Run, RunOptions};
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            wait(2, 10),
+            set_bool(3, 100, false),
+            set_bool(4, 100, true),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "cancelled", 3, "in"),
+            edge(3, 2, "then", 4, "in"),
+        ],
+        vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+    );
+    for completed in [false, true] {
+        let mut run = Run::start(
+            plan.clone(),
+            &doc,
+            plan.data().snapshot(),
+            1,
+            RunOptions::default(),
+        )
+        .unwrap();
+        run.pump(300).unwrap();
+        run.advance_to(10).unwrap();
+        if completed {
+            run.pump(1).unwrap();
+        }
+        run.stop().unwrap();
+        if run.state() == orange_runtime::RunState::Cancelling {
+            run.pump(300).unwrap();
+        }
+        assert_eq!(
+            run.variable(id(100).parse().unwrap()),
+            Some(&orange_model::Value::Bool(completed))
+        );
+        assert_eq!(
+            run.trace()
+                .iter()
+                .filter(|e| e.node.to_string() == id(2)
+                    && matches!(e.outcome, ControlOutcome::Then | ControlOutcome::Cancelled))
+                .count(),
+            1
+        );
+        assert_eq!(run.pending_continuations(), 0);
+    }
 }

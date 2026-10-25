@@ -1,6 +1,7 @@
-//! Checked immutable plans for root-body pure scalar/JSON/option/result exports.
-//! Constant Select/And/Or/Coalesce/Try demands are supported. Control, volatile,
-//! function and scheduled execution remain separate slices.
+//! Checked immutable data and bounded structured-control plans.
+//! Pure/seeded data demand supports Select/And/Or/Coalesce/Try. Control plans
+//! additionally admit the documented entries, Get/Set, branches, Sequence,
+//! Count/While and virtual Wait/Yield. Functions/Fork/services remain unsupported.
 
 mod compile;
 mod control;

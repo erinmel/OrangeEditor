@@ -1132,3 +1132,43 @@ One local release run of perf_edit_baseline::edit_cost_by_document_size:
 These are single runs, not NFR evidence. Whole-document validation and whole-component re-inference on edits remain, so NFR-15 is still unmet.
 
 cargo test --workspace --locked --offline passed 667 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged. Inference results, issues and public signatures are unchanged. Local commits only, no push.
+
+## Structured headless control verification — 2026-10-24
+
+Integrated work on `core/headless-control-runtime`, based directly on fetched dev `1a901281f6bdf8fb274a6064a35335d4822800ef`. The selected E3/R1 cohort implements checked Start/Stop/Branch/Sequence/Count/While/Break/Continue/Wait/Yield and local/run Get/Set execution, bounded resumable data/control work, virtual time, staged drain/cancel/dispose and narrow timer-continuation ownership. General events, Fork/functions, affine resources and service adapters are not implemented by this cohort. V12a implementation remains on its own branch; no topic commits were copied.
+
+Environment: rustc 1.99.1 (58cf8f9c3, LLVM 23.1.1), Cargo 1.99.1 (5f94df478), Windows x86_64 MSVC, default features, Node.js 24.18.0. Reported OS kernel: Microsoft Windows NT 10.0.26300.0; 24 available logical processors. CPU model enumeration through CIM was unavailable, so this is not named-hardware qualification. Toolchain/features/external dependency versions are unchanged. Cargo.lock SHA-256 remains `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`. The configured human Git author was retained; no generated attribution trailers were added.
+
+| Executed command/check | Result |
+|---|---|
+| `cargo test --workspace --locked` | PASS: 699 tests, 8 manual timing tests ignored; includes checked-construction compile-fail tests |
+| `cargo test -p orange-bundled -p orange-compiler -p orange-runtime --release --locked` | PASS: 153 tests, 2 manual timing tests ignored |
+| `cargo test -p orange-bundled --release --locked --test control headless_control_timing_baseline -- --ignored --nocapture` | PASS: one explicitly invoked local timing probe |
+| `cargo run -p orange-bundled --example headless_control --locked` | PASS: `total=3; virtual_time_ns=10`; Count accumulation, virtual Wait, Branch, graceful stop and dispose |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | PASS |
+| `cargo doc --workspace --no-deps --locked`, with `RUSTDOCFLAGS=-D warnings` | PASS; caller environment restored |
+| `node tools/check-cargo-metadata.mjs --self-test` | PASS: nine policy fixtures |
+| `node tools/check-cargo-metadata.mjs` | PASS: core dependency boundary |
+| `node tools/check-cargo-metadata.mjs --msrv` | PASS: declares 1.97.1; this is metadata, not an MSRV build |
+| `git diff --check` | PASS |
+
+Only Rust 1.99.1 is installed locally. Rust 1.97.1 compilation, Linux/macOS execution and full dependency/security CI are not claimed by local checks; repository CI owns those checks on the PR. The Windows incremental cache emitted hard-link warnings and successfully copied files instead; the recorded commands exited successfully. No dependency, feature, lockfile, graph JSON or schema-version changes were needed.
+
+### Behavior and review evidence
+
+Thirty focused control tests pass. A test-only independent source interpreter scans saved edges and uses lexical regions; it never reads compiler blocks/slots, runtime cursors or native kernels. Ninety-six generated nested Count/While/Sequence/Branch/Wait/state/seeded cases use proptest 1.12.0 with fixed runner seed 20261024 at work budgets 1, 3 and 64. The fixed-seed API was checked in the installed versioned `proptest-1.12.0/src/test_runner/config.rs` release source. The oracle shares fresh validation metadata, the model literal codec and the versioned entropy stream primitive anchored by prior external vectors. It is not an independent validator, IEEE implementation or cryptographic proof.
+
+Known answers cover zero/negative Count, fresh indices, nested Break/Continue, initial-false While, exact iteration bounds, suspended Sequence/loop bodies, source/storage/presentation invariance, stale entry versus pinned active snapshots, original Get fault provenance, Error as data versus successful Try, shared-state snapshots across interleaved data safe points, wait-completion/stop ordering at the same time, cleanup entropy continuity, stop-run fault policy, cleanup rejection/fuel/deadline/second cancellation, zero-time wait-cycle fuel, 512 nested iterative regions and fail-closed depth limits. Explicit disposal releases the plan; late time/execution operations are rejected. Segment inspection reports written IDs only; Eq/change notifications and Watch dispatch remain R2b work.
+
+Self-review followed compiler admission and original-document demand roots, implicit/variadic outcome resolution, source writers, input-fault publication, actor ownership, epoch resume, loop cursor lifetimes, timer retirement, every stop path and default Debug/inspection. A producer index replaces repeated edge scans in control demand admission. The example uses public consumer APIs and actual bundled provider metadata. Independent oracle tests supplement self-review and are not independent human approval.
+
+The embedding host serializes commands through exclusive `&mut Run` methods and drives pump/time advancement; no redundant command queue, worker thread or OS clock was introduced. Idle Running remains live; virtual deadlines require the host to advance time. Native callbacks cannot be preempted, and configured retained-value limits are not hard process RSS guarantees. Start still conservatively requires exact document/registry state; semantic plan reuse after layout-only edits belongs to later incremental work. Public Rust enums/types are unfrozen; PlanType gains Duration/Error, DataError gains PullInProgress, and the new control/run surfaces require downstream source review before API freeze.
+
+### Local control timing baseline
+
+One native release probe, default features, seed 42, a 1,000-iteration Count accumulating a u64 through Get/Add/Set. Compilation is excluded; start/frame preparation, run, stop and dispose are included. Tracing is disabled. Ten-second warmup, 30 samples, 8 whole runs per sample; each run uses 8,004 counted work items. Batch-mean ns/run: median 213118.8 (about 213 microseconds), p95 215812.5, maximum 216437.5. This is not a tail-latency, allocation, cross-OS, NFR-02/05/15 or throughput-concurrency qualification.
+
+Sorted batch means (ns/run): 210150, 210525, 210875, 211250, 211475, 211912.5, 212312.5, 212325, 212337.5, 212587.5, 212700, 212700, 212775, 212862.5, 212962.5, 213275, 213325, 213350, 213650, 213812.5, 213950, 214375, 214387.5, 214450, 214500, 214512.5, 214825, 215075, 215812.5, 216437.5.
+
+The supported headless cohort is qualified locally, not the complete E3/R1/R3 rows, general core completion, G2 API freeze, installed-package lifecycle, concrete services, editor or release gates.

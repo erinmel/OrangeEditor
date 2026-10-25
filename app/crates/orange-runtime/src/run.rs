@@ -403,7 +403,8 @@ impl Run {
         }
         self.trace.push_back(event);
     }
-    /// Drive at most `budget` control instructions. Idle Running is a live run.
+    /// Drive at most `budget` control/data/timer work items. Idle Running is live.
+    /// Native callbacks are trusted; this is not a wall-time preemption guarantee.
     pub fn pump(&mut self, budget: usize) -> Result<RunProgress, RunError> {
         if !matches!(
             self.state,
