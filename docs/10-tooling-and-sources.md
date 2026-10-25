@@ -1132,3 +1132,17 @@ One local release run of perf_edit_baseline::edit_cost_by_document_size:
 These are single runs, not NFR evidence. Whole-document validation and whole-component re-inference on edits remain, so NFR-15 is still unmet.
 
 cargo test --workspace --locked --offline passed 667 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged. Inference results, issues and public signatures are unchanged. Local commits only, no push.
+
+### Analysis session skeleton (V12a, 2026-10-24)
+
+Base b612f3f. `validation::AnalysisSession` keeps a document's combined analysis across committed edits and states what each update did (`EditStats`, `SessionWork`, `RebuildReason`). In this slice every semantic change recomputes the whole analysis, so visit counts equal the document size; dirty-unit recompute follows in V12b–V12e. Layout-only changes rebind without work. Mismatched revisions, registry, limits or effects changes, and cancelled results rebuild with a reason.
+
+Evidence:
+
+- Known-answer tests cover creation, recompute, undo, layout rebind (still ready for lowering), skipped changes, registry and limits changes (including the full pass's over-quota rejection), equal and changed leaf effects, and cancellation.
+- Two property tests (64 cases each, up to 15 random edits from an empty document and from the saved example) compare the session with `analyze_with_options` after every commit, rollback, undo and redo. They also assert that no update was a state-mismatch rebuild.
+- Mutants that skip the layout rebind, or ignore cancellation, fail these tests.
+
+cargo test --workspace --locked --offline passed 674 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged.
+
+Public additions: AnalysisSession, EditStats, SessionWork and RebuildReason (the last three `#[non_exhaustive]`), plus `PartialEq` on ValidationAnalysis. No timing claim: V12a does not change edit cost.
