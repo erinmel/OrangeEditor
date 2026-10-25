@@ -501,3 +501,28 @@ fn core_reference_fields_count_only_for_unbound_version_one_controls() {
         assert!(fragment.events.is_empty() && fragment.references.is_empty());
     }
 }
+
+#[test]
+fn hand_built_fragment_with_dangling_edges_pastes_only_internal_ones() {
+    let mut document = fixture();
+    let mut fragment = Fragment::copy(&document, &registry(), &[nid(2), nid(3)]).unwrap();
+    assert_eq!(fragment.edges.len(), 1, "Get → Add");
+    // Public fields allow edges to nodes the fragment lacks; they used to panic.
+    fragment.edges = document.root().edges.values().cloned().collect();
+    assert!(fragment.edges.len() > 1);
+    let paste = fragment
+        .paste(&document, BodyRef::Root, id_source(1))
+        .unwrap();
+    let connects: Vec<_> = paste
+        .commands
+        .iter()
+        .filter_map(|command| match command {
+            DocCommand::Connect { edge } => Some(edge.clone()),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(connects.len(), 1);
+    assert_eq!(connects[0].from.node, paste.nodes[&nid(2)]);
+    assert_eq!(connects[0].to.node, paste.nodes[&nid(3)]);
+    let _ = document.apply(paste.commands).unwrap();
+}
