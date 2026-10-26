@@ -1,5 +1,6 @@
 use crate::{
     ActivationEntropy, CancelToken, EntropyError, EntropyLayout, EntropySlot, EntropyStream,
+    FrameId,
 };
 use orange_compiler::{
     ConstantFault, DataNode, DataOperation, DataPlan, DataStability, EntropySource,
@@ -100,11 +101,16 @@ fn checkpoint(cancel: Option<&CancelToken>) -> Result<(), DataError> {
 }
 
 /// Immutable execution metadata shared by all frames of one retained plan.
+struct PreparedEntropy {
+    slot: EntropySlot,
+    frame: FrameId,
+    counter: usize,
+}
 pub(crate) struct PreparedData {
     plan: Arc<DataPlan>,
     retained: usize,
     layout: EntropyLayout,
-    entropy_slots: Box<[Option<EntropySlot>]>,
+    entropy_slots: Box<[Option<PreparedEntropy>]>,
     host_indices: Box<[Option<usize>]>,
     dynamic_slots: Box<[Option<usize>]>,
     dynamic_count: usize,
@@ -121,20 +127,55 @@ impl PreparedData {
             plan.nodes()
                 .iter()
                 .filter(|n| matches!(n.operation(), DataOperation::Entropy(_)))
-                .map(|n| n.node()),
+                .map(|n| n.node())
+                .collect::<std::collections::BTreeSet<_>>(),
             limits.max_nodes,
         )?;
+        // Hash only ancestry used by actual entropy instructions. Pure plans and
+        // unused potential calls need no call-frame hashing or memo allocation.
+        let mut frames = std::collections::BTreeMap::new();
+        let mut path = Vec::new();
+        let mut counter = 0;
         let entropy_slots = plan
             .nodes()
             .iter()
-            .map(|n| {
-                if matches!(n.operation(), DataOperation::Entropy(_)) {
-                    layout.slot(n.node())
-                } else {
-                    None
+            .map(|node| {
+                if !matches!(node.operation(), DataOperation::Entropy(_)) {
+                    return Ok(None);
                 }
+                let slot = layout
+                    .slot(node.node())
+                    .ok_or(DataError::KernelContract { node: node.node() })?;
+                let mut parent = node.call_instance();
+                let mut frame = FrameId::ROOT;
+                while let Some(call) = parent {
+                    if let Some(known) = frames.get(&call) {
+                        frame = *known;
+                        break;
+                    }
+                    let site = plan
+                        .call_sites()
+                        .get(call)
+                        .ok_or(DataError::KernelContract { node: node.node() })?;
+                    if site.parent.is_some_and(|parent| parent >= call) {
+                        return Err(DataError::KernelContract { node: node.node() });
+                    }
+                    path.push(call);
+                    parent = site.parent;
+                }
+                while let Some(call) = path.pop() {
+                    frame = frame.call(plan.call_sites()[call].call);
+                    frames.insert(call, frame);
+                }
+                let prepared = PreparedEntropy {
+                    slot,
+                    frame,
+                    counter,
+                };
+                counter += 1;
+                Ok(Some(prepared))
             })
-            .collect::<Box<[_]>>();
+            .collect::<Result<Box<[_]>, DataError>>()?;
 
         let mut host_indices = vec![None; resources.nodes];
         for (i, node) in plan.host_inputs().iter().enumerate() {
@@ -282,8 +323,14 @@ impl DataActivation {
         let resources = plan.resources();
         let limits = options.limits;
         let retained = prepared.retained;
-        // Root data plans have no callee frames.
-        let scopes = ActivationEntropy::new(&prepared.layout, seed, activation_sequence, 0);
+        // One counter per expanded entropy instruction; call identity is bound
+        // once in PreparedData, never hashed/looked up on each callback.
+        let scopes = ActivationEntropy::new_dense(
+            &prepared.layout,
+            seed,
+            activation_sequence,
+            resources.entropy_nodes,
+        );
         // Immutable constants remain in the shared plan. Only dynamic slots
         // need activation-owned cells, avoiding per-entry constant copies/drop.
         let slots = vec![None; prepared.dynamic_count];
@@ -695,7 +742,9 @@ impl Frame {
                 let slot = self.prepared.entropy_slots[node.index().index()]
                     .as_ref()
                     .ok_or(DataError::KernelContract { node: node.node() })?;
-                let key = self.scopes.invocation_key(slot)?;
+                let key = self
+                    .scopes
+                    .invocation_key_dense(slot.frame, &slot.slot, slot.counter)?;
                 let mut source = ScopedSource {
                     stream: EntropyStream::new(key),
                     remaining: self.limits.max_entropy_draws,
