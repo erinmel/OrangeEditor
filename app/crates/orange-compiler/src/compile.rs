@@ -22,6 +22,8 @@ pub struct CompileLimits {
     /// Conservative number of producers in the potential export cone, including
     /// unselected lazy alternatives, not the number of callbacks actually invoked.
     pub max_fold_operations: usize,
+    /// Nominal retained values and owned specialized-signature copies. Metadata
+    /// borrowed from fresh analysis is shared and needs no owned-copy charge.
     pub max_constant_bytes: usize,
 }
 impl Default for CompileLimits {
