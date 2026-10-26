@@ -426,6 +426,12 @@ impl<'a> Calls<'a> {
         }
         Ok(out)
     }
+    pub(crate) fn body<'b>(&self, document: &'b GraphDocument, scope: usize) -> &'b GraphBody {
+        match self.scopes[scope].function {
+            Some(id) => &document.functions()[&id].body,
+            None => document.root(),
+        }
+    }
     pub(crate) fn entry(&self, scope: usize) -> Option<NodeId> {
         self.scopes[scope].body.as_ref().and_then(|b| b.entry)
     }

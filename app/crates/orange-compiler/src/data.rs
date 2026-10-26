@@ -22,6 +22,11 @@ pub enum DataOperation {
     /// Host-supplied value (DataPlan::host_inputs): a state read today, control-plane
     /// outputs later. The data plane never evaluates it, only reads its slot.
     Input,
+    /// Strict argument prefix followed by all declared results. First faults in
+    /// either collection propagate to every output. No provider callback runs.
+    Call {
+        arguments: usize,
+    },
     Select {
         when_true: usize,
         when_false: usize,
@@ -42,6 +47,7 @@ pub struct DataInput {
 
 #[derive(Debug, Clone)]
 pub struct DataNode {
+    pub(crate) call: Option<usize>,
     pub(crate) index: NodeIx,
     pub(crate) node: NodeId,
     pub(crate) stability: DataStability,
@@ -50,6 +56,11 @@ pub struct DataNode {
     pub(crate) operation: DataOperation,
 }
 impl DataNode {
+    /// Index into DataPlan::call_sites; None denotes the root body.
+    pub fn call_instance(&self) -> Option<usize> {
+        self.call
+    }
+
     pub fn index(&self) -> NodeIx {
         self.index
     }
@@ -81,7 +92,8 @@ pub struct DataResources {
 }
 
 /// Checked pure/seeded-entropy root exports. No default, public constructor or
-/// deserialization can bypass lowering. This is not a control/function/run plan.
+/// deserialization can bypass lowering. Includes bounded graph-local pure calls
+/// with epoch-dependent arguments; control ownership remains in ControlPlan/Run.
 /// Debug reports metadata/counts without values, registry contents or callbacks.
 ///
 /// ```compile_fail
@@ -92,6 +104,8 @@ pub struct DataPlan {
     pub(crate) graph: GraphId,
     pub(crate) revision: u64,
     pub(crate) state: u64,
+    pub(crate) calls: Vec<PureCallSite>,
+    pub(crate) slot_calls: Vec<Option<usize>>,
     pub(crate) nodes: Vec<DataNode>,
     pub(crate) types: Vec<PlanType>,
     pub(crate) sources: Vec<SlotSource>,
@@ -115,6 +129,14 @@ impl std::fmt::Debug for DataPlan {
     }
 }
 impl DataPlan {
+    pub fn call_sites(&self) -> &[PureCallSite] {
+        &self.calls
+    }
+    /// Compilation source scope, not a runtime entropy frame identity.
+    pub fn slot_call_instance(&self, slot: SlotIx) -> Option<usize> {
+        self.slot_calls.get(slot.index()).copied().flatten()
+    }
+
     pub fn snapshot(&self) -> &Arc<RegistrySnapshot> {
         &self.snapshot
     }
