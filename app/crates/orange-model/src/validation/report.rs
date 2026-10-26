@@ -268,13 +268,11 @@ pub fn analyze_with_options(
     leaf_effects: BTreeMap<NodeId, LeafEffects>,
     options: AnalysisOptions<'_>,
 ) -> ValidationAnalysis {
-    match options
-        .admit(document, registry, &leaf_effects)
-        .and_then(|()| run_analysis(document, registry, leaf_effects, &options, None))
-    {
-        Ok(analysis) => analysis,
-        Err(code) => rejected_analysis(document, registry, code),
+    if let Some(report) = prerequisite_report(document, registry, &leaf_effects, &options) {
+        return report;
     }
+    run_supported_analysis(document, registry, &leaf_effects, &options, None)
+        .unwrap_or_else(|code| rejected_analysis(document, registry, code))
 }
 
 fn rejected_analysis(
@@ -298,33 +296,14 @@ fn rejected_analysis(
 pub(super) fn analyze_indexed(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
-    effects: BTreeMap<NodeId, LeafEffects>,
+    effects: &BTreeMap<NodeId, LeafEffects>,
     options: AnalysisOptions<'_>,
     index: &mut Option<DocIndex>,
     local: &mut super::local::LocalValidation,
     change: Option<&crate::edit::ChangeSet>,
 ) -> (ValidationAnalysis, super::local::LocalWork, bool) {
-    if let Err(code) = options.admit(document, registry, &effects) {
-        return (
-            rejected_analysis(document, registry, code),
-            Default::default(),
-            false,
-        );
-    }
-    let domains = validate_body_domains(document, registry.origin());
-    if let Err(code) = options.checkpoint() {
-        return (
-            rejected_analysis(document, registry, code),
-            Default::default(),
-            false,
-        );
-    }
-    if !domains.unsupported_bodies.is_empty() {
-        return (
-            domain_blocked_analysis(document, registry, domains.diagnostics),
-            Default::default(),
-            false,
-        );
+    if let Some(report) = prerequisite_report(document, registry, effects, &options) {
+        return (report, Default::default(), false);
     }
     let rebuilt = match index {
         Some(index) if index.is_current(document) => false,
@@ -352,29 +331,29 @@ pub(super) fn analyze_indexed(
     (result, work, rebuilt)
 }
 
-fn run_analysis(
+/// Shared rejection boundary: neither route prepares retained state or copies effects
+/// before current cancellation, admission quotas and domain support are checked.
+fn prerequisite_report(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
-    leaf_effects: BTreeMap<NodeId, LeafEffects>,
+    leaf_effects: &BTreeMap<NodeId, LeafEffects>,
     options: &AnalysisOptions<'_>,
-    retained: Option<(&DocIndex, &super::local::LocalValidation)>,
-) -> Result<ValidationAnalysis, DiagnosticCode> {
-    let domains = validate_body_domains(document, registry.origin());
-    options.checkpoint()?;
-    if !domains.unsupported_bodies.is_empty() {
-        return Ok(domain_blocked_analysis(
-            document,
-            registry,
-            domains.diagnostics,
-        ));
+) -> Option<ValidationAnalysis> {
+    if let Err(code) = options.admit(document, registry, leaf_effects) {
+        return Some(rejected_analysis(document, registry, code));
     }
-    run_supported_analysis(document, registry, leaf_effects, options, retained)
+    let domains = validate_body_domains(document, registry.origin());
+    if let Err(code) = options.checkpoint() {
+        return Some(rejected_analysis(document, registry, code));
+    }
+    (!domains.unsupported_bodies.is_empty())
+        .then(|| domain_blocked_analysis(document, registry, domains.diagnostics))
 }
 
 fn run_supported_analysis(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
-    leaf_effects: BTreeMap<NodeId, LeafEffects>,
+    leaf_effects: &BTreeMap<NodeId, LeafEffects>,
     options: &AnalysisOptions<'_>,
     retained: Option<(&DocIndex, &super::local::LocalValidation)>,
 ) -> Result<ValidationAnalysis, DiagnosticCode> {
@@ -386,7 +365,7 @@ fn run_supported_analysis(
             &built_index
         }
     };
-    let seed = accept_functions(document, registry, &leaf_effects, index, options)?;
+    let seed = accept_functions(document, registry, leaf_effects, index, options)?;
     let Settled {
         passes:
             BodyPasses {
@@ -401,7 +380,7 @@ fn run_supported_analysis(
         functions,
         conformance,
         ..
-    } = settle(document, registry, &leaf_effects, index, seed, options)?;
+    } = settle(document, registry, leaf_effects, index, seed, options)?;
 
     let ports = super::ports::PortResolver::resume(document, &nodes.resolved, projections);
     let availability = super::availability::validate_availability_with_ports(
@@ -443,7 +422,7 @@ fn run_supported_analysis(
         &nodes.resolved,
         &regions.index,
         &functions.summaries,
-        &leaf_effects,
+        leaf_effects,
     ));
     options.checkpoint()?;
     let explained_nodes: BTreeSet<_> = diagnostics

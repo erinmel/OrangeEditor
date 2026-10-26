@@ -87,17 +87,11 @@ impl AnalysisSession {
         let mut index = None;
         let mut local = LocalValidation::default();
         let (analysis, work, rebuilt) = super::report::analyze_indexed(
-            document,
-            registry,
-            effects.clone(),
-            options,
-            &mut index,
-            &mut local,
-            None,
+            document, registry, &effects, options, &mut index, &mut local, None,
         );
         let subjects = subject_index(&analysis);
         Self {
-            stale: incomplete(&analysis),
+            stale: cancelled(&analysis),
             changed_subjects: subjects.keys().cloned().collect(),
             changed_nodes: analysis.report().resolved.keys().copied().collect(),
             analysis,
@@ -227,43 +221,25 @@ impl AnalysisSession {
         let (analysis, local, rebuilt) = super::report::analyze_indexed(
             document,
             registry,
-            self.effects.clone(),
+            &self.effects,
             options,
             &mut self.index,
             &mut self.local,
             change,
         );
         let subjects = subject_index(&analysis);
-        self.changed_subjects.clear();
-        for subject in self.subjects.keys().chain(subjects.keys()) {
-            let old = self
-                .subjects
-                .get(subject)
-                .into_iter()
-                .flatten()
-                .map(|&i| &self.analysis.report().diagnostics[i]);
-            let new = subjects
-                .get(subject)
-                .into_iter()
-                .flatten()
-                .map(|&i| &analysis.report().diagnostics[i]);
-            if !old.eq(new) {
-                self.changed_subjects.insert(subject.clone());
-            }
-        }
-        self.changed_nodes = self
-            .analysis
-            .report()
-            .resolved
-            .keys()
-            .chain(analysis.report().resolved.keys())
-            .filter(|node| {
-                self.analysis.report().resolved.get(node) != analysis.report().resolved.get(node)
-            })
-            .copied()
-            .collect();
+        self.changed_subjects = changed_keys(&self.subjects, &subjects, |old, new| {
+            old.iter()
+                .map(|&i| &self.analysis.report().diagnostics[i])
+                .eq(new.iter().map(|&i| &analysis.report().diagnostics[i]))
+        });
+        self.changed_nodes = changed_keys(
+            &self.analysis.report().resolved,
+            &analysis.report().resolved,
+            PartialEq::eq,
+        );
         self.subjects = subjects;
-        self.stale = incomplete(&analysis);
+        self.stale = cancelled(&analysis);
         self.analysis = analysis;
         self.limits = options.limits;
         self.revision = document.revision();
@@ -363,8 +339,72 @@ fn full(
         local,
     }
 }
-fn incomplete(analysis: &ValidationAnalysis) -> bool {
-    !analysis
-        .covered_checks()
-        .any(|check| check == super::ValidationCheck::NodeResolution)
+fn cancelled(analysis: &ValidationAnalysis) -> bool {
+    // A fresh deterministic rejection describes these inputs even with no coverage.
+    // Cancellation alone leaves the request unfinished and requires recovery.
+    analysis
+        .report()
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == super::DiagnosticCode::AnalysisCancelled)
+}
+
+/// Merge sorted maps once. Only shared keys need a value comparison; additions and
+/// removals are changes by definition. Both published change views use this rule.
+fn changed_keys<K: Ord + Clone, V>(
+    old: &BTreeMap<K, V>,
+    new: &BTreeMap<K, V>,
+    mut equivalent: impl FnMut(&V, &V) -> bool,
+) -> BTreeSet<K> {
+    let (mut old, mut new) = (old.iter(), new.iter());
+    let (mut left, mut right) = (old.next(), new.next());
+    let mut changed = BTreeSet::new();
+    while let (Some((old_key, old_value)), Some((new_key, new_value))) = (left, right) {
+        match old_key.cmp(new_key) {
+            std::cmp::Ordering::Less => {
+                changed.insert(old_key.clone());
+                left = old.next();
+            }
+            std::cmp::Ordering::Greater => {
+                changed.insert(new_key.clone());
+                right = new.next();
+            }
+            std::cmp::Ordering::Equal => {
+                if !equivalent(old_value, new_value) {
+                    changed.insert(old_key.clone());
+                }
+                left = old.next();
+                right = new.next();
+            }
+        }
+    }
+    changed.extend(left.into_iter().chain(old).map(|(key, _)| key.clone()));
+    changed.extend(right.into_iter().chain(new).map(|(key, _)| key.clone()));
+    changed
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn ordered_diff_compares_each_shared_value_once_and_reports_both_tails() {
+        let old = BTreeMap::from([(1, 10), (3, 30), (5, 50), (8, 80)]);
+        let new = BTreeMap::from([(2, 20), (3, 31), (5, 50), (9, 90)]);
+        let mut comparisons = Vec::new();
+        let changed = changed_keys(&old, &new, |left, right| {
+            comparisons.push((*left, *right));
+            left == right
+        });
+        assert_eq!(changed, BTreeSet::from([1, 2, 3, 8, 9]));
+        assert_eq!(comparisons, [(30, 31), (50, 50)]);
+        assert_eq!(
+            changed_keys(&BTreeMap::new(), &old, PartialEq::eq),
+            old.keys().copied().collect()
+        );
+        assert_eq!(
+            changed_keys(&old, &BTreeMap::new(), PartialEq::eq),
+            old.keys().copied().collect()
+        );
+    }
 }

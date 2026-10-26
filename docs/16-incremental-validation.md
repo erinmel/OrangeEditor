@@ -61,9 +61,9 @@ A conservative rebuild runs full analysis without reusing local buckets when:
 - the leaf effects or limits change;
 - shared-signature or package-lock metadata changes (`ChangeSet::global_dirty()`);
 - committed content/semantic lineage or revision does not match;
-- the previous result was rejected, cancelled or domain-blocked.
+- the previous request was cancelled.
 
-Current cancellation returns the full oracle's cancellation result rather than a reused success. Every semantic analysis performs admission and domain checks; quota/domain failure exposes incomplete evidence, and the next update rebuilds. A dirty-set threshold is a future optimization, not implemented policy.
+Current cancellation returns the full oracle's cancellation result rather than a reused success. Every semantic analysis performs admission and domain checks. A fresh deterministic quota/domain error remains current through layout/undo/redo under unchanged semantic/registry/effect/limit inputs, with zero validation runs; it never establishes compiler readiness. Only cancellation requires recovery solely because of the previous result. Both routes borrow effect metadata and share prerequisites, so an already rejected request does not first clone retained write vectors. A dirty-set threshold is a future optimization, not implemented policy.
 
 Each rebuild records its reason in `EditStats`.
 
