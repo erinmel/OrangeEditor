@@ -205,17 +205,20 @@ fn generic_nested_calls_are_independent_and_do_not_rewrite_the_document() {
             .count(),
         3
     );
-    // Root data and control do not accidentally route host calls through a resolver.
-    assert!(matches!(
-        orange_compiler::compile_data(
-            &doc,
-            snapshot.clone(),
-            &analyze(&doc, &snapshot),
-            &package,
-            CompileOptions::default()
-        ),
-        Err(CompileError::UnsupportedNode { .. })
-    ));
+    let data = orange_compiler::compile_data(
+        &doc,
+        snapshot.clone(),
+        &analyze(&doc, &snapshot),
+        &package,
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let actual: Vec<_> = data
+        .exports()
+        .iter()
+        .map(|e| data.initial_values()[e.slot.index()].clone().unwrap())
+        .collect();
+    assert_eq!(actual, outcomes(&plan));
 }
 
 #[test]

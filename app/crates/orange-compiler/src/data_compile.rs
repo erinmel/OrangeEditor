@@ -9,7 +9,7 @@ use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{NodeKind, PortDescriptor, PortDirection, PortKind};
 use orange_model::id::{NodeId, PortKey};
 use orange_model::validation::ValidationAnalysis;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 #[derive(Clone, Copy)]
@@ -22,6 +22,11 @@ struct Selection {
     mode: SelectionMode,
 }
 enum Task {
+    ReturnCall {
+        node: NodeId,
+        child: usize,
+        inputs: Vec<DataInput>,
+    },
     Enter(NodeId),
     Choose(NodeId),
     Finish {
@@ -32,10 +37,12 @@ enum Task {
 #[derive(Clone, Copy)]
 struct ProducedOutput {
     slot: SlotIx,
-    producer: NodeIx,
+    producer: Option<NodeIx>,
 }
 
 struct Lowering<'a, R: EntropyKernelResolver> {
+    scope: usize,
+    calls: Arc<crate::calls::Calls<'a>>,
     document: &'a GraphDocument,
     analysis: &'a ValidationAnalysis,
     resolver: &'a R,
@@ -44,10 +51,11 @@ struct Lowering<'a, R: EntropyKernelResolver> {
     lazy: &'a BTreeMap<NodeId, Lazy>,
     folder: ConstantFolder<'a, R>,
     plan: DataPlan,
-    completed: BTreeMap<NodeId, NodeIx>,
-    outputs: BTreeMap<(NodeId, PortKey), ProducedOutput>,
-    work: Vec<Task>,
+    completed: BTreeSet<(usize, NodeId)>,
+    outputs: BTreeMap<(usize, NodeId, PortKey), ProducedOutput>,
+    work: Vec<(usize, Task)>,
     bytes: usize,
+    seeded: BTreeMap<usize, SlotIx>,
     host_nodes: &'a std::collections::BTreeSet<NodeId>,
 }
 impl<R: EntropyKernelResolver> Lowering<'_, R> {
@@ -78,16 +86,21 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             node,
             port: key(port),
         });
+        self.plan.slot_calls.push(self.scope.checked_sub(1));
         self.plan.initial.push(value);
         Ok(SlotIx(index))
     }
     fn input(&mut self, node: NodeId, port: &PortDescriptor) -> Result<DataInput, CompileError> {
         self.options.checkpoint()?;
         let port_key = key(port);
-        if let Some(edge) = self.incoming.get(&(node, port_key.clone())) {
+        if let Some(edge) = self
+            .calls
+            .incoming(self.incoming, self.scope)
+            .get(&(node, port_key.clone()))
+        {
             let ProducedOutput { slot, producer } = *self
                 .outputs
-                .get(&(edge.from.node, edge.from.port.clone()))
+                .get(&(self.scope, edge.from.node, edge.from.port.clone()))
                 .ok_or(CompileError::ValidationIncomplete)?;
             return Ok(DataInput {
                 source: InputSource {
@@ -95,10 +108,10 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     slot,
                     edge: Some(edge.id),
                 },
-                producer: Some(producer),
+                producer,
             });
         }
-        let literal = self.document.root().nodes[&node]
+        let literal = self.calls.body(self.document, self.scope).nodes[&node]
             .inputs
             .get(&port_key)
             .or(port.default.as_ref())
@@ -134,28 +147,82 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         &self,
         node: NodeId,
         ports: impl IntoIterator<Item = PortKey>,
-        work: &mut Vec<Task>,
+        work: &mut Vec<(usize, Task)>,
     ) {
         for port in ports {
-            if let Some(edge) = self.incoming.get(&(node, port)) {
-                work.push(Task::Enter(edge.from.node));
+            if let Some(edge) = self
+                .calls
+                .incoming(self.incoming, self.scope)
+                .get(&(node, port))
+            {
+                work.push((self.scope, Task::Enter(edge.from.node)));
             }
         }
     }
     fn lower(&mut self, root: NodeId) -> Result<(), CompileError> {
         let analysis = self.analysis;
+        let calls = self.calls.clone();
         let document = self.document;
         let mut work = std::mem::take(&mut self.work);
-        work.push(Task::Enter(root));
-        while let Some(task) = work.pop() {
+        work.push((0, Task::Enter(root)));
+        while let Some((scope, task)) = work.pop() {
+            self.scope = scope;
             self.options.checkpoint()?;
+            if let Task::ReturnCall {
+                node,
+                child,
+                mut inputs,
+            } = task
+            {
+                let result = calls
+                    .result(child)
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                let arguments = inputs.len();
+                self.scope = child;
+                for port in &calls.signature(analysis, child, result).ports {
+                    inputs.push(self.input(result, port)?);
+                }
+                self.scope = scope;
+                let index = NodeIx(
+                    u32::try_from(self.plan.nodes.len())
+                        .map_err(|_| CompileError::ResourceLimit)?,
+                );
+                let mut outputs = Vec::new();
+                for port in calls
+                    .signature(analysis, scope, node)
+                    .ports
+                    .iter()
+                    .filter(|p| p.direction == PortDirection::Output)
+                {
+                    let slot = self.push(node, port, None)?;
+                    self.outputs.insert(
+                        (scope, node, key(port)),
+                        ProducedOutput {
+                            slot,
+                            producer: Some(index),
+                        },
+                    );
+                    outputs.push(slot);
+                }
+                self.plan.nodes.push(DataNode {
+                    call: scope.checked_sub(1),
+                    index,
+                    node,
+                    stability: DataStability::Epoch,
+                    inputs: inputs.into(),
+                    outputs: outputs.into(),
+                    operation: DataOperation::Call { arguments },
+                });
+                self.completed.insert((scope, node));
+                continue;
+            }
             let (node_id, selection) = match task {
                 Task::Enter(node) => {
-                    if self.completed.contains_key(&node) {
+                    if self.completed.contains(&(scope, node)) {
                         continue;
                     }
-                    let sig = &analysis.report().resolved[&node];
-                    if self.host_nodes.contains(&node) {
+                    let sig = calls.signature(analysis, scope, node);
+                    if scope == 0 && self.host_nodes.contains(&node) {
                         let mut ports: Vec<_> = sig
                             .ports
                             .iter()
@@ -178,14 +245,15 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                                     .map_err(|_| CompileError::ResourceLimit)?,
                             );
                             self.outputs.insert(
-                                (node, key(port)),
+                                (scope, node, key(port)),
                                 ProducedOutput {
                                     slot,
-                                    producer: index,
+                                    producer: Some(index),
                                 },
                             );
                             self.plan.host_inputs.push(index);
                             self.plan.nodes.push(DataNode {
+                                call: self.scope.checked_sub(1),
                                 index,
                                 node,
                                 stability: DataStability::Epoch,
@@ -193,18 +261,21 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                                 outputs: Box::new([slot]),
                                 operation: DataOperation::Input,
                             });
-                            self.completed.insert(node, index);
+                            self.completed.insert((scope, node));
                         }
                         continue;
                     }
-                    if self.lazy.contains_key(&node) {
-                        work.push(Task::Choose(node));
+                    if calls.lazy(self.lazy, scope, node).is_some() {
+                        work.push((scope, Task::Choose(node)));
                         self.dependencies(node, [key(&sig.ports[0])], &mut work);
                     } else {
-                        work.push(Task::Finish {
-                            node,
-                            selection: None,
-                        });
+                        work.push((
+                            scope,
+                            Task::Finish {
+                                node,
+                                selection: None,
+                            },
+                        ));
                         self.dependencies(
                             node,
                             sig.ports
@@ -218,12 +289,14 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     continue;
                 }
                 Task::Choose(node) => {
-                    let sig = &analysis.report().resolved[&node];
+                    let sig = calls.signature(analysis, scope, node);
                     let selector = self.input(node, &sig.ports[0])?;
                     let mode = match &self.plan.initial[selector.source.slot.index()] {
                         Some(FoldedValue::Fault(_)) => SelectionMode::Static(None),
                         Some(FoldedValue::Value(value)) => SelectionMode::Static(
-                            self.lazy[&node]
+                            calls
+                                .lazy(self.lazy, scope, node)
+                                .ok_or(CompileError::ValidationIncomplete)?
                                 .selected(value)
                                 .ok_or(CompileError::KernelContract { node })?,
                         ),
@@ -244,16 +317,20 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                         })
                         .map(key)
                         .collect();
-                    work.push(Task::Finish {
-                        node,
-                        selection: Some(Selection { selector, mode }),
-                    });
+                    work.push((
+                        scope,
+                        Task::Finish {
+                            node,
+                            selection: Some(Selection { selector, mode }),
+                        },
+                    ));
                     self.dependencies(node, alternatives, &mut work);
                     continue;
                 }
                 Task::Finish { node, selection } => (node, selection),
+                Task::ReturnCall { .. } => unreachable!("handled before ordinary lowering"),
             };
-            let sig = &analysis.report().resolved[&node_id];
+            let sig = calls.signature(analysis, scope, node_id);
             let inputs_ports: Vec<_> = sig
                 .ports
                 .iter()
@@ -288,15 +365,76 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     },
                 );
             }
+            let child = calls.scopes[scope].calls.get(&node_id).copied();
             let constant = sig.kind == NodeKind::Pure
                 && inputs
                     .iter()
                     .all(|i| self.plan.initial[i.source.slot.index()].is_some());
-            let node = &document.root().nodes[&node_id];
+            let node = &calls.body(document, scope).nodes[&node_id];
+            if !constant && let Some(child) = child {
+                if let Some(entry) = calls.entry(child) {
+                    for input in &inputs {
+                        self.options.checkpoint()?;
+                        let slot = input.source.slot;
+                        if let Some(value) = self.plan.initial[slot.index()].as_ref() {
+                            let constant = match self.seeded.get(&slot.index()) {
+                                Some(constant) => *constant,
+                                None => {
+                                    let constant = self.folder.seed_constant(
+                                        self.plan.types[slot.index()].clone(),
+                                        self.plan.sources[slot.index()].clone(),
+                                        value.clone(),
+                                        self.plan.slot_calls[slot.index()],
+                                    )?;
+                                    self.seeded.insert(slot.index(), constant);
+                                    constant
+                                }
+                            };
+                            self.folder.alias_constant(
+                                child,
+                                entry,
+                                input.source.port.clone(),
+                                constant,
+                            );
+                        }
+                        self.outputs.insert(
+                            (child, entry, input.source.port.clone()),
+                            ProducedOutput {
+                                slot: input.source.slot,
+                                producer: input.producer,
+                            },
+                        );
+                    }
+                    self.completed.insert((child, entry));
+                }
+                let result = calls
+                    .result(child)
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                work.push((
+                    scope,
+                    Task::ReturnCall {
+                        node: node_id,
+                        child,
+                        inputs,
+                    },
+                ));
+                self.scope = child;
+                self.dependencies(
+                    result,
+                    calls
+                        .signature(analysis, child, result)
+                        .ports
+                        .iter()
+                        .rev()
+                        .map(key),
+                    &mut work,
+                );
+                continue;
+            }
             let operation = if constant {
-                self.folder.pull(node_id)?;
+                self.folder.pull_at(scope, node_id)?;
                 DataOperation::Constant
-            } else if let Some(lazy) = self.lazy.get(&node_id) {
+            } else if let Some(lazy) = calls.lazy(self.lazy, scope, node_id) {
                 match lazy {
                     Lazy::Select => {
                         let selected = selection
@@ -353,7 +491,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 let value = if constant {
                     Some(
                         self.folder
-                            .folded(node_id, &key(port))
+                            .folded_at(scope, node_id, &key(port))
                             .ok_or(CompileError::ValidationIncomplete)?
                             .clone(),
                     )
@@ -362,10 +500,10 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 };
                 let slot = self.push(node_id, port, value)?;
                 self.outputs.insert(
-                    (node_id, key(port)),
+                    (scope, node_id, key(port)),
                     ProducedOutput {
                         slot,
-                        producer: index,
+                        producer: Some(index),
                     },
                 );
                 outputs.push(slot);
@@ -374,6 +512,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 self.plan.host_inputs.push(index);
             }
             self.plan.nodes.push(DataNode {
+                call: self.scope.checked_sub(1),
                 index,
                 node: node_id,
                 stability: if constant {
@@ -385,7 +524,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 outputs: outputs.into(),
                 operation,
             });
-            self.completed.insert(node_id, index);
+            self.completed.insert((scope, node_id));
         }
         self.work = work;
         Ok(())
@@ -413,7 +552,8 @@ fn binding_error(node: NodeId, error: ResolveError) -> CompileError {
     }
 }
 
-/// Compile fresh root pure/seeded-entropy computed exports. Static selectors prune
+/// Compile fresh pure/seeded-entropy computed exports and graph-local Pure calls.
+/// Static selectors prune
 /// inactive alternatives; epoch-dependent selectors retain both possible arms.
 /// Eligible constant islands in those possible arms may fold during compilation.
 pub fn compile_data(
@@ -466,18 +606,21 @@ pub(crate) fn lower_roots(
         &admission.lazy_nodes,
     )?;
     let mut state = Lowering {
+        scope: 0,
+        calls: folder.calls.clone(),
         document,
         analysis,
         resolver,
         options,
         incoming: &admission.incoming,
         lazy: &admission.lazy_nodes,
-        folder,
         plan: DataPlan {
             snapshot,
             graph: document.graph_id(),
             revision: document.revision(),
             state: document.semantic_state_id(),
+            calls: folder.calls.sites.clone(),
+            slot_calls: vec![],
             nodes: vec![],
             types: vec![],
             sources: vec![],
@@ -495,12 +638,15 @@ pub(crate) fn lower_roots(
                 entropy_nodes: 0,
             },
         },
-        completed: BTreeMap::new(),
+        folder,
+        completed: BTreeSet::new(),
         outputs: BTreeMap::new(),
         work: Vec::new(),
         bytes: 0,
+        seeded: BTreeMap::new(),
         host_nodes: &admission.host_nodes,
     };
+    state.bytes = state.calls.signature_bytes;
     for export in roots {
         charge(
             &mut state.bytes,
@@ -514,8 +660,8 @@ pub(crate) fn lower_roots(
             if let Some(edge) = admission.incoming.get(&(export.node, export.port.clone())) {
                 state.lower(edge.from.node)?;
                 let ProducedOutput { slot, producer } =
-                    state.outputs[&(edge.from.node, edge.from.port.clone())];
-                (slot, producer)
+                    state.outputs[&(0, edge.from.node, edge.from.port.clone())];
+                (slot, producer.ok_or(CompileError::ValidationIncomplete)?)
             } else {
                 let port = analysis.report().resolved[&export.node]
                     .ports
@@ -528,6 +674,7 @@ pub(crate) fn lower_roots(
                         .map_err(|_| CompileError::ResourceLimit)?,
                 );
                 state.plan.nodes.push(DataNode {
+                    call: None,
                     index,
                     node: export.node,
                     stability: DataStability::Const,
@@ -541,9 +688,9 @@ pub(crate) fn lower_roots(
             state.lower(export.node)?;
             let ProducedOutput { slot, producer } = *state
                 .outputs
-                .get(&(export.node, export.port.clone()))
+                .get(&(0, export.node, export.port.clone()))
                 .ok_or(CompileError::ValidationIncomplete)?;
-            (slot, producer)
+            (slot, producer.ok_or(CompileError::ValidationIncomplete)?)
         };
         state.plan.exports.push(Export {
             id: export.id.clone(),

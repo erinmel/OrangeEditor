@@ -344,7 +344,7 @@ pub(crate) struct ConstantFolder<'a, R: PureKernelResolver> {
     lazy_nodes: &'a BTreeMap<NodeId, crate::lazy::Lazy>,
     plan: PurePlan,
     frames: Vec<FoldFrame>,
-    calls: crate::calls::Calls<'a>,
+    pub(crate) calls: Arc<crate::calls::Calls<'a>>,
     bytes: usize,
     input_values: Vec<Value>,
     output_values: Vec<Value>,
@@ -366,7 +366,9 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
         incoming: &'a Incoming<'a>,
         lazy_nodes: &'a BTreeMap<NodeId, crate::lazy::Lazy>,
     ) -> Result<Self, CompileError> {
-        let mut calls = crate::calls::Calls::prepare(document, &snapshot, analysis, options)?;
+        let calls = Arc::new(crate::calls::Calls::prepare(
+            document, &snapshot, analysis, options,
+        )?);
         let frames = (0..calls.scopes.len())
             .map(|_| FoldFrame::default())
             .collect();
@@ -381,7 +383,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             constants: vec![],
             exports: vec![],
             diagnostics: vec![],
-            calls: std::mem::take(&mut calls.sites),
+            calls: calls.sites.clone(),
             slot_calls: vec![],
         };
         let mut bytes = calls.signature_bytes;
@@ -409,8 +411,13 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             work: vec![],
         })
     }
-    pub(crate) fn folded(&self, node: NodeId, port: &PortKey) -> Option<&FoldedValue> {
-        self.frames[0]
+    pub(crate) fn folded_at(
+        &self,
+        scope: usize,
+        node: NodeId,
+        port: &PortKey,
+    ) -> Option<&FoldedValue> {
+        self.frames[scope]
             .outputs
             .get(&(node, port.clone()))
             .map(|slot| &self.plan.constants[slot.index()])
@@ -418,7 +425,36 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
     pub(crate) fn diagnostics(&self) -> &[Diagnostic] {
         &self.plan.diagnostics
     }
+    pub(crate) fn seed_constant(
+        &mut self,
+        ty: PlanType,
+        source: SlotSource,
+        value: FoldedValue,
+        call: Option<usize>,
+    ) -> Result<SlotIx, CompileError> {
+        push_slot(
+            &mut self.plan,
+            ty,
+            source,
+            value,
+            call,
+            self.options,
+            &mut self.bytes,
+        )
+    }
+    pub(crate) fn alias_constant(
+        &mut self,
+        scope: usize,
+        node: NodeId,
+        port: PortKey,
+        slot: SlotIx,
+    ) {
+        self.frames[scope].outputs.insert((node, port), slot);
+    }
     pub(crate) fn pull(&mut self, root: NodeId) -> Result<(), CompileError> {
+        self.pull_at(0, root)
+    }
+    pub(crate) fn pull_at(&mut self, root_scope: usize, root: NodeId) -> Result<(), CompileError> {
         let Self {
             document,
             analysis,
@@ -435,7 +471,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             output_values,
             work,
         } = self;
-        work.push((0, Work::Enter(root)));
+        work.push((root_scope, Work::Enter(root)));
         while let Some((scope, task)) = work.pop() {
             options.checkpoint()?;
             let incoming = calls.incoming(incoming, scope);
@@ -891,8 +927,7 @@ pub(crate) fn admit_roots<'a>(
             && body.nodes[node].definition.id.as_str() != "core/convert"
             && !lazy_nodes.contains_key(node)
             && !state_read
-            && !(!data_plan
-                && sig.kind == NodeKind::Pure
+            && !(sig.kind == NodeKind::Pure
                 && body.nodes[node].definition.id.as_str() == "core/call")
         {
             return Err(CompileError::UnsupportedNode { node: *node });

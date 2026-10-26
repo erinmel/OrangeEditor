@@ -11,6 +11,7 @@ Use two long-lived branches plus short-lived topic branches. Every topic PR targ
 | `dev` | Protected integration branch; target of every topic PR | `dev` |
 | `main` | Protected promoted branch; changes only through a `dev` → `main` PR | `main` |
 | `docs/<work-id>-<slug>` | `dev`; planning/contracts/examples | `docs/wu-00a-graph-fixtures` |
+| `core/<focus>` | `dev`; user-selected core implementation cohorts, possibly several related slices/commits | `core/pure-call-runtime` |
 | `feat/<work-id>-<slug>` | `dev`; product behavior | `feat/wu-00b-document-model` |
 | `fix/<work-id>-<slug>` | `dev`; bug and regression fixture | `fix/wu-04d-stale-completion` |
 | `chore/<slug>` | `dev`; tooling, dependencies, maintenance | `chore/document-checks` |

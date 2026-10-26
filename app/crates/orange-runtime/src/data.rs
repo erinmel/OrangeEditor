@@ -665,6 +665,22 @@ impl Frame {
     fn callback(&mut self, plan: &DataPlan, node: &DataNode) -> Result<(), DataError> {
         self.inputs.clear();
         self.outputs.clear();
+        if let DataOperation::Call { arguments } = node.operation() {
+            if node.inputs().len().checked_sub(*arguments) != Some(node.outputs().len()) {
+                return Err(DataError::KernelContract { node: node.node() });
+            }
+            // Gather already checked the strict prefix and every result in order.
+            // Only returned values need copying; unused arguments stay borrowed.
+            for input in *arguments..node.inputs().len() {
+                match self.outcome(node, input)? {
+                    FoldedValue::Value(value) => self.outputs.push(value.clone()),
+                    FoldedValue::Fault(fault) => {
+                        return self.publish_fault(plan, node, fault.clone());
+                    }
+                }
+            }
+            return self.publish_values(plan, node);
+        }
         self.outputs.resize(node.outputs().len(), Value::Unit);
         for input in 0..node.inputs().len() {
             match self.outcome(node, input)? {
@@ -813,12 +829,12 @@ impl Frame {
                         .ok_or(DataError::ResourceLimit)?;
                     self.burn()?;
                     match node.operation() {
-                        DataOperation::Pure(_) | DataOperation::Entropy(_) => {
-                            self.push(Work::Gather {
-                                node: index,
-                                next: 0,
-                            })?
-                        }
+                        DataOperation::Pure(_)
+                        | DataOperation::Entropy(_)
+                        | DataOperation::Call { .. } => self.push(Work::Gather {
+                            node: index,
+                            next: 0,
+                        })?,
                         DataOperation::Constant => {
                             return Err(DataError::KernelContract { node: node.node() });
                         }

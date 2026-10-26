@@ -349,12 +349,8 @@ fn state_reads_become_host_inputs_and_function_calls_never_enter_generic_callbac
             &resolver,
             CompileOptions::default(),
         );
-        if function_call {
-            assert!(matches!(data, Err(CompileError::UnsupportedNode { .. })));
-        } else {
-            // Admitted, but nothing exports it, so no input slot is lowered.
-            assert!(data.unwrap().host_inputs().is_empty());
-        }
+        // Admitted, but nothing exports it, so no callbacks or input slots.
+        assert!(data.unwrap().host_inputs().is_empty());
         let pure = compile_pure(
             &doc,
             snapshot.clone(),

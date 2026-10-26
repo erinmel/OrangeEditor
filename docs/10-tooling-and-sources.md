@@ -1489,3 +1489,29 @@ Thus the wide-call and largest pending-pull fixtures improve about4x and256-root
 Reproduction commands used the ignored `.artifacts/pr18-20-review-probe` and `.artifacts/pr20-before-probe` Cargo manifests with `--release --locked --offline --target-dir target/pr18-20-review-probe`; Count used `cargo test ... headless_control_timing_baseline -- --ignored --nocapture`, other probes `cargo run`. Logs:pr18-20-review-probe.log,pr20-fixes-probe.log,pr20-before-runtime-timing.log,pr20-before-count-timing.log,pr20-fixes-count-timing.log,pr20-fixes-debug.log,pr20-fixes-release.log,pr20-fixes-clippy.log,pr20-fixes-rustdoc.log and the focused/mutation logs. Temporary review/harness/baseline/build sources are removed after the repair is qualified; durable behavior tests, contracts and this evidence remain.
 
 Remote CI is qualified separately on the published final head; this local record does not claim remote success in advance. The PR description and ignored delivery checkpoint record the final CI run/head once verified.
+
+### Runtime Pure-call qualification — 2026-10-26 (PR21)
+
+Base: fetched `origin/dev` `4662b3ec71a623f4251127a24eab2fd8171648f9`, the verified PR20 squash merge. Branch: `core/pure-call-runtime`, following the user-selected `core/<focus>` convention. Local platform: Windows x86_64 MSVC, Rust `1.99.1 (58cf8f9c3 2026-10-13)`, Cargo `1.99.1 (5f94df478 2026-08-27)`, Node.js24.18.0, default workspace features. No dependency/features/lockfile change; root Cargo.lock SHA256 remains `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`.
+
+The implemented scope is the bounded graph-local Pure vocabulary through DataPlan and supported control data demands, including epoch-dependent arguments, nested interface-visible generics, source scopes and ordinary runtime fuel/budget/cancellation. This is not general function-frame/Return execution. Contracts and remaining scope are in03/11/12 and the ADR amendment.
+
+| Check | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` | PASS:808 tests,0 failures,14 ignored,86 test-result groups including doctests |
+| `cargo test --workspace --release --locked --offline` | PASS:same808/0/14 |
+| `cargo test -p orange-bundled --test function_epochs --locked --offline` | PASS:9 new regressions; existing tests updated to assert equivalent constant-call outputs across compiler profiles |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --offline` | PASS; PowerShell environment variable assignment used locally |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary metadata check | PASS:9 policy fixtures; UI/engine boundary intact |
+| `node --test tools/release.test.mjs`; `node tools/release.mjs check` | PASS:7 tests; release configuration valid and intentionally disabled |
+| `cargo run -p orange-bundled --example headless_control --locked --offline`; same `headless_fork` | PASS:total3 at10ns; all/any/race/detach retain documented timing/retirement |
+| `git diff --check` | PASS |
+| Remote OS/MSRV/workflow/supply-chain checks | Separate exact-head CI qualification required on the PR; local results alone do not pass these gates |
+
+The arithmetic regression uses an independent wrapping-add formula over32 varied epochs in two activations, two distinct call instances and duplicate exports; it checks actual callback counts, not just final values. Other tests cover nested u64/bool specialization, shared immutable constants, strict unused argument faults, two faulting results with nonlexical declaration order, original-body producer identity, lazy arms with both constant and dynamic inputs, latent constant warnings, Try capture, root seeded-input replay without extra draws, a statically skipped unavailable callee,128-deep iterative calls, pre-callback admission limits, cancellation during a suspended pull, operation/activation fuel limits, and control demands resumed through one-unit host pumps.
+
+Two isolated mutations were detected by failing behavior tests: dropping the strict argument prefix loses the unused-argument fault; removing the scope from body output keys breaks the independent call-instance test. Sources were restored immediately and the focused suite rerun successfully. Final full debug/release and lint checks ran after restoration and the final test changes. OneDrive emitted hard-link-to-copy fallback warnings; there were no Rust/Clippy/Rustdoc diagnostic failures in qualification.
+
+Self-review: entry aliases carry original producer dependencies, boundary gathering checks arguments before any body demand, result faults publish atomically across outputs, all expanded dynamic nodes use existing fuel and cancellation, and exact provider/snapshot bindings remain pinned. Constant islands reuse the folder rather than creating a second implementation. Potential expansion is conservatively admitted, and each call boundary has extra slots/work; no timing, allocation/RSS, scalability improvement or completed NFR/core gate is claimed. Public DataOperation adds Call, requiring downstream exhaustive matches to update; resolver traits and persisted formats remain unchanged. Volatile/action/async calls, stateful call locals, erased generic parameters, package bodies, full runtime error stacks and Return cleanup remain pending.
