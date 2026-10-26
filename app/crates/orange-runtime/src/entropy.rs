@@ -221,12 +221,31 @@ impl ActivationEntropy {
         activation_sequence: u64,
         max_frames: usize,
     ) -> Self {
+        Self::with_counters(layout, seed, activation_sequence, max_frames, layout.len())
+    }
+    // Expanded plans already assign one bounded dense counter to each actual
+    // frame/node instruction. They do not need sparse whole-layout frame arrays.
+    pub(crate) fn new_dense(
+        layout: &EntropyLayout,
+        seed: u64,
+        sequence: u64,
+        count: usize,
+    ) -> Self {
+        Self::with_counters(layout, seed, sequence, 0, count)
+    }
+    fn with_counters(
+        layout: &EntropyLayout,
+        seed: u64,
+        activation_sequence: u64,
+        max_frames: usize,
+        count: usize,
+    ) -> Self {
         Self {
             layout: layout.0.clone(),
             seed,
             sequence: activation_sequence,
             epoch: None,
-            nodes: vec![FRESH; layout.len()],
+            nodes: vec![FRESH; count],
             frames: BTreeMap::new(),
             max_frames,
         }
@@ -282,7 +301,7 @@ impl ActivationEntropy {
             return Err(EntropyError::ForeignSlot);
         }
         let epoch = self.epoch.ok_or(EntropyError::NoEpoch)?;
-        let mut key = EntropyKey {
+        let key = EntropyKey {
             seed: self.seed,
             frame,
             node: slot.node(),
@@ -290,17 +309,47 @@ impl ActivationEntropy {
             invocation: 0,
         };
         let state = self.state(frame, slot.index)?;
-        if let Some((sample_epoch, invocation, _)) = state.memo
-            && sample_epoch == epoch
-        {
-            key.invocation = invocation;
-            return Ok(key);
-        }
-        key.invocation = state.next.ok_or(EntropyError::InvocationExhausted)?;
-        state.next = key.invocation.checked_add(1);
-        state.memo = Some((epoch, key.invocation, None));
-        Ok(key)
+        invocation(key, epoch, state)
     }
+    pub(crate) fn invocation_key_dense(
+        &mut self,
+        frame: FrameId,
+        slot: &EntropySlot,
+        index: usize,
+    ) -> Result<EntropyKey, EntropyError> {
+        if !Arc::ptr_eq(&self.layout, &slot.layout) {
+            return Err(EntropyError::ForeignSlot);
+        }
+        let epoch = self.epoch.ok_or(EntropyError::NoEpoch)?;
+        let key = EntropyKey {
+            seed: self.seed,
+            frame,
+            node: slot.node(),
+            activation_sequence: self.sequence,
+            invocation: 0,
+        };
+        let state = self
+            .nodes
+            .get_mut(index)
+            .ok_or(EntropyError::ResourceLimit)?;
+        invocation(key, epoch, state)
+    }
+}
+fn invocation(
+    mut key: EntropyKey,
+    epoch: u64,
+    state: &mut NodeState,
+) -> Result<EntropyKey, EntropyError> {
+    if let Some((sample_epoch, invocation, _)) = state.memo
+        && sample_epoch == epoch
+    {
+        key.invocation = invocation;
+        return Ok(key);
+    }
+    key.invocation = state.next.ok_or(EntropyError::InvocationExhausted)?;
+    state.next = key.invocation.checked_add(1);
+    state.memo = Some((epoch, key.invocation, None));
+    Ok(key)
 }
 
 #[cfg(test)]
@@ -320,6 +369,44 @@ mod tests {
     }
     fn first(key: EntropyKey) -> u64 {
         EntropyStream::new(key).next_u64().unwrap()
+    }
+
+    #[test]
+    fn dense_expansion_matches_explicit_frames_without_sparse_frame_arrays() {
+        let layout = EntropyLayout::new((1..=64).map(node), 64).unwrap();
+        let mut dense = ActivationEntropy::new_dense(&layout, 42, 7, 128);
+        let mut reference = ActivationEntropy::new(&layout, 42, 7, 2);
+        let foreign = EntropyLayout::new([node(1)], 1)
+            .unwrap()
+            .slot(node(1))
+            .unwrap();
+        assert_eq!(
+            dense.invocation_key_dense(FrameId::ROOT, &foreign, 0),
+            Err(EntropyError::ForeignSlot)
+        );
+        for epoch in 0..3 {
+            dense.begin_epoch().unwrap();
+            reference.begin_epoch().unwrap();
+            for (frame_index, frame) in
+                [FrameId::ROOT.call(node(100)), FrameId::ROOT.call(node(101))]
+                    .into_iter()
+                    .enumerate()
+            {
+                for n in 1..=64 {
+                    let slot = layout.slot(node(n)).unwrap();
+                    let index = frame_index * 64 + usize::from(n - 1);
+                    let key = dense.invocation_key_dense(frame, &slot, index).unwrap();
+                    assert_eq!(key, reference.invocation_key_in(frame, &slot).unwrap());
+                    assert_eq!(key.invocation, epoch);
+                    assert_eq!(
+                        key,
+                        dense.invocation_key_dense(frame, &slot, index).unwrap()
+                    );
+                }
+            }
+            assert_eq!(dense.nodes.len(), 128);
+            assert!(dense.frames.is_empty());
+        }
     }
 
     #[test]

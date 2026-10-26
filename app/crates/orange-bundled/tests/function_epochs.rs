@@ -613,3 +613,6 @@ fn statically_unselected_call_has_no_callee_binding_or_runtime_work() {
     frame.begin_epoch().unwrap();
     assert_eq!(value(&mut frame, 0, 1), Value::U64(7));
 }
+
+#[path = "support/seeded_functions.rs"]
+mod seeded_functions;

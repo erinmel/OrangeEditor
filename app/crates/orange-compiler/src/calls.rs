@@ -14,6 +14,12 @@ use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallProfile {
+    Pure,
+    SeededData,
+}
+
 #[derive(Default)]
 struct PreparedBody<'a> {
     signatures: BTreeMap<NodeId, Cow<'a, SignatureSnapshot>>,
@@ -159,6 +165,7 @@ impl<'a> Calls<'a> {
         snapshot: &RegistrySnapshot,
         analysis: &'a ValidationAnalysis,
         options: CompileOptions<'_>,
+        profile: CallProfile,
     ) -> Result<Self, CompileError> {
         let mut out = Self {
             scopes: vec![CallScope::default()],
@@ -204,7 +211,11 @@ impl<'a> Calls<'a> {
                         node.definition.id.as_str(),
                         "core/function-entry" | "core/function-outputs"
                     );
-                    if !marker && sig.kind != NodeKind::Pure {
+                    let seeded = profile == CallProfile::SeededData
+                        && sig.kind == NodeKind::Volatile
+                        && (node.definition.id.as_str() == "core/call"
+                            || crate::compile::is_seeded_entropy(snapshot, node));
+                    if !marker && sig.kind != NodeKind::Pure && !seeded {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
                     let lazy = out.lazy(&BTreeMap::new(), cursor, node.id).is_some();
@@ -232,7 +243,8 @@ impl<'a> Calls<'a> {
                 if node.definition.id.as_str() != "core/call" {
                     continue;
                 }
-                if sig.kind != NodeKind::Pure
+                if !(sig.kind == NodeKind::Pure
+                    || (profile == CallProfile::SeededData && sig.kind == NodeKind::Volatile))
                     || node.definition.version != 1
                     || node.config_version != 1
                     || node.provider.is_some()

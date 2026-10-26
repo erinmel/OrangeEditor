@@ -1515,3 +1515,32 @@ The arithmetic regression uses an independent wrapping-add formula over32 varied
 Two isolated mutations were detected by failing behavior tests: dropping the strict argument prefix loses the unused-argument fault; removing the scope from body output keys breaks the independent call-instance test. Sources were restored immediately and the focused suite rerun successfully. Final full debug/release and lint checks ran after restoration and the final test changes. OneDrive emitted hard-link-to-copy fallback warnings; there were no Rust/Clippy/Rustdoc diagnostic failures in qualification.
 
 Self-review: entry aliases carry original producer dependencies, boundary gathering checks arguments before any body demand, result faults publish atomically across outputs, all expanded dynamic nodes use existing fuel and cancellation, and exact provider/snapshot bindings remain pinned. Constant islands reuse the folder rather than creating a second implementation. Potential expansion is conservatively admitted, and each call boundary has extra slots/work; no timing, allocation/RSS, scalability improvement or completed NFR/core gate is claimed. Public DataOperation adds Call, requiring downstream exhaustive matches to update; resolver traits and persisted formats remain unchanged. Volatile/action/async calls, stateful call locals, erased generic parameters, package bodies, full runtime error stacks and Return cleanup remain pending.
+
+### Seeded function calls and PR21 merge review — 2026-10-26 (PR22)
+
+PR21 review inspected its compiler/runtime diff for scoped completion/output keys, constant imports and accounting, strict argument gating, ordered atomic result faults, lazy/constant warning behavior, checked-plan construction, cancellation/fuel, and pinned provider/source ownership. No confirmed blocking gap was found within its documented Pure scope. The nine focused function regressions were rerun successfully. The exact reviewed head `3a23c82aa67dc31a843776cb4c745eab51110268` already had all checks passing in CI40351255674. Following explicit user authorization, PR21 was squash-merged as `0d0bcf405fe45f3d54ae54532d0ea6badc565f3c`, then fetched before starting `core/seeded-function-calls`. This review does not certify the explicitly pending core/function families.
+
+PR22 implements the bounded seeded-volatile call profile described in03/11/12. Local verification used Windows x86_64 MSVC, Rust `1.99.1 (58cf8f9c3 2026-10-13)`, Cargo `1.99.1 (5f94df478 2026-08-27)`, Node.js24.18.0 and default workspace features. No dependency/feature/lockfile changes. Cargo.lock SHA256 remains `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`.
+
+| Executed check | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` | PASS:818 passed,0 failed,14 ignored,86 test-result groups |
+| `cargo test --workspace --release --locked --offline` | PASS:same818/0/14 |
+| `cargo test -p orange-bundled --test function_epochs --locked --offline` | PASS:18 tests, including9 new seeded-call regressions |
+| `cargo test -p orange-runtime --lib --locked --offline` | PASS:15 tests, including1 new dense-counter/layout regression |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --offline` | PASS; environment set with PowerShell locally |
+| `node tools/check-cargo-metadata.mjs --self-test`; ordinary metadata check | PASS:9 fixtures; UI/engine boundary intact |
+| `node --test tools/release.test.mjs`; `node tools/release.mjs check` | PASS:7 tests; disabled release configuration valid |
+| Both `cargo run -p orange-bundled --example headless_control/headless_fork --locked --offline` commands, run separately | PASS:existing total3/10ns and all/any/race/detach timing/retirement behavior |
+| `git diff --check` | PASS |
+| Remote platform/MSRV/workflow/security/supply-chain checks | Separate exact-head qualification required on PR22; local checks do not pass those gates |
+
+Independent vector generation used Python's hashlib.sha256, UUID canonical network-order bytes, struct.pack little-endian u64 fields and the existing frame/stream domain strings. Seed42/activation7/invocations0and1 were computed for call paths[1],[2],[3,203] at body node103, and the existing root node4. Pinned expected u64 values are committed in the regression; no production compiler/runtime output generated them. Existing public stream and frame known vectors continue to pass. Other tests check two activations, repeated reads, independent counters under different skipped epochs, unused/unavailable body nodes, argument faults before entry, mixed generic Pure callees, original-body draw faults/Try, cancellation outside Try, one-unit control Set consumption, and128deep calls with pre-binding depth/operation rejection.
+
+The private counter test compares128dense counters against public explicit-frame key semantics over64source nodes/twoframes/threeepochs, checks foreign-slot refusal and asserts no sparse frame arrays are allocated in the dense owner. This verifies counter cardinality/semantics, not RSS/allocator totals or timing. Preparation hashes only ancestry referenced by actual entropy instructions; Pure plans and unused potential calls do not hash call frames. The legacy standalone explicit-frame API remains unchanged.
+
+Two isolated mutations were detected by behavior-test failures: replacing the bound frame with ROOT breaks the independent vectors, and aliasing every instruction to counter0 breaks sibling paths with different skipped epochs. Product sources were restored, focused tests rerun, then full debug/release and quality checks qualified the restored behavior. OneDrive hard-link fallback warnings remain environmental; Rust/Clippy/Rustdoc checks pass.
+
+Self-review retained Pure-only compilation, rejected state-reading bodies before callbacks, checked exact registered seeded entropy metadata, and kept all call nodes on the existing ordered/fueled evaluator. No generic call binding, new scheduler, saved schema, replay-version change, provider override change or dependency was added. Other volatile/state/clock calls, mutable call locals, action/async functions, package bodies, erased parameters, full error stacks and Return cleanup remain pending. No completed E3/core/NFR or universal performance claim follows.
