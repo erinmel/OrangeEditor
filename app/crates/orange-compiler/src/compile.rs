@@ -17,7 +17,7 @@ use std::sync::{
 pub struct CompileLimits {
     pub max_graph_items: usize,
     pub max_slots: usize,
-    /// Maximum nested graph-local pure calls; preparation and folding are iterative.
+    /// Maximum nested graph-local calls in the selected profile; preparation is iterative.
     pub max_call_depth: usize,
     /// Conservative number of producers in the potential export cone, including
     /// unselected lazy alternatives, not the number of callbacks actually invoked.
@@ -303,6 +303,13 @@ pub fn compile_pure(
         lazy_nodes,
         ..
     } = admit(document, &snapshot, analysis, options, false)?;
+    let calls = Arc::new(crate::calls::Calls::prepare(
+        document,
+        &snapshot,
+        analysis,
+        options,
+        crate::calls::CallProfile::Pure,
+    )?);
     let mut folder = ConstantFolder::new(
         document,
         analysis,
@@ -311,6 +318,7 @@ pub fn compile_pure(
         options,
         &incoming,
         &lazy_nodes,
+        calls,
     )?;
     for export in document.exports() {
         folder.pull(export.node)?;
@@ -357,6 +365,7 @@ struct FoldFrame {
 }
 
 impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
+    #[allow(clippy::too_many_arguments)] // Explicit admitted metadata shared by two profiles.
     pub(crate) fn new(
         document: &'a GraphDocument,
         analysis: &'a ValidationAnalysis,
@@ -365,10 +374,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
         options: CompileOptions<'a>,
         incoming: &'a Incoming<'a>,
         lazy_nodes: &'a BTreeMap<NodeId, crate::lazy::Lazy>,
+        calls: Arc<crate::calls::Calls<'a>>,
     ) -> Result<Self, CompileError> {
-        let calls = Arc::new(crate::calls::Calls::prepare(
-            document, &snapshot, analysis, options,
-        )?);
         let frames = (0..calls.scopes.len())
             .map(|_| FoldFrame::default())
             .collect();
@@ -825,6 +832,17 @@ pub(crate) struct Admission<'a> {
     pub(crate) host_nodes: BTreeSet<NodeId>,
 }
 /// Fresh definition metadata says the node reads host-owned state.
+pub(crate) fn is_seeded_entropy(
+    snapshot: &RegistrySnapshot,
+    node: &orange_model::document::NodeInstance,
+) -> bool {
+    snapshot
+        .definition(&node.definition)
+        .is_some_and(|definition| {
+            definition.volatility == Some(orange_model::catalog::Volatility::Entropy)
+                && definition.determinism == orange_model::catalog::Determinism::Seeded
+        })
+}
 pub(crate) fn is_state_read(
     snapshot: &RegistrySnapshot,
     node: &orange_model::document::NodeInstance,
@@ -908,17 +926,14 @@ pub(crate) fn admit_roots<'a>(
         {
             return Err(CompileError::UnsupportedNode { node: *node });
         }
-        if sig.kind != NodeKind::Pure && !state_read {
-            let metadata = snapshot.definition(&body.nodes[node].definition);
-            if !data_plan
-                || sig.kind != NodeKind::Volatile
-                || !metadata.is_some_and(|definition| {
-                    definition.volatility == Some(orange_model::catalog::Volatility::Entropy)
-                        && definition.determinism == orange_model::catalog::Determinism::Seeded
-                })
-            {
-                return Err(CompileError::UnsupportedNode { node: *node });
-            }
+        let call = body.nodes[node].definition.id.as_str() == "core/call";
+        if sig.kind != NodeKind::Pure
+            && !state_read
+            && !(data_plan
+                && sig.kind == NodeKind::Volatile
+                && (call || is_seeded_entropy(snapshot, &body.nodes[node])))
+        {
+            return Err(CompileError::UnsupportedNode { node: *node });
         }
         if let Some(kind) = crate::lazy::Lazy::resolve(&body.nodes[node], sig)? {
             lazy_nodes.insert(*node, kind);
@@ -927,8 +942,8 @@ pub(crate) fn admit_roots<'a>(
             && body.nodes[node].definition.id.as_str() != "core/convert"
             && !lazy_nodes.contains_key(node)
             && !state_read
-            && !(sig.kind == NodeKind::Pure
-                && body.nodes[node].definition.id.as_str() == "core/call")
+            && !(call
+                && (sig.kind == NodeKind::Pure || (data_plan && sig.kind == NodeKind::Volatile)))
         {
             return Err(CompileError::UnsupportedNode { node: *node });
         }

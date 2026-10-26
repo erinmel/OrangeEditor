@@ -92,7 +92,7 @@ pub struct DataResources {
 }
 
 /// Checked pure/seeded-entropy root exports. No default, public constructor or
-/// deserialization can bypass lowering. Includes bounded graph-local pure calls
+/// deserialization can bypass lowering. Includes bounded graph-local Pure/seeded-volatile calls
 /// with epoch-dependent arguments; control ownership remains in ControlPlan/Run.
 /// Debug reports metadata/counts without values, registry contents or callbacks.
 ///

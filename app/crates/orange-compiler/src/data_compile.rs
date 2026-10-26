@@ -552,7 +552,7 @@ fn binding_error(node: NodeId, error: ResolveError) -> CompileError {
     }
 }
 
-/// Compile fresh pure/seeded-entropy computed exports and graph-local Pure calls.
+/// Compile fresh pure/seeded-entropy computed exports and graph-local Pure/seeded-volatile calls.
 /// Static selectors prune
 /// inactive alternatives; epoch-dependent selectors retain both possible arms.
 /// Eligible constant islands in those possible arms may fold during compilation.
@@ -596,6 +596,13 @@ pub(crate) fn lower_roots(
     admission: Admission<'_>,
     roots: &[DemandRoot],
 ) -> Result<DataPlan, CompileError> {
+    let calls = Arc::new(crate::calls::Calls::prepare(
+        document,
+        &snapshot,
+        analysis,
+        options,
+        crate::calls::CallProfile::SeededData,
+    )?);
     let folder = ConstantFolder::new(
         document,
         analysis,
@@ -604,6 +611,7 @@ pub(crate) fn lower_roots(
         options,
         &admission.incoming,
         &admission.lazy_nodes,
+        calls,
     )?;
     let mut state = Lowering {
         scope: 0,

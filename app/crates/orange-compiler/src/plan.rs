@@ -253,7 +253,8 @@ pub struct Export {
     pub slot: SlotIx,
 }
 
-/// One specialized potential call instance. Parent indexes the same table;
+/// One specialized potential call instance. PurePlan uses Pure calls; DataPlan
+/// also admits the supported seeded-volatile subset. Parent indexes the same table;
 /// None denotes a root call. Unselected lazy arms may have no executed steps.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PureCallSite {
