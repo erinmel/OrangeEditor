@@ -11,7 +11,7 @@ use crate::document::{BodyRef, GraphDocument};
 use crate::edit::{ChangeSet, DeclId};
 use crate::id::NodeId;
 
-use super::config::validate_node_config;
+use super::config::{ConfigSchemas, validate_node_config};
 use super::declarations::validate_declaration_type;
 use super::{Diagnostic, Subject};
 
@@ -48,6 +48,7 @@ pub(crate) struct LocalValidation {
     config: BTreeMap<NodeId, ConfigResult>,
     body_nodes: BTreeMap<BodyRef, BTreeSet<NodeId>>,
     declarations: BTreeMap<DeclId, Option<Diagnostic>>,
+    schemas: ConfigSchemas,
 }
 
 impl std::fmt::Debug for LocalValidation {
@@ -115,7 +116,12 @@ impl LocalValidation {
                         work.config_computed += 1;
                         entry.insert(ConfigResult {
                             body: body_ref,
-                            diagnostic: validate_node_config(body_ref, node, registry),
+                            diagnostic: validate_node_config(
+                                body_ref,
+                                node,
+                                registry,
+                                &mut self.schemas,
+                            ),
                         });
                         self.body_nodes.entry(body_ref).or_default().insert(node.id);
                     }

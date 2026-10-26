@@ -6,11 +6,12 @@
 //! dialect can never silently accept a configuration.
 
 use std::cmp::Ordering;
+use std::collections::BTreeMap;
 
 use serde_json::{Map, Number, Value};
 
 use crate::catalog::RegistrySnapshot;
-use crate::document::{BodyRef, GraphDocument, NodeInstance};
+use crate::document::{BodyRef, DefinitionRef, GraphDocument, NodeInstance};
 
 use super::diagnostic::{Diagnostic, DiagnosticCode, Subject, sort_diagnostics};
 
@@ -102,6 +103,9 @@ pub fn config_satisfies_schema(config: &Value, schema: &Value) -> bool {
 }
 
 fn satisfies(value: &Value, schema: &Map<String, Value>) -> bool {
+    if let Some(object) = value.as_object() {
+        return satisfies_object(object, schema);
+    }
     if let Some(name) = schema.get("type").and_then(Value::as_str) {
         let matches = match name {
             "object" => value.is_object(),
@@ -134,9 +138,26 @@ fn satisfies(value: &Value, schema: &Map<String, Value>) -> bool {
             return false;
         }
     }
-    let Some(object) = value.as_object() else {
-        return true;
-    };
+    true
+}
+
+/// Validate the existing object by reference, including root type/enum rules.
+/// Never wrap it in a cloned Value just to dispatch on its JSON kind.
+fn satisfies_object(object: &Map<String, Value>, schema: &Map<String, Value>) -> bool {
+    if schema
+        .get("type")
+        .and_then(Value::as_str)
+        .is_some_and(|kind| kind != "object")
+    {
+        return false;
+    }
+    if let Some(members) = schema.get("enum").and_then(Value::as_array)
+        && !members
+            .iter()
+            .any(|member| member.as_object() == Some(object))
+    {
+        return false;
+    }
     let required = schema
         .get("required")
         .and_then(Value::as_array)
@@ -203,9 +224,10 @@ fn compare_integer_float(integer: i128, float: f64) -> Ordering {
 /// config values. Nodes whose definition is not in the registry are left to node resolution.
 pub fn validate_config(document: &GraphDocument, registry: &RegistrySnapshot) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
+    let mut schemas = ConfigSchemas::default();
     for (body_ref, body) in document.bodies_with_refs() {
         for node in body.nodes.values() {
-            diagnostics.extend(validate_node_config(body_ref, node, registry));
+            diagnostics.extend(validate_node_config(body_ref, node, registry, &mut schemas));
         }
     }
     sort_diagnostics(&mut diagnostics);
@@ -218,16 +240,17 @@ pub(crate) fn validate_node_config(
     body: BodyRef,
     node: &NodeInstance,
     registry: &RegistrySnapshot,
+    schemas: &mut ConfigSchemas,
 ) -> Option<Diagnostic> {
     // A schema describes exactly its own config version; other versions are a
     // resolution matter and are not judged against it.
-    let schema = registry
-        .definition(&node.definition)
-        .filter(|definition| definition.config_version == node.config_version)
-        .and_then(|definition| definition.config_schema.as_ref())?;
-    let code = if !config_schema_is_supported(schema) {
+    let (schema, supported) = schemas.schema(node, registry)?;
+    let code = if !supported {
         DiagnosticCode::ConfigSchemaUnsupported
-    } else if config_satisfies_schema(&Value::Object(node.config.clone()), schema) {
+    } else if schema
+        .as_object()
+        .is_some_and(|schema| satisfies_object(&node.config, schema))
+    {
         return None;
     } else {
         DiagnosticCode::ConfigInvalid
@@ -238,4 +261,38 @@ pub(crate) fn validate_node_config(
         BodyRef::Function(function) => subject.with_function(function),
     };
     Some(Diagnostic::new(code, subject, registry.origin()))
+}
+
+/// Immutable definition schemas share a dialect verdict within one registry generation.
+/// No node configuration or schema payload is copied into this cache.
+#[derive(Default, Clone)]
+pub(crate) struct ConfigSchemas {
+    generation: Option<u64>,
+    supported: BTreeMap<DefinitionRef, bool>,
+}
+
+impl ConfigSchemas {
+    fn schema<'a>(
+        &mut self,
+        node: &NodeInstance,
+        registry: &'a RegistrySnapshot,
+    ) -> Option<(&'a Value, bool)> {
+        if self.generation != Some(registry.generation()) {
+            self.supported.clear();
+            self.generation = Some(registry.generation());
+        }
+        let schema = registry
+            .definition(&node.definition)
+            .filter(|definition| definition.config_version == node.config_version)
+            .and_then(|definition| definition.config_schema.as_ref())?;
+        let supported = match self.supported.get(&node.definition) {
+            Some(supported) => *supported,
+            None => {
+                let supported = config_schema_is_supported(schema);
+                self.supported.insert(node.definition.clone(), supported);
+                supported
+            }
+        };
+        Some((schema, supported))
+    }
 }
