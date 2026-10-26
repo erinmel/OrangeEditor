@@ -1416,3 +1416,31 @@ The prior public-API reproduction was rerun using the corrected model (`cargo ru
 The explicit `measure_config_unit_reuse` release probe also PASSes: five warmups/40 samples at128/1024 nodes. Full analysis p50/p95=135.6/142.9us and1209.6/1270.9us; session p50/p95=118.5/124.7us and1046.8/1113.7us; owned materialization p50/p95=2.8/2.9us and22.7/24.3us. All node IDs/global passes are still visited/run on semantic edits; per edit one config unit recomputes and127/1023 are reused. Historical earlier measurements remain tied to their versions; this is not a controlled universal before/after speedup or W4/W9/NFR-15 qualification.
 
 Contracts/ADR/trace are updated in01/08/12/16. Existing diagnostics/localization keys and provider/override interfaces are unchanged. Core completion and V12b remainder still require their later cohorts. The PR remains subject to user review; no agent merge is authorized.
+
+## Pure graph-local call compilation — 2026-10-26 UTC
+
+Base fetched `origin/dev` b7d32e4a7590a41591df8cf21b7ed405efe461d5, containing merged PR17; branch `core/function-execution`. This cohort implements constant Pure calls only; volatile/action/async frames, dynamic data/control calls, erased generic parameters, package bodies and Return cleanup remain pending. Contracts:03/11/12, ADR amendment:08, FR trace:01. No gate or performance target is declared complete.
+
+Environment: Windows x86_64-pc-windows-msvc; selected Rust1.99.1 (`rustc 58cf8f9c3`, Cargo1.99.1 `5f94df478`); declared MSRV1.97.1, local MSRV not rerun. Node24.18.0. Workspace default features; checked-in Cargo.lock unchanged, SHA256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152. No dependency/toolchain/feature changes. The user foundation review remains untouched (SHA256 D8F25A2F3DF04A88578972340B3CA3B591DC42126083B107A60344B00125D553).
+
+Executed local checks:
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` |789 passed,14 ignored,0 failed,85 result groups including doctests|
+| `cargo test --workspace --release --locked --offline` |789 passed,14 ignored,0 failed,85 result groups including doctests|
+| `cargo fmt --all --check` |PASS|
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` |PASS|
+| `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked --offline` |PASS|
+| `node tools/check-cargo-metadata.mjs --self-test` and actual policy |9 fixtures and architecture guard PASS|
+| `node --test tools/release.test.mjs` |7 passed|
+| `node tools/release.mjs check` |valid, intentionally disabled|
+| `cargo run -p orange-bundled --example headless_control --locked --offline` |total3 at10ns|
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` |all10/10,any5/10,race5/5,detach0/10ns|
+| `git diff --check` |PASS|
+
+Fourteen new tests: two model marker/inference regressions and twelve compiler tests, including a64-case independent source-demand property. Deterministic checks cover per-call generic arithmetic/cache isolation, three independent type instantiations, nested calls, typed result aliases, first-result fault choice, argument faults/Try, lazy skipped callbacks, function-edit freshness/frozen views,128-call depth, five quota limits, cancellation, expanding acyclic call graphs, exact concrete provider refusal and explicit erased-argument refusal despite saved inference. Existing dynamic/control suites still refuse calls in their compiler profiles.
+
+A deliberate reversed-result-order mutation made the first-fault regression fail (actual NumericOverflow instead of original DivideByZero). Original compiler bytes were restored in a finally block; the focused regression passed again. Full debug/release runs include the final two-fault fixture; only documentation changed afterward. Raw logs live in ignored `.artifacts/functions-*.log`. The source oracle scans original body edges with independent invocation caches; its generated function vocabulary is nested identity plus integer division/Try. It shares the model codec/validation and arithmetic platform, not compiler call preparation, slots or callbacks. This is bounded behavioral equivalence, not proof of general function/runtime correctness.
+
+Only environmental OneDrive incremental-cache hard-link fallback warnings appeared; no code warnings were suppressed. Potential call expansion is conservatively bounded, not optimized/fused or measured for allocations/RSS. Trusted callback time/allocations remain outside cooperative admission guarantees. Remote native platform, MSRV and security CI will qualify the published final head separately; no remote pass is claimed by this local record.
