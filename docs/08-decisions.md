@@ -358,6 +358,8 @@ Review follow-up decision: every activation API that observes cancellation inval
 - Implemented configuration/declaration buckets invalidate from immutable committed deltas; other pass-unit invalidation remains future work. Cache refresh and publication still visit current results, so hits do not establish O(delta) updates.
 - Registry, effects, limits, global metadata or identity-lineage mismatches use full analysis. Current cancellation precedes fast-path reuse; cancelled/rejected results cannot supply compiler approval.
 
+Review correction (2026-10-25): report freshness and execution readiness are distinct. Fresh deterministic domain/quota errors remain current through layout-only changes with unchanged analysis inputs; cancellation requires recovery. Both analysis routes borrow host effects and share rejection prerequisites before preparing indexes/results. Config checks borrow objects with registry-generation-bound schema support; indexed input checks share a diagnostic buffer and preserve body-scoped invalid-wire precedence. Change publication merges ordered keys once. These refinements preserve the full-pass oracle and do not complete V12b or any NFR gate.
+
 Its observable result must equal `analyze` for the same inputs. The full pass remains the test oracle and the fallback, and `materialize()` produces the same `ValidationAnalysis` the compiler requires.
 
 Alternatives:
