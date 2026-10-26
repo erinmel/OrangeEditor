@@ -355,16 +355,18 @@ fn state_reads_become_host_inputs_and_function_calls_never_enter_generic_callbac
             // Admitted, but nothing exports it, so no input slot is lowered.
             assert!(data.unwrap().host_inputs().is_empty());
         }
-        assert!(matches!(
-            compile_pure(
-                &doc,
-                snapshot.clone(),
-                &analysis,
-                &resolver,
-                CompileOptions::default()
-            ),
-            Err(CompileError::UnsupportedNode { .. })
-        ));
+        let pure = compile_pure(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &resolver,
+            CompileOptions::default(),
+        );
+        if function_call {
+            assert!(pure.unwrap().exports().is_empty());
+        } else {
+            assert!(matches!(pure, Err(CompileError::UnsupportedNode { .. })));
+        }
         assert_eq!(resolver.pure.load(Ordering::Relaxed), 0);
         assert_eq!(resolver.entropy.load(Ordering::Relaxed), 0);
     }
