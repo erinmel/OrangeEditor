@@ -10,7 +10,9 @@ pub mod provider;
 pub mod snapshot;
 
 pub use call::{CallInterface, CallInterfaceError, call_interface};
-pub(crate) use call::{body_rigid_params, is_function_marker, project_interface, rigid_params};
+pub(crate) use call::{
+    body_rigid_params, is_function_marker, marker_contract, project_interface, rigid_params,
+};
 pub use definition::{
     ContractError, Determinism, EventAccess, NodeContract, NodeDefinition, Ports, ReferenceError,
     ReferenceField, ReferenceKind, TypeArgs, VariableAccess, Volatility,

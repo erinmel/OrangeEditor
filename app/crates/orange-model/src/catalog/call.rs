@@ -218,3 +218,63 @@ pub(crate) fn body_rigid_params(document: &GraphDocument, body: Option<BodyRef>)
         _ => &[],
     }
 }
+
+/// Ports of a function-structure marker, derived from the owning function's interface.
+///
+/// The entry exposes the declared inputs as data outputs; return and function-outputs accept
+/// the declared outputs as required data inputs (`return` also has the exec `in`). The
+/// declaration is the only type authority, so a marker is never independently generic: the
+/// function's own type parameters stay in the port types as rigid `$T` constants shared by
+/// every marker, and only a call site instantiates them.
+pub(crate) fn marker_contract(
+    document: &GraphDocument,
+    node: &crate::document::NodeInstance,
+) -> Result<super::NodeContract, CallInterfaceError> {
+    if !is_function_marker(node.definition.id.as_str())
+        || node.definition.version != 1
+        || node.config_version != 1
+        || node.provider.is_some()
+    {
+        return Err(CallInterfaceError::Identity);
+    }
+    let Some(BodyRef::Function(function)) = document.locate_node(node.id) else {
+        return Err(CallInterfaceError::Identity);
+    };
+    let declaration = document
+        .functions()
+        .get(&function)
+        .ok_or(CallInterfaceError::Identity)?;
+    let interface =
+        project_interface(declaration).map_err(|_| CallInterfaceError::InvalidInterface)?;
+    let entry = node.definition.id.as_str() == "core/function-entry";
+    let mut ports = Vec::new();
+    for port in interface {
+        let ty = port.ty.expect("projected interface ports are typed");
+        match (entry, port.direction) {
+            (true, crate::document::PortDirection::Input) => {
+                ports.push(PortDescriptor::data_out(
+                    port.port_id.as_str(),
+                    ty,
+                    crate::document::OutputSource::Computed,
+                ));
+            }
+            (false, crate::document::PortDirection::Output) => {
+                ports.push(PortDescriptor::data_in(port.port_id.as_str(), ty));
+            }
+            _ => {}
+        }
+    }
+    if node.definition.id.as_str() == "core/return" {
+        ports.push(PortDescriptor::exec_in("in"));
+    }
+    Ok(super::NodeContract {
+        kind: if entry {
+            crate::document::NodeKind::Entry
+        } else {
+            crate::document::NodeKind::Pure
+        },
+        suspends: None,
+        type_params: Vec::new(),
+        ports,
+    })
+}

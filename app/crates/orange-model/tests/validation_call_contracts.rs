@@ -168,6 +168,78 @@ fn generic_functions_treat_their_parameters_as_rigid_and_calls_instantiate_them(
     assert!(codes(&report).contains(&DiagnosticCode::TypeAmbiguous));
 }
 
+#[test]
+fn nested_generic_calls_infer_from_declaration_owned_markers() {
+    let mut outer = generic_identity("$T");
+    outer["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .push(call(INNER_CALL, G));
+    outer["edges"] = json!([
+        edge(1, ENTRY, "x", INNER_CALL, "x"),
+        edge(2, INNER_CALL, "y", OUT, "y")
+    ]);
+    let mut inner = generic_identity("$T");
+    inner["id"] = json!(G);
+    let input = "40000000-0000-4000-8000-000000000011";
+    let output = "40000000-0000-4000-8000-000000000012";
+    inner["nodes"] = json!([
+        marker(input, "core/function-entry"),
+        marker(output, "core/function-outputs")
+    ]);
+    inner["edges"] = json!([edge(3, input, "x", output, "y")]);
+    let report = run_pinned(vec![outer, inner], Some("core/i64@1"));
+    assert_eq!(
+        report.resolved[&INNER_CALL.parse().unwrap()].ports[0]
+            .ty
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "$T"
+    );
+    assert_eq!(
+        report.resolved[&CALL.parse().unwrap()].ports[0]
+            .ty
+            .as_ref()
+            .unwrap()
+            .as_str(),
+        "core/i64@1"
+    );
+    assert!(
+        !codes(&report).iter().any(|c| matches!(
+            c,
+            DiagnosticCode::TypeMismatch
+                | DiagnosticCode::TypeAmbiguous
+                | DiagnosticCode::FunctionMetadataUnavailable
+        )),
+        "{:?}",
+        report.diagnostics
+    );
+}
+
+#[test]
+fn malformed_markers_do_not_supply_generic_inference_evidence() {
+    let mut f = generic_identity("$T");
+    f["nodes"].as_array_mut().unwrap().push(call(INNER_CALL, G));
+    f["edges"] = json!([
+        edge(1, ENTRY, "x", INNER_CALL, "x"),
+        edge(2, INNER_CALL, "y", OUT, "y")
+    ]);
+    f["nodes"][0]["definition_version"] = json!(99);
+    let mut target = generic_identity("$T");
+    target["id"] = json!(G);
+    let input = "40000000-0000-4000-8000-000000000011";
+    let output = "40000000-0000-4000-8000-000000000012";
+    target["nodes"] = json!([
+        marker(input, "core/function-entry"),
+        marker(output, "core/function-outputs")
+    ]);
+    target["edges"] = json!([edge(3, input, "x", output, "y")]);
+    let report = run_pinned(vec![f, target], Some("core/i64@1"));
+    assert!(!report.resolved.contains_key(&CALL.parse().unwrap()));
+    assert!(!report.resolved.contains_key(&ENTRY.parse().unwrap()));
+}
+
 const SET: &str = "40000000-0000-4000-8000-000000000005";
 const VAR: &str = "60000000-0000-4000-8000-000000000001";
 
