@@ -656,3 +656,6 @@ proptest::proptest! {
         assert_oracle(&doc,&snapshot,&plan);
     }
 }
+
+#[path = "pure_function_review_fixes.rs"]
+mod review_fixes;

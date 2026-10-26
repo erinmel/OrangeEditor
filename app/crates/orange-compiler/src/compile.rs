@@ -65,6 +65,31 @@ pub(crate) fn port_type(node: NodeId, port: &PortDescriptor) -> Result<PlanType,
             port: key(port),
         })
 }
+/// Shared executable port policy for root and function-body admission.
+pub(crate) fn admit_data_ports(
+    node: NodeId,
+    sig: &orange_model::document::SignatureSnapshot,
+    lazy: bool,
+    source: OutputSource,
+    options: CompileOptions<'_>,
+) -> Result<(), CompileError> {
+    for port in &sig.ports {
+        options.checkpoint()?;
+        if port.kind != PortKind::Data
+            || (port.is_lazy() && !lazy)
+            || port.is_optional()
+            || port.variadic.is_some()
+            || (port.direction == PortDirection::Output && port.source != Some(source))
+        {
+            return Err(CompileError::UnsupportedPort {
+                node,
+                port: key(port),
+            });
+        }
+        port_type(node, port)?;
+    }
+    Ok(())
+}
 pub(crate) fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<(), CompileError> {
     *used = used
         .checked_add(amount)
@@ -357,7 +382,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             calls: std::mem::take(&mut calls.sites),
             slot_calls: vec![],
         };
-        let mut bytes = 0;
+        let mut bytes = calls.signature_bytes;
         for export in document.exports() {
             charge(
                 &mut bytes,
@@ -420,8 +445,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                 call: scope.checked_sub(1),
             };
             if let Work::ReturnCall { parent, node } = task {
-                let result = calls.scopes[scope]
-                    .result
+                let result = calls
+                    .result(scope)
                     .ok_or(CompileError::ValidationIncomplete)?;
                 let mut results = Vec::new();
                 for port in &calls.signature(analysis, scope, result).ports {
@@ -467,7 +492,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     if completed.contains(&node) {
                         continue;
                     }
-                    if calls.scopes[scope].entry == Some(node) {
+                    if calls.entry(scope) == Some(node) {
                         continue;
                     }
                     let signature = calls.signature(analysis, scope, node);
@@ -587,12 +612,12 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     completed.insert(node_id);
                     continue;
                 }
-                if let Some(entry) = calls.scopes[child].entry {
+                if let Some(entry) = calls.entry(child) {
                     for (port, slot) in args {
                         frames[child].outputs.insert((entry, port), slot);
                     }
                 }
-                if let Some(result) = calls.scopes[child].result {
+                if let Some(result) = calls.result(child) {
                     work.push((
                         child,
                         Work::ReturnCall {
@@ -876,20 +901,13 @@ pub(crate) fn admit_roots<'a>(
             OutputSource::Computed
         };
         charge(&mut ports, sig.ports.len(), options.limits.max_graph_items)?;
-        for port in &sig.ports {
-            if port.kind != PortKind::Data
-                || (port.is_lazy() && !lazy_nodes.contains_key(node))
-                || port.is_optional()
-                || port.variadic.is_some()
-                || (port.direction == PortDirection::Output && port.source != Some(output_source))
-            {
-                return Err(CompileError::UnsupportedPort {
-                    node: *node,
-                    port: key(port),
-                });
-            }
-            port_type(*node, port)?;
-        }
+        admit_data_ports(
+            *node,
+            sig,
+            lazy_nodes.contains_key(node),
+            output_source,
+            options,
+        )?;
     }
     let incoming: BTreeMap<_, _> = body
         .edges
