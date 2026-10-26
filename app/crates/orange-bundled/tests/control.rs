@@ -9,6 +9,8 @@ mod fork_reference;
 #[path = "support/reference.rs"]
 #[allow(dead_code)]
 mod reference;
+#[path = "support/control_review_fixes.rs"]
+mod review_fixes;
 #[path = "support/data_graph.rs"]
 #[allow(dead_code)]
 mod support;

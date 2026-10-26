@@ -106,6 +106,8 @@ pub(crate) struct PreparedData {
     layout: EntropyLayout,
     entropy_slots: Box<[Option<EntropySlot>]>,
     host_indices: Box<[Option<usize>]>,
+    dynamic_slots: Box<[Option<usize>]>,
+    dynamic_count: usize,
 }
 impl PreparedData {
     pub(crate) fn new(plan: Arc<DataPlan>, limits: DataLimits) -> Result<Arc<Self>, DataError> {
@@ -138,7 +140,23 @@ impl PreparedData {
         for (i, node) in plan.host_inputs().iter().enumerate() {
             host_indices[node.index()] = Some(i);
         }
+        let mut dynamic_count = 0;
+        let dynamic_slots = plan
+            .initial_values()
+            .iter()
+            .map(|value| {
+                if value.is_some() {
+                    None
+                } else {
+                    let index = dynamic_count;
+                    dynamic_count += 1;
+                    Some(index)
+                }
+            })
+            .collect();
         Ok(Arc::new(Self {
+            dynamic_slots,
+            dynamic_count,
             plan,
             retained,
             layout,
@@ -266,7 +284,9 @@ impl DataActivation {
         let retained = prepared.retained;
         // Root data plans have no callee frames.
         let scopes = ActivationEntropy::new(&prepared.layout, seed, activation_sequence, 0);
-        let slots = plan.initial_values().to_vec();
+        // Immutable constants remain in the shared plan. Only dynamic slots
+        // need activation-owned cells, avoiding per-entry constant copies/drop.
+        let slots = vec![None; prepared.dynamic_count];
         let state = Frame {
             scopes,
             prepared,
@@ -478,8 +498,9 @@ impl DataActivation {
         self.checkpoint()?;
         let export = &self.plan.exports()[index];
         let slot = export.slot.index();
-        let outcome = match self.state.slots[slot]
-            .as_ref()
+        let outcome = match self
+            .state
+            .slot(export.slot)
             .ok_or(DataError::KernelContract {
                 node: self.plan.nodes()[node.index()].node(),
             })? {
@@ -545,16 +566,24 @@ impl Frame {
         }
         Ok(())
     }
+    fn slot(&self, slot: orange_compiler::SlotIx) -> Option<&FoldedValue> {
+        match self.prepared.dynamic_slots[slot.index()] {
+            Some(index) => self.slots[index].as_ref(),
+            None => self.prepared.plan.initial_values()[slot.index()].as_ref(),
+        }
+    }
     fn outcome(&self, node: &DataNode, input: usize) -> Result<&FoldedValue, DataError> {
         node.inputs()
             .get(input)
-            .and_then(|input| self.slots[input.source.slot.index()].as_ref())
+            .and_then(|input| self.slot(input.source.slot))
             .ok_or(DataError::KernelContract { node: node.node() })
     }
     fn old_charge(&self, plan: &DataPlan, node: &DataNode) -> Result<usize, DataError> {
         let mut bytes = 0usize;
         for slot in node.outputs() {
-            let value = match self.slots[slot.index()].as_ref() {
+            let index = self.prepared.dynamic_slots[slot.index()]
+                .ok_or(DataError::KernelContract { node: node.node() })?;
+            let value = match self.slots[index].as_ref() {
                 Some(FoldedValue::Value(value)) => plan.value_charge(*slot, value),
                 Some(FoldedValue::Fault(fault)) => plan.fault_charge(fault),
                 None => Some(0),
@@ -590,7 +619,9 @@ impl Frame {
             .ok_or(DataError::ResourceLimit)?;
         self.replace_charge(self.old_charge(plan, node)?, new)?;
         for slot in node.outputs() {
-            self.slots[slot.index()] = Some(FoldedValue::Fault(fault.clone()));
+            let index = self.prepared.dynamic_slots[slot.index()]
+                .expect("publication checked dynamic targets");
+            self.slots[index] = Some(FoldedValue::Fault(fault.clone()));
         }
         self.memo[node.index().index()] = self.epoch;
         Ok(())
@@ -614,7 +645,9 @@ impl Frame {
         }
         self.replace_charge(self.old_charge(plan, node)?, new)?;
         for (slot, value) in node.outputs().iter().zip(self.outputs.drain(..)) {
-            self.slots[slot.index()] = Some(FoldedValue::Value(value));
+            let index = self.prepared.dynamic_slots[slot.index()]
+                .expect("publication checked dynamic targets");
+            self.slots[index] = Some(FoldedValue::Value(value));
         }
         self.memo[node.index().index()] = self.epoch;
         Ok(())

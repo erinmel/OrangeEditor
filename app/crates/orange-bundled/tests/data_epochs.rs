@@ -20,6 +20,55 @@ use std::sync::{Arc, OnceLock, Weak, atomic::Ordering};
 use support::*;
 
 #[test]
+fn activation_frames_borrow_immutable_constants_from_the_retained_plan() {
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![math(1, "add", 7, 8)],
+        vec![],
+        vec![export(1, "sum")],
+    );
+    let plan = Arc::new(
+        compile_data(
+            &doc,
+            snapshot.clone(),
+            &analyze(&doc, &snapshot),
+            &package,
+            CompileOptions::default(),
+        )
+        .unwrap(),
+    );
+    let orange_compiler::FoldedValue::Value(expected) = plan.initial_values()
+        [plan.exports()[0].slot.index()]
+    .as_ref()
+    .unwrap() else {
+        panic!()
+    };
+    let mut first =
+        DataActivation::start(plan.clone(), &doc, &snapshot, 1, 0, DataOptions::default()).unwrap();
+    let mut second =
+        DataActivation::start(plan.clone(), &doc, &snapshot, 2, 1, DataOptions::default()).unwrap();
+    for _ in 0..3 {
+        first.begin_epoch().unwrap();
+        second.begin_epoch().unwrap();
+        assert!(std::ptr::eq(
+            first.export(0).unwrap().unwrap().outcome.unwrap(),
+            expected
+        ));
+        assert!(std::ptr::eq(
+            second.export(0).unwrap().unwrap().outcome.unwrap(),
+            expected
+        ));
+    }
+    drop(first);
+    second.begin_epoch().unwrap();
+    assert_eq!(
+        second.export(0).unwrap().unwrap().outcome.unwrap(),
+        &Value::U64(15)
+    );
+}
+
+#[test]
 #[ignore = "manual release-only local timing baseline; no NFR threshold"]
 fn root_data_epoch_timing_baseline() {
     use std::hint::black_box;
