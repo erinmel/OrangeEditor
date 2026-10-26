@@ -34,11 +34,13 @@ mod functions;
 mod graph;
 mod inputs;
 mod limits;
+mod local;
 mod nodes;
 pub(crate) mod ports;
 mod regions;
 mod report;
 mod scope;
+mod session;
 mod state;
 mod streams;
 mod variables;
@@ -60,6 +62,7 @@ pub use domains::{DomainValidation, validate_body_domains};
 pub use exports::validate_exports;
 pub use inputs::validate_inputs;
 pub use limits::{AnalysisLimits, AnalysisOptions};
+pub use local::LocalWork;
 pub use nodes::{NodeValidation, validate_nodes};
 pub use regions::{
     Region, RegionIndex, RegionKind, RegionRoot, RegionValidation, validate_regions,
@@ -68,6 +71,7 @@ pub use report::{
     ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
     analyze_with_options, required_checks, validate, validate_with_effects,
 };
+pub use session::{AnalysisSession, EditStats, RebuildReason, SessionWork};
 pub use state::validate_state;
 pub use streams::validate_streams;
 

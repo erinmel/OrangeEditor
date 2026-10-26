@@ -65,7 +65,8 @@ impl BodyPasses {
         options.checkpoint()?;
         let control = validate_control_cycles_in(document, resolved, &connections, registry, scope);
         options.checkpoint()?;
-        let input_diagnostics = validate_inputs_in(document, resolved, registry, scope);
+        let input_diagnostics =
+            validate_inputs_in(document, resolved, registry, scope, Some(index));
         options.checkpoint()?;
         let projections = ports.retain();
         drop(ports);

@@ -173,7 +173,13 @@ impl GraphDocument {
         if journal.is_empty() {
             return Err(TxError::Empty);
         }
-        let change = std::mem::take(&mut journal.tracker).finish(self, self.revision);
+        let change = std::mem::take(&mut journal.tracker).finish(
+            self,
+            self.revision,
+            self.state_id,
+            self.semantic_state_id,
+            false,
+        );
         // Roll back even if `observe` panics: a caller that catches the unwind must not
         // keep trial content under the document's unchanged state identity.
         let result = catch_unwind(AssertUnwindSafe(|| observe(self, &change)));
@@ -268,15 +274,18 @@ impl Journal {
         let (from_revision, from_state) = (document.revision, document.state_id);
         document.revision += 1; // checked by `check_revision` before the first patch
         let from_semantic = document.semantic_state_id;
-        let change_set = self.tracker.finish(document, from_revision);
+        let layout_only = self.tracker.layout_only();
         document.state_id = restores.map(|state| state.0).unwrap_or_else(fresh_state_id);
         document.semantic_state_id = restores.map(|state| state.1).unwrap_or_else(|| {
-            if change_set.layout_only {
+            if layout_only {
                 from_semantic
             } else {
                 fresh_state_id()
             }
         });
+        let change_set =
+            self.tracker
+                .finish(document, from_revision, from_state, from_semantic, true);
         self.inverses.reverse();
         Committed {
             change_set,
@@ -702,6 +711,43 @@ mod tests {
             "definition_version": 1, "config_version": 1, "config": {}
         }))
         .unwrap()
+    }
+
+    #[test]
+    fn scratch_changes_are_not_committed_and_restore_the_retained_index() {
+        let mut document =
+            GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let mut index = crate::DocIndex::build(&document);
+        let before = (
+            document.revision(),
+            document.state_id(),
+            document.semantic_state_id(),
+        );
+        let change = crate::inference::persist::scratch_indexed(
+            &mut document,
+            &mut index,
+            [DocCommand::AddNode {
+                body: BodyRef::Root,
+                node: branch(1),
+            }],
+            |trial, trial_index, change| {
+                assert!(!change.is_committed());
+                assert!(!change.layout_only());
+                assert_eq!(trial_index, &crate::DocIndex::build(trial));
+                change.clone()
+            },
+        )
+        .unwrap();
+        assert!(!change.is_committed());
+        assert_eq!(
+            (
+                document.revision(),
+                document.state_id(),
+                document.semantic_state_id()
+            ),
+            before
+        );
+        assert_eq!(index, crate::DocIndex::build(&document));
     }
 
     #[test]

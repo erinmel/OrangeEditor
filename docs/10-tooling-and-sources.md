@@ -1133,6 +1133,20 @@ These are single runs, not NFR evidence. Whole-document validation and whole-com
 
 cargo test --workspace --locked --offline passed 667 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged. Inference results, issues and public signatures are unchanged. Local commits only, no push.
 
+### Analysis session skeleton (V12a, 2026-10-24)
+
+Base b612f3f. `validation::AnalysisSession` keeps a document's combined analysis across committed edits and states what each update did (`EditStats`, `SessionWork`, `RebuildReason`). In this slice every semantic change recomputes the whole analysis, so visit counts equal the document size; dirty-unit recompute follows in V12b–V12e. Layout-only changes rebind without work. Mismatched revisions, registry, limits or effects changes, and cancelled results rebuild with a reason.
+
+Evidence:
+
+- Known-answer tests cover creation, recompute, undo, layout rebind (still ready for lowering), skipped changes, registry and limits changes (including the full pass's over-quota rejection), equal and changed leaf effects, and cancellation.
+- Two property tests (64 cases each, up to 15 random edits from an empty document and from the saved example) compare the session with `analyze_with_options` after every commit, rollback, undo and redo. They also assert that no update was a state-mismatch rebuild.
+- Mutants that skip the layout rebind, or ignore cancellation, fail these tests.
+
+cargo test --workspace --locked --offline passed 674 tests, seven timing tests ignored. cargo fmt --all --check, cargo clippy --workspace --all-targets --locked --offline -- -D warnings, cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings, node tools/check-cargo-metadata.mjs with its nine-fixture self-test, and git diff --check passed. Environment: rustc 1.99.1 (58cf8f9c3), Cargo 1.99.1 (5f94df478), x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged.
+
+Public additions: AnalysisSession, EditStats, SessionWork and RebuildReason (the last three `#[non_exhaustive]`), plus `PartialEq` on ValidationAnalysis. No timing claim: V12a does not change edit cost.
+
 ## Structured headless control verification — 2026-10-24
 
 Integrated work on `core/headless-control-runtime`, based directly on fetched dev `1a901281f6bdf8fb274a6064a35335d4822800ef`. The selected E3/R1 cohort implements checked Start/Stop/Branch/Sequence/Count/While/Break/Continue/Wait/Yield and local/run Get/Set execution, bounded resumable data/control work, virtual time, staged drain/cancel/dispose and narrow timer-continuation ownership. General events, Fork/functions, affine resources and service adapters are not implemented by this cohort. V12a implementation remains on its own branch; no topic commits were copied.
@@ -1341,3 +1355,64 @@ Ten added ordinary regressions cover malformed Sequence/Fork identities and atom
 Explicit descriptive timing: `cargo test -p orange-bundled --test core_integrity --release --locked --offline measure_nested_none_literal_decoding -- --ignored --nocapture`. The probe decodes and drops 10,000 outer None values in a list of nested option types, with three warmups and five timed samples per type depth. Before the fix, recorded medians at depths 1/32/63 were 1,066/25,631/50,646 µs. Borrowing type arguments instead of cloning them yields 151/157/161 µs (sample maxima 152/157/163 µs). Type parsing remains in each decode; no timing assertion, allocator count, cross-OS comparison, general runtime speedup or NFR pass is claimed.
 
 Self-review checked every semantic-state consumer in compiler/evaluation entry, preserved whole-content binding for undo/index/edit proposals, checked type-lock validation executes once in combined analysis, and traced cleanup entry failures through activation restoration and normal region retirement. Paste occupancy uses binary UUID keys by typed namespace rather than allocating one UUID string per existing identity. Temporary review reproductions are promoted to durable behavior tests. Final-head remote CI is recorded separately after push; no merge is authorized.
+
+
+## Resilient edit analysis and bounded local reuse — 2026-10-25
+
+PR17's original V12a work was integrated with merged dev `bda93989233e799398a25eefa837c4c8afd9dae4` (PR19). This section supersedes the earlier V12a content-rebind/current-work claims; their test results remain historical evidence for their stated base.
+
+Implemented V12a reliability plus bounded V12b configuration/declaration-type reuse. Committed changes carry journal-owned read-only before/after content and semantic identities, revision lineage, committed/trial status and explicit global invalidation. Session reuse checks every update path, including current cancellation and unchanged effects. Layout retains semantic compiler evidence. A retained optional index supports journaled inference trials; borrowed diagnostics, signature and changed-subject reads avoid per-read whole-report copies. A shared full-analysis pipeline consumes the same local validators as uncached analysis; inputs/resolution/connections and all global passes remain full. No dependency, feature, lockfile or graph/schema-format change occurred. Unfrozen ChangeSet field users must adopt getters; EditStats input cardinalities are distinct from actual LocalWork visits/computations/hits.
+
+Verification environment: Windows `x86_64-pc-windows-msvc`; rustc `1.99.1 (58cf8f9c3 2026-10-13)`; Cargo `1.99.1 (5f94df478 2026-08-27)`; Node `24.18.0`; default features and locked/offline Cargo commands. Declared MSRV remains 1.97.1; local metadata checks are not an MSRV build. Cargo.lock SHA256 is unchanged: `E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152`.
+
+| Executed command/check | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` | PASS: 770 passed, 14 manual probes ignored, zero failures; 84 result groups including doctests |
+| `cargo test --workspace --release --locked --offline` | PASS: same 770/14/zero failures |
+| Original session properties | PASS: two bounded 64-case edit/rollback/undo/redo properties compare complete analysis with the full oracle; original seven V12a tests retained |
+| New behavior coverage | PASS: immutable edit/undo/trial provenance, foreign/divergent/reloaded/skipped/replayed receipts, all update/cancellation/quota paths, global lock/signature changes, declarations inside functions, cache invalidation/undo/function replacement, borrowed subject views, Send+Sync and payload-safe Debug |
+| `cargo test -p orange-bundled --test analysis_session_embedding --locked --offline` | PASS: two external API tests; already-running plan produces old result 5 after an edit, stale new-run/background compiler inputs are rejected, and new plan produces 23; partial failed editor trials preserve source and analysis/index identities |
+| Cache invalidation mutation | Removing local invalidation makes the public config-edit/full-oracle test FAIL (exit101); restored source passes. This is a test-sensitivity result, not production code or a bypass |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `cargo doc --workspace --no-deps --locked --offline`, `RUSTDOCFLAGS=-Dwarnings` | PASS |
+| `node tools/check-cargo-metadata.mjs --self-test` / normal metadata guard | PASS: nine policy fixtures; core remains UI/engine independent |
+| `node --test tools/release.test.mjs` / `node tools/release.mjs check` | PASS: seven tests; release configuration valid and intentionally disabled |
+| Both `headless_control` and `headless_fork` examples, `--locked --offline` | PASS: total3 at10ns; all10/10, any5/10, race5/5, detach0/10ns |
+| `git diff --check` | PASS |
+
+The complete suite is 32 tests above merged dev: the seven original V12a tests plus 25 additional tests/doctests. The extra ignored probe is run explicitly below. OneDrive incremental-cache hard-link warnings used Cargo's copy fallback; no Rust/Clippy warning was suppressed.
+
+Independent bounded review found and corrected two additional integration issues: domain admission must precede index/local preparation, and a layout fast path must defer an invalid retained index rebuild rather than hide a scan. Regressions cover both. Four previously reproduced stale-session issues are now covered by passing public-consumer tests. Source/effects are not authenticated by analysis; host-owned effects and late worker-publication request identities remain host responsibilities. Native callbacks and individual analysis passes are not wall-clock preemptible.
+
+### Descriptive release probe
+
+Executed `cargo test -p orange-model --test analysis_session_units --release --locked --offline measure_config_unit_reuse -- --ignored --nocapture`. Two valid registered/provider-bound isolated-node fixtures, one boolean config edit per sample, five warmups and 40 measured samples. Full analysis, session update and owned materialization have separate timers; complete oracle equality checks are outside timed sections. No wall-clock assertions.
+
+| Nodes | Full analysis p50 / p95 | Session update p50 / p95 | Owned materialize p50 / p95 |
+|---|---|---|---|
+| 128 | 161.4 / 185.5 microseconds | 125.1 / 151.2 microseconds | 2.8 / 2.9 microseconds |
+| 1024 | 1406.8 / 1496.4 microseconds | 1162.0 / 1213.6 microseconds | 22.5 / 25.8 microseconds |
+
+Each edit computes one configuration unit and reuses127/1023, but still visits128/1024 node IDs and runs full orchestration/global passes once. These are descriptive local fixture distributions, not W4/W9 or NFR-15 evidence, a universal speedup or an allocator/retained-memory measurement. Full admission, global validation, result/change publication scans, broader invalidation indexes, per-pass work instrumentation and V12c–f remain open. Compiler calls may borrow `session.analysis()` directly; owned materialization is needed only when a consumer needs a retained snapshot.
+
+Final remote Linux/macOS/Windows/MSRV, workflow/security and aggregate CI must pass on the actual updated PR head; local checks do not substitute for them. No merge is authorized by this evidence.
+
+## PR17 review corrections — 2026-10-25
+
+The follow-up review reproduced two missed boundaries and four reuse/simplification opportunities at `ff2a0a6`. They are addressed in `71e1c76` and `9f83961`, with unchanged public signatures, dependencies/features, graph format and Cargo.lock.
+
+- Fresh deterministic domain/quota errors are current reports, independently of coverage or execution readiness. Layout/undo/redo and unchanged-effect updates retain them without validation; changed inputs still rerun. Cancellation remains transient and requires recovery.
+- Session analysis borrows retained effect maps instead of deep-cloning write vectors before cancellation/admission. Normal and cached analysis share one prerequisite boundary; preparation follows successful admission/domain checks.
+- Configuration validation borrows JSON objects, shares root object/enum/member rules and caches schema-dialect verdicts by exact definition/registry generation. Unsupported config versions retain their previous handling.
+- Indexed input checking reuses incoming edges, appends into one diagnostic buffer and sorts once per pass. The standalone fallback remains scoped and equivalent, including invalid-wire literal shadowing. Result-change views share a sorted-map merge that compares each surviving value once.
+
+Windows x86_64 MSVC; unchanged Rust/Cargo1.99.1 toolchain, Node24.18.0, default features and locked/offline Cargo commands. `cargo test --workspace --locked --offline` and its `--release` equivalent both PASS: 775 tests, 14 manual probes ignored, zero failures, 85 result groups including doctests. Five added regressions cover deterministic-error freshness/history/changed inputs, large-effect rejection and cancellation recovery, object schema rules and registry replacement, single-comparison ordered-map changes, and indexed/standalone function-scope invalid-wire precedence. The last scope test was also rerun separately in debug/release after tightening its malformed-wire fixture to keep edge IDs unique.
+
+`cargo fmt --all --check`, workspace/all-target Clippy with `-D warnings`, Rustdoc with `RUSTDOCFLAGS=-Dwarnings`, metadata architecture guard/nine policy fixtures, seven release-helper tests, disabled-release check, both headless examples and `git diff --check` PASS. OneDrive hard-link fallback warnings remain environmental. No local MSRV build or new NFR/allocator/RSS gate is claimed; required remote platform/MSRV/security checks apply to the final pushed head.
+
+The prior public-API reproduction was rerun using the corrected model (`cargo run --manifest-path .artifacts/pr17-review-probe/Cargo.toml --release --locked --offline --target-dir target/pr17-review-probe`). The unknown-domain 10k-node case now reports analysis/session current=true and layout work=None/full_runs=0; a single sample was140us versus8216us previously, including retiring old changed-subject sets. The one-million-write cancelled update now borrows the retained17MB vector and a single sample was7us versus2230us previously. These are diagnostic samples; they establish the changed path and recorded work, not timing guarantees or measured allocations.
+
+The explicit `measure_config_unit_reuse` release probe also PASSes: five warmups/40 samples at128/1024 nodes. Full analysis p50/p95=135.6/142.9us and1209.6/1270.9us; session p50/p95=118.5/124.7us and1046.8/1113.7us; owned materialization p50/p95=2.8/2.9us and22.7/24.3us. All node IDs/global passes are still visited/run on semantic edits; per edit one config unit recomputes and127/1023 are reused. Historical earlier measurements remain tied to their versions; this is not a controlled universal before/after speedup or W4/W9/NFR-15 qualification.
+
+Contracts/ADR/trace are updated in01/08/12/16. Existing diagnostics/localization keys and provider/override interfaces are unchanged. Core completion and V12b remainder still require their later cohorts. The PR remains subject to user review; no agent merge is authorized.

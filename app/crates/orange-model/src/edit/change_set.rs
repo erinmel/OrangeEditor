@@ -54,23 +54,86 @@ impl<K: Ord> Delta<K> {
 
 /// Result of one committed transaction. Region-root compile scope (`affected_roots` in
 /// 12 §3.3) is derived from these deltas by the compiler once regions exist (00d/00e).
+///
+/// Only the transaction journal constructs this evidence. Readers may inspect or clone
+/// it, but cannot forge a layout edit or change the affected IDs.
+///
+/// ```compile_fail
+/// fn forge(mut change: orange_model::ChangeSet) {
+///     change.layout_only = true;
+/// }
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ChangeSet {
-    pub from_revision: u64,
-    pub to_revision: u64,
+    pub(crate) from_revision: u64,
+    pub(crate) to_revision: u64,
+    from_state: u64,
+    to_state: u64,
+    from_semantic_state: u64,
+    to_semantic_state: u64,
+    committed: bool,
+    global_dirty: bool,
     /// True when only editor layout changed: no validation, compile or preview work (G-36).
-    pub layout_only: bool,
-    pub nodes: Delta<NodeId>,
-    pub edges: Delta<EdgeId>,
-    pub decls: Delta<DeclId>,
+    pub(crate) layout_only: bool,
+    pub(crate) nodes: Delta<NodeId>,
+    pub(crate) edges: Delta<EdgeId>,
+    pub(crate) decls: Delta<DeclId>,
 }
 
 impl ChangeSet {
+    pub fn from_revision(&self) -> u64 {
+        self.from_revision
+    }
+    pub fn to_revision(&self) -> u64 {
+        self.to_revision
+    }
+    /// Whole-content identity before this transaction.
+    pub fn from_state(&self) -> u64 {
+        self.from_state
+    }
+    /// Whole-content identity after this transaction.
+    pub fn to_state(&self) -> u64 {
+        self.to_state
+    }
+    pub fn from_semantic_state(&self) -> u64 {
+        self.from_semantic_state
+    }
+    pub fn to_semantic_state(&self) -> u64 {
+        self.to_semantic_state
+    }
+    /// False for private rolled-back trial edits; they never establish new analysis evidence.
+    pub fn is_committed(&self) -> bool {
+        self.committed
+    }
+    /// Shared signatures or package locks changed. Consumers without those reverse
+    /// dependencies must rebuild instead of treating empty ID deltas as no work.
+    pub fn global_dirty(&self) -> bool {
+        self.global_dirty
+    }
+    pub fn layout_only(&self) -> bool {
+        self.layout_only
+    }
+    pub fn nodes(&self) -> &Delta<NodeId> {
+        &self.nodes
+    }
+    pub fn edges(&self) -> &Delta<EdgeId> {
+        &self.edges
+    }
+    pub fn decls(&self) -> &Delta<DeclId> {
+        &self.decls
+    }
+
     /// The change set of undoing this one.
     pub(crate) fn reversed(&self) -> Self {
         Self {
             from_revision: self.to_revision,
             to_revision: self.from_revision,
+            from_state: self.to_state,
+            to_state: self.from_state,
+            from_semantic_state: self.to_semantic_state,
+            to_semantic_state: self.from_semantic_state,
+            committed: false,
+            global_dirty: self.global_dirty,
             layout_only: self.layout_only,
             nodes: self.nodes.reversed(),
             edges: self.edges.reversed(),
@@ -86,6 +149,7 @@ pub(crate) struct Tracker {
     edges: BTreeMap<EdgeId, bool>,
     decls: BTreeMap<DeclId, bool>,
     semantic: bool,
+    global_dirty: bool,
 }
 
 impl Tracker {
@@ -114,14 +178,32 @@ impl Tracker {
                     .entry(DeclId::Function(*id))
                     .or_insert(entry.is_some());
             }
-            Patch::Signature { .. } | Patch::PackageLock { .. } | Patch::Editor { .. } => {}
+            Patch::Signature { .. } | Patch::PackageLock { .. } => self.global_dirty = true,
+            Patch::Editor { .. } => {}
         }
     }
 
-    pub fn finish(self, document: &GraphDocument, from_revision: u64) -> ChangeSet {
+    pub fn layout_only(&self) -> bool {
+        !self.semantic
+    }
+
+    pub fn finish(
+        self,
+        document: &GraphDocument,
+        from_revision: u64,
+        from_state: u64,
+        from_semantic_state: u64,
+        committed: bool,
+    ) -> ChangeSet {
         ChangeSet {
             from_revision,
             to_revision: document.revision(),
+            from_state,
+            to_state: document.state_id(),
+            from_semantic_state,
+            to_semantic_state: document.semantic_state_id(),
+            committed,
+            global_dirty: self.global_dirty,
             layout_only: !self.semantic,
             nodes: delta(self.nodes, |id| document.locate_node(*id).is_some()),
             edges: delta(self.edges, |id| document.locate_edge(*id).is_some()),

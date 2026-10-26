@@ -27,12 +27,19 @@ pub fn validate_declaration_types(
         );
     let mut diagnostics = Vec::new();
     for (ty, subject) in declarations {
-        if let Some(code) = type_error(ty, registry) {
-            diagnostics.push(Diagnostic::new(code, subject, registry.origin()));
-        }
+        diagnostics.extend(validate_declaration_type(ty, subject, registry));
     }
     sort_diagnostics(&mut diagnostics);
     diagnostics
+}
+
+/// Validates one declaration using the same type-resolution rules as the full pass.
+pub(crate) fn validate_declaration_type(
+    ty: &TypeExpr,
+    subject: Subject,
+    registry: &RegistrySnapshot,
+) -> Option<Diagnostic> {
+    type_error(ty, registry).map(|code| Diagnostic::new(code, subject, registry.origin()))
 }
 
 fn type_error(ty: &TypeExpr, registry: &RegistrySnapshot) -> Option<DiagnosticCode> {

@@ -78,7 +78,7 @@ fn reusing_an_edge_id_reinfers_old_and_new_endpoints_and_is_undoable() {
             &registry(None),
         )
         .unwrap();
-        assert!(done.committed.change_set.edges.changed.contains(&eid(1)));
+        assert!(done.committed.change_set.edges().changed.contains(&eid(1)));
         assert_eq!(doc.revision(), revision + 1);
         assert_eq!(type_arg(&doc, target).as_deref(), Some("core/f64@1"));
         assert_eq!(signature_types(&doc, target), ["core/f64@1"; 3]);
@@ -265,7 +265,7 @@ fn unrelated_nodes_and_provider_locks_are_untouched() {
 
     assert_eq!(doc.node(nid(2)).unwrap().provider, provider_2);
     assert_eq!(doc.node(nid(4)), Some(&node_4));
-    assert!(!done.committed.change_set.nodes.changed.contains(&nid(4)));
+    assert!(!done.committed.change_set.nodes().changed.contains(&nid(4)));
 }
 
 #[test]
