@@ -8,11 +8,10 @@ use std::cell::OnceCell;
 use crate::catalog::{
     CallInterfaceError, ContractError, NodeContract, ProviderKey, RegistrySnapshot, TypeArgs,
     body_rigid_params, call_interface, is_converter_special_form, is_function_marker, is_intrinsic,
-    project_interface,
 };
 use crate::document::{
-    BodyRef, DefinitionRef, GraphDocument, NodeKind, OutputSource, PortDescriptor, PortKind,
-    PortRef, SignatureSnapshot, Suspends, SuspensionContractIssue,
+    BodyRef, DefinitionRef, GraphDocument, NodeKind, OutputSource, PortKind, PortRef,
+    SignatureSnapshot, Suspends, SuspensionContractIssue,
     suspension_contract_issue as classify_suspension_contract,
 };
 use crate::error::IdError;
@@ -880,55 +879,12 @@ fn call_suspends(kind: NodeKind, suspends: Suspends) -> Option<Suspends> {
     matches!(kind, NodeKind::Async | NodeKind::Iterator).then_some(suspends)
 }
 
-/// Ports of a function-structure marker, derived from the owning function's interface.
-///
-/// The entry exposes the declared inputs as data outputs; return and function-outputs accept
-/// the declared outputs as required data inputs (`return` also has the exec `in`). The
-/// declaration is the only type authority, so a marker is never independently generic: the
-/// function's own type parameters stay in the port types as rigid `$T` constants shared by
-/// every marker, and only a call site instantiates them.
 fn marker_contract(
     document: &GraphDocument,
     node: &crate::document::NodeInstance,
 ) -> Result<NodeContract, DiagnosticCode> {
-    let Some(BodyRef::Function(function)) = document.locate_node(node.id) else {
-        return Err(DiagnosticCode::IntrinsicUnsupported);
-    };
-    let declaration = document
-        .functions()
-        .get(&function)
-        .ok_or(DiagnosticCode::IntrinsicUnsupported)?;
-    let interface =
-        project_interface(declaration).map_err(|_| DiagnosticCode::FunctionInterface)?;
-    let entry = node.definition.id.as_str() == "core/function-entry";
-    let mut ports = Vec::new();
-    for port in interface {
-        let ty = port.ty.expect("projected interface ports are typed");
-        match (entry, port.direction) {
-            (true, crate::document::PortDirection::Input) => {
-                ports.push(PortDescriptor::data_out(
-                    port.port_id.as_str(),
-                    ty,
-                    OutputSource::Computed,
-                ));
-            }
-            (false, crate::document::PortDirection::Output) => {
-                ports.push(PortDescriptor::data_in(port.port_id.as_str(), ty));
-            }
-            _ => {}
-        }
-    }
-    if node.definition.id.as_str() == "core/return" {
-        ports.push(PortDescriptor::exec_in("in"));
-    }
-    Ok(NodeContract {
-        kind: if entry {
-            NodeKind::Entry
-        } else {
-            NodeKind::Pure
-        },
-        suspends: None,
-        type_params: Vec::new(),
-        ports,
+    crate::catalog::marker_contract(document, node).map_err(|error| match error {
+        CallInterfaceError::InvalidInterface => DiagnosticCode::FunctionInterface,
+        _ => DiagnosticCode::IntrinsicUnsupported,
     })
 }

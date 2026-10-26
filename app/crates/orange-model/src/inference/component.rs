@@ -452,7 +452,16 @@ impl Graph<'_> {
                     }
                 }
             }
-            if complete && template.check_specializations && !self.specialized(node, &args) {
+            // A rigid body argument is checked against its declared constraints above.
+            // Exact provider support is meaningful only after call specialization; the
+            // compiler must check every concrete body binding before executing callbacks.
+            if complete
+                && template.check_specializations
+                && !args
+                    .values()
+                    .any(|ty| TypeTerm::parse(ty).is_ok_and(|t| t.contains_param()))
+                && !self.specialized(node, &args)
+            {
                 result.issues.push(InferenceIssue::NoSpecialization {
                     node: id,
                     type_args: args.clone(),
@@ -545,6 +554,13 @@ pub(crate) fn declared_port(
     port: &PortRef,
 ) -> Option<PortDescriptor> {
     let node = document.node(port.node)?;
+    if is_function_marker(node.definition.id.as_str()) {
+        return crate::catalog::marker_contract(document, node)
+            .ok()?
+            .ports
+            .into_iter()
+            .find(|declared| declared.port_id == *port.port.port());
+    }
     if is_function_call(node) {
         return call_interface(document, node, registry)
             .ok()

@@ -1,8 +1,10 @@
 //! Checked immutable data and bounded structured-control plans.
 //! Pure/seeded data demand supports Select/And/Or/Coalesce/Try. Control plans
 //! additionally admit the documented entries, Get/Set, branches, Sequence,
-//! Count/While and virtual Wait/Yield. Functions/Fork/services remain unsupported.
+//! Count/While, Fork and virtual Wait/Yield. PurePlan also folds bounded graph-local
+//! pure calls. Dynamic/volatile/action/async calls and services remain unsupported.
 
+mod calls;
 mod compile;
 mod control;
 mod data;
@@ -27,6 +29,6 @@ pub use kernel::{
     KernelFault, PureKernel, PureKernelResolver, ResolveError,
 };
 pub use plan::{
-    ConstantFault, Export, FoldedValue, InputSource, NodeIx, PlanType, PurePlan, PureStep, SlotIx,
-    SlotSource,
+    ConstantFault, Export, FoldedValue, InputSource, NodeIx, PlanType, PureCallSite, PurePlan,
+    PureStep, SlotIx, SlotSource,
 };

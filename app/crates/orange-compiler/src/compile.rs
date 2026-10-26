@@ -17,9 +17,13 @@ use std::sync::{
 pub struct CompileLimits {
     pub max_graph_items: usize,
     pub max_slots: usize,
+    /// Maximum nested graph-local pure calls; preparation and folding are iterative.
+    pub max_call_depth: usize,
     /// Conservative number of producers in the potential export cone, including
     /// unselected lazy alternatives, not the number of callbacks actually invoked.
     pub max_fold_operations: usize,
+    /// Nominal retained values and owned specialized-signature copies. Metadata
+    /// borrowed from fresh analysis is shared and needs no owned-copy charge.
     pub max_constant_bytes: usize,
 }
 impl Default for CompileLimits {
@@ -27,6 +31,7 @@ impl Default for CompileLimits {
         Self {
             max_graph_items: 100_000,
             max_slots: 200_000,
+            max_call_depth: 256,
             max_fold_operations: 20_000,
             max_constant_bytes: 16 * 1024 * 1024,
         }
@@ -62,6 +67,31 @@ pub(crate) fn port_type(node: NodeId, port: &PortDescriptor) -> Result<PlanType,
             port: key(port),
         })
 }
+/// Shared executable port policy for root and function-body admission.
+pub(crate) fn admit_data_ports(
+    node: NodeId,
+    sig: &orange_model::document::SignatureSnapshot,
+    lazy: bool,
+    source: OutputSource,
+    options: CompileOptions<'_>,
+) -> Result<(), CompileError> {
+    for port in &sig.ports {
+        options.checkpoint()?;
+        if port.kind != PortKind::Data
+            || (port.is_lazy() && !lazy)
+            || port.is_optional()
+            || port.variadic.is_some()
+            || (port.direction == PortDirection::Output && port.source != Some(source))
+        {
+            return Err(CompileError::UnsupportedPort {
+                node,
+                port: key(port),
+            });
+        }
+        port_type(node, port)?;
+    }
+    Ok(())
+}
 pub(crate) fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<(), CompileError> {
     *used = used
         .checked_add(amount)
@@ -82,6 +112,7 @@ fn push_slot(
     ty: PlanType,
     source: SlotSource,
     value: FoldedValue,
+    call: Option<usize>,
     options: CompileOptions<'_>,
     bytes: &mut usize,
 ) -> Result<SlotIx, CompileError> {
@@ -94,6 +125,7 @@ fn push_slot(
         FoldedValue::Fault(_) => 64,
     };
     charge(bytes, size, options.limits.max_constant_bytes)?;
+    plan.slot_calls.push(call);
     plan.types.push(ty);
     plan.sources.push(source);
     plan.constants.push(value);
@@ -173,6 +205,7 @@ struct InputContext<'a> {
     snapshot: &'a RegistrySnapshot,
     incoming: &'a Incoming<'a>,
     options: CompileOptions<'a>,
+    call: Option<usize>,
 }
 impl InputContext<'_> {
     fn source(
@@ -192,7 +225,10 @@ impl InputContext<'_> {
                 .ok_or(CompileError::ValidationIncomplete)?;
             (slot, Some(edge.id))
         } else {
-            let instance = &self.document.root().nodes[&node];
+            let instance = &self
+                .document
+                .node(node)
+                .ok_or(CompileError::ValidationIncomplete)?;
             let bad = || CompileError::InvalidLiteral {
                 node,
                 port: port_key.clone(),
@@ -221,6 +257,7 @@ impl InputContext<'_> {
                     port: port_key.clone(),
                 },
                 FoldedValue::Value(value),
+                self.call,
                 self.options,
                 bytes,
             )?;
@@ -243,6 +280,10 @@ enum Work {
     Finish {
         node: NodeId,
         decision: Option<Decision>,
+    },
+    ReturnCall {
+        parent: usize,
+        node: NodeId,
     },
 }
 
@@ -276,7 +317,7 @@ pub fn compile_pure(
     }
     for export in document.exports() {
         options.checkpoint()?;
-        let slot = folder
+        let slot = folder.frames[0]
             .outputs
             .get(&(export.node, export.port.clone()))
             .copied()
@@ -302,13 +343,19 @@ pub(crate) struct ConstantFolder<'a, R: PureKernelResolver> {
     incoming: &'a Incoming<'a>,
     lazy_nodes: &'a BTreeMap<NodeId, crate::lazy::Lazy>,
     plan: PurePlan,
-    outputs: OutputSlots,
-    completed: BTreeSet<NodeId>,
+    frames: Vec<FoldFrame>,
+    calls: crate::calls::Calls<'a>,
     bytes: usize,
     input_values: Vec<Value>,
     output_values: Vec<Value>,
-    work: Vec<Work>,
+    work: Vec<(usize, Work)>,
 }
+#[derive(Default)]
+struct FoldFrame {
+    outputs: OutputSlots,
+    completed: BTreeSet<NodeId>,
+}
+
 impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
     pub(crate) fn new(
         document: &'a GraphDocument,
@@ -319,6 +366,10 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
         incoming: &'a Incoming<'a>,
         lazy_nodes: &'a BTreeMap<NodeId, crate::lazy::Lazy>,
     ) -> Result<Self, CompileError> {
+        let mut calls = crate::calls::Calls::prepare(document, &snapshot, analysis, options)?;
+        let frames = (0..calls.scopes.len())
+            .map(|_| FoldFrame::default())
+            .collect();
         let plan = PurePlan {
             snapshot: snapshot.clone(),
             graph: document.graph_id(),
@@ -330,8 +381,10 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             constants: vec![],
             exports: vec![],
             diagnostics: vec![],
+            calls: std::mem::take(&mut calls.sites),
+            slot_calls: vec![],
         };
-        let mut bytes = 0;
+        let mut bytes = calls.signature_bytes;
         for export in document.exports() {
             charge(
                 &mut bytes,
@@ -348,8 +401,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             incoming,
             lazy_nodes,
             plan,
-            outputs: BTreeMap::new(),
-            completed: BTreeSet::new(),
+            frames,
+            calls,
             bytes,
             input_values: vec![],
             output_values: vec![],
@@ -357,7 +410,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
         })
     }
     pub(crate) fn folded(&self, node: NodeId, port: &PortKey) -> Option<&FoldedValue> {
-        self.outputs
+        self.frames[0]
+            .outputs
             .get(&(node, port.clone()))
             .map(|slot| &self.plan.constants[slot.index()])
     }
@@ -374,42 +428,92 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             incoming,
             lazy_nodes,
             plan,
-            outputs,
-            completed,
+            frames,
+            calls,
             bytes,
             input_values,
             output_values,
             work,
         } = self;
-        let body = document.root();
-        let context = InputContext {
-            document,
-            snapshot,
-            incoming,
-            options: *options,
-        };
-        work.push(Work::Enter(root));
-        while let Some(task) = work.pop() {
+        work.push((0, Work::Enter(root)));
+        while let Some((scope, task)) = work.pop() {
             options.checkpoint()?;
+            let incoming = calls.incoming(incoming, scope);
+            let context = InputContext {
+                document,
+                snapshot,
+                incoming,
+                options: *options,
+                call: scope.checked_sub(1),
+            };
+            if let Work::ReturnCall { parent, node } = task {
+                let result = calls
+                    .result(scope)
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                let mut results = Vec::new();
+                for port in &calls.signature(analysis, scope, result).ports {
+                    results.push((
+                        port,
+                        context
+                            .source(result, port, plan, &frames[scope].outputs, bytes)?
+                            .slot,
+                    ));
+                }
+                // The result marker gathers required inputs in declaration order.
+                // Its first fault is the call's failure, shared by every result.
+                let fault =
+                    results
+                        .iter()
+                        .find_map(|(_, slot)| match &plan.constants[slot.index()] {
+                            FoldedValue::Fault(fault) => Some(fault.clone()),
+                            _ => None,
+                        });
+                for (port, mut slot) in results {
+                    if let Some(fault) = &fault {
+                        slot = push_slot(
+                            plan,
+                            port_type(result, port)?,
+                            SlotSource {
+                                node: result,
+                                port: key(port),
+                            },
+                            FoldedValue::Fault(fault.clone()),
+                            scope.checked_sub(1),
+                            *options,
+                            bytes,
+                        )?;
+                    }
+                    frames[parent].outputs.insert((node, key(port)), slot);
+                }
+                frames[parent].completed.insert(node);
+                continue;
+            }
+            let FoldFrame { outputs, completed } = &mut frames[scope];
             let (node_id, decision) = match task {
                 Work::Enter(node) => {
                     if completed.contains(&node) {
                         continue;
                     }
-                    let signature = &analysis.report().resolved[&node];
+                    if calls.entry(scope) == Some(node) {
+                        continue;
+                    }
+                    let signature = calls.signature(analysis, scope, node);
                     if signature.kind != NodeKind::Pure {
                         return Err(CompileError::UnsupportedNode { node });
                     }
-                    if lazy_nodes.contains_key(&node) {
-                        work.push(Work::Choose(node));
+                    if calls.lazy(lazy_nodes, scope, node).is_some() {
+                        work.push((scope, Work::Choose(node)));
                         if let Some(edge) = incoming.get(&(node, key(&signature.ports[0]))) {
-                            work.push(Work::Enter(edge.from.node));
+                            work.push((scope, Work::Enter(edge.from.node)));
                         }
                     } else {
-                        work.push(Work::Finish {
-                            node,
-                            decision: None,
-                        });
+                        work.push((
+                            scope,
+                            Work::Finish {
+                                node,
+                                decision: None,
+                            },
+                        ));
                         for port in signature
                             .ports
                             .iter()
@@ -417,26 +521,31 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                             .filter(|p| p.direction == PortDirection::Input)
                         {
                             if let Some(edge) = incoming.get(&(node, key(port))) {
-                                work.push(Work::Enter(edge.from.node));
+                                work.push((scope, Work::Enter(edge.from.node)));
                             }
                         }
                     }
                     continue;
                 }
                 Work::Choose(node) => {
-                    let signature = &analysis.report().resolved[&node];
+                    let signature = calls.signature(analysis, scope, node);
                     let selector =
                         context.source(node, &signature.ports[0], plan, outputs, bytes)?;
                     let selected = match &plan.constants[selector.slot.index()] {
                         FoldedValue::Fault(_) => None,
-                        FoldedValue::Value(value) => lazy_nodes[&node]
+                        FoldedValue::Value(value) => calls
+                            .lazy(lazy_nodes, scope, node)
+                            .ok_or(CompileError::ValidationIncomplete)?
                             .selected(value)
                             .ok_or(CompileError::KernelContract { node })?,
                     };
-                    work.push(Work::Finish {
-                        node,
-                        decision: Some(Decision { selector, selected }),
-                    });
+                    work.push((
+                        scope,
+                        Work::Finish {
+                            node,
+                            decision: Some(Decision { selector, selected }),
+                        },
+                    ));
                     if let Some(name) = selected {
                         let port = signature
                             .ports
@@ -444,15 +553,18 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                             .find(|p| p.port_id.as_str() == name)
                             .ok_or(CompileError::KernelContract { node })?;
                         if let Some(edge) = incoming.get(&(node, key(port))) {
-                            work.push(Work::Enter(edge.from.node));
+                            work.push((scope, Work::Enter(edge.from.node)));
                         }
                     }
                     continue;
                 }
                 Work::Finish { node, decision } => (node, decision),
+                Work::ReturnCall { .. } => unreachable!("handled before frame borrowing"),
             };
-            let node = &body.nodes[&node_id];
-            let sig = &analysis.report().resolved[&node_id];
+            let node = document
+                .node(node_id)
+                .ok_or(CompileError::ValidationIncomplete)?;
+            let sig = calls.signature(analysis, scope, node_id);
             let input_ports: Vec<_> = sig
                 .ports
                 .iter()
@@ -469,6 +581,62 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                 .iter()
                 .filter(|p| p.direction == PortDirection::Output)
                 .collect();
+            if let Some(child) = calls.scopes[scope].calls.get(&node_id).copied() {
+                let mut args = Vec::new();
+                for port in &input_ports {
+                    args.push((
+                        key(port),
+                        context.source(node_id, port, plan, outputs, bytes)?.slot,
+                    ));
+                }
+                let fault = args
+                    .iter()
+                    .find_map(|(_, slot)| match &plan.constants[slot.index()] {
+                        FoldedValue::Fault(fault) => Some(fault.clone()),
+                        _ => None,
+                    });
+                if let Some(fault) = fault {
+                    for port in output_ports {
+                        let slot = push_slot(
+                            plan,
+                            port_type(node_id, port)?,
+                            SlotSource {
+                                node: node_id,
+                                port: key(port),
+                            },
+                            FoldedValue::Fault(fault.clone()),
+                            scope.checked_sub(1),
+                            *options,
+                            bytes,
+                        )?;
+                        outputs.insert((node_id, key(port)), slot);
+                    }
+                    completed.insert(node_id);
+                    continue;
+                }
+                if let Some(entry) = calls.entry(child) {
+                    for (port, slot) in args {
+                        frames[child].outputs.insert((entry, port), slot);
+                    }
+                }
+                if let Some(result) = calls.result(child) {
+                    work.push((
+                        child,
+                        Work::ReturnCall {
+                            parent: scope,
+                            node: node_id,
+                        },
+                    ));
+                    for port in calls.signature(analysis, child, result).ports.iter().rev() {
+                        if let Some(edge) = calls.incoming.get(&(result, key(port))) {
+                            work.push((child, Work::Enter(edge.from.node)));
+                        }
+                    }
+                } else {
+                    frames[scope].completed.insert(node_id);
+                }
+                continue;
+            }
             let binding = if let Some(choice) = &decision {
                 crate::lazy::binding(
                     input_ports.iter().map(|p| key(p)).collect(),
@@ -477,7 +645,10 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                         plan.constants[choice.selector.slot.index()],
                         FoldedValue::Fault(_)
                     ),
-                    match lazy_nodes[&node_id] {
+                    match calls
+                        .lazy(lazy_nodes, scope, node_id)
+                        .ok_or(CompileError::ValidationIncomplete)?
+                    {
                         crate::lazy::Lazy::Coalesce if choice.selected.is_none() => {
                             crate::lazy::ProjectionMode::UnwrapOption
                         }
@@ -532,7 +703,10 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             output_values.clear();
             output_values.resize(output_ports.len(), Value::Unit);
             let fault = if let Some(fault) = inherited {
-                if matches!(lazy_nodes.get(&node_id), Some(crate::lazy::Lazy::Try)) {
+                if matches!(
+                    calls.lazy(lazy_nodes, scope, node_id),
+                    Some(crate::lazy::Lazy::Try)
+                ) {
                     output_values[0] = Value::Err(Arc::new(orange_model::value::NodeError {
                         code: fault.fault.code.to_owned(),
                         node: Some(fault.source),
@@ -585,6 +759,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                         port: port.clone(),
                     },
                     value,
+                    scope.checked_sub(1),
                     *options,
                     bytes,
                 )?;
@@ -599,6 +774,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                 inputs: inputs.into(),
                 outputs: slots.into(),
                 binding,
+                call: scope.checked_sub(1),
             });
             completed.insert(node_id);
         }
@@ -715,6 +891,9 @@ pub(crate) fn admit_roots<'a>(
             && body.nodes[node].definition.id.as_str() != "core/convert"
             && !lazy_nodes.contains_key(node)
             && !state_read
+            && !(!data_plan
+                && sig.kind == NodeKind::Pure
+                && body.nodes[node].definition.id.as_str() == "core/call")
         {
             return Err(CompileError::UnsupportedNode { node: *node });
         }
@@ -724,20 +903,13 @@ pub(crate) fn admit_roots<'a>(
             OutputSource::Computed
         };
         charge(&mut ports, sig.ports.len(), options.limits.max_graph_items)?;
-        for port in &sig.ports {
-            if port.kind != PortKind::Data
-                || (port.is_lazy() && !lazy_nodes.contains_key(node))
-                || port.is_optional()
-                || port.variadic.is_some()
-                || (port.direction == PortDirection::Output && port.source != Some(output_source))
-            {
-                return Err(CompileError::UnsupportedPort {
-                    node: *node,
-                    port: key(port),
-                });
-            }
-            port_type(*node, port)?;
-        }
+        admit_data_ports(
+            *node,
+            sig,
+            lazy_nodes.contains_key(node),
+            output_source,
+            options,
+        )?;
     }
     let incoming: BTreeMap<_, _> = body
         .edges

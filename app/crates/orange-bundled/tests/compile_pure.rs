@@ -17,6 +17,9 @@ use std::sync::{
 #[path = "support/reference.rs"]
 mod reference;
 
+#[path = "support/pure_functions.rs"]
+mod pure_functions;
+
 fn select_node(n: u32, condition: bool, ty: &str, if_true: Json, if_false: Json) -> Json {
     json!({"id":id(n),"definition_id":"core/select","definition_version":1,"config_version":1,
         "config":{},"type_pins":{"T":ty},"inputs":{"condition":{"type":"core/bool@1","value":condition},

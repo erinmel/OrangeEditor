@@ -9,7 +9,7 @@ use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{FaultPolicy, VarScope};
 use orange_model::id::{NodeId, VariableId};
 use orange_model::{GraphDocument, Value};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, HashMap, VecDeque};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -17,7 +17,9 @@ use std::sync::{
 use thiserror::Error;
 
 mod ownership;
-use ownership::{Region, RegionKind};
+mod ready;
+use ownership::{IdSet, Region, RegionKind};
+use ready::ReadyQueue;
 
 static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 fn run_identity() -> Result<u64, RunError> {
@@ -281,7 +283,7 @@ pub struct Run {
     plan: Option<Arc<ControlPlan>>,
     options: RunOptions,
     state: RunState,
-    ready: VecDeque<Strand>,
+    ready: ReadyQueue<Strand>,
     activations: Vec<Option<Box<ActivationState>>>,
     regions: BTreeMap<u64, Region>,
     next_owner: u64,
@@ -295,6 +297,7 @@ pub struct Run {
     versions: Vec<u64>,
     now: u64,
     next_timer: u64,
+    timer_keys: HashMap<u64, (u64, u64)>,
     timers: BTreeMap<(u64, u64), Timer>,
     transitions: Vec<RunState>,
     deadline: Option<u64>,
@@ -354,7 +357,7 @@ impl Run {
             return Err(RunError::ResourceLimit);
         }
         let mut regions = BTreeMap::new();
-        let mut ready = VecDeque::with_capacity(capacity);
+        let mut ready = ReadyQueue::with_capacity(capacity);
         let mut activations = Vec::with_capacity(capacity);
         let mut stop_ready = VecDeque::with_capacity(plan.stops().len());
         let layout = StateLayout::new(&plan);
@@ -388,11 +391,6 @@ impl Run {
             .copied()
             .enumerate()
         {
-            let queue = if sequence < plan.starts().len() {
-                &mut ready
-            } else {
-                &mut stop_ready
-            };
             activations.push(Some(Box::new(ActivationState {
                 cleanup_scope: None,
                 cleanup_remaining: options.max_cleanup_operations,
@@ -417,13 +415,13 @@ impl Run {
                     parent: None,
                     activation: sequence as u64,
                     depth: 0,
-                    live: 1,
-                    children: 0,
+                    live: IdSet::one(sequence as u64),
+                    children: IdSet::default(),
                     continuation: None,
                     kind: RegionKind::Root,
                 },
             );
-            queue.push_back(Strand {
+            let strand = Strand {
                 cleanup_deadline: None,
                 fork: None,
                 id: sequence as u64,
@@ -441,7 +439,12 @@ impl Run {
                 reenter: None,
                 cleanup: false,
                 cleanup_remaining: 0,
-            });
+            };
+            if sequence < plan.starts().len() {
+                ready.push_back(strand.id, strand);
+            } else {
+                stop_ready.push_back(strand);
+            }
         }
         let variable_count = plan.variables().len();
         Ok(Self {
@@ -463,6 +466,7 @@ impl Run {
             state_bytes,
             now: 0,
             next_timer: 0,
+            timer_keys: HashMap::new(),
             timers: BTreeMap::new(),
             transitions: vec![RunState::Created, RunState::Starting, RunState::Running],
             deadline: None,
@@ -605,6 +609,7 @@ impl Run {
             {
                 remaining -= 1;
                 let (_, timer) = self.timers.pop_first().expect("due timer");
+                self.timer_keys.remove(&timer.activation.id);
                 if timer.run != self.id {
                     return self.fail(RunError::InvalidState);
                 }
@@ -614,28 +619,25 @@ impl Run {
                     outcome: ControlOutcome::Then,
                     fault: None,
                 });
-                self.ready.push_back(timer.activation);
+                self.ready.push_back(timer.activation.id, timer.activation);
                 continue;
             }
             // One pending consumption owns the shared activation evaluator.
             // Other activations can interleave; sibling strands cannot open a
             // replacement epoch or reset activation entropy/fuel under it.
-            if let Some(front) = self.ready.front()
-                && let Some(owner) = self
-                    .activations
+            let pull_owner = self.ready.front().and_then(|front| {
+                self.activations
                     .get(front.sequence as usize)
                     .and_then(Option::as_ref)
                     .and_then(|a| a.pull_owner)
-                && owner != front.id
-                && let Some(position) = self
-                    .ready
-                    .iter()
-                    .position(|s| s.sequence == front.sequence && s.id == owner)
-            {
-                let owner = self.ready.remove(position).unwrap();
-                self.ready.push_front(owner);
-            }
-            let Some(mut activation) = self.ready.pop_front() else {
+                    .filter(|owner| *owner != front.id)
+            });
+            let next = if let Some(owner) = pull_owner {
+                Some(self.ready.remove(owner).ok_or(RunError::InvalidState)?)
+            } else {
+                self.ready.pop_front()
+            };
+            let Some(mut activation) = next else {
                 break;
             };
             last = Some(activation.id);
@@ -745,6 +747,7 @@ impl Run {
                     return self.fail(RunError::ResourceLimit);
                 };
                 self.next_timer = next;
+                self.timer_keys.insert(activation.id, (at, sequence));
                 self.timers.insert(
                     (at, sequence),
                     Timer {
@@ -757,9 +760,9 @@ impl Run {
                 if activation.yielded {
                     self.segment_owner = None;
                     activation.yielded = false;
-                    self.ready.push_back(activation);
+                    self.ready.push_back(activation.id, activation);
                 } else {
-                    self.ready.push_front(activation);
+                    self.ready.push_front(activation.id, activation);
                 }
             } else {
                 self.retire_strand(activation)?;
@@ -780,7 +783,7 @@ impl Run {
             })
             && let Some(activation) = self.ready.pop_front()
         {
-            self.ready.push_back(activation);
+            self.ready.push_back(activation.id, activation);
         }
         self.segment_owner = None;
         let count = initial - remaining;
@@ -846,6 +849,7 @@ impl Run {
         self.stop_ready.clear();
         self.ready.clear();
         self.timers.clear();
+        self.timer_keys.clear();
         self.regions.clear();
         self.activations.clear();
         self.live_strands = 0;
@@ -1369,7 +1373,9 @@ impl Run {
                     .ok_or(RunError::ResourceLimit)?;
                 self.transition(RunState::Draining);
                 self.deadline = Some(deadline);
-                self.ready.append(&mut self.stop_ready);
+                while let Some(strand) = self.stop_ready.pop_front() {
+                    self.ready.push_back(strand.id, strand);
+                }
                 self.finish_if_idle();
                 Ok(())
             }

@@ -1416,3 +1416,76 @@ The prior public-API reproduction was rerun using the corrected model (`cargo ru
 The explicit `measure_config_unit_reuse` release probe also PASSes: five warmups/40 samples at128/1024 nodes. Full analysis p50/p95=135.6/142.9us and1209.6/1270.9us; session p50/p95=118.5/124.7us and1046.8/1113.7us; owned materialization p50/p95=2.8/2.9us and22.7/24.3us. All node IDs/global passes are still visited/run on semantic edits; per edit one config unit recomputes and127/1023 are reused. Historical earlier measurements remain tied to their versions; this is not a controlled universal before/after speedup or W4/W9/NFR-15 qualification.
 
 Contracts/ADR/trace are updated in01/08/12/16. Existing diagnostics/localization keys and provider/override interfaces are unchanged. Core completion and V12b remainder still require their later cohorts. The PR remains subject to user review; no agent merge is authorized.
+
+## Pure graph-local call compilation — 2026-10-26 UTC
+
+Base fetched `origin/dev` b7d32e4a7590a41591df8cf21b7ed405efe461d5, containing merged PR17; branch `core/function-execution`. This cohort implements constant Pure calls only; volatile/action/async frames, dynamic data/control calls, erased generic parameters, package bodies and Return cleanup remain pending. Contracts:03/11/12, ADR amendment:08, FR trace:01. No gate or performance target is declared complete.
+
+Environment: Windows x86_64-pc-windows-msvc; selected Rust1.99.1 (`rustc 58cf8f9c3`, Cargo1.99.1 `5f94df478`); declared MSRV1.97.1, local MSRV not rerun. Node24.18.0. Workspace default features; checked-in Cargo.lock unchanged, SHA256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152. No dependency/toolchain/feature changes. The user foundation review remains untouched (SHA256 D8F25A2F3DF04A88578972340B3CA3B591DC42126083B107A60344B00125D553).
+
+Executed local checks:
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` |789 passed,14 ignored,0 failed,85 result groups including doctests|
+| `cargo test --workspace --release --locked --offline` |789 passed,14 ignored,0 failed,85 result groups including doctests|
+| `cargo fmt --all --check` |PASS|
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` |PASS|
+| `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked --offline` |PASS|
+| `node tools/check-cargo-metadata.mjs --self-test` and actual policy |9 fixtures and architecture guard PASS|
+| `node --test tools/release.test.mjs` |7 passed|
+| `node tools/release.mjs check` |valid, intentionally disabled|
+| `cargo run -p orange-bundled --example headless_control --locked --offline` |total3 at10ns|
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` |all10/10,any5/10,race5/5,detach0/10ns|
+| `git diff --check` |PASS|
+
+Fourteen new tests: two model marker/inference regressions and twelve compiler tests, including a64-case independent source-demand property. Deterministic checks cover per-call generic arithmetic/cache isolation, three independent type instantiations, nested calls, typed result aliases, first-result fault choice, argument faults/Try, lazy skipped callbacks, function-edit freshness/frozen views,128-call depth, five quota limits, cancellation, expanding acyclic call graphs, exact concrete provider refusal and explicit erased-argument refusal despite saved inference. Existing dynamic/control suites still refuse calls in their compiler profiles.
+
+A deliberate reversed-result-order mutation made the first-fault regression fail (actual NumericOverflow instead of original DivideByZero). Original compiler bytes were restored in a finally block; the focused regression passed again. Full debug/release runs include the final two-fault fixture; only documentation changed afterward. Raw logs live in ignored `.artifacts/functions-*.log`. The source oracle scans original body edges with independent invocation caches; its generated function vocabulary is nested identity plus integer division/Try. It shares the model codec/validation and arithmetic platform, not compiler call preparation, slots or callbacks. This is bounded behavioral equivalence, not proof of general function/runtime correctness.
+
+Only environmental OneDrive incremental-cache hard-link fallback warnings appeared; no code warnings were suppressed. Potential call expansion is conservatively bounded, not optimized/fused or measured for allocations/RSS. Trusted callback time/allocations remain outside cooperative admission guarantees. Remote native platform, MSRV and security CI will qualify the published final head separately; no remote pass is claimed by this local record.
+
+## PR18–20 review repairs — 2026-10-26 UTC
+
+Review of combined head94764867b68a2c29448b8f490f9de1dcfb90888f found five issues still present from PR18/19/20. All five are repaired on the existing core/function-execution / PR20 branch: compiler92535e1 shares admitted call metadata, enforces root/callee port parity and matches ports in declaration order; runtime783c8c2 indexes owned cancellation/ready work and borrows immutable constants. Original commits remain; no merge is authorized or performed. Contracts/trace/ADR are updated in01/03/08/11/12. Dynamic/volatile/action/async calls, package bodies, erased arguments and Return cleanup remain pending; no core/NFR gate is declared complete.
+
+Selected local environment: Windows x86_64-pc-windows-msvc; rustc1.99.1 (58cf8f9c3), Cargo1.99.1 (5f94df478), Node24.18.0, workspace default features. Declared MSRV1.97.1 was not rerun locally; final-head remote CI checks it separately. Product Cargo.lock and dependencies/features are unchanged, SHA256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152. The user's foundation review is untouched, SHA256 D8F25A2F3DF04A88578972340B3CA3B591DC42126083B107A60344B00125D553.
+
+Executed qualification:
+
+| Command/check | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` |799 passed,14 ignored,0 failed;85 result groups including doctests|
+| `cargo test --workspace --release --locked --offline` |799 passed,14 ignored,0 failed;85 result groups including doctests|
+| `cargo fmt --all --check` |PASS|
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` |PASS|
+| PowerShell `$env:RUSTDOCFLAGS='-D warnings'`; `cargo doc --workspace --no-deps --locked --offline` |PASS|
+| metadata policy self-test / actual architecture guard |9 fixtures / actual check PASS|
+| `node --test tools/release.test.mjs` |7 passed|
+| `node tools/release.mjs check` |valid, intentionally disabled|
+| existing headless_control and headless_fork examples, locked/offline |total3 at10ns; all10/10,any5/10,race5/5,detach0/10ns|
+| `git diff --check` |PASS|
+
+Ten new tests: four compiler regressions cover large borrowed defaults on rejected/successful calls, shared generic metadata plus admission before cloning, exact root/callee Computed-source parity before callbacks, and wide nonlexicographic interface keys/types. Runtime regressions cover32 waiting roots cancelled once, a race preserving an unrelated activation's timer, stopping a wide queued pending pull, and two activation frames borrowing the same constant values across epochs. Two private model tests compare20,000 mixed ready-queue operations with VecDeque and20,000 ownership-set operations with BTreeSet, including removal, spill, clear and identity/slot reuse. Existing source oracles, quota, lifecycle, cleanup/fuel and freshness regressions also pass. Final compact-layout assertion/lint annotation received a focused runtime rerun after the full runs; they do not change product behavior.
+
+Two temporary mutations were detected: cloning instead of borrowing nongeneric defaults fails the default-identity regression; removing callee port admission fails the root/callee refusal regression. Original compiler bytes were restored in finally blocks and the focused four regressions passed afterward. These are executed mutation checks, not assertions about coverage percentage.
+
+Ready-queue selection and region ownership remain private safe Rust implementations. One narrowly scoped `clippy::box_collection` expectation is intentional: only the multi-owner spill is boxed so the common IdSet representation stays at most16 bytes; the layout bound and spill behavior are tested. There is no crate-wide lint suppression. Environmental OneDrive hard-link fallback warnings remain.
+
+### Release measurements and tradeoffs
+
+The ignored local probe uses the real public APIs and assertions; no timing thresholds enter ordinary tests. Compiler measurements compare the original review log against repaired code. Runtime comparisons use the exact9476486 runtime sources in an isolated ignored crate, with the same current compiler/model and fixture source on both sides to isolate runtime changes. No product source was replaced for this baseline. The two variants were measured sequentially; final probes ran separately from workspace compilation/tests. Raw logs are retained in ignored `.artifacts/`.
+
+| Fixture | Before | Repaired | Method |
+|---|---:|---:|---|
+|64 calls,256KiB default,4KiB compile budget rejection |6141us|246us|single descriptive samples; fresh analysis outside timing|
+|wide identity call,256 /512 /1024 /2048 port pairs |1163 /2818 /6349 /17605us|478 /1168 /2079 /4238us|7-sample medians; zero provider callbacks|
+|stop1 /16 /64 /256 independent waiting roots |0.5 /11.4 /155.3 /2784.3us|0.6 /4.8 /17.9 /152.8us|11-sample medians; startup/pumping outside timing,trace disabled|
+|1000-node dynamic pull,Fork widths2 /128 /512 /2048 |317.2 /531.3 /1060.1 /4231.5us|423.4 /460.5 /572.8 /1057.3us|7-sample medians,pump(1),trace disabled;3008 /3134 /3518 /5054 pumps in both variants|
+|Count1000 full lifecycle |median283.2us,p95 292.1us|median304.8us,p95 314.8us|10s warmup,30x8 runs,9003 operations/run,trace disabled|
+
+Thus the wide-call and largest pending-pull fixtures improve about4x and256-root stop about18x in these samples. The ownership directory has a real small-workload cost: Count1000 is about8% slower and width2 pull about34% slower. Inline singleton ready/ownership paths reduced the initial repair's larger serial overhead; this is still a tradeoff, not a universal speedup or completed NFR acceptance. Structural cancellation no longer scans/reinserts unrelated work, but destroying retained dynamic frame state still costs work. No allocations/peak RSS were measured; pointer-identity tests establish metadata/constant sharing without claiming a process-memory bound. The dangerous multi-gigabyte default expansion discussed in review was not executed.
+
+Reproduction commands used the ignored `.artifacts/pr18-20-review-probe` and `.artifacts/pr20-before-probe` Cargo manifests with `--release --locked --offline --target-dir target/pr18-20-review-probe`; Count used `cargo test ... headless_control_timing_baseline -- --ignored --nocapture`, other probes `cargo run`. Logs:pr18-20-review-probe.log,pr20-fixes-probe.log,pr20-before-runtime-timing.log,pr20-before-count-timing.log,pr20-fixes-count-timing.log,pr20-fixes-debug.log,pr20-fixes-release.log,pr20-fixes-clippy.log,pr20-fixes-rustdoc.log and the focused/mutation logs. Temporary review/harness/baseline/build sources are removed after the repair is qualified; durable behavior tests, contracts and this evidence remain.
+
+Remote CI is qualified separately on the published final head; this local record does not claim remote success in advance. The PR description and ignored delivery checkpoint record the final CI run/head once verified.

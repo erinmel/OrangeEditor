@@ -221,8 +221,13 @@ pub struct PureStep {
     pub(crate) inputs: Box<[InputSource]>,
     pub(crate) outputs: Box<[SlotIx]>,
     pub(crate) binding: KernelBinding,
+    pub(crate) call: Option<usize>,
 }
 impl PureStep {
+    /// Index into PurePlan::call_sites; None denotes the root body.
+    pub fn call_instance(&self) -> Option<usize> {
+        self.call
+    }
     pub fn index(&self) -> NodeIx {
         self.index
     }
@@ -248,8 +253,18 @@ pub struct Export {
     pub slot: SlotIx,
 }
 
+/// One specialized potential call instance. Parent indexes the same table;
+/// None denotes a root call. Unselected lazy arms may have no executed steps.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PureCallSite {
+    pub call: NodeId,
+    pub function: orange_model::id::FunctionId,
+    pub parent: Option<usize>,
+}
+
 /// Checked restricted pure-export plan, with a pinned registry and original source IDs.
-/// It is not approval for control, volatile, function or dynamic epoch execution.
+/// Includes bounded graph-local pure calls; it does not authorize control, volatile,
+/// action/async calls or dynamic epoch execution.
 /// Debug reports metadata/counts without values, registry contents or callbacks.
 ///
 /// ```compile_fail
@@ -267,6 +282,8 @@ pub struct PurePlan {
     pub(crate) constants: Vec<FoldedValue>,
     pub(crate) exports: Vec<Export>,
     pub(crate) diagnostics: Vec<Diagnostic>,
+    pub(crate) calls: Vec<PureCallSite>,
+    pub(crate) slot_calls: Vec<Option<usize>>,
 }
 impl std::fmt::Debug for PurePlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -282,6 +299,14 @@ impl std::fmt::Debug for PurePlan {
     }
 }
 impl PurePlan {
+    pub fn call_sites(&self) -> &[PureCallSite] {
+        &self.calls
+    }
+    /// Original producer's call instance; aliases retain source ownership.
+    pub fn slot_call_instance(&self, slot: SlotIx) -> Option<usize> {
+        self.slot_calls.get(slot.index()).copied().flatten()
+    }
+
     pub fn snapshot(&self) -> &Arc<RegistrySnapshot> {
         &self.snapshot
     }

@@ -21,6 +21,7 @@ pub type Outcome = Result<Value, Fault>;
 
 pub struct Reference<'a> {
     document: &'a GraphDocument,
+    body: orange_model::document::BodyRef,
     snapshot: &'a RegistrySnapshot,
     analysis: &'a ValidationAnalysis,
     cache: BTreeMap<NodeId, BTreeMap<PortKey, Outcome>>,
@@ -52,6 +53,7 @@ impl<'a> Reference<'a> {
         );
         let mut reference = Self {
             document,
+            body: orange_model::document::BodyRef::Root,
             snapshot,
             analysis,
             cache: BTreeMap::new(),
@@ -97,7 +99,7 @@ impl<'a> Reference<'a> {
         }
         let document = self.document;
         let analysis = self.analysis;
-        let node = &document.root().nodes[&node_id];
+        let node = document.node(node_id).unwrap();
         let signature = &analysis.report().resolved[&node_id];
         let mut inputs = Vec::new();
         let mut first_fault = None;
@@ -136,7 +138,8 @@ impl<'a> Reference<'a> {
             }
             let key = PortKey::new(input.port_id.clone(), None);
             let outcome = if let Some(edge) = document
-                .root()
+                .body(self.body)
+                .unwrap()
                 .edges
                 .values()
                 .find(|edge| edge.to.node == node_id && edge.to.port == key)
@@ -157,6 +160,68 @@ impl<'a> Reference<'a> {
                     break;
                 }
             }
+        }
+        if node.definition.id.as_str() == "core/call" && first_fault.is_none() {
+            let target = node.config["function"].as_str().unwrap().parse().unwrap();
+            let function = &document.functions()[&target];
+            let mut child = Self::new(document, self.snapshot, analysis);
+            child.body = orange_model::document::BodyRef::Function(target);
+            if let Some(entry) = function
+                .body
+                .nodes
+                .values()
+                .find(|n| n.definition.id.as_str() == "core/function-entry")
+            {
+                for (parameter, value) in function.inputs.iter().zip(inputs) {
+                    child.supply(
+                        entry.id,
+                        PortKey::new(parameter.port_id.clone(), None),
+                        Ok(value),
+                    );
+                }
+            }
+            let result = function
+                .body
+                .nodes
+                .values()
+                .find(|n| n.definition.id.as_str() == "core/function-outputs")
+                .unwrap();
+            let mut outputs = BTreeMap::new();
+            for output in &function.outputs {
+                let key = PortKey::new(output.port_id.clone(), None);
+                let value = if let Some(edge) = function
+                    .body
+                    .edges
+                    .values()
+                    .find(|e| e.to.node == result.id && e.to.port == key)
+                {
+                    child.pull(edge.from.node, &edge.from.port, depth + 1)
+                } else {
+                    Ok(literal_codec::decode(
+                        result.inputs.get(&key).unwrap(),
+                        self.snapshot.types().as_ref(),
+                    )
+                    .unwrap())
+                };
+                outputs.insert(key, value);
+            }
+            let first_fault = function.outputs.iter().find_map(|p| {
+                outputs[&PortKey::new(p.port_id.clone(), None)]
+                    .as_ref()
+                    .err()
+                    .cloned()
+            });
+            if let Some(fault) = first_fault {
+                for value in outputs.values_mut() {
+                    *value = Err(fault.clone());
+                }
+            }
+            for (node, count) in child.executions {
+                *self.executions.entry(node).or_default() += count;
+            }
+            let value = outputs[port_key].clone();
+            self.cache.insert(node_id, outputs);
+            return value;
         }
         let result = if let Some(fault) = first_fault {
             if node.definition.id.as_str() == "core/try" {
