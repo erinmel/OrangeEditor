@@ -14,8 +14,10 @@ use orange_model::value::shape::VALUE_CHARGE;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod dependencies;
 mod dispatch;
 mod update;
+use dependencies::{UnionScratch, host_dependencies, union_inputs};
 #[derive(Debug, Clone, Copy)]
 pub enum IterationProjection {
     Index,
@@ -613,7 +615,8 @@ pub fn compile_control(
         }
     }
     let mut projection_items = 0;
-    let dependencies = host_dependencies(&data, options, &mut projection_items)?;
+    let mut scratch = UnionScratch::default();
+    let dependencies = host_dependencies(&data, options, &mut projection_items, &mut scratch)?;
     let root_inputs = (0..data.exports().len())
         .map(|root| {
             data.export_node(root)
@@ -631,6 +634,7 @@ pub fn compile_control(
                 demand.roots.iter().map(|&root| &root_inputs[root]),
                 options,
                 &mut projection_items,
+                &mut scratch,
             )?;
         }
     }
@@ -1330,67 +1334,6 @@ fn host_source(
         (_, "index") => Ok(HostSource::Index(owner)),
         _ => Err(unsupported),
     }
-}
-
-/// For each data node, the sorted host inputs its value transitively depends on.
-fn host_dependencies(
-    data: &DataPlan,
-    options: CompileOptions<'_>,
-    items: &mut usize,
-) -> Result<Vec<Arc<[usize]>>, CompileError> {
-    let host_indices: BTreeMap<_, _> = data
-        .host_inputs()
-        .iter()
-        .enumerate()
-        .map(|(i, n)| (n.index(), i))
-        .collect();
-    let mut dependencies: Vec<Arc<[usize]>> = Vec::with_capacity(data.nodes().len());
-    for node in data.nodes() {
-        options.checkpoint()?;
-        let inputs = if let Some(index) = host_indices.get(&node.index().index()) {
-            charge(items, 1, options.limits.max_graph_items)?;
-            Arc::from([*index])
-        } else {
-            let producers = node
-                .inputs()
-                .iter()
-                .filter_map(|i| i.producer)
-                .map(|i| {
-                    dependencies
-                        .get(i.index())
-                        .ok_or(CompileError::ValidationIncomplete)
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            union_inputs(producers, options, items)?
-        };
-        dependencies.push(inputs);
-    }
-    Ok(dependencies)
-}
-
-/// Union of sorted host-input sets, sharing the input set when all are identical.
-fn union_inputs<'s>(
-    sets: impl IntoIterator<Item = &'s Arc<[usize]>>,
-    options: CompileOptions<'_>,
-    items: &mut usize,
-) -> Result<Arc<[usize]>, CompileError> {
-    let sets: Vec<_> = sets.into_iter().collect();
-    let Some(first) = sets.first() else {
-        return Ok(Arc::from([]));
-    };
-    if sets.iter().all(|s| s.as_ref() == first.as_ref()) {
-        return Ok(Arc::clone(first));
-    }
-    let mut union = BTreeSet::new();
-    for set in sets {
-        for &index in set.iter() {
-            options.checkpoint()?;
-            if union.insert(index) {
-                charge(items, 1, options.limits.max_graph_items)?;
-            }
-        }
-    }
-    Ok(union.into_iter().collect::<Vec<_>>().into())
 }
 
 fn input_root(roots: &mut Vec<DemandRoot>, scope: usize, node: NodeId, port: &str) -> usize {
