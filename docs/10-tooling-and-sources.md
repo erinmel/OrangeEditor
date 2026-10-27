@@ -1625,3 +1625,30 @@ Self-review: Core operation/type admission is closed and preserves fresh languag
 New Update operation/demand/projection enums and shared scalar types are unfrozen Rust surface changes; bundled KernelError retains its original import path as a ScalarError reexport. No saved-schema/provider ABI change occurs. Bytes/list/timestamp/JSON/result/package Update execution, workspace actors and change/Watch delivery remain open; action/async functions, iterators/zones, resources/services and other planned core gates also remain incomplete.
 
 PR25 pre-merge review correction: UpdateDemand now reuses the existing immutable Arc host-input directory when operands have identical directories, including all single-input updates. Only differing inputs build and charge a new union. This removes per-update copied metadata and duplicate quota admission while retaining checked sorted indices. It is a structural allocation improvement, not a timing/NFR claim; final qualification must use the corrected head.
+
+### Core-loop collection and iteration qualification — 2026-10-27 (PR26)
+
+Based on PR25 squash merge8b9b98ac51afbb223b110ef871a5601bd14277f9 after its final head2ba7489b7b53eb09061e5e353168ef68214472a8 passed CI40431675230. Local Windows x86_64 MSVC, Rust1.99.1 (58cf8f9c3), Cargo1.99.1 (5f94df478), LLVM23.1.1 and Node24.18.0; default workspace features and checked-in lockfile. No dependency, feature or manifest change; Cargo.lock SHA256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152. The untracked foundation review remains byte-identical.
+
+| Executed check | Result |
+|---|---|
+| cargo test --workspace --locked --offline | PASS:869 passed,0 failed,14 existing ignored,86 result groups; rerun after resuming checkpoint b81ea2b |
+| cargo test --workspace --release --locked --offline | PASS:same869/0/14 |
+| cargo test -p orange-bundled --test control collection_iteration --locked --offline | PASS:18 focused groups, including96 fixed-seed source-fold comparisons at two pump budgets and512 nested iteration contexts |
+| Compiler checked-value units in full workspace suites | PASS:2 groups, including malformed/deep types, packed/generic charging and order-independent nested map equality |
+| cargo fmt --all --check | PASS |
+| cargo clippy --workspace --all-targets --locked --offline -- -D warnings | PASS |
+| cargo doc --workspace --no-deps --locked --offline with RUSTDOCFLAGS=-D warnings | PASS |
+| Metadata policy and self-test | PASS:9 fixtures |
+| node --test tools/release.test.mjs; node tools/release.mjs check | PASS:7 helper tests; desktop release intentionally disabled |
+| headless_control and headless_fork via cargo run -p orange-bundled --example NAME --locked --offline | PASS:total3 at10ns; existing all/any/race/detach timing and retirement |
+| git diff --check | PASS |
+| Remote platform/MSRV/security/supply-chain CI | Requires final-head PR26 qualification; local tests do not substitute |
+
+Independent source folds check list/map insertion order at small and larger pump budgets. Focused regressions cover empty collections, nested indices, immutable collection capture across replacement/waits, Break/Continue quota reuse across50 invocations, cancellation cleanup in the original lexical frame, independent sibling scopes, race/stop/disposal, moving a suspended Run between host threads, quota refusal without advancing the body, local-state budget sharing, container Append/CAS and timestamp ordering, pre-binding literal admission and retryable host-input rejection. Count Break now preserves its index until canceled body cleanup retires.
+
+Five deliberately introduced mutations produced behavior-test failures: reverse list order, omit the RAII charge release, omit child iteration context, make map equality order-sensitive, and restore premature Count index clearing. Sources were restored before full qualification. Ignored logs are .artifacts/collection-*.log.
+
+Self-review: typed native checks reject malformed provider/host shapes, duplicate keys and excessive depth, including publicly constructed empty/None PlanTypes. Borrowed checks precede retained publication; packed scalar list charging is constant-time. Map membership uses native checked keys and borrowed hash tables; package comparator authority is not inferred from constraint metadata. Lexical frames retain only actual enclosing scopes through immutable Arc links, release parent chains iteratively, and share a private RAII byte ledger with local state and Match/Update outputs. Actor mutation is exclusive; relaxed atomic accounting provides ownership-safe release when Run moves between host threads without claiming parallel actor execution. Snapshot and per-item charges are conservative even when immutable storage is shared. Empty Append reuses storage; matching packed lists stay packed. No runtime saved-JSON parsing, UI dependency, generic iterator callback, unsafe code or new dependency is introduced.
+
+PlanType/HostSource/ControlOperation additions, ValueCheckError and ListRepr::concat are unfrozen Rust surface changes; downstream exhaustive matches need updating. Saved JSON and provider ABI remain unchanged. Validation and equality are synchronous within configured depth/nominal byte bounds; these checks do not prove wall-time preemption, allocator/RSS or NFR targets. OneDrive incremental hard-link fallback warnings are environmental. Action/async functions and Return, zones/affine streams, broader kernels/types, events/Watch, workspace actors, resources/service seams, checkpoint recovery and applicable core/API-freeze gates remain incomplete. UI and concrete OS backend qualification remain separate.
