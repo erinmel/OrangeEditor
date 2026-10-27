@@ -209,6 +209,9 @@ impl<Id: Copy> ControlCell<Id> {
 #[derive(Debug, Clone, Copy)]
 pub enum HostSource {
     Variable(usize),
+    /// Read-only volatile calls get their own initialized locals, never caller locals.
+    /// Mutable action/async call frames are a separate execution contract.
+    CallLocal(usize),
     Error(ControlIx),
     Index(ControlIx),
     Value(ControlIx),
@@ -396,7 +399,21 @@ pub fn compile_control(
     let mut variable_ids = BTreeMap::new();
     let mut variable_nodes = BTreeMap::new();
     let mut bytes = 0;
-    for node in document.root().nodes.values() {
+    let calls = Arc::new(crate::calls::Calls::prepare(
+        document,
+        &snapshot,
+        analysis,
+        options,
+        crate::calls::CallProfile::HostData,
+    )?);
+    let called_nodes = calls
+        .scopes
+        .iter()
+        .enumerate()
+        .skip(1)
+        .flat_map(|(scope, _)| calls.body(document, scope).nodes.values());
+    // Visit every potential call before binding, including unused/lazy body nodes.
+    for node in document.root().nodes.values().chain(called_nodes) {
         options.checkpoint()?;
         if crate::compile::is_state_read(&snapshot, node)
             && node.definition.id.as_str() != "core/get-variable"
@@ -872,16 +889,25 @@ pub fn compile_control(
         data_options,
         admission,
         &roots,
+        calls,
     )?;
     let host_sources = data
         .host_inputs()
         .iter()
         .map(|ix| {
             let node = &data.nodes()[ix.index()];
-            if document.root().nodes[&node.node()].definition.id.as_str() == "core/get-variable"
+            if !controls.contains(&node.node())
                 && let Some(variable) = variable_nodes.get(&node.node())
             {
-                return Ok(HostSource::Variable(*variable));
+                return Ok(
+                    if node.call_instance().is_some()
+                        && variables[*variable].scope() == VarScope::Local
+                    {
+                        HostSource::CallLocal(*variable)
+                    } else {
+                        HostSource::Variable(*variable)
+                    },
+                );
             }
             let source = &data.slot_sources()[node.outputs()[0].index()];
             if matches!(source.port.port().as_str(), "is_open" | "is_a" | "current") {
@@ -957,7 +983,10 @@ pub fn compile_control(
             HostSource::Value(owner) | HostSource::Update(owner, _) => {
                 value_targets[owner.index()].push(i)
             }
-            HostSource::Variable(_) | HostSource::State(_) | HostSource::Iteration(_, _) => {}
+            HostSource::Variable(_)
+            | HostSource::CallLocal(_)
+            | HostSource::State(_)
+            | HostSource::Iteration(_, _) => {}
         }
     }
     let empty: Arc<[usize]> = Arc::from([]);

@@ -895,6 +895,16 @@ pub(crate) fn is_state_read(
             definition.volatility == Some(orange_model::catalog::Volatility::StateRead)
         })
 }
+/// State readers have the same host-input ABI in roots and called bodies.
+pub(crate) fn admit_state_read(
+    node: NodeId,
+    sig: &orange_model::document::SignatureSnapshot,
+) -> Result<(), CompileError> {
+    if !matches!(sig.ports.as_slice(), [port] if port.direction == PortDirection::Output) {
+        return Err(CompileError::UnsupportedNode { node });
+    }
+    Ok(())
+}
 pub(crate) fn admit<'a>(
     document: &'a GraphDocument,
     snapshot: &RegistrySnapshot,
@@ -963,10 +973,8 @@ pub(crate) fn admit_roots<'a>(
         let state_read = data_plan
             && sig.kind == NodeKind::Volatile
             && is_state_read(snapshot, &body.nodes[node]);
-        if state_read
-            && !matches!(sig.ports.as_slice(), [port] if port.direction == PortDirection::Output)
-        {
-            return Err(CompileError::UnsupportedNode { node: *node });
+        if state_read {
+            admit_state_read(*node, sig)?;
         }
         let call = body.nodes[node].definition.id.as_str() == "core/call";
         if sig.kind != NodeKind::Pure
