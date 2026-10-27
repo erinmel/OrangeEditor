@@ -1774,3 +1774,33 @@ Follow-up review (same day, same toolchain and lockfile):
 - A probe test for a nested zone whose prefix does not depend on the outer iteration confirmed that the model rejects the shape as `E-ZONE-STRUCTURE`. Deriving `parent` from the begin's owner is therefore sound, and the probe was removed.
 
 Results: fmt check, clippy `-D warnings`, rustdoc `-D warnings` and `git diff --check` all pass. `cargo test --workspace --locked` passes with 927 passed, 0 failed, 14 existing ignored, in 88 result groups.
+
+### Data shape slice — 2026-10-27
+
+`core/data-shape` starts from `dev` after the zones merge (82952bc), on the same Windows MSVC/Rust 1.99.1/Cargo 1.99.1 toolchain with default features. Cargo.lock and the manifests are unchanged.
+
+| Executed check | Result |
+|---|---|
+| cargo test --workspace --locked | PASS: 928 passed, 0 failed, 14 existing ignored, 88 result groups |
+| cargo clippy --workspace --all-targets --locked -- -D warnings | PASS |
+| cargo doc --workspace --no-deps --locked with RUSTDOCFLAGS=-D warnings | PASS |
+| cargo fmt --all --check; git diff --check | PASS |
+
+Changes:
+- **Value shape:** the compiler's string-prefix type parser and its separate value checks are gone. `ValueShape` resolves from parsed `TypeTerm`s and owns:
+  - the value check and its nominal charges (named constants);
+  - checked equality;
+  - the error-code rule.
+- **List packing:** one model `ListBuilder` serves the literal codec and runtime zones. The codec's panicking `unreachable!` packing path is gone.
+- **Charges:** compiler literal-size estimates and fault charges use named constants.
+- **Intrinsic IDs:** about 165 intrinsic ID literals outside tests and the language table now use the `catalog::intrinsic_id` constants, which also serve as the language table's IDs. Tests keep wire literals so they still pin the format.
+- **Non-exhaustive enums:** growing value and error enums are `#[non_exhaustive]`, and downstream matches gained wildcard arms.
+
+Tests: the moved shape tests keep their assertions. They add parsed-term resolution cases (wrong arity, float map key, parameter, foreign namespace, major version) and equal charging of bare and result errors. A codec↔shape test checks that decoded literals satisfy their shape and that rebuilt lists keep the same packing.
+
+Deliberately not changed:
+- **`PortDescriptor`:** stays flat. Registry publication already rejects incoherent kind/type/source combinations, and `Option<bool>` flags keep byte-stable round-trips.
+- **Literal codec dispatch:** stays a JSON-format layer. Its precise errors and secret references have no executable shape.
+- **Converter error codes:** keep their own laxer rule.
+
+Package record, enum and handle shapes; the domain seam; port templates; and redirects remain open. No NFR, API-freeze or core-completion claim follows.

@@ -619,6 +619,18 @@ Implementation notes (WU-00/00b.4; Rust spelling only):
 - **`NodeError`:** carries its stable code and optional original producer node; the full message/activation contract remains WU-03/runtime work.
 - **Equality and hashing** are structural, with floats compared by bit pattern and lists by elements whatever their storage; they are not the language `eq`/`hash` constraints.
 
+Value shape ownership (2026-10-27; `core/data-shape`):
+- `orange_model::value::shape::ValueShape` replaces the compiler's `PlanType`, with the same variants. Earlier notes that say `PlanType` now refer to it.
+- A shape resolves from the parsed `TypeTerm`, never from type-expression text.
+- The model owns, in one module:
+  - the bounded value check and its nominal charges: `VALUE_CHARGE`, `MAP_ENTRY_CHARGE` and `ERROR_CHARGE`;
+  - checked equality;
+  - the error-code rule;
+  - the option/result boxing rule above.
+- `ListBuilder` is the one list packing. The literal codec and runtime builders both use it, so every producer stores scalar and string elements natively.
+- `Value`, `ListRepr`, `ValueShape`, `ValueCheckError` and `ListPushError` are `#[non_exhaustive]`, because they will grow with records, enums, handles and OPEN-15. Language-closed enums stay exhaustive: node kind, port kind, output source and zone kind.
+- Package records, enums and handles still have no executable shape. The compiler refuses them before binding.
+
 ## 8. Registry snapshot
 
 ```rust
