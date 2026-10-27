@@ -555,7 +555,7 @@ pub fn compile_control(
                     operation,
                     demand: UpdateDemand {
                         roots: operands.into(),
-                        inputs: Box::new([]),
+                        inputs: Arc::from([]),
                     },
                 }
             }
@@ -972,6 +972,15 @@ pub fn compile_control(
         .collect::<Result<Vec<_>, _>>()?;
     for node in &mut nodes {
         if let ControlOperation::Update { demand, .. } = &mut node.operation {
+            let first = &root_inputs[demand.roots[0]];
+            if demand
+                .roots
+                .iter()
+                .all(|&root| root_inputs[root].as_ref() == first.as_ref())
+            {
+                demand.inputs = first.clone();
+                continue;
+            }
             let mut union = BTreeSet::new();
             for &root in demand.roots.iter() {
                 for &input in root_inputs[root].iter() {
@@ -981,7 +990,7 @@ pub fn compile_control(
                     }
                 }
             }
-            demand.inputs = union.into_iter().collect();
+            demand.inputs = Arc::from(union.into_iter().collect::<Vec<_>>());
         }
     }
     Ok(ControlPlan {

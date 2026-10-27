@@ -29,7 +29,7 @@ pub enum UpdateProjection {
 #[derive(Debug, Clone)]
 pub struct UpdateDemand {
     pub(super) roots: Box<[usize]>,
-    pub(super) inputs: Box<[usize]>,
+    pub(super) inputs: Arc<[usize]>,
 }
 impl UpdateDemand {
     pub fn roots(&self) -> &[usize] {
