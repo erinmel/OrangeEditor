@@ -338,35 +338,34 @@ fn check_body(
         index += 1;
     }
 
-    let is_ancestor = |ancestor: usize, mut region: usize| {
-        loop {
-            if region == ancestor {
-                return true;
-            }
-            match walks[region].parent {
-                Some(parent) => region = parent,
-                None => return false,
-            }
-        }
+    // A region and its enclosing regions, innermost first.
+    let lineage = |region: usize| std::iter::successors(Some(region), |&r| walks[r].parent);
+    let is_ancestor = |ancestor: usize, region: usize| lineage(region).any(|r| r == ancestor);
+    let empty = BTreeSet::new();
+    let regions_of = |node: NodeId| membership.get(&node).unwrap_or(&empty);
+    // Whether an incoming edge carries `region`: the root's own region, or any region
+    // of its source node.
+    let carries = |(source, _, root): &Incoming, region: usize| {
+        root.map_or_else(|| regions_of(*source).contains(&region), |r| r == region)
     };
-    let regions_of = |node: NodeId| membership.get(&node).cloned().unwrap_or_default();
+    let mut report = |code, subject| {
+        result
+            .diagnostics
+            .push(Diagnostic::new(code, subject, origin));
+    };
+    let at = |node| subject(function, node, None, None);
 
     // Conflicts: report only where an edge first brings a node into more regions than its
     // source belongs to, so downstream nodes do not repeat the same fault.
+    let no_edges = BTreeMap::new();
     for (node, regions) in &membership {
         if regions.len() < 2 {
             continue;
         }
-        let edges = incoming.get(node).cloned().unwrap_or_default();
-        let frontier = edges.values().any(|(source, _, root)| {
-            let set = root.map_or_else(BTreeSet::new, |region| BTreeSet::from([region]));
-            let set = if root.is_some() {
-                set
-            } else {
-                regions_of(*source)
-            };
-            !regions.is_subset(&set)
-        });
+        let edges = incoming.get(node).unwrap_or(&no_edges);
+        let frontier = edges
+            .values()
+            .any(|edge| regions.iter().any(|&region| !carries(edge, region)));
         if !frontier {
             continue;
         }
@@ -376,11 +375,7 @@ fn check_body(
                 .all(|b| is_ancestor(*a, *b) || is_ancestor(*b, *a))
         });
         if !nested {
-            result.diagnostics.push(Diagnostic::new(
-                DiagnosticCode::RegionAmbiguous,
-                subject(function, *node, None, None),
-                origin,
-            ));
+            report(DiagnosticCode::RegionAmbiguous, at(*node));
             continue;
         }
         let home = edges
@@ -389,24 +384,18 @@ fn check_body(
             .filter(|region| regions.contains(region))
             .or_else(|| regions.iter().copied().min_by_key(|r| depth(&walks, *r)))
             .expect("conflict has regions");
-        let mut flagged = false;
-        for (edge, (source, port, root)) in &edges {
-            let set = root.map_or_else(|| regions_of(*source), |region| BTreeSet::from([region]));
-            if !set.contains(&home) {
-                flagged = true;
-                result.diagnostics.push(Diagnostic::new(
-                    DiagnosticCode::RegionEscape,
-                    subject(function, *source, Some(port.clone()), Some(*edge)),
-                    origin,
-                ));
-            }
+        let escapes: Vec<_> = edges
+            .iter()
+            .filter(|(_, via)| !carries(via, home))
+            .collect();
+        if escapes.is_empty() {
+            report(DiagnosticCode::RegionEscape, at(*node));
         }
-        if !flagged {
-            result.diagnostics.push(Diagnostic::new(
+        for (edge, (source, port, _)) in escapes {
+            report(
                 DiagnosticCode::RegionEscape,
-                subject(function, *node, None, None),
-                origin,
-            ));
+                subject(function, *source, Some(port.clone()), Some(*edge)),
+            );
         }
     }
 
@@ -420,51 +409,24 @@ fn check_body(
                 .and_then(serde_json::Value::as_u64)
                 .is_some_and(|limit| limit > 0)
         {
-            result.diagnostics.push(Diagnostic::new(
-                DiagnosticCode::LoopUnbounded,
-                subject(function, node.id, None, None),
-                origin,
-            ));
+            report(DiagnosticCode::LoopUnbounded, at(node.id));
         }
         if definition == ids::SWITCH
             && resolved
                 .get(&node.id)
                 .is_some_and(|signature| !switch_cases_valid(node, signature))
         {
-            result.diagnostics.push(Diagnostic::new(
-                DiagnosticCode::SwitchCase,
-                subject(function, node.id, None, None),
-                origin,
-            ));
+            report(DiagnosticCode::SwitchCase, at(node.id));
         }
-        let regions = regions_of(node.id);
+        let mut regions = regions_of(node.id).iter().copied();
         match definition {
-            ids::BREAK | ids::CONTINUE
-                if regions.iter().any(|r| walks[*r].enclosing_loop.is_none()) =>
-            {
-                result.diagnostics.push(Diagnostic::new(
-                    DiagnosticCode::BreakOutsideLoop,
-                    subject(function, node.id, None, None),
-                    origin,
-                ));
+            ids::BREAK | ids::CONTINUE if regions.any(|r| walks[r].enclosing_loop.is_none()) => {
+                report(DiagnosticCode::BreakOutsideLoop, at(node.id));
             }
             ids::RETURN
-                if regions.iter().any(|r| {
-                    let mut cursor = Some(*r);
-                    while let Some(region) = cursor {
-                        if walks[region].kind == RegionKind::Fork {
-                            return true;
-                        }
-                        cursor = walks[region].parent;
-                    }
-                    false
-                }) =>
+                if regions.any(|r| lineage(r).any(|r| walks[r].kind == RegionKind::Fork)) =>
             {
-                result.diagnostics.push(Diagnostic::new(
-                    DiagnosticCode::RegionEscape,
-                    subject(function, node.id, None, None),
-                    origin,
-                ));
+                report(DiagnosticCode::RegionEscape, at(node.id));
             }
             _ => {}
         }
