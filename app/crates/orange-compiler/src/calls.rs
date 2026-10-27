@@ -3,6 +3,7 @@
 use crate::compile::{CompileOptions, Incoming, admit_data_ports, charge, key};
 use crate::{CompileError, PureCallSite};
 use orange_model::GraphDocument;
+use orange_model::catalog::intrinsic_id as ids;
 use orange_model::catalog::{Ports, ReferenceKind, RegistrySnapshot, TypeArgs};
 use orange_model::document::{GraphBody, NodeKind, OutputSource, SignatureSnapshot};
 use orange_model::edit::DeclId;
@@ -179,7 +180,7 @@ impl<'a> Calls<'a> {
             .root()
             .nodes
             .values()
-            .any(|n| n.definition.id.as_str() == "core/call")
+            .any(|n| n.definition.id.as_str() == ids::CALL)
         {
             return Ok(out);
         }
@@ -214,7 +215,7 @@ impl<'a> Calls<'a> {
                         effect && !matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile);
                     let marker = matches!(
                         node.definition.id.as_str(),
-                        "core/function-entry" | "core/function-outputs" | "core/return"
+                        ids::FUNCTION_ENTRY | ids::FUNCTION_OUTPUTS | ids::RETURN
                     );
                     let state = profile != CallProfile::Pure
                         && sig.kind == NodeKind::Volatile
@@ -224,7 +225,7 @@ impl<'a> Calls<'a> {
                     }
                     let seeded = profile != CallProfile::Pure
                         && sig.kind == NodeKind::Volatile
-                        && (node.definition.id.as_str() == "core/call"
+                        && (node.definition.id.as_str() == ids::CALL
                             || crate::compile::is_seeded_entropy(snapshot, node));
                     if !marker && sig.kind != NodeKind::Pure && !seeded && !state && !control {
                         return Err(CompileError::UnsupportedNode { node: node.id });
@@ -239,7 +240,7 @@ impl<'a> Calls<'a> {
                         && !state
                         && !control
                         && zone.is_none()
-                        && !matches!(node.definition.id.as_str(), "core/call" | "core/convert")
+                        && !matches!(node.definition.id.as_str(), ids::CALL | ids::CONVERT)
                     {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
@@ -273,7 +274,7 @@ impl<'a> Calls<'a> {
                         )?;
                     }
                 }
-                if node.definition.id.as_str() != "core/call" {
+                if node.definition.id.as_str() != ids::CALL {
                     continue;
                 }
                 if !(sig.kind == NodeKind::Pure
@@ -381,10 +382,10 @@ impl<'a> Calls<'a> {
                             .ok_or(CompileError::ValidationIncomplete)?;
                         let sig =
                             specialize(original, &cache_key.1, &mut out.signature_bytes, options)?;
-                        if child.definition.id.as_str() == "core/function-entry" {
+                        if child.definition.id.as_str() == ids::FUNCTION_ENTRY {
                             prepared.entry = Some(child.id);
                         }
-                        if child.definition.id.as_str() == "core/function-outputs" {
+                        if child.definition.id.as_str() == ids::FUNCTION_OUTPUTS {
                             prepared.result = Some(child.id);
                         }
                         if !child.definition.id.is_core() {

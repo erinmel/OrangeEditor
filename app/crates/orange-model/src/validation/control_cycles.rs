@@ -1,5 +1,6 @@
 //! Control-cycle validation (11 §8.1, §8.2 "C").
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
@@ -142,7 +143,7 @@ pub(crate) fn validate_control_cycles_in(
 fn is_yield(document: &GraphDocument, node: NodeId) -> bool {
     document
         .node(node)
-        .is_some_and(|instance| instance.definition.id.as_str() == "core/yield")
+        .is_some_and(|instance| instance.definition.id.as_str() == ids::YIELD)
 }
 
 fn cycle_subject(function: Option<crate::id::FunctionId>, path: &[NodeId]) -> Subject {

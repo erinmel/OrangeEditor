@@ -312,7 +312,7 @@ fn concrete_vertices(
 }
 
 fn add_edge(graph: &mut BTreeMap<Vertex, BTreeSet<Vertex>>, from: Vertex, to: Vertex) {
-    graph.entry(from.clone()).or_default().insert(to.clone());
+    graph.entry(from).or_default().insert(to.clone());
     graph.entry(to).or_default();
 }
 

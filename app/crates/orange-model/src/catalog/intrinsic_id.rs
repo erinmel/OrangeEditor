@@ -1,0 +1,47 @@
+//! Exact definition IDs of every language intrinsic (11 §3) and the `core/convert` special
+//! form. Every other module names intrinsics through these constants, never literals.
+
+pub const ON_START: &str = "core/on-start";
+pub const ON_STOP: &str = "core/on-stop";
+pub const CALL: &str = "core/call";
+pub const FUNCTION_ENTRY: &str = "core/function-entry";
+pub const FUNCTION_OUTPUTS: &str = "core/function-outputs";
+pub const RETURN: &str = "core/return";
+pub const GET_VARIABLE: &str = "core/get-variable";
+pub const SET_VARIABLE: &str = "core/set-variable";
+pub const UPDATE_VARIABLE: &str = "core/update-variable";
+pub const SET_SHARED: &str = "core/set-shared";
+pub const UPDATE_SHARED: &str = "core/update-shared";
+pub const ON_EVENT: &str = "core/on-event";
+pub const EMIT: &str = "core/emit";
+pub const BRANCH: &str = "core/branch";
+pub const SWITCH: &str = "core/switch";
+pub const SEQUENCE: &str = "core/sequence";
+pub const FORK: &str = "core/fork";
+pub const FOR_EACH: &str = "core/for-each";
+pub const COUNT: &str = "core/count";
+pub const WHILE: &str = "core/while";
+pub const BREAK: &str = "core/break";
+pub const CONTINUE: &str = "core/continue";
+pub const GATE: &str = "core/gate";
+pub const DO_ONCE: &str = "core/do-once";
+pub const FLIP_FLOP: &str = "core/flip-flop";
+pub const YIELD: &str = "core/yield";
+pub const WAIT: &str = "core/wait";
+pub const AWAIT_EVENT: &str = "core/await-event";
+pub const REGISTER: &str = "core/register";
+pub const SELECT: &str = "core/select";
+pub const AND: &str = "core/and";
+pub const OR: &str = "core/or";
+pub const COALESCE: &str = "core/coalesce";
+pub const TRY: &str = "core/try";
+pub const MATCH_RESULT: &str = "core/match-result";
+pub const REPEAT_BEGIN: &str = "core/repeat-begin";
+pub const REPEAT_END: &str = "core/repeat-end";
+pub const MAP_BEGIN: &str = "core/map-begin";
+pub const MAP_END: &str = "core/map-end";
+pub const FOLD_BEGIN: &str = "core/fold-begin";
+pub const FOLD_END: &str = "core/fold-end";
+pub const FILTER_BEGIN: &str = "core/filter-begin";
+pub const FILTER_END: &str = "core/filter-end";
+pub const CONVERT: &str = "core/convert";

@@ -165,7 +165,7 @@ impl TypeRegistryBuilder {
         if !matches!(definition.data, TypeData::Record(_) | TypeData::Enum(_)) {
             return Err(TypeRegistrationError::NotDerivableType { ty: id.to_string() });
         }
-        let target = TypeTerm::Named(named.clone());
+        let target = TypeTerm::Named(named);
         if self
             .implementations
             .contains_key(&(target, ConstraintId::Core(constraint)))

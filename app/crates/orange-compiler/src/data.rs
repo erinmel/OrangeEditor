@@ -1,5 +1,5 @@
 //! Immutable root data plans. Execution and epoch ownership live in orange-runtime.
-use crate::compile::valid_fault;
+use crate::compile::{FAULT_CHARGE, valid_fault};
 use crate::*;
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::id::{GraphId, NodeId};
@@ -120,7 +120,7 @@ pub struct DataPlan {
     pub(crate) calls: Vec<PureCallSite>,
     pub(crate) slot_calls: Vec<Option<usize>>,
     pub(crate) nodes: Vec<DataNode>,
-    pub(crate) types: Vec<PlanType>,
+    pub(crate) types: Vec<ValueShape>,
     pub(crate) sources: Vec<SlotSource>,
     pub(crate) initial: Vec<Option<FoldedValue>>,
     pub(crate) exports: Vec<Export>,
@@ -169,7 +169,7 @@ impl DataPlan {
     pub fn nodes(&self) -> &[DataNode] {
         &self.nodes
     }
-    pub fn slot_types(&self) -> &[PlanType] {
+    pub fn slot_types(&self) -> &[ValueShape] {
         &self.types
     }
     pub fn slot_sources(&self) -> &[SlotSource] {
@@ -228,6 +228,6 @@ impl DataPlan {
             .checked_charge(value, limit)
     }
     pub fn fault_charge(&self, fault: &ConstantFault) -> Option<usize> {
-        valid_fault(fault.fault).then_some(64)
+        valid_fault(fault.fault).then_some(FAULT_CHARGE)
     }
 }

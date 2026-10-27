@@ -1,4 +1,4 @@
-use crate::{ExecTarget, PlanType};
+use crate::{ExecTarget, ValueShape};
 use orange_model::Value;
 use std::sync::Arc;
 
@@ -50,14 +50,14 @@ impl SwitchCase {
         self.target
     }
 }
-pub(super) fn case_key(ty: &PlanType, value: &serde_json::Value) -> Option<SwitchKey> {
+pub(super) fn case_key(ty: &ValueShape, value: &serde_json::Value) -> Option<SwitchKey> {
     Some(match ty {
-        PlanType::Bool => SwitchKey::Bool(value.as_bool()?),
-        PlanType::I32 => SwitchKey::Signed(i64::from(i32::try_from(value.as_i64()?).ok()?)),
-        PlanType::I64 => SwitchKey::Signed(value.as_i64()?),
-        PlanType::U32 => SwitchKey::Unsigned(u64::from(u32::try_from(value.as_u64()?).ok()?)),
-        PlanType::U64 => SwitchKey::Unsigned(value.as_u64()?),
-        PlanType::String => SwitchKey::String(Arc::new(value.as_str()?.to_owned())),
+        ValueShape::Bool => SwitchKey::Bool(value.as_bool()?),
+        ValueShape::I32 => SwitchKey::Signed(i64::from(i32::try_from(value.as_i64()?).ok()?)),
+        ValueShape::I64 => SwitchKey::Signed(value.as_i64()?),
+        ValueShape::U32 => SwitchKey::Unsigned(u64::from(u32::try_from(value.as_u64()?).ok()?)),
+        ValueShape::U64 => SwitchKey::Unsigned(value.as_u64()?),
+        ValueShape::String => SwitchKey::String(Arc::new(value.as_str()?.to_owned())),
         _ => return None,
     })
 }

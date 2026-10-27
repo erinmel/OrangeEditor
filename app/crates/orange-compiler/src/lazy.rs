@@ -1,6 +1,7 @@
 //! Language-owned constant branch specialization, never package-controlled laziness.
 use crate::{CompileError, KernelBinding, KernelFault, PureKernel};
 use orange_model::Value;
+use orange_model::catalog::intrinsic_id as ids;
 use orange_model::document::{NodeInstance, PortDirection, SignatureSnapshot};
 use std::sync::Arc;
 
@@ -18,11 +19,11 @@ impl Lazy {
         sig: &SignatureSnapshot,
     ) -> Result<Option<Self>, CompileError> {
         let kind = match node.definition.id.as_str() {
-            "core/select" => Self::Select,
-            "core/and" => Self::And,
-            "core/or" => Self::Or,
-            "core/coalesce" => Self::Coalesce,
-            "core/try" => Self::Try,
+            ids::SELECT => Self::Select,
+            ids::AND => Self::And,
+            ids::OR => Self::Or,
+            ids::COALESCE => Self::Coalesce,
+            ids::TRY => Self::Try,
             _ => return Ok(None),
         };
         let bad = || CompileError::KernelContract { node: node.id };

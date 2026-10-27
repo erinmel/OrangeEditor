@@ -123,7 +123,7 @@ fn append_node_inputs(
     let node_id = node.id;
     let rigid: Vec<String> = rigid_params(document, node_id)
         .iter()
-        .map(|param| param.name.to_string())
+        .map(|param| param.name.clone())
         .collect();
     let mut valid_keys = BTreeSet::new();
     let mut candidates = Vec::new();

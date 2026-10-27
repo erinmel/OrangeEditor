@@ -1,10 +1,12 @@
 use crate::*;
 use orange_model::catalog::RegistrySnapshot;
+use orange_model::catalog::intrinsic_id as ids;
 use orange_model::document::literal::{Literal, LiteralPayload};
 use orange_model::document::{NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind};
 use orange_model::id::{NodeId, PortKey};
 use orange_model::validation::{Diagnostic, DiagnosticCode, Subject, ValidationAnalysis};
 use orange_model::value::literal_codec;
+use orange_model::value::shape::{MAP_ENTRY_CHARGE, VALUE_CHARGE, is_error_code};
 use orange_model::{GraphDocument, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
@@ -58,10 +60,10 @@ impl CompileOptions<'_> {
 pub(crate) fn key(port: &PortDescriptor) -> PortKey {
     PortKey::new(port.port_id.clone(), None)
 }
-pub(crate) fn port_type(node: NodeId, port: &PortDescriptor) -> Result<PlanType, CompileError> {
+pub(crate) fn port_type(node: NodeId, port: &PortDescriptor) -> Result<ValueShape, CompileError> {
     port.ty
         .as_ref()
-        .and_then(|ty| PlanType::parse(ty.as_str()))
+        .and_then(ValueShape::of)
         .ok_or_else(|| CompileError::UnsupportedPort {
             node,
             port: key(port),
@@ -99,26 +101,17 @@ pub(crate) fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<()
         .ok_or(CompileError::ResourceLimit)?;
     Ok(())
 }
-pub(crate) fn value_bytes(value: &Value) -> usize {
-    match value {
-        Value::Json(text) => text.as_str().len().saturating_add(16),
-        Value::Str(text) => text.len().saturating_add(16),
-        Value::Bytes(bytes) => bytes.len().saturating_add(16),
-        Value::List(items) => items.iter().fold(16usize, |sum, value| {
-            sum.saturating_add(value_bytes(&value))
-        }),
-        Value::Map(map) => map.entries.iter().fold(16usize, |sum, (k, v)| {
-            sum.saturating_add(value_bytes(k))
-                .saturating_add(value_bytes(v))
-        }),
-        Value::Some(inner) | Value::Ok(inner) => value_bytes(inner).saturating_add(16),
-        Value::Err(error) => error.code.len().saturating_add(32),
-        _ => 16,
-    }
+/// Retained bytes of one published constant fault: static code, key, message and producer.
+pub(crate) const FAULT_CHARGE: usize = 64;
+
+/// Nominal retained bytes of a constant, already checked against its shape.
+pub(crate) fn value_bytes(ty: &ValueShape, value: &Value) -> Result<usize, CompileError> {
+    ty.checked_charge(value, usize::MAX)
+        .map_err(|_| CompileError::ValidationIncomplete)
 }
 fn push_slot(
     plan: &mut PurePlan,
-    ty: PlanType,
+    ty: ValueShape,
     source: SlotSource,
     value: FoldedValue,
     call: Option<usize>,
@@ -130,8 +123,8 @@ fn push_slot(
     }
     let index = u32::try_from(plan.constants.len()).map_err(|_| CompileError::ResourceLimit)?;
     let size = match &value {
-        FoldedValue::Value(v) => value_bytes(v),
-        FoldedValue::Fault(_) => 64,
+        FoldedValue::Value(v) => value_bytes(&ty, v)?,
+        FoldedValue::Fault(_) => FAULT_CHARGE,
     };
     charge(bytes, size, options.limits.max_constant_bytes)?;
     plan.slot_calls.push(call);
@@ -142,11 +135,11 @@ fn push_slot(
 }
 pub(crate) fn decode(
     literal: &Literal,
-    ty: &PlanType,
+    ty: &ValueShape,
     snapshot: &RegistrySnapshot,
     remaining: usize,
 ) -> Result<Option<Value>, CompileError> {
-    if PlanType::parse(literal.ty.as_str()).as_ref() != Some(ty) {
+    if ValueShape::of(&literal.ty).as_ref() != Some(ty) {
         return Ok(None);
     }
     let cost = literal_bytes(&literal.payload, ty, remaining).ok_or(CompileError::ResourceLimit)?;
@@ -157,24 +150,24 @@ pub(crate) fn decode(
         .ok()
         .filter(|v| ty.accepts(v)))
 }
-fn literal_bytes(payload: &LiteralPayload, ty: &PlanType, limit: usize) -> Option<usize> {
-    fn visit(value: &serde_json::Value, ty: &PlanType, remaining: &mut usize) -> Option<()> {
-        *remaining = remaining.checked_sub(16)?;
+fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Option<usize> {
+    fn visit(value: &serde_json::Value, ty: &ValueShape, remaining: &mut usize) -> Option<()> {
+        *remaining = remaining.checked_sub(VALUE_CHARGE)?;
         match ty {
-            PlanType::Option(inner) => {
+            ValueShape::Option(inner) => {
                 let object = value.as_object().filter(|o| o.len() == 1)?;
                 if object.get("none") == Some(&serde_json::Value::Bool(true)) {
                     return Some(());
                 }
                 let some = object.get("some")?;
-                if !matches!(inner.as_ref(), PlanType::Option(_)) {
-                    *remaining = remaining.checked_add(16)?;
+                if !matches!(inner.as_ref(), ValueShape::Option(_)) {
+                    *remaining = remaining.checked_add(VALUE_CHARGE)?;
                 }
                 visit(some, inner, remaining)
             }
-            PlanType::List(inner) => {
+            ValueShape::List(inner) => {
                 let items = value.as_array()?;
-                if items.len().checked_mul(16)? > *remaining {
+                if items.len().checked_mul(VALUE_CHARGE)? > *remaining {
                     return None;
                 }
                 for item in items {
@@ -182,9 +175,9 @@ fn literal_bytes(payload: &LiteralPayload, ty: &PlanType, limit: usize) -> Optio
                 }
                 Some(())
             }
-            PlanType::Map(key, inner) => {
+            ValueShape::Map(key, inner) => {
                 let items = value.as_array()?;
-                if items.len().checked_mul(32)? > *remaining {
+                if items.len().checked_mul(MAP_ENTRY_CHARGE)? > *remaining {
                     return None;
                 }
                 for item in items {
@@ -197,7 +190,7 @@ fn literal_bytes(payload: &LiteralPayload, ty: &PlanType, limit: usize) -> Optio
             _ => {
                 let bytes = match value {
                     serde_json::Value::String(s) => s.len(),
-                    serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 16,
+                    serde_json::Value::Bool(_) | serde_json::Value::Number(_) => VALUE_CHARGE,
                     _ => return None,
                 };
                 *remaining = remaining.checked_sub(bytes)?;
@@ -207,26 +200,14 @@ fn literal_bytes(payload: &LiteralPayload, ty: &PlanType, limit: usize) -> Optio
     }
     let mut remaining = limit;
     match payload {
-        LiteralPayload::Bits(bits) => return bits.len().checked_add(16),
+        LiteralPayload::Bits(bits) => return bits.len().checked_add(VALUE_CHARGE),
         LiteralPayload::Value(value) => visit(value, ty, &mut remaining)?,
     };
     Some(limit - remaining)
 }
-pub(crate) fn valid_identifier(text: &str) -> bool {
-    let Some((namespace, name)) = text.split_once('/') else {
-        return false;
-    };
-    !namespace.is_empty()
-        && !name.is_empty()
-        && !name.contains('/')
-        && text.len() <= 256
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"/-_.".contains(&b))
-}
 pub(crate) fn valid_fault(fault: KernelFault) -> bool {
-    valid_identifier(fault.code)
-        && valid_identifier(fault.message_key)
+    is_error_code(fault.code)
+        && is_error_code(fault.message_key)
         && !fault.message.is_empty()
         && fault.message.len() <= 512
         && !fault.message.chars().any(char::is_control)
@@ -468,7 +449,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
     }
     pub(crate) fn seed_constant(
         &mut self,
-        ty: PlanType,
+        ty: ValueShape,
         source: SlotSource,
         value: FoldedValue,
         call: Option<usize>,
@@ -828,10 +809,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                         options.limits.max_constant_bytes.saturating_sub(*bytes),
                     )
                     .map_err(|error| match error {
-                        ValueCheckError::InvalidType => {
-                            CompileError::KernelContract { node: node_id }
-                        }
                         ValueCheckError::ResourceLimit => CompileError::ResourceLimit,
+                        _ => CompileError::KernelContract { node: node_id },
                     })?;
                     FoldedValue::Value(value)
                 };
@@ -976,7 +955,7 @@ pub(crate) fn admit_roots<'a>(
         if state_read {
             admit_state_read(*node, sig)?;
         }
-        let call = body.nodes[node].definition.id.as_str() == "core/call";
+        let call = body.nodes[node].definition.id.as_str() == ids::CALL;
         let zone = data_plan
             .then(|| crate::zones::marker(analysis, *node))
             .flatten();
@@ -992,7 +971,7 @@ pub(crate) fn admit_roots<'a>(
             lazy_nodes.insert(*node, kind);
         }
         if body.nodes[node].definition.id.is_core()
-            && body.nodes[node].definition.id.as_str() != "core/convert"
+            && body.nodes[node].definition.id.as_str() != ids::CONVERT
             && !lazy_nodes.contains_key(node)
             && !state_read
             && zone.is_none()

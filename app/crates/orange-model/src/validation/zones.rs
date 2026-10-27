@@ -1,5 +1,6 @@
 //! Shared intrinsic pairing and the checked, compact lexical zone directory.
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::document::GraphBody;
@@ -18,14 +19,14 @@ impl ZoneKind {
     /// Exact intrinsic identity and whether it is the end marker.
     pub(crate) fn marker(definition: &str) -> Option<(Self, bool)> {
         Some(match definition {
-            "core/repeat-begin" => (Self::Repeat, false),
-            "core/repeat-end" => (Self::Repeat, true),
-            "core/map-begin" => (Self::Map, false),
-            "core/map-end" => (Self::Map, true),
-            "core/fold-begin" => (Self::Fold, false),
-            "core/fold-end" => (Self::Fold, true),
-            "core/filter-begin" => (Self::Filter, false),
-            "core/filter-end" => (Self::Filter, true),
+            ids::REPEAT_BEGIN => (Self::Repeat, false),
+            ids::REPEAT_END => (Self::Repeat, true),
+            ids::MAP_BEGIN => (Self::Map, false),
+            ids::MAP_END => (Self::Map, true),
+            ids::FOLD_BEGIN => (Self::Fold, false),
+            ids::FOLD_END => (Self::Fold, true),
+            ids::FILTER_BEGIN => (Self::Filter, false),
+            ids::FILTER_END => (Self::Filter, true),
             _ => return None,
         })
     }

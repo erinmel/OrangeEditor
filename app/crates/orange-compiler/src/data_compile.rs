@@ -1,6 +1,6 @@
 use crate::compile::{
-    Admission, ConstantFolder, Incoming, admit, charge, decode, is_state_read, key, port_type,
-    value_bytes,
+    Admission, ConstantFolder, FAULT_CHARGE, Incoming, admit, charge, decode, is_state_read, key,
+    port_type, value_bytes,
 };
 use crate::lazy::Lazy;
 use crate::*;
@@ -71,10 +71,11 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         }
         let index =
             u32::try_from(self.plan.initial.len()).map_err(|_| CompileError::ResourceLimit)?;
+        let ty = port_type(node, port)?;
         if let Some(value) = &value {
             let size = match value {
-                FoldedValue::Value(value) => value_bytes(value),
-                FoldedValue::Fault(_) => 64,
+                FoldedValue::Value(value) => value_bytes(&ty, value)?,
+                FoldedValue::Fault(_) => FAULT_CHARGE,
             };
             charge(
                 &mut self.bytes,
@@ -82,7 +83,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 self.options.limits.max_constant_bytes,
             )?;
         }
-        self.plan.types.push(port_type(node, port)?);
+        self.plan.types.push(ty);
         self.plan.sources.push(SlotSource {
             node,
             port: key(port),

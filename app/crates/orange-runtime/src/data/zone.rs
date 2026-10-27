@@ -7,20 +7,18 @@
 
 use super::{DataError, Frame, Work};
 use orange_compiler::{
-    ConstantFault, DataNode, DataOperation, DataPlan, FoldedValue, KernelFault, NodeIx, PlanType,
-    ValueCheckError, ZoneIx,
+    ConstantFault, DataNode, DataOperation, DataPlan, FoldedValue, KernelFault, NodeIx, ZoneIx,
 };
 use orange_model::Value;
 use orange_model::id::NodeId;
 use orange_model::validation::ZoneKind;
-use orange_model::value::ListRepr;
+use orange_model::value::shape::{VALUE_CHARGE, ValueCheckError, ValueShape};
+use orange_model::value::{ListBuilder, ListPushError, ListRepr};
 use std::sync::Arc;
 
 /// Begin inputs collected before the first iteration: Repeat count/initial,
 /// Fold items/initial, Map/Filter items.
 const MAX_PREFIX: usize = 2;
-/// Fixed charge of a list builder before its first element.
-const BUILDER_CHARGE: usize = 16;
 
 /// Per-zone state in a Frame. The generation is never reset, so a body memo
 /// stamp from an earlier iteration or epoch can never match a later one.
@@ -47,66 +45,18 @@ enum MachineError {
 impl From<ValueCheckError> for MachineError {
     fn from(error: ValueCheckError) -> Self {
         match error {
-            ValueCheckError::InvalidType => Self::Contract,
             ValueCheckError::ResourceLimit => Self::Limit,
+            _ => Self::Contract,
         }
     }
 }
 
-enum ListBuilder {
-    Bool(Vec<bool>),
-    I32(Vec<i32>),
-    I64(Vec<i64>),
-    U32(Vec<u32>),
-    U64(Vec<u64>),
-    F32(Vec<f32>),
-    F64(Vec<f64>),
-    Str(Vec<Arc<String>>),
-    Values(Vec<Value>),
-}
-
-impl ListBuilder {
-    fn new(ty: &PlanType) -> Self {
-        match ty {
-            PlanType::Bool => Self::Bool(Vec::new()),
-            PlanType::I32 => Self::I32(Vec::new()),
-            PlanType::I64 => Self::I64(Vec::new()),
-            PlanType::U32 => Self::U32(Vec::new()),
-            PlanType::U64 => Self::U64(Vec::new()),
-            PlanType::F32 => Self::F32(Vec::new()),
-            PlanType::F64 => Self::F64(Vec::new()),
-            PlanType::String => Self::Str(Vec::new()),
-            _ => Self::Values(Vec::new()),
+impl From<ListPushError> for MachineError {
+    fn from(error: ListPushError) -> Self {
+        match error {
+            ListPushError::Capacity => Self::Limit,
+            _ => Self::Contract,
         }
-    }
-    fn push(&mut self, value: Value) -> Result<(), MachineError> {
-        macro_rules! push {
-            ($($variant:ident),*) => {
-                match (self, value) {
-                    $((Self::$variant(values), Value::$variant(value)) => {
-                        values.try_reserve(1).map_err(|_| MachineError::Limit)?;
-                        values.push(value);
-                    })*
-                    (Self::Values(values), value) => {
-                        values.try_reserve(1).map_err(|_| MachineError::Limit)?;
-                        values.push(value);
-                    }
-                    _ => return Err(MachineError::Contract),
-                }
-            }
-        }
-        push!(Bool, I32, I64, U32, U64, F32, F64, Str);
-        Ok(())
-    }
-    fn finish(self) -> ListRepr {
-        macro_rules! finish {
-            ($($variant:ident),*) => {
-                match self {
-                    $(Self::$variant(values) => ListRepr::$variant(values.into_boxed_slice()),)*
-                }
-            }
-        }
-        finish!(Bool, I32, I64, U32, U64, F32, F64, Str, Values)
     }
 }
 
@@ -127,7 +77,7 @@ impl ZoneMachine {
     fn new(
         kind: ZoneKind,
         inputs: &[Value],
-        result: &PlanType,
+        result: &ValueShape,
         limit: usize,
     ) -> Result<Self, MachineError> {
         let mut machine = Self {
@@ -160,11 +110,12 @@ impl ZoneMachine {
                 machine.carry = Some(initial.clone());
             }
             (ZoneKind::Map | ZoneKind::Filter, [Value::List(items)]) => {
-                let PlanType::List(element) = result else {
+                let ValueShape::List(element) = result else {
                     return Err(MachineError::Contract);
                 };
-                machine.builder = Some(ListBuilder::new(element));
-                machine.builder_charge = BUILDER_CHARGE;
+                machine.builder = Some(ListBuilder::new(Some(element)));
+                // An empty list charges one value; each push adds its checked element charge.
+                machine.builder_charge = VALUE_CHARGE;
                 machine.source = Some(items.clone());
                 machine.count = items.len();
             }
@@ -213,11 +164,11 @@ impl ZoneMachine {
     fn advance(
         &mut self,
         inputs: &[Value],
-        result: &PlanType,
+        result: &ValueShape,
         limit: usize,
     ) -> Result<(), MachineError> {
         let element = match (self.kind, result) {
-            (ZoneKind::Map | ZoneKind::Filter, PlanType::List(element)) => element.as_ref(),
+            (ZoneKind::Map | ZoneKind::Filter, ValueShape::List(element)) => element.as_ref(),
             (ZoneKind::Repeat | ZoneKind::Fold, ty) => ty,
             _ => return Err(MachineError::Contract),
         };

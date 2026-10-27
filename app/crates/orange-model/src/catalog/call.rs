@@ -3,6 +3,7 @@
 //! This projection is for authoring inference. It deliberately carries no execution kind,
 //! suspension, or effect facts and is not an accepted node contract or signature snapshot.
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::BTreeSet;
 
 use serde_json::Value;
@@ -66,7 +67,7 @@ pub fn call_interface(
     node: &NodeInstance,
     registry: &RegistrySnapshot,
 ) -> Result<Option<CallInterface>, CallInterfaceError> {
-    if node.definition.id.as_str() != "core/call" {
+    if node.definition.id.as_str() != ids::CALL {
         return Ok(None);
     }
     if node.definition.version != 1
@@ -197,7 +198,7 @@ fn params_in_term_are_declared(term: &TypeTerm, declared: &BTreeSet<&str>) -> bo
 pub(crate) fn is_function_marker(id: &str) -> bool {
     matches!(
         id,
-        "core/function-entry" | "core/function-outputs" | "core/return"
+        ids::FUNCTION_ENTRY | ids::FUNCTION_OUTPUTS | ids::RETURN
     )
 }
 
@@ -246,7 +247,7 @@ pub(crate) fn marker_contract(
         .ok_or(CallInterfaceError::Identity)?;
     let interface =
         project_interface(declaration).map_err(|_| CallInterfaceError::InvalidInterface)?;
-    let entry = node.definition.id.as_str() == "core/function-entry";
+    let entry = node.definition.id.as_str() == ids::FUNCTION_ENTRY;
     let mut ports = Vec::new();
     for port in interface {
         let ty = port.ty.expect("projected interface ports are typed");
@@ -264,7 +265,7 @@ pub(crate) fn marker_contract(
             _ => {}
         }
     }
-    if node.definition.id.as_str() == "core/return" {
+    if node.definition.id.as_str() == ids::RETURN {
         ports.push(PortDescriptor::exec_in("in"));
     }
     Ok(super::NodeContract {

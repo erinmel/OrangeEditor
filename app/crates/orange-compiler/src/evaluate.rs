@@ -8,7 +8,7 @@ use orange_model::catalog::RegistrySnapshot;
 use orange_model::{GraphDocument, Value};
 use thiserror::Error;
 
-use crate::{ConstantFault, Export, FoldedValue, PlanType, PurePlan, SlotSource};
+use crate::{ConstantFault, Export, FoldedValue, PurePlan, SlotSource, ValueShape};
 
 /// Bounds the exported result set; cancellation is polled at entry and each read.
 /// It does not interrupt trusted compilation callbacks or bound caller-owned copies.
@@ -65,7 +65,7 @@ fn checkpoint(cancel: Option<&AtomicBool>) -> Result<(), EvaluationError> {
 pub struct EvaluatedExport<'a> {
     pub id: &'a str,
     /// Borrowed type metadata; reading nested options never clones a type tree.
-    pub ty: &'a PlanType,
+    pub ty: &'a ValueShape,
     pub source: &'a SlotSource,
     pub outcome: Result<&'a Value, &'a ConstantFault>,
 }

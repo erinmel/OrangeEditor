@@ -16,7 +16,8 @@ use std::sync::Arc;
 use serde_json::{Map, Value as Json, json};
 
 use super::base64;
-use super::{JsonText, ListRepr, MapRepr, RecordRepr, Value};
+use super::shape::ValueShape;
+use super::{JsonText, ListBuilder, ListPushError, MapRepr, RecordRepr, Value};
 use crate::document::literal::{Literal, LiteralPayload};
 use crate::error::{JsonTextError, LiteralError};
 use crate::id::TypeExpr;
@@ -276,10 +277,18 @@ impl<S: Schemas> Codec<'_, S> {
             ("list", items) => {
                 let [element] = args(term, items)?;
                 let array = json.as_array().ok_or_else(|| mismatch(term))?;
-                let values = array
-                    .iter()
-                    .map(|item| self.decode(item, element, depth + 1));
-                Value::List(Arc::new(pack(element, values.collect::<Result<_, _>>()?)))
+                let mut list = ListBuilder::new(ValueShape::resolve(element).as_ref());
+                for item in array {
+                    list.push(self.decode(item, element, depth + 1)?).map_err(
+                        |error| match error {
+                            ListPushError::Mismatch => mismatch(term),
+                            ListPushError::Capacity => LiteralError::TooLarge {
+                                ty: term.to_string(),
+                            },
+                        },
+                    )?;
+                }
+                Value::List(Arc::new(list.finish()))
             }
             ("map", items) => {
                 let [key, value] = args(term, items)?;
@@ -533,42 +542,5 @@ impl<S: Schemas> Codec<'_, S> {
         Err(LiteralError::UnknownType {
             ty: term.to_string(),
         })
-    }
-}
-
-/// Stores decoded elements in the typed array for scalar element types (12 §7).
-fn pack(element: &TypeTerm, values: Vec<Value>) -> ListRepr {
-    macro_rules! typed {
-        ($variant:ident) => {
-            ListRepr::$variant(
-                values
-                    .into_iter()
-                    .map(|value| match value {
-                        Value::$variant(item) => item,
-                        _ => unreachable!("elements were decoded as the element type"),
-                    })
-                    .collect(),
-            )
-        };
-    }
-    let scalar = |name| element.core(name).is_some_and(<[_]>::is_empty);
-    if scalar("bool") {
-        typed!(Bool)
-    } else if scalar("i32") {
-        typed!(I32)
-    } else if scalar("i64") {
-        typed!(I64)
-    } else if scalar("u32") {
-        typed!(U32)
-    } else if scalar("u64") {
-        typed!(U64)
-    } else if scalar("f32") {
-        typed!(F32)
-    } else if scalar("f64") {
-        typed!(F64)
-    } else if scalar("string") {
-        typed!(Str)
-    } else {
-        ListRepr::Values(values.into())
     }
 }

@@ -1,4 +1,4 @@
-use crate::{KernelBinding, KernelFault};
+use crate::{KernelBinding, KernelFault, ValueShape};
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::id::{EdgeId, GraphId, NodeId, PortKey};
 use orange_model::validation::Diagnostic;
@@ -18,186 +18,6 @@ pub struct SlotIx(pub(crate) u32);
 impl SlotIx {
     pub fn index(self) -> usize {
         self.0 as usize
-    }
-}
-
-/// Supported scalar/string/JSON leaves and recursively typed options/results. Values
-/// follow the model's boxed/unboxed representation, not JSON null.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PlanType {
-    Bool,
-    I32,
-    I64,
-    U32,
-    U64,
-    F32,
-    F64,
-    Json,
-    String,
-    Duration,
-    Timestamp,
-    Bytes,
-    List(Box<PlanType>),
-    Map(Box<PlanType>, Box<PlanType>),
-    Error,
-    Option(Box<PlanType>),
-    Result(Box<PlanType>),
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn option_types_preserve_unboxed_and_nested_value_contracts() {
-        let option = PlanType::Option(Box::new(PlanType::I64));
-        assert!(option.accepts(&Value::None));
-        assert!(option.accepts(&Value::I64(7)));
-        assert!(!option.accepts(&Value::Bool(false)));
-        assert!(!option.accepts(&Value::Some(Arc::new(Value::I64(7)))));
-        let nested = PlanType::Option(Box::new(option));
-        assert!(nested.accepts(&Value::None));
-        assert!(nested.accepts(&Value::Some(Arc::new(Value::None))));
-        assert!(nested.accepts(&Value::Some(Arc::new(Value::I64(7)))));
-        assert!(!nested.accepts(&Value::I64(7)));
-        assert!(!nested.accepts(&Value::Some(Arc::new(Value::Bool(false)))));
-        assert!(
-            !nested.accepts(&Value::Err(Arc::new(orange_model::value::NodeError {
-                code: "core/Test".into(),
-                node: None
-            })))
-        );
-    }
-
-    #[test]
-    fn option_type_depth_and_unsupported_leaves_are_bounded() {
-        let wrap = |n| format!("{}core/json@1{}", "core/option@1<".repeat(n), ">".repeat(n));
-        assert!(PlanType::parse(&wrap(orange_model::type_term::MAX_NESTING)).is_some());
-        assert!(PlanType::parse(&wrap(orange_model::type_term::MAX_NESTING + 1)).is_none());
-        for invalid in [
-            "core/option@1<org.example/custom@1>",
-            "core/option@1<core/i64@1,core/i64@1>",
-            "core/option@1<$T>",
-            "core/option@2<core/i64@1>",
-        ] {
-            assert!(PlanType::parse(invalid).is_none());
-        }
-    }
-
-    #[test]
-    fn result_types_validate_error_codes_and_success_boxing() {
-        let error = Value::Err(Arc::new(orange_model::value::NodeError {
-            code: "core/DivideByZero".into(),
-            node: None,
-        }));
-        let scalar = PlanType::Result(Box::new(PlanType::I64));
-        assert!(scalar.accepts(&error));
-        assert!(scalar.accepts(&Value::I64(1)));
-        assert!(!scalar.accepts(&Value::Ok(Arc::new(Value::I64(1)))));
-        let nested = PlanType::Result(Box::new(scalar));
-        assert!(nested.accepts(&Value::Ok(Arc::new(error.clone()))));
-        assert!(!nested.accepts(&Value::I64(1)));
-        assert!(nested.accepts(&error)); // An actual outer Err, not Ok(Err).
-        let optional = PlanType::Result(Box::new(PlanType::Option(Box::new(PlanType::Result(
-            Box::new(PlanType::I64),
-        )))));
-        assert!(optional.accepts(&Value::Ok(Arc::new(Value::None))));
-        assert!(!optional.accepts(&Value::None));
-        let long = format!("core/{}", "x".repeat(257));
-        for code in [
-            "no_namespace",
-            "core/secret\ntext",
-            "core/a/b",
-            long.as_str(),
-        ] {
-            assert!(
-                !nested.accepts(&Value::Err(Arc::new(orange_model::value::NodeError {
-                    code: code.into(),
-                    node: None
-                })))
-            );
-        }
-    }
-}
-impl PlanType {
-    pub(crate) fn parse(ty: &str) -> Option<Self> {
-        Self::parse_depth(ty, 0)
-    }
-    fn parse_depth(ty: &str, depth: usize) -> Option<Self> {
-        if depth > orange_model::type_term::MAX_NESTING {
-            return None;
-        }
-        if let Some(inner) = ty
-            .strip_prefix("core/option@1<")
-            .and_then(|s| s.strip_suffix('>'))
-        {
-            return Self::parse_depth(inner, depth + 1).map(|inner| Self::Option(Box::new(inner)));
-        }
-        if let Some(inner) = ty
-            .strip_prefix("core/result@1<")
-            .and_then(|s| s.strip_suffix('>'))
-        {
-            return Self::parse_depth(inner, depth + 1).map(|inner| Self::Result(Box::new(inner)));
-        }
-        if let Some(inner) = ty
-            .strip_prefix("core/list@1<")
-            .and_then(|s| s.strip_suffix('>'))
-        {
-            return Self::parse_depth(inner, depth + 1).map(|inner| Self::List(Box::new(inner)));
-        }
-        if let Some(inner) = ty
-            .strip_prefix("core/map@1<")
-            .and_then(|s| s.strip_suffix('>'))
-        {
-            let mut nesting = 0usize;
-            let split = inner.char_indices().find_map(|(i, c)| match c {
-                '<' => {
-                    nesting += 1;
-                    None
-                }
-                '>' => {
-                    nesting = nesting.saturating_sub(1);
-                    None
-                }
-                ',' if nesting == 0 => Some(i),
-                _ => None,
-            })?;
-            let key = Self::parse_depth(&inner[..split], depth + 1)?;
-            let value = Self::parse_depth(&inner[split + 1..], depth + 1)?;
-            if !key.native_hash() {
-                return None;
-            }
-            return Some(Self::Map(Box::new(key), Box::new(value)));
-        }
-        Some(match ty {
-            "core/bool@1" => Self::Bool,
-            "core/i32@1" => Self::I32,
-            "core/i64@1" => Self::I64,
-            "core/u32@1" => Self::U32,
-            "core/u64@1" => Self::U64,
-            "core/f32@1" => Self::F32,
-            "core/f64@1" => Self::F64,
-            "core/json@1" => Self::Json,
-            "core/string@1" => Self::String,
-            "core/duration@1" => Self::Duration,
-            "core/timestamp@1" => Self::Timestamp,
-            "core/bytes@1" => Self::Bytes,
-            "core/error@1" => Self::Error,
-            _ => return None,
-        })
-    }
-    pub(crate) fn accepts(&self, value: &Value) -> bool {
-        self.checked_charge(value, usize::MAX).is_ok()
-    }
-    /// Whether a valid value of this type can carry the Err discriminant directly.
-    pub(crate) fn unboxed_error(&self) -> bool {
-        match self {
-            Self::Result(_) | Self::Error => true,
-            Self::Option(inner) if !matches!(inner.as_ref(), Self::Option(_)) => {
-                inner.unboxed_error()
-            }
-            _ => false,
-        }
     }
 }
 
@@ -287,7 +107,7 @@ pub struct PurePlan {
     pub(crate) revision: u64,
     pub(crate) state: u64,
     pub(crate) steps: Vec<PureStep>,
-    pub(crate) types: Vec<PlanType>,
+    pub(crate) types: Vec<ValueShape>,
     pub(crate) sources: Vec<SlotSource>,
     pub(crate) constants: Vec<FoldedValue>,
     pub(crate) exports: Vec<Export>,
@@ -332,7 +152,7 @@ impl PurePlan {
     pub fn steps(&self) -> &[PureStep] {
         &self.steps
     }
-    pub fn slot_types(&self) -> &[PlanType] {
+    pub fn slot_types(&self) -> &[ValueShape] {
         &self.types
     }
     pub fn slot_sources(&self) -> &[SlotSource] {

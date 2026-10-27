@@ -3,6 +3,7 @@
 
 use super::language::intrinsic_reference;
 use super::{ContractError, EventAccess, NodeContract, NodeDefinition, Ports, VariableAccess};
+use crate::catalog::intrinsic_id as ids;
 use crate::document::{
     DefinitionRef, NodeInstance, NodeKind, OutputSource, PortDescriptor, Suspends, TypeParam,
 };
@@ -91,7 +92,7 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     definitions.push(NodeDefinition {
         ports: Ports::ForEach,
         ..definition(
-            "core/for-each",
+            ids::FOR_EACH,
             NodeKind::Iterator,
             Some(Suspends::Maybe),
             Vec::new(),
@@ -160,7 +161,7 @@ fn zone_definitions() -> Vec<NodeDefinition> {
     };
     vec![
         pure(
-            "core/repeat-begin",
+            ids::REPEAT_BEGIN,
             vec![
                 input("count", "core/i64@1"),
                 input("initial", "$A"),
@@ -170,12 +171,12 @@ fn zone_definitions() -> Vec<NodeDefinition> {
             &["A"],
         ),
         pure(
-            "core/repeat-end",
+            ids::REPEAT_END,
             vec![input("next", "$A"), computed("result", "$A")],
             &["A"],
         ),
         pure(
-            "core/map-begin",
+            ids::MAP_BEGIN,
             vec![
                 input("items", "core/list@1<$T>"),
                 iteration("element", "$T"),
@@ -184,12 +185,12 @@ fn zone_definitions() -> Vec<NodeDefinition> {
             &["T"],
         ),
         pure(
-            "core/map-end",
+            ids::MAP_END,
             vec![input("item", "$U"), computed("result", "core/list@1<$U>")],
             &["U"],
         ),
         pure(
-            "core/fold-begin",
+            ids::FOLD_BEGIN,
             vec![
                 input("items", "core/list@1<$T>"),
                 input("initial", "$A"),
@@ -200,12 +201,12 @@ fn zone_definitions() -> Vec<NodeDefinition> {
             &["T", "A"],
         ),
         pure(
-            "core/fold-end",
+            ids::FOLD_END,
             vec![input("next", "$A"), computed("result", "$A")],
             &["A"],
         ),
         pure(
-            "core/filter-begin",
+            ids::FILTER_BEGIN,
             vec![
                 input("items", "core/list@1<$T>"),
                 iteration("element", "$T"),
@@ -214,7 +215,7 @@ fn zone_definitions() -> Vec<NodeDefinition> {
             &["T"],
         ),
         pure(
-            "core/filter-end",
+            ids::FILTER_END,
             vec![
                 input("keep", "core/bool@1"),
                 input("item", "$T"),
@@ -244,7 +245,7 @@ fn lazy_pure_definitions() -> Vec<NodeDefinition> {
     vec![
         generic(
             pure(
-                "core/select",
+                ids::SELECT,
                 vec![
                     PortDescriptor::data_in("condition", boolean()),
                     PortDescriptor::data_in("if_true", ty("$T")).lazy(),
@@ -255,11 +256,11 @@ fn lazy_pure_definitions() -> Vec<NodeDefinition> {
             "T",
             &[],
         ),
-        logic("core/and"),
-        logic("core/or"),
+        logic(ids::AND),
+        logic(ids::OR),
         generic(
             pure(
-                "core/coalesce",
+                ids::COALESCE,
                 vec![
                     PortDescriptor::data_in("value", ty("core/option@1<$T>")),
                     PortDescriptor::data_in("fallback", ty("$T")).lazy(),
@@ -291,7 +292,7 @@ fn result_definitions() -> Vec<NodeDefinition> {
     vec![
         generic(
             definition(
-                "core/try",
+                ids::TRY,
                 NodeKind::Pure,
                 None,
                 vec![
@@ -308,7 +309,7 @@ fn result_definitions() -> Vec<NodeDefinition> {
         ),
         generic(
             definition(
-                "core/match-result",
+                ids::MATCH_RESULT,
                 NodeKind::Action,
                 None,
                 vec![
@@ -342,7 +343,7 @@ fn result_definitions() -> Vec<NodeDefinition> {
 fn register_definitions() -> Vec<NodeDefinition> {
     vec![generic(
         definition(
-            "core/register",
+            ids::REGISTER,
             NodeKind::Action,
             None,
             vec![
@@ -363,10 +364,10 @@ fn core_control_definitions() -> Vec<NodeDefinition> {
     let sequence_then = PortDescriptor::exec_out("then").variadic(2, None);
     let fork_branch = PortDescriptor::exec_out("branch").variadic(1, None);
     vec![
-        definition("core/on-start", NodeKind::Entry, None, vec![]),
-        definition("core/on-stop", NodeKind::Entry, None, vec![]),
+        definition(ids::ON_START, NodeKind::Entry, None, vec![]),
+        definition(ids::ON_STOP, NodeKind::Entry, None, vec![]),
         definition(
-            "core/branch",
+            ids::BRANCH,
             Action,
             None,
             vec![
@@ -376,14 +377,9 @@ fn core_control_definitions() -> Vec<NodeDefinition> {
                 PortDescriptor::exec_out("false"),
             ],
         ),
+        definition(ids::SEQUENCE, Action, None, vec![exec_in(), sequence_then]),
         definition(
-            "core/sequence",
-            Action,
-            None,
-            vec![exec_in(), sequence_then],
-        ),
-        definition(
-            "core/fork",
+            ids::FORK,
             Action,
             None,
             vec![
@@ -393,7 +389,7 @@ fn core_control_definitions() -> Vec<NodeDefinition> {
             ],
         ),
         definition(
-            "core/count",
+            ids::COUNT,
             Iterator,
             Some(Suspends::Maybe),
             vec![
@@ -403,7 +399,7 @@ fn core_control_definitions() -> Vec<NodeDefinition> {
             ],
         ),
         definition(
-            "core/while",
+            ids::WHILE,
             Iterator,
             Some(Suspends::Maybe),
             vec![
@@ -411,9 +407,9 @@ fn core_control_definitions() -> Vec<NodeDefinition> {
                 PortDescriptor::data_in("condition", ty("core/bool@1")),
             ],
         ),
-        definition("core/yield", Async, Some(Suspends::Always), vec![exec_in()]),
+        definition(ids::YIELD, Async, Some(Suspends::Always), vec![exec_in()]),
         definition(
-            "core/wait",
+            ids::WAIT,
             Async,
             Some(Suspends::Always),
             vec![
@@ -421,47 +417,42 @@ fn core_control_definitions() -> Vec<NodeDefinition> {
                 PortDescriptor::data_in("duration", ty("core/duration@1")),
             ],
         ),
-        definition("core/break", Action, None, vec![exec_in()]),
-        definition("core/continue", Action, None, vec![exec_in()]),
+        definition(ids::BREAK, Action, None, vec![exec_in()]),
+        definition(ids::CONTINUE, Action, None, vec![exec_in()]),
         variable_definition(
-            "core/get-variable",
+            ids::GET_VARIABLE,
             NodeKind::Volatile,
             Some(Suspends::Never),
             VariableAccess::Read,
         ),
         variable_definition(
-            "core/set-variable",
+            ids::SET_VARIABLE,
             Action,
             Some(Suspends::Never),
             VariableAccess::Write,
         ),
         variable_definition(
-            "core/update-variable",
+            ids::UPDATE_VARIABLE,
             Action,
             Some(Suspends::Never),
             VariableAccess::Update,
         ),
         variable_definition(
-            "core/set-shared",
+            ids::SET_SHARED,
             Async,
             Some(Suspends::Maybe),
             VariableAccess::WriteShared,
         ),
         variable_definition(
-            "core/update-shared",
+            ids::UPDATE_SHARED,
             Async,
             Some(Suspends::Maybe),
             VariableAccess::UpdateShared,
         ),
-        event_definition("core/on-event", NodeKind::Entry, None, EventAccess::Handle),
+        event_definition(ids::ON_EVENT, NodeKind::Entry, None, EventAccess::Handle),
+        event_definition(ids::EMIT, Action, Some(Suspends::Never), EventAccess::Emit),
         event_definition(
-            "core/emit",
-            Action,
-            Some(Suspends::Never),
-            EventAccess::Emit,
-        ),
-        event_definition(
-            "core/await-event",
+            ids::AWAIT_EVENT,
             Async,
             Some(Suspends::Always),
             EventAccess::Await,
@@ -477,7 +468,7 @@ fn selection_and_state_definitions() -> Vec<NodeDefinition> {
     vec![
         generic(
             definition(
-                "core/switch",
+                ids::SWITCH,
                 Action,
                 None,
                 vec![
@@ -492,7 +483,7 @@ fn selection_and_state_definitions() -> Vec<NodeDefinition> {
         ),
         {
             let mut gate = definition(
-                "core/gate",
+                ids::GATE,
                 Action,
                 None,
                 vec![
@@ -509,7 +500,7 @@ fn selection_and_state_definitions() -> Vec<NodeDefinition> {
             gate
         },
         definition(
-            "core/do-once",
+            ids::DO_ONCE,
             Action,
             None,
             vec![
@@ -518,7 +509,7 @@ fn selection_and_state_definitions() -> Vec<NodeDefinition> {
             ],
         ),
         definition(
-            "core/flip-flop",
+            ids::FLIP_FLOP,
             Action,
             None,
             vec![

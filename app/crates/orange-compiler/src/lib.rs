@@ -34,10 +34,9 @@ pub use kernel::{
     KernelFault, PureKernel, PureKernelResolver, ResolveError,
 };
 pub use plan::{
-    ConstantFault, Export, FoldedValue, InputSource, NodeIx, PlanType, PureCallSite, PurePlan,
-    PureStep, SlotIx, SlotSource,
+    ConstantFault, Export, FoldedValue, InputSource, NodeIx, PureCallSite, PurePlan, PureStep,
+    SlotIx, SlotSource,
 };
 pub use zones::{DataZone, ZoneIx};
 
-mod values;
-pub use values::ValueCheckError;
+pub(crate) use orange_model::value::shape::{ValueCheckError, ValueShape};

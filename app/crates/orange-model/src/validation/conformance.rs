@@ -7,6 +7,7 @@
 //! marker multiplicity against the inferred kind, return coverage, and whether anything in
 //! the body is still unresolved or erroneous.
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::{RegistrySnapshot, intrinsic, project_interface};
@@ -81,7 +82,7 @@ impl ReturnFlow {
         for node in body
             .nodes
             .values()
-            .filter(|node| node.definition.id.as_str() == "core/sequence")
+            .filter(|node| node.definition.id.as_str() == ids::SEQUENCE)
         {
             let Some(order) = node.variadic.get(&"then".parse().expect("fixed port")) else {
                 continue;
@@ -148,9 +149,9 @@ impl Check<'_> {
             self.emit(DiagnosticCode::FunctionInterface, None);
             return;
         }
-        let entries = self.markers("core/function-entry");
-        let returns = self.markers("core/return");
-        let outputs = self.markers("core/function-outputs");
+        let entries = self.markers(ids::FUNCTION_ENTRY);
+        let returns = self.markers(ids::RETURN);
+        let outputs = self.markers(ids::FUNCTION_OUTPUTS);
         let has_outputs = !self.function.outputs.is_empty();
         for extra in entries.iter().skip(1) {
             self.emit(DiagnosticCode::FunctionBodyMarker, Some(*extra));
@@ -274,7 +275,7 @@ impl Check<'_> {
                 continue;
             };
             let definition = node.definition.id.as_str();
-            if definition == "core/sequence" {
+            if definition == ids::SEQUENCE {
                 let Some(order) = node.variadic.get(&"then".parse().expect("fixed port")) else {
                     self.provable = false;
                     continue;
@@ -302,15 +303,15 @@ impl Check<'_> {
                 .as_ref()
                 .map(|port| port.port().as_str())
                 .unwrap_or("in");
-            let command_only = (definition == "core/gate"
+            let command_only = (definition == ids::GATE
                 && matches!(command, "open" | "close" | "toggle"))
-                || (definition == "core/do-once" && command == "reset");
-            let immutable_open_gate = definition == "core/gate"
+                || (definition == ids::DO_ONCE && command == "reset");
+            let immutable_open_gate = definition == ids::GATE
                 && node.config.get("start_open").and_then(|v| v.as_bool()) == Some(true)
                 && !mutable_gates.contains(&node_id);
             if command_only
-                || definition == "core/do-once"
-                || (definition == "core/gate" && !immutable_open_gate)
+                || definition == ids::DO_ONCE
+                || (definition == ids::GATE && !immutable_open_gate)
             {
                 self.finish_path(node_id, node_id, None, &flow, &mut stack, &mut flagged);
                 if command_only {
@@ -348,7 +349,7 @@ impl Check<'_> {
             );
             for port in ports {
                 if matches!(port.port().as_str(), "failed" | "cancelled")
-                    || (definition == "core/fork" && port.port().as_str() == "branch")
+                    || (definition == ids::FORK && port.port().as_str() == "branch")
                     || (snapshot.kind == NodeKind::Iterator && port.port().as_str() == "body")
                 {
                     continue;

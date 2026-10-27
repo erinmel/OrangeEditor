@@ -1,5 +1,6 @@
 //! Read-only node metadata, provider, signature, and generic resolution (WU-00d.2a).
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::{BTreeMap, BTreeSet};
 
 use std::borrow::Cow;
@@ -158,7 +159,7 @@ fn preflight_node(
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> bool {
-    if node.definition.id.as_str() == "core/call" {
+    if node.definition.id.as_str() == ids::CALL {
         let code = match call_interface(document, node, registry) {
             Err(CallInterfaceError::Identity) => DiagnosticCode::IntrinsicUnsupported,
             Err(CallInterfaceError::TargetMissing) => DiagnosticCode::CallTargetMissing,
@@ -608,7 +609,7 @@ fn project_contract(
     );
     let rigid: Vec<String> = body_rigid_params(pass.document, body)
         .iter()
-        .map(|param| param.name.to_string())
+        .map(|param| param.name.clone())
         .collect();
     let failures = projected_type_failures(&projected, pass.registry.types(), &rigid);
     if failures.is_empty() {
@@ -840,7 +841,7 @@ impl NodePass<'_> {
     /// function marker derived from its function's declared interface.
     fn contract(&self, node: &crate::document::NodeInstance) -> Option<Cow<'_, NodeContract>> {
         match node.definition.id.as_str() {
-            "core/call" => self.call_contract(node).map(Cow::Owned),
+            ids::CALL => self.call_contract(node).map(Cow::Owned),
             id if is_function_marker(id) => {
                 marker_contract(self.document, node).ok().map(Cow::Owned)
             }

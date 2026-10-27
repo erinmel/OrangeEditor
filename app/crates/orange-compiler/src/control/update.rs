@@ -40,21 +40,21 @@ impl UpdateDemand {
     }
 }
 
-fn scalar(ty: &PlanType) -> Option<Scalar> {
+fn scalar(ty: &ValueShape) -> Option<Scalar> {
     Some(match ty {
-        PlanType::I32 => Scalar::I32,
-        PlanType::I64 => Scalar::I64,
-        PlanType::U32 => Scalar::U32,
-        PlanType::U64 => Scalar::U64,
-        PlanType::F32 => Scalar::F32,
-        PlanType::F64 => Scalar::F64,
+        ValueShape::I32 => Scalar::I32,
+        ValueShape::I64 => Scalar::I64,
+        ValueShape::U32 => Scalar::U32,
+        ValueShape::U64 => Scalar::U64,
+        ValueShape::F32 => Scalar::F32,
+        ValueShape::F64 => Scalar::F64,
         _ => return None,
     })
 }
 pub(super) fn resolve(
     node: NodeId,
     config: &serde_json::Map<String, serde_json::Value>,
-    ty: &PlanType,
+    ty: &ValueShape,
 ) -> Result<UpdateOperation, CompileError> {
     let unsupported = || CompileError::UnsupportedNode { node };
     let token = config
@@ -95,14 +95,14 @@ pub(super) fn resolve(
         "min" | "max"
             if matches!(
                 ty,
-                PlanType::Bool
-                    | PlanType::I32
-                    | PlanType::I64
-                    | PlanType::U32
-                    | PlanType::U64
-                    | PlanType::String
-                    | PlanType::Duration
-                    | PlanType::Timestamp
+                ValueShape::Bool
+                    | ValueShape::I32
+                    | ValueShape::I64
+                    | ValueShape::U32
+                    | ValueShape::U64
+                    | ValueShape::String
+                    | ValueShape::Duration
+                    | ValueShape::Timestamp
             ) =>
         {
             if token == "min" {
@@ -114,7 +114,11 @@ pub(super) fn resolve(
         "and" | "or" | "xor"
             if matches!(
                 ty,
-                PlanType::Bool | PlanType::I32 | PlanType::I64 | PlanType::U32 | PlanType::U64
+                ValueShape::Bool
+                    | ValueShape::I32
+                    | ValueShape::I64
+                    | ValueShape::U32
+                    | ValueShape::U64
             ) =>
         {
             match token {
@@ -123,7 +127,12 @@ pub(super) fn resolve(
                 _ => UpdateOperation::Xor,
             }
         }
-        "append" if matches!(ty, PlanType::String | PlanType::Bytes | PlanType::List(_)) => {
+        "append"
+            if matches!(
+                ty,
+                ValueShape::String | ValueShape::Bytes | ValueShape::List(_)
+            ) =>
+        {
             UpdateOperation::Append
         }
         "compare-and-set" if ty.native_eq() => UpdateOperation::CompareAndSet,

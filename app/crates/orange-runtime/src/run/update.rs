@@ -322,7 +322,7 @@ fn internal() -> KernelFault {
     }
 }
 fn compute(
-    ty: &orange_compiler::PlanType,
+    ty: &orange_model::value::shape::ValueShape,
     operation: UpdateOperation,
     old: &Value,
     inputs: &UpdateOperands,

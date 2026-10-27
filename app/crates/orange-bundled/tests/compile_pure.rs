@@ -3,10 +3,11 @@ use orange_compiler::{
     CompileError, CompileOptions, FoldedValue, KernelBinding, KernelFault, PureKernel,
     PureKernelResolver, ResolveError, compile_pure,
 };
-use orange_compiler::{EvaluationError, EvaluationOptions, PlanType};
+use orange_compiler::{EvaluationError, EvaluationOptions};
 use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
 use orange_model::document::{NodeInstance, NodeKind, SignatureSnapshot};
 use orange_model::validation::{DiagnosticCode, HostOrigin, Severity};
+use orange_model::value::shape::ValueShape;
 use orange_model::{GraphDocument, Value, analyze, from_json, to_json};
 use serde_json::{Value as Json, json};
 use std::sync::{
@@ -502,7 +503,7 @@ fn nested_some_none_is_present_and_export_type_is_borrowed() {
             .unwrap()
             .unwrap();
         assert_eq!(result.outcome, Ok(&expected));
-        assert_eq!(result.ty, &PlanType::Option(Box::new(PlanType::I64)));
+        assert_eq!(result.ty, &ValueShape::Option(Box::new(ValueShape::I64)));
         assert!(std::ptr::eq(
             result.ty,
             &plan.slot_types()[plan.exports()[0].slot.index()]
@@ -1138,7 +1139,7 @@ fn checked_evaluation_is_borrowed_pinned_and_does_not_reexecute_kernels() {
         .unwrap();
     let result = evaluation.export(0).unwrap().unwrap();
     assert_eq!(result.id, "out-1");
-    assert_eq!(result.ty, &PlanType::I64);
+    assert_eq!(result.ty, &ValueShape::I64);
     assert_eq!(result.outcome, Ok(&Value::I64(42)));
     let FoldedValue::Value(constant) = &plan.constants()[plan.exports()[0].slot.index()] else {
         panic!()

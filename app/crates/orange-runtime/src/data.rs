@@ -7,10 +7,11 @@ use crate::{
 };
 use orange_compiler::{
     ConstantFault, DataNode, DataOperation, DataPlan, DataStability, EntropySource,
-    EvaluatedExport, FoldedValue, KernelFault, NodeIx, ValueCheckError,
+    EvaluatedExport, FoldedValue, KernelFault, NodeIx,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::id::NodeId;
+use orange_model::value::shape::ValueCheckError;
 use orange_model::{GraphDocument, Value};
 use std::sync::Arc;
 use thiserror::Error;
@@ -106,8 +107,8 @@ fn checkpoint(cancel: Option<&CancelToken>) -> Result<(), DataError> {
 /// `invalid` names who supplied the wrongly typed value: host input or kernel.
 fn value_check(invalid: DataError) -> impl Fn(ValueCheckError) -> DataError {
     move |error| match error {
-        ValueCheckError::InvalidType => invalid,
         ValueCheckError::ResourceLimit => DataError::ResourceLimit,
+        _ => invalid,
     }
 }
 

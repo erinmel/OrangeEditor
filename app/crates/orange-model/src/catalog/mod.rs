@@ -4,6 +4,7 @@
 mod availability;
 mod call;
 pub mod definition;
+pub mod intrinsic_id;
 pub(crate) mod intrinsics;
 pub(crate) mod language;
 pub mod provider;
