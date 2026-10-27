@@ -41,39 +41,7 @@ impl BindingError {
     }
 }
 
-/// Scalar execution failures. Runtime orchestration adds node/activation provenance
-/// and the full redacted MessageRef envelope; this layer never interpolates values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
-pub enum KernelError {
-    #[error("Numeric arithmetic overflowed.")]
-    NumericOverflow,
-    #[error("Division requires a nonzero divisor.")]
-    DivideByZero,
-    #[error("Finite arithmetic requires finite inputs and results.")]
-    NonFinite,
-    #[error("Kernel inputs violate the resolved contract.")]
-    InputContract,
-}
-
-impl KernelError {
-    pub const fn code(self) -> &'static str {
-        match self {
-            Self::NumericOverflow => "core/NumericOverflow",
-            Self::DivideByZero => "core/DivideByZero",
-            Self::NonFinite => "core/NonFinite",
-            Self::InputContract => "core/InternalFault",
-        }
-    }
-
-    pub const fn message_key(self) -> &'static str {
-        match self {
-            Self::NumericOverflow => "core/kernel-numeric-overflow",
-            Self::DivideByZero => "core/kernel-divide-by-zero",
-            Self::NonFinite => "core/kernel-non-finite",
-            Self::InputContract => "core/kernel-input-contract",
-        }
-    }
-}
+pub use orange_model::scalar::ScalarError as KernelError;
 
 /// Explicit scalar conversion failures; the caller adds runtime provenance.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
