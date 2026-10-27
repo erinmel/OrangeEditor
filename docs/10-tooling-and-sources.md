@@ -1553,9 +1553,9 @@ Local verification: Windows x86_64 MSVC, Rust1.99.1 (`58cf8f9c3`,2026-10-13), Ca
 
 | Executed check | Result |
 |---|---|
-| `cargo test --workspace --locked --offline` | PASS:825 passed,0 failed,14 ignored,86 test-result groups |
-| `cargo test --workspace --release --locked --offline` | PASS:same825/0/14 |
-| `cargo test -p orange-bundled --test control control_dispatch --locked --offline` | PASS:7 new regressions, including table-driven source comparisons at two pump budgets |
+| `cargo test --workspace --locked --offline` | PASS:826 passed,0 failed,14 ignored,86 test-result groups |
+| `cargo test --workspace --release --locked --offline` | PASS:same826/0/14 |
+| `cargo test -p orange-bundled --test control control_dispatch --locked --offline` | PASS:8 new regressions, including table-driven source comparisons at two pump budgets |
 | `cargo fmt --all --check` | PASS |
 | `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
 | `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --offline` | PASS; environment assigned in PowerShell |
@@ -1571,3 +1571,7 @@ Match regressions check typed success/error routing at two budgets, exactly one 
 Three mutations were detected by behavior-test failures: substituting sorted array position for original case ID, retaining the outer Ok wrapper during Match unwrapping, and failing to subtract the old Match payload charge. Sources were restored and focused tests rerun, followed by full debug/release and quality qualification. OneDrive hard-link fallback warnings are environmental; no Rust/Clippy/Rustdoc errors remain.
 
 Self-review: admission checks exact supported key families and case ranges before binding; case count/table bytes consume existing budgets; no generic comparator or provider fallback is introduced. Match projections suppress duplicate implicit error storage, preserve shared result boxing/provenance and commit typed retained values only after budget reservation. Existing data-pull ownership, snapshots, stop, cleanup and fuel remain in use. Public PlanType, ControlOperation, HostSource and ControlOutcome additions require exhaustive downstream Rust matches to update; no saved schema/provider trait change occurs. Enum/custom-key Switch, remaining state controls/iterators/zones, action/async function frames/Return, resources/events/services and other planned core acceptance remain open. Structural/admission tests are not timing, allocation/RSS or completed NFR evidence.
+
+Post-publication PR23 review found a real authoring/performance gap: integer case JSON kinds were checked but not width/signedness bounds, and duplicate checks repeatedly scanned prior values. The correction reports E-SWITCH-CASE during semantic analysis and uses a borrowed HashSet with the pinned serde_json1.0.154 Value Hash/Eq implementation (verified from versioned local registry source). It retains original variadic iteration/diagnostic order and adds a1024-case acceptance/duplicate regression. A fourth mutation removing the i32 range check is detected. Final corrected full-suite qualification supersedes the initial825-test result; no timing/RSS or general incremental-validation claim is made.
+
+Final corrected qualification: debug/release826passed/0failed/14ignored across86groups,8focused dispatch regressions, four detected/restored mutations, format/Clippy/Rustdoc warnings-denied checks all PASS. Final-head CI is recorded separately on PR23; the earlier published-head run cannot qualify this correction.

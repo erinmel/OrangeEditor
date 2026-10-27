@@ -1,6 +1,6 @@
 //! Control-region ownership, loop nesting and structured-boundary validation (11 §7.1, §8.3).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::catalog::RegistrySnapshot;
 use crate::document::{
@@ -560,23 +560,23 @@ fn switch_cases_valid(node: &crate::document::NodeInstance, signature: &Signatur
         .find(|port| port.port_id.as_str() == "key")
         .and_then(|port| port.ty.as_ref())
         .map(|ty| ty.as_str());
-    let mut seen: Vec<&serde_json::Value> = Vec::new();
+    let mut seen = HashSet::new();
     for instance in order {
         let Some(value) = cases.get(&instance.to_string()) else {
             return false;
         };
         let kind_ok = match key {
-            Some("core/i32@1" | "core/i64@1" | "core/u32@1" | "core/u64@1") => {
-                value.is_i64() || value.is_u64()
-            }
+            Some("core/i32@1") => value.as_i64().is_some_and(|n| i32::try_from(n).is_ok()),
+            Some("core/i64@1") => value.as_i64().is_some(),
+            Some("core/u32@1") => value.as_u64().is_some_and(|n| u32::try_from(n).is_ok()),
+            Some("core/u64@1") => value.as_u64().is_some(),
             Some("core/bool@1") => value.is_boolean(),
             Some("core/string@1") => value.is_string(),
             _ => true,
         };
-        if !kind_ok || seen.contains(&value) {
+        if !kind_ok || !seen.insert(value) {
             return false;
         }
-        seen.push(value);
     }
     true
 }

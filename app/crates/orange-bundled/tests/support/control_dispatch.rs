@@ -185,10 +185,13 @@ fn switch_case_ranges_and_table_quotas_fail_before_provider_callbacks() {
             vec![export(90, "sum")],
         );
         let analysis = analyze(&doc, &snapshot);
+        assert!(!analysis.is_ready_for_lowering(&doc, &snapshot));
         assert!(
-            analysis.is_ready_for_lowering(&doc, &snapshot),
-            "{:?}",
-            analysis.report().diagnostics
+            analysis
+                .report()
+                .diagnostics
+                .iter()
+                .any(|d| d.code == orange_model::validation::DiagnosticCode::SwitchCase)
         );
         let resolver = Counting::new(package.clone());
         assert!(matches!(
@@ -199,7 +202,7 @@ fn switch_case_ranges_and_table_quotas_fail_before_provider_callbacks() {
                 &resolver,
                 CompileOptions::default()
             ),
-            Err(CompileError::InvalidLiteral { .. })
+            Err(CompileError::ValidationIncomplete)
         ));
         assert_eq!(resolver.pure.load(Ordering::Relaxed), 0);
     }
@@ -461,4 +464,55 @@ fn uncaptured_input_fault_takes_failed_instead_of_the_result_err_arm() {
     assert_eq!(event.fault.as_ref().unwrap().source, id(2).parse().unwrap());
     assert!(run.trace().iter().any(|e| e.node.to_string() == id(5)));
     assert!(!run.trace().iter().any(|e| e.node.to_string() == id(6)));
+}
+
+#[test]
+fn wide_case_validation_rejects_duplicates_without_changing_case_identity() {
+    let (package, snapshot) = catalog();
+    let cases = (0..1024u16)
+        .map(|i| (i, json!(u64::from(i))))
+        .collect::<Vec<_>>();
+    let mut selected = switch(2, "core/u64@1", json!(1023), &cases);
+    let base = graph(
+        &package,
+        vec![core(1, "on-start"), selected.clone()],
+        vec![edge(1, 1, "then", 2, "in")],
+        vec![],
+    );
+    let analysis = analyze(&base, &snapshot);
+    assert!(analysis.is_ready_for_lowering(&base, &snapshot));
+    let plan = Arc::new(
+        compile_control(
+            &base,
+            snapshot.clone(),
+            &analysis,
+            &package,
+            CompileOptions::default(),
+        )
+        .unwrap(),
+    );
+    let mut run = Run::start(plan, &base, &snapshot, 1, RunOptions::default()).unwrap();
+    run_all(&mut run, 1);
+    assert_eq!(
+        run.trace().back().unwrap().outcome,
+        ControlOutcome::Case(1023)
+    );
+    selected["config"]["cases"]["1023"] = json!(0);
+    let invalid = graph(
+        &package,
+        vec![core(1, "on-start"), selected],
+        vec![edge(1, 1, "then", 2, "in")],
+        vec![],
+    );
+    let report = analyze(&invalid, &snapshot);
+    assert!(!report.is_ready_for_lowering(&invalid, &snapshot));
+    assert_eq!(
+        report
+            .report()
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == orange_model::validation::DiagnosticCode::SwitchCase)
+            .count(),
+        1
+    );
 }
