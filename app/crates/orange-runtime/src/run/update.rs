@@ -12,6 +12,7 @@ enum UpdatePoll {
     Ready(UpdateOperands),
 }
 struct UpdateCommit<'a> {
+    frame: Option<u64>,
     owner: ControlIx,
     variable: usize,
     old: &'a Value,
@@ -81,16 +82,24 @@ impl Run {
         let (variable, operation) = (*variable, *operation);
         let metadata = &plan.variables()[variable];
         let cell = self.layout.variables[variable];
-        let current = if metadata.scope() == VarScope::Local {
-            &shared.locals[cell]
+        let frame =
+            if metadata.scope() == VarScope::Local && plan.nodes()[owner.index()].scope() != 0 {
+                Some(self.find_frame(activation.function, plan.nodes()[owner.index()].scope())?)
+            } else {
+                None
+            };
+        let current = if let Some(frame) = frame {
+            self.frame_value(plan, frame, variable)?
+        } else if metadata.scope() == VarScope::Local {
+            shared.locals[cell].as_ref()
         } else {
-            &self.variables[cell]
+            self.variables[cell].as_ref()
         };
         let fault = |fault| ConstantFault {
             source: plan.nodes()[owner.index()].node(),
             fault,
         };
-        let Some(old) = current.clone() else {
+        let Some(old) = current.cloned() else {
             Self::publish_match_value(
                 plan,
                 &self.layout,
@@ -144,6 +153,7 @@ impl Run {
             plan,
             shared,
             UpdateCommit {
+                frame,
                 owner,
                 variable,
                 old: &old,
@@ -173,6 +183,7 @@ impl Run {
         commit: UpdateCommit<'_>,
     ) -> Result<(), RunError> {
         let UpdateCommit {
+            frame,
             owner,
             variable,
             old,
@@ -184,7 +195,10 @@ impl Run {
         let local = metadata.scope() == VarScope::Local;
         let old_charge = metadata.charge(old).ok_or(RunError::InvalidState)?;
         let new_charge = metadata.charge(&new).ok_or(RunError::InvalidState)?;
-        let bytes = if local {
+        let bytes = if frame.is_some() {
+            // Function-frame bytes are reserved with the complete output delta below.
+            old_charge
+        } else if local {
             shared.local_bytes
         } else {
             self.state_bytes
@@ -225,22 +239,44 @@ impl Run {
             .checked_sub(removed)
             .and_then(|n| n.checked_add(added))
             .ok_or(RunError::ResourceLimit)?;
-        let locals = if local { bytes } else { shared.local_bytes };
-        if (!local && bytes > self.options.limits.max_state_bytes)
-            || locals
-                .checked_add(retained)
-                .and_then(|n| {
-                    n.checked_add(
-                        shared
-                            .owned_bytes
-                            .load(std::sync::atomic::Ordering::Relaxed),
-                    )
-                })
-                .is_none_or(|n| n > self.options.limits.max_state_bytes)
+        let locals = if local && frame.is_none() {
+            bytes
+        } else {
+            shared.local_bytes
+        };
+        if frame.is_none()
+            && ((!local && bytes > self.options.limits.max_state_bytes)
+                || locals
+                    .checked_add(retained)
+                    .and_then(|n| {
+                        n.checked_add(
+                            shared
+                                .owned_bytes
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                        )
+                    })
+                    .is_none_or(|n| n > self.options.limits.max_state_bytes))
         {
             return Err(RunError::ResourceLimit);
         }
-        let version = if write {
+        let frame_write = if let Some(frame) = frame {
+            // Also check unchanged CAS so projections cannot bypass the combined budget.
+            let reservation = self.prepare_frame_write(
+                plan,
+                shared,
+                super::function::FrameWriteSpec {
+                    frame,
+                    variable,
+                    value: &new,
+                    retained,
+                    write,
+                },
+            )?;
+            Some((frame, reservation))
+        } else {
+            None
+        };
+        let version = if write && frame.is_none() {
             self.versions[variable]
                 .checked_add(1)
                 .ok_or(RunError::ResourceLimit)?
@@ -256,14 +292,18 @@ impl Run {
         shared.retained_bytes = retained;
         if write {
             let cell = self.layout.variables[variable];
-            if local {
+            if let Some((frame, reservation)) = frame_write {
+                self.commit_frame_write(frame, variable, new, reservation);
+            } else if local {
                 shared.locals[cell] = Some(new);
                 shared.local_bytes = bytes;
             } else {
                 self.variables[cell] = Some(new);
                 self.state_bytes = bytes;
             }
-            self.versions[variable] = version;
+            if frame.is_none() {
+                self.versions[variable] = version;
+            }
             if !self.dirty[variable] {
                 self.dirty[variable] = true;
                 self.segment_indices.push(variable);

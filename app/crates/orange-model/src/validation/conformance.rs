@@ -28,6 +28,7 @@ pub(crate) struct Conformance {
 
 /// Facts about the rest of the validation run that block a function from being accepted.
 pub(crate) struct BodyStatus<'a> {
+    pub(crate) regions: &'a super::regions::RegionIndex,
     pub(crate) resolved: &'a BTreeMap<NodeId, SignatureSnapshot>,
     /// Nodes that are unresolved, incomplete or carry an error diagnostic.
     pub(crate) blocked: &'a BTreeSet<NodeId>,
@@ -67,6 +68,44 @@ pub(crate) fn check_conformance(
         }
     }
     result
+}
+
+type ExecTargets = BTreeMap<NodeId, BTreeMap<PortKey, Vec<(NodeId, PortKey)>>>;
+struct ReturnFlow {
+    edges: ExecTargets,
+    next: BTreeMap<super::regions::RegionRoot, Option<PortKey>>,
+}
+impl ReturnFlow {
+    fn new(body: &crate::document::GraphBody, edges: ExecTargets) -> Self {
+        let mut next = BTreeMap::new();
+        for node in body
+            .nodes
+            .values()
+            .filter(|node| node.definition.id.as_str() == "core/sequence")
+        {
+            let Some(order) = node.variadic.get(&"then".parse().expect("fixed port")) else {
+                continue;
+            };
+            let mut continuation = None;
+            for &key in order.order.iter().rev() {
+                let port = PortKey::new("then".parse().expect("fixed port"), Some(key));
+                next.insert(
+                    super::regions::RegionRoot {
+                        node: node.id,
+                        port: port.clone(),
+                    },
+                    continuation.clone(),
+                );
+                if edges
+                    .get(&node.id)
+                    .is_some_and(|ports| ports.contains_key(&port))
+                {
+                    continuation = Some(port);
+                }
+            }
+        }
+        Self { edges, next }
+    }
 }
 
 struct Check<'a> {
@@ -139,37 +178,92 @@ impl Check<'_> {
         }
     }
 
-    /// Every exec path from the entry in an action function with outputs reaches a Return.
-    ///
-    /// A path ends at an exec output that has no connection. Faults (`failed`), cancellation,
-    /// a loop's `body` and paths inside a loop body (which continue the loop) do not end the
-    /// function. `core/fork` branches are exempt because a Return may not appear in them.
+    /// Follow natural region completion into the next Sequence step, or the enclosing
+    /// region. Loop/Fork bodies complete their owner rather than requiring a Return.
+    fn finish_path(
+        &mut self,
+        mut node: NodeId,
+        origin: NodeId,
+        port: Option<PortKey>,
+        flow: &ReturnFlow,
+        stack: &mut Vec<(NodeId, Option<PortKey>)>,
+        flagged: &mut BTreeSet<(NodeId, Option<PortKey>)>,
+    ) {
+        loop {
+            let Some(root) = self.status.regions.owners.get(&node) else {
+                self.provable = false;
+                return;
+            };
+            let Some(region) = self.status.regions.regions.get(root) else {
+                self.provable = false;
+                return;
+            };
+            match region.kind {
+                super::regions::RegionKind::Entry => {
+                    if flagged.insert((origin, port.clone())) {
+                        self.diagnostics.push(Diagnostic::new(
+                            DiagnosticCode::MissingReturn,
+                            Subject::new(Some(origin), port, None).with_function(self.id),
+                            self.registry.origin(),
+                        ));
+                    }
+                    return;
+                }
+                super::regions::RegionKind::LoopBody | super::regions::RegionKind::Fork => return,
+                super::regions::RegionKind::Sequence => {
+                    let Some(next) = flow.next.get(root) else {
+                        self.provable = false;
+                        return;
+                    };
+                    if let Some(targets) = next.as_ref().and_then(|port| {
+                        flow.edges.get(&root.node).and_then(|ports| ports.get(port))
+                    }) {
+                        stack.extend(
+                            targets
+                                .iter()
+                                .map(|(node, port)| (*node, Some(port.clone()))),
+                        );
+                        return;
+                    }
+                    node = root.node;
+                }
+            }
+        }
+    }
+
+    /// Every normal completion path must return results. Missing continuations may
+    /// finish an owned Sequence step; silent state-control suppression does too.
     fn check_return_coverage(&mut self, entry: Option<NodeId>, returns: &[NodeId]) {
         let Some(entry) = entry.filter(|_| !returns.is_empty()) else {
             self.emit(DiagnosticCode::MissingReturn, None);
             return;
         };
-        let mut exec_out: BTreeMap<NodeId, BTreeMap<String, Vec<NodeId>>> = BTreeMap::new();
+        let returns: BTreeSet<_> = returns.iter().copied().collect();
+        let mut mutable_gates = BTreeSet::new();
+        let mut edges = ExecTargets::new();
         for edge in self.function.body.edges.values() {
+            if matches!(edge.to.port.port().as_str(), "close" | "toggle") {
+                mutable_gates.insert(edge.to.node);
+            }
             match lookup_port(self.document, self.status.resolved, &edge.from) {
                 Ok(port) if port.kind == PortKind::Exec => {
-                    exec_out
+                    edges
                         .entry(edge.from.node)
                         .or_default()
-                        .entry(edge.from.port.port().as_str().to_owned())
+                        .entry(edge.from.port.clone())
                         .or_default()
-                        .push(edge.to.node);
+                        .push((edge.to.node, edge.to.port.clone()));
                 }
                 Ok(_) => {}
                 Err(_) => self.provable = false,
             }
         }
-
+        let flow = ReturnFlow::new(&self.function.body, edges);
         let mut seen = BTreeSet::new();
         let mut flagged = BTreeSet::new();
-        let mut stack = vec![(entry, false)];
-        while let Some((node_id, in_loop)) = stack.pop() {
-            if !seen.insert((node_id, in_loop)) || returns.contains(&node_id) {
+        let mut stack = vec![(entry, None)];
+        while let Some((node_id, input)) = stack.pop() {
+            if !seen.insert((node_id, input.clone())) || returns.contains(&node_id) {
                 continue;
             }
             let (Some(node), Some(snapshot)) = (
@@ -180,50 +274,100 @@ impl Check<'_> {
                 continue;
             };
             let definition = node.definition.id.as_str();
-            let terminator = intrinsic(definition).is_some_and(|rule| rule.terminator);
-            let fork = definition == "core/fork";
-            let is_loop = snapshot.kind == NodeKind::Iterator;
-            let mut ports: BTreeSet<String> = snapshot
+            if definition == "core/sequence" {
+                let Some(order) = node.variadic.get(&"then".parse().expect("fixed port")) else {
+                    self.provable = false;
+                    continue;
+                };
+                let target = order.order.iter().find_map(|&key| {
+                    flow.edges.get(&node_id).and_then(|ports| {
+                        ports.get(&PortKey::new(
+                            "then".parse().expect("fixed port"),
+                            Some(key),
+                        ))
+                    })
+                });
+                if let Some(targets) = target {
+                    stack.extend(
+                        targets
+                            .iter()
+                            .map(|(node, port)| (*node, Some(port.clone()))),
+                    );
+                } else {
+                    self.finish_path(node_id, node_id, None, &flow, &mut stack, &mut flagged);
+                }
+                continue;
+            }
+            let command = input
+                .as_ref()
+                .map(|port| port.port().as_str())
+                .unwrap_or("in");
+            let command_only = (definition == "core/gate"
+                && matches!(command, "open" | "close" | "toggle"))
+                || (definition == "core/do-once" && command == "reset");
+            let immutable_open_gate = definition == "core/gate"
+                && node.config.get("start_open").and_then(|v| v.as_bool()) == Some(true)
+                && !mutable_gates.contains(&node_id);
+            if command_only
+                || definition == "core/do-once"
+                || (definition == "core/gate" && !immutable_open_gate)
+            {
+                self.finish_path(node_id, node_id, None, &flow, &mut stack, &mut flagged);
+                if command_only {
+                    continue;
+                }
+            }
+            if intrinsic(definition).is_some_and(|rule| rule.terminator) {
+                continue;
+            }
+            let mut ports = BTreeSet::new();
+            for port in snapshot
                 .ports
                 .iter()
-                .filter(|port| {
-                    port.kind == PortKind::Exec && port.direction == PortDirection::Output
-                })
-                .map(|port| port.port_id.as_str().to_owned())
-                .collect();
+                .filter(|p| p.kind == PortKind::Exec && p.direction == PortDirection::Output)
+            {
+                if port.variadic.is_some() {
+                    if let Some(order) = node.variadic.get(&port.port_id) {
+                        ports.extend(
+                            order
+                                .order
+                                .iter()
+                                .map(|key| PortKey::new(port.port_id.clone(), Some(*key))),
+                        );
+                    }
+                } else {
+                    ports.insert(PortKey::new(port.port_id.clone(), None));
+                }
+            }
             ports.extend(
                 snapshot
                     .implicit_ports()
                     .into_iter()
                     .filter(|name| matches!(*name, "then" | "body" | "completed"))
-                    .map(str::to_owned),
+                    .map(|name| name.parse().expect("fixed port")),
             );
-            if terminator {
-                ports.clear();
-            }
             for port in ports {
-                let targets = exec_out.get(&node_id).and_then(|map| map.get(&port));
-                let loop_body = is_loop && port == "body";
-                if targets.is_none() && !fork && !loop_body && !in_loop {
-                    if flagged.insert((node_id, port.clone())) {
-                        self.diagnostics.push(Diagnostic::new(
-                            DiagnosticCode::MissingReturn,
-                            Subject::new(
-                                Some(node_id),
-                                Some(PortKey::new(
-                                    port.parse().expect("declared port id is valid"),
-                                    None,
-                                )),
-                                None,
-                            )
-                            .with_function(self.id),
-                            self.registry.origin(),
-                        ));
-                    }
+                if matches!(port.port().as_str(), "failed" | "cancelled")
+                    || (definition == "core/fork" && port.port().as_str() == "branch")
+                    || (snapshot.kind == NodeKind::Iterator && port.port().as_str() == "body")
+                {
                     continue;
                 }
-                for target in targets.into_iter().flatten() {
-                    stack.push((*target, in_loop || loop_body));
+                if let Some(targets) = flow.edges.get(&node_id).and_then(|ports| ports.get(&port)) {
+                    stack.extend(
+                        targets
+                            .iter()
+                            .map(|(node, port)| (*node, Some(port.clone()))),
+                    );
+                } else {
+                    self.finish_path(
+                        node_id,
+                        node_id,
+                        Some(port),
+                        &flow,
+                        &mut stack,
+                        &mut flagged,
+                    );
                 }
             }
         }

@@ -18,6 +18,7 @@ use std::sync::Arc;
 pub(crate) enum CallProfile {
     Pure,
     HostData,
+    Control,
 }
 
 #[derive(Default)]
@@ -29,6 +30,7 @@ struct PreparedBody<'a> {
 }
 #[derive(Default)]
 pub(crate) struct CallScope<'a> {
+    pub(crate) control: bool,
     body: Option<Arc<PreparedBody<'a>>>,
     pub(crate) calls: BTreeMap<NodeId, usize>,
     function: Option<FunctionId>,
@@ -207,21 +209,24 @@ impl<'a> Calls<'a> {
                 options.checkpoint()?;
                 let sig = out.signature(analysis, cursor, node.id);
                 if cursor != 0 {
+                    let effect = profile == CallProfile::Control && out.scopes[cursor].control;
+                    let control =
+                        effect && !matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile);
                     let marker = matches!(
                         node.definition.id.as_str(),
-                        "core/function-entry" | "core/function-outputs"
+                        "core/function-entry" | "core/function-outputs" | "core/return"
                     );
-                    let state = profile == CallProfile::HostData
+                    let state = profile != CallProfile::Pure
                         && sig.kind == NodeKind::Volatile
                         && crate::compile::is_state_read(snapshot, node);
                     if state {
                         crate::compile::admit_state_read(node.id, sig)?;
                     }
-                    let seeded = profile == CallProfile::HostData
+                    let seeded = profile != CallProfile::Pure
                         && sig.kind == NodeKind::Volatile
                         && (node.definition.id.as_str() == "core/call"
                             || crate::compile::is_seeded_entropy(snapshot, node));
-                    if !marker && sig.kind != NodeKind::Pure && !seeded && !state {
+                    if !marker && sig.kind != NodeKind::Pure && !seeded && !state && !control {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
                     let lazy = out.lazy(&BTreeMap::new(), cursor, node.id).is_some();
@@ -229,21 +234,26 @@ impl<'a> Calls<'a> {
                         && !marker
                         && !lazy
                         && !state
+                        && !control
                         && !matches!(node.definition.id.as_str(), "core/call" | "core/convert")
                     {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
-                    admit_data_ports(
-                        node.id,
-                        sig,
-                        lazy,
-                        if state {
-                            OutputSource::State
-                        } else {
-                            OutputSource::Computed
-                        },
-                        options,
-                    )?;
+                    if !effect
+                        || (!marker && matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile))
+                    {
+                        admit_data_ports(
+                            node.id,
+                            sig,
+                            lazy,
+                            if state {
+                                OutputSource::State
+                            } else {
+                                OutputSource::Computed
+                            },
+                            options,
+                        )?;
+                    }
                 }
                 for port in &sig.ports {
                     options.checkpoint()?;
@@ -261,7 +271,9 @@ impl<'a> Calls<'a> {
                     continue;
                 }
                 if !(sig.kind == NodeKind::Pure
-                    || (profile == CallProfile::HostData && sig.kind == NodeKind::Volatile))
+                    || (profile != CallProfile::Pure && sig.kind == NodeKind::Volatile)
+                    || (profile == CallProfile::Control
+                        && matches!(sig.kind, NodeKind::Action | NodeKind::Async)))
                     || node.definition.version != 1
                     || node.config_version != 1
                     || node.provider.is_some()
@@ -348,6 +360,7 @@ impl<'a> Calls<'a> {
                         options.limits.max_graph_items,
                     )?;
                 }
+                let control = matches!(sig.kind, NodeKind::Action | NodeKind::Async);
                 let cache_key = (target, args);
                 let prepared = if let Some(body) = cache.get(&cache_key) {
                     body.clone()
@@ -418,7 +431,7 @@ impl<'a> Calls<'a> {
                         }
                         prepared.signatures.insert(child.id, sig);
                     }
-                    if !function.outputs.is_empty() && prepared.result.is_none() {
+                    if !control && !function.outputs.is_empty() && prepared.result.is_none() {
                         return Err(CompileError::ValidationIncomplete);
                     }
                     for edge in function.body.edges.values() {
@@ -432,6 +445,7 @@ impl<'a> Calls<'a> {
                 let index = out.scopes.len();
                 out.scopes[cursor].calls.insert(node.id, index);
                 out.scopes.push(CallScope {
+                    control,
                     body: Some(prepared),
                     function: Some(target),
                     parent: Some(cursor),

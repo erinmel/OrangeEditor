@@ -17,7 +17,10 @@ use std::sync::{
 };
 use thiserror::Error;
 
+mod function;
 mod iteration;
+mod retained;
+use function::{FunctionFrame, FunctionReturn, PendingCall};
 mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod ready;
@@ -176,6 +179,7 @@ impl RunError {
 struct StateLayout {
     variables: Box<[usize]>,
     states: Box<[usize]>,
+    state_sources: Box<[usize]>,
     outputs: Box<[Option<usize>]>,
     output_count: usize,
 }
@@ -199,6 +203,13 @@ impl StateLayout {
         }
         let variables = indices(plan.variables());
         let states = indices(plan.states());
+        let mut sources = BTreeMap::new();
+        let state_sources = plan
+            .states()
+            .iter()
+            .enumerate()
+            .map(|(index, cell)| *sources.entry(cell.id()).or_insert(index))
+            .collect();
         let mut output_count = 0;
         let outputs = plan
             .host_sources()
@@ -207,6 +218,8 @@ impl StateLayout {
                 if matches!(
                     source,
                     HostSource::Variable(_)
+                        | HostSource::FrameLocal { .. }
+                        | HostSource::Argument { .. }
                         | HostSource::CallLocal(_)
                         | HostSource::State(_)
                         | HostSource::Iteration(_, _)
@@ -222,6 +235,7 @@ impl StateLayout {
         Self {
             variables,
             states,
+            state_sources,
             outputs,
             output_count,
         }
@@ -234,6 +248,7 @@ struct PullState {
     inputs: Vec<Option<FoldedValue>>,
     completed: [Option<Value>; 2],
     completed_len: usize,
+    call_values: Vec<Value>,
 }
 struct PendingPull {
     root: usize,
@@ -249,10 +264,15 @@ impl PullState {
         self.inputs.clear();
         self.completed = [None, None];
         self.completed_len = 0;
+        self.call_values.clear();
     }
 }
 
 struct Strand {
+    function: Option<u64>,
+    call: Option<Box<PendingCall>>,
+    returning: Option<Box<FunctionReturn>>,
+    call_fault: Option<Box<ConstantFault>>,
     cleanup_deadline: Option<u64>,
     iteration_context: Option<Arc<IterationFrame>>,
     fork: Option<ControlIx>,
@@ -312,6 +332,7 @@ enum Cursor {
 /// let run = orange_runtime::Run::default();
 /// ```
 pub struct Run {
+    frames: BTreeMap<u64, FunctionFrame>,
     id: u64,
     plan: Option<Arc<ControlPlan>>,
     options: RunOptions,
@@ -480,6 +501,7 @@ impl Run {
             regions.insert(
                 sequence as u64,
                 Region {
+                    frames: None,
                     retired_cursor: None,
                     parent: None,
                     activation: sequence as u64,
@@ -491,6 +513,10 @@ impl Run {
                 },
             );
             let strand = Strand {
+                function: None,
+                call: None,
+                returning: None,
+                call_fault: None,
                 cleanup_deadline: None,
                 iteration_context: None,
                 fork: None,
@@ -519,6 +545,7 @@ impl Run {
         let variable_count = plan.variables().len();
         let state_count = plan.states().len();
         Ok(Self {
+            frames: BTreeMap::new(),
             id: run_identity()?,
             plan: Some(plan),
             options,
@@ -623,10 +650,33 @@ impl Run {
     pub fn trace_dropped(&self) -> u64 {
         self.trace_dropped
     }
-    /// Explicit run-owned node state inspection; activation cells remain private.
+    /// Unambiguous run-owned source state; repeated call sites require `control_state`.
     pub fn node_state(&self, id: NodeId) -> Option<&Value> {
         let plan = self.plan.as_ref()?;
-        let index = plan.states().iter().position(|cell| cell.id() == id)?;
+        let mut cells = plan
+            .states()
+            .iter()
+            .enumerate()
+            .filter(|(_, cell)| cell.id() == id);
+        let (index, _) = cells.next()?;
+        if cells.next().is_some() {
+            return None;
+        }
+        if plan.states()[index].scope() == VarScope::Local {
+            return None;
+        }
+        self.states[self.layout.states[index]].as_ref()
+    }
+    /// Run-owned state at an exact control index in this run's pinned plan.
+    pub fn control_state(&self, owner: ControlIx) -> Option<&Value> {
+        let plan = self.plan.as_ref()?;
+        let index = match plan.nodes().get(owner.index())?.operation() {
+            ControlOperation::Gate { state }
+            | ControlOperation::DoOnce { state }
+            | ControlOperation::FlipFlop { state, .. }
+            | ControlOperation::Register { state, .. } => *state,
+            _ => return None,
+        };
         if plan.states()[index].scope() == VarScope::Local {
             return None;
         }
@@ -815,6 +865,25 @@ impl Run {
                 self.cancel_owned()?;
                 break;
             }
+            if activation.faulted && activation.function.is_some() {
+                let fault = activation.call_fault.take().ok_or(RunError::InvalidState)?;
+                if let Err(error) = self.leave_function(activation, FunctionReturn::Fault(*fault)) {
+                    return self.fail(error);
+                }
+                continue;
+            }
+            if let Some(result) = activation.returning.take() {
+                if let Err(error) = self.leave_function(activation, *result) {
+                    return self.fail(error);
+                }
+                continue;
+            }
+            if let Some(call) = activation.call.take() {
+                if let Err(error) = self.enter_function(activation, *call) {
+                    return self.fail(error);
+                }
+                continue;
+            }
             if activation.faulted {
                 self.retire_failed(activation)?;
                 continue;
@@ -862,26 +931,33 @@ impl Run {
                 self.retire_strand(activation)?;
             }
         }
+        if self.state == RunState::Faulted {
+            self.cancel_owned()?;
+        }
         // A pending mutation owns its read/compute/write segment across host slices.
         // Explicit suspension still releases ownership; read-only pulls may rotate.
         if remaining == 0
             && self.ready.front().is_some_and(|a| {
                 Some(a.id) == last
-                    && !(a.pull.active.is_some()
-                        && a.pc.is_some_and(|pc| {
-                            matches!(
-                                self.plan.as_ref().unwrap().nodes()[pc.index()].operation(),
-                                ControlOperation::Set { .. }
-                                    | ControlOperation::Register { .. }
-                                    | ControlOperation::Update { .. }
-                            )
-                        }))
+                    && !(a.function.is_some()
+                        || (a.pull.active.is_some()
+                            && a.pc.is_some_and(|pc| {
+                                matches!(
+                                    self.plan.as_ref().unwrap().nodes()[pc.index()].operation(),
+                                    ControlOperation::Set { .. }
+                                        | ControlOperation::Call { .. }
+                                        | ControlOperation::Return { .. }
+                                        | ControlOperation::Register { .. }
+                                        | ControlOperation::Update { .. }
+                                )
+                            })))
             })
             && let Some(activation) = self.ready.pop_front()
         {
             self.ready.push_back(activation.id, activation);
         }
-        self.segment_owner = None;
+        // A host budget boundary does not itself suspend the logical strand.
+        // Explicit suspension or selecting a different strand opens a new segment.
         let count = initial - remaining;
         self.operations = self.operations.saturating_add(count);
         if budget > 0
@@ -947,6 +1023,7 @@ impl Run {
         self.timers.clear();
         self.timer_keys.clear();
         self.regions.clear();
+        self.frames.clear();
         self.activations.clear();
         self.live_strands = 0;
         self.deadline = None;
@@ -967,6 +1044,20 @@ impl Run {
         let node = &plan.nodes()[ix.index()];
         if activation.pull.active.is_none() {
             *budget -= 1;
+        }
+        if activation.cleanup && matches!(node.operation(), ControlOperation::Return { .. }) {
+            // Cancellation never publishes ordinary results or revives a held caller.
+            activation.pc = None;
+            activation.stack.clear();
+            activation.pull.reset();
+            shared.pull_owner = None;
+            self.record(RunEvent {
+                activation: activation.sequence,
+                node: node.node(),
+                outcome: ControlOutcome::Cancelled,
+                fault: None,
+            });
+            return Ok(());
         }
         if activation.cleanup
             && !matches!(
@@ -1006,6 +1097,12 @@ impl Run {
             }
             return Ok(());
         }
+        if matches!(
+            node.operation(),
+            ControlOperation::Call { .. } | ControlOperation::Return { .. }
+        ) {
+            return self.execute_function(plan, activation, shared, ix, budget);
+        }
         if matches!(node.operation(), ControlOperation::Update { .. }) {
             if let Some(fault) = self.execute_update(plan, activation, shared, ix, budget)? {
                 self.complete(
@@ -1019,6 +1116,9 @@ impl Run {
             return Ok(());
         }
         let (next, outcome, fault) = match node.operation() {
+            ControlOperation::Call { .. } | ControlOperation::Return { .. } => {
+                unreachable!("function dispatch handled above")
+            }
             ControlOperation::ForEach {
                 items,
                 body,
@@ -1412,6 +1512,18 @@ impl Run {
                     }
                     FoldedValue::Value(value) => {
                         let var = &plan.variables()[*variable];
+                        if var.scope() == VarScope::Local && node.scope() != 0 {
+                            let frame = self.find_frame(activation.function, node.scope())?;
+                            self.write_frame_local(plan, shared, frame, *variable, value)?;
+                            self.complete(
+                                plan,
+                                activation,
+                                shared,
+                                ix,
+                                (node.then(), ControlOutcome::Then, None),
+                            );
+                            return Ok(());
+                        }
                         let (store, retained) = if var.scope() == VarScope::Local {
                             (&mut shared.locals, &mut shared.local_bytes)
                         } else {
@@ -1473,6 +1585,13 @@ impl Run {
         if let Some(fault) = &fault {
             Self::publish_error(plan, &self.layout, shared, ix, fault);
         }
+        activation.call_fault =
+            if activation.function.is_some() && outcome == ControlOutcome::Failed && next.is_none()
+            {
+                fault.clone().map(Box::new)
+            } else {
+                None
+            };
         self.record(RunEvent {
             activation: activation.sequence,
             node: node.node(),
@@ -1486,6 +1605,7 @@ impl Run {
         if outcome == ControlOutcome::Failed
             && next.is_none()
             && !activation.cleanup
+            && activation.function.is_none()
             && plan.nodes()[activation.entry.index()].fault_policy() == FaultPolicy::StopRun
         {
             self.transition(RunState::Faulted);
@@ -1603,6 +1723,25 @@ impl Run {
                             frame.value(*projection).ok_or(RunError::InvalidState)?,
                         ))
                     }
+                    HostSource::FrameLocal { scope, variable } => {
+                        let frame = self.find_frame(activation.function, *scope)?;
+                        let value = self.frame_value(plan, frame, *variable)?.cloned();
+                        Some(
+                            value
+                                .map(FoldedValue::Value)
+                                .unwrap_or_else(|| FunctionFrame::uninitialized(plan, i)),
+                        )
+                    }
+                    HostSource::Argument { scope, index } => {
+                        let frame = self.find_frame(activation.function, *scope)?;
+                        Some(FoldedValue::Value(
+                            self.frames[&frame]
+                                .arguments
+                                .get(*index)
+                                .ok_or(RunError::InvalidState)?
+                                .clone(),
+                        ))
+                    }
                     HostSource::State(index) => {
                         Some(match self.state_value(plan, shared, *index) {
                             Some(value) => FoldedValue::Value(value.clone()),
@@ -1643,7 +1782,8 @@ impl Run {
                     HostSource::Error(_)
                     | HostSource::Index(_)
                     | HostSource::Value(_)
-                    | HostSource::Update(_, _) => {
+                    | HostSource::Update(_, _)
+                    | HostSource::CallOutput(_, _) => {
                         self.layout.outputs[i].and_then(|slot| shared.outputs[slot].clone())
                     }
                 };
@@ -1743,9 +1883,10 @@ impl Run {
             .ok_or(RunError::ResourceLimit)?;
         *retained = bytes;
         store[cell] = value;
-        if !self.dirty_states[index] {
-            self.dirty_states[index] = true;
-            self.state_segment_indices.push(index);
+        let source = self.layout.state_sources[index];
+        if !self.dirty_states[source] {
+            self.dirty_states[source] = true;
+            self.state_segment_indices.push(source);
             self.state_segment_writes.push(metadata.id());
         }
         Ok(())
@@ -1885,6 +2026,7 @@ impl Run {
             return Err(RunError::InvalidState);
         }
         self.plan = None;
+        self.frames.clear();
         self.activations.clear();
         self.variables.clear();
         self.states.clear();

@@ -87,6 +87,10 @@ impl FromIterator<u64> for IdSet {
 
 pub(super) enum RegionKind {
     Root,
+    Function {
+        owner: ControlIx,
+        result: Option<Box<FunctionReturn>>,
+    },
     Body {
         loop_owner: Option<ControlIx>,
     },
@@ -98,6 +102,7 @@ pub(super) enum RegionKind {
     },
 }
 pub(super) struct Region {
+    pub frames: Option<Box<IdSet>>,
     pub retired_cursor: Option<Box<Cursor>>,
     pub parent: Option<u64>,
     pub activation: u64,
@@ -150,6 +155,7 @@ impl Run {
         self.regions.insert(
             region,
             Region {
+                frames: None,
                 retired_cursor: None,
                 parent: Some(caller.region),
                 activation: caller.sequence,
@@ -170,6 +176,10 @@ impl Run {
         region: u64,
     ) -> Result<Strand, RunError> {
         Ok(Strand {
+            function: caller.function,
+            call: None,
+            returning: None,
+            call_fault: None,
             cleanup_deadline: caller.cleanup_deadline,
             iteration_context: caller.iteration_context.clone(),
             fork: None,
@@ -207,7 +217,44 @@ impl Run {
             if !r.live.is_empty() || !r.children.is_empty() {
                 return Ok(());
             }
-            let r = self.regions.remove(&id).unwrap();
+            let mut r = self.regions.remove(&id).unwrap();
+            for frame in r.frames.iter().flat_map(|frames| frames.iter()) {
+                self.retire_frame(frame, r.activation)?;
+            }
+            if let RegionKind::Function { owner, result } = r.kind {
+                self.retire_frame(id, r.activation)?;
+                let result = match result {
+                    Some(result) => *result,
+                    None => {
+                        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?;
+                        let node = &plan.nodes()[owner.index()];
+                        let ControlOperation::Call { scope, .. } = node.operation() else {
+                            return Err(RunError::InvalidState);
+                        };
+                        if plan
+                            .function(*scope)
+                            .ok_or(RunError::InvalidState)?
+                            .outputs()
+                            == 0
+                        {
+                            FunctionReturn::empty()
+                        } else {
+                            FunctionReturn::Fault(ConstantFault {
+                                source: node.node(),
+                                fault: KernelFault {
+                                    code: "core/MissingReturn",
+                                    message_key: "core/function-missing-return",
+                                    message: "The function ended without returning its declared results.",
+                                },
+                            })
+                        }
+                    }
+                };
+                let mut caller = r.continuation.take().ok_or(RunError::InvalidState)?;
+                self.finish_function(&mut caller, owner, result)?;
+                r.continuation = Some(caller);
+                r.kind = RegionKind::Body { loop_owner: None };
+            }
             if let Some(cursor) = r.retired_cursor.as_deref() {
                 let owner = match cursor {
                     Cursor::Count { owner, .. } | Cursor::While { owner, .. } => Some(*owner),
@@ -314,6 +361,7 @@ impl Run {
             self.regions.insert(
                 region,
                 Region {
+                    frames: None,
                     retired_cursor: None,
                     parent: Some(group),
                     activation: caller.sequence,
@@ -350,6 +398,7 @@ impl Run {
         self.regions.insert(
             group,
             Region {
+                frames: None,
                 retired_cursor: None,
                 parent: Some(parent),
                 activation,
@@ -429,6 +478,7 @@ impl Run {
             ids.push(id);
         }
         let mut cleanup = Vec::new();
+        let mut retained_frames = IdSet::default();
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
         // Timer keys preserve the original cancellation/outcome order.
         for key in timer_keys {
@@ -457,11 +507,23 @@ impl Run {
             }
         }
         for id in ids {
-            if id != root {
-                self.regions.remove(&id);
+            if id != root
+                && let Some(region) = self.regions.remove(&id)
+            {
+                if matches!(region.kind, RegionKind::Function { .. }) {
+                    retained_frames.insert(id);
+                }
+                for frame in region.frames.iter().flat_map(|frames| frames.iter()) {
+                    retained_frames.insert(frame);
+                }
             }
         }
         let r = self.regions.get_mut(&root).ok_or(RunError::InvalidState)?;
+        for frame in retained_frames.iter() {
+            r.frames
+                .get_or_insert_with(|| Box::new(IdSet::default()))
+                .insert(frame);
+        }
         r.live = cleanup.iter().map(|s| s.id).collect();
         r.children.clear();
         let activation = r.activation;
