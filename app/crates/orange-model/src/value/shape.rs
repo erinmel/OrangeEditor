@@ -17,6 +17,11 @@ pub const MAP_ENTRY_CHARGE: usize = 32;
 /// Nominal retained bytes of an error envelope, before its code text.
 pub const ERROR_CHARGE: usize = 2 * VALUE_CHARGE;
 
+/// Maps with at most this many entries match keys pairwise, so checking and comparing
+/// the common small map allocates nothing. Larger maps use one presized hash table,
+/// keeping the cost linear.
+const SMALL_MAP: usize = 16;
+
 /// Supported Core leaves and recursively typed containers. Values follow the model's
 /// boxed/unboxed representation, not JSON null.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,11 +274,17 @@ impl ValueShape {
                 Ok(())
             }
             (Self::Map(key, ty), Value::Map(map)) if key.native_hash() => {
-                minimum(*left, map.entries.len(), MAP_ENTRY_CHARGE)?;
-                let mut keys = HashSet::new();
-                for (k, v) in &map.entries {
+                let entries = &map.entries;
+                minimum(*left, entries.len(), MAP_ENTRY_CHARGE)?;
+                let mut seen =
+                    (entries.len() > SMALL_MAP).then(|| HashSet::with_capacity(entries.len()));
+                for (i, (k, v)) in entries.iter().enumerate() {
                     key.check(k, left, depth + 1)?;
-                    if !keys.insert(k) {
+                    let repeated = match &mut seen {
+                        Some(keys) => !keys.insert(k),
+                        None => entries[..i].iter().any(|(other, _)| other == k),
+                    };
+                    if repeated {
                         return Err(InvalidType);
                     }
                     ty.check(v, left, depth + 1)?;
@@ -336,10 +347,24 @@ impl ValueShape {
                 if a.entries.len() != b.entries.len() {
                     return false;
                 }
-                let values: HashMap<_, _> = b.entries.iter().map(|(k, v)| (k, v)).collect();
+                // Both maps were checked, so each key has at most one match.
+                let index = (b.entries.len() > SMALL_MAP).then(|| {
+                    b.entries
+                        .iter()
+                        .map(|(k, v)| (k, v))
+                        .collect::<HashMap<_, _>>()
+                });
+                let find = |k: &Value| match &index {
+                    Some(values) => values.get(k).copied(),
+                    None => b
+                        .entries
+                        .iter()
+                        .find(|(other, _)| other == k)
+                        .map(|(_, v)| v),
+                };
                 a.entries
                     .iter()
-                    .all(|(k, v)| values.get(k).is_some_and(|other| inner.equal(v, other)))
+                    .all(|(k, v)| find(k).is_some_and(|other| inner.equal(v, other)))
             }
             _ => a == b,
         }
