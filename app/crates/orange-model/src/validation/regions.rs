@@ -53,6 +53,8 @@ pub struct Region {
 /// `owners` and diagnosed; they never get a guessed owner.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RegionIndex {
+    /// Checked lexical ownership of pure iteration zones, independent of exec regions.
+    pub zones: super::zones::ZoneIndex,
     pub regions: BTreeMap<RegionRoot, Region>,
     pub owners: BTreeMap<NodeId, RegionRoot>,
     /// Exec nodes that no region reaches (`W-UNREACHABLE`).
@@ -581,20 +583,6 @@ fn switch_cases_valid(node: &crate::document::NodeInstance, signature: &Signatur
     true
 }
 
-/// The zone family and side of a zone intrinsic (`core/map-begin` is `("map", false)`).
-fn zone_of(definition: &str) -> Option<(&str, bool)> {
-    let name = definition.strip_prefix("core/")?;
-    let (family, side) = name.split_once('-')?;
-    if !matches!(family, "repeat" | "map" | "fold" | "filter") {
-        return None;
-    }
-    match side {
-        "begin" => Some((family, false)),
-        "end" => Some((family, true)),
-        _ => None,
-    }
-}
-
 /// A data edge: id, source node and port, target node.
 type DataEdge = (EdgeId, NodeId, PortKey, NodeId);
 
@@ -626,33 +614,13 @@ fn check_zones(
     origin: &HostOrigin,
     result: &mut RegionValidation,
 ) {
-    let mut faults: BTreeSet<(NodeId, Option<PortKey>, Option<EdgeId>)> = BTreeSet::new();
-    // (family, zone id) -> (begins, ends)
-    let mut groups: BTreeMap<(String, String), (Vec<NodeId>, Vec<NodeId>)> = BTreeMap::new();
-    for node in body.nodes.values() {
-        let Some((family, end)) = zone_of(node.definition.id.as_str()) else {
-            continue;
-        };
-        match node.config.get("zone").and_then(serde_json::Value::as_str) {
-            Some(zone) if !zone.is_empty() => {
-                let group = groups
-                    .entry((family.to_owned(), zone.to_owned()))
-                    .or_default();
-                if end { &mut group.1 } else { &mut group.0 }.push(node.id);
-            }
-            _ => {
-                faults.insert((node.id, None, None));
-            }
-        }
-    }
-    let mut pairs = Vec::new();
-    for (begins, ends) in groups.values() {
-        if let ([begin], [end]) = (&begins[..], &ends[..]) {
-            pairs.push((*begin, *end));
-        } else {
-            faults.extend(begins.iter().chain(ends).map(|node| (*node, None, None)));
-        }
-    }
+    let pairing = super::zones::pair_zones(body, function);
+    let mut faults: BTreeSet<(NodeId, Option<PortKey>, Option<EdgeId>)> = pairing
+        .faults
+        .into_iter()
+        .map(|node| (node, None, None))
+        .collect();
+    let pairs = pairing.pairs;
     if pairs.is_empty() {
         emit_zone_faults(faults, function, origin, result);
         return;
@@ -690,7 +658,8 @@ fn check_zones(
 
     let bodies: Vec<BTreeSet<NodeId>> = pairs
         .iter()
-        .map(|(begin, end)| {
+        .map(|pair| {
+            let (begin, end) = (&pair.begin, &pair.end);
             let after = reach(*begin, *end, &forward);
             let before = reach(*end, *begin, &backward);
             after
@@ -701,7 +670,8 @@ fn check_zones(
         })
         .collect();
 
-    for ((begin, end), inside) in pairs.iter().zip(&bodies) {
+    for (pair, inside) in pairs.iter().zip(&bodies) {
+        let (begin, end) = (&pair.begin, &pair.end);
         for node in inside {
             let pure = resolved
                 .get(node)
@@ -716,13 +686,28 @@ fn check_zones(
                 faults.insert((*from, Some(port.clone()), Some(*id)));
             }
         }
-        for ((other_begin, other_end), _) in pairs.iter().zip(&bodies) {
+        for other in &pairs {
+            let (other_begin, other_end) = (&other.begin, &other.end);
             if other_begin == begin {
                 continue;
             }
             if inside.contains(other_begin) != inside.contains(other_end) {
                 faults.insert((*other_begin, None, None));
             }
+        }
+    }
+    if faults.is_empty() {
+        // Outer bodies first, so each overwrite records the innermost owner.
+        // Only one owner per node is retained, even for deeply nested zones.
+        let mut order: Vec<_> = (0..pairs.len()).collect();
+        order.sort_by_key(|&i| (std::cmp::Reverse(bodies[i].len()), pairs[i].end));
+        for i in order {
+            let mut pair = pairs[i];
+            pair.parent = result.index.zones.owners.get(&pair.begin).copied();
+            for node in bodies[i].iter().copied().chain([pair.begin]) {
+                result.index.zones.owners.insert(node, pair.end);
+            }
+            result.index.zones.pairs.insert(pair.end, pair);
         }
     }
     emit_zone_faults(faults, function, origin, result);

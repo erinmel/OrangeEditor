@@ -182,6 +182,40 @@ pub(crate) fn validate_data_cycles_in(
             }
         }
 
+        // A zone result also depends on its strict prefix (count/items/initial).
+        // Begin iteration projections themselves remain independent of those
+        // inputs: adding input-to-iteration edges would reject legal carry.
+        for pair in super::zones::pair_zones(body, None).pairs {
+            let (Some(begin), Some(end)) = (resolved.get(&pair.begin), resolved.get(&pair.end))
+            else {
+                continue;
+            };
+            let inputs = begin.ports.iter().filter(|port| {
+                port.kind == PortKind::Data
+                    && port.direction == PortDirection::Input
+                    && port.ty.is_some()
+            });
+            let outputs: Vec<_> = end
+                .ports
+                .iter()
+                .filter(|port| {
+                    port.kind == PortKind::Data
+                        && port.direction == PortDirection::Output
+                        && port.source == Some(OutputSource::Computed)
+                        && port.ty.is_some()
+                })
+                .collect();
+            for input in inputs {
+                for from in concrete_vertices(pair.begin, &body.nodes[&pair.begin], input) {
+                    for output in &outputs {
+                        for to in concrete_vertices(pair.end, &body.nodes[&pair.end], output) {
+                            add_edge(&mut graph, from.clone(), to);
+                        }
+                    }
+                }
+            }
+        }
+
         let mut edges: Vec<_> = body.edges.values().collect();
         edges.sort_by_key(|edge| edge.id);
         for edge in edges {
