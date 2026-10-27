@@ -1,11 +1,13 @@
-use crate::data_zone::{MAX_PREFIX, MachineError, ZoneMachine};
+mod zone;
+use zone::ZoneCell;
+
 use crate::{
     ActivationEntropy, CancelToken, EntropyError, EntropyLayout, EntropySlot, EntropyStream,
     FrameId,
 };
 use orange_compiler::{
     ConstantFault, DataNode, DataOperation, DataPlan, DataStability, EntropySource,
-    EvaluatedExport, FoldedValue, KernelFault, NodeIx, ValueCheckError, ZoneIx,
+    EvaluatedExport, FoldedValue, KernelFault, NodeIx, ValueCheckError,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::id::NodeId;
@@ -578,12 +580,6 @@ enum Work {
     Choose(NodeIx),
     Copy { node: NodeIx, input: usize },
 }
-#[derive(Default)]
-struct ZoneCell {
-    generation: u64,
-    live: bool,
-    machine: Option<Box<ZoneMachine>>,
-}
 struct Frame {
     zones: Vec<ZoneCell>,
     zone_bytes: usize,
@@ -606,27 +602,11 @@ struct Frame {
     limits: DataLimits,
     cancel: Option<CancelToken>,
 }
-fn zone_operation(node: &DataNode) -> Result<(ZoneIx, usize), DataError> {
-    match node.operation() {
-        DataOperation::Zone { zone, prefix } => Ok((*zone, *prefix)),
-        _ => Err(DataError::KernelContract { node: node.node() }),
-    }
-}
-fn machine_error(node: NodeId, error: MachineError) -> DataError {
-    match error {
-        MachineError::Limit => DataError::ResourceLimit,
-        MachineError::Contract | MachineError::Fault(_) => DataError::KernelContract { node },
-    }
-}
 impl Frame {
     /// Drop an unfinished pull: work, scratch values and zone machines. Published
     /// slots and memo stamps stay; stamps alone keep stale values from being read.
     fn discard_pass(&mut self) {
-        for zone in &mut self.zones {
-            zone.machine = None;
-            zone.live = false;
-        }
-        self.zone_bytes = 0;
+        self.clear_zones();
         self.pending = None;
         self.work.clear();
         self.inputs.clear();
@@ -643,8 +623,7 @@ impl Frame {
             Some(zone) => self
                 .zones
                 .get(zone.index())
-                .filter(|zone| zone.live)
-                .map(|zone| zone.generation)
+                .and_then(ZoneCell::stamp)
                 .ok_or(DataError::KernelContract { node: node.node() }),
         }
     }
@@ -692,6 +671,22 @@ impl Frame {
             .get(input)
             .and_then(|input| self.slot(input.source.slot))
             .ok_or(DataError::KernelContract { node: node.node() })
+    }
+    /// Strict operand walks pull one input per step; this is the fault of the input
+    /// pulled before `next`, if the walk began at `first` and has pulled any.
+    fn pulled_fault(
+        &self,
+        node: &DataNode,
+        next: usize,
+        first: usize,
+    ) -> Result<Option<ConstantFault>, DataError> {
+        if next <= first {
+            return Ok(None);
+        }
+        Ok(match self.outcome(node, next - 1)? {
+            FoldedValue::Fault(fault) => Some(fault.clone()),
+            FoldedValue::Value(_) => None,
+        })
     }
     fn old_charge(&self, node: &DataNode) -> Result<usize, DataError> {
         let mut bytes = 0usize;
@@ -865,140 +860,6 @@ impl Frame {
         self.outputs.clear();
         publication
     }
-    fn zone_capacity(&self, credit: usize) -> Result<usize, DataError> {
-        self.limits
-            .max_retained_bytes
-            .checked_sub(self.retained)
-            .and_then(|free| free.checked_sub(self.zone_bytes.checked_sub(credit)?))
-            .ok_or(DataError::ResourceLimit)
-    }
-    fn start_zone(
-        &mut self,
-        plan: &DataPlan,
-        node: &DataNode,
-        zone: ZoneIx,
-        prefix: usize,
-    ) -> Result<(), DataError> {
-        if prefix > MAX_PREFIX || self.zones[zone.index()].machine.is_some() {
-            return Err(DataError::KernelContract { node: node.node() });
-        }
-        self.inputs.clear();
-        let mut charges = [0; MAX_PREFIX];
-        for (i, charge) in charges.iter_mut().enumerate().take(prefix) {
-            let FoldedValue::Value(value) = self.outcome(node, i)? else {
-                return Err(DataError::KernelContract { node: node.node() });
-            };
-            *charge = plan
-                .value_charge(node.inputs()[i].source.slot, value)
-                .ok_or(DataError::KernelContract { node: node.node() })?;
-            self.inputs.push(value.clone());
-        }
-        let result = node
-            .outputs()
-            .first()
-            .ok_or(DataError::KernelContract { node: node.node() })?;
-        let machine = ZoneMachine::new(
-            plan.zones()[zone.index()].kind(),
-            &self.inputs,
-            &charges[..prefix],
-            &plan.slot_types()[result.index()],
-            self.zone_capacity(0)?,
-        );
-        self.inputs.clear();
-        match machine {
-            Ok(machine) => {
-                self.zone_bytes = self
-                    .zone_bytes
-                    .checked_add(machine.bytes().map_err(|e| machine_error(node.node(), e))?)
-                    .ok_or(DataError::ResourceLimit)?;
-                self.zones[zone.index()].machine = Some(Box::new(machine));
-                self.push(Work::ZoneNext(node.index()))
-            }
-            Err(MachineError::Fault(fault)) => self.publish_fault(
-                plan,
-                node,
-                ConstantFault {
-                    source: plan.zones()[zone.index()].begin(),
-                    fault,
-                },
-            ),
-            Err(error) => Err(machine_error(node.node(), error)),
-        }
-    }
-    fn advance_zone(
-        &mut self,
-        plan: &DataPlan,
-        node: &DataNode,
-        zone: ZoneIx,
-        prefix: usize,
-    ) -> Result<(), DataError> {
-        self.inputs.clear();
-        for i in prefix..node.inputs().len() {
-            let FoldedValue::Value(value) = self.outcome(node, i)? else {
-                return Err(DataError::KernelContract { node: node.node() });
-            };
-            self.inputs.push(value.clone());
-        }
-        let missing = DataError::KernelContract { node: node.node() };
-        let old = self.zones[zone.index()]
-            .machine
-            .as_ref()
-            .ok_or(missing)?
-            .bytes()
-            .map_err(|e| machine_error(node.node(), e))?;
-        let capacity = self.zone_capacity(old)?;
-        // The machine stays in its cell, so zone_bytes remains exact on failure;
-        // advance validates and reserves before it changes any state.
-        let machine = self.zones[zone.index()].machine.as_mut().ok_or(missing)?;
-        let new = machine
-            .advance(
-                &self.inputs,
-                &plan.slot_types()[node.outputs()[0].index()],
-                capacity,
-            )
-            .and_then(|()| machine.bytes())
-            .map_err(|e| machine_error(node.node(), e))?;
-        self.inputs.clear();
-        self.zone_bytes = self
-            .zone_bytes
-            .checked_sub(old)
-            .and_then(|n| n.checked_add(new))
-            .ok_or(DataError::ResourceLimit)?;
-        Ok(())
-    }
-    fn retire_zone(&mut self, zone: ZoneIx, node: NodeId) -> Result<Box<ZoneMachine>, DataError> {
-        let cell = &mut self.zones[zone.index()];
-        cell.live = false;
-        let machine = cell
-            .machine
-            .take()
-            .ok_or(DataError::KernelContract { node })?;
-        self.zone_bytes = self
-            .zone_bytes
-            .checked_sub(machine.bytes().map_err(|e| machine_error(node, e))?)
-            .ok_or(DataError::ResourceLimit)?;
-        Ok(machine)
-    }
-    fn finish_zone(&mut self, node: &DataNode, zone: ZoneIx) -> Result<(), DataError> {
-        let machine = self.retire_zone(zone, node.node())?;
-        let (value, charge) = machine
-            .finish()
-            .map_err(|e| machine_error(node.node(), e))?;
-        // Only the private machine can produce this verified value/charge pair.
-        // Each append/carry was checked before retention; provider outputs still
-        // use commit_outputs' full type/byte validation.
-        let [slot] = node.outputs() else {
-            return Err(DataError::KernelContract { node: node.node() });
-        };
-        let target = self.prepared.dynamic_slots[slot.index()]
-            .ok_or(DataError::KernelContract { node: node.node() })?;
-        let stamp = self.stamp(node)?;
-        self.replace_charge(self.old_charge(node)?, charge)?;
-        self.slots[target] = Some(FoldedValue::Value(value));
-        self.charges[target] = charge;
-        self.memo[node.index().index()] = Some(stamp);
-        Ok(())
-    }
     fn choose(&mut self, plan: &DataPlan, node: &DataNode) -> Result<(), DataError> {
         let value = match self.outcome(node, 0)? {
             FoldedValue::Fault(fault) => {
@@ -1116,10 +977,8 @@ impl Frame {
                 }
                 Work::Gather { node: index, next } => {
                     let node = &plan.nodes()[index.index()];
-                    if next > 0
-                        && let FoldedValue::Fault(fault) = self.outcome(node, next - 1)?
-                    {
-                        self.publish_fault(plan, node, fault.clone())?;
+                    if let Some(fault) = self.pulled_fault(node, next, 0)? {
+                        self.publish_fault(plan, node, fault)?;
                         continue;
                     }
                     if next == node.inputs().len() {
@@ -1132,78 +991,9 @@ impl Frame {
                         self.pull_input(node, next)?;
                     }
                 }
-                Work::ZonePrefix { node: index, next } => {
-                    let node = &plan.nodes()[index.index()];
-                    let (zone, prefix) = zone_operation(node)?;
-                    if next > 0
-                        && let FoldedValue::Fault(fault) = self.outcome(node, next - 1)?
-                    {
-                        self.publish_fault(plan, node, fault.clone())?;
-                        continue;
-                    }
-                    if next == prefix {
-                        self.start_zone(plan, node, zone, prefix)?;
-                    } else {
-                        self.push(Work::ZonePrefix {
-                            node: index,
-                            next: next + 1,
-                        })?;
-                        self.pull_input(node, next)?;
-                    }
-                }
-                Work::ZoneNext(index) => {
-                    self.operation()?;
-                    let node = &plan.nodes()[index.index()];
-                    let (zone, prefix) = zone_operation(node)?;
-                    let machine = self.zones[zone.index()]
-                        .machine
-                        .as_ref()
-                        .ok_or(DataError::KernelContract { node: node.node() })?;
-                    if machine.finished() {
-                        self.finish_zone(node, zone)?;
-                        continue;
-                    }
-                    self.outputs.clear();
-                    machine
-                        .parameters(&mut self.outputs)
-                        .map_err(|e| machine_error(node.node(), e))?;
-                    let cell = &mut self.zones[zone.index()];
-                    cell.generation = cell
-                        .generation
-                        .checked_add(1)
-                        .ok_or(DataError::ResourceLimit)?;
-                    cell.live = true;
-                    let parameters = plan.zones()[zone.index()]
-                        .parameters()
-                        .ok_or(DataError::KernelContract { node: node.node() })?;
-                    self.publish_values(plan, &plan.nodes()[parameters.index()])?;
-                    self.push(Work::ZoneBody {
-                        node: index,
-                        next: prefix,
-                    })?;
-                }
-                Work::ZoneBody { node: index, next } => {
-                    let node = &plan.nodes()[index.index()];
-                    let (zone, prefix) = zone_operation(node)?;
-                    if next > prefix
-                        && let FoldedValue::Fault(fault) = self.outcome(node, next - 1)?
-                    {
-                        let fault = fault.clone();
-                        self.retire_zone(zone, node.node())?;
-                        self.publish_fault(plan, node, fault)?;
-                        continue;
-                    }
-                    if next == node.inputs().len() {
-                        self.advance_zone(plan, node, zone, prefix)?;
-                        self.push(Work::ZoneNext(index))?;
-                    } else {
-                        self.push(Work::ZoneBody {
-                            node: index,
-                            next: next + 1,
-                        })?;
-                        self.pull_input(node, next)?;
-                    }
-                }
+                Work::ZonePrefix { node, next } => self.zone_prefix(plan, node, next)?,
+                Work::ZoneNext(node) => self.zone_next(plan, node)?,
+                Work::ZoneBody { node, next } => self.zone_body(plan, node, next)?,
                 Work::Choose(index) => self.choose(plan, &plan.nodes()[index.index()])?,
                 Work::Copy { node: index, input } => {
                     let node = &plan.nodes()[index.index()];
