@@ -1017,7 +1017,7 @@ fn lazy_preflight_and_unsupported_forms_fail_before_external_resolution() {
     ));
     assert_eq!(resolver.resolves.load(Ordering::Relaxed), 0);
     let unimplemented = json!({"id":id(1),"definition_id":"core/try","definition_version":1,"config_version":1,
-        "config":{},"type_pins":{"T":"core/bytes@1"},"inputs":{"value":{"type":"core/bytes@1","value":""}}});
+        "config":{},"type_pins":{"T":"core/secret-ref@1"},"inputs":{"value":{"type":"core/secret-ref@1","value":"credential://test"}}});
     let doc = graph(&package, vec![unimplemented], vec![], vec![]);
     let analysis = analyze(&doc, &snapshot);
     assert!(

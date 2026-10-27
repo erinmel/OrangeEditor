@@ -469,7 +469,16 @@ impl DataActivation {
         };
         if self.state.memo[node.index().index()] == self.state.epoch
             || match &value {
-                FoldedValue::Value(value) => self.plan.value_charge(*slot, value),
+                FoldedValue::Value(value) => Some(
+                    self.plan
+                        .checked_value_charge(*slot, value, self.state.limits.max_retained_bytes)
+                        .map_err(|error| match error {
+                            orange_compiler::ValueCheckError::InvalidType => invalid,
+                            orange_compiler::ValueCheckError::ResourceLimit => {
+                                DataError::ResourceLimit
+                            }
+                        })?,
+                ),
                 FoldedValue::Fault(fault) => self.plan.fault_charge(fault),
             }
             .is_none()
@@ -686,8 +695,17 @@ impl Frame {
         let mut new = 0usize;
         for (slot, value) in node.outputs().iter().zip(&self.outputs) {
             let charge = plan
-                .value_charge(*slot, value)
-                .ok_or(DataError::KernelContract { node: node.node() })?;
+                .checked_value_charge(
+                    *slot,
+                    value,
+                    self.limits.max_retained_bytes.saturating_sub(new),
+                )
+                .map_err(|error| match error {
+                    orange_compiler::ValueCheckError::InvalidType => {
+                        DataError::KernelContract { node: node.node() }
+                    }
+                    orange_compiler::ValueCheckError::ResourceLimit => DataError::ResourceLimit,
+                })?;
             new = new.checked_add(charge).ok_or(DataError::ResourceLimit)?;
         }
         self.replace_charge(self.old_charge(plan, node)?, new)?;

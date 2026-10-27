@@ -121,6 +121,7 @@ impl Run {
             }
         };
         let (new, write) = match compute(
+            metadata.ty(),
             operation,
             &old,
             &inputs,
@@ -228,6 +229,13 @@ impl Run {
         if (!local && bytes > self.options.limits.max_state_bytes)
             || locals
                 .checked_add(retained)
+                .and_then(|n| {
+                    n.checked_add(
+                        shared
+                            .owned_bytes
+                            .load(std::sync::atomic::Ordering::Relaxed),
+                    )
+                })
                 .is_none_or(|n| n > self.options.limits.max_state_bytes)
         {
             return Err(RunError::ResourceLimit);
@@ -274,6 +282,7 @@ fn internal() -> KernelFault {
     }
 }
 fn compute(
+    ty: &orange_compiler::PlanType,
     operation: UpdateOperation,
     old: &Value,
     inputs: &UpdateOperands,
@@ -282,7 +291,7 @@ fn compute(
     if matches!(operation, UpdateOperation::CompareAndSet) {
         let expected = &inputs.first;
         let value = inputs.second.as_ref().ok_or_else(internal)?;
-        let exchanged = old == expected;
+        let exchanged = ty.equal_values(old, expected).ok_or_else(internal)?;
         return Ok((
             if exchanged {
                 value.clone()
@@ -329,7 +338,7 @@ fn compute(
         })?,
         UpdateOperation::Min | UpdateOperation::Max => {
             macro_rules! compare {($($v:ident),*)=>{match(old,value){$((Value::$v(a),Value::$v(b))=>a.cmp(b),)*_=>return Err(internal())}};}
-            let order = compare!(Bool, I32, I64, U32, U64, Str, Duration);
+            let order = compare!(Bool, I32, I64, U32, U64, Str, Duration, Timestamp);
             if (matches!(operation, UpdateOperation::Min) && order == Ordering::Greater)
                 || (matches!(operation, UpdateOperation::Max) && order == Ordering::Less)
             {
@@ -343,30 +352,60 @@ fn compute(
             bitwise!(Bool, I32, I64, U32, U64)
         }
         UpdateOperation::Append => {
-            let (Value::Str(a), Value::Str(b)) = (old, value) else {
-                return Err(internal());
+            let failure = || KernelFault {
+                code: "core/LimitExceeded",
+                message_key: "core/update-limit-exceeded",
+                message: "The updated value exceeds its state limit.",
             };
-            let Some(bytes) = a
-                .len()
-                .checked_add(b.len())
-                .filter(|n| n.checked_add(16).is_some_and(|n| n <= limit))
-            else {
-                return Err(KernelFault {
-                    code: "core/LimitExceeded",
-                    message_key: "core/update-limit-exceeded",
-                    message: "The updated value exceeds its state limit.",
-                });
-            };
-            if b.is_empty() {
-                return Ok((old.clone(), true));
+            let a = ty.checked_charge(old, limit).map_err(|_| failure())?;
+            let b = ty.checked_charge(value, limit).map_err(|_| failure())?;
+            let bytes = a
+                .checked_add(b)
+                .and_then(|n| n.checked_sub(16))
+                .filter(|n| *n <= limit)
+                .ok_or_else(failure)?;
+            match (old, value) {
+                (Value::Str(a), Value::Str(b)) => {
+                    if b.is_empty() {
+                        return Ok((old.clone(), true));
+                    }
+                    if a.is_empty() {
+                        return Ok((value.clone(), true));
+                    }
+                    let mut result = String::new();
+                    result
+                        .try_reserve_exact(bytes - 16)
+                        .map_err(|_| failure())?;
+                    result.push_str(a);
+                    result.push_str(b);
+                    Value::Str(Arc::new(result))
+                }
+                (Value::Bytes(a), Value::Bytes(b)) => {
+                    if b.is_empty() {
+                        return Ok((old.clone(), true));
+                    }
+                    if a.is_empty() {
+                        return Ok((value.clone(), true));
+                    }
+                    let mut result = Vec::new();
+                    result
+                        .try_reserve_exact(bytes - 16)
+                        .map_err(|_| failure())?;
+                    result.extend_from_slice(a);
+                    result.extend_from_slice(b);
+                    Value::Bytes(Arc::new(result))
+                }
+                (Value::List(a), Value::List(b)) => {
+                    if b.is_empty() {
+                        return Ok((old.clone(), true));
+                    }
+                    if a.is_empty() {
+                        return Ok((value.clone(), true));
+                    }
+                    Value::List(Arc::new(a.concat(b).ok_or_else(failure)?))
+                }
+                _ => return Err(internal()),
             }
-            if a.is_empty() {
-                return Ok((value.clone(), true));
-            }
-            let mut result = String::with_capacity(bytes);
-            result.push_str(a);
-            result.push_str(b);
-            Value::Str(Arc::new(result))
         }
         UpdateOperation::CompareAndSet => unreachable!("handled before single operand"),
     };

@@ -111,6 +111,32 @@ impl ListRepr {
         })
     }
 
+    /// Concatenate raw immutable storage without asserting a language element type.
+    /// Checked callers admit type and byte limits first; None reports capacity failure.
+    pub fn concat(&self, other: &Self) -> Option<Self> {
+        let len = self.len().checked_add(other.len())?;
+        macro_rules! packed {
+            ($($variant:ident),*) => {
+                match (self,other) {
+                    $((Self::$variant(a),Self::$variant(b))=>{
+                        let mut values=Vec::new();
+                        values.try_reserve_exact(len).ok()?;
+                        values.extend_from_slice(a);
+                        values.extend_from_slice(b);
+                        Self::$variant(values.into_boxed_slice())
+                    },)*
+                    _=>{
+                        let mut values=Vec::new();
+                        values.try_reserve_exact(len).ok()?;
+                        values.extend(self.iter());
+                        values.extend(other.iter());
+                        Self::Values(values.into_boxed_slice())
+                    }
+                }
+            };
+        }
+        Some(packed!(Bool, I32, I64, U32, U64, F32, F64, Str))
+    }
     pub fn iter(&self) -> impl Iterator<Item = Value> + '_ {
         (0..self.len()).map(|index| self.get(index).expect("index is in range"))
     }

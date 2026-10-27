@@ -103,6 +103,14 @@ pub(crate) fn value_bytes(value: &Value) -> usize {
     match value {
         Value::Json(text) => text.as_str().len().saturating_add(16),
         Value::Str(text) => text.len().saturating_add(16),
+        Value::Bytes(bytes) => bytes.len().saturating_add(16),
+        Value::List(items) => items.iter().fold(16usize, |sum, value| {
+            sum.saturating_add(value_bytes(&value))
+        }),
+        Value::Map(map) => map.entries.iter().fold(16usize, |sum, (k, v)| {
+            sum.saturating_add(value_bytes(k))
+                .saturating_add(value_bytes(v))
+        }),
         Value::Some(inner) | Value::Ok(inner) => value_bytes(inner).saturating_add(16),
         Value::Err(error) => error.code.len().saturating_add(32),
         _ => 16,
@@ -141,9 +149,7 @@ pub(crate) fn decode(
     if PlanType::parse(literal.ty.as_str()).as_ref() != Some(ty) {
         return Ok(None);
     }
-    let Some(cost) = literal_bytes(&literal.payload, ty) else {
-        return Ok(None);
-    };
+    let cost = literal_bytes(&literal.payload, ty, remaining).ok_or(CompileError::ResourceLimit)?;
     if cost > remaining {
         return Err(CompileError::ResourceLimit);
     }
@@ -151,33 +157,60 @@ pub(crate) fn decode(
         .ok()
         .filter(|v| ty.accepts(v)))
 }
-fn literal_bytes(payload: &LiteralPayload, ty: &PlanType) -> Option<usize> {
-    // Walk only the supported option envelope and scalar leaf before decoding.
-    // No payload serialization, recursive JSON traversal or unbounded work stack.
-    let mut cost = 16;
-    let mut expected = ty;
-    let mut payload = match payload {
-        LiteralPayload::Bits(bits) => return Some(bits.len().saturating_add(cost)),
-        LiteralPayload::Value(value) => value,
-    };
-    while let PlanType::Option(inner) = expected {
-        let object = payload.as_object().filter(|o| o.len() == 1)?;
-        if object.get("none") == Some(&serde_json::Value::Bool(true)) {
-            return Some(cost);
+fn literal_bytes(payload: &LiteralPayload, ty: &PlanType, limit: usize) -> Option<usize> {
+    fn visit(value: &serde_json::Value, ty: &PlanType, remaining: &mut usize) -> Option<()> {
+        *remaining = remaining.checked_sub(16)?;
+        match ty {
+            PlanType::Option(inner) => {
+                let object = value.as_object().filter(|o| o.len() == 1)?;
+                if object.get("none") == Some(&serde_json::Value::Bool(true)) {
+                    return Some(());
+                }
+                let some = object.get("some")?;
+                if !matches!(inner.as_ref(), PlanType::Option(_)) {
+                    *remaining = remaining.checked_add(16)?;
+                }
+                visit(some, inner, remaining)
+            }
+            PlanType::List(inner) => {
+                let items = value.as_array()?;
+                if items.len().checked_mul(16)? > *remaining {
+                    return None;
+                }
+                for item in items {
+                    visit(item, inner, remaining)?;
+                }
+                Some(())
+            }
+            PlanType::Map(key, inner) => {
+                let items = value.as_array()?;
+                if items.len().checked_mul(32)? > *remaining {
+                    return None;
+                }
+                for item in items {
+                    let pair = item.as_array().filter(|p| p.len() == 2)?;
+                    visit(&pair[0], key, remaining)?;
+                    visit(&pair[1], inner, remaining)?;
+                }
+                Some(())
+            }
+            _ => {
+                let bytes = match value {
+                    serde_json::Value::String(s) => s.len(),
+                    serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 16,
+                    _ => return None,
+                };
+                *remaining = remaining.checked_sub(bytes)?;
+                Some(())
+            }
         }
-        let some = object.get("some")?;
-        if matches!(inner.as_ref(), PlanType::Option(_)) {
-            cost += 16;
-        }
-        payload = some;
-        expected = inner;
     }
-    let size = match payload {
-        serde_json::Value::String(text) => text.len(),
-        serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 16,
-        _ => return None,
+    let mut remaining = limit;
+    match payload {
+        LiteralPayload::Bits(bits) => return bits.len().checked_add(16),
+        LiteralPayload::Value(value) => visit(value, ty, &mut remaining)?,
     };
-    Some(size.saturating_add(cost))
+    Some(limit - remaining)
 }
 pub(crate) fn valid_identifier(text: &str) -> bool {
     let Some((namespace, name)) = text.split_once('/') else {
@@ -789,10 +822,18 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                 let ty = port_type(node_id, port)?;
                 let value = if let Some(fault) = &fault {
                     FoldedValue::Fault(fault.clone())
-                } else if ty.accepts(&value) {
-                    FoldedValue::Value(value)
                 } else {
-                    return Err(CompileError::KernelContract { node: node_id });
+                    ty.checked_charge(
+                        &value,
+                        options.limits.max_constant_bytes.saturating_sub(*bytes),
+                    )
+                    .map_err(|error| match error {
+                        ValueCheckError::InvalidType => {
+                            CompileError::KernelContract { node: node_id }
+                        }
+                        ValueCheckError::ResourceLimit => CompileError::ResourceLimit,
+                    })?;
+                    FoldedValue::Value(value)
                 };
                 let port = key(port);
                 let slot = push_slot(

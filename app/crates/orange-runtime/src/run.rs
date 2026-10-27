@@ -3,7 +3,8 @@ use crate::data::{CleanupScope, HostPoll, PreparedData};
 use crate::{DataActivation, DataError, DataOptions};
 use orange_compiler::{
     ConstantFault, ControlIx, ControlOperation, ControlPlan, ExecInput, ExecTarget, FoldedValue,
-    ForkJoin, HostSource, KernelFault, SwitchKey, UpdateDemand, UpdateOperation, UpdateProjection,
+    ForkJoin, HostSource, IterationProjection, KernelFault, SwitchKey, UpdateDemand,
+    UpdateOperation, UpdateProjection,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{FaultPolicy, VarScope};
@@ -16,7 +17,9 @@ use std::sync::{
 };
 use thiserror::Error;
 
+mod iteration;
 mod ownership;
+use iteration::{ForEachCursor, IterationFrame};
 mod ready;
 mod update;
 use ownership::{IdSet, Region, RegionKind};
@@ -201,7 +204,10 @@ impl StateLayout {
             .host_sources()
             .iter()
             .map(|source| {
-                if matches!(source, HostSource::Variable(_) | HostSource::State(_)) {
+                if matches!(
+                    source,
+                    HostSource::Variable(_) | HostSource::State(_) | HostSource::Iteration(_, _)
+                ) {
                     None
                 } else {
                     let index = output_count;
@@ -245,6 +251,7 @@ impl PullState {
 
 struct Strand {
     cleanup_deadline: Option<u64>,
+    iteration_context: Option<Arc<IterationFrame>>,
     fork: Option<ControlIx>,
     id: u64,
     region: u64,
@@ -264,6 +271,7 @@ struct Strand {
 }
 struct ActivationState {
     retained_bytes: usize,
+    owned_bytes: Arc<std::sync::atomic::AtomicUsize>,
     cleanup_scope: Option<CleanupScope>,
     cleanup_remaining: usize,
     pull_owner: Option<u64>,
@@ -279,6 +287,7 @@ struct Timer {
     activation: Strand,
 }
 enum Cursor {
+    ForEach(Box<ForEachCursor>),
     While {
         owner: ControlIx,
         iterations: u64,
@@ -446,6 +455,7 @@ impl Run {
         {
             activations.push(Some(Box::new(ActivationState {
                 retained_bytes: 0,
+                owned_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 cleanup_scope: None,
                 cleanup_remaining: options.max_cleanup_operations,
                 pull_owner: None,
@@ -467,6 +477,7 @@ impl Run {
             regions.insert(
                 sequence as u64,
                 Region {
+                    retired_cursor: None,
                     parent: None,
                     activation: sequence as u64,
                     depth: 0,
@@ -478,6 +489,7 @@ impl Run {
             );
             let strand = Strand {
                 cleanup_deadline: None,
+                iteration_context: None,
                 fork: None,
                 id: sequence as u64,
                 region: sequence as u64,
@@ -1004,6 +1016,43 @@ impl Run {
             return Ok(());
         }
         let (next, outcome, fault) = match node.operation() {
+            ControlOperation::ForEach {
+                items,
+                body,
+                completed,
+            } => {
+                let Some(result) = self.consume(plan, activation, shared, *items, budget)? else {
+                    return Ok(());
+                };
+                match result {
+                    FoldedValue::Fault(fault) => {
+                        (node.failed(), ControlOutcome::Failed, Some(fault))
+                    }
+                    FoldedValue::Value(value) => {
+                        let len = iteration::collection_len(&value)
+                            .ok_or(DataError::KernelContract { node: node.node() })?;
+                        if len == 0 {
+                            (*completed, ControlOutcome::Completed, None)
+                        } else {
+                            if activation.stack.len() == self.options.limits.max_region_depth {
+                                return Err(RunError::ResourceLimit);
+                            }
+                            let cursor = self.begin_iteration(
+                                plan,
+                                shared,
+                                ix,
+                                *items,
+                                value,
+                                activation.iteration_context.clone(),
+                            )?;
+                            activation.stack.push(Cursor::ForEach(Box::new(cursor)));
+                            activation.enter_body = Some(Some(ix));
+                            (*body, ControlOutcome::Body, None)
+                        }
+                    }
+                }
+            }
+
             ControlOperation::Update { .. } => unreachable!("handled by typed state action"),
             ControlOperation::Gate { state } => {
                 let Some(Value::Bool(open)) = self.state_value(plan, shared, *state) else {
@@ -1378,7 +1427,9 @@ impl Run {
                             .and_then(|b| b.checked_add(new))
                             .filter(|b| {
                                 b.checked_add(if var.scope() == VarScope::Local {
-                                    shared.retained_bytes
+                                    shared
+                                        .retained_bytes
+                                        .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
                                 } else {
                                     0
                                 })
@@ -1448,6 +1499,7 @@ impl Run {
             return Ok(());
         };
         match cursor {
+            Cursor::ForEach(cursor) => self.resume_iteration(plan, activation, shared, cursor)?,
             Cursor::While { owner, iterations } => {
                 activation.pc = Some(owner.into());
                 activation.reenter = Some((owner, iterations));
@@ -1538,6 +1590,16 @@ impl Run {
             for &i in inputs {
                 let source = &plan.host_sources()[i];
                 let value = match source {
+                    HostSource::Iteration(owner, projection) => {
+                        let frame =
+                            IterationFrame::find(activation.iteration_context.as_deref(), *owner)
+                                .ok_or(DataError::MissingInput {
+                                node: plan.nodes()[owner.index()].node(),
+                            })?;
+                        Some(FoldedValue::Value(
+                            frame.value(*projection).ok_or(RunError::InvalidState)?,
+                        ))
+                    }
                     HostSource::State(index) => {
                         Some(match self.state_value(plan, shared, *index) {
                             Some(value) => FoldedValue::Value(value.clone()),
@@ -1663,7 +1725,9 @@ impl Run {
             .and_then(|b| b.checked_add(new))
             .filter(|b| {
                 b.checked_add(if metadata.scope() == VarScope::Local {
-                    shared.retained_bytes
+                    shared
+                        .retained_bytes
+                        .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
                 } else {
                     0
                 })
@@ -1716,6 +1780,7 @@ impl Run {
             .and_then(|n| n.checked_add(new))
             .filter(|n| {
                 n.checked_add(shared.local_bytes)
+                    .and_then(|n| n.checked_add(shared.owned_bytes.load(Ordering::Relaxed)))
                     .is_some_and(|total| total <= limit)
             })
             .ok_or(RunError::ResourceLimit)?;
