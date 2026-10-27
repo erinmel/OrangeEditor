@@ -1765,3 +1765,12 @@ Review fixes in this slice:
 A new regression folds a 1,000-item list (about 16,000 charged bytes) under a 24,000-byte limit; restoring the double charge made it fail, and the restored source passes. The existing Map quota test exceeded its limit only through that double charge, so its limit is now 3,000 bytes and the test still rejects mid-build, then succeeds with a smaller list in the next epoch.
 
 Still open for this cohort: source-reference equivalence, release qualification, and exact-head remote CI. Last-iteration body values stay charged until they are overwritten. No performance/NFR, complete-core or API-freeze claim follows. OneDrive hard-link fallback warnings remain environmental.
+
+Follow-up review (same day, same toolchain and lockfile):
+- The zone work steps (prefix, next, body), zone cells and machine now live in the private `data::zone` child module. `data.rs` keeps the generic work loop and shrinks from 1,275 to 1,052 lines.
+- Zone start no longer computes the source list's value charge, an O(n) result that was being discarded. The machine type-checks and charges only the initial carry against the end type.
+- Discarded Filter items are no longer type-checked a second time; their producer already checked them when it published them.
+- One `pulled_fault` helper replaces the operand fault check that was copied into Gather and both zone walks.
+- A probe test for a nested zone whose prefix does not depend on the outer iteration confirmed that the model rejects the shape as `E-ZONE-STRUCTURE`. Deriving `parent` from the begin's owner is therefore sound, and the probe was removed.
+
+Results: fmt check, clippy `-D warnings`, rustdoc `-D warnings` and `git diff --check` all pass. `cargo test --workspace --locked` passes with 927 passed, 0 failed, 14 existing ignored, in 88 result groups.
