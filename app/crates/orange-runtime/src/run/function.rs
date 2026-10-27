@@ -107,18 +107,21 @@ impl Run {
         }
         Err(RunError::InvalidState)
     }
+    /// One frame lookup, then the local's slot in its scope's sorted table.
     fn frame_slot(
         &self,
         plan: &ControlPlan,
         frame: u64,
         variable: usize,
-    ) -> Result<usize, RunError> {
-        let scope = self.frames.get(&frame).ok_or(RunError::InvalidState)?.scope;
-        plan.function(scope)
+    ) -> Result<(&FunctionFrame, usize), RunError> {
+        let frame = self.frames.get(&frame).ok_or(RunError::InvalidState)?;
+        let slot = plan
+            .function(frame.scope)
             .ok_or(RunError::InvalidState)?
             .locals()
             .binary_search(&variable)
-            .map_err(|_| RunError::InvalidState)
+            .map_err(|_| RunError::InvalidState)?;
+        Ok((frame, slot))
     }
     pub(super) fn frame_value<'a>(
         &'a self,
@@ -126,8 +129,8 @@ impl Run {
         frame: u64,
         variable: usize,
     ) -> Result<Option<&'a Value>, RunError> {
-        let slot = self.frame_slot(plan, frame, variable)?;
-        Ok(self.frames[&frame].locals[slot].value.as_ref())
+        let (frame, slot) = self.frame_slot(plan, frame, variable)?;
+        Ok(frame.locals[slot].value.as_ref())
     }
     pub(super) fn prepare_frame_write(
         &self,
@@ -142,8 +145,7 @@ impl Run {
             retained,
             write,
         } = spec;
-        let slot = self.frame_slot(plan, frame, variable)?;
-        let frame = &self.frames[&frame];
+        let (frame, slot) = self.frame_slot(plan, frame, variable)?;
         let metadata = &plan.variables()[variable];
         let old = frame.locals[slot]
             .value
