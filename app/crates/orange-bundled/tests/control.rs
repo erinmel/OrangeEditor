@@ -1647,3 +1647,6 @@ mod control_dispatch;
 
 #[path = "support/state_controls.rs"]
 mod state_controls;
+
+#[path = "support/variable_updates.rs"]
+mod variable_updates;
