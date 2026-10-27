@@ -9,7 +9,7 @@ use crate::{
 };
 use orange_compiler::{
     ConstantFault, DataNode, DataOperation, DataPlan, DataStability, EntropySource,
-    EvaluatedExport, FoldedValue, KernelFault, NodeIx,
+    EvaluatedExport, FoldedValue, KernelFault, NodeIx, SlotIx,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::id::NodeId;
@@ -98,6 +98,17 @@ impl DataError {
             Self::Entropy(error) => error.message_key(),
         }
     }
+}
+/// The single runtime entry to a slot type/byte check; tests count its calls.
+fn value_charge(
+    plan: &DataPlan,
+    slot: SlotIx,
+    value: &Value,
+    limit: usize,
+) -> Result<usize, ValueCheckError> {
+    #[cfg(test)]
+    tests::VALUE_CHECKS.with(|count| count.set(count.get() + 1));
+    plan.checked_value_charge(slot, value, limit)
 }
 fn checkpoint(cancel: Option<&CancelToken>) -> Result<(), DataError> {
     if cancel.is_some_and(CancelToken::is_cancelled) {
@@ -474,23 +485,28 @@ impl DataActivation {
         let [slot] = node.outputs() else {
             return Err(DataError::KernelContract { node: node.node() });
         };
-        if self.state.memo[node.index().index()] == self.state.epoch
-            || match &value {
-                FoldedValue::Value(value) => Some(
-                    self.plan
-                        .checked_value_charge(*slot, value, self.state.limits.max_retained_bytes)
-                        .map_err(value_check(invalid))?,
-                ),
-                FoldedValue::Fault(fault) => self.plan.fault_charge(fault),
-            }
-            .is_none()
-        {
+        if self.state.memo[node.index().index()] == self.state.epoch {
             return Err(invalid);
         }
-        match value {
-            FoldedValue::Value(value) => self.state.publish_value(&self.plan, node, value),
-            FoldedValue::Fault(fault) => self.state.publish_fault(&self.plan, node, fault),
+        let charge = match &value {
+            FoldedValue::Value(value) => Some(
+                value_charge(
+                    &self.plan,
+                    *slot,
+                    value,
+                    self.state.limits.max_retained_bytes,
+                )
+                .map_err(value_check(invalid))?,
+            ),
+            FoldedValue::Fault(fault) => self.plan.fault_charge(fault),
         }
+        .ok_or(invalid)?;
+        // The immutable outcome was validated and charged above; publish it as is.
+        let outcome = match value {
+            FoldedValue::Value(value) => Ok(value),
+            FoldedValue::Fault(fault) => Err(fault),
+        };
+        self.state.publish_checked(node, outcome, charge)
     }
     /// Pull one ordered export inside the current explicit epoch. Other pulls in
     /// the same epoch share producers. Borrowed results prevent concurrent mutation.
@@ -769,13 +785,13 @@ impl Frame {
         let mut new = 0usize;
         self.output_charges.clear();
         for (slot, value) in node.outputs().iter().zip(&self.outputs) {
-            let charge = plan
-                .checked_value_charge(
-                    *slot,
-                    value,
-                    self.limits.max_retained_bytes.saturating_sub(new),
-                )
-                .map_err(value_check(DataError::KernelContract { node: node.node() }))?;
+            let charge = value_charge(
+                plan,
+                *slot,
+                value,
+                self.limits.max_retained_bytes.saturating_sub(new),
+            )
+            .map_err(value_check(DataError::KernelContract { node: node.node() }))?;
             new = new.checked_add(charge).ok_or(DataError::ResourceLimit)?;
             self.output_charges.push(charge);
         }
@@ -1075,6 +1091,11 @@ mod tests {
     };
     use orange_model::document::{NodeInstance, SignatureSnapshot};
     use orange_model::validation::HostOrigin;
+    use std::cell::Cell;
+
+    thread_local! {
+        pub(super) static VALUE_CHECKS: Cell<usize> = const { Cell::new(0) };
+    }
 
     /// Core intrinsics only; no provider kernel is ever resolved.
     struct NoKernels;
@@ -1149,7 +1170,7 @@ mod tests {
     }
 
     #[test]
-    fn fault_provenance_survives_value_fault_value_republish() {
+    fn host_input_is_checked_once_and_fault_provenance_survives_republish() {
         let mut frame = input_activation();
         let fault = ConstantFault {
             source: NODE.parse().unwrap(),
@@ -1157,17 +1178,23 @@ mod tests {
         };
         for epoch in 0..4 {
             frame.begin_epoch().unwrap();
+            VALUE_CHECKS.with(|count| count.set(0));
             if epoch % 2 == 0 {
                 frame.set_input(0, Value::U64(epoch)).unwrap();
+                assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
                 let export = frame.export(0).unwrap().unwrap();
                 assert_eq!(export.outcome, Ok(&Value::U64(epoch)));
             } else {
                 frame
                     .set_input_outcome(0, FoldedValue::Fault(fault.clone()))
                     .unwrap();
+                assert_eq!(VALUE_CHECKS.with(Cell::get), 0);
                 let export = frame.export(0).unwrap().unwrap();
                 assert_eq!(export.outcome, Err(&fault));
             }
+            // The reread hits the memoized register without another check.
+            frame.export(0).unwrap();
+            assert_eq!(VALUE_CHECKS.with(Cell::get), usize::from(epoch % 2 == 0));
         }
     }
 }
