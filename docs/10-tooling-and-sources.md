@@ -1804,3 +1804,17 @@ Deliberately not changed:
 - **Converter error codes:** keep their own laxer rule.
 
 Package record, enum and handle shapes; the domain seam; port templates; and redirects remain open. No NFR, API-freeze or core-completion claim follows.
+
+Simplification follow-up (same slice, toolchain and lockfile). Targets were picked by measurement: `clippy::too_many_lines` and `clippy::cognitive_complexity` reports and redundant-clone lints, not taste. All changes are behavior-preserving:
+- **Control lowering:** `compile_control` was one 908-line function with cognitive complexity 55. It is now a 221-line orchestrator over named phases: admission, variables, function layouts, state cells, exec edges, per-node lowering and host sources. Two copied dependency-union blocks became one `union_inputs`. Two identical activation-order sorts now share one key. Repeated control-index lookups use the known owner.
+- **Constant charges:** these now come from the constant's `ValueShape`. The untyped `value_bytes` duplicate rule is gone, and one `FAULT_CHARGE` replaces two literal `64`s. Charges are byte-identical for every checked value.
+- **Function summaries:** one fallible per-node step (`Result` with `?`) replaces about 15 copies of "emit, mark incomplete, continue", for 99 fewer lines. The diagnostics are unchanged, including one report per unknown variable in a leaf's effects.
+- **Region checks:**
+  - The two ways of testing whether an edge carries a region are now one predicate.
+  - Per-node `BTreeSet`/`BTreeMap` clones used only for subset tests are gone.
+  - Ancestor walks use one `lineage` iterator.
+  - Diagnostics go through one reporter.
+  - The file is 38 lines shorter.
+- **Clones:** six redundant clones and three implicit `String` clones were removed.
+
+Results: `cargo test --workspace --locked` passes with 928 passed, 0 failed, 14 existing ignored, in 88 result groups. Clippy `-D warnings` and fmt pass. Cognitive-complexity warnings fell from 10 to 8 across the libraries. The remaining long functions are compiler data/pure lowering, runtime run/pull steps and model transactions. They are left for later measured passes.
