@@ -7,7 +7,7 @@
 
 use super::{DataError, Frame, Work};
 use orange_compiler::{
-    ConstantFault, DataNode, DataOperation, DataPlan, FoldedValue, KernelFault, NodeIx, ZoneIx,
+    ConstantFault, DataNode, DataOperation, DataPlan, KernelFault, NodeIx, ZoneIx,
 };
 use orange_model::Value;
 use orange_model::id::NodeId;
@@ -332,7 +332,7 @@ impl Frame {
     ) -> Result<(), DataError> {
         self.inputs.clear();
         for i in inputs {
-            let FoldedValue::Value(value) = self.outcome(node, i)? else {
+            let Ok(value) = self.outcome(node, i)? else {
                 return Err(DataError::KernelContract { node: node.node() });
             };
             self.inputs.push(value.clone());
@@ -437,16 +437,6 @@ impl Frame {
         // Only the private machine can produce this verified value/charge pair.
         // Each append/carry was checked before retention; provider outputs still
         // use commit_outputs' full type/byte validation.
-        let [slot] = node.outputs() else {
-            return Err(DataError::KernelContract { node: node.node() });
-        };
-        let target = self.prepared.dynamic_slots[slot.index()]
-            .ok_or(DataError::KernelContract { node: node.node() })?;
-        let stamp = self.stamp(node)?;
-        self.replace_charge(self.old_charge(node)?, charge)?;
-        self.slots[target] = Some(FoldedValue::Value(value));
-        self.charges[target] = charge;
-        self.memo[node.index().index()] = Some(stamp);
-        Ok(())
+        self.publish_checked(node, Ok(value), charge)
     }
 }

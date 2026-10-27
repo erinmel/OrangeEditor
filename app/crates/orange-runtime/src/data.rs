@@ -1,4 +1,6 @@
+mod registers;
 mod zone;
+use registers::{Outcome, Registers};
 use zone::ZoneCell;
 
 use crate::{
@@ -345,17 +347,15 @@ impl DataActivation {
             resources.entropy_nodes,
         );
         // Immutable constants remain in the shared plan. Only dynamic slots
-        // need activation-owned cells, avoiding per-entry constant copies/drop.
-        let slots = vec![None; prepared.dynamic_count];
+        // need activation-owned registers, avoiding per-entry constant copies/drop.
         let state = Frame {
             zones: (0..plan.zones().len())
                 .map(|_| ZoneCell::default())
                 .collect(),
             zone_bytes: 0,
             scopes,
+            registers: Registers::new(prepared.dynamic_count),
             prepared,
-            charges: vec![0; slots.len()],
-            slots,
             retained,
             memo: vec![None; resources.nodes],
             epoch: None,
@@ -554,15 +554,12 @@ impl DataActivation {
         self.checkpoint()?;
         let export = &self.plan.exports()[index];
         let slot = export.slot.index();
-        let outcome = match self
+        let outcome = self
             .state
             .slot(export.slot)
             .ok_or(DataError::KernelContract {
                 node: self.plan.nodes()[node.index()].node(),
-            })? {
-            FoldedValue::Value(value) => Ok(value),
-            FoldedValue::Fault(fault) => Err(fault),
-        };
+            })?;
         Ok(HostPoll::Ready(Some(EvaluatedExport {
             id: &export.id,
             ty: &self.plan.slot_types()[slot],
@@ -586,8 +583,8 @@ struct Frame {
     zone_bytes: usize,
     scopes: ActivationEntropy,
     prepared: Arc<PreparedData>,
-    slots: Vec<Option<FoldedValue>>,
-    charges: Vec<usize>,
+    /// Outcomes and charges of dynamic slots, indexed by `dynamic_slots`.
+    registers: Registers,
     retained: usize,
     memo: Vec<Option<u64>>,
     epoch: Option<u64>,
@@ -661,13 +658,15 @@ impl Frame {
         }
         Ok(())
     }
-    fn slot(&self, slot: orange_compiler::SlotIx) -> Option<&FoldedValue> {
+    fn slot(&self, slot: orange_compiler::SlotIx) -> Option<Outcome<'_>> {
         match self.prepared.dynamic_slots[slot.index()] {
-            Some(index) => self.slots[index].as_ref(),
-            None => self.prepared.plan.initial_values()[slot.index()].as_ref(),
+            Some(index) => self.registers.get(index),
+            None => self.prepared.plan.initial_values()[slot.index()]
+                .as_ref()
+                .map(registers::borrow),
         }
     }
-    fn outcome(&self, node: &DataNode, input: usize) -> Result<&FoldedValue, DataError> {
+    fn outcome(&self, node: &DataNode, input: usize) -> Result<Outcome<'_>, DataError> {
         node.inputs()
             .get(input)
             .and_then(|input| self.slot(input.source.slot))
@@ -684,10 +683,7 @@ impl Frame {
         if next <= first {
             return Ok(None);
         }
-        Ok(match self.outcome(node, next - 1)? {
-            FoldedValue::Fault(fault) => Some(fault.clone()),
-            FoldedValue::Value(_) => None,
-        })
+        Ok(self.outcome(node, next - 1)?.err().cloned())
     }
     fn old_charge(&self, node: &DataNode) -> Result<usize, DataError> {
         let mut bytes = 0usize;
@@ -695,7 +691,7 @@ impl Frame {
             let index = self.prepared.dynamic_slots[slot.index()]
                 .ok_or(DataError::KernelContract { node: node.node() })?;
             bytes = bytes
-                .checked_add(self.charges[index])
+                .checked_add(self.registers.charge(index))
                 .ok_or(DataError::ResourceLimit)?;
         }
         Ok(bytes)
@@ -732,8 +728,29 @@ impl Frame {
         for slot in node.outputs() {
             let index = self.prepared.dynamic_slots[slot.index()]
                 .expect("publication checked dynamic targets");
-            self.slots[index] = Some(FoldedValue::Fault(fault.clone()));
-            self.charges[index] = charge;
+            self.registers.set_fault(index, fault.clone(), charge);
+        }
+        self.memo[node.index().index()] = Some(stamp);
+        Ok(())
+    }
+    /// Publish one single-output outcome whose type and charge were already checked
+    /// by its trusted producer (a host input or a private zone machine).
+    fn publish_checked(
+        &mut self,
+        node: &DataNode,
+        outcome: Result<Value, ConstantFault>,
+        charge: usize,
+    ) -> Result<(), DataError> {
+        let contract = DataError::KernelContract { node: node.node() };
+        let [slot] = node.outputs() else {
+            return Err(contract);
+        };
+        let index = self.prepared.dynamic_slots[slot.index()].ok_or(contract)?;
+        let stamp = self.stamp(node)?;
+        self.replace_charge(self.registers.charge(index), charge)?;
+        match outcome {
+            Ok(value) => self.registers.set_value(index, value, charge),
+            Err(fault) => self.registers.set_fault(index, fault, charge),
         }
         self.memo[node.index().index()] = Some(stamp);
         Ok(())
@@ -771,8 +788,7 @@ impl Frame {
         {
             let index = self.prepared.dynamic_slots[slot.index()]
                 .expect("publication checked dynamic targets");
-            self.slots[index] = Some(FoldedValue::Value(value));
-            self.charges[index] = charge;
+            self.registers.set_value(index, value, charge);
         }
         self.memo[node.index().index()] = Some(stamp);
         Ok(())
@@ -798,10 +814,8 @@ impl Frame {
             // Only returned values need copying; unused arguments stay borrowed.
             for input in *arguments..node.inputs().len() {
                 match self.outcome(node, input)? {
-                    FoldedValue::Value(value) => self.outputs.push(value.clone()),
-                    FoldedValue::Fault(fault) => {
-                        return self.publish_fault(plan, node, fault.clone());
-                    }
+                    Ok(value) => self.outputs.push(value.clone()),
+                    Err(fault) => return self.publish_fault(plan, node, fault.clone()),
                 }
             }
             return self.publish_values(plan, node);
@@ -809,8 +823,8 @@ impl Frame {
         self.outputs.resize(node.outputs().len(), Value::Unit);
         for input in 0..node.inputs().len() {
             match self.outcome(node, input)? {
-                FoldedValue::Value(value) => self.inputs.push(value.clone()),
-                FoldedValue::Fault(fault) => return self.publish_fault(plan, node, fault.clone()),
+                Ok(value) => self.inputs.push(value.clone()),
+                Err(fault) => return self.publish_fault(plan, node, fault.clone()),
             }
         }
         checkpoint(self.cancel.as_ref())?;
@@ -863,7 +877,7 @@ impl Frame {
     }
     fn choose(&mut self, plan: &DataPlan, node: &DataNode) -> Result<(), DataError> {
         let value = match self.outcome(node, 0)? {
-            FoldedValue::Fault(fault) => {
+            Err(fault) => {
                 if matches!(node.operation(), DataOperation::Try { .. }) {
                     let value = Value::Err(Arc::new(orange_model::value::NodeError {
                         code: fault.fault.code.into(),
@@ -873,7 +887,7 @@ impl Frame {
                 }
                 return self.publish_fault(plan, node, fault.clone());
             }
-            FoldedValue::Value(value) => value,
+            Ok(value) => value,
         };
         let selected = match (node.operation(), value) {
             (
@@ -998,9 +1012,9 @@ impl Frame {
                 Work::Choose(index) => self.choose(plan, &plan.nodes()[index.index()])?,
                 Work::Copy { node: index, input } => {
                     let node = &plan.nodes()[index.index()];
-                    match self.outcome(node, input)?.clone() {
-                        FoldedValue::Value(value) => self.publish_value(plan, node, value)?,
-                        FoldedValue::Fault(fault) => self.publish_fault(plan, node, fault)?,
+                    match self.outcome(node, input)? {
+                        Ok(value) => self.publish_value(plan, node, value.clone())?,
+                        Err(fault) => self.publish_fault(plan, node, fault.clone())?,
                     }
                 }
             }
@@ -1049,5 +1063,111 @@ impl EntropySource for ScopedSource<'_> {
             self.fault = Some(fault);
             fault
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orange_compiler::{
+        CompileOptions, EntropyBinding, EntropyKernelResolver, KernelBinding, PureKernelResolver,
+        ResolveError, compile_data,
+    };
+    use orange_model::document::{NodeInstance, SignatureSnapshot};
+    use orange_model::validation::HostOrigin;
+
+    /// Core intrinsics only; no provider kernel is ever resolved.
+    struct NoKernels;
+    impl PureKernelResolver for NoKernels {
+        fn resolve(
+            &self,
+            _: &GraphDocument,
+            _: &NodeInstance,
+            _: &SignatureSnapshot,
+            _: Arc<RegistrySnapshot>,
+        ) -> Result<KernelBinding, ResolveError> {
+            Err(ResolveError::Unavailable)
+        }
+    }
+    impl EntropyKernelResolver for NoKernels {
+        fn resolve_entropy(
+            &self,
+            _: &GraphDocument,
+            _: &NodeInstance,
+            _: &SignatureSnapshot,
+            _: Arc<RegistrySnapshot>,
+        ) -> Result<EntropyBinding, ResolveError> {
+            Err(ResolveError::Unavailable)
+        }
+    }
+
+    const NODE: &str = "10000000-0000-4000-8000-000000000001";
+
+    /// One run-variable read exported directly: a single host input slot.
+    fn input_activation() -> DataActivation {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        let snapshot = RegistrySnapshot::core(HostOrigin::new("0.0.0", digest).unwrap());
+        let variable = "10000000-0000-4000-8000-000000000014";
+        let doc = orange_model::from_json(&format!(
+            r#"{{"format":"orange.graph","format_version":1,
+            "graph_id":"20000000-0000-4000-8000-000000000001","revision":0,
+            "package_lock":[],"signatures":{{}},"edges":[],
+            "nodes":[{{"id":"{NODE}","definition_id":"core/get-variable",
+                "definition_version":1,"config_version":1,"config":{{"variable":"{variable}"}}}}],
+            "exports":[{{"id":"out","node":"{NODE}","port":"value"}}],
+            "variables":[{{"id":"{variable}","name":"v","type":"core/u64@1","scope":"run"}}]}}"#
+        ))
+        .unwrap();
+        let analysis = orange_model::analyze(&doc, &snapshot);
+        let plan = compile_data(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &NoKernels,
+            CompileOptions::default(),
+        )
+        .unwrap();
+        assert_eq!(plan.host_inputs().len(), 1);
+        DataActivation::start(
+            Arc::new(plan),
+            &doc,
+            &snapshot,
+            0,
+            0,
+            DataOptions::default(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn dynamic_slot_registers_are_smaller_than_folded_cells() {
+        use std::mem::size_of;
+        // Value register + state byte + charge, versus the former cell + charge.
+        let register = size_of::<Value>() + 1 + size_of::<usize>();
+        let folded = size_of::<Option<FoldedValue>>() + size_of::<usize>();
+        assert!(register < folded, "{register} >= {folded}");
+    }
+
+    #[test]
+    fn fault_provenance_survives_value_fault_value_republish() {
+        let mut frame = input_activation();
+        let fault = ConstantFault {
+            source: NODE.parse().unwrap(),
+            fault: KernelFault::NEGATIVE_COUNT,
+        };
+        for epoch in 0..4 {
+            frame.begin_epoch().unwrap();
+            if epoch % 2 == 0 {
+                frame.set_input(0, Value::U64(epoch)).unwrap();
+                let export = frame.export(0).unwrap().unwrap();
+                assert_eq!(export.outcome, Ok(&Value::U64(epoch)));
+            } else {
+                frame
+                    .set_input_outcome(0, FoldedValue::Fault(fault.clone()))
+                    .unwrap();
+                let export = frame.export(0).unwrap().unwrap();
+                assert_eq!(export.outcome, Err(&fault));
+            }
+        }
     }
 }
