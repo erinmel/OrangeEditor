@@ -142,6 +142,7 @@ pub(crate) fn settle(
         let blocked = passes.blocked();
         let status = BodyStatus {
             resolved: &passes.nodes.resolved,
+            regions: &passes.regions.index,
             blocked: &blocked,
         };
         let conformance = check_conformance(document, &functions.summaries, &status, registry);
@@ -219,6 +220,7 @@ pub(crate) fn accept_functions(
         let blocked = passes.blocked();
         let status = BodyStatus {
             resolved: &passes.nodes.resolved,
+            regions: &passes.regions.index,
             blocked: &blocked,
         };
         let summaries = BTreeMap::from([(id, summary.clone())]);
