@@ -20,8 +20,9 @@ mod plan;
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
 pub use control::{
     ControlCell, ControlIx, ControlNode, ControlOperation, ControlPlan, ControlState,
-    ControlVariable, ExecInput, ExecTarget, ForkJoin, HostSource, IterationProjection, SwitchCase,
-    SwitchKey, UpdateDemand, UpdateOperation, UpdateProjection, compile_control,
+    ControlVariable, ExecInput, ExecTarget, ForkJoin, FunctionLayout, HostSource,
+    IterationProjection, SwitchCase, SwitchKey, UpdateDemand, UpdateOperation, UpdateProjection,
+    compile_control,
 };
 pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
 pub use data_compile::compile_data;

@@ -18,6 +18,7 @@ use std::sync::Arc;
 pub(crate) enum CallProfile {
     Pure,
     HostData,
+    Control,
 }
 
 #[derive(Default)]
@@ -208,21 +209,22 @@ impl<'a> Calls<'a> {
                 options.checkpoint()?;
                 let sig = out.signature(analysis, cursor, node.id);
                 if cursor != 0 {
+                    let effect = profile == CallProfile::Control && out.scopes[cursor].control;
                     let marker = matches!(
                         node.definition.id.as_str(),
-                        "core/function-entry" | "core/function-outputs"
+                        "core/function-entry" | "core/function-outputs" | "core/return"
                     );
-                    let state = profile == CallProfile::HostData
+                    let state = profile != CallProfile::Pure
                         && sig.kind == NodeKind::Volatile
                         && crate::compile::is_state_read(snapshot, node);
                     if state {
                         crate::compile::admit_state_read(node.id, sig)?;
                     }
-                    let seeded = profile == CallProfile::HostData
+                    let seeded = profile != CallProfile::Pure
                         && sig.kind == NodeKind::Volatile
                         && (node.definition.id.as_str() == "core/call"
                             || crate::compile::is_seeded_entropy(snapshot, node));
-                    if !marker && sig.kind != NodeKind::Pure && !seeded && !state {
+                    if !marker && sig.kind != NodeKind::Pure && !seeded && !state && !effect {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
                     let lazy = out.lazy(&BTreeMap::new(), cursor, node.id).is_some();
@@ -230,21 +232,26 @@ impl<'a> Calls<'a> {
                         && !marker
                         && !lazy
                         && !state
+                        && !(effect && !matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile))
                         && !matches!(node.definition.id.as_str(), "core/call" | "core/convert")
                     {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
-                    admit_data_ports(
-                        node.id,
-                        sig,
-                        lazy,
-                        if state {
-                            OutputSource::State
-                        } else {
-                            OutputSource::Computed
-                        },
-                        options,
-                    )?;
+                    if !effect
+                        || (!marker && matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile))
+                    {
+                        admit_data_ports(
+                            node.id,
+                            sig,
+                            lazy,
+                            if state {
+                                OutputSource::State
+                            } else {
+                                OutputSource::Computed
+                            },
+                            options,
+                        )?;
+                    }
                 }
                 for port in &sig.ports {
                     options.checkpoint()?;
@@ -262,7 +269,9 @@ impl<'a> Calls<'a> {
                     continue;
                 }
                 if !(sig.kind == NodeKind::Pure
-                    || (profile == CallProfile::HostData && sig.kind == NodeKind::Volatile))
+                    || (profile != CallProfile::Pure && sig.kind == NodeKind::Volatile)
+                    || (profile == CallProfile::Control
+                        && matches!(sig.kind, NodeKind::Action | NodeKind::Async)))
                     || node.definition.version != 1
                     || node.config_version != 1
                     || node.provider.is_some()
@@ -420,7 +429,7 @@ impl<'a> Calls<'a> {
                         }
                         prepared.signatures.insert(child.id, sig);
                     }
-                    if !function.outputs.is_empty() && prepared.result.is_none() {
+                    if !control && !function.outputs.is_empty() && prepared.result.is_none() {
                         return Err(CompileError::ValidationIncomplete);
                     }
                     for edge in function.body.edges.values() {

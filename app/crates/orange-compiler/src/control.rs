@@ -90,6 +90,13 @@ fn destination(
 
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
+    Call {
+        scope: usize,
+        demand: UpdateDemand,
+    },
+    Return {
+        demand: UpdateDemand,
+    },
     ForEach {
         items: usize,
         body: Option<ExecTarget>,
@@ -212,6 +219,15 @@ pub enum HostSource {
     /// Read-only volatile calls get their own initialized locals, never caller locals.
     /// Mutable action/async call frames are a separate execution contract.
     CallLocal(usize),
+    FrameLocal {
+        scope: usize,
+        variable: usize,
+    },
+    Argument {
+        scope: usize,
+        index: usize,
+    },
+    CallOutput(ControlIx, usize),
     Error(ControlIx),
     Index(ControlIx),
     Value(ControlIx),
@@ -222,6 +238,7 @@ pub enum HostSource {
 
 #[derive(Debug, Clone)]
 pub struct ControlNode {
+    scope: usize,
     pub(crate) node: NodeId,
     pub(crate) operation: ControlOperation,
     pub(crate) then: Option<ExecTarget>,
@@ -231,6 +248,10 @@ pub struct ControlNode {
     pub(crate) loop_owner: Option<ControlIx>,
 }
 impl ControlNode {
+    /// Static compilation scope; zero is the root, not a runtime invocation ID.
+    pub fn scope(&self) -> usize {
+        self.scope
+    }
     pub fn node(&self) -> NodeId {
         self.node
     }
@@ -254,12 +275,37 @@ impl ControlNode {
     }
 }
 
+/// Immutable layout for one expanded action/async call site.
+#[derive(Debug)]
+pub struct FunctionLayout {
+    outputs: usize,
+    projections: Box<[usize]>,
+    entry: Option<ExecTarget>,
+    locals: Box<[usize]>,
+}
+impl FunctionLayout {
+    /// Host-input indices whose execution projections belong to this invocation.
+    pub fn projections(&self) -> &[usize] {
+        &self.projections
+    }
+    pub fn outputs(&self) -> usize {
+        self.outputs
+    }
+    pub fn entry(&self) -> Option<ExecTarget> {
+        self.entry
+    }
+    pub fn locals(&self) -> &[usize] {
+        &self.locals
+    }
+}
+
 /// Private checked construction, no serde/default bypass. Debug omits payloads.
 ///
 /// ```compile_fail
 /// let plan = orange_compiler::ControlPlan::default();
 /// ```
 pub struct ControlPlan {
+    functions: Box<[Option<FunctionLayout>]>,
     pub(crate) data: Arc<DataPlan>,
     pub(crate) nodes: Box<[ControlNode]>,
     pub(crate) starts: Box<[ControlIx]>,
@@ -282,6 +328,9 @@ impl std::fmt::Debug for ControlPlan {
     }
 }
 impl ControlPlan {
+    pub fn function(&self, scope: usize) -> Option<&FunctionLayout> {
+        self.functions.get(scope.checked_sub(1)?)?.as_ref()
+    }
     pub fn data(&self) -> &Arc<DataPlan> {
         &self.data
     }
@@ -356,7 +405,7 @@ pub fn compile_control(
         &snapshot,
         analysis,
         options,
-        crate::calls::CallProfile::HostData,
+        crate::calls::CallProfile::Control,
     )?);
     let mut controls = BTreeSet::new();
     for scope in 0..calls.scopes.len() {
@@ -365,12 +414,17 @@ pub fn compile_control(
         }
         for node in calls.body(document, scope).nodes.values() {
             let sig = calls.signature(analysis, scope, node.id);
-            if matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile) {
+            if matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile)
+                && node.definition.id.as_str() != "core/return"
+            {
                 continue;
             }
             if !matches!(
                 node.definition.id.as_str(),
-                "core/gate"
+                "core/call"
+                    | "core/function-entry"
+                    | "core/return"
+                    | "core/gate"
                     | "core/do-once"
                     | "core/flip-flop"
                     | "core/register"
@@ -475,6 +529,35 @@ pub fn compile_control(
         }
         variable_nodes.insert(node.id, variable_ids[&id]);
     }
+    let mut functions = (1..calls.scopes.len())
+        .map(|scope| -> Result<_, CompileError> {
+            options.checkpoint()?;
+            if !calls.scopes[scope].control {
+                return Ok(None);
+            }
+            let mut locals = BTreeSet::new();
+            for node in calls.body(document, scope).nodes.values() {
+                options.checkpoint()?;
+                if let Some(&variable) = variable_nodes.get(&node.id)
+                    && variables[variable].scope() == VarScope::Local
+                {
+                    locals.insert(variable);
+                }
+            }
+            Ok(Some(FunctionLayout {
+                projections: Box::new([]),
+                outputs: document.functions()[&calls.sites[scope - 1].function]
+                    .outputs
+                    .len(),
+                entry: calls
+                    .entry(scope)
+                    .and_then(|id| ids.get(&(scope, id)))
+                    .copied()
+                    .map(Into::into),
+                locals: locals.into_iter().collect::<Vec<_>>().into(),
+            }))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let mut states = Vec::new();
     let mut state_nodes = BTreeMap::new();
     for (scope, id) in &controls {
@@ -593,6 +676,27 @@ pub fn compile_control(
                 .copied()
         };
         let operation = match node.definition.id.as_str() {
+            "core/call" | "core/return" => {
+                let demand = UpdateDemand {
+                    roots: calls
+                        .signature(analysis, *scope, *id)
+                        .ports
+                        .iter()
+                        .filter(|p| p.direction == PortDirection::Input && p.kind == PortKind::Data)
+                        .map(|p| input_root(&mut roots, *scope, *id, p.port_id.as_str()))
+                        .collect(),
+                    inputs: Arc::from([]),
+                };
+                if node.definition.id.as_str() == "core/call" {
+                    ControlOperation::Call {
+                        scope: calls.scopes[*scope].calls[id],
+                        demand,
+                    }
+                } else {
+                    ControlOperation::Return { demand }
+                }
+            }
+            "core/function-entry" => ControlOperation::Entry,
             "core/update-variable" => {
                 let variable = variable_nodes[id];
                 let operation = update::resolve(*id, &node.config, variables[variable].ty())?;
@@ -830,6 +934,7 @@ pub fn compile_control(
             }
         }
         nodes.push(ControlNode {
+            scope: *scope,
             node: *id,
             operation,
             then: target("then"),
@@ -928,13 +1033,49 @@ pub fn compile_control(
                     if node.call_instance().is_some()
                         && variables[*variable].scope() == VarScope::Local
                     {
-                        HostSource::CallLocal(*variable)
+                        if calls.scopes[scope].control {
+                            HostSource::FrameLocal {
+                                scope,
+                                variable: *variable,
+                            }
+                        } else {
+                            HostSource::CallLocal(*variable)
+                        }
                     } else {
                         HostSource::Variable(*variable)
                     },
                 );
             }
             let source = &data.slot_sources()[node.outputs()[0].index()];
+            let owner = ids
+                .get(&(scope, source.node))
+                .copied()
+                .ok_or(CompileError::ValidationIncomplete)?;
+            if calls.entry(scope) == Some(source.node) && scope != 0 && calls.scopes[scope].control
+            {
+                let index = calls
+                    .signature(analysis, scope, source.node)
+                    .ports
+                    .iter()
+                    .filter(|p| p.direction == PortDirection::Output && p.kind == PortKind::Data)
+                    .position(|p| key(p) == source.port)
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                return Ok(HostSource::Argument { scope, index });
+            }
+            if matches!(
+                nodes[owner.index()].operation(),
+                ControlOperation::Call { .. }
+            ) && source.port.port().as_str() != "error"
+            {
+                let index = calls
+                    .signature(analysis, scope, source.node)
+                    .ports
+                    .iter()
+                    .filter(|p| p.direction == PortDirection::Output && p.kind == PortKind::Data)
+                    .position(|p| key(p) == source.port)
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                return Ok(HostSource::CallOutput(owner, index));
+            }
             if matches!(source.port.port().as_str(), "is_open" | "is_a" | "current") {
                 return state_nodes
                     .get(&(scope, source.node))
@@ -995,6 +1136,31 @@ pub fn compile_control(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut owned_projections = vec![Vec::new(); functions.len()];
+    for (input, source) in host_sources.iter().enumerate() {
+        let scope = data.nodes()[data.host_inputs()[input].index()]
+            .call_instance()
+            .map(|i| i + 1);
+        if let Some(scope) = scope
+            && functions[scope - 1].is_some()
+            && matches!(
+                source,
+                HostSource::Error(_)
+                    | HostSource::Index(_)
+                    | HostSource::Value(_)
+                    | HostSource::Update(_, _)
+                    | HostSource::CallOutput(_, _)
+            )
+        {
+            charge(&mut graph_items, 1, options.limits.max_graph_items)?;
+            owned_projections[scope - 1].push(input);
+        }
+    }
+    for (function, projections) in functions.iter_mut().zip(owned_projections) {
+        if let Some(function) = function {
+            function.projections = projections.into();
+        }
+    }
     let mut index_targets = vec![Vec::new(); nodes.len()];
     let mut error_targets = vec![Vec::new(); nodes.len()];
     let mut value_targets = vec![Vec::new(); nodes.len()];
@@ -1008,11 +1174,13 @@ pub fn compile_control(
         match source {
             HostSource::Index(owner) => index_targets[owner.index()].push(i),
             HostSource::Error(owner) => error_targets[owner.index()].push(i),
-            HostSource::Value(owner) | HostSource::Update(owner, _) => {
-                value_targets[owner.index()].push(i)
-            }
+            HostSource::Value(owner)
+            | HostSource::Update(owner, _)
+            | HostSource::CallOutput(owner, _) => value_targets[owner.index()].push(i),
             HostSource::Variable(_)
             | HostSource::CallLocal(_)
+            | HostSource::FrameLocal { .. }
+            | HostSource::Argument { .. }
             | HostSource::State(_)
             | HostSource::Iteration(_, _) => {}
         }
@@ -1068,7 +1236,13 @@ pub fn compile_control(
         })
         .collect::<Result<Vec<_>, _>>()?;
     for node in &mut nodes {
-        if let ControlOperation::Update { demand, .. } = &mut node.operation {
+        if let ControlOperation::Update { demand, .. }
+        | ControlOperation::Call { demand, .. }
+        | ControlOperation::Return { demand } = &mut node.operation
+        {
+            if demand.roots.is_empty() {
+                continue;
+            }
             let first = &root_inputs[demand.roots[0]];
             if demand
                 .roots
@@ -1091,6 +1265,7 @@ pub fn compile_control(
         }
     }
     Ok(ControlPlan {
+        functions: functions.into(),
         data: Arc::new(data),
         nodes: nodes.into(),
         starts: starts.into(),
