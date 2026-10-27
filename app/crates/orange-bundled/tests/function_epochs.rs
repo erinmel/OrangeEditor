@@ -616,3 +616,6 @@ fn statically_unselected_call_has_no_callee_binding_or_runtime_work() {
 
 #[path = "support/seeded_functions.rs"]
 mod seeded_functions;
+
+#[path = "support/state_functions.rs"]
+mod state_functions;
