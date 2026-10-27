@@ -8,6 +8,7 @@
 //! inferred binding cannot act as a pin. The document is never modified; `persist` turns
 //! the result into commands.
 
+use crate::catalog::intrinsic_id as ids;
 use std::cell::RefCell;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::rc::Rc;
@@ -597,7 +598,7 @@ pub(crate) fn declared_port(
 }
 
 fn is_function_call(node: &NodeInstance) -> bool {
-    node.definition.id.as_str() == "core/call"
+    node.definition.id.as_str() == ids::CALL
 }
 
 fn evidence(evidence: EquationEvidence) -> EquationContext {

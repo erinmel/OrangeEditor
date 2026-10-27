@@ -9,6 +9,7 @@
 //! initializer checks use the fresh resolved cell type. `W-STALE-CAPTURE` uses the
 //! conservative dataflow approximation below, rather than proving exact suspension order.
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
@@ -136,7 +137,7 @@ fn validate_registers(
 ) {
     let (origin, types) = (registry.origin(), registry.types().as_ref());
     for node in body.nodes.values() {
-        if node.definition.id.as_str() != "core/register"
+        if node.definition.id.as_str() != ids::REGISTER
             || node.provider.is_some()
             || node.definition.version != 1
             || node.config_version != 1
@@ -257,11 +258,11 @@ fn collect_writes(
     let definition = node.definition.id.as_str();
     let core = node.provider.is_none() && node.definition.version == 1 && node.config_version == 1;
     match definition {
-        "core/set-variable" | "core/update-variable" if core => {
+        ids::SET_VARIABLE | ids::UPDATE_VARIABLE if core => {
             let Ok(variable) = super::variables::variable_reference(registry, node) else {
                 return;
             };
-            let operation = if definition == "core/set-variable" {
+            let operation = if definition == ids::SET_VARIABLE {
                 Some(WriteOperation::Set)
             } else {
                 node.config
@@ -275,7 +276,7 @@ fn collect_writes(
                 writes.entry(variable).or_default().insert(operation);
             }
         }
-        "core/call" if core => {
+        ids::CALL if core => {
             if let Ok(DeclId::Function(callee)) = registry.reference(node, ReferenceKind::Function)
                 && let Some(summary) = summaries.get(&callee)
             {
@@ -381,7 +382,7 @@ fn stale_captures(
         let Some(write) = body.nodes.get(id) else {
             continue;
         };
-        if write.definition.id.as_str() != "core/set-variable" {
+        if write.definition.id.as_str() != ids::SET_VARIABLE {
             continue;
         }
         let Some(variable) = variable_of(write) else {
@@ -410,7 +411,7 @@ fn stale_captures(
                 continue;
             };
             if crossed
-                && node.definition.id.as_str() == "core/get-variable"
+                && node.definition.id.as_str() == ids::GET_VARIABLE
                 && variable_of(node) == Some(variable)
             {
                 stale = true;

@@ -3,6 +3,7 @@
 //! nor replace these (11 §16). Whether this core version registers an intrinsic's contract
 //! is separate; see `intrinsic_definitions`.
 
+use crate::catalog::intrinsic_id as ids;
 use std::sync::LazyLock;
 
 use super::{EventAccess, ReferenceField, ReferenceKind, VariableAccess};
@@ -142,57 +143,57 @@ const FUNCTION: Option<ReferenceKind> = Some(ReferenceKind::Function);
 
 /// Every intrinsic of format v1, in the order of 11 §8.4, §11 and §14.
 const INTRINSICS: [Intrinsic; 43] = [
-    rule("core/on-start", ENTRY, None),
-    rule("core/on-stop", ENTRY, None),
-    rule("core/call", None, FUNCTION),
-    rule("core/function-entry", None, None),
-    rule("core/function-outputs", None, None),
-    rule("core/return", None, None),
-    variable_rule("core/get-variable", VOLATILE, VariableAccess::Read),
-    variable_rule("core/set-variable", ACTION, VariableAccess::Write),
-    variable_rule("core/update-variable", ACTION, VariableAccess::Update),
+    rule(ids::ON_START, ENTRY, None),
+    rule(ids::ON_STOP, ENTRY, None),
+    rule(ids::CALL, None, FUNCTION),
+    rule(ids::FUNCTION_ENTRY, None, None),
+    rule(ids::FUNCTION_OUTPUTS, None, None),
+    rule(ids::RETURN, None, None),
+    variable_rule(ids::GET_VARIABLE, VOLATILE, VariableAccess::Read),
+    variable_rule(ids::SET_VARIABLE, ACTION, VariableAccess::Write),
+    variable_rule(ids::UPDATE_VARIABLE, ACTION, VariableAccess::Update),
     variable_rule(
-        "core/set-shared",
+        ids::SET_SHARED,
         Some((NodeKind::Async, Suspends::Maybe)),
         VariableAccess::WriteShared,
     ),
     variable_rule(
-        "core/update-shared",
+        ids::UPDATE_SHARED,
         Some((NodeKind::Async, Suspends::Maybe)),
         VariableAccess::UpdateShared,
     ),
-    event_rule("core/on-event", ENTRY, EventAccess::Handle),
-    event_rule("core/emit", ACTION, EventAccess::Emit),
-    rule("core/branch", ACTION, None),
-    rule("core/switch", ACTION, None),
-    rule("core/sequence", ACTION, None),
-    rule("core/fork", ACTION, None),
-    rule("core/for-each", ITERATOR, None),
-    rule("core/count", ITERATOR, None),
-    rule("core/while", ITERATOR, None),
-    terminator("core/break"),
-    terminator("core/continue"),
-    rule("core/gate", ACTION, None),
-    rule("core/do-once", ACTION, None),
-    rule("core/flip-flop", ACTION, None),
-    rule("core/yield", ASYNC, None),
-    rule("core/wait", ASYNC, None),
-    event_rule("core/await-event", ASYNC, EventAccess::Await),
-    rule("core/register", ACTION, None),
-    rule("core/select", PURE, None),
-    rule("core/and", PURE, None),
-    rule("core/or", PURE, None),
-    rule("core/coalesce", PURE, None),
-    rule("core/try", PURE, None),
-    rule("core/match-result", ACTION, None),
-    rule("core/repeat-begin", PURE, None),
-    rule("core/repeat-end", PURE, None),
-    rule("core/map-begin", PURE, None),
-    rule("core/map-end", PURE, None),
-    rule("core/fold-begin", PURE, None),
-    rule("core/fold-end", PURE, None),
-    rule("core/filter-begin", PURE, None),
-    rule("core/filter-end", PURE, None),
+    event_rule(ids::ON_EVENT, ENTRY, EventAccess::Handle),
+    event_rule(ids::EMIT, ACTION, EventAccess::Emit),
+    rule(ids::BRANCH, ACTION, None),
+    rule(ids::SWITCH, ACTION, None),
+    rule(ids::SEQUENCE, ACTION, None),
+    rule(ids::FORK, ACTION, None),
+    rule(ids::FOR_EACH, ITERATOR, None),
+    rule(ids::COUNT, ITERATOR, None),
+    rule(ids::WHILE, ITERATOR, None),
+    terminator(ids::BREAK),
+    terminator(ids::CONTINUE),
+    rule(ids::GATE, ACTION, None),
+    rule(ids::DO_ONCE, ACTION, None),
+    rule(ids::FLIP_FLOP, ACTION, None),
+    rule(ids::YIELD, ASYNC, None),
+    rule(ids::WAIT, ASYNC, None),
+    event_rule(ids::AWAIT_EVENT, ASYNC, EventAccess::Await),
+    rule(ids::REGISTER, ACTION, None),
+    rule(ids::SELECT, PURE, None),
+    rule(ids::AND, PURE, None),
+    rule(ids::OR, PURE, None),
+    rule(ids::COALESCE, PURE, None),
+    rule(ids::TRY, PURE, None),
+    rule(ids::MATCH_RESULT, ACTION, None),
+    rule(ids::REPEAT_BEGIN, PURE, None),
+    rule(ids::REPEAT_END, PURE, None),
+    rule(ids::MAP_BEGIN, PURE, None),
+    rule(ids::MAP_END, PURE, None),
+    rule(ids::FOLD_BEGIN, PURE, None),
+    rule(ids::FOLD_END, PURE, None),
+    rule(ids::FILTER_BEGIN, PURE, None),
+    rule(ids::FILTER_END, PURE, None),
 ];
 
 /// The intrinsic with this exact ID. Intrinsic status comes from this table, never from the
@@ -209,7 +210,7 @@ pub(crate) fn is_intrinsic(id: &str) -> bool {
 /// and may bind an exact package implementation, so it does not follow ordinary intrinsic
 /// or ordinary package-definition resolution.
 pub(crate) fn is_converter_special_form(id: &str) -> bool {
-    id == "core/convert"
+    id == ids::CONVERT
 }
 
 /// The standard config field naming a declaration of `kind`: `/variable`, `/event` or

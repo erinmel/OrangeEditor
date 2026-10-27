@@ -1,5 +1,6 @@
 use crate::*;
 use orange_model::catalog::RegistrySnapshot;
+use orange_model::catalog::intrinsic_id as ids;
 use orange_model::document::literal::{Literal, LiteralPayload};
 use orange_model::document::{NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind};
 use orange_model::id::{NodeId, PortKey};
@@ -965,7 +966,7 @@ pub(crate) fn admit_roots<'a>(
         if state_read {
             admit_state_read(*node, sig)?;
         }
-        let call = body.nodes[node].definition.id.as_str() == "core/call";
+        let call = body.nodes[node].definition.id.as_str() == ids::CALL;
         let zone = data_plan
             .then(|| crate::zones::marker(analysis, *node))
             .flatten();
@@ -981,7 +982,7 @@ pub(crate) fn admit_roots<'a>(
             lazy_nodes.insert(*node, kind);
         }
         if body.nodes[node].definition.id.is_core()
-            && body.nodes[node].definition.id.as_str() != "core/convert"
+            && body.nodes[node].definition.id.as_str() != ids::CONVERT
             && !lazy_nodes.contains_key(node)
             && !state_read
             && zone.is_none()

@@ -11,6 +11,7 @@
 //! representable document. It simply gets no `type_args` for the affected parameters, and its
 //! signature keeps `$name` for them. The issues are returned for the caller to report.
 
+use crate::catalog::intrinsic_id as ids;
 use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
@@ -372,7 +373,7 @@ fn component_updates(
 }
 
 fn is_function_call(node: &crate::document::NodeInstance) -> bool {
-    node.definition.id.as_str() == "core/call"
+    node.definition.id.as_str() == ids::CALL
 }
 
 #[cfg(test)]

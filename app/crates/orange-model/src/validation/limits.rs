@@ -1,5 +1,6 @@
 //! Host-configurable admission limits and cooperative cancellation for combined analysis.
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 
@@ -147,7 +148,7 @@ impl AnalysisOptions<'_> {
                         budget.json(schema)?;
                     }
                 }
-                if node.definition.id.as_str() == "core/call"
+                if node.definition.id.as_str() == ids::CALL
                     && let Some(function) = node
                         .config
                         .get("function")

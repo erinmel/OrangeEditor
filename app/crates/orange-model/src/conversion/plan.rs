@@ -8,6 +8,7 @@
 //! refused. Identities are generated once, here, and the plan records the document content
 //! state and registry snapshot it was made against.
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::BTreeMap;
 
 use thiserror::Error;
@@ -417,7 +418,7 @@ fn convert_node(
     let instance = NodeInstance {
         id,
         definition: DefinitionRef {
-            id: "core/convert".parse().expect("core/convert is canonical"),
+            id: ids::CONVERT.parse().expect("core/convert is canonical"),
             version: 1,
         },
         config_version: 1,

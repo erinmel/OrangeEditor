@@ -6,6 +6,7 @@ use crate::*;
 use orange_model::GraphDocument;
 use orange_model::Value;
 use orange_model::catalog::RegistrySnapshot;
+use orange_model::catalog::intrinsic_id as ids;
 use orange_model::document::{FaultPolicy, NodeKind, PortDirection, PortKind, VarScope};
 use orange_model::id::{NodeId, VariableId};
 use orange_model::validation::ValidationAnalysis;
@@ -76,12 +77,12 @@ fn destination(
         return None;
     }
     let input = match (definition, port.port().as_str()) {
-        ("core/gate", "in" | "enter") => ExecInput::Enter,
-        ("core/gate", "open") => ExecInput::Open,
-        ("core/gate", "close") => ExecInput::Close,
-        ("core/gate", "toggle") => ExecInput::Toggle,
-        ("core/do-once" | "core/register", "reset") => ExecInput::Reset,
-        ("core/register", "in" | "store") => ExecInput::Store,
+        (ids::GATE, "in" | "enter") => ExecInput::Enter,
+        (ids::GATE, "open") => ExecInput::Open,
+        (ids::GATE, "close") => ExecInput::Close,
+        (ids::GATE, "toggle") => ExecInput::Toggle,
+        (ids::DO_ONCE | ids::REGISTER, "reset") => ExecInput::Reset,
+        (ids::REGISTER, "in" | "store") => ExecInput::Store,
         (_, "in") => ExecInput::In,
         _ => return None,
     };
@@ -415,35 +416,35 @@ pub fn compile_control(
         for node in calls.body(document, scope).nodes.values() {
             let sig = calls.signature(analysis, scope, node.id);
             if matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile)
-                && node.definition.id.as_str() != "core/return"
+                && node.definition.id.as_str() != ids::RETURN
             {
                 continue;
             }
             if !matches!(
                 node.definition.id.as_str(),
-                "core/call"
-                    | "core/function-entry"
-                    | "core/return"
-                    | "core/gate"
-                    | "core/do-once"
-                    | "core/flip-flop"
-                    | "core/register"
-                    | "core/switch"
-                    | "core/match-result"
-                    | "core/on-start"
-                    | "core/on-stop"
-                    | "core/branch"
-                    | "core/set-variable"
-                    | "core/update-variable"
-                    | "core/sequence"
-                    | "core/fork"
-                    | "core/yield"
-                    | "core/wait"
-                    | "core/count"
-                    | "core/for-each"
-                    | "core/break"
-                    | "core/continue"
-                    | "core/while"
+                ids::CALL
+                    | ids::FUNCTION_ENTRY
+                    | ids::RETURN
+                    | ids::GATE
+                    | ids::DO_ONCE
+                    | ids::FLIP_FLOP
+                    | ids::REGISTER
+                    | ids::SWITCH
+                    | ids::MATCH_RESULT
+                    | ids::ON_START
+                    | ids::ON_STOP
+                    | ids::BRANCH
+                    | ids::SET_VARIABLE
+                    | ids::UPDATE_VARIABLE
+                    | ids::SEQUENCE
+                    | ids::FORK
+                    | ids::YIELD
+                    | ids::WAIT
+                    | ids::COUNT
+                    | ids::FOR_EACH
+                    | ids::BREAK
+                    | ids::CONTINUE
+                    | ids::WHILE
             ) || node.definition.version != 1
                 || node.config_version != 1
                 || node.provider.is_some()
@@ -475,13 +476,13 @@ pub fn compile_control(
     for node in document.root().nodes.values().chain(called_nodes) {
         options.checkpoint()?;
         if crate::compile::is_state_read(&snapshot, node)
-            && node.definition.id.as_str() != "core/get-variable"
+            && node.definition.id.as_str() != ids::GET_VARIABLE
         {
             return Err(CompileError::UnsupportedNode { node: node.id });
         }
         if !matches!(
             node.definition.id.as_str(),
-            "core/get-variable" | "core/set-variable" | "core/update-variable"
+            ids::GET_VARIABLE | ids::SET_VARIABLE | ids::UPDATE_VARIABLE
         ) {
             continue;
         }
@@ -524,7 +525,7 @@ pub fn compile_control(
                 initial,
             });
         }
-        if node.definition.id.as_str() == "core/update-variable" {
+        if node.definition.id.as_str() == ids::UPDATE_VARIABLE {
             update::resolve(node.id, &node.config, variables[variable_ids[&id]].ty())?;
         }
         variable_nodes.insert(node.id, variable_ids[&id]);
@@ -564,17 +565,17 @@ pub fn compile_control(
         options.checkpoint()?;
         let node = &calls.body(document, *scope).nodes[id];
         let (state_scope, ty, initial) = match node.definition.id.as_str() {
-            "core/gate" => {
+            ids::GATE => {
                 let open = match node.config.get("start_open") {
                     None => false,
                     Some(value) => value.as_bool().ok_or(CompileError::ValidationIncomplete)?,
                 };
                 (VarScope::Run, ValueShape::Bool, Some(Value::Bool(open)))
             }
-            "core/do-once" | "core/flip-flop" => {
+            ids::DO_ONCE | ids::FLIP_FLOP => {
                 (VarScope::Run, ValueShape::Bool, Some(Value::Bool(false)))
             }
-            "core/register" => {
+            ids::REGISTER => {
                 let port = calls
                     .signature(analysis, *scope, *id)
                     .ports
@@ -676,7 +677,7 @@ pub fn compile_control(
                 .copied()
         };
         let operation = match node.definition.id.as_str() {
-            "core/call" | "core/return" => {
+            ids::CALL | ids::RETURN => {
                 let demand = UpdateDemand {
                     roots: calls
                         .signature(analysis, *scope, *id)
@@ -687,7 +688,7 @@ pub fn compile_control(
                         .collect(),
                     inputs: Arc::from([]),
                 };
-                if node.definition.id.as_str() == "core/call" {
+                if node.definition.id.as_str() == ids::CALL {
                     ControlOperation::Call {
                         scope: calls.scopes[*scope].calls[id],
                         demand,
@@ -696,8 +697,8 @@ pub fn compile_control(
                     ControlOperation::Return { demand }
                 }
             }
-            "core/function-entry" => ControlOperation::Entry,
-            "core/update-variable" => {
+            ids::FUNCTION_ENTRY => ControlOperation::Entry,
+            ids::UPDATE_VARIABLE => {
                 let variable = variable_nodes[id];
                 let operation = update::resolve(*id, &node.config, variables[variable].ty())?;
                 let mut operands = Vec::new();
@@ -714,22 +715,22 @@ pub fn compile_control(
                     },
                 }
             }
-            "core/gate" => ControlOperation::Gate {
+            ids::GATE => ControlOperation::Gate {
                 state: state_nodes[&(*scope, *id)],
             },
-            "core/do-once" => ControlOperation::DoOnce {
+            ids::DO_ONCE => ControlOperation::DoOnce {
                 state: state_nodes[&(*scope, *id)],
             },
-            "core/flip-flop" => ControlOperation::FlipFlop {
+            ids::FLIP_FLOP => ControlOperation::FlipFlop {
                 state: state_nodes[&(*scope, *id)],
                 a: target("a"),
                 b: target("b"),
             },
-            "core/register" => ControlOperation::Register {
+            ids::REGISTER => ControlOperation::Register {
                 state: state_nodes[&(*scope, *id)],
                 next: input_root(&mut roots, *scope, *id, "next"),
             },
-            "core/switch" => {
+            ids::SWITCH => {
                 let port = calls
                     .signature(analysis, *scope, *id)
                     .ports
@@ -802,7 +803,7 @@ pub fn compile_control(
                     default: target("default"),
                 }
             }
-            "core/match-result" => {
+            ids::MATCH_RESULT => {
                 let port = calls
                     .signature(analysis, *scope, *id)
                     .ports
@@ -820,8 +821,8 @@ pub fn compile_control(
                 }
             }
 
-            "core/on-start" | "core/on-stop" => {
-                let entries = if node.definition.id.as_str() == "core/on-start" {
+            ids::ON_START | ids::ON_STOP => {
+                let entries = if node.definition.id.as_str() == ids::ON_START {
                     &mut starts
                 } else {
                     &mut stops
@@ -829,7 +830,7 @@ pub fn compile_control(
                 entries.push(ids[&(*scope, *id)]);
                 ControlOperation::Entry
             }
-            "core/branch" => {
+            ids::BRANCH => {
                 let condition = input_root(&mut roots, *scope, *id, "condition");
                 ControlOperation::Branch {
                     condition,
@@ -837,15 +838,15 @@ pub fn compile_control(
                     when_false: target("false"),
                 }
             }
-            "core/set-variable" => {
+            ids::SET_VARIABLE => {
                 let value = input_root(&mut roots, *scope, *id, "value");
                 ControlOperation::Set {
                     variable: variable_nodes[id],
                     value,
                 }
             }
-            "core/sequence" | "core/fork" => {
-                let fork = node.definition.id.as_str() == "core/fork";
+            ids::SEQUENCE | ids::FORK => {
+                let fork = node.definition.id.as_str() == ids::FORK;
                 let port = if fork { "branch" } else { "then" };
                 let state = node
                     .variadic
@@ -888,17 +889,17 @@ pub fn compile_control(
                     }
                 }
             }
-            "core/yield" => ControlOperation::Yield,
-            "core/wait" => {
+            ids::YIELD => ControlOperation::Yield,
+            ids::WAIT => {
                 let duration = input_root(&mut roots, *scope, *id, "duration");
                 ControlOperation::Wait { duration }
             }
-            "core/for-each" => ControlOperation::ForEach {
+            ids::FOR_EACH => ControlOperation::ForEach {
                 items: input_root(&mut roots, *scope, *id, "items"),
                 body: target("body"),
                 completed: target("completed"),
             },
-            "core/count" => {
+            ids::COUNT => {
                 let count = input_root(&mut roots, *scope, *id, "count");
                 ControlOperation::Count {
                     count,
@@ -906,7 +907,7 @@ pub fn compile_control(
                     completed: target("completed"),
                 }
             }
-            "core/while" => {
+            ids::WHILE => {
                 let condition = input_root(&mut roots, *scope, *id, "condition");
                 let max_iterations = node
                     .config
@@ -921,8 +922,8 @@ pub fn compile_control(
                     max_iterations,
                 }
             }
-            "core/break" => ControlOperation::Break,
-            "core/continue" => ControlOperation::Continue,
+            ids::BREAK => ControlOperation::Break,
+            ids::CONTINUE => ControlOperation::Continue,
             _ => unreachable!("admitted control"),
         };
         for port in calls

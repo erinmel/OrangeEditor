@@ -1,5 +1,6 @@
 //! Graph-local function effect and execution-kind summaries.
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde_json::Value;
@@ -239,7 +240,7 @@ pub(crate) fn summarize_function(
         }
         // A function's return (or end) cancels strands a detaching fork left running
         // (11 §14). The fork stays legal, so this is a warning and not incompleteness.
-        if definition == "core/fork"
+        if definition == ids::FORK
             && node.config.get("join").and_then(serde_json::Value::as_str) == Some("detach")
         {
             emit_at(
@@ -253,7 +254,7 @@ pub(crate) fn summarize_function(
         if is_marker(node) {
             continue;
         }
-        if definition == "core/call" {
+        if definition == ids::CALL {
             let Some(callee) = calls
                 .get(&function_id)
                 .and_then(|items| items.get(&node.id))
@@ -270,7 +271,7 @@ pub(crate) fn summarize_function(
             merge_writes(&mut writes, &summary.run_writes);
             continue;
         }
-        if definition == "core/get-variable" {
+        if definition == ids::GET_VARIABLE {
             let variable = super::variables::variable_reference(registry, node).ok();
             if variable.is_none_or(|id| !document.variables().contains_key(&id)) {
                 emit_at(
@@ -297,7 +298,7 @@ pub(crate) fn summarize_function(
             complete = false;
             continue;
         }
-        if is_intrinsic(definition) && definition != "core/call" {
+        if is_intrinsic(definition) && definition != ids::CALL {
             let Some((kind, suspends)) = intrinsic(definition).and_then(|rule| rule.summary) else {
                 emit_at(
                     result,
@@ -567,7 +568,7 @@ pub(crate) fn call_graph(
             .body
             .nodes
             .values()
-            .filter(|n| n.definition.id.as_str() == "core/call")
+            .filter(|n| n.definition.id.as_str() == ids::CALL)
         {
             if node.provider.is_some() || node.definition.version != 1 || node.config_version != 1 {
                 emit_at(
@@ -620,7 +621,7 @@ fn is_marker(node: &crate::document::NodeInstance) -> bool {
         && node.config_version == 1
         && matches!(
             node.definition.id.as_str(),
-            "core/function-entry" | "core/function-outputs" | "core/return"
+            ids::FUNCTION_ENTRY | ids::FUNCTION_OUTPUTS | ids::RETURN
         )
 }
 
@@ -700,8 +701,8 @@ fn emit(result: &mut FunctionAnalysis, code: DiagnosticCode, id: FunctionId, ori
 
 /// Host entry identities from the 11 §10 table that the core registry does not yet define.
 const UNREGISTERED_HOST_ENTRIES: &[&str] = &[
-    "core/on-start",
-    "core/on-stop",
+    ids::ON_START,
+    ids::ON_STOP,
     "core/on-manual",
     "core/on-timer",
     "core/on-timeout",

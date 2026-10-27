@@ -6,6 +6,7 @@
 //! cone inherits the consuming exec node's requirement), against its producer's `source`.
 //! All traversals are iterative.
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
@@ -604,7 +605,7 @@ fn build_node(
     let is_loop = signature.kind == NodeKind::Iterator;
 
     match definition {
-        "core/break" | "core/continue" => {
+        ids::BREAK | ids::CONTINUE => {
             if let Some(enclosing) = context
                 .regions
                 .regions
@@ -612,7 +613,7 @@ fn build_node(
                 .and_then(|found| found.enclosing_loop.as_ref())
             {
                 let loop_node = enclosing.node;
-                let to = if definition == "core/break" {
+                let to = if definition == ids::BREAK {
                     Vertex::Done(loop_node)
                 } else {
                     Vertex::Next(loop_node)
@@ -621,7 +622,7 @@ fn build_node(
             }
             return;
         }
-        "core/sequence" => {
+        ids::SEQUENCE => {
             let then = "then".parse().expect("port id is valid");
             let steps: Vec<_> = node
                 .variadic
@@ -647,7 +648,7 @@ fn build_node(
             }
             return;
         }
-        "core/fork" => {
+        ids::FORK => {
             let join = node.config.get("join").and_then(serde_json::Value::as_str);
             let mut fork = Fork {
                 // Only an explicit `all` makes branch values available at `completed`.

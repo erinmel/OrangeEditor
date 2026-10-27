@@ -1,5 +1,6 @@
 //! Control-region ownership, loop nesting and structured-boundary validation (11 §7.1, §8.3).
 
+use crate::catalog::intrinsic_id as ids;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::catalog::RegistrySnapshot;
@@ -175,8 +176,8 @@ fn subject(
 
 fn child_kind(definition: &str, kind: NodeKind, port: &PortKey) -> Option<RegionKind> {
     match (definition, port.port().as_str()) {
-        ("core/sequence", "then") => Some(RegionKind::Sequence),
-        ("core/fork", "branch") => Some(RegionKind::Fork),
+        (ids::SEQUENCE, "then") => Some(RegionKind::Sequence),
+        (ids::FORK, "branch") => Some(RegionKind::Fork),
         (_, "body") if kind == NodeKind::Iterator => Some(RegionKind::LoopBody),
         _ => None,
     }
@@ -412,7 +413,7 @@ fn check_body(
     // Structured boundaries and loop bounds.
     for node in body.nodes.values() {
         let definition = node.definition.id.as_str();
-        if definition == "core/while"
+        if definition == ids::WHILE
             && !node
                 .config
                 .get("max_iterations")
@@ -425,7 +426,7 @@ fn check_body(
                 origin,
             ));
         }
-        if definition == "core/switch"
+        if definition == ids::SWITCH
             && resolved
                 .get(&node.id)
                 .is_some_and(|signature| !switch_cases_valid(node, signature))
@@ -438,7 +439,7 @@ fn check_body(
         }
         let regions = regions_of(node.id);
         match definition {
-            "core/break" | "core/continue"
+            ids::BREAK | ids::CONTINUE
                 if regions.iter().any(|r| walks[*r].enclosing_loop.is_none()) =>
             {
                 result.diagnostics.push(Diagnostic::new(
@@ -447,7 +448,7 @@ fn check_body(
                     origin,
                 ));
             }
-            "core/return"
+            ids::RETURN
                 if regions.iter().any(|r| {
                     let mut cursor = Some(*r);
                     while let Some(region) = cursor {
