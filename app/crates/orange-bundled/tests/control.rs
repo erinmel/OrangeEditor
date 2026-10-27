@@ -73,9 +73,12 @@ fn checked_real_entry_branch_preserves_document_and_typed_condition() {
 fn unsupported_control_and_stale_analysis_never_reach_resolvers() {
     let (package, snapshot) = catalog();
     let resolver = Counting::new(package.clone());
+    let mut unsupported = core(2, "for-each");
+    unsupported["type_pins"] = json!({"T":"core/u64@1"});
+    unsupported["inputs"] = json!({"items":{"type":"core/list@1<core/u64@1>","value":[]}});
     let doc = graph(
         &package,
-        vec![core(1, "on-start"), core(2, "do-once")],
+        vec![core(1, "on-start"), unsupported],
         vec![edge(1, 1, "then", 2, "in")],
         vec![],
     );
@@ -1641,3 +1644,6 @@ fn wait_completion_and_stop_choose_one_outcome_at_the_same_virtual_time() {
 
 #[path = "support/control_dispatch.rs"]
 mod control_dispatch;
+
+#[path = "support/state_controls.rs"]
+mod state_controls;
