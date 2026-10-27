@@ -566,6 +566,13 @@ pub fn compile_data(
     options: CompileOptions<'_>,
 ) -> Result<DataPlan, CompileError> {
     let admission = admit(document, &snapshot, analysis, options, true)?;
+    let calls = Arc::new(crate::calls::Calls::prepare(
+        document,
+        &snapshot,
+        analysis,
+        options,
+        crate::calls::CallProfile::HostData,
+    )?);
     let roots: Vec<_> = document
         .exports()
         .iter()
@@ -577,7 +584,7 @@ pub fn compile_data(
         })
         .collect();
     lower_roots(
-        document, snapshot, analysis, resolver, options, admission, &roots,
+        document, snapshot, analysis, resolver, options, admission, &roots, calls,
     )
 }
 
@@ -597,14 +604,8 @@ pub(crate) fn lower_roots(
     options: CompileOptions<'_>,
     admission: Admission<'_>,
     roots: &[DemandRoot],
+    calls: Arc<crate::calls::Calls<'_>>,
 ) -> Result<DataPlan, CompileError> {
-    let calls = Arc::new(crate::calls::Calls::prepare(
-        document,
-        &snapshot,
-        analysis,
-        options,
-        crate::calls::CallProfile::SeededData,
-    )?);
     let folder = ConstantFolder::new(
         document,
         analysis,

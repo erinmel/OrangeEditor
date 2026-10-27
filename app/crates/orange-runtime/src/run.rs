@@ -206,7 +206,10 @@ impl StateLayout {
             .map(|source| {
                 if matches!(
                     source,
-                    HostSource::Variable(_) | HostSource::State(_) | HostSource::Iteration(_, _)
+                    HostSource::Variable(_)
+                        | HostSource::CallLocal(_)
+                        | HostSource::State(_)
+                        | HostSource::Iteration(_, _)
                 ) {
                     None
                 } else {
@@ -1613,12 +1616,16 @@ impl Run {
                             }),
                         })
                     }
-                    HostSource::Variable(index) => {
+                    HostSource::Variable(index) | HostSource::CallLocal(index) => {
                         let var = &plan.variables()[*index];
-                        let cell = if var.scope() == VarScope::Local {
-                            &shared.locals[self.layout.variables[*index]]
+                        let cell = if matches!(source, HostSource::CallLocal(_)) {
+                            // Volatile bodies cannot mutate locals; immutable initial values
+                            // implement fresh call-local reads without mutable frame allocation.
+                            var.initial()
+                        } else if var.scope() == VarScope::Local {
+                            shared.locals[self.layout.variables[*index]].as_ref()
                         } else {
-                            &self.variables[self.layout.variables[*index]]
+                            self.variables[self.layout.variables[*index]].as_ref()
                         };
                         Some(match cell {
                             Some(value) => FoldedValue::Value(value.clone()),

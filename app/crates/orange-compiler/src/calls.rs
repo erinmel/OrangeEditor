@@ -17,7 +17,7 @@ use std::sync::Arc;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum CallProfile {
     Pure,
-    SeededData,
+    HostData,
 }
 
 #[derive(Default)]
@@ -211,22 +211,39 @@ impl<'a> Calls<'a> {
                         node.definition.id.as_str(),
                         "core/function-entry" | "core/function-outputs"
                     );
-                    let seeded = profile == CallProfile::SeededData
+                    let state = profile == CallProfile::HostData
+                        && sig.kind == NodeKind::Volatile
+                        && crate::compile::is_state_read(snapshot, node);
+                    if state {
+                        crate::compile::admit_state_read(node.id, sig)?;
+                    }
+                    let seeded = profile == CallProfile::HostData
                         && sig.kind == NodeKind::Volatile
                         && (node.definition.id.as_str() == "core/call"
                             || crate::compile::is_seeded_entropy(snapshot, node));
-                    if !marker && sig.kind != NodeKind::Pure && !seeded {
+                    if !marker && sig.kind != NodeKind::Pure && !seeded && !state {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
                     let lazy = out.lazy(&BTreeMap::new(), cursor, node.id).is_some();
                     if node.definition.id.is_core()
                         && !marker
                         && !lazy
+                        && !state
                         && !matches!(node.definition.id.as_str(), "core/call" | "core/convert")
                     {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
-                    admit_data_ports(node.id, sig, lazy, OutputSource::Computed, options)?;
+                    admit_data_ports(
+                        node.id,
+                        sig,
+                        lazy,
+                        if state {
+                            OutputSource::State
+                        } else {
+                            OutputSource::Computed
+                        },
+                        options,
+                    )?;
                 }
                 for port in &sig.ports {
                     options.checkpoint()?;
@@ -244,7 +261,7 @@ impl<'a> Calls<'a> {
                     continue;
                 }
                 if !(sig.kind == NodeKind::Pure
-                    || (profile == CallProfile::SeededData && sig.kind == NodeKind::Volatile))
+                    || (profile == CallProfile::HostData && sig.kind == NodeKind::Volatile))
                     || node.definition.version != 1
                     || node.config_version != 1
                     || node.provider.is_some()

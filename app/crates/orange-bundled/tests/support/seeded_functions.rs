@@ -186,7 +186,7 @@ fn argument_fault_skips_entropy_and_preserves_the_first_live_invocation() {
 }
 
 #[test]
-fn pure_profile_and_state_read_bodies_fail_before_executable_binding() {
+fn pure_profile_refuses_volatile_bodies_and_data_state_reads_need_no_binding() {
     let (package, snapshot) = catalog();
     for state in [false, true] {
         let mut f = entropy_function(100, None);
@@ -223,16 +223,27 @@ fn pure_profile_and_state_read_bodies_fail_before_executable_binding() {
             Err(CompileError::UnsupportedNode { .. })
         ));
         if state {
-            assert!(
-                compile_data(
-                    &doc,
-                    snapshot.clone(),
-                    &analysis,
-                    &resolver,
-                    CompileOptions::default()
-                )
-                .is_err()
-            );
+            let plan = compile_data(
+                &doc,
+                snapshot.clone(),
+                &analysis,
+                &resolver,
+                CompileOptions::default(),
+            )
+            .unwrap();
+            assert_eq!(plan.host_inputs().len(), 1);
+            let mut frame = DataActivation::start(
+                Arc::new(plan),
+                &doc,
+                &snapshot,
+                1,
+                0,
+                DataOptions::default(),
+            )
+            .unwrap();
+            frame.begin_epoch().unwrap();
+            frame.set_input(0, Value::U64(19)).unwrap();
+            assert_eq!(value(&mut frame, 0, 1), Value::U64(19));
         }
         assert_eq!(resolver.pure.load(Ordering::Relaxed), 0);
         assert_eq!(resolver.entropy.load(Ordering::Relaxed), 0);
