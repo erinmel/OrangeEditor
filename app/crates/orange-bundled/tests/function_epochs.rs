@@ -619,3 +619,6 @@ mod seeded_functions;
 
 #[path = "support/state_functions.rs"]
 mod state_functions;
+
+#[path = "support/action_functions.rs"]
+mod action_functions;
