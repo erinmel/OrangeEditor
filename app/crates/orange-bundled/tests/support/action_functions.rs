@@ -1007,3 +1007,46 @@ fn returned_function_execution_projections_release_before_the_next_call() {
         Some(&Value::Str(Arc::new("b".repeat(40))))
     );
 }
+
+#[test]
+fn potential_variadic_steps_are_admitted_before_allocating_expanded_plans() {
+    let (package, snapshot) = catalog();
+    for called in [false, true] {
+        let mut sequence = core(if called { 103 } else { 2 }, "sequence");
+        sequence["variadic"] =
+            json!({"then":{"order":(0..1024).collect::<Vec<u32>>(),"next":1024}});
+        let (nodes, functions) = if called {
+            (
+                vec![start(), action_call(2, 100, 42)],
+                vec![
+                    json!({"id":id(100),"name":"large","kind":"action","inputs":[port("value","input","core/u64@1")],"outputs":[],"nodes":[core(101,"function-entry"),sequence,math(104,"add",1,2)],"edges":[edge(101,101,"then",103,"in")]}),
+                ],
+            )
+        } else {
+            (vec![start(), sequence, math(90, "add", 1, 2)], vec![])
+        };
+        let doc = document(
+            &package,
+            nodes,
+            vec![edge(1, 1, "then", 2, "in")],
+            vec![],
+            functions,
+            vec![],
+        );
+        let analysis = analyze(&doc, &snapshot);
+        assert!(
+            analysis.is_ready_for_lowering(&doc, &snapshot),
+            "{:?}",
+            analysis.report().diagnostics
+        );
+        let resolver = Counting::new(package.clone());
+        let mut options = CompileOptions::default();
+        options.limits.max_graph_items = 32;
+        assert!(matches!(
+            compile_control(&doc, snapshot.clone(), &analysis, &resolver, options),
+            Err(CompileError::ResourceLimit)
+        ));
+        assert_eq!(resolver.pure.load(Ordering::Relaxed), 0);
+        assert_eq!(resolver.entropy.load(Ordering::Relaxed), 0);
+    }
+}

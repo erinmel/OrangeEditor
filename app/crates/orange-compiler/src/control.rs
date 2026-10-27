@@ -851,6 +851,11 @@ pub fn compile_control(
                     .variadic
                     .get(&port.parse().expect("fixed port"))
                     .ok_or(CompileError::ValidationIncomplete)?;
+                charge(
+                    &mut graph_items,
+                    state.order.len(),
+                    options.limits.max_graph_items,
+                )?;
                 let steps = state
                     .order
                     .iter()
