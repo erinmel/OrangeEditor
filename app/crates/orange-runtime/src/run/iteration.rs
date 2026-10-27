@@ -118,7 +118,7 @@ fn frame(
     let hold = Hold::new(
         shared,
         a.checked_add(b)
-            .and_then(|n| n.checked_add(16))
+            .and_then(|n| n.checked_add(orange_model::value::shape::VALUE_CHARGE))
             .ok_or(RunError::ResourceLimit)?,
         credit,
         limit,

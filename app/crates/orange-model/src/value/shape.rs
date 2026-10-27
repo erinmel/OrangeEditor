@@ -347,7 +347,7 @@ impl ValueShape {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value::{MapRepr, NodeError};
+    use crate::value::{ListBuilder, ListPushError, MapRepr, NodeError};
     use std::sync::Arc;
 
     fn shape(text: &str) -> Option<ValueShape> {
@@ -489,5 +489,46 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(ty.equal_values(&a, &b), Some(true));
         assert_eq!(ty.equal_values(&a, &c), Some(false));
+    }
+
+    #[test]
+    fn decoded_literals_satisfy_their_shape_and_lists_share_one_packing() {
+        use crate::document::literal::Literal;
+        use crate::value::literal_codec::{SchemaSet, decode};
+        use serde_json::json;
+        for (ty, json) in [
+            ("core/list@1<core/u64@1>", json!(["1", "2"])),
+            ("core/list@1<core/string@1>", json!(["a", "b"])),
+            ("core/list@1<core/f64@1>", json!(["3ff0000000000000"])),
+            ("core/list@1<core/list@1<core/i32@1>>", json!([[1], [2, 3]])),
+            (
+                "core/option@1<core/option@1<core/i64@1>>",
+                json!({"some": {"none": true}}),
+            ),
+            (
+                "core/map@1<core/string@1,core/list@1<core/bool@1>>",
+                json!([["k", [true]]]),
+            ),
+        ] {
+            let ty: TypeExpr = ty.parse().unwrap();
+            let value = decode(&Literal::value(ty.clone(), json), &SchemaSet::default()).unwrap();
+            let shape = ValueShape::of(&ty).unwrap();
+            assert!(shape.accepts(&value), "{ty}");
+            if let (ValueShape::List(element), Value::List(items)) = (&shape, &value) {
+                let mut rebuilt = ListBuilder::new(Some(element));
+                for item in items.iter() {
+                    rebuilt.push(item).unwrap();
+                }
+                let rebuilt = rebuilt.finish();
+                assert_eq!(
+                    std::mem::discriminant(&rebuilt),
+                    std::mem::discriminant(items.as_ref()),
+                    "{ty}"
+                );
+            }
+        }
+        let mut strings = ListBuilder::new(Some(&ValueShape::String));
+        assert_eq!(strings.push(Value::U64(1)), Err(ListPushError::Mismatch));
+        assert!(strings.finish().is_empty());
     }
 }

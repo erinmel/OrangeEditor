@@ -5,7 +5,7 @@ use orange_model::document::{NodeKind, OutputSource, PortDescriptor, PortDirecti
 use orange_model::id::{NodeId, PortKey};
 use orange_model::validation::{Diagnostic, DiagnosticCode, Subject, ValidationAnalysis};
 use orange_model::value::literal_codec;
-use orange_model::value::shape::is_error_code;
+use orange_model::value::shape::{MAP_ENTRY_CHARGE, VALUE_CHARGE, is_error_code};
 use orange_model::{GraphDocument, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
@@ -160,7 +160,7 @@ pub(crate) fn decode(
 }
 fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Option<usize> {
     fn visit(value: &serde_json::Value, ty: &ValueShape, remaining: &mut usize) -> Option<()> {
-        *remaining = remaining.checked_sub(16)?;
+        *remaining = remaining.checked_sub(VALUE_CHARGE)?;
         match ty {
             ValueShape::Option(inner) => {
                 let object = value.as_object().filter(|o| o.len() == 1)?;
@@ -169,13 +169,13 @@ fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Opt
                 }
                 let some = object.get("some")?;
                 if !matches!(inner.as_ref(), ValueShape::Option(_)) {
-                    *remaining = remaining.checked_add(16)?;
+                    *remaining = remaining.checked_add(VALUE_CHARGE)?;
                 }
                 visit(some, inner, remaining)
             }
             ValueShape::List(inner) => {
                 let items = value.as_array()?;
-                if items.len().checked_mul(16)? > *remaining {
+                if items.len().checked_mul(VALUE_CHARGE)? > *remaining {
                     return None;
                 }
                 for item in items {
@@ -185,7 +185,7 @@ fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Opt
             }
             ValueShape::Map(key, inner) => {
                 let items = value.as_array()?;
-                if items.len().checked_mul(32)? > *remaining {
+                if items.len().checked_mul(MAP_ENTRY_CHARGE)? > *remaining {
                     return None;
                 }
                 for item in items {
@@ -198,7 +198,7 @@ fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Opt
             _ => {
                 let bytes = match value {
                     serde_json::Value::String(s) => s.len(),
-                    serde_json::Value::Bool(_) | serde_json::Value::Number(_) => 16,
+                    serde_json::Value::Bool(_) | serde_json::Value::Number(_) => VALUE_CHARGE,
                     _ => return None,
                 };
                 *remaining = remaining.checked_sub(bytes)?;
@@ -208,7 +208,7 @@ fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Opt
     }
     let mut remaining = limit;
     match payload {
-        LiteralPayload::Bits(bits) => return bits.len().checked_add(16),
+        LiteralPayload::Bits(bits) => return bits.len().checked_add(VALUE_CHARGE),
         LiteralPayload::Value(value) => visit(value, ty, &mut remaining)?,
     };
     Some(limit - remaining)

@@ -7,6 +7,9 @@ use orange_model::validation::Diagnostic;
 use orange_model::{GraphDocument, Value};
 use std::sync::Arc;
 
+/// Retained bytes of one published constant fault: static code, key, message and producer.
+const FAULT_CHARGE: usize = 64;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataStability {
     Const,
@@ -228,6 +231,6 @@ impl DataPlan {
             .checked_charge(value, limit)
     }
     pub fn fault_charge(&self, fault: &ConstantFault) -> Option<usize> {
-        valid_fault(fault.fault).then_some(64)
+        valid_fault(fault.fault).then_some(FAULT_CHARGE)
     }
 }

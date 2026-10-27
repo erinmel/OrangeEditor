@@ -143,6 +143,85 @@ impl ListRepr {
     }
 }
 
+/// Why [`ListBuilder::push`] refused an element. Nothing is appended on error.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ListPushError {
+    /// The element is not stored as the builder's packed element type.
+    Mismatch,
+    /// The allocation could not grow.
+    Capacity,
+}
+
+/// Builds a [`ListRepr`] in the one packing every producer uses: scalar and string
+/// elements are stored natively, everything else as generic values.
+#[derive(Debug, Clone)]
+pub struct ListBuilder(Packed);
+
+#[derive(Debug, Clone)]
+enum Packed {
+    Bool(Vec<bool>),
+    I32(Vec<i32>),
+    I64(Vec<i64>),
+    U32(Vec<u32>),
+    U64(Vec<u64>),
+    F32(Vec<f32>),
+    F64(Vec<f64>),
+    Str(Vec<Arc<String>>),
+    Values(Vec<Value>),
+}
+
+impl ListBuilder {
+    /// `element` is the element shape when it is executable; None stores generic values.
+    pub fn new(element: Option<&shape::ValueShape>) -> Self {
+        use shape::ValueShape as S;
+        Self(match element {
+            Some(S::Bool) => Packed::Bool(Vec::new()),
+            Some(S::I32) => Packed::I32(Vec::new()),
+            Some(S::I64) => Packed::I64(Vec::new()),
+            Some(S::U32) => Packed::U32(Vec::new()),
+            Some(S::U64) => Packed::U64(Vec::new()),
+            Some(S::F32) => Packed::F32(Vec::new()),
+            Some(S::F64) => Packed::F64(Vec::new()),
+            Some(S::String) => Packed::Str(Vec::new()),
+            _ => Packed::Values(Vec::new()),
+        })
+    }
+
+    pub fn push(&mut self, value: Value) -> Result<(), ListPushError> {
+        macro_rules! push {
+            ($($variant:ident),*) => {
+                match (&mut self.0, value) {
+                    $((Packed::$variant(items), Value::$variant(item)) => {
+                        items.try_reserve(1).map_err(|_| ListPushError::Capacity)?;
+                        items.push(item);
+                    })*
+                    (Packed::Values(items), item) => {
+                        items.try_reserve(1).map_err(|_| ListPushError::Capacity)?;
+                        items.push(item);
+                    }
+                    _ => return Err(ListPushError::Mismatch),
+                }
+            };
+        }
+        push!(Bool, I32, I64, U32, U64, F32, F64, Str);
+        Ok(())
+    }
+
+    pub fn finish(self) -> ListRepr {
+        match self.0 {
+            Packed::Bool(items) => ListRepr::Bool(items.into()),
+            Packed::I32(items) => ListRepr::I32(items.into()),
+            Packed::I64(items) => ListRepr::I64(items.into()),
+            Packed::U32(items) => ListRepr::U32(items.into()),
+            Packed::U64(items) => ListRepr::U64(items.into()),
+            Packed::F32(items) => ListRepr::F32(items.into()),
+            Packed::F64(items) => ListRepr::F64(items.into()),
+            Packed::Str(items) => ListRepr::Str(items.into()),
+            Packed::Values(items) => ListRepr::Values(items.into()),
+        }
+    }
+}
+
 /// Insertion-ordered entries with unique, non-float keys (11 §5.2).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct MapRepr {
