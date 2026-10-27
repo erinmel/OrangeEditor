@@ -70,7 +70,7 @@ fn bind(pattern: &TypeTerm, actual: &TypeTerm, args: &mut TypeArgs) -> Result<()
 }
 // Charge owned payload/metadata before cloning a specialized signature. This is
 // conservative retained-copy accounting, not an allocator/RSS measurement.
-fn charge_json(
+pub(crate) fn charge_json(
     value: &serde_json::Value,
     used: &mut usize,
     options: CompileOptions<'_>,

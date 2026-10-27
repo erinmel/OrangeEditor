@@ -482,18 +482,24 @@ fn selection_and_state_definitions() -> Vec<NodeDefinition> {
             "K",
             &["eq"],
         ),
-        definition(
-            "core/gate",
-            Action,
-            None,
-            vec![
-                PortDescriptor::exec_in("enter"),
-                PortDescriptor::exec_in("open"),
-                PortDescriptor::exec_in("close"),
-                PortDescriptor::exec_in("toggle"),
-                bool_state("is_open"),
-            ],
-        ),
+        {
+            let mut gate = definition(
+                "core/gate",
+                Action,
+                None,
+                vec![
+                    PortDescriptor::exec_in("enter"),
+                    PortDescriptor::exec_in("open"),
+                    PortDescriptor::exec_in("close"),
+                    PortDescriptor::exec_in("toggle"),
+                    bool_state("is_open"),
+                ],
+            );
+            gate.config_schema = Some(
+                serde_json::json!({"type":"object","properties":{"start_open":{"type":"boolean"}}}),
+            );
+            gate
+        },
         definition(
             "core/do-once",
             Action,

@@ -23,35 +23,106 @@ impl ControlIx {
     }
 }
 
+/// Compiler-resolved destination command. These are language tags, not saved IDs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecInput {
+    In,
+    Enter,
+    Open,
+    Close,
+    Toggle,
+    Reset,
+    Store,
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExecTarget {
+    node: ControlIx,
+    input: ExecInput,
+}
+impl ExecTarget {
+    pub fn node(self) -> ControlIx {
+        self.node
+    }
+    pub fn input(self) -> ExecInput {
+        self.input
+    }
+    pub fn index(self) -> usize {
+        self.node.index()
+    }
+}
+impl From<ControlIx> for ExecTarget {
+    fn from(node: ControlIx) -> Self {
+        Self {
+            node,
+            input: ExecInput::In,
+        }
+    }
+}
+fn destination(
+    node: ControlIx,
+    definition: &str,
+    port: &orange_model::id::PortKey,
+) -> Option<ExecTarget> {
+    if port.instance().is_some() {
+        return None;
+    }
+    let input = match (definition, port.port().as_str()) {
+        ("core/gate", "in" | "enter") => ExecInput::Enter,
+        ("core/gate", "open") => ExecInput::Open,
+        ("core/gate", "close") => ExecInput::Close,
+        ("core/gate", "toggle") => ExecInput::Toggle,
+        ("core/do-once" | "core/register", "reset") => ExecInput::Reset,
+        ("core/register", "in" | "store") => ExecInput::Store,
+        (_, "in") => ExecInput::In,
+        _ => return None,
+    };
+    Some(ExecTarget { node, input })
+}
+
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
+    Gate {
+        state: usize,
+    },
+    DoOnce {
+        state: usize,
+    },
+    FlipFlop {
+        state: usize,
+        a: Option<ExecTarget>,
+        b: Option<ExecTarget>,
+    },
+    Register {
+        state: usize,
+        next: usize,
+    },
     Switch {
         key: usize,
         cases: Box<[SwitchCase]>,
-        default: Option<ControlIx>,
+        default: Option<ExecTarget>,
     },
     MatchResult {
         result: usize,
         boxed: bool,
-        ok: Option<ControlIx>,
-        err: Option<ControlIx>,
+        ok: Option<ExecTarget>,
+        err: Option<ExecTarget>,
     },
     Entry,
     Fork {
-        branches: Box<[Option<ControlIx>]>,
-        completed: Option<ControlIx>,
+        branches: Box<[Option<ExecTarget>]>,
+        completed: Option<ExecTarget>,
         join: ForkJoin,
     },
     While {
         condition: usize,
-        body: Option<ControlIx>,
-        completed: Option<ControlIx>,
+        body: Option<ExecTarget>,
+        completed: Option<ExecTarget>,
         max_iterations: u64,
     },
     Count {
         count: usize,
-        body: Option<ControlIx>,
-        completed: Option<ControlIx>,
+        body: Option<ExecTarget>,
+        completed: Option<ExecTarget>,
     },
     Break,
     Continue,
@@ -60,7 +131,7 @@ pub enum ControlOperation {
         duration: usize,
     },
     Sequence {
-        steps: Box<[Option<ControlIx>]>,
+        steps: Box<[Option<ExecTarget>]>,
     },
     Set {
         variable: usize,
@@ -68,8 +139,8 @@ pub enum ControlOperation {
     },
     Branch {
         condition: usize,
-        when_true: Option<ControlIx>,
-        when_false: Option<ControlIx>,
+        when_true: Option<ExecTarget>,
+        when_false: Option<ExecTarget>,
     },
 }
 
@@ -82,14 +153,18 @@ pub enum ForkJoin {
     Detach,
 }
 
-pub struct ControlVariable {
-    id: VariableId,
+pub type ControlVariable = ControlCell<VariableId>;
+pub type ControlState = ControlCell<NodeId>;
+/// Checked typed cell metadata shared by declaration variables and node state.
+/// Id keeps those two identity spaces distinct at compile time.
+pub struct ControlCell<Id> {
+    id: Id,
     scope: VarScope,
     ty: PlanType,
     initial: Option<Value>,
 }
-impl ControlVariable {
-    pub fn id(&self) -> VariableId {
+impl<Id: Copy> ControlCell<Id> {
+    pub fn id(&self) -> Id {
         self.id
     }
     pub fn scope(&self) -> VarScope {
@@ -111,15 +186,16 @@ pub enum HostSource {
     Error(ControlIx),
     Index(ControlIx),
     Value(ControlIx),
+    State(usize),
 }
 
 #[derive(Debug, Clone)]
 pub struct ControlNode {
     pub(crate) node: NodeId,
     pub(crate) operation: ControlOperation,
-    pub(crate) then: Option<ControlIx>,
-    pub(crate) failed: Option<ControlIx>,
-    pub(crate) cancelled: Option<ControlIx>,
+    pub(crate) then: Option<ExecTarget>,
+    pub(crate) failed: Option<ExecTarget>,
+    pub(crate) cancelled: Option<ExecTarget>,
     pub(crate) fault_policy: FaultPolicy,
     pub(crate) loop_owner: Option<ControlIx>,
 }
@@ -130,13 +206,13 @@ impl ControlNode {
     pub fn operation(&self) -> &ControlOperation {
         &self.operation
     }
-    pub fn then(&self) -> Option<ControlIx> {
+    pub fn then(&self) -> Option<ExecTarget> {
         self.then
     }
-    pub fn failed(&self) -> Option<ControlIx> {
+    pub fn failed(&self) -> Option<ExecTarget> {
         self.failed
     }
-    pub fn cancelled(&self) -> Option<ControlIx> {
+    pub fn cancelled(&self) -> Option<ExecTarget> {
         self.cancelled
     }
     pub fn fault_policy(&self) -> FaultPolicy {
@@ -158,6 +234,7 @@ pub struct ControlPlan {
     pub(crate) starts: Box<[ControlIx]>,
     pub(crate) stops: Box<[ControlIx]>,
     pub(crate) variables: Box<[ControlVariable]>,
+    states: Box<[ControlState]>,
     pub(crate) host_sources: Box<[HostSource]>,
     root_inputs: Box<[Arc<[usize]>]>,
     index_targets: Box<[Box<[usize]>]>,
@@ -188,6 +265,9 @@ impl ControlPlan {
     }
     pub fn variables(&self) -> &[ControlVariable] {
         &self.variables
+    }
+    pub fn states(&self) -> &[ControlState] {
+        &self.states
     }
     /// Parallel to data().host_inputs(), resolved once outside execution.
     pub fn host_sources(&self) -> &[HostSource] {
@@ -248,7 +328,11 @@ pub fn compile_control(
         }
         if !matches!(
             node.definition.id.as_str(),
-            "core/switch"
+            "core/gate"
+                | "core/do-once"
+                | "core/flip-flop"
+                | "core/register"
+                | "core/switch"
                 | "core/match-result"
                 | "core/on-start"
                 | "core/on-stop"
@@ -336,6 +420,75 @@ pub fn compile_control(
         }
         variable_nodes.insert(node.id, variable_ids[&id]);
     }
+    let mut states = Vec::new();
+    let mut state_nodes = BTreeMap::new();
+    for id in &controls {
+        options.checkpoint()?;
+        let node = &document.root().nodes[id];
+        let (scope, ty, initial) = match node.definition.id.as_str() {
+            "core/gate" => {
+                let open = match node.config.get("start_open") {
+                    None => false,
+                    Some(value) => value.as_bool().ok_or(CompileError::ValidationIncomplete)?,
+                };
+                (VarScope::Run, PlanType::Bool, Some(Value::Bool(open)))
+            }
+            "core/do-once" | "core/flip-flop" => {
+                (VarScope::Run, PlanType::Bool, Some(Value::Bool(false)))
+            }
+            "core/register" => {
+                let port = analysis.report().resolved[id]
+                    .ports
+                    .iter()
+                    .find(|p| p.port_id.as_str() == "current")
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                let ty = port_type(*id, port)?;
+                let scope = match node.config.get("scope").and_then(|s| s.as_str()) {
+                    None | Some("run") => VarScope::Run,
+                    Some("activation") => VarScope::Local,
+                    _ => return Err(CompileError::ValidationIncomplete),
+                };
+                let initial = if let Some(raw) = node.config.get("initial") {
+                    let mut admitted = bytes;
+                    crate::calls::charge_json(raw, &mut admitted, options)?;
+                    let literal = serde_json::from_value(raw.clone()).map_err(|_| {
+                        CompileError::InvalidLiteral {
+                            node: *id,
+                            port: key(port),
+                        }
+                    })?;
+                    Some(
+                        decode(
+                            &literal,
+                            &ty,
+                            &snapshot,
+                            options.limits.max_constant_bytes.saturating_sub(bytes),
+                        )?
+                        .ok_or_else(|| CompileError::InvalidLiteral {
+                            node: *id,
+                            port: key(port),
+                        })?,
+                    )
+                } else {
+                    None
+                };
+                (scope, ty, initial)
+            }
+            _ => continue,
+        };
+        charge(
+            &mut bytes,
+            initial.as_ref().map_or(16, value_bytes),
+            options.limits.max_constant_bytes,
+        )?;
+        state_nodes.insert(*id, states.len());
+        states.push(ControlState {
+            id: *id,
+            scope,
+            ty,
+            initial,
+        });
+    }
     let mut adjacency = BTreeMap::new();
     let mut producers = BTreeMap::new();
     for edge in document.root().edges.values() {
@@ -351,7 +504,16 @@ pub fn compile_control(
                     .iter()
                     .any(|p| p.port_id == *edge.from.port.port() && p.kind == PortKind::Exec)
             {
-                adjacency.insert((edge.from.node, edge.from.port.clone()), ids[&edge.to.node]);
+                let to = destination(
+                    ids[&edge.to.node],
+                    document.root().nodes[&edge.to.node].definition.id.as_str(),
+                    &edge.to.port,
+                )
+                .ok_or_else(|| CompileError::UnsupportedPort {
+                    node: edge.to.node,
+                    port: edge.to.port.clone(),
+                })?;
+                adjacency.insert((edge.from.node, edge.from.port.clone()), to);
             }
         }
     }
@@ -368,6 +530,21 @@ pub fn compile_control(
                 .copied()
         };
         let operation = match node.definition.id.as_str() {
+            "core/gate" => ControlOperation::Gate {
+                state: state_nodes[id],
+            },
+            "core/do-once" => ControlOperation::DoOnce {
+                state: state_nodes[id],
+            },
+            "core/flip-flop" => ControlOperation::FlipFlop {
+                state: state_nodes[id],
+                a: target("a"),
+                b: target("b"),
+            },
+            "core/register" => ControlOperation::Register {
+                state: state_nodes[id],
+                next: input_root(&mut roots, *id, "next"),
+            },
             "core/switch" => {
                 let port = analysis.report().resolved[id]
                     .ports
@@ -652,6 +829,13 @@ pub fn compile_control(
                 return Ok(HostSource::Variable(*variable));
             }
             let source = &data.slot_sources()[node.outputs()[0].index()];
+            if matches!(source.port.port().as_str(), "is_open" | "is_a" | "current") {
+                return state_nodes
+                    .get(&source.node)
+                    .copied()
+                    .map(HostSource::State)
+                    .ok_or(CompileError::ValidationIncomplete);
+            }
             match source.port.port().as_str() {
                 "value"
                     if matches!(
@@ -689,7 +873,7 @@ pub fn compile_control(
             HostSource::Index(owner) => index_targets[owner.index()].push(i),
             HostSource::Error(owner) => error_targets[owner.index()].push(i),
             HostSource::Value(owner) => value_targets[owner.index()].push(i),
-            HostSource::Variable(_) => {}
+            HostSource::Variable(_) | HostSource::State(_) => {}
         }
     }
     let empty: Arc<[usize]> = Arc::from([]);
@@ -748,6 +932,7 @@ pub fn compile_control(
         starts: starts.into(),
         stops: stops.into(),
         variables: variables.into(),
+        states: states.into(),
         host_sources: host_sources.into(),
         root_inputs: root_inputs.into(),
         value_targets: value_targets
