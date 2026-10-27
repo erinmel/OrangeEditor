@@ -96,7 +96,7 @@ impl ConverterRegistryBuilder {
     ) -> Result<ConverterKey, ConverterRegistrationError> {
         if package_namespace == "core" || definition.id.namespace() != package_namespace {
             return Err(ConverterRegistrationError::EntryNamespaceMismatch {
-                entry: definition.id.clone(),
+                entry: definition.id,
                 owner: package_namespace.to_owned(),
             });
         }
@@ -106,7 +106,7 @@ impl ConverterRegistryBuilder {
         if !owns_endpoint {
             return Err(ConverterRegistrationError::ForeignToForeign {
                 from: definition.from.clone(),
-                to: definition.to.clone(),
+                to: definition.to,
                 owner: package_namespace.to_owned(),
             });
         }
@@ -203,7 +203,7 @@ impl ConverterRegistryBuilder {
     ) -> Result<ConverterKey, ConverterRegistrationError> {
         if definition.id.namespace() != "core" {
             return Err(ConverterRegistrationError::EntryNamespaceMismatch {
-                entry: definition.id.clone(),
+                entry: definition.id,
                 owner: "core".to_owned(),
             });
         }
@@ -211,7 +211,7 @@ impl ConverterRegistryBuilder {
         if !matches!(from_owner, TypeOwner::Core) && !matches!(to_owner, TypeOwner::Core) {
             return Err(ConverterRegistrationError::ForeignToForeign {
                 from: definition.from.clone(),
-                to: definition.to.clone(),
+                to: definition.to,
                 owner: "core".to_owned(),
             });
         }

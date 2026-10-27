@@ -609,7 +609,7 @@ fn project_contract(
     );
     let rigid: Vec<String> = body_rigid_params(pass.document, body)
         .iter()
-        .map(|param| param.name.to_string())
+        .map(|param| param.name.clone())
         .collect();
     let failures = projected_type_failures(&projected, pass.registry.types(), &rigid);
     if failures.is_empty() {

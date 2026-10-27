@@ -652,7 +652,7 @@ fn check_argument(
         .to_string()
         .parse()
         .expect("a concrete type term prints as a nonblank type expression");
-    let rigid_names: Vec<String> = rigid.iter().map(|param| param.name.to_string()).collect();
+    let rigid_names: Vec<String> = rigid.iter().map(|param| param.name.clone()).collect();
     types
         .validate_scoped(term, &rigid_names)
         .map_err(|error| InferenceIssue::UnknownType {
