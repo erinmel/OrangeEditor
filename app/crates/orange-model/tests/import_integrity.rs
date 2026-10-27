@@ -108,3 +108,62 @@ fn byte_limit_precedes_json_parsing() {
         })
     ));
 }
+
+fn function(nodes: Value, edges: Value) -> Value {
+    json!({"id": "50000000-0000-4000-8000-000000000001", "name": "f", "kind": "pure", "nodes": nodes, "edges": edges})
+}
+
+#[test]
+fn node_quota_rejects_before_the_body_is_built() {
+    // The last node is malformed: building the body would fail on it, so the quota error
+    // shows the count was checked before any node was materialized.
+    let mut nodes: Vec<Value> = (1..=200).map(branch_node).collect();
+    nodes.push(json!({}));
+    let text = minimal_document(json!({"nodes": nodes}));
+    assert!(matches!(
+        from_json_with_limits(&text, ImportLimits::new(text.len(), 1, 0)),
+        Err(CodecError::ImportLimitExceeded {
+            resource: ImportResource::Nodes,
+            max: 1,
+            actual: 201,
+        })
+    ));
+}
+
+#[test]
+fn quotas_count_function_bodies() {
+    let text = minimal_document(json!({
+        "nodes": [branch_node(1)],
+        "functions": [function(json!([branch_node(2), branch_node(3)]), json!([common::edge(1, 2, 3)]))],
+        // Look-alike keys outside graph bodies are not counted.
+        "editor": {"nodes": [1, 2, 3], "edges": [1]},
+        "future": {"functions": [{"nodes": [1], "edges": [1]}]}
+    }));
+    let limits = |nodes, edges| ImportLimits::new(text.len(), nodes, edges);
+    assert!(from_json_with_limits(&text, limits(3, 1)).is_ok());
+    assert!(matches!(
+        from_json_with_limits(&text, limits(2, 1)),
+        Err(CodecError::ImportLimitExceeded {
+            resource: ImportResource::Nodes,
+            max: 2,
+            actual: 3,
+        })
+    ));
+    assert!(matches!(
+        from_json_with_limits(&text, limits(3, 0)),
+        Err(CodecError::ImportLimitExceeded {
+            resource: ImportResource::Edges,
+            max: 0,
+            actual: 1,
+        })
+    ));
+}
+
+#[test]
+fn newer_version_is_reported_before_quotas() {
+    let text = minimal_document(json!({"format_version": 2, "nodes": [branch_node(1)]}));
+    assert!(matches!(
+        from_json_with_limits(&text, ImportLimits::new(text.len(), 0, 0)),
+        Err(CodecError::UnsupportedVersion { found: 2 })
+    ));
+}

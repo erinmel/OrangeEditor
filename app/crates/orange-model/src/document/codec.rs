@@ -6,7 +6,7 @@ use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hash;
 
-use serde::de::{self, Deserializer, MapAccess, SeqAccess, Visitor};
+use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
 
 use crate::document::GraphDocument;
@@ -17,9 +17,11 @@ pub const FORMAT_VERSION: u32 = 1;
 
 /// Configurable safety limits for loading one graph document.
 ///
-/// The defaults are 64 MiB of JSON text, 100,000 nodes, and 500,000 edges. Node and edge
-/// limits are checked after structural deserialization; only `max_bytes` prevents the
-/// parser from allocating in proportion to an oversized input.
+/// The defaults are 64 MiB of JSON text, 100,000 nodes, and 500,000 edges. `max_bytes` is
+/// checked before parsing. Node and edge limits are checked on counts taken by a streaming
+/// pre-pass that keeps no values, so an over-quota document is rejected before any node or
+/// edge is built. A document within its quotas is still built in memory proportional to
+/// its size, which `max_bytes` bounds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportLimits {
     pub max_bytes: usize,
@@ -43,12 +45,62 @@ impl Default for ImportLimits {
     }
 }
 
-/// The first pass over the whole text: the envelope fields, plus the first repeated
-/// object key at any depth. Serde maps would otherwise keep the last value silently.
+/// The first pass over the whole text: the envelope fields, the first repeated object key
+/// at any depth (Serde maps would otherwise keep the last value silently), and the node and
+/// edge counts of every body. It keeps no values, so quotas apply before anything is built.
 struct Header {
     format: String,
     format_version: u32,
     duplicate: Option<String>,
+    counts: Counts,
+}
+
+/// Array elements under the root's and each function's `nodes` and `edges`.
+#[derive(Default)]
+struct Counts {
+    nodes: usize,
+    edges: usize,
+}
+
+/// Where a scanned value sits in the document, so only graph bodies are counted.
+#[derive(Clone, Copy)]
+enum Place {
+    Root,
+    Functions,
+    Function,
+    Nodes,
+    Edges,
+    Other,
+}
+
+impl Place {
+    /// The place of the value under `key` in an object at this place.
+    fn field(self, key: &str) -> Place {
+        match (self, key) {
+            (Place::Root | Place::Function, "nodes") => Place::Nodes,
+            (Place::Root | Place::Function, "edges") => Place::Edges,
+            (Place::Root, "functions") => Place::Functions,
+            _ => Place::Other,
+        }
+    }
+
+    /// The place of each element of an array at this place.
+    fn element(self) -> Place {
+        match self {
+            Place::Functions => Place::Function,
+            _ => Place::Other,
+        }
+    }
+}
+
+impl Counts {
+    fn add_element(&mut self, array: Place) {
+        match array {
+            Place::Nodes => self.nodes = self.nodes.saturating_add(1),
+            Place::Edges => self.edges = self.edges.saturating_add(1),
+            _ => {}
+        }
+    }
 }
 
 impl<'de> Deserialize<'de> for Header {
@@ -70,6 +122,7 @@ impl<'de> Visitor<'de> for HeaderVisitor {
         let (mut format, mut format_version) = (None, None);
         let mut seen = Seen::default();
         let mut duplicate = None;
+        let mut counts = Counts::default();
         while let Some(Key(key)) = map.next_key()? {
             let found = match key.as_ref() {
                 "format" => {
@@ -80,7 +133,10 @@ impl<'de> Visitor<'de> for HeaderVisitor {
                     format_version = Some(map.next_value::<u32>()?);
                     None
                 }
-                _ => map.next_value::<Scan>()?.0,
+                other => map.next_value_seed(Scan {
+                    place: Place::Root.field(other),
+                    counts: &mut counts,
+                })?,
             };
             note_key(&mut seen, key, &mut duplicate);
             duplicate = duplicate.or(found);
@@ -90,61 +146,77 @@ impl<'de> Visitor<'de> for HeaderVisitor {
             format_version: format_version
                 .ok_or_else(|| de::Error::missing_field("format_version"))?,
             duplicate,
+            counts,
         })
     }
 }
 
-/// Any JSON value, keeping only the first repeated object key found inside it.
-struct Scan(Option<String>);
+/// Any JSON value at `place`, yielding only the first repeated object key found inside it
+/// and adding the body items it holds to `counts`. Shape is not checked here, so a newer
+/// document still reaches the version gate.
+struct Scan<'c> {
+    place: Place,
+    counts: &'c mut Counts,
+}
 
-impl<'de> Deserialize<'de> for Scan {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_any(ScanVisitor)
+impl<'de> DeserializeSeed<'de> for Scan<'_> {
+    type Value = Option<String>;
+
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        deserializer.deserialize_any(self)
     }
 }
 
-struct ScanVisitor;
-
-impl<'de> Visitor<'de> for ScanVisitor {
-    type Value = Scan;
+impl<'de> Visitor<'de> for Scan<'_> {
+    type Value = Option<String>;
 
     fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("any JSON value")
     }
-    fn visit_bool<E>(self, _: bool) -> Result<Scan, E> {
-        Ok(Scan(None))
+    fn visit_bool<E>(self, _: bool) -> Result<Self::Value, E> {
+        Ok(None)
     }
-    fn visit_i64<E>(self, _: i64) -> Result<Scan, E> {
-        Ok(Scan(None))
+    fn visit_i64<E>(self, _: i64) -> Result<Self::Value, E> {
+        Ok(None)
     }
-    fn visit_u64<E>(self, _: u64) -> Result<Scan, E> {
-        Ok(Scan(None))
+    fn visit_u64<E>(self, _: u64) -> Result<Self::Value, E> {
+        Ok(None)
     }
-    fn visit_f64<E>(self, _: f64) -> Result<Scan, E> {
-        Ok(Scan(None))
+    fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
+        Ok(None)
     }
-    fn visit_str<E>(self, _: &str) -> Result<Scan, E> {
-        Ok(Scan(None))
+    fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+        Ok(None)
     }
-    fn visit_unit<E>(self) -> Result<Scan, E> {
-        Ok(Scan(None))
+    fn visit_unit<E>(self) -> Result<Self::Value, E> {
+        Ok(None)
     }
-    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Scan, A::Error> {
+    fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
+        let Scan { place, counts } = self;
         let mut duplicate = None;
-        while let Some(Scan(found)) = seq.next_element()? {
+        while let Some(found) = seq.next_element_seed(Scan {
+            place: place.element(),
+            counts: &mut *counts,
+        })? {
+            counts.add_element(place);
             duplicate = duplicate.or(found);
         }
-        Ok(Scan(duplicate))
+        Ok(duplicate)
     }
-    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Scan, A::Error> {
+    fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+        let Scan { place, counts } = self;
         let mut seen = Seen::default();
         let mut duplicate = None;
         while let Some(Key(key)) = map.next_key()? {
+            let child = place.field(&key);
             note_key(&mut seen, key, &mut duplicate);
-            let Scan(found) = map.next_value()?;
+            let found = map.next_value_seed(Scan {
+                place: child,
+                counts: &mut *counts,
+            })?;
             duplicate = duplicate.or(found);
         }
-        Ok(Scan(duplicate))
+        Ok(duplicate)
     }
 }
 
@@ -228,8 +300,11 @@ pub fn from_json(text: &str) -> Result<GraphDocument, CodecError> {
 
 /// Loads a format v1 document subject to caller-supplied import limits.
 ///
-/// The byte limit is enforced before parsing. Node and edge limits are structural checks
-/// after deserialization and therefore do not bound the allocations made while parsing.
+/// The byte limit is enforced before parsing. One streaming pass then reads the envelope,
+/// finds repeated keys and counts the nodes and edges of the root and every function body.
+/// Errors come in this order: format, version, duplicate key, node quota, edge quota, then
+/// shape and identity errors from building the document. Quotas therefore bound what is
+/// built: an over-quota document fails before any node or edge is materialized.
 pub fn from_json_with_limits(
     text: &str,
     limits: ImportLimits,
@@ -250,22 +325,14 @@ pub fn from_json_with_limits(
     if let Some(key) = header.duplicate {
         return Err(CodecError::DuplicateKey { key });
     }
+    enforce_limit(ImportResource::Nodes, header.counts.nodes, limits.max_nodes)?;
+    enforce_limit(ImportResource::Edges, header.counts.edges, limits.max_edges)?;
     // Deserialize the body directly: wrapping the entire graph in another flattened
     // struct buffers it through Serde's intermediate representation a second time.
     // `format` is envelope-owned, not an extension; keep other extension key order.
     let mut document: GraphDocument = serde_json::from_str(text)?;
     document.extensions.shift_remove("format");
     check_unique_across_bodies(&document)?;
-    let (nodes, edges) = document
-        .bodies()
-        .fold((0usize, 0usize), |(nodes, edges), body| {
-            (
-                nodes.saturating_add(body.nodes.len()),
-                edges.saturating_add(body.edges.len()),
-            )
-        });
-    enforce_limit(ImportResource::Nodes, nodes, limits.max_nodes)?;
-    enforce_limit(ImportResource::Edges, edges, limits.max_edges)?;
     check_unique_locks(&document)?;
     Ok(document)
 }
