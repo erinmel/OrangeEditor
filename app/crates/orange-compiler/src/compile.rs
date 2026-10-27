@@ -109,6 +109,37 @@ pub(crate) fn value_bytes(ty: &ValueShape, value: &Value) -> Result<usize, Compi
     ty.checked_charge(value, usize::MAX)
         .map_err(|_| CompileError::ValidationIncomplete)
 }
+/// Whether a binding's port order is exactly the demanded inputs and declared outputs.
+pub(crate) fn matches_abi(
+    inputs: &[PortKey],
+    outputs: &[PortKey],
+    expected_inputs: &[&PortDescriptor],
+    expected_outputs: &[&PortDescriptor],
+) -> bool {
+    inputs
+        .iter()
+        .cloned()
+        .eq(expected_inputs.iter().map(|p| key(p)))
+        && outputs
+            .iter()
+            .cloned()
+            .eq(expected_outputs.iter().map(|p| key(p)))
+}
+pub(crate) fn binding_error(node: NodeId, error: ResolveError) -> CompileError {
+    match error {
+        ResolveError::Unavailable => CompileError::KernelUnavailable { node },
+        ResolveError::Contract => CompileError::KernelContract { node },
+    }
+}
+/// The first fault among already folded slots, in order.
+fn first_fault(plan: &PurePlan, slots: impl IntoIterator<Item = SlotIx>) -> Option<ConstantFault> {
+    slots
+        .into_iter()
+        .find_map(|slot| match &plan.constants[slot.index()] {
+            FoldedValue::Fault(fault) => Some(fault.clone()),
+            FoldedValue::Value(_) => None,
+        })
+}
 fn push_slot(
     plan: &mut PurePlan,
     ty: ValueShape,
@@ -519,13 +550,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                 }
                 // The result marker gathers required inputs in declaration order.
                 // Its first fault is the call's failure, shared by every result.
-                let fault =
-                    results
-                        .iter()
-                        .find_map(|(_, slot)| match &plan.constants[slot.index()] {
-                            FoldedValue::Fault(fault) => Some(fault.clone()),
-                            _ => None,
-                        });
+                let fault = first_fault(plan, results.iter().map(|(_, slot)| *slot));
                 for (port, mut slot) in results {
                     if let Some(fault) = &fault {
                         slot = push_slot(
@@ -647,12 +672,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                         context.source(node_id, port, plan, outputs, bytes)?.slot,
                     ));
                 }
-                let fault = args
-                    .iter()
-                    .find_map(|(_, slot)| match &plan.constants[slot.index()] {
-                        FoldedValue::Fault(fault) => Some(fault.clone()),
-                        _ => None,
-                    });
+                let fault = first_fault(plan, args.iter().map(|(_, slot)| *slot));
                 if let Some(fault) = fault {
                     for port in output_ports {
                         let slot = push_slot(
@@ -719,24 +739,14 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             } else {
                 resolver
                     .resolve(document, node, sig, snapshot.clone())
-                    .map_err(|error| match error {
-                        ResolveError::Unavailable => {
-                            CompileError::KernelUnavailable { node: node_id }
-                        }
-                        ResolveError::Contract => CompileError::KernelContract { node: node_id },
-                    })?
+                    .map_err(|error| binding_error(node_id, error))?
             };
-            if !binding
-                .inputs
-                .iter()
-                .cloned()
-                .eq(input_ports.iter().map(|p| key(p)))
-                || !binding
-                    .outputs
-                    .iter()
-                    .cloned()
-                    .eq(output_ports.iter().map(|p| key(p)))
-            {
+            if !matches_abi(
+                &binding.inputs,
+                &binding.outputs,
+                &input_ports,
+                &output_ports,
+            ) {
                 return Err(CompileError::KernelContract { node: node_id });
             }
             let mut inputs = Vec::new();
@@ -750,13 +760,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     context.source(node_id, port, plan, outputs, bytes)?
                 });
             }
-            let inherited =
-                inputs
-                    .iter()
-                    .find_map(|input| match &plan.constants[input.slot.index()] {
-                        FoldedValue::Fault(fault) => Some(fault.clone()),
-                        _ => None,
-                    });
+            let inherited = first_fault(plan, inputs.iter().map(|input| input.slot));
             input_values.clear();
             output_values.clear();
             output_values.resize(output_ports.len(), Value::Unit);

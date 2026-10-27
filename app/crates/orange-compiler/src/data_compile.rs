@@ -1,6 +1,6 @@
 use crate::compile::{
-    Admission, ConstantFolder, FAULT_CHARGE, Incoming, admit, charge, decode, is_state_read, key,
-    port_type, value_bytes,
+    Admission, ConstantFolder, FAULT_CHARGE, Incoming, admit, binding_error, charge, decode,
+    is_state_read, key, matches_abi, port_type, value_bytes,
 };
 use crate::lazy::Lazy;
 use crate::*;
@@ -627,28 +627,6 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         Ok(())
     }
 }
-fn matches_abi(
-    inputs: &[PortKey],
-    outputs: &[PortKey],
-    expected_inputs: &[&PortDescriptor],
-    expected_outputs: &[&PortDescriptor],
-) -> bool {
-    inputs
-        .iter()
-        .cloned()
-        .eq(expected_inputs.iter().map(|p| key(p)))
-        && outputs
-            .iter()
-            .cloned()
-            .eq(expected_outputs.iter().map(|p| key(p)))
-}
-fn binding_error(node: NodeId, error: ResolveError) -> CompileError {
-    match error {
-        ResolveError::Unavailable => CompileError::KernelUnavailable { node },
-        ResolveError::Contract => CompileError::KernelContract { node },
-    }
-}
-
 /// Compile fresh pure/seeded-entropy computed exports and graph-local Pure/seeded-volatile calls.
 /// Static selectors prune
 /// inactive alternatives; epoch-dependent selectors retain both possible arms.
