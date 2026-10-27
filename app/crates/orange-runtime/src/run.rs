@@ -3,7 +3,7 @@ use crate::data::{CleanupScope, HostPoll, PreparedData};
 use crate::{DataActivation, DataError, DataOptions};
 use orange_compiler::{
     ConstantFault, ControlIx, ControlOperation, ControlPlan, FoldedValue, ForkJoin, HostSource,
-    KernelFault,
+    KernelFault, SwitchKey,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{FaultPolicy, VarScope};
@@ -51,6 +51,10 @@ pub enum StopMode {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ControlOutcome {
+    Case(u16),
+    Default,
+    MatchedOk,
+    MatchedErr,
     Forked,
     Then,
     True,
@@ -244,6 +248,7 @@ struct Strand {
     cleanup_remaining: usize,
 }
 struct ActivationState {
+    matched_bytes: usize,
     cleanup_scope: Option<CleanupScope>,
     cleanup_remaining: usize,
     pull_owner: Option<u64>,
@@ -392,6 +397,7 @@ impl Run {
             .enumerate()
         {
             activations.push(Some(Box::new(ActivationState {
+                matched_bytes: 0,
                 cleanup_scope: None,
                 cleanup_remaining: options.max_cleanup_operations,
                 pull_owner: None,
@@ -876,6 +882,8 @@ impl Run {
                 node.operation(),
                 ControlOperation::Entry
                     | ControlOperation::Branch { .. }
+                    | ControlOperation::Switch { .. }
+                    | ControlOperation::MatchResult { .. }
                     | ControlOperation::Sequence { .. }
                     | ControlOperation::Set { .. }
             )
@@ -903,6 +911,90 @@ impl Run {
             return Ok(());
         }
         let (next, outcome, fault) = match node.operation() {
+            ControlOperation::Switch {
+                key,
+                cases,
+                default,
+            } => {
+                let Some(result) = self.consume(activation, shared, *key, budget)? else {
+                    return Ok(());
+                };
+                match result {
+                    FoldedValue::Fault(fault) => {
+                        (node.failed(), ControlOutcome::Failed, Some(fault))
+                    }
+                    FoldedValue::Value(value) => {
+                        let key = SwitchKey::from_value(&value)
+                            .ok_or(DataError::KernelContract { node: node.node() })?;
+                        match cases.binary_search_by(|case| case.key().cmp(&key)) {
+                            Ok(index) => (
+                                cases[index].target(),
+                                ControlOutcome::Case(cases[index].instance()),
+                                None,
+                            ),
+                            Err(_) => (*default, ControlOutcome::Default, None),
+                        }
+                    }
+                }
+            }
+            ControlOperation::MatchResult {
+                result,
+                boxed,
+                ok,
+                err,
+            } => {
+                let Some(result) = self.consume(activation, shared, *result, budget)? else {
+                    return Ok(());
+                };
+                match result {
+                    FoldedValue::Fault(fault) => {
+                        Self::publish_match_value(
+                            plan,
+                            &self.layout,
+                            shared,
+                            ix,
+                            None,
+                            self.options.limits.max_state_bytes,
+                        )?;
+                        (node.failed(), ControlOutcome::Failed, Some(fault))
+                    }
+                    FoldedValue::Value(Value::Err(error)) => {
+                        Self::publish_match_value(
+                            plan,
+                            &self.layout,
+                            shared,
+                            ix,
+                            None,
+                            self.options.limits.max_state_bytes,
+                        )?;
+                        for &i in plan.error_targets(ix) {
+                            shared.outputs[self.layout.outputs[i].expect("checked output")] =
+                                Some(FoldedValue::Value(Value::Err(error.clone())));
+                        }
+                        (*err, ControlOutcome::MatchedErr, None)
+                    }
+                    FoldedValue::Value(value) => {
+                        let value = match (boxed, value) {
+                            (true, Value::Ok(value)) => value.as_ref().clone(),
+                            (false, value) => value,
+                            _ => return Err(DataError::KernelContract { node: node.node() }.into()),
+                        };
+                        Self::publish_match_value(
+                            plan,
+                            &self.layout,
+                            shared,
+                            ix,
+                            Some(value),
+                            self.options.limits.max_state_bytes,
+                        )?;
+                        for &i in plan.error_targets(ix) {
+                            shared.outputs[self.layout.outputs[i].expect("checked output")] = None;
+                        }
+                        (*ok, ControlOutcome::MatchedOk, None)
+                    }
+                }
+            }
+
             ControlOperation::Fork { .. } => {
                 activation.fork = Some(ix);
                 (None, ControlOutcome::Forked, None)
@@ -1110,7 +1202,14 @@ impl Run {
                         let bytes = retained
                             .checked_sub(old)
                             .and_then(|b| b.checked_add(new))
-                            .filter(|b| *b <= self.options.limits.max_state_bytes)
+                            .filter(|b| {
+                                b.checked_add(if var.scope() == VarScope::Local {
+                                    shared.matched_bytes
+                                } else {
+                                    0
+                                })
+                                .is_some_and(|total| total <= self.options.limits.max_state_bytes)
+                            })
                             .ok_or(RunError::ResourceLimit)?;
                         let version = self.versions[*variable]
                             .checked_add(1)
@@ -1273,7 +1372,7 @@ impl Run {
                             }),
                         })
                     }
-                    HostSource::Error(_) | HostSource::Index(_) => {
+                    HostSource::Error(_) | HostSource::Index(_) | HostSource::Value(_) => {
                         self.layout.outputs[i].and_then(|slot| shared.outputs[slot].clone())
                     }
                 };
@@ -1321,6 +1420,53 @@ impl Run {
                 HostPoll::Ready(None) => return Err(RunError::InvalidState),
             }
         }
+    }
+    fn publish_match_value(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        value: Option<Value>,
+        limit: usize,
+    ) -> Result<(), RunError> {
+        let mut old = 0usize;
+        let mut new = 0usize;
+        for &i in plan.value_targets(owner) {
+            let slot = plan.data().nodes()[plan.data().host_inputs()[i].index()].outputs()[0];
+            let cell = layout.outputs[i].expect("checked execution output");
+            let charge = |value: &Value| {
+                plan.data()
+                    .value_charge(slot, value)
+                    .ok_or(DataError::KernelContract {
+                        node: plan.nodes()[owner.index()].node(),
+                    })
+            };
+            if let Some(FoldedValue::Value(value)) = &shared.outputs[cell] {
+                old = old
+                    .checked_add(charge(value)?)
+                    .ok_or(RunError::ResourceLimit)?;
+            }
+            if let Some(value) = &value {
+                new = new
+                    .checked_add(charge(value)?)
+                    .ok_or(RunError::ResourceLimit)?;
+            }
+        }
+        let retained = shared
+            .matched_bytes
+            .checked_sub(old)
+            .and_then(|n| n.checked_add(new))
+            .filter(|n| {
+                n.checked_add(shared.local_bytes)
+                    .is_some_and(|total| total <= limit)
+            })
+            .ok_or(RunError::ResourceLimit)?;
+        shared.matched_bytes = retained;
+        for &i in plan.value_targets(owner) {
+            shared.outputs[layout.outputs[i].expect("checked execution output")] =
+                value.clone().map(FoldedValue::Value);
+        }
+        Ok(())
     }
     fn publish_index(
         plan: &ControlPlan,

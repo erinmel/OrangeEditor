@@ -12,6 +12,9 @@ use orange_model::validation::ValidationAnalysis;
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
+mod dispatch;
+pub use dispatch::{SwitchCase, SwitchKey};
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlIx(pub(crate) usize);
 impl ControlIx {
@@ -22,6 +25,17 @@ impl ControlIx {
 
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
+    Switch {
+        key: usize,
+        cases: Box<[SwitchCase]>,
+        default: Option<ControlIx>,
+    },
+    MatchResult {
+        result: usize,
+        boxed: bool,
+        ok: Option<ControlIx>,
+        err: Option<ControlIx>,
+    },
     Entry,
     Fork {
         branches: Box<[Option<ControlIx>]>,
@@ -96,6 +110,7 @@ pub enum HostSource {
     Variable(usize),
     Error(ControlIx),
     Index(ControlIx),
+    Value(ControlIx),
 }
 
 #[derive(Debug, Clone)]
@@ -147,6 +162,7 @@ pub struct ControlPlan {
     root_inputs: Box<[Arc<[usize]>]>,
     index_targets: Box<[Box<[usize]>]>,
     error_targets: Box<[Box<[usize]>]>,
+    value_targets: Box<[Box<[usize]>]>,
 }
 impl std::fmt::Debug for ControlPlan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -187,6 +203,9 @@ impl ControlPlan {
     }
     pub fn error_targets(&self, owner: ControlIx) -> &[usize] {
         &self.error_targets[owner.index()]
+    }
+    pub fn value_targets(&self, owner: ControlIx) -> &[usize] {
+        &self.value_targets[owner.index()]
     }
     pub fn is_current(&self, document: &GraphDocument, registry: &RegistrySnapshot) -> bool {
         self.data.is_current(document, registry)
@@ -229,7 +248,9 @@ pub fn compile_control(
         }
         if !matches!(
             node.definition.id.as_str(),
-            "core/on-start"
+            "core/switch"
+                | "core/match-result"
+                | "core/on-start"
                 | "core/on-stop"
                 | "core/branch"
                 | "core/set-variable"
@@ -347,6 +368,95 @@ pub fn compile_control(
                 .copied()
         };
         let operation = match node.definition.id.as_str() {
+            "core/switch" => {
+                let port = analysis.report().resolved[id]
+                    .ports
+                    .iter()
+                    .find(|p| p.port_id.as_str() == "key")
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                let ty = port_type(*id, port)?;
+                if !matches!(
+                    ty,
+                    PlanType::Bool
+                        | PlanType::I32
+                        | PlanType::I64
+                        | PlanType::U32
+                        | PlanType::U64
+                        | PlanType::String
+                ) {
+                    return Err(CompileError::UnsupportedPort {
+                        node: *id,
+                        port: key(port),
+                    });
+                }
+                let state = node
+                    .variadic
+                    .get(&"case".parse().expect("fixed port"))
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                charge(
+                    &mut graph_items,
+                    state.order.len(),
+                    options.limits.max_graph_items,
+                )?;
+                let raw = node
+                    .config
+                    .get("cases")
+                    .and_then(|v| v.as_object())
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                let mut cases = Vec::with_capacity(state.order.len());
+                for instance in &state.order {
+                    options.checkpoint()?;
+                    let value = raw
+                        .get(&instance.to_string())
+                        .ok_or(CompileError::ValidationIncomplete)?;
+                    charge(
+                        &mut bytes,
+                        value.as_str().map_or(64, |s| s.len().saturating_add(96)),
+                        options.limits.max_constant_bytes,
+                    )?;
+                    let key = dispatch::case_key(&ty, value).ok_or_else(|| {
+                        CompileError::InvalidLiteral {
+                            node: *id,
+                            port: key(port),
+                        }
+                    })?;
+                    let case_port = orange_model::id::PortKey::new(
+                        "case".parse().expect("fixed port"),
+                        Some(*instance),
+                    );
+                    cases.push(SwitchCase {
+                        key,
+                        instance: *instance,
+                        target: adjacency.get(&(*id, case_port)).copied(),
+                    });
+                }
+                cases.sort_unstable_by(|a, b| a.key.cmp(&b.key));
+                if cases.windows(2).any(|p| p[0].key == p[1].key) {
+                    return Err(CompileError::ValidationIncomplete);
+                }
+                ControlOperation::Switch {
+                    key: input_root(&mut roots, *id, "key"),
+                    cases: cases.into(),
+                    default: target("default"),
+                }
+            }
+            "core/match-result" => {
+                let port = analysis.report().resolved[id]
+                    .ports
+                    .iter()
+                    .find(|p| p.port_id.as_str() == "result")
+                    .ok_or(CompileError::ValidationIncomplete)?;
+                let PlanType::Result(inner) = port_type(*id, port)? else {
+                    return Err(CompileError::ValidationIncomplete);
+                };
+                ControlOperation::MatchResult {
+                    result: input_root(&mut roots, *id, "result"),
+                    boxed: inner.unboxed_error(),
+                    ok: target("ok"),
+                    err: target("err"),
+                }
+            }
+
             "core/on-start" | "core/on-stop" => {
                 let entries = if node.definition.id.as_str() == "core/on-start" {
                     &mut starts
@@ -543,6 +653,14 @@ pub fn compile_control(
             }
             let source = &data.slot_sources()[node.outputs()[0].index()];
             match source.port.port().as_str() {
+                "value"
+                    if matches!(
+                        nodes[ids[&source.node].index()].operation(),
+                        ControlOperation::MatchResult { .. }
+                    ) =>
+                {
+                    Ok(HostSource::Value(ids[&source.node]))
+                }
                 "index" => ids
                     .get(&source.node)
                     .copied()
@@ -559,6 +677,7 @@ pub fn compile_control(
         .collect::<Result<Vec<_>, _>>()?;
     let mut index_targets = vec![Vec::new(); nodes.len()];
     let mut error_targets = vec![Vec::new(); nodes.len()];
+    let mut value_targets = vec![Vec::new(); nodes.len()];
     let host_indices: BTreeMap<_, _> = data
         .host_inputs()
         .iter()
@@ -569,6 +688,7 @@ pub fn compile_control(
         match source {
             HostSource::Index(owner) => index_targets[owner.index()].push(i),
             HostSource::Error(owner) => error_targets[owner.index()].push(i),
+            HostSource::Value(owner) => value_targets[owner.index()].push(i),
             HostSource::Variable(_) => {}
         }
     }
@@ -630,6 +750,10 @@ pub fn compile_control(
         variables: variables.into(),
         host_sources: host_sources.into(),
         root_inputs: root_inputs.into(),
+        value_targets: value_targets
+            .into_iter()
+            .map(Vec::into_boxed_slice)
+            .collect(),
         index_targets: index_targets
             .into_iter()
             .map(Vec::into_boxed_slice)

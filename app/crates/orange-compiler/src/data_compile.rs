@@ -231,7 +231,9 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                             })
                             .cloned()
                             .collect();
-                        if sig.implicit_ports().contains(&"error") {
+                        if sig.implicit_ports().contains(&"error")
+                            && !ports.iter().any(|p| p.port_id.as_str() == "error")
+                        {
                             ports.push(PortDescriptor::data_out(
                                 "error",
                                 "core/error@1".parse().expect("fixed type"),
