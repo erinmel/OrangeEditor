@@ -871,7 +871,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
 pub(crate) struct Admission<'a> {
     pub(crate) incoming: Incoming<'a>,
     pub(crate) lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
-    pub(crate) host_nodes: BTreeSet<NodeId>,
+    pub(crate) host_nodes: BTreeSet<(usize, NodeId)>,
 }
 /// Fresh definition metadata says the node reads host-owned state.
 pub(crate) fn is_seeded_entropy(
@@ -1092,6 +1092,6 @@ pub(crate) fn admit_roots<'a>(
     Ok(Admission {
         incoming,
         lazy_nodes,
-        host_nodes: controls.clone(),
+        host_nodes: controls.iter().map(|id| (0, *id)).collect(),
     })
 }

@@ -351,43 +351,55 @@ pub fn compile_control(
     ] {
         charge(&mut graph_items, count, options.limits.max_graph_items)?;
     }
+    let calls = Arc::new(crate::calls::Calls::prepare(
+        document,
+        &snapshot,
+        analysis,
+        options,
+        crate::calls::CallProfile::HostData,
+    )?);
     let mut controls = BTreeSet::new();
-    for node in document.root().nodes.values() {
-        let sig = &analysis.report().resolved[&node.id];
-        if matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile) {
+    for scope in 0..calls.scopes.len() {
+        if scope != 0 && !calls.scopes[scope].control {
             continue;
         }
-        if !matches!(
-            node.definition.id.as_str(),
-            "core/gate"
-                | "core/do-once"
-                | "core/flip-flop"
-                | "core/register"
-                | "core/switch"
-                | "core/match-result"
-                | "core/on-start"
-                | "core/on-stop"
-                | "core/branch"
-                | "core/set-variable"
-                | "core/update-variable"
-                | "core/sequence"
-                | "core/fork"
-                | "core/yield"
-                | "core/wait"
-                | "core/count"
-                | "core/for-each"
-                | "core/break"
-                | "core/continue"
-                | "core/while"
-        ) || node.definition.version != 1
-            || node.config_version != 1
-            || node.provider.is_some()
-        {
-            return Err(CompileError::UnsupportedNode { node: node.id });
-        }
-        controls.insert(node.id);
-        for port in sig.ports.iter().filter(|p| p.kind == PortKind::Data) {
-            port_type(node.id, port)?;
+        for node in calls.body(document, scope).nodes.values() {
+            let sig = calls.signature(analysis, scope, node.id);
+            if matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile) {
+                continue;
+            }
+            if !matches!(
+                node.definition.id.as_str(),
+                "core/gate"
+                    | "core/do-once"
+                    | "core/flip-flop"
+                    | "core/register"
+                    | "core/switch"
+                    | "core/match-result"
+                    | "core/on-start"
+                    | "core/on-stop"
+                    | "core/branch"
+                    | "core/set-variable"
+                    | "core/update-variable"
+                    | "core/sequence"
+                    | "core/fork"
+                    | "core/yield"
+                    | "core/wait"
+                    | "core/count"
+                    | "core/for-each"
+                    | "core/break"
+                    | "core/continue"
+                    | "core/while"
+            ) || node.definition.version != 1
+                || node.config_version != 1
+                || node.provider.is_some()
+            {
+                return Err(CompileError::UnsupportedNode { node: node.id });
+            }
+            controls.insert((scope, node.id));
+            for port in sig.ports.iter().filter(|p| p.kind == PortKind::Data) {
+                port_type(node.id, port)?;
+            }
         }
     }
     let ids: BTreeMap<_, _> = controls
@@ -399,13 +411,6 @@ pub fn compile_control(
     let mut variable_ids = BTreeMap::new();
     let mut variable_nodes = BTreeMap::new();
     let mut bytes = 0;
-    let calls = Arc::new(crate::calls::Calls::prepare(
-        document,
-        &snapshot,
-        analysis,
-        options,
-        crate::calls::CallProfile::HostData,
-    )?);
     let called_nodes = calls
         .scopes
         .iter()
@@ -472,10 +477,10 @@ pub fn compile_control(
     }
     let mut states = Vec::new();
     let mut state_nodes = BTreeMap::new();
-    for id in &controls {
+    for (scope, id) in &controls {
         options.checkpoint()?;
-        let node = &document.root().nodes[id];
-        let (scope, ty, initial) = match node.definition.id.as_str() {
+        let node = &calls.body(document, *scope).nodes[id];
+        let (state_scope, ty, initial) = match node.definition.id.as_str() {
             "core/gate" => {
                 let open = match node.config.get("start_open") {
                     None => false,
@@ -487,7 +492,8 @@ pub fn compile_control(
                 (VarScope::Run, PlanType::Bool, Some(Value::Bool(false)))
             }
             "core/register" => {
-                let port = analysis.report().resolved[id]
+                let port = calls
+                    .signature(analysis, *scope, *id)
                     .ports
                     .iter()
                     .find(|p| p.port_id.as_str() == "current")
@@ -531,39 +537,46 @@ pub fn compile_control(
             initial.as_ref().map_or(16, value_bytes),
             options.limits.max_constant_bytes,
         )?;
-        state_nodes.insert(*id, states.len());
+        state_nodes.insert((*scope, *id), states.len());
         states.push(ControlState {
             id: *id,
-            scope,
+            scope: state_scope,
             ty,
             initial,
         });
     }
     let mut adjacency = BTreeMap::new();
     let mut producers = BTreeMap::new();
-    for edge in document.root().edges.values() {
-        producers.insert((edge.to.node, edge.to.port.clone()), edge.from.node);
-        if controls.contains(&edge.to.node) && controls.contains(&edge.from.node) {
-            let sig = &analysis.report().resolved[&edge.from.node];
-            if (sig
-                .implicit_ports()
-                .contains(&edge.from.port.port().as_str())
-                && edge.from.port.port().as_str() != "error")
-                || sig
-                    .ports
-                    .iter()
-                    .any(|p| p.port_id == *edge.from.port.port() && p.kind == PortKind::Exec)
+    for scope in 0..calls.scopes.len() {
+        for edge in calls.body(document, scope).edges.values() {
+            producers.insert((scope, edge.to.node, edge.to.port.clone()), edge.from.node);
+            if controls.contains(&(scope, edge.to.node))
+                && controls.contains(&(scope, edge.from.node))
             {
-                let to = destination(
-                    ids[&edge.to.node],
-                    document.root().nodes[&edge.to.node].definition.id.as_str(),
-                    &edge.to.port,
-                )
-                .ok_or_else(|| CompileError::UnsupportedPort {
-                    node: edge.to.node,
-                    port: edge.to.port.clone(),
-                })?;
-                adjacency.insert((edge.from.node, edge.from.port.clone()), to);
+                let sig = calls.signature(analysis, scope, edge.from.node);
+                if (sig
+                    .implicit_ports()
+                    .contains(&edge.from.port.port().as_str())
+                    && edge.from.port.port().as_str() != "error")
+                    || sig
+                        .ports
+                        .iter()
+                        .any(|p| p.port_id == *edge.from.port.port() && p.kind == PortKind::Exec)
+                {
+                    let to = destination(
+                        ids[&(scope, edge.to.node)],
+                        calls.body(document, scope).nodes[&edge.to.node]
+                            .definition
+                            .id
+                            .as_str(),
+                        &edge.to.port,
+                    )
+                    .ok_or_else(|| CompileError::UnsupportedPort {
+                        node: edge.to.node,
+                        port: edge.to.port.clone(),
+                    })?;
+                    adjacency.insert((scope, edge.from.node, edge.from.port.clone()), to);
+                }
             }
         }
     }
@@ -571,12 +584,12 @@ pub fn compile_control(
     let mut nodes = Vec::new();
     let mut starts = Vec::new();
     let mut stops = Vec::new();
-    for id in &controls {
+    for (scope, id) in &controls {
         options.checkpoint()?;
-        let node = &document.root().nodes[id];
+        let node = &calls.body(document, *scope).nodes[id];
         let target = |name: &str| {
             adjacency
-                .get(&(*id, name.parse().expect("fixed port")))
+                .get(&(*scope, *id, name.parse().expect("fixed port")))
                 .copied()
         };
         let operation = match node.definition.id.as_str() {
@@ -585,9 +598,9 @@ pub fn compile_control(
                 let operation = update::resolve(*id, &node.config, variables[variable].ty())?;
                 let mut operands = Vec::new();
                 if matches!(operation, UpdateOperation::CompareAndSet) {
-                    operands.push(input_root(&mut roots, *id, "expected"));
+                    operands.push(input_root(&mut roots, *scope, *id, "expected"));
                 }
-                operands.push(input_root(&mut roots, *id, "value"));
+                operands.push(input_root(&mut roots, *scope, *id, "value"));
                 ControlOperation::Update {
                     variable,
                     operation,
@@ -598,22 +611,23 @@ pub fn compile_control(
                 }
             }
             "core/gate" => ControlOperation::Gate {
-                state: state_nodes[id],
+                state: state_nodes[&(*scope, *id)],
             },
             "core/do-once" => ControlOperation::DoOnce {
-                state: state_nodes[id],
+                state: state_nodes[&(*scope, *id)],
             },
             "core/flip-flop" => ControlOperation::FlipFlop {
-                state: state_nodes[id],
+                state: state_nodes[&(*scope, *id)],
                 a: target("a"),
                 b: target("b"),
             },
             "core/register" => ControlOperation::Register {
-                state: state_nodes[id],
-                next: input_root(&mut roots, *id, "next"),
+                state: state_nodes[&(*scope, *id)],
+                next: input_root(&mut roots, *scope, *id, "next"),
             },
             "core/switch" => {
-                let port = analysis.report().resolved[id]
+                let port = calls
+                    .signature(analysis, *scope, *id)
                     .ports
                     .iter()
                     .find(|p| p.port_id.as_str() == "key")
@@ -671,7 +685,7 @@ pub fn compile_control(
                     cases.push(SwitchCase {
                         key,
                         instance: *instance,
-                        target: adjacency.get(&(*id, case_port)).copied(),
+                        target: adjacency.get(&(*scope, *id, case_port)).copied(),
                     });
                 }
                 cases.sort_unstable_by(|a, b| a.key.cmp(&b.key));
@@ -679,13 +693,14 @@ pub fn compile_control(
                     return Err(CompileError::ValidationIncomplete);
                 }
                 ControlOperation::Switch {
-                    key: input_root(&mut roots, *id, "key"),
+                    key: input_root(&mut roots, *scope, *id, "key"),
                     cases: cases.into(),
                     default: target("default"),
                 }
             }
             "core/match-result" => {
-                let port = analysis.report().resolved[id]
+                let port = calls
+                    .signature(analysis, *scope, *id)
                     .ports
                     .iter()
                     .find(|p| p.port_id.as_str() == "result")
@@ -694,7 +709,7 @@ pub fn compile_control(
                     return Err(CompileError::ValidationIncomplete);
                 };
                 ControlOperation::MatchResult {
-                    result: input_root(&mut roots, *id, "result"),
+                    result: input_root(&mut roots, *scope, *id, "result"),
                     boxed: inner.unboxed_error(),
                     ok: target("ok"),
                     err: target("err"),
@@ -707,11 +722,11 @@ pub fn compile_control(
                 } else {
                     &mut stops
                 };
-                entries.push(ids[id]);
+                entries.push(ids[&(*scope, *id)]);
                 ControlOperation::Entry
             }
             "core/branch" => {
-                let condition = input_root(&mut roots, *id, "condition");
+                let condition = input_root(&mut roots, *scope, *id, "condition");
                 ControlOperation::Branch {
                     condition,
                     when_true: target("true"),
@@ -719,7 +734,7 @@ pub fn compile_control(
                 }
             }
             "core/set-variable" => {
-                let value = input_root(&mut roots, *id, "value");
+                let value = input_root(&mut roots, *scope, *id, "value");
                 ControlOperation::Set {
                     variable: variable_nodes[id],
                     value,
@@ -738,6 +753,7 @@ pub fn compile_control(
                     .map(|k| {
                         adjacency
                             .get(&(
+                                *scope,
                                 *id,
                                 orange_model::id::PortKey::new(port.parse().unwrap(), Some(*k)),
                             ))
@@ -765,16 +781,16 @@ pub fn compile_control(
             }
             "core/yield" => ControlOperation::Yield,
             "core/wait" => {
-                let duration = input_root(&mut roots, *id, "duration");
+                let duration = input_root(&mut roots, *scope, *id, "duration");
                 ControlOperation::Wait { duration }
             }
             "core/for-each" => ControlOperation::ForEach {
-                items: input_root(&mut roots, *id, "items"),
+                items: input_root(&mut roots, *scope, *id, "items"),
                 body: target("body"),
                 completed: target("completed"),
             },
             "core/count" => {
-                let count = input_root(&mut roots, *id, "count");
+                let count = input_root(&mut roots, *scope, *id, "count");
                 ControlOperation::Count {
                     count,
                     body: target("body"),
@@ -782,7 +798,7 @@ pub fn compile_control(
                 }
             }
             "core/while" => {
-                let condition = input_root(&mut roots, *id, "condition");
+                let condition = input_root(&mut roots, *scope, *id, "condition");
                 let max_iterations = node
                     .config
                     .get("max_iterations")
@@ -800,7 +816,8 @@ pub fn compile_control(
             "core/continue" => ControlOperation::Continue,
             _ => unreachable!("admitted control"),
         };
-        for port in analysis.report().resolved[id]
+        for port in calls
+            .signature(analysis, *scope, *id)
             .ports
             .iter()
             .filter(|p| p.kind == PortKind::Data && p.direction == PortDirection::Input)
@@ -826,7 +843,7 @@ pub fn compile_control(
                 .report()
                 .regions
                 .loop_of(*id)
-                .and_then(|r| ids.get(&r.node))
+                .and_then(|r| ids.get(&(*scope, r.node)))
                 .copied(),
         });
     }
@@ -850,6 +867,7 @@ pub fn compile_control(
     });
     for export in document.exports() {
         roots.push(DemandRoot {
+            scope: 0,
             id: export.id.clone(),
             node: export.node,
             port: export.port.clone(),
@@ -858,9 +876,10 @@ pub fn compile_control(
     }
     let root_nodes: Vec<_> = roots
         .iter()
+        .filter(|r| r.scope == 0)
         .filter_map(|r| {
             if r.input {
-                producers.get(&(r.node, r.port.clone())).copied()
+                producers.get(&(r.scope, r.node, r.port.clone())).copied()
             } else {
                 Some(r.node)
             }
@@ -872,15 +891,20 @@ pub fn compile_control(
         .max_constant_bytes
         .checked_sub(bytes)
         .ok_or(CompileError::ResourceLimit)?;
-    let admission = admit_roots(
+    let root_controls = controls
+        .iter()
+        .filter_map(|(scope, id)| (*scope == 0).then_some(*id))
+        .collect();
+    let mut admission = admit_roots(
         document,
         &snapshot,
         analysis,
         data_options,
         true,
         &root_nodes,
-        &controls,
+        &root_controls,
     )?;
+    admission.host_nodes = controls.clone();
     let data = lower_roots(
         document,
         snapshot,
@@ -889,14 +913,15 @@ pub fn compile_control(
         data_options,
         admission,
         &roots,
-        calls,
+        calls.clone(),
     )?;
     let host_sources = data
         .host_inputs()
         .iter()
         .map(|ix| {
             let node = &data.nodes()[ix.index()];
-            if !controls.contains(&node.node())
+            let scope = node.call_instance().map_or(0, |i| i + 1);
+            if !controls.contains(&(scope, node.node()))
                 && let Some(variable) = variable_nodes.get(&node.node())
             {
                 return Ok(
@@ -912,13 +937,13 @@ pub fn compile_control(
             let source = &data.slot_sources()[node.outputs()[0].index()];
             if matches!(source.port.port().as_str(), "is_open" | "is_a" | "current") {
                 return state_nodes
-                    .get(&source.node)
+                    .get(&(scope, source.node))
                     .copied()
                     .map(HostSource::State)
                     .ok_or(CompileError::ValidationIncomplete);
             }
             if matches!(
-                nodes[ids[&source.node].index()].operation(),
+                nodes[ids[&(scope, source.node)].index()].operation(),
                 ControlOperation::ForEach { .. }
             ) {
                 let projection = match source.port.port().as_str() {
@@ -926,40 +951,43 @@ pub fn compile_control(
                     "element" => IterationProjection::Element,
                     "key" => IterationProjection::Key,
                     "value" => IterationProjection::Value,
-                    "error" => return Ok(HostSource::Error(ids[&source.node])),
+                    "error" => return Ok(HostSource::Error(ids[&(scope, source.node)])),
                     _ => return Err(CompileError::UnsupportedNode { node: source.node }),
                 };
-                return Ok(HostSource::Iteration(ids[&source.node], projection));
+                return Ok(HostSource::Iteration(
+                    ids[&(scope, source.node)],
+                    projection,
+                ));
             }
             if matches!(
-                nodes[ids[&source.node].index()].operation(),
+                nodes[ids[&(scope, source.node)].index()].operation(),
                 ControlOperation::Update { .. }
             ) {
                 let projection = match source.port.port().as_str() {
                     "old" => UpdateProjection::Old,
                     "new" => UpdateProjection::New,
                     "exchanged" => UpdateProjection::Exchanged,
-                    "error" => return Ok(HostSource::Error(ids[&source.node])),
+                    "error" => return Ok(HostSource::Error(ids[&(scope, source.node)])),
                     _ => return Err(CompileError::UnsupportedNode { node: source.node }),
                 };
-                return Ok(HostSource::Update(ids[&source.node], projection));
+                return Ok(HostSource::Update(ids[&(scope, source.node)], projection));
             }
             match source.port.port().as_str() {
                 "value"
                     if matches!(
-                        nodes[ids[&source.node].index()].operation(),
+                        nodes[ids[&(scope, source.node)].index()].operation(),
                         ControlOperation::MatchResult { .. }
                     ) =>
                 {
-                    Ok(HostSource::Value(ids[&source.node]))
+                    Ok(HostSource::Value(ids[&(scope, source.node)]))
                 }
                 "index" => ids
-                    .get(&source.node)
+                    .get(&(scope, source.node))
                     .copied()
                     .map(HostSource::Index)
                     .ok_or(CompileError::ValidationIncomplete),
                 "error" => ids
-                    .get(&source.node)
+                    .get(&(scope, source.node))
                     .copied()
                     .map(HostSource::Error)
                     .ok_or(CompileError::ValidationIncomplete),
@@ -1086,9 +1114,10 @@ pub fn compile_control(
     })
 }
 
-fn input_root(roots: &mut Vec<DemandRoot>, node: NodeId, port: &str) -> usize {
+fn input_root(roots: &mut Vec<DemandRoot>, scope: usize, node: NodeId, port: &str) -> usize {
     let index = roots.len();
     roots.push(DemandRoot {
+        scope,
         id: format!("{node}/{port}"),
         node,
         port: port.parse().expect("fixed input port"),

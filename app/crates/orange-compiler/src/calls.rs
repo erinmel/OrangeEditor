@@ -29,6 +29,7 @@ struct PreparedBody<'a> {
 }
 #[derive(Default)]
 pub(crate) struct CallScope<'a> {
+    pub(crate) control: bool,
     body: Option<Arc<PreparedBody<'a>>>,
     pub(crate) calls: BTreeMap<NodeId, usize>,
     function: Option<FunctionId>,
@@ -348,6 +349,7 @@ impl<'a> Calls<'a> {
                         options.limits.max_graph_items,
                     )?;
                 }
+                let control = matches!(sig.kind, NodeKind::Action | NodeKind::Async);
                 let cache_key = (target, args);
                 let prepared = if let Some(body) = cache.get(&cache_key) {
                     body.clone()
@@ -432,6 +434,7 @@ impl<'a> Calls<'a> {
                 let index = out.scopes.len();
                 out.scopes[cursor].calls.insert(node.id, index);
                 out.scopes.push(CallScope {
+                    control,
                     body: Some(prepared),
                     function: Some(target),
                     parent: Some(cursor),

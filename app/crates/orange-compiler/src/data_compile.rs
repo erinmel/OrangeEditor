@@ -56,7 +56,7 @@ struct Lowering<'a, R: EntropyKernelResolver> {
     work: Vec<(usize, Task)>,
     bytes: usize,
     seeded: BTreeMap<usize, SlotIx>,
-    host_nodes: &'a std::collections::BTreeSet<NodeId>,
+    host_nodes: &'a std::collections::BTreeSet<(usize, NodeId)>,
 }
 impl<R: EntropyKernelResolver> Lowering<'_, R> {
     fn push(
@@ -159,12 +159,12 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             }
         }
     }
-    fn lower(&mut self, root: NodeId) -> Result<(), CompileError> {
+    fn lower(&mut self, scope: usize, root: NodeId) -> Result<(), CompileError> {
         let analysis = self.analysis;
         let calls = self.calls.clone();
         let document = self.document;
         let mut work = std::mem::take(&mut self.work);
-        work.push((0, Task::Enter(root)));
+        work.push((scope, Task::Enter(root)));
         while let Some((scope, task)) = work.pop() {
             self.scope = scope;
             self.options.checkpoint()?;
@@ -222,7 +222,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                         continue;
                     }
                     let sig = calls.signature(analysis, scope, node);
-                    if scope == 0 && self.host_nodes.contains(&node) {
+                    if self.host_nodes.contains(&(scope, node)) {
                         let mut ports: Vec<_> = sig
                             .ports
                             .iter()
@@ -577,6 +577,7 @@ pub fn compile_data(
         .exports()
         .iter()
         .map(|export| DemandRoot {
+            scope: 0,
             id: export.id.clone(),
             node: export.node,
             port: export.port.clone(),
@@ -589,6 +590,7 @@ pub fn compile_data(
 }
 
 pub(crate) struct DemandRoot {
+    pub(crate) scope: usize,
     pub(crate) id: String,
     pub(crate) node: NodeId,
     pub(crate) port: PortKey,
@@ -665,16 +667,23 @@ pub(crate) fn lower_roots(
             options.limits.max_constant_bytes,
         )?;
     }
+    let calls = state.calls.clone();
     for export in roots {
         options.checkpoint()?;
+        let scope = export.scope;
+        state.scope = scope;
         let (slot, producer) = if export.input {
-            if let Some(edge) = admission.incoming.get(&(export.node, export.port.clone())) {
-                state.lower(edge.from.node)?;
+            if let Some(edge) = calls
+                .incoming(&admission.incoming, scope)
+                .get(&(export.node, export.port.clone()))
+            {
+                state.lower(scope, edge.from.node)?;
                 let ProducedOutput { slot, producer } =
-                    state.outputs[&(0, edge.from.node, edge.from.port.clone())];
+                    state.outputs[&(scope, edge.from.node, edge.from.port.clone())];
                 (slot, producer.ok_or(CompileError::ValidationIncomplete)?)
             } else {
-                let port = analysis.report().resolved[&export.node]
+                let port = calls
+                    .signature(analysis, scope, export.node)
                     .ports
                     .iter()
                     .find(|p| key(p) == export.port)
@@ -685,7 +694,7 @@ pub(crate) fn lower_roots(
                         .map_err(|_| CompileError::ResourceLimit)?,
                 );
                 state.plan.nodes.push(DataNode {
-                    call: None,
+                    call: scope.checked_sub(1),
                     index,
                     node: export.node,
                     stability: DataStability::Const,
@@ -696,10 +705,10 @@ pub(crate) fn lower_roots(
                 (input.source.slot, index)
             }
         } else {
-            state.lower(export.node)?;
+            state.lower(scope, export.node)?;
             let ProducedOutput { slot, producer } = *state
                 .outputs
-                .get(&(0, export.node, export.port.clone()))
+                .get(&(scope, export.node, export.port.clone()))
                 .ok_or(CompileError::ValidationIncomplete)?;
             (slot, producer.ok_or(CompileError::ValidationIncomplete)?)
         };
