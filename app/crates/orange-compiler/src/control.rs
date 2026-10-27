@@ -14,6 +14,13 @@ use std::sync::Arc;
 
 mod dispatch;
 mod update;
+#[derive(Debug, Clone, Copy)]
+pub enum IterationProjection {
+    Index,
+    Element,
+    Key,
+    Value,
+}
 pub use dispatch::{SwitchCase, SwitchKey};
 pub use update::{UpdateDemand, UpdateOperation, UpdateProjection};
 
@@ -83,6 +90,11 @@ fn destination(
 
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
+    ForEach {
+        items: usize,
+        body: Option<ExecTarget>,
+        completed: Option<ExecTarget>,
+    },
     Update {
         variable: usize,
         operation: UpdateOperation,
@@ -184,7 +196,14 @@ impl<Id: Copy> ControlCell<Id> {
         self.initial.as_ref()
     }
     pub fn charge(&self, value: &Value) -> Option<usize> {
-        self.ty.accepts(value).then(|| value_bytes(value))
+        self.ty.checked_charge(value, usize::MAX).ok()
+    }
+    pub fn checked_charge(
+        &self,
+        value: &Value,
+        limit: usize,
+    ) -> Result<usize, crate::ValueCheckError> {
+        self.ty.checked_charge(value, limit)
     }
 }
 #[derive(Debug, Clone, Copy)]
@@ -194,6 +213,7 @@ pub enum HostSource {
     Index(ControlIx),
     Value(ControlIx),
     State(usize),
+    Iteration(ControlIx, IterationProjection),
     Update(ControlIx, UpdateProjection),
 }
 
@@ -352,6 +372,7 @@ pub fn compile_control(
                 | "core/yield"
                 | "core/wait"
                 | "core/count"
+                | "core/for-each"
                 | "core/break"
                 | "core/continue"
                 | "core/while"
@@ -730,6 +751,11 @@ pub fn compile_control(
                 let duration = input_root(&mut roots, *id, "duration");
                 ControlOperation::Wait { duration }
             }
+            "core/for-each" => ControlOperation::ForEach {
+                items: input_root(&mut roots, *id, "items"),
+                body: target("body"),
+                completed: target("completed"),
+            },
             "core/count" => {
                 let count = input_root(&mut roots, *id, "count");
                 ControlOperation::Count {
@@ -867,6 +893,20 @@ pub fn compile_control(
             }
             if matches!(
                 nodes[ids[&source.node].index()].operation(),
+                ControlOperation::ForEach { .. }
+            ) {
+                let projection = match source.port.port().as_str() {
+                    "index" => IterationProjection::Index,
+                    "element" => IterationProjection::Element,
+                    "key" => IterationProjection::Key,
+                    "value" => IterationProjection::Value,
+                    "error" => return Ok(HostSource::Error(ids[&source.node])),
+                    _ => return Err(CompileError::UnsupportedNode { node: source.node }),
+                };
+                return Ok(HostSource::Iteration(ids[&source.node], projection));
+            }
+            if matches!(
+                nodes[ids[&source.node].index()].operation(),
                 ControlOperation::Update { .. }
             ) {
                 let projection = match source.port.port().as_str() {
@@ -917,7 +957,7 @@ pub fn compile_control(
             HostSource::Value(owner) | HostSource::Update(owner, _) => {
                 value_targets[owner.index()].push(i)
             }
-            HostSource::Variable(_) | HostSource::State(_) => {}
+            HostSource::Variable(_) | HostSource::State(_) | HostSource::Iteration(_, _) => {}
         }
     }
     let empty: Arc<[usize]> = Arc::from([]);

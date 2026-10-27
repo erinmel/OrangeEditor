@@ -98,6 +98,7 @@ pub(super) enum RegionKind {
     },
 }
 pub(super) struct Region {
+    pub retired_cursor: Option<Box<Cursor>>,
     pub parent: Option<u64>,
     pub activation: u64,
     pub depth: usize,
@@ -131,6 +132,12 @@ impl Run {
         }
         let region = self.owner_id()?;
         let mut child = self.child_strand(&caller, region)?;
+        if let Some(owner) = loop_owner
+            && let Some(Cursor::ForEach(cursor)) = caller.stack.last()
+        {
+            child.iteration_context = Some(cursor.context(owner)?);
+        }
+
         // A structured body continues the same logical strand. Only Fork
         // creates sibling strand identities.
         child.id = caller.id;
@@ -143,6 +150,7 @@ impl Run {
         self.regions.insert(
             region,
             Region {
+                retired_cursor: None,
                 parent: Some(caller.region),
                 activation: caller.sequence,
                 depth,
@@ -163,6 +171,7 @@ impl Run {
     ) -> Result<Strand, RunError> {
         Ok(Strand {
             cleanup_deadline: caller.cleanup_deadline,
+            iteration_context: caller.iteration_context.clone(),
             fork: None,
             id: self.owner_id()?,
             region,
@@ -199,6 +208,27 @@ impl Run {
                 return Ok(());
             }
             let r = self.regions.remove(&id).unwrap();
+            if let Some(cursor) = r.retired_cursor.as_deref() {
+                let owner = match cursor {
+                    Cursor::Count { owner, .. } | Cursor::While { owner, .. } => Some(*owner),
+                    _ => None,
+                };
+                if let Some(owner) = owner {
+                    let shared = self
+                        .activations
+                        .get_mut(r.activation as usize)
+                        .and_then(Option::as_mut)
+                        .ok_or(RunError::InvalidState)?;
+                    Self::publish_index(
+                        self.plan.as_ref().unwrap(),
+                        &self.layout,
+                        shared,
+                        owner,
+                        None,
+                    );
+                }
+            }
+
             if let RegionKind::Join {
                 owner,
                 fired: false,
@@ -284,6 +314,7 @@ impl Run {
             self.regions.insert(
                 region,
                 Region {
+                    retired_cursor: None,
                     parent: Some(group),
                     activation: caller.sequence,
                     depth: depth + 2,
@@ -319,6 +350,7 @@ impl Run {
         self.regions.insert(
             group,
             Region {
+                retired_cursor: None,
                 parent: Some(parent),
                 activation,
                 depth: depth + 1,
@@ -465,7 +497,7 @@ impl Run {
     }
     pub(super) fn unwind_loop(
         &mut self,
-        strand: Strand,
+        _strand: Strand,
         region: u64,
         is_break: bool,
     ) -> Result<(), RunError> {
@@ -481,24 +513,19 @@ impl Run {
             _ => return Err(RunError::InvalidState),
         };
         if is_break {
-            caller.stack.pop().ok_or(RunError::InvalidState)?;
+            let retired = caller.stack.pop().ok_or(RunError::InvalidState)?;
+            if !matches!(retired, Cursor::ForEach(_)) {
+                self.regions
+                    .get_mut(&region)
+                    .ok_or(RunError::InvalidState)?
+                    .retired_cursor = Some(Box::new(retired));
+            }
             caller.pc = match self.plan.as_ref().unwrap().nodes()[owner.index()].operation() {
                 ControlOperation::Count { completed, .. }
-                | ControlOperation::While { completed, .. } => *completed,
+                | ControlOperation::While { completed, .. }
+                | ControlOperation::ForEach { completed, .. } => *completed,
                 _ => return Err(RunError::InvalidState),
             };
-            let shared = self
-                .activations
-                .get_mut(strand.sequence as usize)
-                .and_then(Option::as_mut)
-                .ok_or(RunError::InvalidState)?;
-            Self::publish_index(
-                self.plan.as_ref().unwrap(),
-                &self.layout,
-                shared,
-                owner,
-                None,
-            );
         } else {
             caller.yielded = true;
         }

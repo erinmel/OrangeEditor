@@ -35,6 +35,10 @@ pub enum PlanType {
     Json,
     String,
     Duration,
+    Timestamp,
+    Bytes,
+    List(Box<PlanType>),
+    Map(Box<PlanType>, Box<PlanType>),
     Error,
     Option(Box<PlanType>),
     Result(Box<PlanType>),
@@ -71,7 +75,7 @@ mod tests {
         assert!(PlanType::parse(&wrap(orange_model::type_term::MAX_NESTING)).is_some());
         assert!(PlanType::parse(&wrap(orange_model::type_term::MAX_NESTING + 1)).is_none());
         for invalid in [
-            "core/option@1<core/bytes@1>",
+            "core/option@1<org.example/custom@1>",
             "core/option@1<core/i64@1,core/i64@1>",
             "core/option@1<$T>",
             "core/option@2<core/i64@1>",
@@ -135,6 +139,36 @@ impl PlanType {
         {
             return Self::parse_depth(inner, depth + 1).map(|inner| Self::Result(Box::new(inner)));
         }
+        if let Some(inner) = ty
+            .strip_prefix("core/list@1<")
+            .and_then(|s| s.strip_suffix('>'))
+        {
+            return Self::parse_depth(inner, depth + 1).map(|inner| Self::List(Box::new(inner)));
+        }
+        if let Some(inner) = ty
+            .strip_prefix("core/map@1<")
+            .and_then(|s| s.strip_suffix('>'))
+        {
+            let mut nesting = 0usize;
+            let split = inner.char_indices().find_map(|(i, c)| match c {
+                '<' => {
+                    nesting += 1;
+                    None
+                }
+                '>' => {
+                    nesting = nesting.saturating_sub(1);
+                    None
+                }
+                ',' if nesting == 0 => Some(i),
+                _ => None,
+            })?;
+            let key = Self::parse_depth(&inner[..split], depth + 1)?;
+            let value = Self::parse_depth(&inner[split + 1..], depth + 1)?;
+            if !key.native_hash() {
+                return None;
+            }
+            return Some(Self::Map(Box::new(key), Box::new(value)));
+        }
         Some(match ty {
             "core/bool@1" => Self::Bool,
             "core/i32@1" => Self::I32,
@@ -146,42 +180,14 @@ impl PlanType {
             "core/json@1" => Self::Json,
             "core/string@1" => Self::String,
             "core/duration@1" => Self::Duration,
+            "core/timestamp@1" => Self::Timestamp,
+            "core/bytes@1" => Self::Bytes,
             "core/error@1" => Self::Error,
             _ => return None,
         })
     }
     pub(crate) fn accepts(&self, value: &Value) -> bool {
-        if let Self::Result(inner) = self {
-            return match value {
-                Value::Err(error) => crate::compile::valid_identifier(&error.code),
-                Value::Ok(value) if inner.unboxed_error() => inner.accepts(value),
-                _ if inner.unboxed_error() => false,
-                _ => inner.accepts(value),
-            };
-        }
-        if let Self::Option(inner) = self {
-            return match value {
-                Value::None => true,
-                Value::Some(value) if matches!(inner.as_ref(), Self::Option(_)) => {
-                    inner.accepts(value)
-                }
-                _ if matches!(inner.as_ref(), Self::Option(_)) => false,
-                _ => inner.accepts(value),
-            };
-        }
-        matches!(
-            (self, value),
-            (Self::Bool, Value::Bool(_))
-                | (Self::I32, Value::I32(_))
-                | (Self::I64, Value::I64(_))
-                | (Self::U32, Value::U32(_))
-                | (Self::U64, Value::U64(_))
-                | (Self::F32, Value::F32(_))
-                | (Self::F64, Value::F64(_))
-                | (Self::Json, Value::Json(_))
-                | (Self::String, Value::Str(_))
-                | (Self::Duration, Value::Duration(_))
-        ) || matches!((self, value), (Self::Error, Value::Err(error)) if crate::compile::valid_identifier(&error.code))
+        self.checked_charge(value, usize::MAX).is_ok()
     }
     /// Whether a valid value of this type can carry the Err discriminant directly.
     pub(crate) fn unboxed_error(&self) -> bool {

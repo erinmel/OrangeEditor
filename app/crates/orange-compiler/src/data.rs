@@ -1,5 +1,5 @@
 //! Immutable root data plans. Execution and epoch ownership live in orange-runtime.
-use crate::compile::{valid_fault, value_bytes};
+use crate::compile::valid_fault;
 use crate::*;
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::id::{GraphId, NodeId};
@@ -197,10 +197,19 @@ impl DataPlan {
     /// Check this plan's bounded resolved type before computing a retained charge.
     /// None means wrong slot/type; no arbitrary type tree is trusted.
     pub fn value_charge(&self, slot: SlotIx, value: &Value) -> Option<usize> {
+        self.checked_value_charge(slot, value, usize::MAX).ok()
+    }
+    /// Bounded exact type and nominal value admission before publication.
+    pub fn checked_value_charge(
+        &self,
+        slot: SlotIx,
+        value: &Value,
+        limit: usize,
+    ) -> Result<usize, crate::ValueCheckError> {
         self.types
             .get(slot.index())
-            .filter(|ty| ty.accepts(value))
-            .map(|_| value_bytes(value))
+            .ok_or(crate::ValueCheckError::InvalidType)?
+            .checked_charge(value, limit)
     }
     pub fn fault_charge(&self, fault: &ConstantFault) -> Option<usize> {
         valid_fault(fault.fault).then_some(64)

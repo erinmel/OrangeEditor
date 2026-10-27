@@ -51,19 +51,6 @@ fn scalar(ty: &PlanType) -> Option<Scalar> {
         _ => return None,
     })
 }
-fn equal(ty: &PlanType) -> bool {
-    match ty {
-        PlanType::Bool
-        | PlanType::I32
-        | PlanType::I64
-        | PlanType::U32
-        | PlanType::U64
-        | PlanType::String
-        | PlanType::Duration => true,
-        PlanType::Option(inner) => equal(inner),
-        _ => false,
-    }
-}
 pub(super) fn resolve(
     node: NodeId,
     config: &serde_json::Map<String, serde_json::Value>,
@@ -115,6 +102,7 @@ pub(super) fn resolve(
                     | PlanType::U64
                     | PlanType::String
                     | PlanType::Duration
+                    | PlanType::Timestamp
             ) =>
         {
             if token == "min" {
@@ -135,8 +123,10 @@ pub(super) fn resolve(
                 _ => UpdateOperation::Xor,
             }
         }
-        "append" if matches!(ty, PlanType::String) => UpdateOperation::Append,
-        "compare-and-set" if equal(ty) => UpdateOperation::CompareAndSet,
+        "append" if matches!(ty, PlanType::String | PlanType::Bytes | PlanType::List(_)) => {
+            UpdateOperation::Append
+        }
+        "compare-and-set" if ty.native_eq() => UpdateOperation::CompareAndSet,
         _ => return Err(unsupported()),
     })
 }

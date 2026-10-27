@@ -74,8 +74,8 @@ fn unsupported_control_and_stale_analysis_never_reach_resolvers() {
     let (package, snapshot) = catalog();
     let resolver = Counting::new(package.clone());
     let mut unsupported = core(2, "for-each");
-    unsupported["type_pins"] = json!({"T":"core/u64@1"});
-    unsupported["inputs"] = json!({"items":{"type":"core/list@1<core/u64@1>","value":[]}});
+    unsupported["type_pins"] = json!({"T":"core/secret-ref@1"});
+    unsupported["inputs"] = json!({"items":{"type":"core/list@1<core/secret-ref@1>","value":[]}});
     let doc = graph(
         &package,
         vec![core(1, "on-start"), unsupported],
@@ -91,7 +91,7 @@ fn unsupported_control_and_stale_analysis_never_reach_resolvers() {
             &resolver,
             CompileOptions::default()
         ),
-        Err(CompileError::UnsupportedNode { .. })
+        Err(CompileError::UnsupportedPort { .. })
     ));
     assert_eq!(resolver.pure.load(std::sync::atomic::Ordering::Relaxed), 0);
     let other = from_json(&orange_model::to_json(&doc).unwrap()).unwrap();
@@ -1650,3 +1650,6 @@ mod state_controls;
 
 #[path = "support/variable_updates.rs"]
 mod variable_updates;
+
+#[path = "support/collection_iteration.rs"]
+mod collection_iteration;
