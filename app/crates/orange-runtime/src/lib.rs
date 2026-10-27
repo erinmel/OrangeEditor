@@ -5,6 +5,7 @@
 
 mod cancel;
 mod data;
+mod data_zone;
 mod entropy;
 mod run;
 pub use cancel::CancelToken;

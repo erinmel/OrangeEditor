@@ -16,6 +16,14 @@ pub struct KernelFault {
     pub message_key: &'static str,
     pub message: &'static str,
 }
+impl KernelFault {
+    /// Shared by Count loops and Repeat zones.
+    pub const NEGATIVE_COUNT: Self = Self {
+        code: "core/OutOfRange",
+        message_key: "core/count-out-of-range",
+        message: "Loop count must be nonnegative.",
+    };
+}
 
 /// Implementors are trusted host code: bounded, deterministic and free of effects.
 /// `fold` must fill every output with its declared type. Cancellation cannot interrupt

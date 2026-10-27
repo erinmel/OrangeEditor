@@ -8,6 +8,9 @@ use orange_model::id::NodeId;
 use orange_model::validation::{ValidationAnalysis, ZoneKind};
 use std::collections::BTreeMap;
 
+/// Estimated `Zones::ends` entry: (scope, end) key, ZoneIx and B-tree overhead.
+const END_ENTRY_CHARGE: usize = 48;
+
 /// Plan-local zone identity. Source UUIDs are retained separately for diagnostics.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ZoneIx(pub(crate) u32);
@@ -114,7 +117,7 @@ impl Zones {
                 }
                 charge(
                     bytes,
-                    std::mem::size_of::<DataZone>() + 48,
+                    std::mem::size_of::<DataZone>() + END_ENTRY_CHARGE,
                     options.limits.max_constant_bytes,
                 )?;
                 let ix = ZoneIx(
