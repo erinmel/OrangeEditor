@@ -10,7 +10,7 @@ The compiler also supports nested options over its scalar/JSON types and constan
 
 ## Development
 
-The [headless control example](app/crates/orange-bundled/examples/headless_control.rs) compiles a saved graph, accumulates a run variable through Count, waits on virtual time and selects a Branch. `Run::pump` budgets both control and resumable data work; `advance_to` never executes graph work inline. Local/run Get/Set, Gate/DoOnce/FlipFlop/Register, scalar Switch, Match-result, Sequence, Count/While, Break/Continue, Wait/Yield and Fork all/any/race/detach are supported. Graceful stop runs On Stop once and drains to a deadline; immediate stop retires waits and permits bounded safe cleanup. Action/async functions, Remaining Switch enum/custom-key families, iterators/zones, Update/shared state, event/reactivity delivery and general resources/services remain open.
+The [headless control example](app/crates/orange-bundled/examples/headless_control.rs) compiles a saved graph, accumulates a run variable through Count, waits on virtual time and selects a Branch. `Run::pump` budgets both control and resumable data work; `advance_to` never executes graph work inline. Local/run Get/Set, Gate/DoOnce/FlipFlop/Register, scalar Switch, Match-result, Sequence, Count/While, Break/Continue, Wait/Yield and Fork all/any/race/detach are supported. Graceful stop runs On Stop once and drains to a deadline; immediate stop retires waits and permits bounded safe cleanup. Action/async functions, Remaining Switch enum/custom-key families, iterators/zones, broader Update/shared state, event/reactivity delivery and general resources/services remain open.
 
 ```sh
 cargo run -p orange-bundled --example headless_control --locked
@@ -72,3 +72,5 @@ Graph-local pure functions now compile through `compile_pure`, including nested 
 Control dispatch now includes exact Core bool/integer/string Switch keys with checked case tables and Match-result with outcome-specific typed projections. String values work through existing pure/data plans and quotas. Enum/custom-key dispatch and broader types remain pending.
 
 State controls now execute Gate commands, resettable Do Once, alternating Flip Flop and typed run/activation Register cells. Compiler-resolved destination commands preserve named exec inputs across loops, waits and cancellation; charged state publication and Register mutation ownership survive host pump slices. State inspection reports write intents; event delivery and action/async function frames remain future work.
+
+Synchronous core/update-variable now executes all nine operations over the documented supported Core types, with atomic local/run mutation, strict one-epoch operands and typed old/new/CAS results. It shares scalar arithmetic policies with bundled math. Bytes/list/package update execution, workspace actors and change/Watch delivery remain open.

@@ -1,6 +1,6 @@
 //! Checked data epochs and host-driven structured control with virtual time.
 //! Run owns bounded scheduling, local/run cells and staged stop/disposal for the
-//! admitted subset, including Fork joins and Gate/DoOnce/FlipFlop/Register state.
+//! admitted subset, including Fork joins, node state and atomic Core variable updates.
 //! Action/async functions, events and general host resources remain open.
 
 mod cancel;

@@ -46,29 +46,7 @@ impl Operation {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Scalar {
-    I32,
-    I64,
-    U32,
-    U64,
-    F32,
-    F64,
-    Bool,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Overflow {
-    Checked,
-    Wrapping,
-    Saturating,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum FloatPolicy {
-    Finite,
-    Ieee,
-}
+pub(crate) use orange_model::scalar::{FloatPolicy, Overflow, Scalar};
 
 /// An immutable exact binding. Retaining it pins its registry metadata even after the
 /// host publishes another snapshot. This does not assert that a graph was validated.
@@ -97,81 +75,19 @@ impl ResolvedKernel {
     /// registry lookup, parsing or host calls occur here. Wrong arity/types return a
     /// contract error; the eventual compiler may not treat this as validation evidence.
     pub fn evaluate(&self, inputs: &[Value]) -> Result<Value, KernelError> {
-        if self.operation == Operation::Not {
-            return match inputs {
-                [Value::Bool(value)] => Ok(Value::Bool(!value)),
-                _ => Err(KernelError::InputContract),
-            };
-        }
-        let [left, right] = inputs else {
-            return Err(KernelError::InputContract);
+        let operation = match self.operation {
+            Operation::Add => orange_model::scalar::Operation::Add,
+            Operation::Subtract => orange_model::scalar::Operation::Subtract,
+            Operation::Multiply => orange_model::scalar::Operation::Multiply,
+            Operation::Divide => orange_model::scalar::Operation::Divide,
+            Operation::Not => orange_model::scalar::Operation::Not,
         };
-
-        macro_rules! integer {
-            ($variant:ident) => {{
-                let (Value::$variant(a), Value::$variant(b)) = (left, right) else {
-                    return Err(KernelError::InputContract);
-                };
-                let (a, b) = (*a, *b);
-                if self.operation == Operation::Divide && b == 0 {
-                    return Err(KernelError::DivideByZero);
-                }
-                use Operation::{Add, Divide, Multiply, Subtract};
-                use Overflow::{Checked, Saturating, Wrapping};
-                let value = match (self.operation, self.overflow) {
-                    (Add, Checked) => a.checked_add(b),
-                    (Subtract, Checked) => a.checked_sub(b),
-                    (Multiply, Checked) => a.checked_mul(b),
-                    (Divide, Checked) => a.checked_div(b),
-                    (Add, Wrapping) => Some(a.wrapping_add(b)),
-                    (Subtract, Wrapping) => Some(a.wrapping_sub(b)),
-                    (Multiply, Wrapping) => Some(a.wrapping_mul(b)),
-                    (Divide, Wrapping) => Some(a.wrapping_div(b)),
-                    (Add, Saturating) => Some(a.saturating_add(b)),
-                    (Subtract, Saturating) => Some(a.saturating_sub(b)),
-                    (Multiply, Saturating) => Some(a.saturating_mul(b)),
-                    (Divide, Saturating) => Some(a.saturating_div(b)),
-                    _ => return Err(KernelError::InputContract),
-                }
-                .ok_or(KernelError::NumericOverflow)?;
-                Ok(Value::$variant(value))
-            }};
-        }
-        macro_rules! float {
-            ($variant:ident) => {{
-                let (Value::$variant(a), Value::$variant(b)) = (left, right) else {
-                    return Err(KernelError::InputContract);
-                };
-                let (a, b) = (*a, *b);
-                if self.float_policy == FloatPolicy::Finite {
-                    if !a.is_finite() || !b.is_finite() {
-                        return Err(KernelError::NonFinite);
-                    }
-                    if self.operation == Operation::Divide && b == 0.0 {
-                        return Err(KernelError::DivideByZero);
-                    }
-                }
-                let result = match self.operation {
-                    Operation::Add => a + b,
-                    Operation::Subtract => a - b,
-                    Operation::Multiply => a * b,
-                    Operation::Divide => a / b,
-                    Operation::Not => return Err(KernelError::InputContract),
-                };
-                if self.float_policy == FloatPolicy::Finite && !result.is_finite() {
-                    return Err(KernelError::NonFinite);
-                }
-                Ok(Value::$variant(result))
-            }};
-        }
-        match self.scalar {
-            Scalar::I32 => integer!(I32),
-            Scalar::I64 => integer!(I64),
-            Scalar::U32 => integer!(U32),
-            Scalar::U64 => integer!(U64),
-            Scalar::F32 => float!(F32),
-            Scalar::F64 => float!(F64),
-            Scalar::Bool => Err(KernelError::InputContract),
-        }
+        orange_model::scalar::evaluate(
+            operation,
+            self.scalar,
+            self.overflow,
+            self.float_policy,
+            inputs,
+        )
     }
 }

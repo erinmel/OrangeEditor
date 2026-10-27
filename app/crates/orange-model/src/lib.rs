@@ -20,6 +20,7 @@ pub mod id;
 pub mod index;
 pub mod inference;
 pub mod paste;
+pub mod scalar;
 pub mod signature;
 pub mod type_term;
 pub mod types;

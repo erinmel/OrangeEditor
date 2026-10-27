@@ -3,7 +3,7 @@ use crate::data::{CleanupScope, HostPoll, PreparedData};
 use crate::{DataActivation, DataError, DataOptions};
 use orange_compiler::{
     ConstantFault, ControlIx, ControlOperation, ControlPlan, ExecInput, ExecTarget, FoldedValue,
-    ForkJoin, HostSource, KernelFault, SwitchKey,
+    ForkJoin, HostSource, KernelFault, SwitchKey, UpdateDemand, UpdateOperation, UpdateProjection,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{FaultPolicy, VarScope};
@@ -18,6 +18,7 @@ use thiserror::Error;
 
 mod ownership;
 mod ready;
+mod update;
 use ownership::{IdSet, Region, RegionKind};
 use ready::ReadyQueue;
 
@@ -222,6 +223,8 @@ impl StateLayout {
 struct PullState {
     active: Option<PendingPull>,
     inputs: Vec<Option<FoldedValue>>,
+    completed: [Option<Value>; 2],
+    completed_len: usize,
 }
 struct PendingPull {
     root: usize,
@@ -235,6 +238,8 @@ impl PullState {
     fn reset(&mut self) {
         self.active = None;
         self.inputs.clear();
+        self.completed = [None, None];
+        self.completed_len = 0;
     }
 }
 
@@ -258,7 +263,7 @@ struct Strand {
     cleanup_remaining: usize,
 }
 struct ActivationState {
-    matched_bytes: usize,
+    retained_bytes: usize,
     cleanup_scope: Option<CleanupScope>,
     cleanup_remaining: usize,
     pull_owner: Option<u64>,
@@ -440,7 +445,7 @@ impl Run {
             .enumerate()
         {
             activations.push(Some(Box::new(ActivationState {
-                matched_bytes: 0,
+                retained_bytes: 0,
                 cleanup_scope: None,
                 cleanup_remaining: options.max_cleanup_operations,
                 pull_owner: None,
@@ -603,7 +608,6 @@ impl Run {
     pub fn trace_dropped(&self) -> u64 {
         self.trace_dropped
     }
-    /// Explicit run-state inspection; activation-local cells are not shared.
     /// Explicit run-owned node state inspection; activation cells remain private.
     pub fn node_state(&self, id: NodeId) -> Option<&Value> {
         let plan = self.plan.as_ref()?;
@@ -613,6 +617,7 @@ impl Run {
         }
         self.states[self.layout.states[index]].as_ref()
     }
+    /// Explicit run-state inspection; activation-local cells are not shared.
     pub fn variable(&self, id: VariableId) -> Option<&Value> {
         let index = self
             .plan
@@ -851,7 +856,9 @@ impl Run {
                         && a.pc.is_some_and(|pc| {
                             matches!(
                                 self.plan.as_ref().unwrap().nodes()[pc.index()].operation(),
-                                ControlOperation::Set { .. } | ControlOperation::Register { .. }
+                                ControlOperation::Set { .. }
+                                    | ControlOperation::Register { .. }
+                                    | ControlOperation::Update { .. }
                             )
                         }))
             })
@@ -959,6 +966,7 @@ impl Run {
                     | ControlOperation::DoOnce { .. }
                     | ControlOperation::FlipFlop { .. }
                     | ControlOperation::Register { .. }
+                    | ControlOperation::Update { .. }
             )
         {
             let fault = ConstantFault {
@@ -983,7 +991,20 @@ impl Run {
             }
             return Ok(());
         }
+        if matches!(node.operation(), ControlOperation::Update { .. }) {
+            if let Some(fault) = self.execute_update(plan, activation, shared, ix, budget)? {
+                self.complete(
+                    plan,
+                    activation,
+                    shared,
+                    ix,
+                    (node.failed(), ControlOutcome::Failed, Some(fault)),
+                );
+            }
+            return Ok(());
+        }
         let (next, outcome, fault) = match node.operation() {
+            ControlOperation::Update { .. } => unreachable!("handled by typed state action"),
             ControlOperation::Gate { state } => {
                 let Some(Value::Bool(open)) = self.state_value(plan, shared, *state) else {
                     return Err(DataError::KernelContract { node: node.node() }.into());
@@ -1045,7 +1066,8 @@ impl Run {
                     )?;
                     (node.then(), ControlOutcome::Then, None)
                 } else {
-                    let Some(result) = self.consume(activation, shared, *next, budget)? else {
+                    let Some(result) = self.consume(plan, activation, shared, *next, budget)?
+                    else {
                         return Ok(());
                     };
                     match result {
@@ -1065,7 +1087,7 @@ impl Run {
                 cases,
                 default,
             } => {
-                let Some(result) = self.consume(activation, shared, *key, budget)? else {
+                let Some(result) = self.consume(plan, activation, shared, *key, budget)? else {
                     return Ok(());
                 };
                 match result {
@@ -1092,7 +1114,7 @@ impl Run {
                 ok,
                 err,
             } => {
-                let Some(result) = self.consume(activation, shared, *result, budget)? else {
+                let Some(result) = self.consume(plan, activation, shared, *result, budget)? else {
                     return Ok(());
                 };
                 match result {
@@ -1159,7 +1181,8 @@ impl Run {
                     .reenter
                     .filter(|(owner, _)| *owner == ix)
                     .map_or(0, |(_, n)| n);
-                let Some(result) = self.consume(activation, shared, *condition, budget)? else {
+                let Some(result) = self.consume(plan, activation, shared, *condition, budget)?
+                else {
                     return Ok(());
                 };
                 match result {
@@ -1200,7 +1223,7 @@ impl Run {
                 body,
                 completed,
             } => {
-                let Some(result) = self.consume(activation, shared, *count, budget)? else {
+                let Some(result) = self.consume(plan, activation, shared, *count, budget)? else {
                     return Ok(());
                 };
                 match result {
@@ -1258,7 +1281,8 @@ impl Run {
                 (node.then(), ControlOutcome::Yielded, None)
             }
             ControlOperation::Wait { duration } => {
-                let Some(result) = self.consume(activation, shared, *duration, budget)? else {
+                let Some(result) = self.consume(plan, activation, shared, *duration, budget)?
+                else {
                     return Ok(());
                 };
                 match result {
@@ -1309,7 +1333,8 @@ impl Run {
                 when_true,
                 when_false,
             } => {
-                let Some(result) = self.consume(activation, shared, *condition, budget)? else {
+                let Some(result) = self.consume(plan, activation, shared, *condition, budget)?
+                else {
                     return Ok(());
                 };
                 match result {
@@ -1326,7 +1351,7 @@ impl Run {
                 }
             }
             ControlOperation::Set { variable, value } => {
-                let Some(result) = self.consume(activation, shared, *value, budget)? else {
+                let Some(result) = self.consume(plan, activation, shared, *value, budget)? else {
                     return Ok(());
                 };
                 match result {
@@ -1353,7 +1378,7 @@ impl Run {
                             .and_then(|b| b.checked_add(new))
                             .filter(|b| {
                                 b.checked_add(if var.scope() == VarScope::Local {
-                                    shared.matched_bytes
+                                    shared.retained_bytes
                                 } else {
                                     0
                                 })
@@ -1488,17 +1513,29 @@ impl Run {
     }
     fn consume(
         &mut self,
+        plan: &ControlPlan,
         activation: &mut Strand,
         shared: &mut ActivationState,
         root: usize,
         budget: &mut usize,
     ) -> Result<Option<FoldedValue>, RunError> {
-        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?;
+        let inputs = plan.inputs_for(root).ok_or(RunError::InvalidState)?;
+        self.consume_inputs(plan, activation, shared, root, inputs, budget)
+    }
+    fn consume_inputs(
+        &mut self,
+        plan: &ControlPlan,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
+        root: usize,
+        inputs: &[usize],
+        budget: &mut usize,
+    ) -> Result<Option<FoldedValue>, RunError> {
         if activation.pull.active.is_none() {
             shared.data.begin_epoch()?;
             shared.pull_owner = Some(activation.id);
             activation.pull.begin(root);
-            for &i in plan.inputs_for(root).ok_or(RunError::InvalidState)? {
+            for &i in inputs {
                 let source = &plan.host_sources()[i];
                 let value = match source {
                     HostSource::State(index) => {
@@ -1534,7 +1571,10 @@ impl Run {
                             }),
                         })
                     }
-                    HostSource::Error(_) | HostSource::Index(_) | HostSource::Value(_) => {
+                    HostSource::Error(_)
+                    | HostSource::Index(_)
+                    | HostSource::Value(_)
+                    | HostSource::Update(_, _) => {
                         self.layout.outputs[i].and_then(|slot| shared.outputs[slot].clone())
                     }
                 };
@@ -1555,9 +1595,7 @@ impl Run {
                     return Ok(None);
                 }
                 *budget -= 1;
-                let offset = plan
-                    .inputs_for(root)
-                    .ok_or(RunError::InvalidState)?
+                let offset = inputs
                     .binary_search(&index)
                     .map_err(|_| RunError::InvalidState)?;
                 let value = activation.pull.inputs[offset].clone().ok_or_else(|| {
@@ -1625,7 +1663,7 @@ impl Run {
             .and_then(|b| b.checked_add(new))
             .filter(|b| {
                 b.checked_add(if metadata.scope() == VarScope::Local {
-                    shared.matched_bytes
+                    shared.retained_bytes
                 } else {
                     0
                 })
@@ -1673,7 +1711,7 @@ impl Run {
             }
         }
         let retained = shared
-            .matched_bytes
+            .retained_bytes
             .checked_sub(old)
             .and_then(|n| n.checked_add(new))
             .filter(|n| {
@@ -1681,7 +1719,7 @@ impl Run {
                     .is_some_and(|total| total <= limit)
             })
             .ok_or(RunError::ResourceLimit)?;
-        shared.matched_bytes = retained;
+        shared.retained_bytes = retained;
         for &i in plan.value_targets(owner) {
             shared.outputs[layout.outputs[i].expect("checked execution output")] =
                 value.clone().map(FoldedValue::Value);
