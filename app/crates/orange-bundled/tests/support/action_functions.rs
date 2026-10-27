@@ -162,6 +162,62 @@ fn repeated_and_nested_calls_get_fresh_local_cells_and_release_their_quota() {
     assert_eq!(run.variable(id(11).parse().unwrap()), Some(&Value::U64(42)));
 }
 
+#[test]
+fn recycled_call_and_pull_scratch_never_leaks_values_between_iterations() {
+    // Each iteration passes fresh ordered arguments through a recycled call
+    // buffer and returns two results through the same buffer.
+    let (package, snapshot) = catalog();
+    let i64 = |value: i64| json!({"type":"core/i64@1","value":value.to_string()});
+    let f = json!({"id":id(100),"name":"pair","kind":"action",
+        "inputs":[port("a","input","core/i64@1"),port("b","input","core/i64@1")],
+        "outputs":[port("x","output","core/i64@1"),port("y","output","core/i64@1")],
+        "nodes":[core(101,"function-entry"),set(104,10,0),core(102,"return")],
+        "edges":[edge(101,101,"then",104,"in"),edge(104,104,"then",102,"in"),
+            edge(102,101,"a",102,"y"),edge(103,101,"b",102,"x")]});
+    let mut call = core(3, "call");
+    call["config"] = json!({"function":id(100)});
+    call["inputs"] = json!({"b":i64(3)});
+    let mut count = core(2, "count");
+    count["inputs"] = json!({"count":i64(20)});
+    let update = |n: u32, v: u32| {
+        let mut node = core(n, "update-variable");
+        node["config"] = json!({"variable":id(v),"operation":"add"});
+        node
+    };
+    let sum = |n: u32| {
+        let mut v = variable(n, "core/i64@1");
+        v["init"] = i64(0);
+        v
+    };
+    let doc = document(
+        &package,
+        vec![start(), count, call, update(4, 11), update(5, 12)],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "body", 3, "in"),
+            edge(3, 2, "index", 3, "a"),
+            edge(4, 3, "then", 4, "in"),
+            edge(5, 3, "x", 4, "value"),
+            edge(6, 4, "then", 5, "in"),
+            edge(7, 3, "y", 5, "value"),
+        ],
+        vec![],
+        vec![f],
+        vec![initialized(10, "local", 7), sum(11), sum(12)],
+    );
+    let plan = compile_plan(&doc, snapshot.clone(), &package);
+    for budget in [1, 7, 1000] {
+        let mut run = Run::start(plan.clone(), &doc, &snapshot, 1, RunOptions::default()).unwrap();
+        drain(&mut run, budget);
+        assert_eq!(run.variable(id(11).parse().unwrap()), Some(&Value::I64(60)));
+        assert_eq!(
+            run.variable(id(12).parse().unwrap()),
+            Some(&Value::I64(190))
+        );
+        assert_eq!(run.ownership().strands, 0);
+    }
+}
+
 fn waiting_function(f: u32) -> Json {
     let mut function = local_function(f, 10);
     function["kind"] = json!("async");

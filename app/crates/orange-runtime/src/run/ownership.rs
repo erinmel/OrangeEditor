@@ -146,6 +146,7 @@ impl Run {
         // A structured body continues the same logical strand. Only Fork
         // creates sibling strand identities.
         child.id = caller.id;
+        child.pull = caller.pull.lend();
         caller.pc = None;
         self.regions
             .get_mut(&caller.region)
@@ -207,6 +208,9 @@ impl Run {
             .ok_or(RunError::InvalidState)?;
         if !region.live.remove(&strand.id) {
             return Err(RunError::InvalidState);
+        }
+        if let Some(caller) = region.continuation.as_mut() {
+            caller.pull.recycle(strand.pull);
         }
         self.live_strands -= 1;
         self.complete_regions(strand.region)
@@ -453,15 +457,32 @@ impl Run {
     /// Retire normal descendants immediately, retaining cancelled wait cleanup
     /// in the same region so ancestors still observe its lifetime barrier.
     pub(super) fn cancel_region(&mut self, root: u64) -> Result<(), RunError> {
+        // Reuse the actor's traversal buffers; they are empty between calls.
+        let mut ids = std::mem::take(&mut self.cancel_regions);
+        let mut timer_keys = std::mem::take(&mut self.cancel_timers);
+        let result = self.cancel_owned_regions(root, &mut ids, &mut timer_keys);
+        ids.clear();
+        timer_keys.clear();
+        self.cancel_regions = ids;
+        self.cancel_timers = timer_keys;
+        result
+    }
+    fn cancel_owned_regions(
+        &mut self,
+        root: u64,
+        ids: &mut Vec<u64>,
+        timer_keys: &mut Vec<(u64, u64)>,
+    ) -> Result<(), RunError> {
         // Traverse only owned descendants. Logical strand IDs may also identify
         // held serial continuations; only one queued/timed strand has that ID.
-        let mut ids = Vec::new();
-        let mut work = vec![root];
+        // `ids` is both the visited list and the breadth-first worklist.
+        ids.push(root);
+        let mut next = 0;
         let mut retired = 0usize;
-        let mut timer_keys = BTreeSet::new();
-        while let Some(id) = work.pop() {
+        while let Some(&id) = ids.get(next) {
+            next += 1;
             let region = self.regions.get(&id).ok_or(RunError::InvalidState)?;
-            work.extend(region.children.iter());
+            ids.extend(region.children.iter());
             retired = retired
                 .checked_add(region.live.len())
                 .ok_or(RunError::InvalidState)?;
@@ -472,16 +493,17 @@ impl Run {
                         .saturating_add(u64::from(queued.cleanup));
                 }
                 if let Some(key) = self.timer_keys.remove(&strand) {
-                    timer_keys.insert(key);
+                    timer_keys.push(key);
                 }
             }
-            ids.push(id);
         }
+        // Timer keys are unique, so sorting reproduces the ordered-set walk.
+        timer_keys.sort_unstable();
         let mut cleanup = Vec::new();
         let mut retained_frames = IdSet::default();
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
         // Timer keys preserve the original cancellation/outcome order.
-        for key in timer_keys {
+        for &key in timer_keys.iter() {
             let mut timer = self.timers.remove(&key).ok_or(RunError::InvalidState)?;
             let node = &plan.nodes()[timer.owner.index()];
             self.record(RunEvent {
@@ -506,7 +528,7 @@ impl Run {
                 cleanup.push(timer.activation);
             }
         }
-        for id in ids {
+        for &id in ids.iter() {
             if id != root
                 && let Some(region) = self.regions.remove(&id)
             {
@@ -559,7 +581,7 @@ impl Run {
     }
     pub(super) fn unwind_loop(
         &mut self,
-        _strand: Strand,
+        strand: Strand,
         region: u64,
         is_break: bool,
     ) -> Result<(), RunError> {
@@ -568,6 +590,7 @@ impl Run {
             .get_mut(&region)
             .and_then(|r| r.continuation.take())
             .ok_or(RunError::InvalidState)?;
+        caller.pull.recycle(strand.pull);
         let owner = match self.regions[&region].kind {
             RegionKind::Body {
                 loop_owner: Some(owner),

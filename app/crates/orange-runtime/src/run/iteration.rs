@@ -72,7 +72,7 @@ fn frame(
     shared: &ActivationState,
     spec: FrameSpec<'_>,
     limit: usize,
-) -> Result<Arc<IterationFrame>, RunError> {
+) -> Result<IterationFrame, RunError> {
     let FrameSpec {
         owner,
         collection,
@@ -123,14 +123,14 @@ fn frame(
         credit,
         limit,
     )?;
-    Ok(Arc::new(IterationFrame {
+    Ok(IterationFrame {
         owner,
         parent,
         index,
         first,
         second,
         hold,
-    }))
+    })
 }
 impl Run {
     pub(super) fn begin_iteration(
@@ -168,7 +168,7 @@ impl Run {
             next: 1,
             collection,
             _hold: hold,
-            frame: current,
+            frame: Arc::new(current),
         })
     }
     pub(super) fn resume_iteration(
@@ -187,6 +187,9 @@ impl Run {
             return Err(RunError::InvalidState);
         };
         if cursor.next < collection_len(&cursor.collection).ok_or(RunError::InvalidState)? {
+            // A frame no body strand still captures is replaced in place: its
+            // hold is credited and its allocation reused. Captured frames stay
+            // immutable for their holders.
             let credit = if Arc::strong_count(&cursor.frame) == 1 {
                 cursor.frame.hold.bytes
             } else {
@@ -204,7 +207,10 @@ impl Run {
                 },
                 self.options.limits.max_state_bytes,
             )?;
-            cursor.frame = current;
+            match Arc::get_mut(&mut cursor.frame) {
+                Some(unique) => *unique = current,
+                None => cursor.frame = Arc::new(current),
+            }
             cursor.next += 1;
             activation.stack.push(Cursor::ForEach(cursor));
             activation.enter_body = Some(Some(owner));

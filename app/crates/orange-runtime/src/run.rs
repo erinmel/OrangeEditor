@@ -304,6 +304,31 @@ impl PullState {
         self.completed_len = 0;
         self.call_values.clear();
     }
+    /// Lend idle scratch capacity to a structured child (body or call) that runs
+    /// while this strand waits as its continuation. An active pull stays put.
+    fn lend(&mut self) -> Self {
+        if self.active.is_some() {
+            return Self::default();
+        }
+        let mut lent = std::mem::take(self);
+        lent.reset();
+        lent
+    }
+    /// Take back scratch capacity from a finished child. Buffers hold no state
+    /// while idle: every new pull begins with `reset`.
+    fn recycle(&mut self, mut child: Self) {
+        child.reset();
+        self.keep_values(child.call_values);
+        if self.active.is_none() && child.inputs.capacity() > self.inputs.capacity() {
+            self.inputs = child.inputs;
+        }
+    }
+    fn keep_values(&mut self, mut values: Vec<Value>) {
+        if self.active.is_none() && values.capacity() > self.call_values.capacity() {
+            values.clear();
+            self.call_values = values;
+        }
+    }
 }
 
 struct Strand {
@@ -406,6 +431,9 @@ pub struct Run {
     dirty_states: Vec<bool>,
     state_segment_indices: Vec<usize>,
     state_segment_writes: Vec<NodeId>,
+    /// Reused cancellation traversal buffers; empty between calls.
+    cancel_regions: Vec<u64>,
+    cancel_timers: Vec<(u64, u64)>,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -626,6 +654,8 @@ impl Run {
             dirty_states: vec![false; state_count],
             state_segment_indices: vec![],
             state_segment_writes: vec![],
+            cancel_regions: vec![],
+            cancel_timers: vec![],
         })
     }
     pub fn id(&self) -> u64 {
@@ -912,13 +942,14 @@ impl Run {
             }
             if activation.faulted && activation.function.is_some() {
                 let fault = activation.call_fault.take().ok_or(RunError::InvalidState)?;
-                if let Err(error) = self.leave_function(activation, FunctionReturn::Fault(*fault)) {
+                let result = Box::new(FunctionReturn::Fault(*fault));
+                if let Err(error) = self.leave_function(activation, result) {
                     return self.fail(error);
                 }
                 continue;
             }
             if let Some(result) = activation.returning.take() {
-                if let Err(error) = self.leave_function(activation, *result) {
+                if let Err(error) = self.leave_function(activation, result) {
                     return self.fail(error);
                 }
                 continue;
