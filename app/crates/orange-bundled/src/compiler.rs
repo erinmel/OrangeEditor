@@ -1,7 +1,7 @@
 //! Trusted native adapter. The compiler itself has no bundled-provider dependency.
 use crate::{MathPackage, Operation, ResolvedConversion, ResolvedKernel, resolve_core_conversion};
 use orange_compiler::{KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError};
-use orange_model::catalog::{ProviderKey, RegistrySnapshot, TypeArgs};
+use orange_model::catalog::{ProviderKey, RegistrySnapshot, TypeArgs, intrinsic_id};
 use orange_model::conversion::{ConverterConfig, ConverterProvider};
 use orange_model::document::{NodeInstance, SignatureSnapshot};
 use orange_model::id::PortKey;
@@ -23,7 +23,7 @@ impl PureKernelResolver for MathPackage {
         signature: &SignatureSnapshot,
         snapshot: Arc<RegistrySnapshot>,
     ) -> Result<KernelBinding, ResolveError> {
-        if node.definition.id.as_str() == "core/convert"
+        if node.definition.id.as_str() == intrinsic_id::CONVERT
             && node.definition.version == 1
             && node.config_version == 1
             && node.provider.is_none()
@@ -32,10 +32,9 @@ impl PureKernelResolver for MathPackage {
                 ConverterConfig::from_config(&node.config).map_err(|_| ResolveError::Contract)?;
             let conversion = resolve_core_conversion(snapshot, &config, &ConverterProvider::Core)
                 .map_err(|_| ResolveError::Unavailable)?;
-            let lossy = config.entry.id.as_str() == "core/f64-to-f32";
             return Ok(KernelBinding {
                 inputs: ports(&["value"])?,
-                outputs: ports(if lossy {
+                outputs: ports(if conversion.lossy() {
                     &["result", "loss"]
                 } else {
                     &["result"]
@@ -48,17 +47,16 @@ impl PureKernelResolver for MathPackage {
             .as_ref()
             .and_then(|binding| ProviderKey::of(document, binding))
             .ok_or(ResolveError::Unavailable)?;
-        let operation = Operation::ALL
-            .into_iter()
-            .find(|op| op.definition_id() == node.definition.id.as_str())
+        let operation = Operation::from_definition_id(node.definition.id.as_str())
             .ok_or(ResolveError::Unavailable)?;
-        let args: TypeArgs = if operation == Operation::Not {
+        let inputs = operation.input_ports();
+        let args: TypeArgs = if !operation.is_numeric() {
             Default::default()
         } else {
             let ty = signature
                 .ports
                 .iter()
-                .find(|port| port.port_id.as_str() == "a")
+                .find(|port| port.port_id.as_str() == inputs[0])
                 .and_then(|port| port.ty.clone())
                 .ok_or(ResolveError::Contract)?;
             [("T".into(), ty)].into()
@@ -74,11 +72,7 @@ impl PureKernelResolver for MathPackage {
         )
         .map_err(|_| ResolveError::Unavailable)?;
         Ok(KernelBinding {
-            inputs: ports(if operation == Operation::Not {
-                &["value"]
-            } else {
-                &["a", "b"]
-            })?,
+            inputs: ports(inputs)?,
             outputs: ports(&[operation.output_port()])?,
             kernel: Arc::new(Native::Math(kernel)),
         })

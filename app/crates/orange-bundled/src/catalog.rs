@@ -29,16 +29,13 @@ const NUMERIC_TYPES: [&str; 6] = [
 pub fn math_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
     let mut definitions = Vec::with_capacity(Operation::ALL.len());
     for operation in Operation::ALL {
-        let boolean = operation == Operation::Not;
+        let boolean = !operation.is_numeric();
         let ty: orange_model::id::TypeExpr = if boolean { "core/bool@1" } else { "$T" }.parse()?;
-        let mut ports = if boolean {
-            vec![PortDescriptor::data_in("value", ty.clone())]
-        } else {
-            vec![
-                PortDescriptor::data_in("a", ty.clone()),
-                PortDescriptor::data_in("b", ty.clone()),
-            ]
-        };
+        let mut ports: Vec<_> = operation
+            .input_ports()
+            .iter()
+            .map(|&name| PortDescriptor::data_in(name, ty.clone()))
+            .collect();
         ports.push(PortDescriptor::data_out(
             operation.output_port(),
             ty,
@@ -178,11 +175,9 @@ impl MathPackage {
         {
             return Err(BindingError::UnsupportedType);
         }
-        let operation = Operation::ALL
-            .into_iter()
-            .find(|op| op.definition_id() == definition.id.as_str())
+        let operation = Operation::from_definition_id(definition.id.as_str())
             .ok_or(BindingError::Unavailable)?;
-        let scalar = if operation == Operation::Not {
+        let scalar = if !operation.is_numeric() {
             if !type_args.is_empty() {
                 return Err(BindingError::UnsupportedType);
             }
@@ -217,7 +212,7 @@ fn policies(
     operation: Operation,
     config: &ConfigValue,
 ) -> Result<(Overflow, FloatPolicy), BindingError> {
-    if operation == Operation::Not && !config.is_empty()
+    if !operation.is_numeric() && !config.is_empty()
         || config
             .keys()
             .any(|key| key != "int_overflow" && key != "float_policy")

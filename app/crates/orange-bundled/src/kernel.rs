@@ -4,6 +4,7 @@ use std::sync::Arc;
 
 use orange_model::Value;
 use orange_model::catalog::{ProviderKey, RegistrySnapshot};
+use orange_model::scalar::Operation as ScalarOperation;
 
 use crate::KernelError;
 
@@ -16,6 +17,32 @@ pub enum Operation {
     Not,
 }
 
+/// One operation's identity, ports and typed scalar rule. Every catalog, binding and
+/// dispatch use reads this single declaration; execution still matches typed enums.
+struct Spec {
+    definition_id: &'static str,
+    /// Numeric operations are generic over `T` with overflow/float policies; the
+    /// remaining operation is boolean and has no type parameters or config.
+    numeric: bool,
+    inputs: &'static [&'static str],
+    output: &'static str,
+    scalar: ScalarOperation,
+}
+
+const fn numeric(
+    definition_id: &'static str,
+    output: &'static str,
+    scalar: ScalarOperation,
+) -> Spec {
+    Spec {
+        definition_id,
+        numeric: true,
+        inputs: &["a", "b"],
+        output,
+        scalar,
+    }
+}
+
 impl Operation {
     pub const ALL: [Self; 5] = [
         Self::Add,
@@ -25,24 +52,55 @@ impl Operation {
         Self::Not,
     ];
 
-    pub const fn definition_id(self) -> &'static str {
+    const fn spec(self) -> Spec {
         match self {
-            Self::Add => "org.orange.math/add",
-            Self::Subtract => "org.orange.math/subtract",
-            Self::Multiply => "org.orange.math/multiply",
-            Self::Divide => "org.orange.math/divide",
-            Self::Not => "org.orange.math/not",
+            Self::Add => numeric("org.orange.math/add", "sum", ScalarOperation::Add),
+            Self::Subtract => numeric(
+                "org.orange.math/subtract",
+                "difference",
+                ScalarOperation::Subtract,
+            ),
+            Self::Multiply => numeric(
+                "org.orange.math/multiply",
+                "product",
+                ScalarOperation::Multiply,
+            ),
+            Self::Divide => numeric(
+                "org.orange.math/divide",
+                "quotient",
+                ScalarOperation::Divide,
+            ),
+            Self::Not => Spec {
+                definition_id: "org.orange.math/not",
+                numeric: false,
+                inputs: &["value"],
+                output: "result",
+                scalar: ScalarOperation::Not,
+            },
         }
     }
 
+    /// The operation whose definition ID is exactly `id`.
+    pub fn from_definition_id(id: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|op| op.definition_id() == id)
+    }
+
+    pub const fn definition_id(self) -> &'static str {
+        self.spec().definition_id
+    }
+
+    /// Declared data inputs in executable order: `a`, `b`, or `value` for Not.
+    pub const fn input_ports(self) -> &'static [&'static str] {
+        self.spec().inputs
+    }
+
     pub const fn output_port(self) -> &'static str {
-        match self {
-            Self::Add => "sum",
-            Self::Subtract => "difference",
-            Self::Multiply => "product",
-            Self::Divide => "quotient",
-            Self::Not => "result",
-        }
+        self.spec().output
+    }
+
+    /// Whether the operation is generic over numeric `T` and accepts numeric policies.
+    pub const fn is_numeric(self) -> bool {
+        self.spec().numeric
     }
 }
 
@@ -75,19 +133,36 @@ impl ResolvedKernel {
     /// registry lookup, parsing or host calls occur here. Wrong arity/types return a
     /// contract error; the eventual compiler may not treat this as validation evidence.
     pub fn evaluate(&self, inputs: &[Value]) -> Result<Value, KernelError> {
-        let operation = match self.operation {
-            Operation::Add => orange_model::scalar::Operation::Add,
-            Operation::Subtract => orange_model::scalar::Operation::Subtract,
-            Operation::Multiply => orange_model::scalar::Operation::Multiply,
-            Operation::Divide => orange_model::scalar::Operation::Divide,
-            Operation::Not => orange_model::scalar::Operation::Not,
-        };
         orange_model::scalar::evaluate(
-            operation,
+            self.operation.spec().scalar,
             self.scalar,
             self.overflow,
             self.float_policy,
             inputs,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn each_operation_identity_is_unique_and_round_trips() {
+        for operation in Operation::ALL {
+            assert_eq!(
+                Operation::from_definition_id(operation.definition_id()),
+                Some(operation)
+            );
+            assert_eq!(operation.is_numeric(), operation != Operation::Not);
+            assert_eq!(
+                operation.input_ports().len(),
+                if operation.is_numeric() { 2 } else { 1 }
+            );
+        }
+        assert_eq!(
+            Operation::from_definition_id("org.orange.math/random-u64"),
+            None
+        );
     }
 }

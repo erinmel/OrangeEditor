@@ -44,6 +44,10 @@ impl ResolvedConversion {
     pub fn provider(&self) -> ConverterProvider {
         ConverterProvider::Core
     }
+    /// Whether this entry also produces the `loss` port.
+    pub(crate) fn lossy(&self) -> bool {
+        self.loss_flags.is_some()
+    }
 
     /// Executes one value conversion. Input variants must match the bound source type.
     /// Loss metadata is prebuilt at binding; evaluation performs no registry lookup,
