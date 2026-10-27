@@ -31,13 +31,15 @@ pub fn validate_exports(
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
     let ports = PortResolver::new(document, resolved);
-    validate_exports_with_ports(document, &ports, registry)
+    let zones = super::regions::root_zones(document, &ports, registry.origin());
+    validate_exports_with_ports(document, &ports, registry, &zones)
 }
 
 pub(crate) fn validate_exports_with_ports(
     document: &GraphDocument,
     resolved: &PortResolver<'_>,
     registry: &RegistrySnapshot,
+    zones: &super::zones::ZoneIndex,
 ) -> Vec<Diagnostic> {
     if document.exports().is_empty() {
         return Vec::new();
@@ -67,6 +69,12 @@ pub(crate) fn validate_exports_with_ports(
                 .entry(edge.to.node)
                 .or_default()
                 .push((edge.from.node, source));
+        }
+    }
+    // A result consumes its begin prefix even when no body edge mentions it.
+    for pair in zones.iter() {
+        if let Some(prefix) = incoming.get(&pair.begin).cloned() {
+            incoming.entry(pair.end).or_default().extend(prefix);
         }
     }
     for export in document.exports() {
@@ -103,7 +111,9 @@ pub(crate) fn validate_exports_with_ports(
         if !serializable(registry, port.ty.as_ref()) {
             report(DiagnosticCode::ExportType);
         }
-        if crosses_activation(&incoming, export.node, port.source) {
+        if zones.owner(export.node).is_some()
+            || crosses_activation(&incoming, export.node, port.source, zones)
+        {
             report(DiagnosticCode::CrossActivation);
         }
     }
@@ -131,6 +141,7 @@ fn crosses_activation(
     incoming: &BTreeMap<NodeId, Vec<(NodeId, OutputSource)>>,
     node: NodeId,
     source: Option<OutputSource>,
+    zones: &super::zones::ZoneIndex,
 ) -> bool {
     let scoped = |source: Option<OutputSource>| {
         matches!(
@@ -148,6 +159,13 @@ fn crosses_activation(
     let mut stack = vec![node];
     while let Some(node) = stack.pop() {
         for &(producer, source) in incoming.get(&node).into_iter().flatten() {
+            if source == OutputSource::Iteration
+                && zones
+                    .owner(producer)
+                    .is_some_and(|pair| pair.begin == producer)
+            {
+                continue;
+            }
             if scoped(Some(source)) {
                 return true;
             }

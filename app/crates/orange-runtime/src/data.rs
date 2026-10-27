@@ -902,7 +902,9 @@ impl Frame {
                             node: index,
                             next: 0,
                         })?,
-                        DataOperation::Constant => {
+                        DataOperation::Constant
+                        | DataOperation::Iteration(_)
+                        | DataOperation::Zone { .. } => {
                             return Err(DataError::KernelContract { node: node.node() });
                         }
                         _ => {

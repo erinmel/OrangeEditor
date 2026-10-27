@@ -606,7 +606,7 @@ fn reach(start: NodeId, stop: NodeId, next: &BTreeMap<NodeId, Vec<NodeId>>) -> B
 /// Zone pairing, purity, closure and nesting of one body (11 §8.4). The zone body is the
 /// data cone between a begin output and its end input.
 fn check_zones(
-    _document: &GraphDocument,
+    document: &GraphDocument,
     resolved: &PortResolver<'_>,
     body: &GraphBody,
     function: Option<FunctionId>,
@@ -624,6 +624,29 @@ fn check_zones(
     if pairs.is_empty() {
         emit_zone_faults(faults, function, origin, result);
         return;
+    }
+    let mut type_faults = BTreeSet::new();
+    for pair in &pairs {
+        let input = match pair.kind {
+            super::zones::ZoneKind::Repeat | super::zones::ZoneKind::Fold => "initial",
+            super::zones::ZoneKind::Filter => "items",
+            super::zones::ZoneKind::Map => continue,
+        };
+        let port_type = |node, name| {
+            resolved
+                .get(&node)?
+                .ports
+                .iter()
+                .find(|p| p.port_id.as_str() == name)?
+                .ty
+                .as_ref()
+        };
+        if let (Some(begin), Some(end)) =
+            (port_type(pair.begin, input), port_type(pair.end, "result"))
+            && begin != end
+        {
+            type_faults.insert(pair.end);
+        }
     }
 
     let mut edges: Vec<DataEdge> = Vec::new();
@@ -696,7 +719,18 @@ fn check_zones(
             }
         }
     }
-    if faults.is_empty() {
+    if function.is_none() {
+        for export in document.exports() {
+            if pairs
+                .iter()
+                .zip(&bodies)
+                .any(|(pair, inside)| export.node == pair.begin || inside.contains(&export.node))
+            {
+                faults.insert((export.node, Some(export.port.clone()), None));
+            }
+        }
+    }
+    if faults.is_empty() && type_faults.is_empty() {
         // Outer bodies first, so each overwrite records the innermost owner.
         // Only one owner per node is retained, even for deeply nested zones.
         let mut order: Vec<_> = (0..pairs.len()).collect();
@@ -710,7 +744,34 @@ fn check_zones(
             result.index.zones.pairs.insert(pair.end, pair);
         }
     }
+    for node in type_faults {
+        result.diagnostics.push(Diagnostic::new(
+            DiagnosticCode::TypeMismatch,
+            subject(function, node, None, None),
+            origin,
+        ));
+    }
     emit_zone_faults(faults, function, origin, result);
+}
+
+/// Standalone export checking needs lexical zone facts without rebuilding exec
+/// regions. Combined analysis reuses the already checked directory instead.
+pub(crate) fn root_zones(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    origin: &HostOrigin,
+) -> super::zones::ZoneIndex {
+    let mut result = RegionValidation::default();
+    check_zones(
+        document,
+        resolved,
+        document.root(),
+        None,
+        &BTreeSet::new(),
+        origin,
+        &mut result,
+    );
+    result.index.zones
 }
 
 fn emit_zone_faults(

@@ -400,7 +400,10 @@ fn run_supported_analysis(
     options.checkpoint()?;
     diagnostics.extend(availability.diagnostics);
     diagnostics.extend(super::exports::validate_exports_with_ports(
-        document, &ports, registry,
+        document,
+        &ports,
+        registry,
+        &regions.index.zones,
     ));
     options.checkpoint()?;
     match retained {

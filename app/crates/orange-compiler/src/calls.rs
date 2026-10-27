@@ -230,11 +230,15 @@ impl<'a> Calls<'a> {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
                     let lazy = out.lazy(&BTreeMap::new(), cursor, node.id).is_some();
+                    let zone = (profile != CallProfile::Pure)
+                        .then(|| crate::zones::marker(analysis, node.id))
+                        .flatten();
                     if node.definition.id.is_core()
                         && !marker
                         && !lazy
                         && !state
                         && !control
+                        && zone.is_none()
                         && !matches!(node.definition.id.as_str(), "core/call" | "core/convert")
                     {
                         return Err(CompileError::UnsupportedNode { node: node.id });
@@ -248,6 +252,8 @@ impl<'a> Calls<'a> {
                             lazy,
                             if state {
                                 OutputSource::State
+                            } else if zone == Some(false) {
+                                OutputSource::Iteration
                             } else {
                                 OutputSource::Computed
                             },

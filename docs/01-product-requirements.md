@@ -192,3 +192,6 @@ Action/async function trace (2026-10-27; action-call-frames): FR-08 fault/result
 
 
 Zone validation trace (2026-10-27; iteration-zones): FR-14/44/46 gains a shared exact-family pair projection, checked lexical body/parent ownership and detection of self-dependent or mutually dependent zone begin prefixes. Focused tests preserve state feedback, nested end ownership, capture exclusion, per-function identities and all four families sharing one zone id. This is the validation slice; resumable zone execution and full core acceptance remain pending. Executed qualification is recorded in10.
+
+
+Zone lowering trace (2026-10-27; iteration-zones): FR-08/14/44/46 now has compact dense layouts for all four zone families, per-call specialization and inherited lexical memo domains. Model acceptance distinguishes closed zone results from actor-scoped iteration outputs, rejects exported interior values and preserves Repeat/Fold carry and Filter element types. A million-iteration constant-input Repeat lowers to three instructions without a provider fold or graph rewrite. This is compile-time evidence only; resumable runtime execution and the remaining core gates stay pending.

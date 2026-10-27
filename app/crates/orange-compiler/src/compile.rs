@@ -977,6 +977,9 @@ pub(crate) fn admit_roots<'a>(
             admit_state_read(*node, sig)?;
         }
         let call = body.nodes[node].definition.id.as_str() == "core/call";
+        let zone = data_plan
+            .then(|| crate::zones::marker(analysis, *node))
+            .flatten();
         if sig.kind != NodeKind::Pure
             && !state_read
             && !(data_plan
@@ -992,6 +995,7 @@ pub(crate) fn admit_roots<'a>(
             && body.nodes[node].definition.id.as_str() != "core/convert"
             && !lazy_nodes.contains_key(node)
             && !state_read
+            && zone.is_none()
             && !(call
                 && (sig.kind == NodeKind::Pure || (data_plan && sig.kind == NodeKind::Volatile)))
         {
@@ -999,6 +1003,8 @@ pub(crate) fn admit_roots<'a>(
         }
         let output_source = if state_read {
             OutputSource::State
+        } else if zone == Some(false) {
+            OutputSource::Iteration
         } else {
             OutputSource::Computed
         };

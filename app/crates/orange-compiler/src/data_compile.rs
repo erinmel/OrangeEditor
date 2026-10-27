@@ -42,6 +42,7 @@ struct ProducedOutput {
 
 struct Lowering<'a, R: EntropyKernelResolver> {
     scope: usize,
+    zones: crate::zones::Zones,
     calls: Arc<crate::calls::Calls<'a>>,
     document: &'a GraphDocument,
     analysis: &'a ValidationAnalysis,
@@ -205,6 +206,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     outputs.push(slot);
                 }
                 self.plan.nodes.push(DataNode {
+                    zone: self.zones.owner(analysis, scope, node),
                     call: scope.checked_sub(1),
                     index,
                     node,
@@ -255,6 +257,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                             );
                             self.plan.host_inputs.push(index);
                             self.plan.nodes.push(DataNode {
+                                zone: None,
                                 call: self.scope.checked_sub(1),
                                 index,
                                 node,
@@ -265,6 +268,77 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                             });
                             self.completed.insert((scope, node));
                         }
+                        continue;
+                    }
+                    if crate::zones::marker(analysis, node) == Some(false) {
+                        let zone = self
+                            .zones
+                            .owner(analysis, scope, node)
+                            .ok_or(CompileError::ValidationIncomplete)?;
+                        let index = NodeIx(
+                            u32::try_from(self.plan.nodes.len())
+                                .map_err(|_| CompileError::ResourceLimit)?,
+                        );
+                        let mut outputs = Vec::new();
+                        for port in sig
+                            .ports
+                            .iter()
+                            .filter(|p| p.direction == PortDirection::Output)
+                        {
+                            let slot = self.push(node, port, None)?;
+                            self.outputs.insert(
+                                (scope, node, key(port)),
+                                ProducedOutput {
+                                    slot,
+                                    producer: Some(index),
+                                },
+                            );
+                            outputs.push(slot);
+                        }
+                        self.zones.layouts[zone.index()].parameters = Some(index);
+                        self.plan.nodes.push(DataNode {
+                            zone: Some(zone),
+                            call: scope.checked_sub(1),
+                            index,
+                            node,
+                            stability: DataStability::Epoch,
+                            inputs: Box::new([]),
+                            outputs: outputs.into(),
+                            operation: DataOperation::Iteration(zone),
+                        });
+                        self.completed.insert((scope, node));
+                        continue;
+                    }
+                    if let Some(zone) = self.zones.end(scope, node) {
+                        let begin = self.zones.layouts[zone.index()].begin;
+                        work.push((
+                            scope,
+                            Task::Finish {
+                                node,
+                                selection: None,
+                            },
+                        ));
+                        self.dependencies(
+                            node,
+                            sig.ports
+                                .iter()
+                                .rev()
+                                .filter(|p| p.direction == PortDirection::Input)
+                                .map(key),
+                            &mut work,
+                        );
+                        work.push((scope, Task::Enter(begin)));
+                        self.dependencies(
+                            begin,
+                            calls
+                                .signature(analysis, scope, begin)
+                                .ports
+                                .iter()
+                                .rev()
+                                .filter(|p| p.direction == PortDirection::Input)
+                                .map(key),
+                            &mut work,
+                        );
                         continue;
                     }
                     if calls.lazy(self.lazy, scope, node).is_some() {
@@ -354,7 +428,20 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 .iter()
                 .filter(|p| p.direction == PortDirection::Output)
                 .collect();
+            let zone_end = self.zones.end(scope, node_id);
             let mut inputs = Vec::new();
+            if let Some(zone) = zone_end {
+                let begin = self.zones.layouts[zone.index()].begin;
+                for port in calls
+                    .signature(analysis, scope, begin)
+                    .ports
+                    .iter()
+                    .filter(|p| p.direction == PortDirection::Input)
+                {
+                    inputs.push(self.input(begin, port)?);
+                }
+            }
+            let prefix = inputs.len();
             for port in &inputs_ports {
                 inputs.push(
                     if let Some(selection) = selection
@@ -369,6 +456,8 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             }
             let child = calls.scopes[scope].calls.get(&node_id).copied();
             let constant = sig.kind == NodeKind::Pure
+                && zone_end.is_none()
+                && child.is_none_or(|scope| !self.zones.contains(scope))
                 && inputs
                     .iter()
                     .all(|i| self.plan.initial[i.source.slot.index()].is_some());
@@ -433,7 +522,9 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 );
                 continue;
             }
-            let operation = if constant {
+            let operation = if let Some(zone) = zone_end {
+                DataOperation::Zone { zone, prefix }
+            } else if constant {
                 self.folder.pull_at(scope, node_id)?;
                 DataOperation::Constant
             } else if let Some(lazy) = calls.lazy(self.lazy, scope, node_id) {
@@ -514,6 +605,11 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 self.plan.host_inputs.push(index);
             }
             self.plan.nodes.push(DataNode {
+                zone: if matches!(operation, DataOperation::Input) {
+                    None
+                } else {
+                    self.zones.owner(analysis, scope, node_id)
+                },
                 call: self.scope.checked_sub(1),
                 index,
                 node: node_id,
@@ -608,6 +704,8 @@ pub(crate) fn lower_roots(
     roots: &[DemandRoot],
     calls: Arc<crate::calls::Calls<'_>>,
 ) -> Result<DataPlan, CompileError> {
+    let mut bytes = calls.signature_bytes;
+    let zones = crate::zones::Zones::prepare(document, analysis, &calls, options, &mut bytes)?;
     let folder = ConstantFolder::new(
         document,
         analysis,
@@ -620,6 +718,7 @@ pub(crate) fn lower_roots(
     )?;
     let mut state = Lowering {
         scope: 0,
+        zones,
         calls: folder.calls.clone(),
         document,
         analysis,
@@ -628,6 +727,7 @@ pub(crate) fn lower_roots(
         incoming: &admission.incoming,
         lazy: &admission.lazy_nodes,
         plan: DataPlan {
+            zones: vec![],
             snapshot,
             graph: document.graph_id(),
             revision: document.revision(),
@@ -655,11 +755,10 @@ pub(crate) fn lower_roots(
         completed: BTreeSet::new(),
         outputs: BTreeMap::new(),
         work: Vec::new(),
-        bytes: 0,
+        bytes,
         seeded: BTreeMap::new(),
         host_nodes: &admission.host_nodes,
     };
-    state.bytes = state.calls.signature_bytes;
     for export in roots {
         charge(
             &mut state.bytes,
@@ -694,6 +793,7 @@ pub(crate) fn lower_roots(
                         .map_err(|_| CompileError::ResourceLimit)?,
                 );
                 state.plan.nodes.push(DataNode {
+                    zone: None,
                     call: scope.checked_sub(1),
                     index,
                     node: export.node,
@@ -752,6 +852,7 @@ pub(crate) fn lower_roots(
             .ok_or(CompileError::ResourceLimit)?;
     }
     state.plan.resources = resources;
+    state.plan.zones = state.zones.layouts;
     options.checkpoint()?;
     Ok(state.plan)
 }

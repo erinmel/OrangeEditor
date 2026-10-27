@@ -43,7 +43,7 @@ pub struct ZoneRegion {
 }
 
 /// Compact lexical ownership from the region pass, without duplicated nested body sets.
-/// A body with a zone structure error publishes no zone entries. This directory alone
+/// A body with a zone structure or paired-type error publishes no zone entries. This directory alone
 /// does not certify types, dependency cycles, metadata completeness or compile readiness.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ZoneIndex {
