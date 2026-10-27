@@ -9,6 +9,7 @@
 
 mod base64;
 pub mod literal_codec;
+pub mod shape;
 
 use std::hash::{Hash, Hasher};
 use std::mem::discriminant;

@@ -186,7 +186,7 @@ pub type ControlState = ControlCell<NodeId>;
 pub struct ControlCell<Id> {
     id: Id,
     scope: VarScope,
-    ty: PlanType,
+    ty: ValueShape,
     initial: Option<Value>,
 }
 impl<Id: Copy> ControlCell<Id> {
@@ -196,7 +196,7 @@ impl<Id: Copy> ControlCell<Id> {
     pub fn scope(&self) -> VarScope {
         self.scope
     }
-    pub fn ty(&self) -> &PlanType {
+    pub fn ty(&self) -> &ValueShape {
         &self.ty
     }
     pub fn initial(&self) -> Option<&Value> {
@@ -496,7 +496,7 @@ pub fn compile_control(
             return Err(CompileError::UnsupportedNode { node: node.id });
         }
         if let std::collections::btree_map::Entry::Vacant(entry) = variable_ids.entry(id) {
-            let ty = PlanType::parse(declaration.ty.as_str())
+            let ty = ValueShape::of(&declaration.ty)
                 .ok_or(CompileError::UnsupportedNode { node: node.id })?;
             let initial = if let Some(literal) = &declaration.init {
                 Some(
@@ -569,10 +569,10 @@ pub fn compile_control(
                     None => false,
                     Some(value) => value.as_bool().ok_or(CompileError::ValidationIncomplete)?,
                 };
-                (VarScope::Run, PlanType::Bool, Some(Value::Bool(open)))
+                (VarScope::Run, ValueShape::Bool, Some(Value::Bool(open)))
             }
             "core/do-once" | "core/flip-flop" => {
-                (VarScope::Run, PlanType::Bool, Some(Value::Bool(false)))
+                (VarScope::Run, ValueShape::Bool, Some(Value::Bool(false)))
             }
             "core/register" => {
                 let port = calls
@@ -739,12 +739,12 @@ pub fn compile_control(
                 let ty = port_type(*id, port)?;
                 if !matches!(
                     ty,
-                    PlanType::Bool
-                        | PlanType::I32
-                        | PlanType::I64
-                        | PlanType::U32
-                        | PlanType::U64
-                        | PlanType::String
+                    ValueShape::Bool
+                        | ValueShape::I32
+                        | ValueShape::I64
+                        | ValueShape::U32
+                        | ValueShape::U64
+                        | ValueShape::String
                 ) {
                     return Err(CompileError::UnsupportedPort {
                         node: *id,
@@ -809,7 +809,7 @@ pub fn compile_control(
                     .iter()
                     .find(|p| p.port_id.as_str() == "result")
                     .ok_or(CompileError::ValidationIncomplete)?;
-                let PlanType::Result(inner) = port_type(*id, port)? else {
+                let ValueShape::Result(inner) = port_type(*id, port)? else {
                     return Err(CompileError::ValidationIncomplete);
                 };
                 ControlOperation::MatchResult {

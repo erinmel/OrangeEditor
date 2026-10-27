@@ -100,13 +100,13 @@ fn frame(
     };
     let ty = &plan.data().slot_types()[plan.data().exports()[*items].slot.index()];
     let (a, b) = match ty {
-        orange_compiler::PlanType::List(inner) => (
+        orange_model::value::shape::ValueShape::List(inner) => (
             inner
                 .checked_charge(&first, limit)
                 .map_err(|_| RunError::ResourceLimit)?,
             0,
         ),
-        orange_compiler::PlanType::Map(key, value) => (
+        orange_model::value::shape::ValueShape::Map(key, value) => (
             key.checked_charge(&first, limit)
                 .map_err(|_| RunError::ResourceLimit)?,
             value

@@ -5,6 +5,7 @@ use orange_model::document::{NodeKind, OutputSource, PortDescriptor, PortDirecti
 use orange_model::id::{NodeId, PortKey};
 use orange_model::validation::{Diagnostic, DiagnosticCode, Subject, ValidationAnalysis};
 use orange_model::value::literal_codec;
+use orange_model::value::shape::is_error_code;
 use orange_model::{GraphDocument, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
@@ -58,10 +59,10 @@ impl CompileOptions<'_> {
 pub(crate) fn key(port: &PortDescriptor) -> PortKey {
     PortKey::new(port.port_id.clone(), None)
 }
-pub(crate) fn port_type(node: NodeId, port: &PortDescriptor) -> Result<PlanType, CompileError> {
+pub(crate) fn port_type(node: NodeId, port: &PortDescriptor) -> Result<ValueShape, CompileError> {
     port.ty
         .as_ref()
-        .and_then(|ty| PlanType::parse(ty.as_str()))
+        .and_then(ValueShape::of)
         .ok_or_else(|| CompileError::UnsupportedPort {
             node,
             port: key(port),
@@ -118,7 +119,7 @@ pub(crate) fn value_bytes(value: &Value) -> usize {
 }
 fn push_slot(
     plan: &mut PurePlan,
-    ty: PlanType,
+    ty: ValueShape,
     source: SlotSource,
     value: FoldedValue,
     call: Option<usize>,
@@ -142,11 +143,11 @@ fn push_slot(
 }
 pub(crate) fn decode(
     literal: &Literal,
-    ty: &PlanType,
+    ty: &ValueShape,
     snapshot: &RegistrySnapshot,
     remaining: usize,
 ) -> Result<Option<Value>, CompileError> {
-    if PlanType::parse(literal.ty.as_str()).as_ref() != Some(ty) {
+    if ValueShape::of(&literal.ty).as_ref() != Some(ty) {
         return Ok(None);
     }
     let cost = literal_bytes(&literal.payload, ty, remaining).ok_or(CompileError::ResourceLimit)?;
@@ -157,22 +158,22 @@ pub(crate) fn decode(
         .ok()
         .filter(|v| ty.accepts(v)))
 }
-fn literal_bytes(payload: &LiteralPayload, ty: &PlanType, limit: usize) -> Option<usize> {
-    fn visit(value: &serde_json::Value, ty: &PlanType, remaining: &mut usize) -> Option<()> {
+fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Option<usize> {
+    fn visit(value: &serde_json::Value, ty: &ValueShape, remaining: &mut usize) -> Option<()> {
         *remaining = remaining.checked_sub(16)?;
         match ty {
-            PlanType::Option(inner) => {
+            ValueShape::Option(inner) => {
                 let object = value.as_object().filter(|o| o.len() == 1)?;
                 if object.get("none") == Some(&serde_json::Value::Bool(true)) {
                     return Some(());
                 }
                 let some = object.get("some")?;
-                if !matches!(inner.as_ref(), PlanType::Option(_)) {
+                if !matches!(inner.as_ref(), ValueShape::Option(_)) {
                     *remaining = remaining.checked_add(16)?;
                 }
                 visit(some, inner, remaining)
             }
-            PlanType::List(inner) => {
+            ValueShape::List(inner) => {
                 let items = value.as_array()?;
                 if items.len().checked_mul(16)? > *remaining {
                     return None;
@@ -182,7 +183,7 @@ fn literal_bytes(payload: &LiteralPayload, ty: &PlanType, limit: usize) -> Optio
                 }
                 Some(())
             }
-            PlanType::Map(key, inner) => {
+            ValueShape::Map(key, inner) => {
                 let items = value.as_array()?;
                 if items.len().checked_mul(32)? > *remaining {
                     return None;
@@ -212,21 +213,9 @@ fn literal_bytes(payload: &LiteralPayload, ty: &PlanType, limit: usize) -> Optio
     };
     Some(limit - remaining)
 }
-pub(crate) fn valid_identifier(text: &str) -> bool {
-    let Some((namespace, name)) = text.split_once('/') else {
-        return false;
-    };
-    !namespace.is_empty()
-        && !name.is_empty()
-        && !name.contains('/')
-        && text.len() <= 256
-        && text
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"/-_.".contains(&b))
-}
 pub(crate) fn valid_fault(fault: KernelFault) -> bool {
-    valid_identifier(fault.code)
-        && valid_identifier(fault.message_key)
+    is_error_code(fault.code)
+        && is_error_code(fault.message_key)
         && !fault.message.is_empty()
         && fault.message.len() <= 512
         && !fault.message.chars().any(char::is_control)
@@ -468,7 +457,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
     }
     pub(crate) fn seed_constant(
         &mut self,
-        ty: PlanType,
+        ty: ValueShape,
         source: SlotSource,
         value: FoldedValue,
         call: Option<usize>,

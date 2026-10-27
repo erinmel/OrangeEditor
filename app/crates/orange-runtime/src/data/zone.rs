@@ -7,13 +7,13 @@
 
 use super::{DataError, Frame, Work};
 use orange_compiler::{
-    ConstantFault, DataNode, DataOperation, DataPlan, FoldedValue, KernelFault, NodeIx, PlanType,
-    ValueCheckError, ZoneIx,
+    ConstantFault, DataNode, DataOperation, DataPlan, FoldedValue, KernelFault, NodeIx, ZoneIx,
 };
 use orange_model::Value;
 use orange_model::id::NodeId;
 use orange_model::validation::ZoneKind;
 use orange_model::value::ListRepr;
+use orange_model::value::shape::{ValueCheckError, ValueShape};
 use std::sync::Arc;
 
 /// Begin inputs collected before the first iteration: Repeat count/initial,
@@ -66,16 +66,16 @@ enum ListBuilder {
 }
 
 impl ListBuilder {
-    fn new(ty: &PlanType) -> Self {
+    fn new(ty: &ValueShape) -> Self {
         match ty {
-            PlanType::Bool => Self::Bool(Vec::new()),
-            PlanType::I32 => Self::I32(Vec::new()),
-            PlanType::I64 => Self::I64(Vec::new()),
-            PlanType::U32 => Self::U32(Vec::new()),
-            PlanType::U64 => Self::U64(Vec::new()),
-            PlanType::F32 => Self::F32(Vec::new()),
-            PlanType::F64 => Self::F64(Vec::new()),
-            PlanType::String => Self::Str(Vec::new()),
+            ValueShape::Bool => Self::Bool(Vec::new()),
+            ValueShape::I32 => Self::I32(Vec::new()),
+            ValueShape::I64 => Self::I64(Vec::new()),
+            ValueShape::U32 => Self::U32(Vec::new()),
+            ValueShape::U64 => Self::U64(Vec::new()),
+            ValueShape::F32 => Self::F32(Vec::new()),
+            ValueShape::F64 => Self::F64(Vec::new()),
+            ValueShape::String => Self::Str(Vec::new()),
             _ => Self::Values(Vec::new()),
         }
     }
@@ -127,7 +127,7 @@ impl ZoneMachine {
     fn new(
         kind: ZoneKind,
         inputs: &[Value],
-        result: &PlanType,
+        result: &ValueShape,
         limit: usize,
     ) -> Result<Self, MachineError> {
         let mut machine = Self {
@@ -160,7 +160,7 @@ impl ZoneMachine {
                 machine.carry = Some(initial.clone());
             }
             (ZoneKind::Map | ZoneKind::Filter, [Value::List(items)]) => {
-                let PlanType::List(element) = result else {
+                let ValueShape::List(element) = result else {
                     return Err(MachineError::Contract);
                 };
                 machine.builder = Some(ListBuilder::new(element));
@@ -213,11 +213,11 @@ impl ZoneMachine {
     fn advance(
         &mut self,
         inputs: &[Value],
-        result: &PlanType,
+        result: &ValueShape,
         limit: usize,
     ) -> Result<(), MachineError> {
         let element = match (self.kind, result) {
-            (ZoneKind::Map | ZoneKind::Filter, PlanType::List(element)) => element.as_ref(),
+            (ZoneKind::Map | ZoneKind::Filter, ValueShape::List(element)) => element.as_ref(),
             (ZoneKind::Repeat | ZoneKind::Fold, ty) => ty,
             _ => return Err(MachineError::Contract),
         };
