@@ -228,6 +228,51 @@ fn stop_frames_are_reserved_at_start_and_never_executed_by_immediate_stop() {
 }
 
 #[test]
+fn aggregate_frame_storage_is_admitted_before_any_frame_is_built() {
+    let (doc, plan) = state_plan(
+        vec![
+            core(1, "on-start"),
+            core(2, "on-stop"),
+            set_bool(3, 100, false),
+        ],
+        vec![edge(1, 2, "then", 3, "in")],
+        vec![variable(100, "run", "core/bool@1", Some(json!(true)))],
+    );
+    let start = |limit: usize| {
+        let mut options = RunOptions::default();
+        options.limits.max_frame_storage_bytes = limit;
+        Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options)
+    };
+    assert!(start(orange_runtime::RunLimits::default().max_frame_storage_bytes).is_ok());
+    assert!(matches!(
+        start(0),
+        Err(orange_runtime::RunError::ResourceLimit)
+    ));
+    // Find the smallest admitted aggregate; one byte less is refused.
+    let (mut refused, mut admitted) = (0usize, usize::MAX);
+    while admitted - refused > 1 {
+        let mid = refused + (admitted - refused) / 2;
+        if start(mid).is_ok() {
+            admitted = mid;
+        } else {
+            refused = mid;
+        }
+    }
+    assert!(matches!(
+        start(admitted - 1),
+        Err(orange_runtime::RunError::ResourceLimit)
+    ));
+    // The admitted boundary still runs the reserved On Stop frame.
+    let mut run = start(admitted).unwrap();
+    run.request_stop(StopMode::Graceful).unwrap();
+    run.pump(100).unwrap();
+    assert_eq!(
+        run.variable(id(100).parse().unwrap()),
+        Some(&Value::Bool(false))
+    );
+}
+
+#[test]
 fn dynamic_lazy_arm_does_not_publish_unused_large_snapshot() {
     let select = json!({"id":id(5),"definition_id":"core/select","definition_version":1,
         "config_version":1,"config":{},"type_pins":{"T":"core/json@1"},

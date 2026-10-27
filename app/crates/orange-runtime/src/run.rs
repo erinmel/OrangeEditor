@@ -101,6 +101,11 @@ pub struct RunLimits {
     pub max_state_bytes: usize,
     pub max_region_depth: usize,
     pub max_timers: usize,
+    /// Aggregate nominal storage that all start and On Stop frames reserve at
+    /// startup: data cells, memo stamps, work/scratch capacity, entropy counters
+    /// and run-owned frame cells, multiplied by the frame count. Values are
+    /// shared clones charged by `max_state_bytes`, not by this limit.
+    pub max_frame_storage_bytes: usize,
 }
 impl Default for RunLimits {
     fn default() -> Self {
@@ -114,6 +119,7 @@ impl Default for RunLimits {
             max_state_bytes: 16 * 1024 * 1024,
             max_region_depth: 1024,
             max_timers: 1024,
+            max_frame_storage_bytes: 64 * 1024 * 1024,
         }
     }
 }
@@ -239,6 +245,38 @@ impl StateLayout {
             outputs,
             output_count,
         }
+    }
+    /// Nominal bytes one start or On Stop frame reserves at startup, from plan
+    /// resource counts. Data-activation internals are estimated in machine words
+    /// so admission stays independent of their private layout.
+    fn frame_storage(&self, plan: &ControlPlan, local_cells: usize) -> Option<usize> {
+        use std::mem::size_of;
+        const WORD: usize = size_of::<usize>();
+        let data = plan.data();
+        let resources = data.resources();
+        let dynamic = data.initial_values().iter().filter(|v| v.is_none()).count();
+        let header = size_of::<ActivationState>()
+            + size_of::<Strand>()
+            + size_of::<Region>()
+            + size_of::<Option<Box<ActivationState>>>();
+        [
+            // Dynamic data slots and their retained charges.
+            (dynamic, size_of::<Option<FoldedValue>>() + WORD),
+            (resources.nodes, size_of::<Option<u64>>()),
+            // Reserved pull work stack and input/output scratch capacity.
+            (resources.work_items, 3 * WORD),
+            (resources.max_inputs, size_of::<Value>()),
+            (resources.max_outputs, size_of::<Value>() + WORD),
+            (data.zones().len(), 3 * WORD),
+            (resources.entropy_nodes, 8 * WORD),
+            (local_cells, size_of::<Option<Value>>()),
+            (self.output_count, size_of::<Option<FoldedValue>>()),
+            (1, header),
+        ]
+        .into_iter()
+        .try_fold(0usize, |sum, (count, bytes)| {
+            count.checked_mul(bytes)?.checked_add(sum)
+        })
     }
 }
 
@@ -465,6 +503,13 @@ impl Run {
             &mut local_bytes,
             options.limits.max_state_bytes,
         )?;
+        // Every start and On Stop frame reserves its storage now, so admit the
+        // aggregate before constructing any of them.
+        layout
+            .frame_storage(&plan, locals.len() + local_states.len())
+            .and_then(|bytes| bytes.checked_mul(capacity))
+            .filter(|total| *total <= options.limits.max_frame_storage_bytes)
+            .ok_or(RunError::ResourceLimit)?;
         let prepared = if capacity > 0 {
             Some(PreparedData::new(plan.data().clone(), options.data.limits)?)
         } else {
