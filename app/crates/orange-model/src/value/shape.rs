@@ -20,6 +20,7 @@ pub const ERROR_CHARGE: usize = 2 * VALUE_CHARGE;
 /// Supported Core leaves and recursively typed containers. Values follow the model's
 /// boxed/unboxed representation, not JSON null.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ValueShape {
     Bool,
     I32,
@@ -41,6 +42,7 @@ pub enum ValueShape {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum ValueCheckError {
     #[error("The value does not match its checked plan type.")]
     InvalidType,

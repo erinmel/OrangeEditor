@@ -45,8 +45,8 @@ enum MachineError {
 impl From<ValueCheckError> for MachineError {
     fn from(error: ValueCheckError) -> Self {
         match error {
-            ValueCheckError::InvalidType => Self::Contract,
             ValueCheckError::ResourceLimit => Self::Limit,
+            _ => Self::Contract,
         }
     }
 }
@@ -54,8 +54,8 @@ impl From<ValueCheckError> for MachineError {
 impl From<ListPushError> for MachineError {
     fn from(error: ListPushError) -> Self {
         match error {
-            ListPushError::Mismatch => Self::Contract,
             ListPushError::Capacity => Self::Limit,
+            _ => Self::Contract,
         }
     }
 }

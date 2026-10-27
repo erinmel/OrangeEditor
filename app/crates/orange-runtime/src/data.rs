@@ -107,8 +107,8 @@ fn checkpoint(cancel: Option<&CancelToken>) -> Result<(), DataError> {
 /// `invalid` names who supplied the wrongly typed value: host input or kernel.
 fn value_check(invalid: DataError) -> impl Fn(ValueCheckError) -> DataError {
     move |error| match error {
-        ValueCheckError::InvalidType => invalid,
         ValueCheckError::ResourceLimit => DataError::ResourceLimit,
+        _ => invalid,
     }
 }
 

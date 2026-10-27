@@ -23,6 +23,7 @@ use crate::type_term::MAX_NESTING;
 /// pattern, lists by elements whatever their storage), not the language's `eq`/`hash`
 /// constraints, which belong to the runtime.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum Value {
     Unit,
     Bool(bool),
@@ -66,6 +67,7 @@ const _: () = assert!(
 
 /// Homogeneous list storage; scalar element types use contiguous typed arrays.
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub enum ListRepr {
     Bool(Box<[bool]>),
     I32(Box<[i32]>),
@@ -145,6 +147,7 @@ impl ListRepr {
 
 /// Why [`ListBuilder::push`] refused an element. Nothing is appended on error.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum ListPushError {
     /// The element is not stored as the builder's packed element type.
     Mismatch,

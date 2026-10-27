@@ -818,10 +818,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                         options.limits.max_constant_bytes.saturating_sub(*bytes),
                     )
                     .map_err(|error| match error {
-                        ValueCheckError::InvalidType => {
-                            CompileError::KernelContract { node: node_id }
-                        }
                         ValueCheckError::ResourceLimit => CompileError::ResourceLimit,
+                        _ => CompileError::KernelContract { node: node_id },
                     })?;
                     FoldedValue::Value(value)
                 };
