@@ -193,351 +193,43 @@ pub(crate) fn summarize_function(
     function_id: FunctionId,
     result: &mut FunctionAnalysis,
 ) {
-    let SummaryContext {
-        document,
-        resolved,
-        leaf_effects,
-        registry,
-        calls,
-        cyclic,
-    } = *context;
-    let origin = registry.origin();
-    let Some(function) = document.functions().get(&function_id) else {
+    let Some(function) = context.document.functions().get(&function_id) else {
         return;
+    };
+    let mut summarizer = Summarizer {
+        context,
+        function_id,
+        origin: context.registry.origin(),
+        result,
+        writes: BTreeMap::new(),
     };
     let mut rank = KindRank::Pure;
     let mut may_suspend = false;
-    let mut complete = !result.incomplete_functions.contains(&function_id);
-    let mut writes = BTreeMap::<VariableId, BTreeSet<WriteOperation>>::new();
-
+    let mut complete = !summarizer
+        .result
+        .incomplete_functions
+        .contains(&function_id);
     for node in function.body.nodes.values() {
-        let definition = node.definition.id.as_str();
-        // Documented host entries (11 §10) are never allowed in a body, even before this
-        // core version registers their contracts; an unsupported entry must not hide the rule.
-        if UNREGISTERED_HOST_ENTRIES.contains(&definition) {
-            emit_at(
-                result,
-                DiagnosticCode::EntryInFunction,
-                function_id,
-                node.id,
-                origin,
-            );
-            complete = false;
-            continue;
-        }
-        if is_intrinsic(definition)
-            && (node.provider.is_some() || node.definition.version != 1 || node.config_version != 1)
-        {
-            emit_at(
-                result,
-                DiagnosticCode::FunctionMetadataUnavailable,
-                function_id,
-                node.id,
-                origin,
-            );
-            complete = false;
-            continue;
-        }
-        // A function's return (or end) cancels strands a detaching fork left running
-        // (11 §14). The fork stays legal, so this is a warning and not incompleteness.
-        if definition == ids::FORK
-            && node.config.get("join").and_then(serde_json::Value::as_str) == Some("detach")
-        {
-            emit_at(
-                result,
-                DiagnosticCode::DetachInFunction,
-                function_id,
-                node.id,
-                origin,
-            );
-        }
-        if is_marker(node) {
-            continue;
-        }
-        if definition == ids::CALL {
-            let Some(callee) = calls
-                .get(&function_id)
-                .and_then(|items| items.get(&node.id))
-            else {
-                complete = false;
-                continue;
-            };
-            let Some(summary) = result.summaries.get(callee) else {
-                complete = false;
-                continue;
-            };
-            rank = rank.max(rank_of(summary.kind));
-            may_suspend |= summary.suspends != Suspends::Never;
-            merge_writes(&mut writes, &summary.run_writes);
-            continue;
-        }
-        if definition == ids::GET_VARIABLE {
-            let variable = super::variables::variable_reference(registry, node).ok();
-            if variable.is_none_or(|id| !document.variables().contains_key(&id)) {
-                emit_at(
-                    result,
-                    DiagnosticCode::VariableUnknown,
-                    function_id,
-                    node.id,
-                    origin,
-                );
-                complete = false;
-                continue;
+        match summarizer.node(node) {
+            Ok(Some((kind, suspends))) => {
+                rank = rank.max(rank_of(kind));
+                may_suspend |= suspends != Suspends::Never;
             }
-        }
-        if intrinsic(definition).is_some_and(|rule| rule.event_access.is_some())
-            && let Err(error) = registry.contract(document, node)
-        {
-            emit_at(
-                result,
-                super::nodes::contract_code(error),
-                function_id,
-                node.id,
-                origin,
-            );
-            complete = false;
-            continue;
-        }
-        if is_intrinsic(definition) && definition != ids::CALL {
-            let Some((kind, suspends)) = intrinsic(definition).and_then(|rule| rule.summary) else {
-                emit_at(
-                    result,
-                    DiagnosticCode::FunctionMetadataUnavailable,
-                    function_id,
-                    node.id,
-                    origin,
-                );
-                complete = false;
-                continue;
-            };
-            if kind == NodeKind::Entry {
-                emit_at(
-                    result,
-                    DiagnosticCode::EntryInFunction,
-                    function_id,
-                    node.id,
-                    origin,
-                );
-                complete = false;
-                continue;
-            }
-            rank = rank.max(rank_of(kind));
-            may_suspend |= suspends != Suspends::Never;
-            if let Some(
-                access @ (VariableAccess::Write
-                | VariableAccess::Update
-                | VariableAccess::WriteShared
-                | VariableAccess::UpdateShared),
-            ) = intrinsic(definition).and_then(|rule| rule.variable_access)
-            {
-                let shared = matches!(
-                    access,
-                    VariableAccess::WriteShared | VariableAccess::UpdateShared
-                );
-                let mut fresh_contract = None;
-                if matches!(
-                    access,
-                    VariableAccess::Update
-                        | VariableAccess::WriteShared
-                        | VariableAccess::UpdateShared
-                ) {
-                    match registry.contract(document, node) {
-                        Ok(Some(contract)) => fresh_contract = Some(contract),
-                        Ok(None) => {
-                            emit_at(
-                                result,
-                                DiagnosticCode::FunctionMetadataUnavailable,
-                                function_id,
-                                node.id,
-                                origin,
-                            );
-                            complete = false;
-                            continue;
-                        }
-                        Err(error) => {
-                            emit_at(
-                                result,
-                                super::nodes::contract_code(error),
-                                function_id,
-                                node.id,
-                                origin,
-                            );
-                            complete = false;
-                            continue;
-                        }
-                    }
-                }
-                if access == VariableAccess::WriteShared {
-                    match fresh_contract
-                        .as_deref()
-                        .ok_or(DiagnosticCode::FunctionMetadataUnavailable)
-                        .and_then(|contract| validate_shared_variable_type(registry, contract))
-                    {
-                        Ok(()) => {}
-                        Err(code) => {
-                            emit_at(result, code, function_id, node.id, origin);
-                            complete = false;
-                            continue;
-                        }
-                    }
-                }
-                match core_variable_write(registry, node, access) {
-                    Ok(write) => {
-                        if document.variables().get(&write.variable).is_none() {
-                            emit_at(
-                                result,
-                                DiagnosticCode::VariableUnknown,
-                                function_id,
-                                node.id,
-                                origin,
-                            );
-                            complete = false;
-                        } else if !shared
-                            && document.variables()[&write.variable].scope == VarScope::Workspace
-                        {
-                            emit_at(
-                                result,
-                                DiagnosticCode::FunctionMetadataUnavailable,
-                                function_id,
-                                node.id,
-                                origin,
-                            );
-                            complete = false;
-                        } else if !shared
-                            && document.variables()[&write.variable].scope == VarScope::Run
-                        {
-                            writes
-                                .entry(write.variable)
-                                .or_default()
-                                .insert(write.operation);
-                        }
-                    }
-                    Err(code) => {
-                        emit_at(result, code, function_id, node.id, origin);
-                        complete = false;
-                    }
-                }
-            }
-            continue;
-        }
-
-        let Some(snapshot) = resolved.get(&node.id) else {
-            emit_at(
-                result,
-                DiagnosticCode::FunctionMetadataUnavailable,
-                function_id,
-                node.id,
-                origin,
-            );
-            complete = false;
-            continue;
-        };
-        if snapshot.kind == NodeKind::Entry {
-            emit_at(
-                result,
-                DiagnosticCode::EntryInFunction,
-                function_id,
-                node.id,
-                origin,
-            );
-            complete = false;
-            continue;
-        }
-        if snapshot.ports.iter().any(|port| {
-            port.kind == crate::document::PortKind::Event
-                && port.direction == crate::document::PortDirection::Output
-        }) {
-            emit_at(
-                result,
-                DiagnosticCode::SubscriptionInFunction,
-                function_id,
-                node.id,
-                origin,
-            );
-            complete = false;
-            continue;
-        }
-        if let Some(issue) = suspension_contract_issue(snapshot.kind, snapshot.suspends) {
-            let code = match issue {
-                SuspensionContractIssue::Missing => DiagnosticCode::SuspendsMissing,
-                SuspensionContractIssue::Invalid(_) => DiagnosticCode::SuspendsInvalid,
-            };
-            emit_at(result, code, function_id, node.id, origin);
-            complete = false;
-            continue;
-        }
-        let suspension = snapshot.suspension().unwrap_or(Suspends::Never);
-        rank = rank.max(rank_of(snapshot.kind));
-        may_suspend |= suspension != Suspends::Never;
-
-        if matches!(
-            leaf_effects.get(&node.id),
-            Some(LeafEffects::GraphBodyUnavailable)
-        ) {
-            emit_at(
-                result,
-                DiagnosticCode::FunctionMetadataUnavailable,
-                function_id,
-                node.id,
-                origin,
-            );
-            complete = false;
-            continue;
-        }
-        if matches!(snapshot.kind, NodeKind::Pure | NodeKind::Volatile)
-            && matches!(leaf_effects.get(&node.id), Some(LeafEffects::Known(items)) if !items.is_empty())
-        {
-            emit_at(
-                result,
-                DiagnosticCode::FunctionMetadataUnavailable,
-                function_id,
-                node.id,
-                origin,
-            );
-            complete = false;
-            continue;
-        }
-        match snapshot.kind {
-            NodeKind::Pure | NodeKind::Volatile => {}
-            _ => match leaf_effects.get(&node.id) {
-                Some(LeafEffects::Known(items)) => {
-                    for item in items {
-                        if document.variables().get(&item.variable).is_none() {
-                            emit_at(
-                                result,
-                                DiagnosticCode::VariableUnknown,
-                                function_id,
-                                node.id,
-                                origin,
-                            );
-                            complete = false;
-                        } else if document.variables()[&item.variable].scope == VarScope::Run {
-                            writes
-                                .entry(item.variable)
-                                .or_default()
-                                .insert(item.operation);
-                        }
-                    }
-                }
-                Some(LeafEffects::GraphBodyUnavailable) | None => {
-                    emit_at(
-                        result,
-                        DiagnosticCode::FunctionMetadataUnavailable,
-                        function_id,
-                        node.id,
-                        origin,
-                    );
-                    complete = false;
-                }
-            },
+            Ok(None) => {}
+            Err(Incomplete) => complete = false,
         }
     }
-
+    let Summarizer {
+        result,
+        writes,
+        origin,
+        ..
+    } = summarizer;
     let inferred = rank.kind();
     if complete && function.kind != inferred {
         emit(result, DiagnosticCode::FunctionKind, function_id, origin);
     }
-    if !cyclic.contains(&function_id) && complete {
+    if !context.cyclic.contains(&function_id) && complete {
         result.summaries.insert(
             function_id,
             FunctionSummary {
@@ -552,6 +244,215 @@ pub(crate) fn summarize_function(
         );
     } else {
         result.incomplete_functions.insert(function_id);
+    }
+}
+
+/// A node that leaves its function's summary incomplete; its diagnostics are emitted.
+struct Incomplete;
+
+/// One function's summary under construction. An incomplete node discards nothing
+/// else: the kind, suspension and writes matter only while the function stays complete.
+struct Summarizer<'a, 'r> {
+    context: &'a SummaryContext<'a>,
+    function_id: FunctionId,
+    origin: &'a HostOrigin,
+    result: &'r mut FunctionAnalysis,
+    writes: BTreeMap<VariableId, BTreeSet<WriteOperation>>,
+}
+
+impl Summarizer<'_, '_> {
+    fn report(&mut self, node: NodeId, code: DiagnosticCode) {
+        emit_at(self.result, code, self.function_id, node, self.origin);
+    }
+
+    fn fail(&mut self, node: NodeId, code: DiagnosticCode) -> Incomplete {
+        self.report(node, code);
+        Incomplete
+    }
+
+    fn record_run_write(&mut self, variable: VariableId, operation: WriteOperation) {
+        self.writes.entry(variable).or_default().insert(operation);
+    }
+
+    /// The kind and suspension one body node contributes; None for structure markers.
+    fn node(
+        &mut self,
+        node: &crate::document::NodeInstance,
+    ) -> Result<Option<(NodeKind, Suspends)>, Incomplete> {
+        let SummaryContext {
+            document,
+            registry,
+            calls,
+            ..
+        } = *self.context;
+        let definition = node.definition.id.as_str();
+        // Documented host entries (11 §10) are never allowed in a body, even before this
+        // core version registers their contracts; an unsupported entry must not hide the rule.
+        if UNREGISTERED_HOST_ENTRIES.contains(&definition) {
+            return Err(self.fail(node.id, DiagnosticCode::EntryInFunction));
+        }
+        if is_intrinsic(definition)
+            && (node.provider.is_some() || node.definition.version != 1 || node.config_version != 1)
+        {
+            return Err(self.fail(node.id, DiagnosticCode::FunctionMetadataUnavailable));
+        }
+        // A function's return (or end) cancels strands a detaching fork left running
+        // (11 §14). The fork stays legal, so this is a warning and not incompleteness.
+        if definition == ids::FORK
+            && node.config.get("join").and_then(serde_json::Value::as_str) == Some("detach")
+        {
+            self.report(node.id, DiagnosticCode::DetachInFunction);
+        }
+        if is_marker(node) {
+            return Ok(None);
+        }
+        if definition == ids::CALL {
+            let summary = calls
+                .get(&self.function_id)
+                .and_then(|items| items.get(&node.id))
+                .and_then(|callee| self.result.summaries.get(callee))
+                .ok_or(Incomplete)?;
+            merge_writes(&mut self.writes, &summary.run_writes);
+            return Ok(Some((summary.kind, summary.suspends)));
+        }
+        if definition == ids::GET_VARIABLE {
+            let variable = super::variables::variable_reference(registry, node).ok();
+            if variable.is_none_or(|id| !document.variables().contains_key(&id)) {
+                return Err(self.fail(node.id, DiagnosticCode::VariableUnknown));
+            }
+        }
+        if intrinsic(definition).is_some_and(|rule| rule.event_access.is_some())
+            && let Err(error) = registry.contract(document, node)
+        {
+            return Err(self.fail(node.id, super::nodes::contract_code(error)));
+        }
+        if is_intrinsic(definition) {
+            return self.intrinsic(node).map(Some);
+        }
+        self.leaf(node).map(Some)
+    }
+
+    fn intrinsic(
+        &mut self,
+        node: &crate::document::NodeInstance,
+    ) -> Result<(NodeKind, Suspends), Incomplete> {
+        let SummaryContext {
+            document, registry, ..
+        } = *self.context;
+        let rule = intrinsic(node.definition.id.as_str());
+        let Some((kind, suspends)) = rule.and_then(|rule| rule.summary) else {
+            return Err(self.fail(node.id, DiagnosticCode::FunctionMetadataUnavailable));
+        };
+        if kind == NodeKind::Entry {
+            return Err(self.fail(node.id, DiagnosticCode::EntryInFunction));
+        }
+        let Some(
+            access @ (VariableAccess::Write
+            | VariableAccess::Update
+            | VariableAccess::WriteShared
+            | VariableAccess::UpdateShared),
+        ) = rule.and_then(|rule| rule.variable_access)
+        else {
+            return Ok((kind, suspends));
+        };
+        let shared = matches!(
+            access,
+            VariableAccess::WriteShared | VariableAccess::UpdateShared
+        );
+        if access != VariableAccess::Write {
+            let contract = match registry.contract(document, node) {
+                Ok(Some(contract)) => contract,
+                Ok(None) => {
+                    return Err(self.fail(node.id, DiagnosticCode::FunctionMetadataUnavailable));
+                }
+                Err(error) => return Err(self.fail(node.id, super::nodes::contract_code(error))),
+            };
+            if access == VariableAccess::WriteShared
+                && let Err(code) = validate_shared_variable_type(registry, &contract)
+            {
+                return Err(self.fail(node.id, code));
+            }
+        }
+        let write =
+            core_variable_write(registry, node, access).map_err(|code| self.fail(node.id, code))?;
+        match document.variables().get(&write.variable).map(|v| v.scope) {
+            None => return Err(self.fail(node.id, DiagnosticCode::VariableUnknown)),
+            Some(VarScope::Workspace) if !shared => {
+                return Err(self.fail(node.id, DiagnosticCode::FunctionMetadataUnavailable));
+            }
+            Some(VarScope::Run) if !shared => {
+                self.record_run_write(write.variable, write.operation)
+            }
+            Some(_) => {}
+        }
+        Ok((kind, suspends))
+    }
+
+    /// A package or graph-body leaf, summarized from its fresh signature and effects.
+    fn leaf(
+        &mut self,
+        node: &crate::document::NodeInstance,
+    ) -> Result<(NodeKind, Suspends), Incomplete> {
+        let SummaryContext {
+            document,
+            resolved,
+            leaf_effects,
+            ..
+        } = *self.context;
+        let Some(snapshot) = resolved.get(&node.id) else {
+            return Err(self.fail(node.id, DiagnosticCode::FunctionMetadataUnavailable));
+        };
+        if snapshot.kind == NodeKind::Entry {
+            return Err(self.fail(node.id, DiagnosticCode::EntryInFunction));
+        }
+        if snapshot.ports.iter().any(|port| {
+            port.kind == crate::document::PortKind::Event
+                && port.direction == crate::document::PortDirection::Output
+        }) {
+            return Err(self.fail(node.id, DiagnosticCode::SubscriptionInFunction));
+        }
+        if let Some(issue) = suspension_contract_issue(snapshot.kind, snapshot.suspends) {
+            let code = match issue {
+                SuspensionContractIssue::Missing => DiagnosticCode::SuspendsMissing,
+                SuspensionContractIssue::Invalid(_) => DiagnosticCode::SuspendsInvalid,
+            };
+            return Err(self.fail(node.id, code));
+        }
+        let contribution = (
+            snapshot.kind,
+            snapshot.suspension().unwrap_or(Suspends::Never),
+        );
+        let pure = matches!(snapshot.kind, NodeKind::Pure | NodeKind::Volatile);
+        let items = match leaf_effects.get(&node.id) {
+            Some(LeafEffects::Known(items)) => items,
+            None if pure => return Ok(contribution),
+            Some(LeafEffects::GraphBodyUnavailable) | None => {
+                return Err(self.fail(node.id, DiagnosticCode::FunctionMetadataUnavailable));
+            }
+        };
+        if pure {
+            if items.is_empty() {
+                return Ok(contribution);
+            }
+            return Err(self.fail(node.id, DiagnosticCode::FunctionMetadataUnavailable));
+        }
+        let mut complete = true;
+        for item in items {
+            match document.variables().get(&item.variable).map(|v| v.scope) {
+                // Every unknown variable is reported, not only the first.
+                None => {
+                    self.report(node.id, DiagnosticCode::VariableUnknown);
+                    complete = false;
+                }
+                Some(VarScope::Run) => self.record_run_write(item.variable, item.operation),
+                Some(_) => {}
+            }
+        }
+        if complete {
+            Ok(contribution)
+        } else {
+            Err(Incomplete)
+        }
     }
 }
 
