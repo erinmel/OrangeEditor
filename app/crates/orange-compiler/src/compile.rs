@@ -102,6 +102,7 @@ pub(crate) fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<()
 pub(crate) fn value_bytes(value: &Value) -> usize {
     match value {
         Value::Json(text) => text.as_str().len().saturating_add(16),
+        Value::Str(text) => text.len().saturating_add(16),
         Value::Some(inner) | Value::Ok(inner) => value_bytes(inner).saturating_add(16),
         Value::Err(error) => error.code.len().saturating_add(32),
         _ => 16,

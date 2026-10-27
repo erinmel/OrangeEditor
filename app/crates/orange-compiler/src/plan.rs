@@ -21,7 +21,7 @@ impl SlotIx {
     }
 }
 
-/// Supported scalar/JSON leaves and recursively typed options/results. Values
+/// Supported scalar/string/JSON leaves and recursively typed options/results. Values
 /// follow the model's boxed/unboxed representation, not JSON null.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PlanType {
@@ -33,6 +33,7 @@ pub enum PlanType {
     F32,
     F64,
     Json,
+    String,
     Duration,
     Error,
     Option(Box<PlanType>),
@@ -70,7 +71,7 @@ mod tests {
         assert!(PlanType::parse(&wrap(orange_model::type_term::MAX_NESTING)).is_some());
         assert!(PlanType::parse(&wrap(orange_model::type_term::MAX_NESTING + 1)).is_none());
         for invalid in [
-            "core/option@1<core/string@1>",
+            "core/option@1<core/bytes@1>",
             "core/option@1<core/i64@1,core/i64@1>",
             "core/option@1<$T>",
             "core/option@2<core/i64@1>",
@@ -143,6 +144,7 @@ impl PlanType {
             "core/f32@1" => Self::F32,
             "core/f64@1" => Self::F64,
             "core/json@1" => Self::Json,
+            "core/string@1" => Self::String,
             "core/duration@1" => Self::Duration,
             "core/error@1" => Self::Error,
             _ => return None,
@@ -177,6 +179,7 @@ impl PlanType {
                 | (Self::F32, Value::F32(_))
                 | (Self::F64, Value::F64(_))
                 | (Self::Json, Value::Json(_))
+                | (Self::String, Value::Str(_))
                 | (Self::Duration, Value::Duration(_))
         ) || matches!((self, value), (Self::Error, Value::Err(error)) if crate::compile::valid_identifier(&error.code))
     }

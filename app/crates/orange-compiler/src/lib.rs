@@ -1,8 +1,9 @@
 //! Checked immutable data and bounded structured-control plans.
 //! Pure/seeded data demand supports Select/And/Or/Coalesce/Try. Control plans
 //! additionally admit the documented entries, Get/Set, branches, Sequence,
-//! Count/While, Fork and virtual Wait/Yield. PurePlan also folds bounded graph-local
-//! pure calls. Dynamic/volatile/action/async calls and services remain unsupported.
+//! Count/While, Fork, scalar Switch, Match-result and virtual Wait/Yield. Pure/data
+//! plans support bounded graph-local Pure calls; data plans also support seeded
+//! volatile calls. Other volatile/action/async calls and services remain unsupported.
 
 mod calls;
 mod compile;
@@ -18,7 +19,7 @@ mod plan;
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
 pub use control::{
     ControlIx, ControlNode, ControlOperation, ControlPlan, ControlVariable, ForkJoin, HostSource,
-    compile_control,
+    SwitchCase, SwitchKey, compile_control,
 };
 pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
 pub use data_compile::compile_data;
