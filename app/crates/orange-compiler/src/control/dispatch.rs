@@ -1,4 +1,4 @@
-use crate::{ControlIx, PlanType};
+use crate::{ExecTarget, PlanType};
 use orange_model::Value;
 use std::sync::Arc;
 
@@ -37,7 +37,7 @@ impl SwitchKey {
 pub struct SwitchCase {
     pub(super) key: SwitchKey,
     pub(super) instance: u16,
-    pub(super) target: Option<ControlIx>,
+    pub(super) target: Option<ExecTarget>,
 }
 impl SwitchCase {
     pub fn key(&self) -> &SwitchKey {
@@ -46,7 +46,7 @@ impl SwitchCase {
     pub fn instance(&self) -> u16 {
         self.instance
     }
-    pub fn target(&self) -> Option<ControlIx> {
+    pub fn target(&self) -> Option<ExecTarget> {
         self.target
     }
 }
