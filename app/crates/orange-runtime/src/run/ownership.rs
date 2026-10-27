@@ -178,12 +178,9 @@ impl Run {
     ) -> Result<Strand, RunError> {
         Ok(Strand {
             function: caller.function,
-            call: None,
-            returning: None,
-            call_fault: None,
+            transfer: Transfer::None,
             cleanup_deadline: caller.cleanup_deadline,
             iteration_context: caller.iteration_context.clone(),
-            fork: None,
             id: self.owner_id()?,
             region,
             sequence: caller.sequence,
@@ -191,14 +188,10 @@ impl Run {
             pc: caller.pc,
             pull: PullState::default(),
             stack: vec![],
-            waiting: None,
             yielded: false,
             reenter: None,
             cleanup: caller.cleanup,
             cleanup_remaining: caller.cleanup_remaining,
-            enter_body: None,
-            unwind: None,
-            faulted: false,
         })
     }
     pub(super) fn retire_strand(&mut self, strand: Strand) -> Result<(), RunError> {
@@ -519,7 +512,7 @@ impl Run {
                 s.stack.clear();
                 s.pull.reset();
                 s.reenter = None;
-                s.waiting = None;
+                s.transfer = Transfer::None;
                 s.yielded = false;
                 s.cleanup = true;
                 let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);

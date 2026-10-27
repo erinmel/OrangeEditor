@@ -287,18 +287,18 @@ impl Run {
             // its capacity for this strand and the callee it lends to.
             let mut values = Vec::with_capacity(strand.pull.call_values.len());
             values.append(&mut strand.pull.call_values);
-            strand.call = Some(Box::new(PendingCall {
+            strand.transfer = Transfer::Call(PendingCall {
                 owner,
                 scope,
                 values,
-            }));
+            });
         } else {
             // The buffer travels with the result and returns to the caller's scratch.
             let values = std::mem::take(&mut strand.pull.call_values);
             let bytes =
                 Self::values_charge(plan, demand, &values, self.options.limits.max_state_bytes)?;
             let hold = Hold::new(shared, bytes, 0, self.options.limits.max_state_bytes)?;
-            strand.returning = Some(Box::new(FunctionReturn::Values {
+            strand.transfer = Transfer::Return(Box::new(FunctionReturn::Values {
                 values,
                 hold: Some(hold),
             }));

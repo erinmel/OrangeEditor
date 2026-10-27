@@ -213,7 +213,7 @@ impl Run {
             }
             cursor.next += 1;
             activation.stack.push(Cursor::ForEach(cursor));
-            activation.enter_body = Some(Some(owner));
+            activation.transfer = Transfer::EnterBody(Some(owner));
             activation.pc = *body;
             activation.yielded = true;
             self.record(RunEvent {
