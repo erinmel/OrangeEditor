@@ -13,7 +13,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
 mod dispatch;
+mod update;
 pub use dispatch::{SwitchCase, SwitchKey};
+pub use update::{UpdateDemand, UpdateOperation, UpdateProjection};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ControlIx(pub(crate) usize);
@@ -81,6 +83,11 @@ fn destination(
 
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
+    Update {
+        variable: usize,
+        operation: UpdateOperation,
+        demand: UpdateDemand,
+    },
     Gate {
         state: usize,
     },
@@ -187,6 +194,7 @@ pub enum HostSource {
     Index(ControlIx),
     Value(ControlIx),
     State(usize),
+    Update(ControlIx, UpdateProjection),
 }
 
 #[derive(Debug, Clone)]
@@ -338,6 +346,7 @@ pub fn compile_control(
                 | "core/on-stop"
                 | "core/branch"
                 | "core/set-variable"
+                | "core/update-variable"
                 | "core/sequence"
                 | "core/fork"
                 | "core/yield"
@@ -375,7 +384,7 @@ pub fn compile_control(
         }
         if !matches!(
             node.definition.id.as_str(),
-            "core/get-variable" | "core/set-variable"
+            "core/get-variable" | "core/set-variable" | "core/update-variable"
         ) {
             continue;
         }
@@ -417,6 +426,9 @@ pub fn compile_control(
                 ty,
                 initial,
             });
+        }
+        if node.definition.id.as_str() == "core/update-variable" {
+            update::resolve(node.id, &node.config, variables[variable_ids[&id]].ty())?;
         }
         variable_nodes.insert(node.id, variable_ids[&id]);
     }
@@ -530,6 +542,23 @@ pub fn compile_control(
                 .copied()
         };
         let operation = match node.definition.id.as_str() {
+            "core/update-variable" => {
+                let variable = variable_nodes[id];
+                let operation = update::resolve(*id, &node.config, variables[variable].ty())?;
+                let mut operands = Vec::new();
+                if matches!(operation, UpdateOperation::CompareAndSet) {
+                    operands.push(input_root(&mut roots, *id, "expected"));
+                }
+                operands.push(input_root(&mut roots, *id, "value"));
+                ControlOperation::Update {
+                    variable,
+                    operation,
+                    demand: UpdateDemand {
+                        roots: operands.into(),
+                        inputs: Box::new([]),
+                    },
+                }
+            }
             "core/gate" => ControlOperation::Gate {
                 state: state_nodes[id],
             },
@@ -836,6 +865,19 @@ pub fn compile_control(
                     .map(HostSource::State)
                     .ok_or(CompileError::ValidationIncomplete);
             }
+            if matches!(
+                nodes[ids[&source.node].index()].operation(),
+                ControlOperation::Update { .. }
+            ) {
+                let projection = match source.port.port().as_str() {
+                    "old" => UpdateProjection::Old,
+                    "new" => UpdateProjection::New,
+                    "exchanged" => UpdateProjection::Exchanged,
+                    "error" => return Ok(HostSource::Error(ids[&source.node])),
+                    _ => return Err(CompileError::UnsupportedNode { node: source.node }),
+                };
+                return Ok(HostSource::Update(ids[&source.node], projection));
+            }
             match source.port.port().as_str() {
                 "value"
                     if matches!(
@@ -872,7 +914,9 @@ pub fn compile_control(
         match source {
             HostSource::Index(owner) => index_targets[owner.index()].push(i),
             HostSource::Error(owner) => error_targets[owner.index()].push(i),
-            HostSource::Value(owner) => value_targets[owner.index()].push(i),
+            HostSource::Value(owner) | HostSource::Update(owner, _) => {
+                value_targets[owner.index()].push(i)
+            }
             HostSource::Variable(_) | HostSource::State(_) => {}
         }
     }
@@ -926,6 +970,20 @@ pub fn compile_control(
                 .ok_or(CompileError::ValidationIncomplete)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    for node in &mut nodes {
+        if let ControlOperation::Update { demand, .. } = &mut node.operation {
+            let mut union = BTreeSet::new();
+            for &root in demand.roots.iter() {
+                for &input in root_inputs[root].iter() {
+                    options.checkpoint()?;
+                    if union.insert(input) {
+                        charge(&mut projection_items, 1, options.limits.max_graph_items)?;
+                    }
+                }
+            }
+            demand.inputs = union.into_iter().collect();
+        }
+    }
     Ok(ControlPlan {
         data: Arc::new(data),
         nodes: nodes.into(),

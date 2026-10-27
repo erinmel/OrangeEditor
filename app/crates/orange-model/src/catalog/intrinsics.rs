@@ -56,6 +56,14 @@ fn variable_definition(
     NodeDefinition {
         volatility: (access == VariableAccess::Read).then_some(super::Volatility::StateRead),
         ports: Ports::Variable(access),
+        config_schema: (access == VariableAccess::Update).then(|| {
+            serde_json::json!({
+                "type":"object","properties":{
+                    "int_overflow":{"type":"string","enum":["checked","wrapping","saturating"]},
+                    "float_policy":{"type":"string","enum":["finite","ieee"]}
+                }
+            })
+        }),
         ..definition(id, kind, suspends, Vec::new())
     }
 }
