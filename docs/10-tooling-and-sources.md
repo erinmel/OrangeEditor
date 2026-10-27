@@ -1738,4 +1738,30 @@ Lowering tests inspect real plans built from fresh full analysis and exact MathP
 
 Self-review found and fixed two prior model gaps: valid closed zone results were rejected as actor activation values, and marker pairs could disagree on carried or Filter element types. Combined export analysis reuses the checked zone directory; standalone export checking computes only lexical zone facts. Result cones include begin-prefix producers so actor-scoped prefix captures still fail. Interior exports are structure escapes, and only actual checked zone begin projections are exempted inside a closed result cone. Early lowering tests exposed these model failures; a generic test also incorrectly used a symbolic type pin and was corrected to infer the enclosing function's rigid parameter from its entry edge.
 
-This remains an intermediate compile-time slice. DataActivation explicitly refuses the new zone instructions until the resumable evaluator is integrated; compile_pure explicitly refuses zones under its existing borrowed folded-result contract. Runtime slicing, per-iteration memo/entropy, capture snapshots, typed builders, cancellation/byte-limit reuse, source-reference equivalence, release qualification and exact-head CI remain pending for this cohort. No runtime, performance/NFR, complete-core or API-freeze claim follows. Raw logs are ignored .artifacts/iteration-zones-*; environmental OneDrive hard-link fallback warnings persist.
+This remains an intermediate compile-time slice. At this commit DataActivation explicitly refused the new zone instructions; the runtime slice below supersedes that refusal. compile_pure explicitly refuses zones under its existing borrowed folded-result contract. Runtime slicing, per-iteration memo/entropy, capture snapshots, typed builders, cancellation/byte-limit reuse, source-reference equivalence, release qualification and exact-head CI remain pending for this cohort. No runtime, performance/NFR, complete-core or API-freeze claim follows. Raw logs are ignored .artifacts/iteration-zones-*; environmental OneDrive hard-link fallback warnings persist.
+
+### Iteration-zone runtime slice — 2026-10-27
+
+Continues `core/iteration-zones` after lowering commit 46413eb, on the same Windows MSVC/Rust 1.99.1/Cargo 1.99.1 toolchain with default features. Cargo.lock is unchanged from `dev` (SHA-256 e20eacb56cec10f874aa8c3869d5ab93b34831229a74b91332433db5f5267152). No dependencies or manifests changed. The protected user review remains untouched.
+
+| Executed check | Result |
+|---|---|
+| cargo test --workspace --locked | PASS: 927 passed, 0 failed, 14 existing ignored, 88 result groups |
+| cargo test -p orange-bundled --test zone_epochs --locked | PASS: 24 passed, 0 failed |
+| cargo clippy --workspace --all-targets --locked -- -D warnings | PASS |
+| cargo doc --workspace --no-deps --locked with RUSTDOCFLAGS=-D warnings | PASS |
+| cargo fmt --all --check; git diff --check | PASS |
+
+DataActivation now executes the four zone families as resumable work items. A private ZoneMachine keeps the count, source handle, carry and typed list builder. Every iteration costs one operation and one activation fuel unit. Body nodes memoize against a per-zone generation that is never reset, and outer captures keep the consumption epoch. Body entropy draws a fresh invocation per iteration under the original node/call stream identity. A fault or error in the prefix or body retires the machine with the original begin identity. Cancellation, quota failure and a new epoch discard partial machines. Repeat with a negative count reuses the documented `core/count-out-of-range` fault of Count loops.
+
+Review fixes in this slice:
+- Fold/Map/Filter no longer charge the source list a second time; its memoized outer slot already retains it.
+- `advance_zone` leaves the machine in its cell, so `zone_bytes` stays exact when an advance fails.
+- One reset helper replaces five copies.
+- One helper now maps value-check errors, and `KernelFault::NEGATIVE_COUNT` is shared.
+- The entropy stamp no longer has a separate branch for nodes inside zones.
+- Prefix arity, builder and zone-index charges have named constants.
+
+A new regression folds a 1,000-item list (about 16,000 charged bytes) under a 24,000-byte limit; restoring the double charge made it fail, and the restored source passes. The existing Map quota test exceeded its limit only through that double charge, so its limit is now 3,000 bytes and the test still rejects mid-build, then succeeds with a smaller list in the next epoch.
+
+Still open for this cohort: source-reference equivalence, release qualification, and exact-head remote CI. Last-iteration body values stay charged until they are overwritten. No performance/NFR, complete-core or API-freeze claim follows. OneDrive hard-link fallback warnings remain environmental.
