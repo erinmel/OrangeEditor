@@ -1702,3 +1702,75 @@ Eight restored mutations caused behavior failures: alias call locals, drop funct
 Self-review corrections include scoped control/DemandRoot identities, shared prepared call metadata, exact native reader admission inside effectful scopes, a shared RAII retained-value guard, actor-owned frame storage without locks, cancellation transfer of nested frame lifetimes, atomic local Update/result quotas, retired function projections, and source-intent deduplication. Rare pending calls/results/faults and retained frame sets are boxed to avoid growing common strand/region payloads. Return conformance reuses region ownership and precomputes Sequence continuation/Gate-write facts, avoiding repeated whole-body scans per path. Same-strand host polling no longer manufactures new write-intent segments. This is structural reuse/bounding evidence, not a measured general speedup.
 
 Public unfrozen Rust additions include FunctionLayout, ControlNode::scope, Call/Return operations, FrameLocal/Argument/CallOutput sources and Run::control_state; source-only node_state refuses ambiguous repeated IDs. Downstream exhaustive matches need updating. Saved JSON, provider ABI/locks and dependencies remain unchanged. Cancellation cleanup Return terminates its canceled path without normal result evaluation/publication. Node state preserves declared run/activation lifetime per expanded call site; mutable variables initialize per invocation. Bounded DataActivation memo/slot caches retain their existing activation lifetime and separate quotas. No wall-time preemption, allocator/RSS, full-core, full call-stack error, NFR or API-freeze gate is claimed. OneDrive incremental hard-link fallback warnings are environmental. Clock/other volatile families, zones, enum/custom-key dispatch, package bodies, event/Watch queues, resources/inert services, workspace/checkpoints, broader kernels and original core acceptance gates remain open.
+
+
+### Iteration-zone validation slice — 2026-10-27
+
+Branch `core/iteration-zones`, based on fetched dev cab56e65e5157d90695cefe8c7dcf3be144a59c9 (PR28). Local Windows x86_64 MSVC, rustc1.99.1 (58cf8f9c3), cargo1.99.1 (5f94df478), selected rust-toolchain.toml and default features. No dependency/manifest/feature changes; Cargo.lock SHA256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152. The protected untracked user review remains unchanged.
+
+| Executed check | Result |
+|---|---|
+| cargo test --workspace --locked | PASS:903 passed,0 failed,14 existing ignored,86 result groups |
+| cargo test -p orange-model --locked | PASS:598 passed,0 failed,8 existing ignored,67 result groups |
+| cargo test -p orange-model --test validation_zones --test validation_data_cycles --locked, after mutation restoration | PASS:26 passed (8 new zone behavior groups),0 failed |
+| cargo clippy -p orange-model --all-targets --locked -- -D warnings | PASS |
+| cargo doc -p orange-model --no-deps --locked with RUSTDOCFLAGS=-D warnings | PASS |
+| cargo fmt --all --check; git diff --check | PASS |
+
+Two deliberate source mutations were detected by the focused regressions: omitting zone begin-prefix dependency edges, and assigning nested owners in the wrong order. Exact original source bytes were restored in finally blocks before the passing focused/workspace suites. Tests distinguish original begin parameters, body nodes, outer captures and nested end results; preserve function-local pairing and state feedback; cover all four same-id families and reject self-dependent/mutually dependent prefixes. One early test-fixture attempt used internal serialization with the saved-format decoder and was corrected to the canonical document codec before final qualification.
+
+Self-review: pairing uses exact intrinsic identities and borrowed configuration strings; the cycle pass and region pass share it. Retained lexical ownership is one record per node, with immediate parents rather than duplicated nested body sets. Incomplete/type/cycle acceptance remains the responsibility of the complete analysis; the zone directory alone is not executable evidence. This slice does not yet admit zones into the compiler/runtime. Release, full-workspace lint/doc, source-oracle/runtime qualification and exact-head remote CI remain required for the finished cohort. No PR merge, core/NFR/API-freeze or execution-completion claim follows. Raw local logs remain ignored under .artifacts/iteration-zones-*. OneDrive hard-link fallback warnings remain environmental.
+
+
+### Iteration-zone lowering slice — 2026-10-27
+
+Continues `core/iteration-zones` after model validation commit020dc73. Same selected Windows MSVC/Rust1.99.1/Cargo1.99.1 toolchain, default features and unchanged Cargo.lock hash recorded above; no dependencies or manifest changes. Protected user review remains byte-identical.
+
+| Executed check | Result |
+|---|---|
+| cargo test --workspace --locked | PASS:912 passed,0 failed,14 existing ignored,87 result groups |
+| cargo test -p orange-bundled --test zone_epochs --test compile_data --test function_epochs --locked, after mutation restoration | PASS:61 passed,0 failed,3 groups, including9 new lowering regressions |
+| cargo clippy --workspace --all-targets --locked -- -D warnings | PASS |
+| cargo doc --workspace --no-deps --locked with RUSTDOCFLAGS=-D warnings | PASS |
+| cargo fmt --all --check; git diff --check | PASS |
+
+Lowering tests inspect real plans built from fresh full analysis and exact MathPackage bindings. A million-iteration Repeat stays three instructions, binds its body once and executes no body fold. Other cases cover Map/Fold/Filter port order, nested lexical parents independent of UUID order, distinct generic call programs with constant u64/string arguments, outer entropy capture domains, interior-export rejection, exact carry/Filter element type matching, and metadata quota refusal before callbacks. Three restored source mutations were detected: removing zone metadata charges, allowing scalar constant folding of zone-containing calls, and removing the body memo domain. The metadata test's128-byte limit admits the original scalar slots/constants; its detected charge mutation proves it tests zone metadata admission rather than an earlier slot refusal.
+
+Self-review found and fixed two prior model gaps: valid closed zone results were rejected as actor activation values, and marker pairs could disagree on carried or Filter element types. Combined export analysis reuses the checked zone directory; standalone export checking computes only lexical zone facts. Result cones include begin-prefix producers so actor-scoped prefix captures still fail. Interior exports are structure escapes, and only actual checked zone begin projections are exempted inside a closed result cone. Early lowering tests exposed these model failures; a generic test also incorrectly used a symbolic type pin and was corrected to infer the enclosing function's rigid parameter from its entry edge.
+
+This remains an intermediate compile-time slice. At this commit DataActivation explicitly refused the new zone instructions; the runtime slice below supersedes that refusal. compile_pure explicitly refuses zones under its existing borrowed folded-result contract. Runtime slicing, per-iteration memo/entropy, capture snapshots, typed builders, cancellation/byte-limit reuse, source-reference equivalence, release qualification and exact-head CI remain pending for this cohort. No runtime, performance/NFR, complete-core or API-freeze claim follows. Raw logs are ignored .artifacts/iteration-zones-*; environmental OneDrive hard-link fallback warnings persist.
+
+### Iteration-zone runtime slice — 2026-10-27
+
+Continues `core/iteration-zones` after lowering commit 46413eb, on the same Windows MSVC/Rust 1.99.1/Cargo 1.99.1 toolchain with default features. Cargo.lock is unchanged from `dev` (SHA-256 e20eacb56cec10f874aa8c3869d5ab93b34831229a74b91332433db5f5267152). No dependencies or manifests changed. The protected user review remains untouched.
+
+| Executed check | Result |
+|---|---|
+| cargo test --workspace --locked | PASS: 927 passed, 0 failed, 14 existing ignored, 88 result groups |
+| cargo test -p orange-bundled --test zone_epochs --locked | PASS: 24 passed, 0 failed |
+| cargo clippy --workspace --all-targets --locked -- -D warnings | PASS |
+| cargo doc --workspace --no-deps --locked with RUSTDOCFLAGS=-D warnings | PASS |
+| cargo fmt --all --check; git diff --check | PASS |
+
+DataActivation now executes the four zone families as resumable work items. A private ZoneMachine keeps the count, source handle, carry and typed list builder. Every iteration costs one operation and one activation fuel unit. Body nodes memoize against a per-zone generation that is never reset, and outer captures keep the consumption epoch. Body entropy draws a fresh invocation per iteration under the original node/call stream identity. A fault or error in the prefix or body retires the machine with the original begin identity. Cancellation, quota failure and a new epoch discard partial machines. Repeat with a negative count reuses the documented `core/count-out-of-range` fault of Count loops.
+
+Review fixes in this slice:
+- Fold/Map/Filter no longer charge the source list a second time; its memoized outer slot already retains it.
+- `advance_zone` leaves the machine in its cell, so `zone_bytes` stays exact when an advance fails.
+- One reset helper replaces five copies.
+- One helper now maps value-check errors, and `KernelFault::NEGATIVE_COUNT` is shared.
+- The entropy stamp no longer has a separate branch for nodes inside zones.
+- Prefix arity, builder and zone-index charges have named constants.
+
+A new regression folds a 1,000-item list (about 16,000 charged bytes) under a 24,000-byte limit; restoring the double charge made it fail, and the restored source passes. The existing Map quota test exceeded its limit only through that double charge, so its limit is now 3,000 bytes and the test still rejects mid-build, then succeeds with a smaller list in the next epoch.
+
+Still open for this cohort: source-reference equivalence, release qualification, and exact-head remote CI. Last-iteration body values stay charged until they are overwritten. No performance/NFR, complete-core or API-freeze claim follows. OneDrive hard-link fallback warnings remain environmental.
+
+Follow-up review (same day, same toolchain and lockfile):
+- The zone work steps (prefix, next, body), zone cells and machine now live in the private `data::zone` child module. `data.rs` keeps the generic work loop and shrinks from 1,275 to 1,052 lines.
+- Zone start no longer computes the source list's value charge, an O(n) result that was being discarded. The machine type-checks and charges only the initial carry against the end type.
+- Discarded Filter items are no longer type-checked a second time; their producer already checked them when it published them.
+- One `pulled_fault` helper replaces the operand fault check that was copied into Gather and both zone walks.
+- A probe test for a nested zone whose prefix does not depend on the outer iteration confirmed that the model rejects the shape as `E-ZONE-STRUCTURE`. Deriving `parent` from the begin's owner is therefore sound, and the probe was removed.
+
+Results: fmt check, clippy `-D warnings`, rustdoc `-D warnings` and `git diff --check` all pass. `cargo test --workspace --locked` passes with 927 passed, 0 failed, 14 existing ignored, in 88 result groups.

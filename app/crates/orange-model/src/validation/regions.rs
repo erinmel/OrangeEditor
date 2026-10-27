@@ -53,6 +53,8 @@ pub struct Region {
 /// `owners` and diagnosed; they never get a guessed owner.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct RegionIndex {
+    /// Checked lexical ownership of pure iteration zones, independent of exec regions.
+    pub zones: super::zones::ZoneIndex,
     pub regions: BTreeMap<RegionRoot, Region>,
     pub owners: BTreeMap<NodeId, RegionRoot>,
     /// Exec nodes that no region reaches (`W-UNREACHABLE`).
@@ -581,20 +583,6 @@ fn switch_cases_valid(node: &crate::document::NodeInstance, signature: &Signatur
     true
 }
 
-/// The zone family and side of a zone intrinsic (`core/map-begin` is `("map", false)`).
-fn zone_of(definition: &str) -> Option<(&str, bool)> {
-    let name = definition.strip_prefix("core/")?;
-    let (family, side) = name.split_once('-')?;
-    if !matches!(family, "repeat" | "map" | "fold" | "filter") {
-        return None;
-    }
-    match side {
-        "begin" => Some((family, false)),
-        "end" => Some((family, true)),
-        _ => None,
-    }
-}
-
 /// A data edge: id, source node and port, target node.
 type DataEdge = (EdgeId, NodeId, PortKey, NodeId);
 
@@ -618,7 +606,7 @@ fn reach(start: NodeId, stop: NodeId, next: &BTreeMap<NodeId, Vec<NodeId>>) -> B
 /// Zone pairing, purity, closure and nesting of one body (11 §8.4). The zone body is the
 /// data cone between a begin output and its end input.
 fn check_zones(
-    _document: &GraphDocument,
+    document: &GraphDocument,
     resolved: &PortResolver<'_>,
     body: &GraphBody,
     function: Option<FunctionId>,
@@ -626,36 +614,39 @@ fn check_zones(
     origin: &HostOrigin,
     result: &mut RegionValidation,
 ) {
-    let mut faults: BTreeSet<(NodeId, Option<PortKey>, Option<EdgeId>)> = BTreeSet::new();
-    // (family, zone id) -> (begins, ends)
-    let mut groups: BTreeMap<(String, String), (Vec<NodeId>, Vec<NodeId>)> = BTreeMap::new();
-    for node in body.nodes.values() {
-        let Some((family, end)) = zone_of(node.definition.id.as_str()) else {
-            continue;
-        };
-        match node.config.get("zone").and_then(serde_json::Value::as_str) {
-            Some(zone) if !zone.is_empty() => {
-                let group = groups
-                    .entry((family.to_owned(), zone.to_owned()))
-                    .or_default();
-                if end { &mut group.1 } else { &mut group.0 }.push(node.id);
-            }
-            _ => {
-                faults.insert((node.id, None, None));
-            }
-        }
-    }
-    let mut pairs = Vec::new();
-    for (begins, ends) in groups.values() {
-        if let ([begin], [end]) = (&begins[..], &ends[..]) {
-            pairs.push((*begin, *end));
-        } else {
-            faults.extend(begins.iter().chain(ends).map(|node| (*node, None, None)));
-        }
-    }
+    let pairing = super::zones::pair_zones(body, function);
+    let mut faults: BTreeSet<(NodeId, Option<PortKey>, Option<EdgeId>)> = pairing
+        .faults
+        .into_iter()
+        .map(|node| (node, None, None))
+        .collect();
+    let pairs = pairing.pairs;
     if pairs.is_empty() {
         emit_zone_faults(faults, function, origin, result);
         return;
+    }
+    let mut type_faults = BTreeSet::new();
+    for pair in &pairs {
+        let input = match pair.kind {
+            super::zones::ZoneKind::Repeat | super::zones::ZoneKind::Fold => "initial",
+            super::zones::ZoneKind::Filter => "items",
+            super::zones::ZoneKind::Map => continue,
+        };
+        let port_type = |node, name| {
+            resolved
+                .get(&node)?
+                .ports
+                .iter()
+                .find(|p| p.port_id.as_str() == name)?
+                .ty
+                .as_ref()
+        };
+        if let (Some(begin), Some(end)) =
+            (port_type(pair.begin, input), port_type(pair.end, "result"))
+            && begin != end
+        {
+            type_faults.insert(pair.end);
+        }
     }
 
     let mut edges: Vec<DataEdge> = Vec::new();
@@ -690,7 +681,8 @@ fn check_zones(
 
     let bodies: Vec<BTreeSet<NodeId>> = pairs
         .iter()
-        .map(|(begin, end)| {
+        .map(|pair| {
+            let (begin, end) = (&pair.begin, &pair.end);
             let after = reach(*begin, *end, &forward);
             let before = reach(*end, *begin, &backward);
             after
@@ -701,7 +693,8 @@ fn check_zones(
         })
         .collect();
 
-    for ((begin, end), inside) in pairs.iter().zip(&bodies) {
+    for (pair, inside) in pairs.iter().zip(&bodies) {
+        let (begin, end) = (&pair.begin, &pair.end);
         for node in inside {
             let pure = resolved
                 .get(node)
@@ -716,7 +709,8 @@ fn check_zones(
                 faults.insert((*from, Some(port.clone()), Some(*id)));
             }
         }
-        for ((other_begin, other_end), _) in pairs.iter().zip(&bodies) {
+        for other in &pairs {
+            let (other_begin, other_end) = (&other.begin, &other.end);
             if other_begin == begin {
                 continue;
             }
@@ -725,7 +719,59 @@ fn check_zones(
             }
         }
     }
+    if function.is_none() {
+        for export in document.exports() {
+            if pairs
+                .iter()
+                .zip(&bodies)
+                .any(|(pair, inside)| export.node == pair.begin || inside.contains(&export.node))
+            {
+                faults.insert((export.node, Some(export.port.clone()), None));
+            }
+        }
+    }
+    if faults.is_empty() && type_faults.is_empty() {
+        // Outer bodies first, so each overwrite records the innermost owner.
+        // Only one owner per node is retained, even for deeply nested zones.
+        let mut order: Vec<_> = (0..pairs.len()).collect();
+        order.sort_by_key(|&i| (std::cmp::Reverse(bodies[i].len()), pairs[i].end));
+        for i in order {
+            let mut pair = pairs[i];
+            pair.parent = result.index.zones.owners.get(&pair.begin).copied();
+            for node in bodies[i].iter().copied().chain([pair.begin]) {
+                result.index.zones.owners.insert(node, pair.end);
+            }
+            result.index.zones.pairs.insert(pair.end, pair);
+        }
+    }
+    for node in type_faults {
+        result.diagnostics.push(Diagnostic::new(
+            DiagnosticCode::TypeMismatch,
+            subject(function, node, None, None),
+            origin,
+        ));
+    }
     emit_zone_faults(faults, function, origin, result);
+}
+
+/// Standalone export checking needs lexical zone facts without rebuilding exec
+/// regions. Combined analysis reuses the already checked directory instead.
+pub(crate) fn root_zones(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    origin: &HostOrigin,
+) -> super::zones::ZoneIndex {
+    let mut result = RegionValidation::default();
+    check_zones(
+        document,
+        resolved,
+        document.root(),
+        None,
+        &BTreeSet::new(),
+        origin,
+        &mut result,
+    );
+    result.index.zones
 }
 
 fn emit_zone_faults(

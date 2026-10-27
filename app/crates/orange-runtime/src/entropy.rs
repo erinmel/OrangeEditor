@@ -311,16 +311,32 @@ impl ActivationEntropy {
         let state = self.state(frame, slot.index)?;
         invocation(key, epoch, state)
     }
-    pub(crate) fn invocation_key_dense(
+    /// Epoch-stamped form; the runtime passes its own stamp to the `_at` form.
+    #[cfg(test)]
+    fn invocation_key_dense(
         &mut self,
         frame: FrameId,
         slot: &EntropySlot,
         index: usize,
     ) -> Result<EntropyKey, EntropyError> {
+        // Without an epoch the stamp is unused: `_at` rejects foreign slots, then NoEpoch.
+        let epoch = self.epoch.unwrap_or_default();
+        self.invocation_key_dense_at(frame, slot, index, epoch)
+    }
+
+    /// Each dense instruction has one fixed memo domain. Zone generations may
+    /// replace its outer epoch without changing node/call stream identity.
+    pub(crate) fn invocation_key_dense_at(
+        &mut self,
+        frame: FrameId,
+        slot: &EntropySlot,
+        index: usize,
+        stamp: u64,
+    ) -> Result<EntropyKey, EntropyError> {
         if !Arc::ptr_eq(&self.layout, &slot.layout) {
             return Err(EntropyError::ForeignSlot);
         }
-        let epoch = self.epoch.ok_or(EntropyError::NoEpoch)?;
+        self.epoch.ok_or(EntropyError::NoEpoch)?;
         let key = EntropyKey {
             seed: self.seed,
             frame,
@@ -332,7 +348,7 @@ impl ActivationEntropy {
             .nodes
             .get_mut(index)
             .ok_or(EntropyError::ResourceLimit)?;
-        invocation(key, epoch, state)
+        invocation(key, stamp, state)
     }
 }
 fn invocation(

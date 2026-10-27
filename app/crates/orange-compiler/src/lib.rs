@@ -16,6 +16,7 @@ mod evaluate;
 mod kernel;
 mod lazy;
 mod plan;
+mod zones;
 
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
 pub use control::{
@@ -36,6 +37,7 @@ pub use plan::{
     ConstantFault, Export, FoldedValue, InputSource, NodeIx, PlanType, PureCallSite, PurePlan,
     PureStep, SlotIx, SlotSource,
 };
+pub use zones::{DataZone, ZoneIx};
 
 mod values;
 pub use values::ValueCheckError;

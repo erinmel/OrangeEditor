@@ -16,6 +16,13 @@ pub enum DataStability {
 /// Numeric operand positions refer to DataNode.inputs, never names at execution.
 #[derive(Debug, Clone)]
 pub enum DataOperation {
+    /// Parameters published only by an active zone iteration, never by a host.
+    Iteration(ZoneIx),
+    /// Strict begin-input prefix, then strict end/body inputs per iteration.
+    Zone {
+        zone: ZoneIx,
+        prefix: usize,
+    },
     Constant,
     Pure(KernelBinding),
     Entropy(EntropyBinding),
@@ -47,6 +54,7 @@ pub struct DataInput {
 
 #[derive(Debug, Clone)]
 pub struct DataNode {
+    pub(crate) zone: Option<ZoneIx>,
     pub(crate) call: Option<usize>,
     pub(crate) index: NodeIx,
     pub(crate) node: NodeId,
@@ -56,6 +64,10 @@ pub struct DataNode {
     pub(crate) operation: DataOperation,
 }
 impl DataNode {
+    /// Memoization domain; None uses the outer consumption epoch.
+    pub fn zone(&self) -> Option<ZoneIx> {
+        self.zone
+    }
     /// Index into DataPlan::call_sites; None denotes the root body.
     pub fn call_instance(&self) -> Option<usize> {
         self.call
@@ -100,6 +112,7 @@ pub struct DataResources {
 /// let plan = orange_compiler::DataPlan::default();
 /// ```
 pub struct DataPlan {
+    pub(crate) zones: Vec<DataZone>,
     pub(crate) snapshot: Arc<RegistrySnapshot>,
     pub(crate) graph: GraphId,
     pub(crate) revision: u64,
@@ -129,6 +142,9 @@ impl std::fmt::Debug for DataPlan {
     }
 }
 impl DataPlan {
+    pub fn zones(&self) -> &[DataZone] {
+        &self.zones
+    }
     pub fn call_sites(&self) -> &[PureCallSite] {
         &self.calls
     }

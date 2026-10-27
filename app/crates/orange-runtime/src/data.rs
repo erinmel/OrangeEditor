@@ -1,10 +1,13 @@
+mod zone;
+use zone::ZoneCell;
+
 use crate::{
     ActivationEntropy, CancelToken, EntropyError, EntropyLayout, EntropySlot, EntropyStream,
     FrameId,
 };
 use orange_compiler::{
     ConstantFault, DataNode, DataOperation, DataPlan, DataStability, EntropySource,
-    EvaluatedExport, FoldedValue, KernelFault, NodeIx,
+    EvaluatedExport, FoldedValue, KernelFault, NodeIx, ValueCheckError,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::id::NodeId;
@@ -18,10 +21,11 @@ pub struct DataLimits {
     pub max_nodes: usize,
     pub max_exports: usize,
     pub max_work_items: usize,
-    /// Per consumption epoch.
+    /// Evaluated nodes and zone iteration boundaries per consumption epoch.
     pub max_operations: usize,
     /// Fuel for the whole activation: each epoch start and each evaluated node
-    /// costs one unit. Never refilled, so epoch-per-iteration loops still end.
+    /// and each zone iteration cost one unit. Never refilled, so repeated epochs
+    /// and loops still end.
     pub max_activation_operations: usize,
     pub max_retained_bytes: usize,
     /// Per entropy callback invocation. A request beyond this budget faults the
@@ -97,6 +101,13 @@ fn checkpoint(cancel: Option<&CancelToken>) -> Result<(), DataError> {
         Err(DataError::Cancelled)
     } else {
         Ok(())
+    }
+}
+/// `invalid` names who supplied the wrongly typed value: host input or kernel.
+fn value_check(invalid: DataError) -> impl Fn(ValueCheckError) -> DataError {
+    move |error| match error {
+        ValueCheckError::InvalidType => invalid,
+        ValueCheckError::ResourceLimit => DataError::ResourceLimit,
     }
 }
 
@@ -207,7 +218,8 @@ impl PreparedData {
     }
     fn check_resources(plan: &DataPlan, limits: DataLimits) -> Result<(), DataError> {
         let resources = plan.resources();
-        if resources.slots > limits.max_slots
+        if plan.zones().len() > limits.max_nodes
+            || resources.slots > limits.max_slots
             || resources.nodes > limits.max_nodes
             || plan.exports().len() > limits.max_exports
             || resources.work_items > limits.max_work_items
@@ -335,8 +347,13 @@ impl DataActivation {
         // need activation-owned cells, avoiding per-entry constant copies/drop.
         let slots = vec![None; prepared.dynamic_count];
         let state = Frame {
+            zones: (0..plan.zones().len())
+                .map(|_| ZoneCell::default())
+                .collect(),
+            zone_bytes: 0,
             scopes,
             prepared,
+            charges: vec![0; slots.len()],
             slots,
             retained,
             memo: vec![None; resources.nodes],
@@ -349,6 +366,7 @@ impl DataActivation {
             work_limit: resources.work_items,
             inputs: Vec::with_capacity(resources.max_inputs),
             outputs: Vec::with_capacity(resources.max_outputs),
+            output_charges: Vec::with_capacity(resources.max_outputs),
             limits,
             cancel: options.cancel,
         };
@@ -387,12 +405,7 @@ impl DataActivation {
             .checked_add(fuel)
             .ok_or(DataError::FuelExhausted)?;
         self.state.cancel = None;
-        self.state.failed = None;
-        self.state.epoch = None;
-        self.state.pending = None;
-        self.state.work.clear();
-        self.state.inputs.clear();
-        self.state.outputs.clear();
+        self.state.close_epoch();
         Ok(())
     }
     pub(crate) fn scoped_cleanup(&mut self, fuel: usize) -> Result<CleanupScope, DataError> {
@@ -408,18 +421,14 @@ impl DataActivation {
         self.state.fuel_used = scope.fuel_used;
         self.state.limits.max_activation_operations = scope.fuel_limit;
         self.state.cancel = scope.cancel;
-        self.state.failed = None;
-        self.state.epoch = None;
-        self.state.pending = None;
-        self.state.work.clear();
-        self.state.inputs.clear();
-        self.state.outputs.clear();
+        self.state.close_epoch();
     }
     fn checkpoint(&mut self) -> Result<(), DataError> {
         if let Err(error) = checkpoint(self.state.cancel.as_ref()) {
             if self.state.epoch.is_some() {
                 self.state.failed = Some(error);
             }
+            self.state.discard_pass();
             return Err(error);
         }
         Ok(())
@@ -431,6 +440,7 @@ impl DataActivation {
     /// Each start costs one fuel unit; exhausted fuel rejects every later start.
     pub fn begin_epoch(&mut self) -> Result<u64, DataError> {
         self.checkpoint()?;
+        self.state.discard_pass();
         let epoch = self
             .state
             .burn()
@@ -439,10 +449,6 @@ impl DataActivation {
         self.state.epoch = Some(epoch);
         self.state.operations = 0;
         self.state.failed = None;
-        self.state.work.clear();
-        self.state.pending = None;
-        self.state.inputs.clear();
-        self.state.outputs.clear();
         Ok(epoch)
     }
     /// Supply `plan.host_inputs()[index]` for the current epoch, at most once, before
@@ -472,12 +478,7 @@ impl DataActivation {
                 FoldedValue::Value(value) => Some(
                     self.plan
                         .checked_value_charge(*slot, value, self.state.limits.max_retained_bytes)
-                        .map_err(|error| match error {
-                            orange_compiler::ValueCheckError::InvalidType => invalid,
-                            orange_compiler::ValueCheckError::ResourceLimit => {
-                                DataError::ResourceLimit
-                            }
-                        })?,
+                        .map_err(value_check(invalid))?,
                 ),
                 FoldedValue::Fault(fault) => self.plan.fault_charge(fault),
             }
@@ -540,9 +541,7 @@ impl DataActivation {
             return Err(DataError::PullInProgress);
         }
         if let Err(error) = driven {
-            self.state.work.clear();
-            self.state.inputs.clear();
-            self.state.outputs.clear();
+            self.state.discard_pass();
             self.state.failed = Some(error);
             return Err(error);
         }
@@ -574,14 +573,20 @@ impl DataActivation {
 
 enum Work {
     Enter(NodeIx),
+    ZonePrefix { node: NodeIx, next: usize },
+    ZoneBody { node: NodeIx, next: usize },
+    ZoneNext(NodeIx),
     Gather { node: NodeIx, next: usize },
     Choose(NodeIx),
     Copy { node: NodeIx, input: usize },
 }
 struct Frame {
+    zones: Vec<ZoneCell>,
+    zone_bytes: usize,
     scopes: ActivationEntropy,
     prepared: Arc<PreparedData>,
     slots: Vec<Option<FoldedValue>>,
+    charges: Vec<usize>,
     retained: usize,
     memo: Vec<Option<u64>>,
     epoch: Option<u64>,
@@ -593,10 +598,43 @@ struct Frame {
     work_limit: usize,
     inputs: Vec<Value>,
     outputs: Vec<Value>,
+    output_charges: Vec<usize>,
     limits: DataLimits,
     cancel: Option<CancelToken>,
 }
 impl Frame {
+    /// Drop an unfinished pull: work, scratch values and zone machines. Published
+    /// slots and memo stamps stay; stamps alone keep stale values from being read.
+    fn discard_pass(&mut self) {
+        self.clear_zones();
+        self.pending = None;
+        self.work.clear();
+        self.inputs.clear();
+        self.outputs.clear();
+    }
+    fn close_epoch(&mut self) {
+        self.failed = None;
+        self.epoch = None;
+        self.discard_pass();
+    }
+    fn stamp(&self, node: &DataNode) -> Result<u64, DataError> {
+        match node.zone() {
+            None => self.epoch.ok_or(DataError::NoEpoch),
+            Some(zone) => self
+                .zones
+                .get(zone.index())
+                .and_then(ZoneCell::stamp)
+                .ok_or(DataError::KernelContract { node: node.node() }),
+        }
+    }
+    fn operation(&mut self) -> Result<(), DataError> {
+        self.operations = self
+            .operations
+            .checked_add(1)
+            .filter(|count| *count <= self.limits.max_operations)
+            .ok_or(DataError::ResourceLimit)?;
+        self.burn()
+    }
     fn burn(&mut self) -> Result<(), DataError> {
         self.fuel_used = self
             .fuel_used
@@ -634,18 +672,30 @@ impl Frame {
             .and_then(|input| self.slot(input.source.slot))
             .ok_or(DataError::KernelContract { node: node.node() })
     }
-    fn old_charge(&self, plan: &DataPlan, node: &DataNode) -> Result<usize, DataError> {
+    /// Strict operand walks pull one input per step; this is the fault of the input
+    /// pulled before `next`, if the walk began at `first` and has pulled any.
+    fn pulled_fault(
+        &self,
+        node: &DataNode,
+        next: usize,
+        first: usize,
+    ) -> Result<Option<ConstantFault>, DataError> {
+        if next <= first {
+            return Ok(None);
+        }
+        Ok(match self.outcome(node, next - 1)? {
+            FoldedValue::Fault(fault) => Some(fault.clone()),
+            FoldedValue::Value(_) => None,
+        })
+    }
+    fn old_charge(&self, node: &DataNode) -> Result<usize, DataError> {
         let mut bytes = 0usize;
         for slot in node.outputs() {
             let index = self.prepared.dynamic_slots[slot.index()]
                 .ok_or(DataError::KernelContract { node: node.node() })?;
-            let value = match self.slots[index].as_ref() {
-                Some(FoldedValue::Value(value)) => plan.value_charge(*slot, value),
-                Some(FoldedValue::Fault(fault)) => plan.fault_charge(fault),
-                None => Some(0),
-            }
-            .ok_or(DataError::KernelContract { node: node.node() })?;
-            bytes = bytes.checked_add(value).ok_or(DataError::ResourceLimit)?;
+            bytes = bytes
+                .checked_add(self.charges[index])
+                .ok_or(DataError::ResourceLimit)?;
         }
         Ok(bytes)
     }
@@ -655,7 +705,10 @@ impl Frame {
             .checked_sub(old)
             .and_then(|value| value.checked_add(new))
             .ok_or(DataError::ResourceLimit)?;
-        if retained > self.limits.max_retained_bytes {
+        if retained
+            .checked_add(self.zone_bytes)
+            .is_none_or(|sum| sum > self.limits.max_retained_bytes)
+        {
             return Err(DataError::ResourceLimit);
         }
         self.retained = retained;
@@ -667,19 +720,21 @@ impl Frame {
         node: &DataNode,
         fault: ConstantFault,
     ) -> Result<(), DataError> {
+        let stamp = self.stamp(node)?;
         let charge = plan
             .fault_charge(&fault)
             .ok_or(DataError::KernelContract { node: node.node() })?;
         let new = charge
             .checked_mul(node.outputs().len())
             .ok_or(DataError::ResourceLimit)?;
-        self.replace_charge(self.old_charge(plan, node)?, new)?;
+        self.replace_charge(self.old_charge(node)?, new)?;
         for slot in node.outputs() {
             let index = self.prepared.dynamic_slots[slot.index()]
                 .expect("publication checked dynamic targets");
             self.slots[index] = Some(FoldedValue::Fault(fault.clone()));
+            self.charges[index] = charge;
         }
-        self.memo[node.index().index()] = self.epoch;
+        self.memo[node.index().index()] = Some(stamp);
         Ok(())
     }
     fn publish_values(&mut self, plan: &DataPlan, node: &DataNode) -> Result<(), DataError> {
@@ -692,7 +747,9 @@ impl Frame {
         if self.outputs.len() != node.outputs().len() {
             return Err(DataError::KernelContract { node: node.node() });
         }
+        let stamp = self.stamp(node)?;
         let mut new = 0usize;
+        self.output_charges.clear();
         for (slot, value) in node.outputs().iter().zip(&self.outputs) {
             let charge = plan
                 .checked_value_charge(
@@ -700,21 +757,23 @@ impl Frame {
                     value,
                     self.limits.max_retained_bytes.saturating_sub(new),
                 )
-                .map_err(|error| match error {
-                    orange_compiler::ValueCheckError::InvalidType => {
-                        DataError::KernelContract { node: node.node() }
-                    }
-                    orange_compiler::ValueCheckError::ResourceLimit => DataError::ResourceLimit,
-                })?;
+                .map_err(value_check(DataError::KernelContract { node: node.node() }))?;
             new = new.checked_add(charge).ok_or(DataError::ResourceLimit)?;
+            self.output_charges.push(charge);
         }
-        self.replace_charge(self.old_charge(plan, node)?, new)?;
-        for (slot, value) in node.outputs().iter().zip(self.outputs.drain(..)) {
+        self.replace_charge(self.old_charge(node)?, new)?;
+        for ((slot, value), charge) in node
+            .outputs()
+            .iter()
+            .zip(self.outputs.drain(..))
+            .zip(self.output_charges.drain(..))
+        {
             let index = self.prepared.dynamic_slots[slot.index()]
                 .expect("publication checked dynamic targets");
             self.slots[index] = Some(FoldedValue::Value(value));
+            self.charges[index] = charge;
         }
-        self.memo[node.index().index()] = self.epoch;
+        self.memo[node.index().index()] = Some(stamp);
         Ok(())
     }
     fn publish_value(
@@ -760,9 +819,14 @@ impl Frame {
                 let slot = self.prepared.entropy_slots[node.index().index()]
                     .as_ref()
                     .ok_or(DataError::KernelContract { node: node.node() })?;
-                let key = self
-                    .scopes
-                    .invocation_key_dense(slot.frame, &slot.slot, slot.counter)?;
+                // Outer nodes stamp with the epoch, body nodes with their iteration.
+                let stamp = self.stamp(node)?;
+                let key = self.scopes.invocation_key_dense_at(
+                    slot.frame,
+                    &slot.slot,
+                    slot.counter,
+                    stamp,
+                )?;
                 let mut source = ScopedSource {
                     stream: EntropyStream::new(key),
                     remaining: self.limits.max_entropy_draws,
@@ -874,9 +938,10 @@ impl Frame {
             match work {
                 Work::Enter(index) => {
                     let node = &plan.nodes()[index.index()];
-                    if node.stability() == DataStability::Const
-                        || self.memo[index.index()] == self.epoch
-                    {
+                    if node.stability() == DataStability::Const {
+                        continue;
+                    }
+                    if self.memo[index.index()] == Some(self.stamp(node)?) {
                         continue;
                     }
                     // A supplied input is already stamped for this epoch.
@@ -889,12 +954,7 @@ impl Frame {
                         }
                         return Err(DataError::MissingInput { node: node.node() });
                     }
-                    self.operations = self
-                        .operations
-                        .checked_add(1)
-                        .filter(|count| *count <= self.limits.max_operations)
-                        .ok_or(DataError::ResourceLimit)?;
-                    self.burn()?;
+                    self.operation()?;
                     match node.operation() {
                         DataOperation::Pure(_)
                         | DataOperation::Entropy(_)
@@ -902,7 +962,11 @@ impl Frame {
                             node: index,
                             next: 0,
                         })?,
-                        DataOperation::Constant => {
+                        DataOperation::Zone { .. } => self.push(Work::ZonePrefix {
+                            node: index,
+                            next: 0,
+                        })?,
+                        DataOperation::Constant | DataOperation::Iteration(_) => {
                             return Err(DataError::KernelContract { node: node.node() });
                         }
                         _ => {
@@ -913,10 +977,8 @@ impl Frame {
                 }
                 Work::Gather { node: index, next } => {
                     let node = &plan.nodes()[index.index()];
-                    if next > 0
-                        && let FoldedValue::Fault(fault) = self.outcome(node, next - 1)?
-                    {
-                        self.publish_fault(plan, node, fault.clone())?;
+                    if let Some(fault) = self.pulled_fault(node, next, 0)? {
+                        self.publish_fault(plan, node, fault)?;
                         continue;
                     }
                     if next == node.inputs().len() {
@@ -929,6 +991,9 @@ impl Frame {
                         self.pull_input(node, next)?;
                     }
                 }
+                Work::ZonePrefix { node, next } => self.zone_prefix(plan, node, next)?,
+                Work::ZoneNext(node) => self.zone_next(plan, node)?,
+                Work::ZoneBody { node, next } => self.zone_body(plan, node, next)?,
                 Work::Choose(index) => self.choose(plan, &plan.nodes()[index.index()])?,
                 Work::Copy { node: index, input } => {
                     let node = &plan.nodes()[index.index()];

@@ -44,6 +44,7 @@ mod session;
 mod state;
 mod streams;
 mod variables;
+mod zones;
 
 pub use diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, IdentifierArg, MessageArg, MessageArgError,
@@ -74,6 +75,7 @@ pub use report::{
 pub use session::{AnalysisSession, EditStats, RebuildReason, SessionWork};
 pub use state::validate_state;
 pub use streams::validate_streams;
+pub use zones::{ZoneIndex, ZoneKind, ZoneRegion};
 
 pub use functions::{
     FunctionAnalysis, FunctionEvidence, FunctionSummary, LeafEffects, VariableWrite,

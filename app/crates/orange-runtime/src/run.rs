@@ -1387,11 +1387,7 @@ impl Run {
                         ControlOutcome::Failed,
                         Some(ConstantFault {
                             source: node.node(),
-                            fault: KernelFault {
-                                code: "core/OutOfRange",
-                                message_key: "core/count-out-of-range",
-                                message: "Loop count must be nonnegative.",
-                            },
+                            fault: KernelFault::NEGATIVE_COUNT,
                         }),
                     ),
                     FoldedValue::Value(Value::I64(0)) => {
