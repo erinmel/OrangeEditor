@@ -1638,3 +1638,6 @@ fn wait_completion_and_stop_choose_one_outcome_at_the_same_virtual_time() {
         assert_eq!(run.pending_continuations(), 0);
     }
 }
+
+#[path = "support/control_dispatch.rs"]
+mod control_dispatch;
