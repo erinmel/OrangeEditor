@@ -1544,3 +1544,30 @@ The private counter test compares128dense counters against public explicit-frame
 Two isolated mutations were detected by behavior-test failures: replacing the bound frame with ROOT breaks the independent vectors, and aliasing every instruction to counter0 breaks sibling paths with different skipped epochs. Product sources were restored, focused tests rerun, then full debug/release and quality checks qualified the restored behavior. OneDrive hard-link fallback warnings remain environmental; Rust/Clippy/Rustdoc checks pass.
 
 Self-review retained Pure-only compilation, rejected state-reading bodies before callbacks, checked exact registered seeded entropy metadata, and kept all call nodes on the existing ordered/fueled evaluator. No generic call binding, new scheduler, saved schema, replay-version change, provider override change or dependency was added. Other volatile/state/clock calls, mutable call locals, action/async functions, package bodies, erased parameters, full error stacks and Return cleanup remain pending. No completed E3/core/NFR or universal performance claim follows.
+
+### Core-loop control-dispatch qualification — 2026-10-26 (PR23)
+
+The user authorized repeating reviewed/fixed/CI-qualified squash-merge cycles toward headless core completion, with UI separate. PR22 was re-reviewed for exact seeded metadata, immutable source/call-path bindings, independent dense counters under skipped demand, shared invocation logic and unchanged standalone entropy APIs. No confirmed blocking gap was found in its documented subset;18 focused function tests passed, and final-head CI40388507637 was all-success. PR22 was squash-merged as `b6670b086604c9a3bac871d04ebe7a5b7dc268ba`. The next branch `core/control-dispatch` starts from that fetched dev.
+
+Local verification: Windows x86_64 MSVC, Rust1.99.1 (`58cf8f9c3`,2026-10-13), Cargo1.99.1 (`5f94df478`,2026-08-27), Node24.18.0, default features. No dependencies/features/lockfile changes. Core string plan support and Switch/Match-result contracts are described in03/11/12; this does not complete E3/core/NFR gates.
+
+| Executed check | Result |
+|---|---|
+| `cargo test --workspace --locked --offline` | PASS:825 passed,0 failed,14 ignored,86 test-result groups |
+| `cargo test --workspace --release --locked --offline` | PASS:same825/0/14 |
+| `cargo test -p orange-bundled --test control control_dispatch --locked --offline` | PASS:7 new regressions, including table-driven source comparisons at two pump budgets |
+| `cargo fmt --all --check` | PASS |
+| `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` | PASS |
+| `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps --locked --offline` | PASS; environment assigned in PowerShell |
+| Metadata policy/self-test, release-helper tests/check | PASS:9 policy fixtures/7 release tests; release remains intentionally disabled |
+| Both headless_control and headless_fork examples via `cargo run -p orange-bundled --example <name> --locked --offline` | PASS:existing total3 at10ns and all/any/race/detach timing/retirement |
+| `git diff --check` | PASS |
+| Remote platform/MSRV/security/workflow/supply-chain CI | Requires separate exact-head PR23 qualification; local checks do not pass those gates |
+
+Switch tests independently select expected arms by searching original JSON case values, not compiled keys or the runtime comparator. They cover all four integer widths including extrema, bool, Unicode/empty strings, sparse/nonlexical instance order, default and a matched unconnected arm that must not fall through, at pump budgets1and7. Invalid narrow/unsigned case values and large case-string quotas reject before an otherwise reachable provider is bound. Default operation Debug omits sensitive case text. String literal/payload charges flow through existing plan and variable publication.
+
+Match regressions check typed success/error routing at two budgets, exactly one error projection, original DivideByZero producer identity, Ok(error) through nested Try/Match, present None, uncaptured upstream fault going to failed rather than err,128 replacements of the same retained string payload without charge accumulation, oversized matched publication, and the combined local/Match state limit rejecting a Set before commit. Both selected outcome projections and retained quota updates use checked immutable target metadata.
+
+Three mutations were detected by behavior-test failures: substituting sorted array position for original case ID, retaining the outer Ok wrapper during Match unwrapping, and failing to subtract the old Match payload charge. Sources were restored and focused tests rerun, followed by full debug/release and quality qualification. OneDrive hard-link fallback warnings are environmental; no Rust/Clippy/Rustdoc errors remain.
+
+Self-review: admission checks exact supported key families and case ranges before binding; case count/table bytes consume existing budgets; no generic comparator or provider fallback is introduced. Match projections suppress duplicate implicit error storage, preserve shared result boxing/provenance and commit typed retained values only after budget reservation. Existing data-pull ownership, snapshots, stop, cleanup and fuel remain in use. Public PlanType, ControlOperation, HostSource and ControlOutcome additions require exhaustive downstream Rust matches to update; no saved schema/provider trait change occurs. Enum/custom-key Switch, remaining state controls/iterators/zones, action/async function frames/Return, resources/events/services and other planned core acceptance remain open. Structural/admission tests are not timing, allocation/RSS or completed NFR evidence.
