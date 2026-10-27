@@ -210,6 +210,8 @@ impl<'a> Calls<'a> {
                 let sig = out.signature(analysis, cursor, node.id);
                 if cursor != 0 {
                     let effect = profile == CallProfile::Control && out.scopes[cursor].control;
+                    let control =
+                        effect && !matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile);
                     let marker = matches!(
                         node.definition.id.as_str(),
                         "core/function-entry" | "core/function-outputs" | "core/return"
@@ -224,7 +226,7 @@ impl<'a> Calls<'a> {
                         && sig.kind == NodeKind::Volatile
                         && (node.definition.id.as_str() == "core/call"
                             || crate::compile::is_seeded_entropy(snapshot, node));
-                    if !marker && sig.kind != NodeKind::Pure && !seeded && !state && !effect {
+                    if !marker && sig.kind != NodeKind::Pure && !seeded && !state && !control {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
                     let lazy = out.lazy(&BTreeMap::new(), cursor, node.id).is_some();
@@ -232,7 +234,7 @@ impl<'a> Calls<'a> {
                         && !marker
                         && !lazy
                         && !state
-                        && !(effect && !matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile))
+                        && !control
                         && !matches!(node.definition.id.as_str(), "core/call" | "core/convert")
                     {
                         return Err(CompileError::UnsupportedNode { node: node.id });
