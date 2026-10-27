@@ -763,7 +763,9 @@ fn collect_variables(
             };
             charge(
                 bytes,
-                initial.as_ref().map_or(VALUE_CHARGE, value_bytes),
+                initial
+                    .as_ref()
+                    .map_or(Ok(VALUE_CHARGE), |v| value_bytes(&ty, v))?,
                 options.limits.max_constant_bytes,
             )?;
             entry.insert(variables.len());
@@ -879,7 +881,9 @@ fn collect_states(
         };
         charge(
             bytes,
-            initial.as_ref().map_or(VALUE_CHARGE, value_bytes),
+            initial
+                .as_ref()
+                .map_or(Ok(VALUE_CHARGE), |v| value_bytes(&ty, v))?,
             options.limits.max_constant_bytes,
         )?;
         state_nodes.insert(*key, states.len());

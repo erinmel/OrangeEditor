@@ -1,14 +1,11 @@
 //! Immutable root data plans. Execution and epoch ownership live in orange-runtime.
-use crate::compile::valid_fault;
+use crate::compile::{FAULT_CHARGE, valid_fault};
 use crate::*;
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::id::{GraphId, NodeId};
 use orange_model::validation::Diagnostic;
 use orange_model::{GraphDocument, Value};
 use std::sync::Arc;
-
-/// Retained bytes of one published constant fault: static code, key, message and producer.
-const FAULT_CHARGE: usize = 64;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataStability {

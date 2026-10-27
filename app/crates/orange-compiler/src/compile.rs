@@ -101,22 +101,13 @@ pub(crate) fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<()
         .ok_or(CompileError::ResourceLimit)?;
     Ok(())
 }
-pub(crate) fn value_bytes(value: &Value) -> usize {
-    match value {
-        Value::Json(text) => text.as_str().len().saturating_add(16),
-        Value::Str(text) => text.len().saturating_add(16),
-        Value::Bytes(bytes) => bytes.len().saturating_add(16),
-        Value::List(items) => items.iter().fold(16usize, |sum, value| {
-            sum.saturating_add(value_bytes(&value))
-        }),
-        Value::Map(map) => map.entries.iter().fold(16usize, |sum, (k, v)| {
-            sum.saturating_add(value_bytes(k))
-                .saturating_add(value_bytes(v))
-        }),
-        Value::Some(inner) | Value::Ok(inner) => value_bytes(inner).saturating_add(16),
-        Value::Err(error) => error.code.len().saturating_add(32),
-        _ => 16,
-    }
+/// Retained bytes of one published constant fault: static code, key, message and producer.
+pub(crate) const FAULT_CHARGE: usize = 64;
+
+/// Nominal retained bytes of a constant, already checked against its shape.
+pub(crate) fn value_bytes(ty: &ValueShape, value: &Value) -> Result<usize, CompileError> {
+    ty.checked_charge(value, usize::MAX)
+        .map_err(|_| CompileError::ValidationIncomplete)
 }
 fn push_slot(
     plan: &mut PurePlan,
@@ -132,8 +123,8 @@ fn push_slot(
     }
     let index = u32::try_from(plan.constants.len()).map_err(|_| CompileError::ResourceLimit)?;
     let size = match &value {
-        FoldedValue::Value(v) => value_bytes(v),
-        FoldedValue::Fault(_) => 64,
+        FoldedValue::Value(v) => value_bytes(&ty, v)?,
+        FoldedValue::Fault(_) => FAULT_CHARGE,
     };
     charge(bytes, size, options.limits.max_constant_bytes)?;
     plan.slot_calls.push(call);
