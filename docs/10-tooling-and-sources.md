@@ -1575,3 +1575,25 @@ Self-review: admission checks exact supported key families and case ranges befor
 Post-publication PR23 review found a real authoring/performance gap: integer case JSON kinds were checked but not width/signedness bounds, and duplicate checks repeatedly scanned prior values. The correction reports E-SWITCH-CASE during semantic analysis and uses a borrowed HashSet with the pinned serde_json1.0.154 Value Hash/Eq implementation (verified from versioned local registry source). It retains original variadic iteration/diagnostic order and adds a1024-case acceptance/duplicate regression. A fourth mutation removing the i32 range check is detected. Final corrected full-suite qualification supersedes the initial825-test result; no timing/RSS or general incremental-validation claim is made.
 
 Final corrected qualification: debug/release826passed/0failed/14ignored across86groups,8focused dispatch regressions, four detected/restored mutations, format/Clippy/Rustdoc warnings-denied checks all PASS. Final-head CI is recorded separately on PR23; the earlier published-head run cannot qualify this correction.
+
+### Core-loop state-control qualification — 2026-10-26 (PR24)
+
+PR23 final head6ffb73a1952a62329189b47d3ecf4bb5ba95da15 passed CI40425555209 before squash merge9acc3fa81f08c0bce322409e93c5686a049853bf. State work begins on core/state-controls from fetched dev at that merge. No dependency, feature, saved-schema or lockfile change. Selected local Rust1.99.1 (58cf8f9c3), Cargo1.99.1 (5f94df478), Windows x86_64 MSVC, default workspace features, Node24.18.0. Cargo.lock SHA256 E20EACB56CEC10F874AA8C3869D5AB93B34831229A74B91332433DB5F5267152 unchanged. The unrelated foundation review remains untracked and byte-identical.
+
+| Executed check | Result |
+|---|---|
+| cargo test --workspace --locked --offline | PASS:838 passed,0 failed,14 ignored,86 result groups |
+| cargo test --workspace --release --locked --offline | PASS:same838/0/14 |
+| cargo test -p orange-bundled --test control state_controls --locked --offline | PASS:12 focused regressions |
+| cargo fmt --all --check | PASS |
+| cargo clippy --workspace --all-targets --locked --offline -- -D warnings | PASS |
+| cargo doc --workspace --no-deps --locked --offline, PowerShell RUSTDOCFLAGS=-D warnings | PASS |
+| Metadata policy and --self-test | PASS:9 fixtures; core remains UI/engine independent |
+| node --test tools/release.test.mjs; node tools/release.mjs check | PASS:7 tests; desktop release intentionally disabled |
+| Both headless examples with cargo run -p orange-bundled --example NAME --locked --offline | PASS:total3 at10ns; existing Fork all/any/race/detach timing and retirement |
+| git diff --check | PASS |
+| Remote OS/MSRV/security/supply-chain CI | Requires final-head PR24 qualification; local checks do not substitute |
+
+Focused source-command oracles exercise Gate open/close/toggle/in aliases at two pump budgets, DoOnce reset/suppression and FlipFlop alternation with state snapshots. Register regressions cover feedback across one-unit pumps, state-write inspection, reset without demanding a faulting next input, original uninitialized producer identity, independent runs and activation/run scoping, stop/disposal, transactional string quota refusal, pre-copy compile admission, pending mutation ordering against another activation, and typed Gate cancellation cleanup. Three deliberately introduced faults were detected: mapping Gate open to Enter, dropping pending Register segment ownership and executing Store during Reset. Sources were restored before full debug/release qualification. Ignored logs are .artifacts/state-controls-*.log.
+
+Review: destination ports become typed commands before execution; no runtime string dispatch or package comparator/callback is added. Generic checked cell metadata avoids separate variable/state type validators. Initializer JSON copy admission precedes cloning; state replacement checks type and combined nominal budget before commit. Original region/loop/timer identities remain canonical. State belongs to Run/activation rather than immutable plans, and cleanup retains existing fuel/deadline constraints. Clippy's complex initialization tuple was replaced by a named private structure. Default diagnostics do not expose state payloads. Public routing fields now use ExecTarget and ControlVariable aliases ControlCell; downstream exhaustive Rust matches must update. No API-freeze, allocator/RSS, timing/NFR or complete core gate is claimed. OneDrive cache hard-link fallback warnings are environmental. Action/async frames/Return, state/clock function calls, iterators/zones, Update/shared state, broader value families, events/resources/service seams and other planned core gates remain open.
