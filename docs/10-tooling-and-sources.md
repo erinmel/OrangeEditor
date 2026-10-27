@@ -1818,3 +1818,16 @@ Simplification follow-up (same slice, toolchain and lockfile). Targets were pick
 - **Clones:** six redundant clones and three implicit `String` clones were removed.
 
 Results: `cargo test --workspace --locked` passes with 928 passed, 0 failed, 14 existing ignored, in 88 result groups. Clippy `-D warnings` and fmt pass. Cognitive-complexity warnings fell from 10 to 8 across the libraries. The remaining long functions are compiler data/pure lowering, runtime run/pull steps and model transactions. They are left for later measured passes.
+
+### Lowering simplification — 2026-10-27
+
+`core/simplify-lowering` continues the measured pass on the same toolchain with an unchanged lockfile. All changes are behavior-preserving:
+- **Data lowering:** the 465-line `Lowering::lower` loop is now a short task dispatcher over `enter`, `choose`, `finish`, `expand_call` and `return_call`.
+  - Shared helpers replace four repeated patterns: the next instruction index, publishing a produced output, demanding a node's declared inputs, and the lazy selection-mode port filter (`SelectionMode::admits`).
+  - The pure and entropy bindings share one ABI check.
+- **Pure lowering:**
+  - Three copies of the first-fault scan became `first_fault`.
+  - The ABI comparison and resolve-error mapping were duplicated between pure and data lowering. They now exist once (`matches_abi`, `binding_error`).
+- **Left unchanged:** the runtime control interpreter (`Run::execute`) is a flat dispatch over operations. Its repeated "consume, or fail with the fault" step differs per arm in what follows. Extracting it would need hidden control flow (a macro or labelled breaks), which is less clean than the current code.
+
+Results: `cargo test --workspace --locked` passes with 928 passed, 0 failed, 14 existing ignored, in 88 result groups. Clippy `-D warnings`, rustdoc `-D warnings` and fmt pass. No public API, graph format, diagnostic or charge changes.
