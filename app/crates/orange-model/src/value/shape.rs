@@ -519,6 +519,56 @@ mod tests {
     }
 
     #[test]
+    fn small_and_large_maps_reject_duplicates_and_compare_by_key() {
+        let map = |entries: Vec<(Value, Value)>| {
+            Value::Map(Arc::new(MapRepr {
+                entries: entries.into(),
+            }))
+        };
+        let ints = |keys: &[u64]| {
+            map(keys
+                .iter()
+                .map(|&k| (Value::U64(k), Value::I64(k as i64)))
+                .collect())
+        };
+        let ty = ValueShape::Map(Box::new(ValueShape::U64), Box::new(ValueShape::I64));
+        let nested = ValueShape::Map(Box::new(ValueShape::String), Box::new(ty.clone()));
+        let text = |s: &str| Value::Str(Arc::new(s.into()));
+        // Both sides of the pairwise/hash cutoff.
+        for n in [1, SMALL_MAP, SMALL_MAP + 1, 100] {
+            let keys: Vec<u64> = (0..n as u64).collect();
+            let reversed: Vec<u64> = keys.iter().rev().copied().collect();
+            let (a, b) = (ints(&keys), ints(&reversed));
+            assert_eq!(ty.equal_values(&a, &b), Some(true), "{n}");
+            let mut shifted = keys.clone();
+            shifted[n - 1] = n as u64; // Same length, one different key.
+            assert_eq!(ty.equal_values(&a, &ints(&shifted)), Some(false), "{n}");
+            let mut repeated = keys.clone();
+            repeated.push(0); // The repeat comes last, after the first key.
+            assert_eq!(
+                ty.checked_charge(&ints(&repeated), usize::MAX),
+                Err(InvalidType),
+                "{n}"
+            );
+            assert_eq!(
+                ty.equal_values(&ints(&repeated), &ints(&repeated)),
+                None,
+                "{n}"
+            );
+            // A duplicate inside a nested map is rejected; nested maps compare by key.
+            let outer = |inner| map(vec![(text("x"), inner)]);
+            assert_eq!(nested.equal_values(&outer(a), &outer(b)), Some(true), "{n}");
+            assert!(!nested.accepts(&outer(ints(&repeated))), "{n}");
+        }
+        // Equal values under different keys are not equal maps.
+        let swapped = map(vec![
+            (Value::U64(0), Value::I64(1)),
+            (Value::U64(1), Value::I64(0)),
+        ]);
+        assert_eq!(ty.equal_values(&ints(&[0, 1]), &swapped), Some(false));
+    }
+
+    #[test]
     fn decoded_literals_satisfy_their_shape_and_lists_share_one_packing() {
         use crate::document::literal::Literal;
         use crate::value::literal_codec::{SchemaSet, decode};
