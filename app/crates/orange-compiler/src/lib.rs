@@ -30,8 +30,8 @@ pub use data_compile::compile_data;
 pub use error::CompileError;
 pub use evaluate::{EvaluatedExport, EvaluationError, EvaluationOptions, PureEvaluation};
 pub use kernel::{
-    EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource, KernelBinding,
-    KernelFault, PureKernel, PureKernelResolver, ResolveError,
+    BindingRequest, EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource,
+    KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError,
 };
 pub use plan::{
     ConstantFault, Export, FoldedValue, InputSource, NodeIx, PureCallSite, PurePlan, PureStep,

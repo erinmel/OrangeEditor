@@ -1,6 +1,7 @@
 use crate::{BindingError, CatalogError, MathPackage};
 use orange_compiler::{
-    EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource, KernelFault, ResolveError,
+    BindingRequest, EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource,
+    KernelFault, ResolveError,
 };
 use orange_model::catalog::{
     Determinism, NodeDefinition, Ports, ProviderKey, RegistrySnapshot, TypeArgs, Volatility,
@@ -37,6 +38,19 @@ pub fn random_u64_definition() -> Result<NodeDefinition, CatalogError> {
         config_schema: Some(serde_json::json!({"$schema":"orange.config-schema/v1",
             "type":"object","properties":{},"additionalProperties":false})),
     })
+}
+
+/// The fresh signature a declared-port definition projects without type arguments.
+fn declared_signature(definition: &NodeDefinition) -> Option<SignatureSnapshot> {
+    match &definition.ports {
+        Ports::Declared(ports) => Some(orange_model::signature::project_with_suspension(
+            definition.kind,
+            definition.suspends,
+            ports.clone(),
+            &Default::default(),
+        )),
+        _ => None,
+    }
 }
 
 /// Resolved native proof retaining the exact provider metadata. It is not graph freshness.
@@ -80,22 +94,13 @@ impl MathPackage {
         let current = snapshot
             .definition(definition)
             .ok_or(BindingError::Unavailable)?;
-        let signature = |definition: &NodeDefinition| match &definition.ports {
-            Ports::Declared(ports) => Some(orange_model::signature::project_with_suspension(
-                definition.kind,
-                definition.suspends,
-                ports.clone(),
-                &Default::default(),
-            )),
-            _ => None,
-        };
         if current.kind != NodeKind::Volatile
             || current.config_version != 1
             || current.volatility != Some(Volatility::Entropy)
             || current.determinism != Determinism::Seeded
             || !current.type_params.is_empty()
             || !current.references.is_empty()
-            || signature(current) != signature(&expected)
+            || declared_signature(current) != declared_signature(&expected)
             || snapshot
                 .provider(provider)
                 .and_then(|entry| entry.specializations.get(definition))
@@ -117,18 +122,22 @@ impl EntropyKernelResolver for MathPackage {
         signature: &SignatureSnapshot,
         snapshot: Arc<RegistrySnapshot>,
     ) -> Result<EntropyBinding, ResolveError> {
-        let provider = node
-            .provider
-            .as_ref()
-            .and_then(|binding| ProviderKey::of(document, binding))
-            .ok_or(ResolveError::Unavailable)?;
+        self.resolve_entropy_binding(&BindingRequest::new(document, node, signature, snapshot)?)
+    }
+
+    fn resolve_entropy_binding(
+        &self,
+        request: &BindingRequest<'_>,
+    ) -> Result<EntropyBinding, ResolveError> {
+        let provider = request.provider().ok_or(ResolveError::Unavailable)?;
+        let snapshot = request.snapshot();
         let kernel = self
             .bind_entropy(
                 snapshot.clone(),
-                &provider,
-                &node.definition,
-                node.config_version,
-                &node.config,
+                provider,
+                request.definition(),
+                request.config_version(),
+                request.config(),
             )
             .map_err(|error| {
                 if error == BindingError::InvalidConfig {
@@ -137,17 +146,12 @@ impl EntropyKernelResolver for MathPackage {
                     ResolveError::Unavailable
                 }
             })?;
-        let contract = snapshot
-            .contract(document, node)
-            .map_err(|_| ResolveError::Contract)?
+        // The bound definition has declared ports, so this is its registered contract.
+        let expected = snapshot
+            .definition(request.definition())
+            .and_then(declared_signature)
             .ok_or(ResolveError::Contract)?;
-        let expected = orange_model::signature::project_with_suspension(
-            contract.kind,
-            contract.suspends,
-            contract.ports.clone(),
-            &Default::default(),
-        );
-        if signature != &expected {
+        if request.signature() != &expected {
             return Err(ResolveError::Contract);
         }
         Ok(EntropyBinding {

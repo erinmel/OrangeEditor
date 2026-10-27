@@ -1,7 +1,9 @@
 //! Trusted native adapter. The compiler itself has no bundled-provider dependency.
 use crate::{MathPackage, Operation, ResolvedConversion, ResolvedKernel, resolve_core_conversion};
-use orange_compiler::{KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError};
-use orange_model::catalog::{ProviderKey, RegistrySnapshot, TypeArgs, intrinsic_id};
+use orange_compiler::{
+    BindingRequest, KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError,
+};
+use orange_model::catalog::{RegistrySnapshot, TypeArgs, intrinsic_id};
 use orange_model::conversion::{ConverterConfig, ConverterProvider};
 use orange_model::document::{NodeInstance, SignatureSnapshot};
 use orange_model::id::PortKey;
@@ -16,6 +18,7 @@ fn ports(names: &[&str]) -> Result<Box<[PortKey]>, ResolveError> {
 }
 
 impl PureKernelResolver for MathPackage {
+    /// Compatibility entry: extracts the exact provider once, then binds narrowly.
     fn resolve(
         &self,
         document: &GraphDocument,
@@ -23,15 +26,24 @@ impl PureKernelResolver for MathPackage {
         signature: &SignatureSnapshot,
         snapshot: Arc<RegistrySnapshot>,
     ) -> Result<KernelBinding, ResolveError> {
-        if node.definition.id.as_str() == intrinsic_id::CONVERT
-            && node.definition.version == 1
-            && node.config_version == 1
-            && node.provider.is_none()
+        self.resolve_binding(&BindingRequest::new(document, node, signature, snapshot)?)
+    }
+
+    fn resolve_binding(&self, request: &BindingRequest<'_>) -> Result<KernelBinding, ResolveError> {
+        let definition = request.definition();
+        if definition.id.as_str() == intrinsic_id::CONVERT
+            && definition.version == 1
+            && request.config_version() == 1
+            && request.provider().is_none()
         {
-            let config =
-                ConverterConfig::from_config(&node.config).map_err(|_| ResolveError::Contract)?;
-            let conversion = resolve_core_conversion(snapshot, &config, &ConverterProvider::Core)
-                .map_err(|_| ResolveError::Unavailable)?;
+            let config = ConverterConfig::from_config(request.config())
+                .map_err(|_| ResolveError::Contract)?;
+            let conversion = resolve_core_conversion(
+                request.snapshot().clone(),
+                &config,
+                &ConverterProvider::Core,
+            )
+            .map_err(|_| ResolveError::Unavailable)?;
             return Ok(KernelBinding {
                 inputs: ports(&["value"])?,
                 outputs: ports(if conversion.lossy() {
@@ -42,18 +54,15 @@ impl PureKernelResolver for MathPackage {
                 kernel: Arc::new(Native::Conversion(conversion)),
             });
         }
-        let provider = node
-            .provider
-            .as_ref()
-            .and_then(|binding| ProviderKey::of(document, binding))
-            .ok_or(ResolveError::Unavailable)?;
-        let operation = Operation::from_definition_id(node.definition.id.as_str())
+        let provider = request.provider().ok_or(ResolveError::Unavailable)?;
+        let operation = Operation::from_definition_id(definition.id.as_str())
             .ok_or(ResolveError::Unavailable)?;
         let inputs = operation.input_ports();
         let args: TypeArgs = if !operation.is_numeric() {
             Default::default()
         } else {
-            let ty = signature
+            let ty = request
+                .signature()
                 .ports
                 .iter()
                 .find(|port| port.port_id.as_str() == inputs[0])
@@ -63,12 +72,12 @@ impl PureKernelResolver for MathPackage {
         };
         let kernel = MathPackage::resolve(
             self,
-            snapshot,
-            &provider,
-            &node.definition,
-            node.config_version,
+            request.snapshot().clone(),
+            provider,
+            definition,
+            request.config_version(),
             &args,
-            &node.config,
+            request.config(),
         )
         .map_err(|_| ResolveError::Unavailable)?;
         Ok(KernelBinding {
