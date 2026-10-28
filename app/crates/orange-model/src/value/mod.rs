@@ -1,8 +1,8 @@
 //! In-memory values (12 §7). Small scalars are inline; everything larger is an immutable
 //! `Arc`, so cloning a value is at most a reference-count increment.
 //!
-//! The static type disambiguates: `option<T>` is `None` or the unboxed `T`, and only a
-//! nested option boxes its inner layer in `Some`. Missing exists only as an absent record
+//! The static type disambiguates: `option<T>` is `None` or the unboxed `T`, and boxes in
+//! `Some` only when `T` can itself be a bare None. Missing exists only as an absent record
 //! field. JSON null exists only inside `Json`. Together these keep None, missing, JSON null
 //! and Error distinct by construction (FR-08). Result successes box only when their
 //! payload can itself carry the Err tag. Secrets are never values.
@@ -50,7 +50,8 @@ pub enum Value {
         payload: Option<Arc<Value>>,
     },
     None,
-    /// Only for the inner layer of a nested option.
+    /// Present option whose payload could otherwise be mistaken for outer None,
+    /// such as a nested option or an unboxed result success that can be None (12 §7).
     Some(Arc<Value>),
     /// Only inside `result<T>`.
     Err(Arc<NodeError>),

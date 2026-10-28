@@ -172,13 +172,22 @@ impl ValueShape {
         }
     }
 
+    /// Whether a valid value of this type can carry the None discriminant directly.
+    /// `option<T>` boxes its present value in `Some` exactly when this holds for `T` (12 §7).
+    pub fn unboxed_none(&self) -> bool {
+        match self {
+            Self::Option(_) => true,
+            Self::Result(inner) if !inner.unboxed_error() => inner.unboxed_none(),
+            _ => false,
+        }
+    }
+
     /// Whether a valid value of this type can carry the Err discriminant directly.
+    /// `result<T>` boxes its success in `Ok` exactly when this holds for `T` (12 §7).
     pub fn unboxed_error(&self) -> bool {
         match self {
             Self::Result(_) | Self::Error => true,
-            Self::Option(inner) if !matches!(inner.as_ref(), Self::Option(_)) => {
-                inner.unboxed_error()
-            }
+            Self::Option(inner) if !inner.unboxed_none() => inner.unboxed_error(),
             _ => false,
         }
     }
@@ -236,11 +245,11 @@ impl ValueShape {
         if let Self::Option(inner) = self {
             return match value {
                 Value::None => charge(left, VALUE_CHARGE),
-                Value::Some(value) if matches!(inner.as_ref(), Self::Option(_)) => {
+                Value::Some(value) if inner.unboxed_none() => {
                     charge(left, VALUE_CHARGE)?;
                     inner.check(value, left, depth + 1)
                 }
-                _ if matches!(inner.as_ref(), Self::Option(_)) => Err(InvalidType),
+                _ if inner.unboxed_none() => Err(InvalidType),
                 _ => inner.check(value, left, depth + 1),
             };
         }
@@ -317,9 +326,7 @@ impl ValueShape {
             Self::Option(inner) => match (a, b) {
                 (Value::None, Value::None) => true,
                 (Value::None, _) | (_, Value::None) => false,
-                (Value::Some(a), Value::Some(b)) if matches!(inner.as_ref(), Self::Option(_)) => {
-                    inner.equal(a, b)
-                }
+                (Value::Some(a), Value::Some(b)) if inner.unboxed_none() => inner.equal(a, b),
                 _ => inner.equal(a, b),
             },
             Self::List(inner) => {
@@ -446,6 +453,95 @@ mod tests {
             long.as_str(),
         ] {
             assert!(!nested.accepts(&err(code)));
+        }
+    }
+
+    #[test]
+    fn option_boxes_when_an_unboxed_result_success_can_be_none() {
+        let some = |v: Value| Value::Some(Arc::new(v));
+        // option<result<option<i64>>>: the result's success hides no tag of its own, so
+        // its None reaches the option layer and Some(Ok(None)) must stay distinguishable.
+        let ty = ValueShape::Option(Box::new(ValueShape::Result(Box::new(ValueShape::Option(
+            Box::new(ValueShape::I64),
+        )))));
+        assert!(ty.accepts(&Value::None)); // None
+        assert!(ty.accepts(&some(Value::None))); // Some(Ok(None))
+        assert!(ty.accepts(&some(Value::I64(5)))); // Some(Ok(Some(5)))
+        assert!(ty.accepts(&some(err("core/Test")))); // Some(Err)
+        assert!(!ty.accepts(&Value::I64(5)));
+        assert!(!ty.accepts(&err("core/Test")));
+        assert!(!ty.unboxed_error());
+        let wrapped = ValueShape::Result(Box::new(ty.clone()));
+        assert!(!wrapped.accepts(&Value::Ok(Arc::new(Value::None))));
+        assert!(wrapped.accepts(&some(err("core/Test")))); // Ok(Some(Err))
+        // A boxed result success hides the payload's None: no extra option box.
+        let success = ValueShape::Result(Box::new(ValueShape::Result(Box::new(
+            ValueShape::Option(Box::new(ValueShape::I64)),
+        ))));
+        assert!(!success.unboxed_none());
+        let boxed = ValueShape::Option(Box::new(success));
+        assert!(boxed.accepts(&Value::Ok(Arc::new(Value::None))));
+        assert!(!boxed.accepts(&some(Value::Ok(Arc::new(Value::None)))));
+    }
+
+    /// Every option/result layering up to depth 6 over i64: each semantic value has one
+    /// accepted compact encoding, and distinct semantic values never share one.
+    #[test]
+    fn option_result_layerings_encode_injectively() {
+        // Independent of `unboxed_*`: a layer wraps when its payload can already show the
+        // layer's own bare tag. Tags: 1 = None, 2 = Err, 4 = anything else.
+        fn bare(layers: &[bool]) -> u8 {
+            let Some((&option, rest)) = layers.split_first() else {
+                return 4;
+            };
+            let (own, inner) = (if option { 1 } else { 2 }, bare(rest));
+            if inner & own != 0 {
+                own | 4
+            } else {
+                own | inner
+            }
+        }
+        // All semantic values with one leaf and one error, encoded compactly.
+        fn values(layers: &[bool]) -> Vec<(String, Value)> {
+            let Some((&option, rest)) = layers.split_first() else {
+                return vec![("7".into(), Value::I64(7))];
+            };
+            let wrap = bare(rest) & if option { 1 } else { 2 } != 0;
+            let (empty, label) = if option {
+                (Value::None, "Some")
+            } else {
+                (err("core/Test"), "Ok")
+            };
+            let mut out = vec![(if option { "None" } else { "Err" }.into(), empty)];
+            for (text, value) in values(rest) {
+                let value = match (wrap, option) {
+                    (false, _) => value,
+                    (true, true) => Value::Some(Arc::new(value)),
+                    (true, false) => Value::Ok(Arc::new(value)),
+                };
+                out.push((format!("{label}({text})"), value));
+            }
+            out
+        }
+        for depth in 1..=6 {
+            for bits in 0..1u32 << depth {
+                let layers: Vec<bool> = (0..depth).map(|i| bits >> i & 1 == 1).collect();
+                let mut ty = ValueShape::I64;
+                for &option in layers.iter().rev() {
+                    ty = if option {
+                        ValueShape::Option(Box::new(ty))
+                    } else {
+                        ValueShape::Result(Box::new(ty))
+                    };
+                }
+                let all = values(&layers);
+                for (i, (text, value)) in all.iter().enumerate() {
+                    assert!(ty.accepts(value), "{ty:?} rejects {text}");
+                    for (other, encoded) in &all[..i] {
+                        assert_ne!(value, encoded, "{ty:?}: {text} collides with {other}");
+                    }
+                }
+            }
         }
     }
 
