@@ -186,6 +186,8 @@ pub enum TxError {
     TypeLockConflict(TypeExpr),
     #[error("type `{0}` has no lock entry")]
     TypeLockNotFound(TypeExpr),
+    #[error("export `{0}` does not exist")]
+    ExportNotFound(String),
     #[error("the document revision counter is exhausted")]
     RevisionExhausted,
     #[error("a layout path needs at least one key")]

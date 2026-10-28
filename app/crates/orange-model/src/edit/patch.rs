@@ -9,7 +9,7 @@ use indexmap::IndexMap;
 use serde_json::{Map, Value as Json};
 
 use crate::document::{
-    BodyRef, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
+    BodyRef, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, GraphExport, NodeInstance,
     PackageLockEntry, SignatureSnapshot, TypeLockEntry, VariableDecl,
 };
 use crate::error::TxError;
@@ -56,6 +56,11 @@ pub(crate) enum Patch {
     PackageLock {
         key: (String, String),
         entry: Option<Placed<PackageLockEntry>>,
+    },
+    /// An `exports` entry, keyed by its export ID.
+    Export {
+        key: String,
+        entry: Option<Placed<GraphExport>>,
     },
     /// A `type_lock` entry, keyed by its type identity.
     TypeLock {
@@ -120,6 +125,10 @@ impl Patch {
             Patch::PackageLock { key, entry } => {
                 let old = set_slot(&mut document.package_lock, key.clone(), entry);
                 Patch::PackageLock { key, entry: old }
+            }
+            Patch::Export { key, entry } => {
+                let old = set_slot(&mut document.exports, key.clone(), entry);
+                Patch::Export { key, entry: old }
             }
             Patch::TypeLock { key, entry } => {
                 let old = set_slot(&mut document.type_lock, key.clone(), entry);
@@ -218,6 +227,32 @@ impl Slots<(String, String), PackageLockEntry> for Vec<PackageLockEntry> {
         key: &(String, String),
         value: PackageLockEntry,
     ) -> Option<PackageLockEntry> {
+        let index = self.position(key)?;
+        Some(std::mem::replace(&mut self[index], value))
+    }
+}
+
+/// Exports are an ordered list keyed by the entry's own ID. A loaded document may repeat an
+/// ID (the validator reports it); the first entry with the ID is the one edited.
+impl Slots<String, GraphExport> for Vec<GraphExport> {
+    fn take(&mut self, key: &String) -> Option<Placed<GraphExport>> {
+        let index = self.position(key)?;
+        Some(Placed {
+            index,
+            value: self.remove(index),
+        })
+    }
+
+    fn put(&mut self, _key: String, entry: Placed<GraphExport>) {
+        let index = entry.index.min(self.len());
+        self.insert(index, entry.value);
+    }
+
+    fn position(&self, key: &String) -> Option<usize> {
+        self.iter().position(|entry| &entry.id == key)
+    }
+
+    fn replace(&mut self, key: &String, value: GraphExport) -> Option<GraphExport> {
         let index = self.position(key)?;
         Some(std::mem::replace(&mut self[index], value))
     }

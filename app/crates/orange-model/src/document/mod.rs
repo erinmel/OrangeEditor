@@ -5,9 +5,9 @@
 //! Every extensible object keeps unknown keys in `extensions` so that a newer writer's
 //! fields survive load→save (FR-05).
 //!
-//! State owned by transactions (revision, bodies, declarations, editor layout) is private
-//! and changes only through [`GraphDocument::apply`]. Locks and exports have no document
-//! command yet (12 §3.3) and stay public until their flows exist.
+//! State owned by transactions (revision, bodies, declarations, locks, exports, activation
+//! policies, editor layout) is private and changes only through [`GraphDocument::apply`].
+//! The format version, graph ID and unknown top-level fields are import-only (12 §3.3).
 //!
 //! `graph` owns storage and lookup, `node` owns instances and activation policies,
 //! `port` owns connections/signatures, and `declaration` owns variables/events/functions.
