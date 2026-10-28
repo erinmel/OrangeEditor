@@ -1831,3 +1831,50 @@ Results: `cargo test --workspace --locked` passes with 928 passed, 0 failed, 14 
 - **Left unchanged:** the runtime control interpreter (`Run::execute`) is a flat dispatch over operations. Its repeated "consume, or fail with the fault" step differs per arm in what follows. Extracting it would need hidden control flow (a macro or labelled breaks), which is less clean than the current code.
 
 Results: `cargo test --workspace --locked` passes with 928 passed, 0 failed, 14 existing ignored, in 88 result groups. Clippy `-D warnings`, rustdoc `-D warnings` and fmt pass. No public API, graph format, diagnostic or charge changes.
+
+### Audit remediation — 2026-10-27
+
+An external architecture audit (snapshot ddd675d) was validated finding by finding, then fixed in five parallel worktrees on separate files and integrated on `core/audit-remediation` from `dev` 873167e. Toolchain: Rust 1.99.1, x86_64-pc-windows-msvc, default features. Cargo.lock is unchanged (SHA-256 e20eacb56cec10f874aa8c3869d5ab93b34831229a74b91332433db5f5267152). The integrated branch passes `cargo test --workspace --locked` with 941 passed, 0 failed, 14 existing ignored, in 89 result groups, plus fmt, clippy `-D warnings` and rustdoc `-D warnings`.
+
+**Confirmed and fixed** (allocation and layout figures are measured unless marked as counted from code):
+
+| Finding | Before | After |
+|---|---|---|
+| Map check allocations, 4 / 1,000 entries | 2 / 10 | 0 / 1 |
+| Map equality allocations, 4 / 1,000 entries | 5 / 21 | 0 / 3 |
+| Bytes per dynamic data slot, all parallel arrays | 80 | 25 |
+| Checks per `set_input` value | 2 | 1 |
+| Node/edge quota | after full deserialization | during the streaming pre-pass, before building |
+| Startup frame storage | no aggregate cap | `max_frame_storage_bytes`, default 64 MiB |
+| Allocations per call + return (counted from code) | about 10 | 3 |
+| Allocations per Count/While/For-each iteration (counted from code) | 1–2 | 0 (unless the frame is still captured) |
+| Allocations per `cancel_region` (counted from code) | 2 Vecs + set | 0 |
+| `Strand` / `Region` size | 360 / 464 B | 304 / 408 B |
+| Dependency union, growing chain n=4,000 (release timing) | 332 ms | 137 ms |
+
+Also fixed:
+- The function-local access does one frame lookup instead of two.
+- The bundled operation identity (ID, ports, numeric kind, scalar op) is declared once.
+- The narrow binding request is additive.
+- The admission estimate's data-side sizes come from the data module that owns the layout, not word-sized guesses in `run.rs`.
+
+**Measurement method:** map allocations were counted by a throwaway crate with a counting `GlobalAlloc` outside the workspace, because the workspace forbids unsafe code. Sizes come from temporary `size_of` tests. The other allocation counts come from reading the code paths.
+
+**Validated without code change:**
+- No unsafe code: the workspace sets `unsafe_code = "forbid"`, and no unsafe blocks exist.
+- No self-referential graph storage, and no JSON interpretation while pumping.
+- Run variables use dense vectors.
+- The scoped `RefCell` port cache is not an ownership cycle.
+- `Value` keeps its 16-byte assertion.
+
+**Confirmed but deferred, needing design or profiling first:**
+- Availability analysis re-walks shared pure cones per consumer (`availability.rs`, consumer loop). Requirements depend on each consumer's region, so caching needs a careful key.
+- Semantic edits still rerun the wider analysis pipeline (documented incremental limit).
+- Type terms own their structural text; profile before interning further.
+- Compare-and-set may re-validate already-checked values (`run/update.rs`); this is unproven.
+- Compiler-resolved frame-local addresses.
+- Resumable consumption snapshots and cancellation.
+- Pooled generational ownership storage.
+- A fuller `StrandPhase` covering yield/reenter/cleanup.
+
+No NFR, allocator/RSS, MSRV rerun, exact-head CI or core-completion claim follows.

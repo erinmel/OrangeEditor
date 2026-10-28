@@ -199,3 +199,11 @@ Zone lowering trace (2026-10-27; iteration-zones): FR-08/14/44/46 now has compac
 Zone runtime trace (2026-10-27; iteration-zones): FR-08/14/44/46 now execute Repeat, Fold, Map and Filter as resumable, fuel-bounded data work. Each iteration has its own memo domain, while outer captures keep the epoch. Entropy keeps its stream identity with a fresh sample per iteration. Faults keep the original begin identity, and Map/Filter results stay in packed typed lists. Cancellation, quota failure and a new epoch discard partial zones. Each source list is charged once. Release qualification and exact-head CI remain pending. Executed qualification is recorded in 10.
 
 Data shape trace (2026-10-27; data-shape): FR-08 value identity now has one owner. The model resolves executable value shapes from parsed type terms. The same module checks values against their type, applies the option/result boxing rule and charges retained bytes. The literal codec and runtime build lists with one shared packing. This is a refactor without behavior change: graph JSON, literals and diagnostics are unchanged. Package records, enums and handles remain non-executable.
+
+Audit remediation trace (2026-10-27; audit-remediation):
+- **Import (FR-08):** node and edge quotas now bound import before any node or edge is built.
+- **Data execution (FR-14):** dynamic data slots shrink to 25 bytes, and a host input is checked once.
+- **Runtime:** startup admits aggregate frame storage, and calls, iterations and cancellation reuse their scratch storage.
+- **Package binding:** bindings use a narrow request carrying the exact locked provider.
+
+Behavior, graph JSON, literals and diagnostics are unchanged, except that an invalid document over quota now reports the quota error first. Executed qualification is recorded in 10.
