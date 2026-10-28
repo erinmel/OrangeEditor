@@ -5,9 +5,10 @@ use orange_model::document::{
     GraphDocument, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot,
 };
 use orange_model::from_json;
-use orange_model::id::{NodeId, PortId};
+use orange_model::id::{EdgeId, NodeId, PortId, PortKey};
 use orange_model::validation::{
-    ConnectionValidation, DiagnosticCode, HostOrigin, validate_availability, validate_regions,
+    ConnectionValidation, Diagnostic, DiagnosticCode, HostOrigin, Subject, sort_diagnostics,
+    validate_availability, validate_regions,
 };
 use serde_json::{Value, json};
 
@@ -191,6 +192,10 @@ fn data(n: u8, from: u8, from_port: &str, to: u8) -> Value {
 }
 
 fn codes(nodes: Vec<N>, edges: Vec<Value>) -> Vec<DiagnosticCode> {
+    diagnostics(nodes, edges).iter().map(|d| d.code).collect()
+}
+
+fn diagnostics(nodes: Vec<N>, edges: Vec<Value>) -> Vec<Diagnostic> {
     let doc: GraphDocument = from_json(
         &json!({
             "format":"orange.graph","format_version":1,
@@ -207,11 +212,7 @@ fn codes(nodes: Vec<N>, edges: Vec<Value>) -> Vec<DiagnosticCode> {
     let connections = ConnectionValidation::default();
     let regions = validate_regions(&doc, &resolved, &connections, &registry);
     assert!(regions.is_valid(), "{:?}", regions.diagnostics);
-    validate_availability(&doc, &resolved, &connections, &regions.index, &registry)
-        .diagnostics
-        .iter()
-        .map(|d| d.code)
-        .collect()
+    validate_availability(&doc, &resolved, &connections, &regions.index, &registry).diagnostics
 }
 
 const OK: [DiagnosticCode; 0] = [];
@@ -485,4 +486,113 @@ fn a_join_all_elsewhere_still_reports_a_premature_read_after_it() {
         data(8, 7, "out", 6),
     ];
     assert_eq!(codes(nodes, edges), UNAVAILABLE);
+}
+
+/// Action with two data inputs `v` and `w`, producing `out` on `then`.
+fn action2(n: u8) -> N {
+    node(
+        n,
+        "example/action2",
+        NodeKind::Action,
+        vec![
+            PortDescriptor::exec_in("in"),
+            PortDescriptor::exec_out("then"),
+            PortDescriptor::data_in("v", int()),
+            PortDescriptor::data_in("w", int()),
+            PortDescriptor::data_out("out", int(), OutputSource::Execution),
+        ],
+    )
+}
+
+/// Pure node with two data inputs `v` and `w`.
+fn pure2(n: u8) -> N {
+    node(
+        n,
+        "example/pure2",
+        NodeKind::Pure,
+        vec![
+            PortDescriptor::data_in("v", int()),
+            PortDescriptor::data_in("w", int()),
+            PortDescriptor::data_out("out", int(), OutputSource::Computed),
+        ],
+    )
+}
+
+fn data_to(n: u8, from: u8, from_port: &str, to: u8, to_port: &str) -> Value {
+    let mut edge = data(n, from, from_port, to);
+    edge["to"]["port"] = json!(to_port);
+    edge
+}
+
+#[test]
+fn a_shared_pure_cone_reports_each_consumers_own_requirement_and_edge() {
+    // Activation A: entry 1 -> C0 (7) -> P (3) -> loop 4 { body: C1 (5) } -> C2 (6) -> C4 (9).
+    // Activation B: entry 2 -> C3 (8).
+    // Shared cone: 10(v = A.payload, w = P.out), 11(v = 10, w = loop index), 12(11), 13(10).
+    let nodes = vec![
+        entry(1),
+        entry(2),
+        action(3),
+        looped(4),
+        action(5),
+        action(6),
+        action2(7),
+        action(8),
+        action2(9),
+        pure2(10),
+        pure2(11),
+        pure(12),
+        pure(13),
+    ];
+    let edges = vec![
+        exec(1, 1, "then", 7),
+        exec(2, 7, "then", 3),
+        exec(3, 3, "then", 4),
+        exec(4, 4, "body", 5),
+        exec(5, 4, "completed", 6),
+        exec(6, 6, "then", 9),
+        exec(7, 2, "then", 8),
+        data_to(20, 1, "payload", 10, "v"),
+        data_to(21, 3, "out", 10, "w"),
+        data_to(22, 10, "out", 11, "v"),
+        data_to(23, 4, "index", 11, "w"),
+        data(24, 11, "out", 12),
+        data(25, 10, "out", 13),
+        // A cone edge reached from two direct edges is reported on the higher edge id.
+        data_to(30, 12, "out", 7, "v"),
+        data_to(31, 13, "out", 7, "w"),
+        data(32, 12, "out", 5),
+        data(33, 12, "out", 6),
+        data(34, 13, "out", 8),
+        data_to(35, 13, "out", 9, "v"),
+        data_to(36, 12, "out", 9, "w"),
+    ];
+    use DiagnosticCode::{CrossActivation as Cross, UnavailableValue as Unavailable};
+    let origin = registry().origin().clone();
+    let mut expected: Vec<Diagnostic> = [
+        // C0 runs before P (read through both cones) and outside the loop body.
+        (Unavailable, 7, "w", 31),
+        (Unavailable, 7, "v", 30),
+        // C1 runs inside the loop body after P: everything is available.
+        // C2 and C4 run after the loop: only its index is gone.
+        (Unavailable, 6, "v", 33),
+        (Unavailable, 9, "w", 36),
+        // C3 is in activation B: the payload and P's value belong to A.
+        (Cross, 8, "v", 34),
+    ]
+    .into_iter()
+    .map(|(code, node, port, edge)| {
+        let edge: EdgeId = format!("30000000-0000-4000-8000-{edge:012}")
+            .parse()
+            .unwrap();
+        let port = PortKey::new(pid(port), None);
+        Diagnostic::new(
+            code,
+            Subject::new(Some(nid(node)), Some(port), Some(edge)),
+            &origin,
+        )
+    })
+    .collect();
+    sort_diagnostics(&mut expected);
+    assert_eq!(diagnostics(nodes, edges), expected);
 }

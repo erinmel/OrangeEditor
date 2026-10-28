@@ -932,3 +932,7 @@ Zone analysis projection (2026-10-27): `ValidationReport.regions.zones` is a mod
 
 
 Zone compiler layout slice (2026-10-27): DataPlan now retains plan-local `ZoneIx`/`DataZone` entries per specialized call scope, original begin/end IDs, lexical parent and optional lowered parameter instruction. DataNode records its lexical memoization domain. `DataOperation::Iteration` has no producer inputs; `DataOperation::Zone` consumes strict begin-prefix inputs followed by end/body inputs. Host-state Input instructions retain the outer consumption domain. Metadata is charged before provider binding; constant calls containing zones lower as programs rather than scalar-folder unrolling. Unused admitted zones need no runtime machine. At this intermediate checkpoint, compile_pure explicitly refuses zones, and DataActivation explicitly rejects zone instructions until resumable execution is implemented. This is unfrozen Rust IR, not a saved-format or provider ABI change.
+
+Compare-and-set and harness (2026-10-27):
+- **Compare-and-set** relies on values having been checked when stored or published. It decides equality structurally and uses checked, order-insensitive map equality only for shapes that contain a map.
+- **Harness.** `orange-measure` is a development-only harness. Its counting allocator is the only `unsafe` code in the repository, contained by crate-local lints.

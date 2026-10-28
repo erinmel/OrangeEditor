@@ -207,3 +207,10 @@ Audit remediation trace (2026-10-27; audit-remediation):
 - **Package binding:** bindings use a narrow request carrying the exact locked provider.
 
 Behavior, graph JSON, literals and diagnostics are unchanged, except that an invalid document over quota now reports the quota error first. Executed qualification is recorded in 10.
+
+Measured runtime trace (2026-10-27; measured-runtime):
+- **Baselines:** a measurement harness records allocation and pump-time baselines for representative control and data workloads.
+- **Availability (FR-14/46):** shared pure cones are walked once per body instead of once per consumer, with identical diagnostics.
+- **Runtime:** node execution runs through operation-family handlers with narrow contexts, and compare-and-set no longer re-validates operands that were checked when stored or published.
+
+Behavior, graph JSON and diagnostics are unchanged. Executed qualification is recorded in 10.

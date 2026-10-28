@@ -2,8 +2,8 @@
 use crate::data::{CleanupScope, HostPoll, PreparedData};
 use crate::{DataActivation, DataError, DataOptions};
 use orange_compiler::{
-    ConstantFault, ControlIx, ControlOperation, ControlPlan, ExecInput, ExecTarget, FoldedValue,
-    ForkJoin, HostSource, IterationProjection, KernelFault, SwitchKey, UpdateDemand,
+    ConstantFault, ControlIx, ControlNode, ControlOperation, ControlPlan, ExecInput, ExecTarget,
+    FoldedValue, ForkJoin, HostSource, IterationProjection, KernelFault, SwitchKey, UpdateDemand,
     UpdateOperation, UpdateProjection,
 };
 use orange_model::catalog::RegistrySnapshot;
@@ -17,10 +17,14 @@ use std::sync::{
 };
 use thiserror::Error;
 
+mod cells;
 mod function;
 mod iteration;
+mod loops;
 mod retained;
-use function::{FunctionFrame, FunctionReturn, PendingCall};
+mod select;
+use cells::SegmentWrites;
+use function::{FunctionFrame, FunctionReturn, PendingCall, find_frame, frame_value};
 mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod ready;
@@ -266,6 +270,21 @@ impl StateLayout {
             |sum, (count, bytes)| count.checked_mul(bytes)?.checked_add(sum),
         )
     }
+    /// The state cell `index`: activation-local cells live in `shared`.
+    fn state<'a>(
+        &self,
+        plan: &ControlPlan,
+        run: &'a [Option<Value>],
+        shared: &'a ActivationState,
+        index: usize,
+    ) -> Option<&'a Value> {
+        let cell = self.states[index];
+        if plan.states()[index].scope() == VarScope::Local {
+            shared.states[cell].as_ref()
+        } else {
+            run[cell].as_ref()
+        }
+    }
 }
 
 #[derive(Default)]
@@ -364,6 +383,10 @@ struct Strand {
     cleanup: bool,
     cleanup_remaining: usize,
 }
+/// One activation tree's evaluator, local cells and execution outputs. `pump`
+/// checks it out of `Run::activations` for one strand step and restores it
+/// before any error or transfer is handled, so ownership code never sees a gap.
+/// `retained_bytes`, `local_bytes` and `owned_bytes` share `max_state_bytes`.
 struct ActivationState {
     retained_bytes: usize,
     owned_bytes: Arc<std::sync::atomic::AtomicUsize>,
@@ -396,6 +419,103 @@ enum Cursor {
         next: i64,
         count: i64,
     },
+}
+
+/// A finished node step: its next target, trace outcome and published fault.
+type Step = (Option<ExecTarget>, ControlOutcome, Option<ConstantFault>);
+/// A demanded value's graph fault takes the node's Failed edge with its source.
+fn failed(node: &ControlNode, fault: ConstantFault) -> Step {
+    (node.failed(), ControlOutcome::Failed, Some(fault))
+}
+/// A fault the node raises itself.
+fn failure(node: &ControlNode, fault: KernelFault) -> Step {
+    failed(
+        node,
+        ConstantFault {
+            source: node.node(),
+            fault,
+        },
+    )
+}
+/// Nodes cleanup may run: they neither start work nor publish ordinary results.
+fn cleanup_safe(operation: &ControlOperation) -> bool {
+    matches!(
+        operation,
+        ControlOperation::Entry
+            | ControlOperation::Branch { .. }
+            | ControlOperation::Switch { .. }
+            | ControlOperation::MatchResult { .. }
+            | ControlOperation::Sequence { .. }
+            | ControlOperation::Set { .. }
+            | ControlOperation::Gate { .. }
+            | ControlOperation::DoOnce { .. }
+            | ControlOperation::FlipFlop { .. }
+            | ControlOperation::Register { .. }
+            | ControlOperation::Update { .. }
+    )
+}
+/// The one data root an operation consumes before it acts. Call, Return and
+/// Update consume ordered multi-root demand themselves.
+fn demand_root(operation: &ControlOperation, input: ExecInput) -> Option<usize> {
+    match operation {
+        ControlOperation::Branch {
+            condition: root, ..
+        }
+        | ControlOperation::Switch { key: root, .. }
+        | ControlOperation::MatchResult { result: root, .. }
+        | ControlOperation::ForEach { items: root, .. }
+        | ControlOperation::While {
+            condition: root, ..
+        }
+        | ControlOperation::Count { count: root, .. }
+        | ControlOperation::Wait { duration: root }
+        | ControlOperation::Set { value: root, .. } => Some(*root),
+        ControlOperation::Register { next, .. } if input != ExecInput::Reset => Some(*next),
+        _ => None,
+    }
+}
+/// Fork, Entry, Yield and Wait request a strand transfer or simply continue.
+fn schedule(
+    now: u64,
+    node: &ControlNode,
+    ix: ControlIx,
+    activation: &mut Strand,
+    value: Option<Value>,
+) -> Result<Step, RunError> {
+    Ok(match (node.operation(), value) {
+        (ControlOperation::Fork { .. }, None) => {
+            activation.transfer = Transfer::Fork(ix);
+            (None, ControlOutcome::Forked, None)
+        }
+        (ControlOperation::Entry, None) => (node.then(), ControlOutcome::Then, None),
+        (ControlOperation::Yield, None) => {
+            activation.yielded = true;
+            (node.then(), ControlOutcome::Yielded, None)
+        }
+        (ControlOperation::Wait { .. }, Some(Value::Duration(duration))) => {
+            match u64::try_from(duration)
+                .ok()
+                .and_then(|d| now.checked_add(d))
+            {
+                Some(at) => {
+                    activation.transfer = Transfer::Wait { at, owner: ix };
+                    (node.then(), ControlOutcome::Suspended, None)
+                }
+                None => failure(
+                    node,
+                    KernelFault {
+                        code: "core/OutOfRange",
+                        message_key: "core/wait-out-of-range",
+                        message: "Wait duration is outside the clock range.",
+                    },
+                ),
+            }
+        }
+        (ControlOperation::Wait { .. }, Some(_)) => {
+            return Err(DataError::KernelContract { node: node.node() }.into());
+        }
+        _ => return Err(RunError::InvalidState),
+    })
 }
 
 /// Checked control execution. Inspection is explicit; Debug never formats values.
@@ -434,12 +554,7 @@ pub struct Run {
     stop_ready: VecDeque<Strand>,
     segment_owner: Option<u64>,
     last_segment: Option<u64>,
-    segment_indices: Vec<usize>,
-    segment_writes: Vec<VariableId>,
-    dirty: Vec<bool>,
-    dirty_states: Vec<bool>,
-    state_segment_indices: Vec<usize>,
-    state_segment_writes: Vec<NodeId>,
+    segment: SegmentWrites,
     /// Reused cancellation traversal buffers; empty between calls.
     cancel_regions: Vec<u64>,
     cancel_timers: Vec<(u64, u64)>,
@@ -650,12 +765,7 @@ impl Run {
             stop_ready,
             segment_owner: None,
             last_segment: None,
-            segment_indices: vec![],
-            segment_writes: vec![],
-            dirty: vec![false; variable_count],
-            dirty_states: vec![false; state_count],
-            state_segment_indices: vec![],
-            state_segment_writes: vec![],
+            segment: SegmentWrites::new(variable_count, state_count),
             cancel_regions: vec![],
             cancel_timers: vec![],
         })
@@ -690,7 +800,7 @@ impl Run {
     /// change notification or Watch delivery is implied by this inspection seam.
     pub fn segment_writes(&self) -> Option<(u64, &[VariableId])> {
         self.last_segment
-            .map(|owner| (owner, self.segment_writes.as_slice()))
+            .map(|owner| (owner, self.segment.variables()))
     }
     fn transition(&mut self, state: RunState) {
         if self.state != state {
@@ -702,7 +812,7 @@ impl Run {
     /// not Eq-based change notifications. Activation identifies local cell owners.
     pub fn segment_state_writes(&self) -> Option<(u64, &[NodeId])> {
         self.last_segment
-            .map(|owner| (owner, self.state_segment_writes.as_slice()))
+            .map(|owner| (owner, self.segment.states()))
     }
     pub fn now(&self) -> u64 {
         self.now
@@ -890,14 +1000,7 @@ impl Run {
             }
             let before = quantum;
             if self.segment_owner != Some(activation.id) {
-                for index in self.segment_indices.drain(..) {
-                    self.dirty[index] = false;
-                }
-                self.segment_writes.clear();
-                for index in self.state_segment_indices.drain(..) {
-                    self.dirty_states[index] = false;
-                }
-                self.state_segment_writes.clear();
+                self.segment.open();
                 self.segment_owner = Some(activation.id);
                 self.last_segment = Some(activation.sequence);
             }
@@ -1093,6 +1196,9 @@ impl Run {
         self.deadline = None;
         self.transition(RunState::Stopped);
     }
+    /// One node step. Single-root demand is consumed here, once: pending keeps
+    /// the pull for the next quantum, and a graph fault takes the node's Failed
+    /// edge. Family handlers then act on the value with only the state they own.
     fn execute(
         &mut self,
         plan: &ControlPlan,
@@ -1109,8 +1215,85 @@ impl Run {
         if activation.pull.active.is_none() {
             *budget -= 1;
         }
-        if activation.cleanup && matches!(node.operation(), ControlOperation::Return { .. }) {
-            // Cancellation never publishes ordinary results or revives a held caller.
+        let operation = node.operation();
+        if activation.cleanup && !cleanup_safe(operation) {
+            self.refuse_in_cleanup(plan, activation, shared, ix);
+            return Ok(());
+        }
+        let value = match demand_root(operation, target.input()) {
+            None => None,
+            Some(root) => match self.consume(plan, activation, shared, root, budget)? {
+                None => return Ok(()),
+                Some(FoldedValue::Value(value)) => Some(value),
+                Some(FoldedValue::Fault(fault)) => {
+                    if let ControlOperation::MatchResult { .. } = operation {
+                        // A failed match clears its value outputs.
+                        Self::publish_match_value(
+                            plan,
+                            &self.layout,
+                            shared,
+                            ix,
+                            None,
+                            self.options.limits.max_state_bytes,
+                        )?;
+                    }
+                    self.complete(plan, activation, shared, ix, failed(node, fault));
+                    return Ok(());
+                }
+            },
+        };
+        let step = match operation {
+            ControlOperation::Call { .. } | ControlOperation::Return { .. } => {
+                return self.execute_function(plan, activation, shared, ix, budget);
+            }
+            ControlOperation::Update { .. } => {
+                match self.execute_update(plan, activation, shared, ix, budget)? {
+                    Some(step) => step,
+                    None => return Ok(()),
+                }
+            }
+            ControlOperation::Gate { .. }
+            | ControlOperation::DoOnce { .. }
+            | ControlOperation::FlipFlop { .. }
+            | ControlOperation::Register { .. }
+            | ControlOperation::Set { .. } => {
+                let function = activation.function;
+                self.cells().step(plan, target, shared, function, value)?
+            }
+            ControlOperation::Branch { .. }
+            | ControlOperation::Switch { .. }
+            | ControlOperation::MatchResult { .. } => Self::select(
+                plan,
+                (&self.layout, self.options.limits.max_state_bytes),
+                ix,
+                shared,
+                value,
+            )?,
+            ControlOperation::ForEach { .. }
+            | ControlOperation::While { .. }
+            | ControlOperation::Count { .. }
+            | ControlOperation::Sequence { .. }
+            | ControlOperation::Break
+            | ControlOperation::Continue => self.loop_step(plan, ix, activation, shared, value)?,
+            ControlOperation::Fork { .. }
+            | ControlOperation::Entry
+            | ControlOperation::Yield
+            | ControlOperation::Wait { .. } => schedule(self.now, node, ix, activation, value)?,
+        };
+        self.complete(plan, activation, shared, ix, step);
+        Ok(())
+    }
+    /// Cleanup never publishes ordinary results or revives a held caller: Return
+    /// is cancelled, and any other unsafe node fails at itself.
+    fn refuse_in_cleanup(
+        &mut self,
+        plan: &ControlPlan,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
+        ix: ControlIx,
+    ) {
+        let node = &plan.nodes()[ix.index()];
+        if matches!(node.operation(), ControlOperation::Return { .. }) {
             activation.pc = None;
             activation.stack.clear();
             activation.pull.reset();
@@ -1121,514 +1304,28 @@ impl Run {
                 outcome: ControlOutcome::Cancelled,
                 fault: None,
             });
-            return Ok(());
+            return;
         }
-        if activation.cleanup
-            && !matches!(
-                node.operation(),
-                ControlOperation::Entry
-                    | ControlOperation::Branch { .. }
-                    | ControlOperation::Switch { .. }
-                    | ControlOperation::MatchResult { .. }
-                    | ControlOperation::Sequence { .. }
-                    | ControlOperation::Set { .. }
-                    | ControlOperation::Gate { .. }
-                    | ControlOperation::DoOnce { .. }
-                    | ControlOperation::FlipFlop { .. }
-                    | ControlOperation::Register { .. }
-                    | ControlOperation::Update { .. }
-            )
-        {
-            let fault = ConstantFault {
-                source: node.node(),
-                fault: KernelFault {
-                    code: "core/Cancelled",
-                    message_key: "core/cleanup-unsafe-node",
-                    message: "This operation is not permitted during cancellation cleanup.",
-                },
-            };
-            Self::publish_error(plan, &self.layout, shared, ix, &fault);
-            self.record(RunEvent {
-                activation: activation.sequence,
-                node: node.node(),
-                outcome: ControlOutcome::Failed,
-                fault: Some(fault),
-            });
-            activation.pc = node.failed();
-            activation.pull.reset();
-            if activation.pc.is_none() {
-                activation.stack.clear();
-            }
-            return Ok(());
-        }
-        if matches!(
-            node.operation(),
-            ControlOperation::Call { .. } | ControlOperation::Return { .. }
-        ) {
-            return self.execute_function(plan, activation, shared, ix, budget);
-        }
-        if matches!(node.operation(), ControlOperation::Update { .. }) {
-            if let Some(fault) = self.execute_update(plan, activation, shared, ix, budget)? {
-                self.complete(
-                    plan,
-                    activation,
-                    shared,
-                    ix,
-                    (node.failed(), ControlOutcome::Failed, Some(fault)),
-                );
-            }
-            return Ok(());
-        }
-        let (next, outcome, fault) = match node.operation() {
-            ControlOperation::Call { .. } | ControlOperation::Return { .. } => {
-                unreachable!("function dispatch handled above")
-            }
-            ControlOperation::ForEach {
-                items,
-                body,
-                completed,
-            } => {
-                let Some(result) = self.consume(plan, activation, shared, *items, budget)? else {
-                    return Ok(());
-                };
-                match result {
-                    FoldedValue::Fault(fault) => {
-                        (node.failed(), ControlOutcome::Failed, Some(fault))
-                    }
-                    FoldedValue::Value(value) => {
-                        let len = iteration::collection_len(&value)
-                            .ok_or(DataError::KernelContract { node: node.node() })?;
-                        if len == 0 {
-                            (*completed, ControlOutcome::Completed, None)
-                        } else {
-                            if activation.stack.len() == self.options.limits.max_region_depth {
-                                return Err(RunError::ResourceLimit);
-                            }
-                            let cursor = self.begin_iteration(
-                                plan,
-                                shared,
-                                ix,
-                                *items,
-                                value,
-                                activation.iteration_context.clone(),
-                            )?;
-                            activation.stack.push(Cursor::ForEach(Box::new(cursor)));
-                            activation.transfer = Transfer::EnterBody(Some(ix));
-                            (*body, ControlOutcome::Body, None)
-                        }
-                    }
-                }
-            }
-
-            ControlOperation::Update { .. } => unreachable!("handled by typed state action"),
-            ControlOperation::Gate { state } => {
-                let Some(Value::Bool(open)) = self.state_value(plan, shared, *state) else {
-                    return Err(DataError::KernelContract { node: node.node() }.into());
-                };
-                let open = *open;
-                match target.input() {
-                    ExecInput::Enter => {
-                        if open {
-                            (node.then(), ControlOutcome::Then, None)
-                        } else {
-                            (None, ControlOutcome::Suppressed, None)
-                        }
-                    }
-                    ExecInput::Open | ExecInput::Close | ExecInput::Toggle => {
-                        let next = match target.input() {
-                            ExecInput::Open => true,
-                            ExecInput::Close => false,
-                            _ => !open,
-                        };
-                        self.write_state(plan, shared, *state, Some(Value::Bool(next)))?;
-                        (None, ControlOutcome::StateChanged, None)
-                    }
-                    _ => return Err(RunError::InvalidState),
-                }
-            }
-            ControlOperation::DoOnce { state } => {
-                if target.input() == ExecInput::Reset {
-                    self.write_state(plan, shared, *state, Some(Value::Bool(false)))?;
-                    (None, ControlOutcome::StateChanged, None)
-                } else if matches!(
-                    self.state_value(plan, shared, *state),
-                    Some(Value::Bool(false))
-                ) {
-                    self.write_state(plan, shared, *state, Some(Value::Bool(true)))?;
-                    (node.then(), ControlOutcome::Then, None)
-                } else {
-                    (None, ControlOutcome::Suppressed, None)
-                }
-            }
-            ControlOperation::FlipFlop { state, a, b } => {
-                let Some(Value::Bool(previous)) = self.state_value(plan, shared, *state) else {
-                    return Err(DataError::KernelContract { node: node.node() }.into());
-                };
-                let select_a = !previous;
-                self.write_state(plan, shared, *state, Some(Value::Bool(select_a)))?;
-                if select_a {
-                    (*a, ControlOutcome::FlipA, None)
-                } else {
-                    (*b, ControlOutcome::FlipB, None)
-                }
-            }
-            ControlOperation::Register { state, next } => {
-                if target.input() == ExecInput::Reset {
-                    self.write_state(
-                        plan,
-                        shared,
-                        *state,
-                        plan.states()[*state].initial().cloned(),
-                    )?;
-                    (node.then(), ControlOutcome::Then, None)
-                } else {
-                    let Some(result) = self.consume(plan, activation, shared, *next, budget)?
-                    else {
-                        return Ok(());
-                    };
-                    match result {
-                        FoldedValue::Fault(fault) => {
-                            (node.failed(), ControlOutcome::Failed, Some(fault))
-                        }
-                        FoldedValue::Value(value) => {
-                            self.write_state(plan, shared, *state, Some(value))?;
-                            (node.then(), ControlOutcome::Then, None)
-                        }
-                    }
-                }
-            }
-
-            ControlOperation::Switch {
-                key,
-                cases,
-                default,
-            } => {
-                let Some(result) = self.consume(plan, activation, shared, *key, budget)? else {
-                    return Ok(());
-                };
-                match result {
-                    FoldedValue::Fault(fault) => {
-                        (node.failed(), ControlOutcome::Failed, Some(fault))
-                    }
-                    FoldedValue::Value(value) => {
-                        let key = SwitchKey::from_value(&value)
-                            .ok_or(DataError::KernelContract { node: node.node() })?;
-                        match cases.binary_search_by(|case| case.key().cmp(&key)) {
-                            Ok(index) => (
-                                cases[index].target(),
-                                ControlOutcome::Case(cases[index].instance()),
-                                None,
-                            ),
-                            Err(_) => (*default, ControlOutcome::Default, None),
-                        }
-                    }
-                }
-            }
-            ControlOperation::MatchResult {
-                result,
-                boxed,
-                ok,
-                err,
-            } => {
-                let Some(result) = self.consume(plan, activation, shared, *result, budget)? else {
-                    return Ok(());
-                };
-                match result {
-                    FoldedValue::Fault(fault) => {
-                        Self::publish_match_value(
-                            plan,
-                            &self.layout,
-                            shared,
-                            ix,
-                            None,
-                            self.options.limits.max_state_bytes,
-                        )?;
-                        (node.failed(), ControlOutcome::Failed, Some(fault))
-                    }
-                    FoldedValue::Value(Value::Err(error)) => {
-                        Self::publish_match_value(
-                            plan,
-                            &self.layout,
-                            shared,
-                            ix,
-                            None,
-                            self.options.limits.max_state_bytes,
-                        )?;
-                        for &i in plan.error_targets(ix) {
-                            shared.outputs[self.layout.outputs[i].expect("checked output")] =
-                                Some(FoldedValue::Value(Value::Err(error.clone())));
-                        }
-                        (*err, ControlOutcome::MatchedErr, None)
-                    }
-                    FoldedValue::Value(value) => {
-                        let value = match (boxed, value) {
-                            (true, Value::Ok(value)) => value.as_ref().clone(),
-                            (false, value) => value,
-                            _ => return Err(DataError::KernelContract { node: node.node() }.into()),
-                        };
-                        Self::publish_match_value(
-                            plan,
-                            &self.layout,
-                            shared,
-                            ix,
-                            Some(value),
-                            self.options.limits.max_state_bytes,
-                        )?;
-                        for &i in plan.error_targets(ix) {
-                            shared.outputs[self.layout.outputs[i].expect("checked output")] = None;
-                        }
-                        (*ok, ControlOutcome::MatchedOk, None)
-                    }
-                }
-            }
-
-            ControlOperation::Fork { .. } => {
-                activation.transfer = Transfer::Fork(ix);
-                (None, ControlOutcome::Forked, None)
-            }
-            ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
-            ControlOperation::While {
-                condition,
-                body,
-                completed,
-                max_iterations,
-            } => {
-                let iterations = activation
-                    .reenter
-                    .filter(|(owner, _)| *owner == ix)
-                    .map_or(0, |(_, n)| n);
-                let Some(result) = self.consume(plan, activation, shared, *condition, budget)?
-                else {
-                    return Ok(());
-                };
-                match result {
-                    FoldedValue::Fault(fault) => {
-                        (node.failed(), ControlOutcome::Failed, Some(fault))
-                    }
-                    FoldedValue::Value(Value::Bool(false)) => {
-                        (*completed, ControlOutcome::Completed, None)
-                    }
-                    FoldedValue::Value(Value::Bool(true)) if iterations >= *max_iterations => (
-                        node.failed(),
-                        ControlOutcome::Failed,
-                        Some(ConstantFault {
-                            source: node.node(),
-                            fault: KernelFault {
-                                code: "core/LoopBudgetExceeded",
-                                message_key: "core/loop-budget-exceeded",
-                                message: "The loop iteration budget is exhausted.",
-                            },
-                        }),
-                    ),
-                    FoldedValue::Value(Value::Bool(true)) => {
-                        if activation.stack.len() == self.options.limits.max_region_depth {
-                            return Err(RunError::ResourceLimit);
-                        }
-                        activation.transfer = Transfer::EnterBody(Some(ix));
-                        activation.stack.push(Cursor::While {
-                            owner: ix,
-                            iterations: iterations + 1,
-                        });
-                        (*body, ControlOutcome::Body, None)
-                    }
-                    _ => return Err(DataError::KernelContract { node: node.node() }.into()),
-                }
-            }
-            ControlOperation::Count {
-                count,
-                body,
-                completed,
-            } => {
-                let Some(result) = self.consume(plan, activation, shared, *count, budget)? else {
-                    return Ok(());
-                };
-                match result {
-                    FoldedValue::Fault(fault) => {
-                        (node.failed(), ControlOutcome::Failed, Some(fault))
-                    }
-                    FoldedValue::Value(Value::I64(count)) if count < 0 => (
-                        node.failed(),
-                        ControlOutcome::Failed,
-                        Some(ConstantFault {
-                            source: node.node(),
-                            fault: KernelFault::NEGATIVE_COUNT,
-                        }),
-                    ),
-                    FoldedValue::Value(Value::I64(0)) => {
-                        (*completed, ControlOutcome::Completed, None)
-                    }
-                    FoldedValue::Value(Value::I64(count)) => {
-                        if activation.stack.len() == self.options.limits.max_region_depth {
-                            return Err(RunError::ResourceLimit);
-                        }
-                        activation.transfer = Transfer::EnterBody(Some(ix));
-                        activation.stack.push(Cursor::Count {
-                            owner: ix,
-                            next: 1,
-                            count,
-                        });
-                        Self::publish_index(plan, &self.layout, shared, ix, Some(0));
-                        (*body, ControlOutcome::Body, None)
-                    }
-                    _ => return Err(DataError::KernelContract { node: node.node() }.into()),
-                }
-            }
-            ControlOperation::Break | ControlOperation::Continue => {
-                let owner = node.loop_owner().ok_or(RunError::InvalidState)?;
-                let region = self.loop_region(activation.region, owner)?;
-                let is_break = matches!(node.operation(), ControlOperation::Break);
-                activation.transfer = Transfer::Unwind { region, is_break };
-                (
-                    None,
-                    if is_break {
-                        ControlOutcome::Break
-                    } else {
-                        ControlOutcome::Continue
-                    },
-                    None,
-                )
-            }
-            ControlOperation::Yield => {
-                activation.yielded = true;
-                (node.then(), ControlOutcome::Yielded, None)
-            }
-            ControlOperation::Wait { duration } => {
-                let Some(result) = self.consume(plan, activation, shared, *duration, budget)?
-                else {
-                    return Ok(());
-                };
-                match result {
-                    FoldedValue::Fault(fault) => {
-                        (node.failed(), ControlOutcome::Failed, Some(fault))
-                    }
-                    FoldedValue::Value(Value::Duration(duration)) => {
-                        if let Some(at) = u64::try_from(duration)
-                            .ok()
-                            .and_then(|d| self.now.checked_add(d))
-                        {
-                            activation.transfer = Transfer::Wait { at, owner: ix };
-                            (node.then(), ControlOutcome::Suspended, None)
-                        } else {
-                            (
-                                node.failed(),
-                                ControlOutcome::Failed,
-                                Some(ConstantFault {
-                                    source: node.node(),
-                                    fault: KernelFault {
-                                        code: "core/OutOfRange",
-                                        message_key: "core/wait-out-of-range",
-                                        message: "Wait duration is outside the clock range.",
-                                    },
-                                }),
-                            )
-                        }
-                    }
-                    _ => return Err(DataError::KernelContract { node: node.node() }.into()),
-                }
-            }
-            ControlOperation::Sequence { steps } => {
-                if activation.stack.len() == self.options.limits.max_region_depth {
-                    return Err(RunError::ResourceLimit);
-                }
-                activation.transfer = Transfer::EnterBody(None);
-                activation
-                    .stack
-                    .push(Cursor::Sequence { owner: ix, next: 1 });
-                (
-                    steps.first().copied().flatten(),
-                    ControlOutcome::Step(0),
-                    None,
-                )
-            }
-            ControlOperation::Branch {
-                condition,
-                when_true,
-                when_false,
-            } => {
-                let Some(result) = self.consume(plan, activation, shared, *condition, budget)?
-                else {
-                    return Ok(());
-                };
-                match result {
-                    FoldedValue::Value(Value::Bool(true)) => {
-                        (*when_true, ControlOutcome::True, None)
-                    }
-                    FoldedValue::Value(Value::Bool(false)) => {
-                        (*when_false, ControlOutcome::False, None)
-                    }
-                    FoldedValue::Fault(fault) => {
-                        (node.failed(), ControlOutcome::Failed, Some(fault))
-                    }
-                    _ => return Err(DataError::KernelContract { node: node.node() }.into()),
-                }
-            }
-            ControlOperation::Set { variable, value } => {
-                let Some(result) = self.consume(plan, activation, shared, *value, budget)? else {
-                    return Ok(());
-                };
-                match result {
-                    FoldedValue::Fault(fault) => {
-                        (node.failed(), ControlOutcome::Failed, Some(fault))
-                    }
-                    FoldedValue::Value(value) => {
-                        let var = &plan.variables()[*variable];
-                        if var.scope() == VarScope::Local && node.scope() != 0 {
-                            let frame = self.find_frame(activation.function, node.scope())?;
-                            self.write_frame_local(plan, shared, frame, *variable, value)?;
-                            self.complete(
-                                plan,
-                                activation,
-                                shared,
-                                ix,
-                                (node.then(), ControlOutcome::Then, None),
-                            );
-                            return Ok(());
-                        }
-                        let (store, retained) = if var.scope() == VarScope::Local {
-                            (&mut shared.locals, &mut shared.local_bytes)
-                        } else {
-                            (&mut self.variables, &mut self.state_bytes)
-                        };
-                        let cell = self.layout.variables[*variable];
-                        let old = store[cell]
-                            .as_ref()
-                            .and_then(|v| var.charge(v))
-                            .unwrap_or(16);
-                        let new = var
-                            .charge(&value)
-                            .ok_or(DataError::KernelContract { node: node.node() })?;
-                        let bytes = retained
-                            .checked_sub(old)
-                            .and_then(|b| b.checked_add(new))
-                            .filter(|b| {
-                                b.checked_add(if var.scope() == VarScope::Local {
-                                    shared
-                                        .retained_bytes
-                                        .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
-                                } else {
-                                    0
-                                })
-                                .is_some_and(|total| total <= self.options.limits.max_state_bytes)
-                            })
-                            .ok_or(RunError::ResourceLimit)?;
-                        let version = self.versions[*variable]
-                            .checked_add(1)
-                            .ok_or(RunError::ResourceLimit)?;
-                        *retained = bytes;
-                        store[cell] = Some(value);
-                        self.versions[*variable] = version;
-                        if !self.dirty[*variable] {
-                            self.dirty[*variable] = true;
-                            self.segment_indices.push(*variable);
-                            self.segment_writes.push(var.id());
-                        }
-                        (node.then(), ControlOutcome::Then, None)
-                    }
-                }
-            }
+        let fault = ConstantFault {
+            source: node.node(),
+            fault: KernelFault {
+                code: "core/Cancelled",
+                message_key: "core/cleanup-unsafe-node",
+                message: "This operation is not permitted during cancellation cleanup.",
+            },
         };
-        self.complete(plan, activation, shared, ix, (next, outcome, fault));
-        Ok(())
+        Self::publish_error(plan, &self.layout, shared, ix, &fault);
+        self.record(RunEvent {
+            activation: activation.sequence,
+            node: node.node(),
+            outcome: ControlOutcome::Failed,
+            fault: Some(fault),
+        });
+        activation.pc = node.failed();
+        activation.pull.reset();
+        if activation.pc.is_none() {
+            activation.stack.clear();
+        }
     }
     fn complete(
         &mut self,
@@ -1673,82 +1370,8 @@ impl Run {
         }
         activation.pc = next;
     }
-    fn resume_cursor(
-        &mut self,
-        plan: &ControlPlan,
-        activation: &mut Strand,
-        shared: &mut ActivationState,
-    ) -> Result<(), RunError> {
-        let Some(cursor) = activation.stack.pop() else {
-            return Ok(());
-        };
-        match cursor {
-            Cursor::ForEach(cursor) => self.resume_iteration(plan, activation, shared, cursor)?,
-            Cursor::While { owner, iterations } => {
-                activation.pc = Some(owner.into());
-                activation.reenter = Some((owner, iterations));
-                activation.yielded = true;
-            }
-            Cursor::Count { owner, next, count } => {
-                let node = &plan.nodes()[owner.index()];
-                let ControlOperation::Count {
-                    body, completed, ..
-                } = node.operation()
-                else {
-                    return Err(RunError::InvalidState);
-                };
-                if next < count {
-                    activation.transfer = Transfer::EnterBody(Some(owner));
-                    activation.stack.push(Cursor::Count {
-                        owner,
-                        next: next + 1,
-                        count,
-                    });
-                    Self::publish_index(plan, &self.layout, shared, owner, Some(next));
-                    activation.pc = *body;
-                    activation.yielded = true;
-                    self.record(RunEvent {
-                        activation: activation.sequence,
-                        node: node.node(),
-                        outcome: ControlOutcome::Body,
-                        fault: None,
-                    });
-                } else {
-                    Self::publish_index(plan, &self.layout, shared, owner, None);
-                    activation.pc = *completed;
-                    self.record(RunEvent {
-                        activation: activation.sequence,
-                        node: node.node(),
-                        outcome: ControlOutcome::Completed,
-                        fault: None,
-                    });
-                }
-            }
-            Cursor::Sequence { owner, next } => {
-                let ControlOperation::Sequence { steps } = plan.nodes()[owner.index()].operation()
-                else {
-                    return Err(RunError::InvalidState);
-                };
-                if next < steps.len() {
-                    activation.transfer = Transfer::EnterBody(None);
-                    activation.pc = steps[next];
-                    activation.stack.push(Cursor::Sequence {
-                        owner,
-                        next: next + 1,
-                    });
-                    self.record(RunEvent {
-                        activation: activation.sequence,
-                        node: plan.nodes()[owner.index()].node(),
-                        outcome: ControlOutcome::Step(next),
-                        fault: None,
-                    });
-                }
-            }
-        }
-        Ok(())
-    }
     fn consume(
-        &mut self,
+        &self,
         plan: &ControlPlan,
         activation: &mut Strand,
         shared: &mut ActivationState,
@@ -1759,7 +1382,7 @@ impl Run {
         self.consume_inputs(plan, activation, shared, root, inputs, budget)
     }
     fn consume_inputs(
-        &mut self,
+        &self,
         plan: &ControlPlan,
         activation: &mut Strand,
         shared: &mut ActivationState,
@@ -1767,6 +1390,9 @@ impl Run {
         inputs: &[usize],
         budget: &mut usize,
     ) -> Result<Option<FoldedValue>, RunError> {
+        // Snapshot: a pull's first poll opens one data epoch and copies every host
+        // input it may read; later polls resume that epoch, so cell writes by other
+        // strands meanwhile cannot change what this demand observes.
         if activation.pull.active.is_none() {
             shared.data.begin_epoch()?;
             shared.pull_owner = Some(activation.id);
@@ -1785,8 +1411,8 @@ impl Run {
                         ))
                     }
                     HostSource::FrameLocal { scope, variable } => {
-                        let frame = self.find_frame(activation.function, *scope)?;
-                        let value = self.frame_value(plan, frame, *variable)?.cloned();
+                        let frame = find_frame(&self.frames, activation.function, *scope)?;
+                        let value = frame_value(&self.frames, plan, frame, *variable)?.cloned();
                         Some(
                             value
                                 .map(FoldedValue::Value)
@@ -1794,7 +1420,7 @@ impl Run {
                         )
                     }
                     HostSource::Argument { scope, index } => {
-                        let frame = self.find_frame(activation.function, *scope)?;
+                        let frame = find_frame(&self.frames, activation.function, *scope)?;
                         Some(FoldedValue::Value(
                             self.frames[&frame]
                                 .arguments
@@ -1803,8 +1429,8 @@ impl Run {
                                 .clone(),
                         ))
                     }
-                    HostSource::State(index) => {
-                        Some(match self.state_value(plan, shared, *index) {
+                    HostSource::State(index) => Some(
+                        match self.layout.state(plan, &self.states, shared, *index) {
                             Some(value) => FoldedValue::Value(value.clone()),
                             None => FoldedValue::Fault(ConstantFault {
                                 source: plan.states()[*index].id(),
@@ -1814,8 +1440,8 @@ impl Run {
                                     message: "The register has not been initialized.",
                                 },
                             }),
-                        })
-                    }
+                        },
+                    ),
                     HostSource::Variable(index) | HostSource::CallLocal(index) => {
                         let var = &plan.variables()[*index];
                         let cell = if matches!(source, HostSource::CallLocal(_)) {
@@ -1890,67 +1516,6 @@ impl Run {
                 HostPoll::Ready(None) => return Err(RunError::InvalidState),
             }
         }
-    }
-    fn state_value<'a>(
-        &'a self,
-        plan: &ControlPlan,
-        shared: &'a ActivationState,
-        index: usize,
-    ) -> Option<&'a Value> {
-        let cell = self.layout.states[index];
-        if plan.states()[index].scope() == VarScope::Local {
-            shared.states[cell].as_ref()
-        } else {
-            self.states[cell].as_ref()
-        }
-    }
-    fn write_state(
-        &mut self,
-        plan: &ControlPlan,
-        shared: &mut ActivationState,
-        index: usize,
-        value: Option<Value>,
-    ) -> Result<(), RunError> {
-        let metadata = &plan.states()[index];
-        let (store, retained) = if metadata.scope() == VarScope::Local {
-            (&mut shared.states, &mut shared.local_bytes)
-        } else {
-            (&mut self.states, &mut self.state_bytes)
-        };
-        let cell = self.layout.states[index];
-        let old = store[cell]
-            .as_ref()
-            .and_then(|v| metadata.charge(v))
-            .unwrap_or(16);
-        let new = match &value {
-            Some(value) => metadata.charge(value).ok_or(DataError::KernelContract {
-                node: metadata.id(),
-            })?,
-            None => 16,
-        };
-        let bytes = retained
-            .checked_sub(old)
-            .and_then(|b| b.checked_add(new))
-            .filter(|b| {
-                b.checked_add(if metadata.scope() == VarScope::Local {
-                    shared
-                        .retained_bytes
-                        .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
-                } else {
-                    0
-                })
-                .is_some_and(|total| total <= self.options.limits.max_state_bytes)
-            })
-            .ok_or(RunError::ResourceLimit)?;
-        *retained = bytes;
-        store[cell] = value;
-        let source = self.layout.state_sources[index];
-        if !self.dirty_states[source] {
-            self.dirty_states[source] = true;
-            self.state_segment_indices.push(source);
-            self.state_segment_writes.push(metadata.id());
-        }
-        Ok(())
     }
     fn publish_match_value(
         plan: &ControlPlan,
@@ -2095,12 +1660,7 @@ impl Run {
         self.versions.clear();
         self.state_bytes = 0;
         self.stop_ready.clear();
-        self.dirty.clear();
-        self.dirty_states.clear();
-        self.state_segment_indices.clear();
-        self.state_segment_writes.clear();
-        self.segment_indices.clear();
-        self.segment_writes.clear();
+        self.segment = SegmentWrites::default();
         self.segment_owner = None;
         self.last_segment = None;
         self.trace.clear();

@@ -1,5 +1,8 @@
 //! Atomic typed variable actions and ordered multi-input demand.
+use super::cells::Cells;
+use super::function::{find_frame, frame_value};
 use super::*;
+use orange_model::value::shape::ValueShape;
 use std::cmp::Ordering;
 
 struct UpdateOperands {
@@ -22,7 +25,7 @@ struct UpdateCommit<'a> {
 }
 impl Run {
     fn consume_update(
-        &mut self,
+        &self,
         plan: &ControlPlan,
         activation: &mut Strand,
         shared: &mut ActivationState,
@@ -63,6 +66,7 @@ impl Run {
         }
     }
 
+    /// `None` while the ordered demand is pending; otherwise the node's step.
     pub(super) fn execute_update(
         &mut self,
         plan: &ControlPlan,
@@ -70,86 +74,60 @@ impl Run {
         shared: &mut ActivationState,
         owner: ControlIx,
         budget: &mut usize,
-    ) -> Result<Option<ConstantFault>, RunError> {
+    ) -> Result<Option<Step>, RunError> {
+        let node = &plan.nodes()[owner.index()];
         let ControlOperation::Update {
             variable,
             operation,
             demand,
-        } = plan.nodes()[owner.index()].operation()
+        } = node.operation()
         else {
             return Err(RunError::InvalidState);
         };
         let (variable, operation) = (*variable, *operation);
         let metadata = &plan.variables()[variable];
         let cell = self.layout.variables[variable];
-        let frame =
-            if metadata.scope() == VarScope::Local && plan.nodes()[owner.index()].scope() != 0 {
-                Some(self.find_frame(activation.function, plan.nodes()[owner.index()].scope())?)
-            } else {
-                None
-            };
+        let limit = self.options.limits.max_state_bytes;
+        let frame = if metadata.scope() == VarScope::Local && node.scope() != 0 {
+            Some(find_frame(&self.frames, activation.function, node.scope())?)
+        } else {
+            None
+        };
         let current = if let Some(frame) = frame {
-            self.frame_value(plan, frame, variable)?
+            frame_value(&self.frames, plan, frame, variable)?
         } else if metadata.scope() == VarScope::Local {
             shared.locals[cell].as_ref()
         } else {
             self.variables[cell].as_ref()
         };
-        let fault = |fault| ConstantFault {
-            source: plan.nodes()[owner.index()].node(),
-            fault,
+        let update = match current.cloned() {
+            None => Err(failure(
+                node,
+                KernelFault {
+                    code: "core/UninitializedVariable",
+                    message_key: "core/uninitialized-variable",
+                    message: "The variable has not been initialized.",
+                },
+            )),
+            Some(old) => match self.consume_update(plan, activation, shared, demand, budget)? {
+                UpdatePoll::Pending => return Ok(None),
+                UpdatePoll::Fault(fault) => Err(failed(node, fault)),
+                UpdatePoll::Ready(inputs) => {
+                    compute(metadata.ty(), operation, &old, &inputs, limit)
+                        .map(|result| (old, result))
+                        .map_err(|fault| failure(node, fault))
+                }
+            },
         };
-        let Some(old) = current.cloned() else {
-            Self::publish_match_value(
-                plan,
-                &self.layout,
-                shared,
-                owner,
-                None,
-                self.options.limits.max_state_bytes,
-            )?;
-            return Ok(Some(fault(KernelFault {
-                code: "core/UninitializedVariable",
-                message_key: "core/uninitialized-variable",
-                message: "The variable has not been initialized.",
-            })));
-        };
-        let inputs = match self.consume_update(plan, activation, shared, demand, budget)? {
-            UpdatePoll::Pending => return Ok(None),
-            UpdatePoll::Ready(inputs) => inputs,
-            UpdatePoll::Fault(fault) => {
-                Self::publish_match_value(
-                    plan,
-                    &self.layout,
-                    shared,
-                    owner,
-                    None,
-                    self.options.limits.max_state_bytes,
-                )?;
-                return Ok(Some(fault));
+        let (old, (new, write)) = match update {
+            Ok(update) => update,
+            Err(step) => {
+                // A failed update clears its value outputs before its Failed edge.
+                Self::publish_match_value(plan, &self.layout, shared, owner, None, limit)?;
+                return Ok(Some(step));
             }
         };
-        let (new, write) = match compute(
-            metadata.ty(),
-            operation,
-            &old,
-            &inputs,
-            self.options.limits.max_state_bytes,
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                Self::publish_match_value(
-                    plan,
-                    &self.layout,
-                    shared,
-                    owner,
-                    None,
-                    self.options.limits.max_state_bytes,
-                )?;
-                return Ok(Some(fault(error)));
-            }
-        };
-        self.publish_update(
+        self.cells().publish_update(
             plan,
             shared,
             UpdateCommit {
@@ -162,20 +140,13 @@ impl Run {
                 compare: matches!(operation, UpdateOperation::CompareAndSet),
             },
         )?;
-        self.complete(
-            plan,
-            activation,
-            shared,
-            owner,
-            (
-                plan.nodes()[owner.index()].then(),
-                ControlOutcome::Then,
-                None,
-            ),
-        );
-        Ok(None)
+        Ok(Some((node.then(), ControlOutcome::Then, None)))
     }
+}
 
+impl Cells<'_> {
+    /// Admit every charge (cell, projections, frame hold, version) first; the
+    /// stores after that point cannot fail, so a rejected update changes nothing.
     fn publish_update(
         &mut self,
         plan: &ControlPlan,
@@ -201,7 +172,7 @@ impl Run {
         } else if local {
             shared.local_bytes
         } else {
-            self.state_bytes
+            *self.bytes
         }
         .checked_sub(old_charge)
         .and_then(|n| n.checked_add(new_charge))
@@ -245,7 +216,7 @@ impl Run {
             shared.local_bytes
         };
         if frame.is_none()
-            && ((!local && bytes > self.options.limits.max_state_bytes)
+            && ((!local && bytes > self.limit)
                 || locals
                     .checked_add(retained)
                     .and_then(|n| {
@@ -255,7 +226,7 @@ impl Run {
                                 .load(std::sync::atomic::Ordering::Relaxed),
                         )
                     })
-                    .is_none_or(|n| n > self.options.limits.max_state_bytes))
+                    .is_none_or(|n| n > self.limit))
         {
             return Err(RunError::ResourceLimit);
         }
@@ -293,27 +264,45 @@ impl Run {
         if write {
             let cell = self.layout.variables[variable];
             if let Some((frame, reservation)) = frame_write {
-                self.commit_frame_write(frame, variable, new, reservation);
+                self.commit_frame_write(plan, frame, variable, new, reservation);
             } else if local {
                 shared.locals[cell] = Some(new);
                 shared.local_bytes = bytes;
             } else {
                 self.variables[cell] = Some(new);
-                self.state_bytes = bytes;
+                *self.bytes = bytes;
             }
             if frame.is_none() {
                 self.versions[variable] = version;
             }
-            if !self.dirty[variable] {
-                self.dirty[variable] = true;
-                self.segment_indices.push(variable);
-                self.segment_writes.push(metadata.id());
-            }
+            self.segment.variable(variable, metadata.id());
         }
         Ok(())
     }
 }
 
+/// Core equality of two values already checked against `ty`: compare-and-set is
+/// compiled only for native-eq shapes, every variable store is checked against
+/// the variable type, and `expected` was checked against its slot type (the
+/// port type) when the data plan published it. Structural equality implies Core
+/// equality, and the two differ only inside maps, whose Core equality ignores
+/// insertion order; only that case falls back to the model's checked comparison.
+fn equal_checked(ty: &ValueShape, old: &Value, expected: &Value) -> Option<bool> {
+    fn has_map(ty: &ValueShape) -> bool {
+        match ty {
+            ValueShape::Map(..) => true,
+            ValueShape::Option(inner) | ValueShape::List(inner) => has_map(inner),
+            _ => false,
+        }
+    }
+    if old == expected {
+        Some(true)
+    } else if has_map(ty) {
+        ty.equal_values(old, expected)
+    } else {
+        Some(false)
+    }
+}
 fn internal() -> KernelFault {
     KernelFault {
         code: "core/InternalFault",
@@ -322,7 +311,7 @@ fn internal() -> KernelFault {
     }
 }
 fn compute(
-    ty: &orange_model::value::shape::ValueShape,
+    ty: &ValueShape,
     operation: UpdateOperation,
     old: &Value,
     inputs: &UpdateOperands,
@@ -331,7 +320,7 @@ fn compute(
     if matches!(operation, UpdateOperation::CompareAndSet) {
         let expected = &inputs.first;
         let value = inputs.second.as_ref().ok_or_else(internal)?;
-        let exchanged = ty.equal_values(old, expected).ok_or_else(internal)?;
+        let exchanged = equal_checked(ty, old, expected).ok_or_else(internal)?;
         return Ok((
             if exchanged {
                 value.clone()
@@ -450,4 +439,61 @@ fn compute(
         UpdateOperation::CompareAndSet => unreachable!("handled before single operand"),
     };
     Ok((result, true))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orange_model::value::{ListRepr, MapRepr};
+
+    fn cas(ty: &ValueShape, old: Value, expected: Value) -> (Value, bool) {
+        let inputs = UpdateOperands {
+            first: expected,
+            second: Some(Value::I64(-1)),
+        };
+        compute(
+            ty,
+            UpdateOperation::CompareAndSet,
+            &old,
+            &inputs,
+            usize::MAX,
+        )
+        .unwrap()
+    }
+    fn map(entries: &[(i64, i64)]) -> Value {
+        Value::Map(Arc::new(MapRepr {
+            entries: entries
+                .iter()
+                .map(|&(k, v)| (Value::I64(k), Value::I64(v)))
+                .collect(),
+        }))
+    }
+    fn list(values: Vec<Value>) -> Value {
+        Value::List(Arc::new(ListRepr::Values(values.into())))
+    }
+
+    #[test]
+    fn compare_and_set_uses_core_equality_for_checked_values() {
+        let int = ValueShape::I64;
+        assert_eq!(
+            cas(&int, Value::I64(3), Value::I64(3)),
+            (Value::I64(-1), true)
+        );
+        assert_eq!(
+            cas(&int, Value::I64(3), Value::I64(4)),
+            (Value::I64(3), false)
+        );
+        let packed = Value::List(Arc::new(ListRepr::I64(Box::new([1, 2]))));
+        let boxed = list(vec![Value::I64(1), Value::I64(2)]);
+        let ints = ValueShape::List(Box::new(ValueShape::I64));
+        assert!(cas(&ints, packed, boxed).1, "list storage is not identity");
+
+        // Map equality ignores insertion order, also inside a list.
+        let shape = ValueShape::Map(Box::new(ValueShape::I64), Box::new(ValueShape::I64));
+        let (a, b) = (map(&[(1, 10), (2, 20)]), map(&[(2, 20), (1, 10)]));
+        assert!(cas(&shape, a.clone(), b.clone()).1);
+        assert!(!cas(&shape, a.clone(), map(&[(2, 20), (1, 11)])).1);
+        let maps = ValueShape::List(Box::new(shape));
+        assert!(cas(&maps, list(vec![a]), list(vec![b])).1);
+    }
 }

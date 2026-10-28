@@ -1,0 +1,27 @@
+[package]
+name = "orange-measure"
+description = "OrangeEditor measurement harness: allocation and pump-time baselines for core workloads (development only)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+# A binary, so the harness never runs under `cargo test --workspace`:
+# cargo run --release -p orange-measure --locked
+[dependencies]
+orange-bundled = { path = "../orange-bundled", version = "=0.0.0" }
+orange-compiler = { path = "../orange-compiler", version = "=0.0.0" }
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+orange-runtime = { path = "../orange-runtime", version = "=0.0.0" }
+serde_json.workspace = true
+
+# Not `workspace = true`: the counting global allocator needs one `unsafe impl GlobalAlloc`,
+# and the workspace `forbid` cannot be relaxed locally. `deny` keeps every other unsafe use
+# an error; the single allowance is scoped to that impl and each block needs a SAFETY comment.
+[lints.rust]
+unsafe_code = "deny"
+unsafe_op_in_unsafe_fn = "deny"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }
+undocumented_unsafe_blocks = "deny"

@@ -189,3 +189,5 @@ Closely related slices may share a reviewable PR to `dev`; each implemented beha
 - Function cascades and densely connected generic components can make an edit full-scope. NFR-15 allows this but requires it to be reported.
 - `materialize` is O(document). The editor must not call it per edit; it uses the session reads.
 - The session retains configuration/declaration diagnostics alongside the full report, subject indexes and changed-ID sets. These add memory without cloning config/value payloads; V12f must measure retained memory and allocations before any NFR-05 claim.
+
+Availability cone sharing (2026-10-27): availability analysis still recomputes per body, with no cache across calls. Within one `check_body`, each directly read, unowned pure or volatile producer's requirement-relevant cone is collected once and shared by all its consumers. The requirement and the subject are still evaluated per consumer, because they depend on the consumer's region and direct edge. Nested directly read pure producers each get their own walk.

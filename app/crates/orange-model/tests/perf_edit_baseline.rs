@@ -415,3 +415,68 @@ fn availability_cost_by_action_chain_size() {
         println!("n={n:>6} validate_availability (action/data chain): {time:.3?}");
     }
 }
+
+#[test]
+#[ignore = "release timing; run with --ignored --nocapture"]
+fn availability_cost_by_shared_pure_cone() {
+    let registry = registry_with_provider(key());
+    let variable = "40000000-0000-4000-8000-000000000001";
+    let event = "40000000-0000-4000-8000-000000000002";
+    // An event payload feeds a chain of `cone` pure adds; `consumers` chained actions all
+    // read the chain's last sum.
+    for (cone, consumers) in [
+        (1_000usize, 10usize),
+        (1_000, 100),
+        (1_000, 1_000),
+        (4_000, 1_000),
+    ] {
+        let mut nodes = vec![json!({"id":node_id(0),"definition_id":"core/on-event",
+            "definition_version":1,"config_version":1,"config":{"event":event},
+            "activation":{"mode":"queue","capacity":8,"overflow":"drop-oldest","on_fault":"continue","order":0}})];
+        let mut edges = Vec::new();
+        let mut edge = |from: usize, from_port: &str, to: usize, to_port: &str| {
+            edges.push(json!({"id":format!("20000000-0000-4000-8000-{:012}", edges.len()),
+                "from":{"node":node_id(from),"port":from_port},"to":{"node":node_id(to),"port":to_port}}));
+        };
+        for i in 1..=cone {
+            let mut add = add_node(i);
+            add["inputs"].as_object_mut().unwrap().remove("a");
+            nodes.push(add);
+            edge(i - 1, if i == 1 { "payload" } else { "sum" }, i, "a");
+        }
+        for i in cone + 1..=cone + consumers {
+            nodes.push(json!({"id":node_id(i),"definition_id":"core/update-variable",
+                "definition_version":1,"config_version":1,"config":{"variable":variable,"operation":"add"}}));
+            edge(if i == cone + 1 { 0 } else { i - 1 }, "then", i, "in");
+            edge(cone, "sum", i, "value");
+        }
+        let doc = from_json(&minimal_document(json!({"nodes":nodes,"edges":edges,
+            "package_lock": [{"id": "org.test", "version": "1.0.0", "content_digest": DIGEST}],
+            "signatures": add_signatures(),
+            "variables":[{"id":variable,"name":"v","type":"core/i64@1","scope":"run"}],
+            "events":[{"id":event,"name":"e","payload":"core/i64@1","scope":"run"}]
+        })))
+        .unwrap();
+        let resolved = validate_nodes(&doc, &registry).resolved;
+        assert_eq!(resolved.len(), cone + consumers + 1);
+        let connections = ConnectionValidation::default();
+        let regions = validate_regions(&doc, &resolved, &connections, &registry);
+        assert!(regions.is_valid());
+        assert!(
+            validate_availability(&doc, &resolved, &connections, &regions.index, &registry)
+                .is_valid()
+        );
+        let time = best(&doc, |copy| {
+            std::hint::black_box(validate_availability(
+                copy,
+                &resolved,
+                &connections,
+                &regions.index,
+                &registry,
+            ));
+        });
+        println!(
+            "cone={cone:>5} consumers={consumers:>5} validate_availability (shared pure cone): {time:.3?}"
+        );
+    }
+}
