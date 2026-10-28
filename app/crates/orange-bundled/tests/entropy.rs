@@ -2,9 +2,9 @@ use orange_bundled::{
     BindingError, MathPackage, RANDOM_U64_DEFINITION, math_definitions, random_u64_definition,
 };
 use orange_compiler::{
-    CompileError, CompileOptions, EntropyKernelResolver, EntropySource, KernelFault,
-    PureKernelResolver, ResolveError, compile_pure,
+    CompileError, CompileOptions, EntropySource, KernelFault, ResolveError, compile_pure,
 };
+use orange_compiler::{ResolveEntropyInDocument, ResolveInDocument};
 use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
 use orange_model::document::{NodeKind, SignatureSnapshot};
 use orange_model::validation::HostOrigin;
@@ -80,7 +80,7 @@ fn product_entropy_graph_validates_and_uses_only_the_distinct_entropy_abi() {
         ),
         Err(CompileError::UnsupportedNode { .. })
     ));
-    assert!(PureKernelResolver::resolve(&package, &doc, node, sig, snapshot.clone()).is_err());
+    assert!(ResolveInDocument::resolve(&package, &doc, node, sig, snapshot.clone()).is_err());
     let binding = package.resolve_entropy(&doc, node, sig, snapshot).unwrap();
     assert!(binding.inputs.is_empty());
     assert_eq!(binding.outputs.as_ref(), &["value".parse().unwrap()]);

@@ -6,7 +6,6 @@ use orange_compiler::{
     KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError, compile_data,
 };
 use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
-use orange_model::document::{NodeInstance, SignatureSnapshot};
 use orange_model::validation::HostOrigin;
 use orange_model::{GraphDocument, Value, analyze, from_json};
 use serde_json::{Value as Json, json};
@@ -144,18 +143,15 @@ impl EntropyKernel for CountEntropy {
     }
 }
 impl PureKernelResolver for Counting {
-    fn resolve(
+    fn resolve_binding(
         &self,
-        doc: &GraphDocument,
-        node: &NodeInstance,
-        sig: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<KernelBinding, ResolveError> {
         self.pure.fetch_add(1, Ordering::Relaxed);
-        if self.reject == Some(node.id) {
+        if self.reject == Some(request.node()) {
             return Err(ResolveError::Unavailable);
         }
-        let mut binding = PureKernelResolver::resolve(&self.package, doc, node, sig, snapshot)?;
+        let mut binding = self.package.resolve_binding(request)?;
         binding.kernel = Arc::new(CountPure {
             inner: binding.kernel,
             calls: self.folds.clone(),
@@ -164,18 +160,15 @@ impl PureKernelResolver for Counting {
     }
 }
 impl EntropyKernelResolver for Counting {
-    fn resolve_entropy(
+    fn resolve_entropy_binding(
         &self,
-        doc: &GraphDocument,
-        node: &NodeInstance,
-        sig: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<EntropyBinding, ResolveError> {
         self.entropy.fetch_add(1, Ordering::Relaxed);
-        if self.reject == Some(node.id) {
+        if self.reject == Some(request.node()) {
             return Err(ResolveError::Unavailable);
         }
-        let mut binding = self.package.resolve_entropy(doc, node, sig, snapshot)?;
+        let mut binding = self.package.resolve_entropy_binding(request)?;
         if self.bad_entropy_abi {
             binding.outputs = Box::new([]);
         }

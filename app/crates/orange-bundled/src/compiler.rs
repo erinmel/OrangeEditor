@@ -3,11 +3,10 @@ use crate::{MathPackage, Operation, ResolvedConversion, ResolvedKernel, resolve_
 use orange_compiler::{
     BindingRequest, KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError,
 };
-use orange_model::catalog::{RegistrySnapshot, TypeArgs, intrinsic_id};
+use orange_model::Value;
+use orange_model::catalog::{TypeArgs, intrinsic_id};
 use orange_model::conversion::{ConverterConfig, ConverterProvider};
-use orange_model::document::{NodeInstance, SignatureSnapshot};
 use orange_model::id::PortKey;
-use orange_model::{GraphDocument, Value};
 use std::sync::Arc;
 
 fn ports(names: &[&str]) -> Result<Box<[PortKey]>, ResolveError> {
@@ -18,17 +17,6 @@ fn ports(names: &[&str]) -> Result<Box<[PortKey]>, ResolveError> {
 }
 
 impl PureKernelResolver for MathPackage {
-    /// Compatibility entry: extracts the exact provider once, then binds narrowly.
-    fn resolve(
-        &self,
-        document: &GraphDocument,
-        node: &NodeInstance,
-        signature: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
-    ) -> Result<KernelBinding, ResolveError> {
-        self.resolve_binding(&BindingRequest::new(document, node, signature, snapshot)?)
-    }
-
     fn resolve_binding(&self, request: &BindingRequest<'_>) -> Result<KernelBinding, ResolveError> {
         let definition = request.definition();
         if definition.id.as_str() == intrinsic_id::CONVERT

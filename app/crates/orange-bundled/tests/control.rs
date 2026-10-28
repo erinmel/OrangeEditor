@@ -1671,31 +1671,22 @@ impl orange_compiler::PureKernel for PanickingKernel {
 }
 
 impl orange_compiler::PureKernelResolver for PanickingResolver {
-    fn resolve(
+    fn resolve_binding(
         &self,
-        doc: &orange_model::GraphDocument,
-        node: &orange_model::document::NodeInstance,
-        signature: &orange_model::document::SignatureSnapshot,
-        registry: std::sync::Arc<orange_model::catalog::RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<orange_compiler::KernelBinding, orange_compiler::ResolveError> {
-        let mut binding =
-            orange_compiler::PureKernelResolver::resolve(&self.0, doc, node, signature, registry)?;
+        let mut binding = self.0.resolve_binding(request)?;
         binding.kernel = std::sync::Arc::new(PanickingKernel);
         Ok(binding)
     }
 }
 
 impl orange_compiler::EntropyKernelResolver for PanickingResolver {
-    fn resolve_entropy(
+    fn resolve_entropy_binding(
         &self,
-        doc: &orange_model::GraphDocument,
-        node: &orange_model::document::NodeInstance,
-        signature: &orange_model::document::SignatureSnapshot,
-        registry: std::sync::Arc<orange_model::catalog::RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<orange_compiler::EntropyBinding, orange_compiler::ResolveError> {
-        orange_compiler::EntropyKernelResolver::resolve_entropy(
-            &self.0, doc, node, signature, registry,
-        )
+        self.0.resolve_entropy_binding(request)
     }
 }
 

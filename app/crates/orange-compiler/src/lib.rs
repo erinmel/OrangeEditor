@@ -33,7 +33,8 @@ pub use error::CompileError;
 pub use evaluate::{EvaluatedExport, EvaluationError, EvaluationOptions, PureEvaluation};
 pub use kernel::{
     BindingRequest, EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource,
-    KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError,
+    KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveEntropyInDocument,
+    ResolveError, ResolveInDocument,
 };
 pub use plan::{
     ConstantFault, Export, FoldedValue, InputSource, NodeIx, PureCallSite, PurePlan, PureStep,

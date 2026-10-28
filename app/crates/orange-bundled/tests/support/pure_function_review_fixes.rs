@@ -17,14 +17,12 @@ struct CheckDefaults<'a> {
     calls: AtomicUsize,
 }
 impl PureKernelResolver for CheckDefaults<'_> {
-    fn resolve(
+    fn resolve_binding(
         &self,
-        _: &GraphDocument,
-        _: &NodeInstance,
-        signature: &SignatureSnapshot,
-        _: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<KernelBinding, ResolveError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
+        let signature = request.signature();
         let default = signature
             .ports
             .iter()

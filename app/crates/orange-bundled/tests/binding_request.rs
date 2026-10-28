@@ -6,12 +6,12 @@ use orange_compiler::{
     compile_pure,
 };
 use orange_model::catalog::{Ports, ProviderKey, RegistryBuilder, RegistrySnapshot};
-use orange_model::document::{DefinitionRef, NodeInstance, NodeKind, SignatureSnapshot};
+use orange_model::document::{DefinitionRef, NodeKind, SignatureSnapshot};
 use orange_model::id::NodeId;
 use orange_model::validation::HostOrigin;
 use orange_model::{GraphDocument, Value, analyze, from_json};
 use serde_json::json;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::sync::Arc;
 
 const NODE: &str = "10000000-0000-4000-8000-000000000001";
@@ -70,36 +70,6 @@ fn compile_answer(
     value.clone()
 }
 
-/// A downstream resolver written before the narrow request existed.
-struct Legacy {
-    package: MathPackage,
-    calls: Cell<usize>,
-}
-impl PureKernelResolver for Legacy {
-    fn resolve(
-        &self,
-        document: &GraphDocument,
-        node: &NodeInstance,
-        signature: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
-    ) -> Result<KernelBinding, ResolveError> {
-        self.calls.set(self.calls.get() + 1);
-        PureKernelResolver::resolve(&self.package, document, node, signature, snapshot)
-    }
-}
-
-#[test]
-fn a_resolver_with_only_the_original_method_still_compiles_and_binds() {
-    let (package, snapshot) = catalog();
-    let doc = graph(&package);
-    let legacy = Legacy {
-        package,
-        calls: Cell::new(0),
-    };
-    assert_eq!(compile_answer(&doc, &snapshot, &legacy), Value::I64(42));
-    assert_eq!(legacy.calls.get(), 1);
-}
-
 type Seen = (
     NodeId,
     DefinitionRef,
@@ -108,21 +78,12 @@ type Seen = (
     SignatureSnapshot,
 );
 
-/// Reads only the narrow request; the whole-document entry must not be used.
+/// Implements only the narrow request, the one method a resolver must provide.
 struct Narrow {
     package: MathPackage,
     seen: RefCell<Vec<Seen>>,
 }
 impl PureKernelResolver for Narrow {
-    fn resolve(
-        &self,
-        _: &GraphDocument,
-        _: &NodeInstance,
-        _: &SignatureSnapshot,
-        _: Arc<RegistrySnapshot>,
-    ) -> Result<KernelBinding, ResolveError> {
-        panic!("the compiler binds through the narrow request")
-    }
     fn resolve_binding(&self, request: &BindingRequest<'_>) -> Result<KernelBinding, ResolveError> {
         self.seen.borrow_mut().push((
             request.node(),

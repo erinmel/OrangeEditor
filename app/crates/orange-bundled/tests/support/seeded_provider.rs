@@ -4,7 +4,6 @@ use orange_compiler::{
     KernelBinding, KernelFault, PureKernelResolver, ResolveError, compile_data,
 };
 use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{NodeInstance, SignatureSnapshot};
 use orange_model::{GraphDocument, Value, analyze, from_json, to_json};
 use serde_json::json;
 use std::sync::{
@@ -78,38 +77,31 @@ pub struct FixtureResolver {
     pub calls: Arc<AtomicUsize>,
 }
 impl PureKernelResolver for FixtureResolver {
-    fn resolve(
+    fn resolve_binding(
         &self,
-        doc: &GraphDocument,
-        node: &NodeInstance,
-        sig: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<KernelBinding, ResolveError> {
-        self.base.resolve(doc, node, sig, snapshot)
+        self.base.resolve_binding(request)
     }
 }
 impl EntropyKernelResolver for FixtureResolver {
-    fn resolve_entropy(
+    fn resolve_entropy_binding(
         &self,
-        doc: &GraphDocument,
-        node: &NodeInstance,
-        sig: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<EntropyBinding, ResolveError> {
-        if node.definition.id.as_str() != FIXTURE {
-            return self.base.resolve_entropy(doc, node, sig, snapshot);
+        if request.definition().id.as_str() != FIXTURE {
+            return self.base.resolve_entropy_binding(request);
         }
-        if node
-            .provider
-            .as_ref()
-            .and_then(|p| orange_model::catalog::ProviderKey::of(doc, p))
-            .as_ref()
-            != Some(&self.key)
-            || !snapshot.provides(&node.definition, node.config_version, &self.key)
+        if request.provider() != Some(&self.key)
+            || !request.snapshot().provides(
+                request.definition(),
+                request.config_version(),
+                &self.key,
+            )
         {
             return Err(ResolveError::Unavailable);
         }
-        let shape = match sig.ports[0].ty.as_ref().unwrap().as_str() {
+        let shape = match request.signature().ports[0].ty.as_ref().unwrap().as_str() {
             BOOL => Shape::Bool,
             MAYBE => Shape::Maybe,
             NESTED => Shape::Nested,
@@ -121,8 +113,8 @@ impl EntropyKernelResolver for FixtureResolver {
             outputs: vec!["value".parse().unwrap()].into(),
             kernel: Arc::new(FixtureKernel {
                 shape,
-                fault: node
-                    .config
+                fault: request
+                    .config()
                     .get("fault")
                     .and_then(|v| v.as_bool())
                     .unwrap_or(false),
