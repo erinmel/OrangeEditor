@@ -10,7 +10,10 @@
 
 use std::collections::{BTreeSet, HashMap};
 
-use crate::document::{BodyRef, Edge, GraphBody, GraphDocument, PortRef, SignatureSnapshot};
+use crate::catalog::instance_port;
+use crate::document::{
+    BodyRef, Edge, GraphBody, GraphDocument, NodeInstance, PortRef, SignatureSnapshot,
+};
 use crate::edit::{ChangeSet, DeclId};
 use crate::id::{EdgeId, NodeId};
 
@@ -120,12 +123,16 @@ impl DocIndex {
         self.incident.get(&node).into_iter().flatten().copied()
     }
 
-    /// Edges at `node` that use a port `snapshot` does not declare (11 §4.5). They are kept
-    /// in the document and shown, but not compiled.
-    pub fn orphan_edges(&self, node: NodeId, snapshot: &SignatureSnapshot) -> Vec<EdgeId> {
-        let undeclared =
-            |end: &PortRef| end.node == node && !snapshot.declares_port(end.port.port());
-        self.incident(node)
+    /// Edges at `node` whose endpoint is not a port of the node under `snapshot` (11 §4.5),
+    /// by the validator's rule: an undeclared port, a variadic instance missing from the
+    /// node's variadic state, or a bare variadic base port. Pass the node's fresh resolved
+    /// signature, such as `ValidationReport::resolved`, to match the validator. Orphaned
+    /// edges are kept in the document and shown, but not compiled.
+    pub fn orphan_edges(&self, node: &NodeInstance, snapshot: &SignatureSnapshot) -> Vec<EdgeId> {
+        let undeclared = |end: &PortRef| {
+            end.node == node.id && instance_port(node, snapshot, &end.port).is_none()
+        };
+        self.incident(node.id)
             .filter(|id| {
                 let entry = &self.edges[id];
                 undeclared(&entry.from) || undeclared(&entry.to)

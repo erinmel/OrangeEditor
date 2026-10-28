@@ -7,8 +7,10 @@ use crate::catalog::intrinsic_id as ids;
 use std::sync::LazyLock;
 
 use super::{EventAccess, ReferenceField, ReferenceKind, VariableAccess};
-use crate::document::{NodeKind, OutputSource, PortDescriptor, SignatureSnapshot, Suspends};
-use crate::id::PortId;
+use crate::document::{
+    NodeInstance, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot, Suspends,
+};
+use crate::id::{PortId, PortKey};
 
 /// Port IDs that kinds supply implicitly (11 §4.1); only intrinsics may declare them.
 pub(crate) const IMPLICIT_PORTS: [&str; 7] = [
@@ -68,6 +70,46 @@ pub(crate) fn implicit_port(
         },
         _ => return None,
     })
+}
+
+/// The port `key` names on `node` under `snapshot` (11 §4.5), or `None` when the node has no
+/// such port. A variadic instance must be active in the node's variadic state and belong to
+/// a declared variadic port; a variadic base port is never an endpoint by itself.
+///
+/// Validation and authoring projections share this rule, so a UI and the validator agree
+/// on which edges are orphaned.
+pub(crate) fn instance_port(
+    node: &NodeInstance,
+    snapshot: &SignatureSnapshot,
+    key: &PortKey,
+) -> Option<PortDescriptor> {
+    let base = key.port();
+    if let Some(index) = key.instance() {
+        let active = node
+            .variadic
+            .get(base)
+            .is_some_and(|state| state.order.contains(&index));
+        return snapshot
+            .ports
+            .iter()
+            .find(|candidate| candidate.port_id == *base && candidate.variadic.is_some())
+            .filter(|_| active)
+            .cloned();
+    }
+    let variadic_base = node.variadic.contains_key(base)
+        || snapshot
+            .ports
+            .iter()
+            .any(|port| port.port_id == *base && port.variadic.is_some());
+    if variadic_base {
+        return None;
+    }
+    snapshot
+        .ports
+        .iter()
+        .find(|port| port.port_id == *base)
+        .cloned()
+        .or_else(|| implicit_port(node.definition.id.as_str(), snapshot, base))
 }
 
 /// One language intrinsic.
