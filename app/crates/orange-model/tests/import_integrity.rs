@@ -1,11 +1,11 @@
-//! Structural import bounds and ambiguous-lock rejection.
+//! Structural import bounds, ambiguous-lock rejection and the checked Serde boundary.
 
 mod common;
 
 use common::{branch_node, minimal_document};
 use orange_model::document::codec::{ImportLimits, from_json_with_limits};
 use orange_model::error::ImportResource;
-use orange_model::{CodecError, from_json};
+use orange_model::{CodecError, GraphDocument, from_json, to_json};
 use serde_json::{Value, json};
 
 fn package(id: &str, version: &str, digest: &str) -> Value {
@@ -166,4 +166,70 @@ fn newer_version_is_reported_before_quotas() {
         from_json_with_limits(&text, ImportLimits::new(text.len(), 0, 0)),
         Err(CodecError::UnsupportedVersion { found: 2 })
     ));
+}
+
+/// Each document the importer refuses, with the message Serde surfaces for it.
+fn refused_documents() -> Vec<(String, &'static str)> {
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let lock = package("org.example.pkg", "1.0.0", &digest);
+    let ty = json!({"type": "core/i64@1", "codec": "orange.value.v1"});
+    vec![
+        (
+            minimal_document(json!({"format_version": 999})),
+            "unsupported format_version 999",
+        ),
+        (
+            minimal_document(json!({"format": "other.graph"})),
+            "unsupported document format `other.graph`",
+        ),
+        (
+            minimal_document(json!({
+                "nodes": [branch_node(1)],
+                "functions": [function(json!([branch_node(1)]), json!([]))]
+            })),
+            "duplicate node id",
+        ),
+        (
+            minimal_document(json!({"package_lock": [lock.clone(), lock]})),
+            "duplicate package lock identity",
+        ),
+        (
+            minimal_document(json!({"type_lock": [ty.clone(), ty]})),
+            "duplicate type lock identity",
+        ),
+    ]
+}
+
+#[test]
+fn serde_construction_refuses_what_the_importer_refuses() {
+    for (text, message) in refused_documents() {
+        assert!(from_json(&text).is_err(), "importer accepted {text}");
+        let value: Value = serde_json::from_str(&text).unwrap();
+        for error in [
+            serde_json::from_str::<GraphDocument>(&text).unwrap_err(),
+            serde_json::from_value::<GraphDocument>(value).unwrap_err(),
+        ] {
+            assert!(error.to_string().contains(message), "{error} for {text}");
+        }
+    }
+}
+
+#[test]
+fn serde_construction_matches_the_importer_on_valid_documents() {
+    let text = minimal_document(json!({
+        "nodes": [branch_node(1)],
+        "functions": [function(json!([branch_node(2)]), json!([]))],
+        "future": {"kept": true}
+    }));
+    let imported = from_json(&text).unwrap();
+    // The envelope tag is accepted and dropped, as the importer does; unknown fields stay.
+    let from_file: GraphDocument = serde_json::from_str(&text).unwrap();
+    assert_eq!(from_file, imported);
+    assert!(!from_file.extensions().contains_key("format"));
+    assert_eq!(from_file.extensions()["future"], json!({"kept": true}));
+    // Serde's own output has no envelope and reads back unchanged.
+    let bare: GraphDocument =
+        serde_json::from_value(serde_json::to_value(&imported).unwrap()).unwrap();
+    assert_eq!(bare, imported);
+    assert_eq!(to_json(&bare).unwrap(), to_json(&imported).unwrap());
 }

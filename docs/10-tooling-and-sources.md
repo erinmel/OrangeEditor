@@ -2021,3 +2021,13 @@ On `dev` fa9d983 (same toolchain; Cargo.lock unchanged). The change fixes audit 
 - **Executed:** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` and `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked --offline` pass. `cargo test --workspace --locked --offline` reports 947 passed, 0 failed and 15 ignored.
 - **New checks:** every option/result layering up to depth 6 over i64 is checked: each semantic value has one accepted compact encoding, and no two values share one. Known answers cover dynamic Coalesce over `option<result<option<option<i64>>>>` (None, Some(Ok(None)), Some(Ok(Some(None))), present payloads and Some(Err)), and constant Try over the new compositions against the tagged oracle.
 - **Not covered:** this does not requalify any NFR. The 15 ignored tests were not run, and Linux/macOS/MSRV were not exercised locally.
+
+### Checked document construction — 2026-10-28
+
+Branch `core/checked-document-serde` on `dev` 458f9b0, after #38 (same toolchain; Cargo.lock unchanged). Closes audit finding A01.
+
+- **Change:** `GraphDocument`'s Serde attributes move to a crate-private wire layout. The public `Deserialize` impl reads that layout, then runs the importer's admission: format tag if present, version, cross-body node/edge IDs and lock identities. `from_json` uses the same admission and still reports typed `CodecError`s in its documented order. `Serialize` output is unchanged.
+- **Regressions:** Serde construction (`from_str` and `from_value`) refuses an unsupported version, a foreign format tag, a node ID repeated across bodies, and duplicate package and type locks. Valid documents read through Serde equal the imported document, keep unknown fields and save identical bytes. A test that built duplicate locks through raw Serde now asserts rejection; locks have no public mutator, so that state is no longer constructible from outside the crate.
+- **Limitations:** duplicate JSON keys and node/edge quotas need the text and stay importer-only. Import error messages still echo rejected input (A02).
+
+**Checks:** `cargo test --workspace --locked --offline` passes with 949 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

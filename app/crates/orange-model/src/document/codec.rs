@@ -10,6 +10,7 @@ use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visit
 use serde::{Deserialize, Serialize};
 
 use crate::document::GraphDocument;
+use crate::document::graph::DocumentWire;
 use crate::error::{CodecError, ImportResource};
 
 pub const FORMAT: &str = "orange.graph";
@@ -328,10 +329,33 @@ pub fn from_json_with_limits(
     enforce_limit(ImportResource::Nodes, header.counts.nodes, limits.max_nodes)?;
     enforce_limit(ImportResource::Edges, header.counts.edges, limits.max_edges)?;
     // Deserialize the body directly: wrapping the entire graph in another flattened
-    // struct buffers it through Serde's intermediate representation a second time.
-    // `format` is envelope-owned, not an extension; keep other extension key order.
-    let mut document: GraphDocument = serde_json::from_str(text)?;
-    document.extensions.shift_remove("format");
+    // struct buffers it through Serde's intermediate representation a second time. The
+    // unchecked wire form is read so `admit` reports typed codec errors.
+    let mut json = serde_json::Deserializer::from_str(text);
+    let document = DocumentWire::deserialize(&mut json)?;
+    json.end()?;
+    admit(document)
+}
+
+/// The structural checks shared by every construction from serialized data, through
+/// [`from_json`] or the Serde `Deserialize` impl: the envelope tag when present, the
+/// version, node and edge identities across bodies, and lock identities. `format` is
+/// envelope-owned, not an extension, so it is removed; other extension order is kept.
+pub(crate) fn admit(mut document: GraphDocument) -> Result<GraphDocument, CodecError> {
+    if let Some(format) = document.extensions.shift_remove("format")
+        && format.as_str() != Some(FORMAT)
+    {
+        return Err(CodecError::UnsupportedFormat {
+            found: format
+                .as_str()
+                .map_or_else(|| format.to_string(), str::to_owned),
+        });
+    }
+    if document.format_version != FORMAT_VERSION {
+        return Err(CodecError::UnsupportedVersion {
+            found: document.format_version,
+        });
+    }
     check_unique_across_bodies(&document)?;
     check_unique_locks(&document)?;
     Ok(document)
