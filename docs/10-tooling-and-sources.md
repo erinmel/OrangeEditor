@@ -2085,4 +2085,12 @@ Branch `core/redacted-import-errors` on `dev` c7fffe7 (same toolchain; Cargo.loc
 - **Regressions:** a sentinel with control characters placed in the graph ID, format tag, a duplicated object key, a duplicated package lock, a definition ID, a type expression, an enum token and a port ID never appears in the error's `Display` or `Debug` output, neither does any control character, every error has an import message key, and JSON errors keep a non-zero line and column. Existing tests read rejected text through `reveal`.
 - **Limitations:** deserializing `GraphDocument` with Serde directly returns the caller's `serde_json::Error`, whose own messages can quote input; hosts handling untrusted text use `from_json`.
 
+### Map admission before reservation — 2026-10-28
+
+Branch `core/zone-admission` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A03.
+
+- **Change:** before reserving a Map result, the zone checks with overflow-checked arithmetic that one value charge per element plus the list's own charge fits the capacity left; otherwise it fails with `ResourceLimit`. The bound uses the minimum element charge, not the source element's size, so it holds for maps to wider outputs.
+- **Measured** with `orange-measure` (release, same machine): a 10,000-item `u64` Map under a 161,024-byte retained limit peaked at 80,104 heap bytes before being refused; it now allocates nothing before refusing. The 10,000-item map-zone workload still succeeds with its preallocation. A unit test under the counting allocator fails above 16 KiB.
+- **Behavior change:** the existing quota-failure test now sees the refusal before any element is computed, instead of after part of the result was built; the next smaller epoch still succeeds.
+
 **Checks:** `cargo test --workspace --locked --offline` passes with 950 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
