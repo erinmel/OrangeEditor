@@ -211,7 +211,7 @@ fn generic_endpoints_connect_directly_and_carry_their_inferred_updates() {
     // The plan is the edit plus `plan_edit`'s updates, nothing else.
     let edit = vec![first.clone()];
     let expected = plan_edit(&doc, edit, &registry(None)).unwrap();
-    assert_eq!(plan.commands(), expected.commands.as_slice());
+    assert_eq!(plan.commands(), expected.commands());
 }
 
 #[test]

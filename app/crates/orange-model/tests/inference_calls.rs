@@ -357,7 +357,7 @@ fn missing_target_never_falls_back_to_a_saved_call_signature() {
         &registry(None),
     )
     .unwrap();
-    assert!(plan.commands.iter().any(|command| matches!(command,
+    assert!(plan.commands().iter().any(|command| matches!(command,
         DocCommand::SetTypeArgs { node, args } if *node == nid(3) && args.is_empty()
     )));
     let _ = apply_inferred(
