@@ -214,3 +214,10 @@ Measured runtime trace (2026-10-27; measured-runtime):
 - **Runtime:** node execution runs through operation-family handlers with narrow contexts, and compare-and-set no longer re-validates operands that were checked when stored or published.
 
 Behavior, graph JSON and diagnostics are unchanged. Executed qualification is recorded in 10.
+
+Option/Result composition trace (2026-10-28; FR-08/45):
+- **Representation:** an option boxes its present value exactly when the payload can be a bare None, and a result boxes its success exactly when the payload can be a bare Err. The two rules compose, so `option<result<option<T>>>` keeps Some(Ok(None)) distinct from None (12 §7).
+- **Coalesce:** constant and dynamic Coalesce remove a `Some` box only when the payload type boxes, so a present Ok(Some(None)) is no longer turned into Ok(None).
+- **Oracle:** the test reference decodes compact values into explicit tags and reasons about Option/Result there, rather than repeating the runtime's unwrapping.
+
+Saved graph JSON, literals and diagnostics are unchanged. Values whose type nests an option inside an unboxed result success now carry the `Some` box. Executed qualification is recorded in 10.
