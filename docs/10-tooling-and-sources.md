@@ -2133,3 +2133,12 @@ Branch `core/crate-docs` on `dev` c7fffe7. Closes audit finding A20.
 - **Change:** the `orange-compiler` and `orange-runtime` crate docs now state the current profile, including iteration zones and graph-local Action/Async calls, and name what remains unsupported: events, package-provided function bodies, clock readers and host services. Two README sentences that still listed zones as open now match the implemented zone runtime, and the README gains one sentence on zone execution. No code changed.
 
 **Checks:** rustdoc `-D warnings` passes.
+
+### Metadata layering — 2026-10-28
+
+Branch `core/metadata-layering` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A08.
+
+- **Change:** `DeclId` moves to `id` and `HostOrigin`/`OriginError` to a new `origin` module, below the catalog. The catalog now imports neither `validation` nor `edit`. `edit::DeclId`, `validation::HostOrigin` and `validation::OriginError` remain as re-exports, so downstream paths, the wire format and the language are unchanged.
+- **Scope:** actor-internal `impl Run` blocks and compiler/runtime module imports were left as they are; the audit advises against splitting the scheduler or adding traits only to restrict them.
+
+**Checks:** `cargo test --workspace --locked --offline` passes with 949 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
