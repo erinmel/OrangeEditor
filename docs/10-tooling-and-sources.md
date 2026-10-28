@@ -2051,3 +2051,13 @@ Branch `core/export-policy-commands` on `dev` 3b58100, after #40 (same toolchain
 - **Regressions:** upsert appends, replaces in place and is undone exactly; removing a missing export is rejected without change; activation policies are set, cleared and undone, and a missing node is rejected. End to end, a bundled math graph gains its export through a command, compiles to the expected constant, reports a retargeted export through analysis, and undoes back to the compilable graph.
 
 **Checks:** `cargo test --workspace --locked --offline` passes with 955 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Shared nesting budget — 2026-10-28
+
+Branch `core/nesting-budget` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A13.
+
+- **Change:** `document::nesting::MAX_NESTING` (64) bounds the JSON container nesting of a saved document, root included. A non-allocating serializer measures each transaction patch at its saved position, and the transaction rejects an over-budget patch before applying it. The importer's streaming pass and Serde construction apply the same budget.
+- **Regressions:** for a layout value, a layout path, a root-body node config and a function-body node config, edits are accepted up to the budget, each accepted document saves and reloads equal, the deepest one nests exactly 64 levels, and the next level is rejected without changing the document. Loading a document one level over the budget fails on both construction paths.
+- **Limitations:** byte and node/edge quotas remain import policy, not edit limits; `from_json_with_limits` reopens a larger edited document. Measuring a patch walks the patched entry once.
+
+**Checks:** `cargo test --workspace --locked --offline` passes with 953 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
