@@ -246,37 +246,25 @@ impl StateLayout {
             output_count,
         }
     }
-    /// Nominal bytes one start or On Stop frame reserves at startup, from plan
-    /// resource counts. Data-activation internals are estimated in machine words
-    /// so admission stays independent of their private layout.
+    /// Nominal bytes one start or On Stop frame reserves at startup: its data
+    /// activation (sized by the data module that owns that layout) plus the run's
+    /// own local cells, output cells and frame headers.
     fn frame_storage(&self, plan: &ControlPlan, local_cells: usize) -> Option<usize> {
         use std::mem::size_of;
-        const WORD: usize = size_of::<usize>();
-        let data = plan.data();
-        let resources = data.resources();
-        let dynamic = data.initial_values().iter().filter(|v| v.is_none()).count();
         let header = size_of::<ActivationState>()
             + size_of::<Strand>()
             + size_of::<Region>()
             + size_of::<Option<Box<ActivationState>>>();
         [
-            // Dynamic data slots and their retained charges.
-            (dynamic, size_of::<Option<FoldedValue>>() + WORD),
-            (resources.nodes, size_of::<Option<u64>>()),
-            // Reserved pull work stack and input/output scratch capacity.
-            (resources.work_items, 3 * WORD),
-            (resources.max_inputs, size_of::<Value>()),
-            (resources.max_outputs, size_of::<Value>() + WORD),
-            (data.zones().len(), 3 * WORD),
-            (resources.entropy_nodes, 8 * WORD),
             (local_cells, size_of::<Option<Value>>()),
             (self.output_count, size_of::<Option<FoldedValue>>()),
             (1, header),
         ]
         .into_iter()
-        .try_fold(0usize, |sum, (count, bytes)| {
-            count.checked_mul(bytes)?.checked_add(sum)
-        })
+        .try_fold(
+            crate::data::activation_storage(plan.data())?,
+            |sum, (count, bytes)| count.checked_mul(bytes)?.checked_add(sum),
+        )
     }
 }
 

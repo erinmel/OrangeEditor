@@ -1,6 +1,6 @@
 mod registers;
 mod zone;
-use registers::{Outcome, Registers};
+use registers::{Outcome, Registers, SLOT_BYTES};
 use zone::ZoneCell;
 
 use crate::{
@@ -593,6 +593,31 @@ enum Work {
     Gather { node: NodeIx, next: usize },
     Choose(NodeIx),
     Copy { node: NodeIx, input: usize },
+}
+/// Nominal bytes one activation of `plan` reserves before publishing any value: its
+/// registers, memo stamps, reserved pull work and scratch, zone cells and entropy
+/// counters. Hosts admit aggregate frame storage with it before building frames.
+pub(crate) fn activation_storage(plan: &DataPlan) -> Option<usize> {
+    use std::mem::size_of;
+    let resources = plan.resources();
+    let dynamic = plan.initial_values().iter().filter(|v| v.is_none()).count();
+    [
+        (dynamic, SLOT_BYTES),
+        (resources.nodes, size_of::<Option<u64>>()),
+        (resources.work_items, size_of::<Work>()),
+        (resources.max_inputs, size_of::<Value>()),
+        (
+            resources.max_outputs,
+            size_of::<Value>() + size_of::<usize>(),
+        ),
+        (plan.zones().len(), size_of::<ZoneCell>()),
+        (resources.entropy_nodes, crate::entropy::DENSE_NODE_BYTES),
+        (1, size_of::<Frame>()),
+    ]
+    .into_iter()
+    .try_fold(0usize, |sum, (count, bytes)| {
+        count.checked_mul(bytes)?.checked_add(sum)
+    })
 }
 struct Frame {
     zones: Vec<ZoneCell>,
