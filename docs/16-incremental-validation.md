@@ -68,6 +68,7 @@ Current cancellation returns the full oracle's cancellation result rather than a
 Each rebuild records its reason in `EditStats`.
 
 `EditStats::input_nodes/input_edges` are input cardinalities, not total pass visits. `full_analysis_runs` counts full orchestration attempts (including rejection); `index_rebuilt` reports index rebuilding. `local: LocalWork` counts actual current node/declaration visits, configuration/declaration computations and cache hits. Cache assembly still visits current IDs. Other passes' visits, allocations and retained memory are not represented by these counts; broader instrumentation remains required for NFR-15.
+Background analysis (2026-10-28): `AnalysisWorker` runs combined analysis on its own thread for a host that must not block its UI thread. `submit(document, registry, effects)` copies the document's semantic content, cancels the previous submission at its next pass boundary and queues the new one; queued submissions that are already superseded are skipped. `current(document, registry)` returns the newest finished analysis only while it belongs to that document and registry, so rapid edits, undo, divergent copies and registry replacements never show a result for content that is gone; `wait()` blocks for the newest submission. Hosts skip layout-only changes, which keep the semantic state and the current result. Per-pass interruption and per-body incremental analysis remain the V12 work below.
 
 ## 4. Dependency model
 
