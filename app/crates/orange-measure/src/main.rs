@@ -27,6 +27,9 @@ const WORKLOADS: &[Workload] = &[
     ("fork-cancel", workloads::fork_cancel),
     ("map-cas-16", workloads::map_cas_16),
     ("map-cas-1000", workloads::map_cas_1000),
+    ("host-map-16", workloads::host_map_16),
+    ("host-map-1000", workloads::host_map_1000),
+    ("map-zone", workloads::map_zone),
 ];
 
 fn main() {

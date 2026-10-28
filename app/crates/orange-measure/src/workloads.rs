@@ -2,10 +2,11 @@
 //! is only reported for a workload that did the work it names.
 
 use crate::graph::*;
-use crate::harness::{Config, Row, RunSession, measure};
+use crate::harness::{Config, DataInput, DataSession, Row, RunSession, measure};
 use orange_model::Value;
 use orange_model::id::VariableId;
-use orange_model::value::MapRepr;
+use orange_model::value::{ListRepr, MapRepr};
+use orange_runtime::DataLimits;
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
 
@@ -249,4 +250,98 @@ pub fn map_cas_16(config: Config) -> Row {
 
 pub fn map_cas_1000(config: Config) -> Row {
     map_cas(config, 1000)
+}
+
+/// A data plan that exports a map host input; every epoch publishes the same shared map
+/// value, so the cost is input admission and export, not building the map.
+fn host_map(config: Config, entries: u64) -> Row {
+    const EPOCHS: u64 = 1000;
+    let mut source = Source::new(vec![var_node(1, "get-variable", TOTAL)], vec![]);
+    source.exports = vec![export(1, "value")];
+    source.variables = vec![run_variable(TOTAL, STRING_MAP, None)];
+    let (document, plan, index) = source.data(1);
+    let value = map_value(entries);
+    let input = DataInput {
+        index,
+        value: &value,
+        epochs: EPOCHS,
+    };
+    measure(
+        format!("host map input ({entries} entries)"),
+        EPOCHS,
+        "epochs",
+        config,
+        || {
+            DataSession::start(
+                &plan,
+                &document,
+                &input,
+                config.budget,
+                DataLimits::default(),
+            )
+        },
+        |result| assert_eq!(result.as_ref(), Some(&value)),
+    )
+}
+
+pub fn host_map_16(config: Config) -> Row {
+    host_map(config, 16)
+}
+
+pub fn host_map_1000(config: Config) -> Row {
+    host_map(config, 1000)
+}
+
+fn zone(n: u32, end: bool, pins: Json) -> Json {
+    let definition = if end {
+        "core/map-end"
+    } else {
+        "core/map-begin"
+    };
+    json!({"id":id(n),"definition_id":definition,"definition_version":1,"config_version":1,
+        "config":{"zone":"z"},"type_pins":pins,"inputs":{}})
+}
+
+/// A Map zone that adds one to each item of a 10,000-item `u64` host list, pulled in
+/// ten epochs.
+pub fn map_zone(config: Config) -> Row {
+    const ITEMS: u64 = 10_000;
+    const EPOCHS: u64 = 10;
+    let mut source = Source::new(
+        vec![
+            zone(1, false, json!({"T":U64})),
+            math(2, "add", 0, 1),
+            zone(3, true, json!({"U":U64})),
+            var_node(4, "get-variable", TOTAL),
+        ],
+        vec![
+            edge(1, 4, "value", 1, "items"),
+            edge(2, 1, "element", 2, "a"),
+            edge(3, 2, "sum", 3, "item"),
+        ],
+    );
+    source.exports = vec![export(3, "result")];
+    source.variables = vec![run_variable(TOTAL, "core/list@1<core/u64@1>", None)];
+    let (document, plan, index) = source.data(4);
+    let list = |items: std::ops::Range<u64>| Value::List(Arc::new(ListRepr::U64(items.collect())));
+    let value = list(0..ITEMS);
+    let expected = list(1..ITEMS + 1);
+    let input = DataInput {
+        index,
+        value: &value,
+        epochs: EPOCHS,
+    };
+    // Each epoch evaluates every item; the default per-epoch operation limit is smaller.
+    let limits = DataLimits {
+        max_operations: 1_000_000,
+        ..DataLimits::default()
+    };
+    measure(
+        format!("map zone ({ITEMS} items)"),
+        ITEMS * EPOCHS,
+        "items",
+        config,
+        || DataSession::start(&plan, &document, &input, config.budget, limits),
+        |result| assert_eq!(result.as_ref(), Some(&expected)),
+    )
 }

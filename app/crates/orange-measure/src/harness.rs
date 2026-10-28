@@ -7,10 +7,12 @@
 //! drop/dispose. Plans and documents are built before the window opens.
 
 use crate::counter::{Counts, Snapshot};
-use orange_compiler::ControlPlan;
+use orange_compiler::{ControlPlan, DataPlan};
 use orange_model::id::VariableId;
 use orange_model::{GraphDocument, Value};
-use orange_runtime::{Run, RunLimits, RunOptions};
+use orange_runtime::{
+    DataActivation, DataLimits, DataOptions, DataPoll, Run, RunLimits, RunOptions,
+};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -196,6 +198,86 @@ impl Session for RunSession {
         self.run.stop().expect("stop");
         self.run.dispose().expect("dispose");
         (value, self.wakeups)
+    }
+}
+
+/// A data activation that publishes one host input per epoch and pulls export 0.
+pub struct DataSession {
+    activation: DataActivation,
+    input: usize,
+    value: Value,
+    budget: usize,
+    epochs_left: u64,
+    open: bool,
+    result: Option<Value>,
+}
+
+pub struct DataInput<'a> {
+    /// Index into the plan's host inputs.
+    pub index: usize,
+    pub value: &'a Value,
+    pub epochs: u64,
+}
+
+impl DataSession {
+    pub fn start(
+        plan: &Arc<DataPlan>,
+        document: &GraphDocument,
+        input: &DataInput<'_>,
+        budget: usize,
+        limits: DataLimits,
+    ) -> Self {
+        let options = DataOptions {
+            limits,
+            cancel: None,
+        };
+        let activation =
+            DataActivation::start(plan.clone(), document, plan.snapshot(), 17, 1, options)
+                .expect("activation starts");
+        Self {
+            activation,
+            input: input.index,
+            value: input.value.clone(),
+            budget,
+            epochs_left: input.epochs,
+            open: false,
+            result: None,
+        }
+    }
+}
+
+impl Session for DataSession {
+    type Outcome = Option<Value>;
+
+    fn step(&mut self) -> bool {
+        if !self.open {
+            self.activation.begin_epoch().expect("epoch");
+            self.activation
+                .set_input(self.input, self.value.clone())
+                .expect("host input");
+            self.open = true;
+        }
+        match self
+            .activation
+            .poll_export(0, &mut { self.budget })
+            .expect("poll")
+        {
+            DataPoll::Pending => true,
+            DataPoll::Ready(Some(export)) => {
+                self.open = false;
+                self.epochs_left -= 1;
+                if self.epochs_left > 0 {
+                    return true;
+                }
+                self.result = Some(export.outcome.expect("export value").clone());
+                false
+            }
+            DataPoll::Ready(None) => panic!("missing export"),
+        }
+    }
+
+    fn finish(self) -> Self::Outcome {
+        self.result
     }
 }
 

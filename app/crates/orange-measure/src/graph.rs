@@ -8,14 +8,14 @@
 mod data_graph;
 
 use orange_bundled::MathPackage;
-use orange_compiler::{CompileOptions, ControlPlan, compile_control};
+use orange_compiler::{CompileOptions, ControlPlan, DataPlan, compile_control, compile_data};
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::validation::ValidationAnalysis;
 use orange_model::{GraphDocument, analyze, from_json, to_json};
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
 
-pub use data_graph::{edge, id, math};
+pub use data_graph::{edge, export, id, math};
 
 pub const U64: &str = "core/u64@1";
 
@@ -109,5 +109,19 @@ impl Source {
         let options = CompileOptions::default();
         let plan = compile_control(&document, snapshot, &analysis, &package, options);
         (document, Arc::new(plan.expect("control plan")))
+    }
+
+    /// A data plan and the host-input index of the `get-variable` node `n`.
+    pub fn data(self, n: u32) -> (GraphDocument, Arc<DataPlan>, usize) {
+        let (package, snapshot, document, analysis) = self.checked();
+        let options = CompileOptions::default();
+        let plan = compile_data(&document, snapshot, &analysis, &package, options);
+        let plan = plan.expect("data plan");
+        let input = plan
+            .host_inputs()
+            .iter()
+            .position(|node| plan.nodes()[node.index()].node().to_string() == id(n))
+            .expect("host input");
+        (document, Arc::new(plan), input)
     }
 }
