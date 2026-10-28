@@ -89,7 +89,7 @@ pub(super) enum RegionKind {
     Root,
     Function {
         owner: ControlIx,
-        result: Option<Box<FunctionReturn>>,
+        result: Option<FunctionReturn>,
     },
     Body {
         loop_owner: Option<ControlIx>,
@@ -221,7 +221,7 @@ impl Run {
             if let RegionKind::Function { owner, result } = r.kind {
                 self.retire_frame(id, r.activation)?;
                 let result = match result {
-                    Some(result) => *result,
+                    Some(result) => result,
                     None => {
                         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?;
                         let node = &plan.nodes()[owner.index()];

@@ -24,7 +24,7 @@ mod loops;
 mod retained;
 mod select;
 use cells::SegmentWrites;
-use function::{FunctionFrame, FunctionReturn, PendingCall, find_frame, frame_value};
+use function::{FrameStorage, FunctionFrame, FunctionReturn, PendingCall, find_frame, frame_value};
 mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod ready;
@@ -349,7 +349,7 @@ enum Transfer {
     /// An unhandled fault outside a function retires the activation tree.
     Fault,
     /// Returned values, or an unhandled fault, leave the current function.
-    Return(Box<FunctionReturn>),
+    Return(FunctionReturn),
     Call(PendingCall),
     Fork(ControlIx),
     Unwind {
@@ -525,6 +525,7 @@ fn schedule(
 /// ```
 pub struct Run {
     frames: BTreeMap<u64, FunctionFrame>,
+    spare_frames: Vec<FrameStorage>,
     id: u64,
     plan: Option<Arc<ControlPlan>>,
     options: RunOptions,
@@ -736,6 +737,7 @@ impl Run {
         let state_count = plan.states().len();
         Ok(Self {
             frames: BTreeMap::new(),
+            spare_frames: Vec::new(),
             id: run_identity()?,
             plan: Some(plan),
             options,
@@ -1348,7 +1350,7 @@ impl Run {
             if !activation.cleanup {
                 activation.transfer = match (activation.function, &fault) {
                     (Some(_), Some(fault)) => {
-                        Transfer::Return(Box::new(FunctionReturn::Fault(fault.clone())))
+                        Transfer::Return(FunctionReturn::Fault(fault.clone()))
                     }
                     _ => Transfer::Fault,
                 };
