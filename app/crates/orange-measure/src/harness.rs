@@ -41,6 +41,9 @@ pub struct Row {
     pub counts_vary: bool,
     pub pump_p50: Duration,
     pub pump_p95: Duration,
+    pub pump_p99: Duration,
+    /// The slowest single pump observed.
+    pub pump_max: Duration,
     pub total_p50: Duration,
 }
 
@@ -107,6 +110,8 @@ pub fn measure<S: Session>(
         counts_vary,
         pump_p50: percentile(&durations, 50),
         pump_p95: percentile(&durations, 95),
+        pump_p99: percentile(&durations, 99),
+        pump_max: durations.last().copied().unwrap_or_default(),
         total_p50: percentile(&totals, 50),
     }
 }
@@ -119,13 +124,13 @@ fn percentile(sorted: &[Duration], percent: usize) -> Duration {
 
 pub fn print_table(rows: &[Row]) {
     println!(
-        "| workload | units | pumps/run | allocs/run | allocs/unit | bytes/run | peak live bytes | pump p50 µs | pump p95 µs | run total p50 ms |"
+        "| workload | units | pumps/run | allocs/run | allocs/unit | bytes/run | peak live bytes | pump p50 µs | pump p95 µs | pump p99 µs | pump max µs | run total p50 ms |"
     );
-    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
+    println!("|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|");
     for row in rows {
         let vary = if row.counts_vary { " (varies)" } else { "" };
         println!(
-            "| {} | {} {} | {} | {}{vary} | {:.2} | {} | {} | {:.2} | {:.2} | {:.3} |",
+            "| {} | {} {} | {} | {}{vary} | {:.2} | {} | {} | {:.2} | {:.2} | {:.2} | {:.2} | {:.3} |",
             row.name,
             row.units,
             row.unit,
@@ -136,6 +141,8 @@ pub fn print_table(rows: &[Row]) {
             row.counts.peak_live_bytes,
             row.pump_p50.as_secs_f64() * 1e6,
             row.pump_p95.as_secs_f64() * 1e6,
+            row.pump_p99.as_secs_f64() * 1e6,
+            row.pump_max.as_secs_f64() * 1e6,
             row.total_p50.as_secs_f64() * 1e3,
         );
     }
