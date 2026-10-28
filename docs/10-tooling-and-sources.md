@@ -2109,4 +2109,12 @@ Branch `core/run-panic-poison` on `dev` c7fffe7 (same toolchain; Cargo.lock unch
 - **Measured** with `orange-measure` (release, same machine): the scalar-chain workload ran in 1.36 ms per run, against 1.44 ms recorded at the same budget before; the two flag writes per pump are not measurable.
 - **Limitations:** a standalone `DataActivation` has no such mark; a panic there leaves the activation for the host to drop.
 
+### Add write-conflict evidence — 2026-10-28
+
+Branch `core/add-conflict-evidence` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A12 with the contract decision recorded in 11 §11.2 and 08.
+
+- **Change:** state validation records, per write, whether it is a core `update-variable` Add with `int_overflow: "wrapping"`. The Add exemption needs that on every writer and a core `i32`, `i64`, `u32` or `u64` variable. And, Or, Xor and the existing Min/Max rule are unchanged.
+- **Regressions:** saturating, checked, default (checked), mixed wrapping/saturating, float and duration Adds in two Fork branches report `E-WRITE-CONFLICT`; wrapping integer Adds and any pair under last-writer-wins do not. A call summary's Add no longer counts as evidence, while a summary's And still pairs with an And. The runtime test of concurrent Fork updates now declares wrapping overflow.
+- **Behavior change:** graphs that relied on the old blanket Add exemption are rejected until they use wrapping overflow or last-writer-wins.
+
 **Checks:** `cargo test --workspace --locked --offline` passes with 950 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
