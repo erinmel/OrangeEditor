@@ -1995,3 +1995,21 @@ Fork bytes rise only because each branch strand is 32 bytes larger.
 **Checks:** `cargo test --workspace --locked` passes with 944 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings`, rustdoc `-D warnings` and the metadata policy pass.
 
 **Next candidates:** a fork still makes 3 allocations: its branch list and the boxed ordered set of its two branch regions. Pump budgets still count fine-grained work items.
+
+### Pump budget granularity measured — 2026-10-27
+
+On `dev` b33a7d9 (same toolchain; Cargo.lock unchanged). No code change.
+
+- **Measured** every `orange-measure` workload at budgets 16, 64, 1,024 and 65,536: release, same machine, 15 runs per workload.
+- **Throughput:** total run time barely depends on the budget. The fixed cost per pump is about 0.13 µs, so coarser units would not speed up runs.
+
+| Workload, per run | Budget 16 | Budget 64 | Budget 1,024 | Budget 65,536 |
+|---|---:|---:|---:|---:|
+| Scalar chain (16 adds), 1,000 iterations | 1.75 ms | 1.44 ms | 1.30 ms | 1.30 ms |
+| Function call + return, 1,000 calls | 1.21 ms | 1.08 ms | 1.04 ms | 1.06 ms |
+| Map CAS, 1,000 entries, 1,000 updates | 10.8 ms | 10.4 ms | 10.8 ms | 10.7 ms |
+
+- **Slice latency:** one unit is not a steady amount of time. A whole-value operation counts as one unit regardless of size. At budget 64, a scalar-chain pump takes about 1.3 µs and a 1,000-entry map CAS pump about 109 µs. At the proposed 1,024-unit slice, that CAS pump takes 1.7 ms p50 and 2.1 ms p95, above the proposed 1 ms slice.
+- **Decision:** budgets stay operation bounds, as [03](03-data-and-execution.md) already states, not wall-time guarantees. Size-weighted charges for value-proportional work, such as collection equality and CAS, are deferred until slice latency (NFR-02) is qualified. The candidate is closed.
+
+**Next candidates:** a fork still makes 3 allocations, for its branch list and the boxed ordered set of its two branch regions.
