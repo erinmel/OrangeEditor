@@ -1936,3 +1936,23 @@ A temporary side-by-side check showed identical diagnostics on 11,824 suite bodi
 4. Pump budgets count fine-grained work items, so a 64-unit budget covers about one 16-add iteration.
 
 Compiler-resolved frame-local addresses and per-body incremental analysis remain queued.
+
+### Exact-length list results — 2026-10-27
+
+Branch `core/zone-builder-capacity` from `dev` 75caaef (same toolchain; Cargo.lock unchanged).
+
+- **Change:** `ListBuilder::reserve` makes an exact reservation for producers that know their result length. Map zones reserve the source length, so the result is built in one allocation and needs no shrink when finished. The literal codec reserves its JSON array's length.
+- **Filter:** Filter keeps growing on demand, because its result length is unknown.
+- **Memory bound:** the reservation is at most one more list the size of the already-retained source. Nominal retained-byte charging is unchanged and still applied per pushed element.
+- **Measured** with the `orange-measure` "map zone (10000 items)" workload: release, same machine, 15 runs per workload. Results are byte-identical; all existing zone and codec tests pass unchanged.
+
+| Metric per run | Before | After |
+|---|---:|---:|
+| Allocations | 174 | 44 |
+| Bytes allocated | 3,423,589 | 802,469 |
+| Peak live bytes | 212,245 | 161,213 |
+| Run p50 | 16.1 ms | 16.3 ms (unchanged within noise) |
+
+**Checks:** `cargo test --workspace --locked` passes with 944 passed, 0 failed, 15 ignored, in 90 result groups. fmt, clippy `-D warnings`, rustdoc `-D warnings` and the metadata policy pass.
+
+**Frame-local addresses deferred.** The compiler-resolved frame-local addresses step was measured and not taken. It would remove only a binary search over one function's few local variables per access. The function-call workload is dominated by its 3 allocations per call. Encoding slot indices into public compiled plan types would add surface for no measurable gain, so it stays deferred until a workload shows local-access cost.
