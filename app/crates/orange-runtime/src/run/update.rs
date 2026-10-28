@@ -1,4 +1,6 @@
 //! Atomic typed variable actions and ordered multi-input demand.
+use super::cells::Cells;
+use super::function::{find_frame, frame_value};
 use super::*;
 use std::cmp::Ordering;
 
@@ -84,12 +86,16 @@ impl Run {
         let cell = self.layout.variables[variable];
         let frame =
             if metadata.scope() == VarScope::Local && plan.nodes()[owner.index()].scope() != 0 {
-                Some(self.find_frame(activation.function, plan.nodes()[owner.index()].scope())?)
+                Some(find_frame(
+                    &self.frames,
+                    activation.function,
+                    plan.nodes()[owner.index()].scope(),
+                )?)
             } else {
                 None
             };
         let current = if let Some(frame) = frame {
-            self.frame_value(plan, frame, variable)?
+            frame_value(&self.frames, plan, frame, variable)?
         } else if metadata.scope() == VarScope::Local {
             shared.locals[cell].as_ref()
         } else {
@@ -149,7 +155,7 @@ impl Run {
                 return Ok(Some(fault(error)));
             }
         };
-        self.publish_update(
+        self.cells().publish_update(
             plan,
             shared,
             UpdateCommit {
@@ -175,7 +181,11 @@ impl Run {
         );
         Ok(None)
     }
+}
 
+impl Cells<'_> {
+    /// Admit every charge (cell, projections, frame hold, version) first; the
+    /// stores after that point cannot fail, so a rejected update changes nothing.
     fn publish_update(
         &mut self,
         plan: &ControlPlan,
@@ -201,7 +211,7 @@ impl Run {
         } else if local {
             shared.local_bytes
         } else {
-            self.state_bytes
+            *self.bytes
         }
         .checked_sub(old_charge)
         .and_then(|n| n.checked_add(new_charge))
@@ -245,7 +255,7 @@ impl Run {
             shared.local_bytes
         };
         if frame.is_none()
-            && ((!local && bytes > self.options.limits.max_state_bytes)
+            && ((!local && bytes > self.limit)
                 || locals
                     .checked_add(retained)
                     .and_then(|n| {
@@ -255,7 +265,7 @@ impl Run {
                                 .load(std::sync::atomic::Ordering::Relaxed),
                         )
                     })
-                    .is_none_or(|n| n > self.options.limits.max_state_bytes))
+                    .is_none_or(|n| n > self.limit))
         {
             return Err(RunError::ResourceLimit);
         }
@@ -293,22 +303,18 @@ impl Run {
         if write {
             let cell = self.layout.variables[variable];
             if let Some((frame, reservation)) = frame_write {
-                self.commit_frame_write(frame, variable, new, reservation);
+                self.commit_frame_write(plan, frame, variable, new, reservation);
             } else if local {
                 shared.locals[cell] = Some(new);
                 shared.local_bytes = bytes;
             } else {
                 self.variables[cell] = Some(new);
-                self.state_bytes = bytes;
+                *self.bytes = bytes;
             }
             if frame.is_none() {
                 self.versions[variable] = version;
             }
-            if !self.dirty[variable] {
-                self.dirty[variable] = true;
-                self.segment_indices.push(variable);
-                self.segment_writes.push(metadata.id());
-            }
+            self.segment.variable(variable, metadata.id());
         }
         Ok(())
     }

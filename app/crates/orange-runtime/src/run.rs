@@ -2,8 +2,8 @@
 use crate::data::{CleanupScope, HostPoll, PreparedData};
 use crate::{DataActivation, DataError, DataOptions};
 use orange_compiler::{
-    ConstantFault, ControlIx, ControlOperation, ControlPlan, ExecInput, ExecTarget, FoldedValue,
-    ForkJoin, HostSource, IterationProjection, KernelFault, SwitchKey, UpdateDemand,
+    ConstantFault, ControlIx, ControlNode, ControlOperation, ControlPlan, ExecInput, ExecTarget,
+    FoldedValue, ForkJoin, HostSource, IterationProjection, KernelFault, SwitchKey, UpdateDemand,
     UpdateOperation, UpdateProjection,
 };
 use orange_model::catalog::RegistrySnapshot;
@@ -17,10 +17,12 @@ use std::sync::{
 };
 use thiserror::Error;
 
+mod cells;
 mod function;
 mod iteration;
 mod retained;
-use function::{FunctionFrame, FunctionReturn, PendingCall};
+use cells::SegmentWrites;
+use function::{FunctionFrame, FunctionReturn, PendingCall, find_frame, frame_value};
 mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod ready;
@@ -266,6 +268,21 @@ impl StateLayout {
             |sum, (count, bytes)| count.checked_mul(bytes)?.checked_add(sum),
         )
     }
+    /// The state cell `index`: activation-local cells live in `shared`.
+    fn state<'a>(
+        &self,
+        plan: &ControlPlan,
+        run: &'a [Option<Value>],
+        shared: &'a ActivationState,
+        index: usize,
+    ) -> Option<&'a Value> {
+        let cell = self.states[index];
+        if plan.states()[index].scope() == VarScope::Local {
+            shared.states[cell].as_ref()
+        } else {
+            run[cell].as_ref()
+        }
+    }
 }
 
 #[derive(Default)]
@@ -434,12 +451,7 @@ pub struct Run {
     stop_ready: VecDeque<Strand>,
     segment_owner: Option<u64>,
     last_segment: Option<u64>,
-    segment_indices: Vec<usize>,
-    segment_writes: Vec<VariableId>,
-    dirty: Vec<bool>,
-    dirty_states: Vec<bool>,
-    state_segment_indices: Vec<usize>,
-    state_segment_writes: Vec<NodeId>,
+    segment: SegmentWrites,
     /// Reused cancellation traversal buffers; empty between calls.
     cancel_regions: Vec<u64>,
     cancel_timers: Vec<(u64, u64)>,
@@ -650,12 +662,7 @@ impl Run {
             stop_ready,
             segment_owner: None,
             last_segment: None,
-            segment_indices: vec![],
-            segment_writes: vec![],
-            dirty: vec![false; variable_count],
-            dirty_states: vec![false; state_count],
-            state_segment_indices: vec![],
-            state_segment_writes: vec![],
+            segment: SegmentWrites::new(variable_count, state_count),
             cancel_regions: vec![],
             cancel_timers: vec![],
         })
@@ -690,7 +697,7 @@ impl Run {
     /// change notification or Watch delivery is implied by this inspection seam.
     pub fn segment_writes(&self) -> Option<(u64, &[VariableId])> {
         self.last_segment
-            .map(|owner| (owner, self.segment_writes.as_slice()))
+            .map(|owner| (owner, self.segment.variables()))
     }
     fn transition(&mut self, state: RunState) {
         if self.state != state {
@@ -702,7 +709,7 @@ impl Run {
     /// not Eq-based change notifications. Activation identifies local cell owners.
     pub fn segment_state_writes(&self) -> Option<(u64, &[NodeId])> {
         self.last_segment
-            .map(|owner| (owner, self.state_segment_writes.as_slice()))
+            .map(|owner| (owner, self.segment.states()))
     }
     pub fn now(&self) -> u64 {
         self.now
@@ -890,14 +897,7 @@ impl Run {
             }
             let before = quantum;
             if self.segment_owner != Some(activation.id) {
-                for index in self.segment_indices.drain(..) {
-                    self.dirty[index] = false;
-                }
-                self.segment_writes.clear();
-                for index in self.state_segment_indices.drain(..) {
-                    self.dirty_states[index] = false;
-                }
-                self.state_segment_writes.clear();
+                self.segment.open();
                 self.segment_owner = Some(activation.id);
                 self.last_segment = Some(activation.sequence);
             }
@@ -1222,7 +1222,8 @@ impl Run {
 
             ControlOperation::Update { .. } => unreachable!("handled by typed state action"),
             ControlOperation::Gate { state } => {
-                let Some(Value::Bool(open)) = self.state_value(plan, shared, *state) else {
+                let Some(Value::Bool(open)) = self.layout.state(plan, &self.states, shared, *state)
+                else {
                     return Err(DataError::KernelContract { node: node.node() }.into());
                 };
                 let open = *open;
@@ -1240,7 +1241,8 @@ impl Run {
                             ExecInput::Close => false,
                             _ => !open,
                         };
-                        self.write_state(plan, shared, *state, Some(Value::Bool(next)))?;
+                        self.cells()
+                            .write_state(plan, shared, *state, Some(Value::Bool(next)))?;
                         (None, ControlOutcome::StateChanged, None)
                     }
                     _ => return Err(RunError::InvalidState),
@@ -1248,24 +1250,29 @@ impl Run {
             }
             ControlOperation::DoOnce { state } => {
                 if target.input() == ExecInput::Reset {
-                    self.write_state(plan, shared, *state, Some(Value::Bool(false)))?;
+                    self.cells()
+                        .write_state(plan, shared, *state, Some(Value::Bool(false)))?;
                     (None, ControlOutcome::StateChanged, None)
                 } else if matches!(
-                    self.state_value(plan, shared, *state),
+                    self.layout.state(plan, &self.states, shared, *state),
                     Some(Value::Bool(false))
                 ) {
-                    self.write_state(plan, shared, *state, Some(Value::Bool(true)))?;
+                    self.cells()
+                        .write_state(plan, shared, *state, Some(Value::Bool(true)))?;
                     (node.then(), ControlOutcome::Then, None)
                 } else {
                     (None, ControlOutcome::Suppressed, None)
                 }
             }
             ControlOperation::FlipFlop { state, a, b } => {
-                let Some(Value::Bool(previous)) = self.state_value(plan, shared, *state) else {
+                let Some(Value::Bool(previous)) =
+                    self.layout.state(plan, &self.states, shared, *state)
+                else {
                     return Err(DataError::KernelContract { node: node.node() }.into());
                 };
                 let select_a = !previous;
-                self.write_state(plan, shared, *state, Some(Value::Bool(select_a)))?;
+                self.cells()
+                    .write_state(plan, shared, *state, Some(Value::Bool(select_a)))?;
                 if select_a {
                     (*a, ControlOutcome::FlipA, None)
                 } else {
@@ -1274,7 +1281,7 @@ impl Run {
             }
             ControlOperation::Register { state, next } => {
                 if target.input() == ExecInput::Reset {
-                    self.write_state(
+                    self.cells().write_state(
                         plan,
                         shared,
                         *state,
@@ -1291,7 +1298,8 @@ impl Run {
                             (node.failed(), ControlOutcome::Failed, Some(fault))
                         }
                         FoldedValue::Value(value) => {
-                            self.write_state(plan, shared, *state, Some(value))?;
+                            self.cells()
+                                .write_state(plan, shared, *state, Some(value))?;
                             (node.then(), ControlOutcome::Then, None)
                         }
                     }
@@ -1571,57 +1579,14 @@ impl Run {
                         (node.failed(), ControlOutcome::Failed, Some(fault))
                     }
                     FoldedValue::Value(value) => {
-                        let var = &plan.variables()[*variable];
-                        if var.scope() == VarScope::Local && node.scope() != 0 {
-                            let frame = self.find_frame(activation.function, node.scope())?;
-                            self.write_frame_local(plan, shared, frame, *variable, value)?;
-                            self.complete(
-                                plan,
-                                activation,
-                                shared,
-                                ix,
-                                (node.then(), ControlOutcome::Then, None),
-                            );
-                            return Ok(());
-                        }
-                        let (store, retained) = if var.scope() == VarScope::Local {
-                            (&mut shared.locals, &mut shared.local_bytes)
-                        } else {
-                            (&mut self.variables, &mut self.state_bytes)
-                        };
-                        let cell = self.layout.variables[*variable];
-                        let old = store[cell]
-                            .as_ref()
-                            .and_then(|v| var.charge(v))
-                            .unwrap_or(16);
-                        let new = var
-                            .charge(&value)
-                            .ok_or(DataError::KernelContract { node: node.node() })?;
-                        let bytes = retained
-                            .checked_sub(old)
-                            .and_then(|b| b.checked_add(new))
-                            .filter(|b| {
-                                b.checked_add(if var.scope() == VarScope::Local {
-                                    shared
-                                        .retained_bytes
-                                        .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
-                                } else {
-                                    0
-                                })
-                                .is_some_and(|total| total <= self.options.limits.max_state_bytes)
-                            })
-                            .ok_or(RunError::ResourceLimit)?;
-                        let version = self.versions[*variable]
-                            .checked_add(1)
-                            .ok_or(RunError::ResourceLimit)?;
-                        *retained = bytes;
-                        store[cell] = Some(value);
-                        self.versions[*variable] = version;
-                        if !self.dirty[*variable] {
-                            self.dirty[*variable] = true;
-                            self.segment_indices.push(*variable);
-                            self.segment_writes.push(var.id());
-                        }
+                        self.cells().set_variable(
+                            plan,
+                            shared,
+                            activation.function,
+                            node,
+                            *variable,
+                            value,
+                        )?;
                         (node.then(), ControlOutcome::Then, None)
                     }
                 }
@@ -1785,8 +1750,8 @@ impl Run {
                         ))
                     }
                     HostSource::FrameLocal { scope, variable } => {
-                        let frame = self.find_frame(activation.function, *scope)?;
-                        let value = self.frame_value(plan, frame, *variable)?.cloned();
+                        let frame = find_frame(&self.frames, activation.function, *scope)?;
+                        let value = frame_value(&self.frames, plan, frame, *variable)?.cloned();
                         Some(
                             value
                                 .map(FoldedValue::Value)
@@ -1794,7 +1759,7 @@ impl Run {
                         )
                     }
                     HostSource::Argument { scope, index } => {
-                        let frame = self.find_frame(activation.function, *scope)?;
+                        let frame = find_frame(&self.frames, activation.function, *scope)?;
                         Some(FoldedValue::Value(
                             self.frames[&frame]
                                 .arguments
@@ -1803,8 +1768,8 @@ impl Run {
                                 .clone(),
                         ))
                     }
-                    HostSource::State(index) => {
-                        Some(match self.state_value(plan, shared, *index) {
+                    HostSource::State(index) => Some(
+                        match self.layout.state(plan, &self.states, shared, *index) {
                             Some(value) => FoldedValue::Value(value.clone()),
                             None => FoldedValue::Fault(ConstantFault {
                                 source: plan.states()[*index].id(),
@@ -1814,8 +1779,8 @@ impl Run {
                                     message: "The register has not been initialized.",
                                 },
                             }),
-                        })
-                    }
+                        },
+                    ),
                     HostSource::Variable(index) | HostSource::CallLocal(index) => {
                         let var = &plan.variables()[*index];
                         let cell = if matches!(source, HostSource::CallLocal(_)) {
@@ -1890,67 +1855,6 @@ impl Run {
                 HostPoll::Ready(None) => return Err(RunError::InvalidState),
             }
         }
-    }
-    fn state_value<'a>(
-        &'a self,
-        plan: &ControlPlan,
-        shared: &'a ActivationState,
-        index: usize,
-    ) -> Option<&'a Value> {
-        let cell = self.layout.states[index];
-        if plan.states()[index].scope() == VarScope::Local {
-            shared.states[cell].as_ref()
-        } else {
-            self.states[cell].as_ref()
-        }
-    }
-    fn write_state(
-        &mut self,
-        plan: &ControlPlan,
-        shared: &mut ActivationState,
-        index: usize,
-        value: Option<Value>,
-    ) -> Result<(), RunError> {
-        let metadata = &plan.states()[index];
-        let (store, retained) = if metadata.scope() == VarScope::Local {
-            (&mut shared.states, &mut shared.local_bytes)
-        } else {
-            (&mut self.states, &mut self.state_bytes)
-        };
-        let cell = self.layout.states[index];
-        let old = store[cell]
-            .as_ref()
-            .and_then(|v| metadata.charge(v))
-            .unwrap_or(16);
-        let new = match &value {
-            Some(value) => metadata.charge(value).ok_or(DataError::KernelContract {
-                node: metadata.id(),
-            })?,
-            None => 16,
-        };
-        let bytes = retained
-            .checked_sub(old)
-            .and_then(|b| b.checked_add(new))
-            .filter(|b| {
-                b.checked_add(if metadata.scope() == VarScope::Local {
-                    shared
-                        .retained_bytes
-                        .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
-                } else {
-                    0
-                })
-                .is_some_and(|total| total <= self.options.limits.max_state_bytes)
-            })
-            .ok_or(RunError::ResourceLimit)?;
-        *retained = bytes;
-        store[cell] = value;
-        let source = self.layout.state_sources[index];
-        if !self.dirty_states[source] {
-            self.dirty_states[source] = true;
-            self.state_segment_indices.push(source);
-            self.state_segment_writes.push(metadata.id());
-        }
-        Ok(())
     }
     fn publish_match_value(
         plan: &ControlPlan,
@@ -2095,12 +1999,7 @@ impl Run {
         self.versions.clear();
         self.state_bytes = 0;
         self.stop_ready.clear();
-        self.dirty.clear();
-        self.dirty_states.clear();
-        self.state_segment_indices.clear();
-        self.state_segment_writes.clear();
-        self.segment_indices.clear();
-        self.segment_writes.clear();
+        self.segment = SegmentWrites::default();
         self.segment_owner = None;
         self.last_segment = None;
         self.trace.clear();

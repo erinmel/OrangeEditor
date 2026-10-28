@@ -1,4 +1,5 @@
 //! Actor-owned function invocations. Regions keep frames alive through cancellation cleanup.
+use super::cells::Cells;
 use super::retained::Hold;
 use super::*;
 
@@ -58,6 +59,142 @@ pub(super) struct FrameWrite {
     hold: Hold,
     version: u64,
 }
+pub(super) type Frames = BTreeMap<u64, FunctionFrame>;
+/// The nearest frame of `scope` on the strand's lexical frame chain.
+pub(super) fn find_frame(
+    frames: &Frames,
+    mut id: Option<u64>,
+    scope: usize,
+) -> Result<u64, RunError> {
+    while let Some(current) = id {
+        let frame = frames.get(&current).ok_or(RunError::InvalidState)?;
+        if frame.scope == scope {
+            return Ok(current);
+        }
+        id = frame.parent;
+    }
+    Err(RunError::InvalidState)
+}
+/// One frame lookup, then the local's slot in its scope's sorted table.
+fn frame_slot<'a>(
+    frames: &'a Frames,
+    plan: &ControlPlan,
+    frame: u64,
+    variable: usize,
+) -> Result<(&'a FunctionFrame, usize), RunError> {
+    let frame = frames.get(&frame).ok_or(RunError::InvalidState)?;
+    let slot = plan
+        .function(frame.scope)
+        .ok_or(RunError::InvalidState)?
+        .locals()
+        .binary_search(&variable)
+        .map_err(|_| RunError::InvalidState)?;
+    Ok((frame, slot))
+}
+pub(super) fn frame_value<'a>(
+    frames: &'a Frames,
+    plan: &ControlPlan,
+    frame: u64,
+    variable: usize,
+) -> Result<Option<&'a Value>, RunError> {
+    let (frame, slot) = frame_slot(frames, plan, frame, variable)?;
+    Ok(frame.locals[slot].value.as_ref())
+}
+/// A frame-local write is prepared (charged, hold reserved, version bumped)
+/// before any store, then committed infallibly; a rejected write changes nothing.
+impl Cells<'_> {
+    pub(super) fn prepare_frame_write(
+        &self,
+        plan: &ControlPlan,
+        shared: &ActivationState,
+        spec: FrameWriteSpec<'_>,
+    ) -> Result<FrameWrite, RunError> {
+        let FrameWriteSpec {
+            frame,
+            variable,
+            value,
+            retained,
+            write,
+        } = spec;
+        let (frame, slot) = frame_slot(self.frames, plan, frame, variable)?;
+        let metadata = &plan.variables()[variable];
+        let old = frame.locals[slot]
+            .value
+            .as_ref()
+            .and_then(|v| metadata.charge(v))
+            .unwrap_or(16);
+        let new = metadata
+            .checked_charge(value, self.limit)
+            .map_err(|_| RunError::ResourceLimit)?;
+        let bytes = frame
+            .hold
+            .bytes
+            .checked_sub(old)
+            .and_then(|n| n.checked_add(new))
+            .ok_or(RunError::ResourceLimit)?;
+        let hold = Hold::with_retained(shared, bytes, frame.hold.bytes, retained, self.limit)?;
+        let version = if write {
+            frame.locals[slot]
+                .version
+                .checked_add(1)
+                .ok_or(RunError::ResourceLimit)?
+        } else {
+            frame.locals[slot].version
+        };
+        Ok(FrameWrite {
+            slot,
+            hold,
+            version,
+        })
+    }
+    pub(super) fn commit_frame_write(
+        &mut self,
+        plan: &ControlPlan,
+        frame: u64,
+        variable: usize,
+        value: Value,
+        reservation: FrameWrite,
+    ) {
+        let FrameWrite {
+            slot,
+            hold,
+            version,
+        } = reservation;
+        let frame = self
+            .frames
+            .get_mut(&frame)
+            .expect("reserved actor-owned function frame");
+        frame.hold = hold;
+        frame.locals[slot] = LocalCell {
+            value: Some(value),
+            version,
+        };
+        self.segment
+            .variable(variable, plan.variables()[variable].id());
+    }
+    pub(super) fn write_frame_local(
+        &mut self,
+        plan: &ControlPlan,
+        shared: &ActivationState,
+        frame: u64,
+        variable: usize,
+        value: Value,
+    ) -> Result<(), RunError> {
+        let reservation = self.prepare_frame_write(
+            plan,
+            shared,
+            FrameWriteSpec {
+                frame,
+                variable,
+                value: &value,
+                retained: shared.retained_bytes,
+                write: true,
+            },
+        )?;
+        self.commit_frame_write(plan, frame, variable, value, reservation);
+        Ok(())
+    }
+}
 impl Run {
     pub(super) fn retire_frame(&mut self, id: u64, activation: u64) -> Result<(), RunError> {
         let frame = self.frames.remove(&id).ok_or(RunError::InvalidState)?;
@@ -95,141 +232,6 @@ impl Run {
             shared.outputs[self.layout.outputs[input].expect("checked frame output")] = None;
         }
         shared.retained_bytes = retained;
-        Ok(())
-    }
-    pub(super) fn find_frame(&self, mut id: Option<u64>, scope: usize) -> Result<u64, RunError> {
-        while let Some(current) = id {
-            let frame = self.frames.get(&current).ok_or(RunError::InvalidState)?;
-            if frame.scope == scope {
-                return Ok(current);
-            }
-            id = frame.parent;
-        }
-        Err(RunError::InvalidState)
-    }
-    /// One frame lookup, then the local's slot in its scope's sorted table.
-    fn frame_slot(
-        &self,
-        plan: &ControlPlan,
-        frame: u64,
-        variable: usize,
-    ) -> Result<(&FunctionFrame, usize), RunError> {
-        let frame = self.frames.get(&frame).ok_or(RunError::InvalidState)?;
-        let slot = plan
-            .function(frame.scope)
-            .ok_or(RunError::InvalidState)?
-            .locals()
-            .binary_search(&variable)
-            .map_err(|_| RunError::InvalidState)?;
-        Ok((frame, slot))
-    }
-    pub(super) fn frame_value<'a>(
-        &'a self,
-        plan: &ControlPlan,
-        frame: u64,
-        variable: usize,
-    ) -> Result<Option<&'a Value>, RunError> {
-        let (frame, slot) = self.frame_slot(plan, frame, variable)?;
-        Ok(frame.locals[slot].value.as_ref())
-    }
-    pub(super) fn prepare_frame_write(
-        &self,
-        plan: &ControlPlan,
-        shared: &ActivationState,
-        spec: FrameWriteSpec<'_>,
-    ) -> Result<FrameWrite, RunError> {
-        let FrameWriteSpec {
-            frame,
-            variable,
-            value,
-            retained,
-            write,
-        } = spec;
-        let (frame, slot) = self.frame_slot(plan, frame, variable)?;
-        let metadata = &plan.variables()[variable];
-        let old = frame.locals[slot]
-            .value
-            .as_ref()
-            .and_then(|v| metadata.charge(v))
-            .unwrap_or(16);
-        let new = metadata
-            .checked_charge(value, self.options.limits.max_state_bytes)
-            .map_err(|_| RunError::ResourceLimit)?;
-        let bytes = frame
-            .hold
-            .bytes
-            .checked_sub(old)
-            .and_then(|n| n.checked_add(new))
-            .ok_or(RunError::ResourceLimit)?;
-        let hold = Hold::with_retained(
-            shared,
-            bytes,
-            frame.hold.bytes,
-            retained,
-            self.options.limits.max_state_bytes,
-        )?;
-        let version = if write {
-            frame.locals[slot]
-                .version
-                .checked_add(1)
-                .ok_or(RunError::ResourceLimit)?
-        } else {
-            frame.locals[slot].version
-        };
-        Ok(FrameWrite {
-            slot,
-            hold,
-            version,
-        })
-    }
-    pub(super) fn commit_frame_write(
-        &mut self,
-        frame: u64,
-        variable: usize,
-        value: Value,
-        reservation: FrameWrite,
-    ) {
-        let FrameWrite {
-            slot,
-            hold,
-            version,
-        } = reservation;
-        let frame = self
-            .frames
-            .get_mut(&frame)
-            .expect("reserved actor-owned function frame");
-        frame.hold = hold;
-        frame.locals[slot] = LocalCell {
-            value: Some(value),
-            version,
-        };
-        if !self.dirty[variable] {
-            self.dirty[variable] = true;
-            self.segment_indices.push(variable);
-            self.segment_writes
-                .push(self.plan.as_ref().expect("live plan").variables()[variable].id());
-        }
-    }
-    pub(super) fn write_frame_local(
-        &mut self,
-        plan: &ControlPlan,
-        shared: &ActivationState,
-        frame: u64,
-        variable: usize,
-        value: Value,
-    ) -> Result<(), RunError> {
-        let reservation = self.prepare_frame_write(
-            plan,
-            shared,
-            FrameWriteSpec {
-                frame,
-                variable,
-                value: &value,
-                retained: shared.retained_bytes,
-                write: true,
-            },
-        )?;
-        self.commit_frame_write(frame, variable, value, reservation);
         Ok(())
     }
     pub(super) fn execute_function(
