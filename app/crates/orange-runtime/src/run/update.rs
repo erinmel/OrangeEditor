@@ -24,7 +24,7 @@ struct UpdateCommit<'a> {
 }
 impl Run {
     fn consume_update(
-        &mut self,
+        &self,
         plan: &ControlPlan,
         activation: &mut Strand,
         shared: &mut ActivationState,
@@ -65,6 +65,7 @@ impl Run {
         }
     }
 
+    /// `None` while the ordered demand is pending; otherwise the node's step.
     pub(super) fn execute_update(
         &mut self,
         plan: &ControlPlan,
@@ -72,28 +73,25 @@ impl Run {
         shared: &mut ActivationState,
         owner: ControlIx,
         budget: &mut usize,
-    ) -> Result<Option<ConstantFault>, RunError> {
+    ) -> Result<Option<Step>, RunError> {
+        let node = &plan.nodes()[owner.index()];
         let ControlOperation::Update {
             variable,
             operation,
             demand,
-        } = plan.nodes()[owner.index()].operation()
+        } = node.operation()
         else {
             return Err(RunError::InvalidState);
         };
         let (variable, operation) = (*variable, *operation);
         let metadata = &plan.variables()[variable];
         let cell = self.layout.variables[variable];
-        let frame =
-            if metadata.scope() == VarScope::Local && plan.nodes()[owner.index()].scope() != 0 {
-                Some(find_frame(
-                    &self.frames,
-                    activation.function,
-                    plan.nodes()[owner.index()].scope(),
-                )?)
-            } else {
-                None
-            };
+        let limit = self.options.limits.max_state_bytes;
+        let frame = if metadata.scope() == VarScope::Local && node.scope() != 0 {
+            Some(find_frame(&self.frames, activation.function, node.scope())?)
+        } else {
+            None
+        };
         let current = if let Some(frame) = frame {
             frame_value(&self.frames, plan, frame, variable)?
         } else if metadata.scope() == VarScope::Local {
@@ -101,58 +99,31 @@ impl Run {
         } else {
             self.variables[cell].as_ref()
         };
-        let fault = |fault| ConstantFault {
-            source: plan.nodes()[owner.index()].node(),
-            fault,
+        let update = match current.cloned() {
+            None => Err(failure(
+                node,
+                KernelFault {
+                    code: "core/UninitializedVariable",
+                    message_key: "core/uninitialized-variable",
+                    message: "The variable has not been initialized.",
+                },
+            )),
+            Some(old) => match self.consume_update(plan, activation, shared, demand, budget)? {
+                UpdatePoll::Pending => return Ok(None),
+                UpdatePoll::Fault(fault) => Err(failed(node, fault)),
+                UpdatePoll::Ready(inputs) => {
+                    compute(metadata.ty(), operation, &old, &inputs, limit)
+                        .map(|result| (old, result))
+                        .map_err(|fault| failure(node, fault))
+                }
+            },
         };
-        let Some(old) = current.cloned() else {
-            Self::publish_match_value(
-                plan,
-                &self.layout,
-                shared,
-                owner,
-                None,
-                self.options.limits.max_state_bytes,
-            )?;
-            return Ok(Some(fault(KernelFault {
-                code: "core/UninitializedVariable",
-                message_key: "core/uninitialized-variable",
-                message: "The variable has not been initialized.",
-            })));
-        };
-        let inputs = match self.consume_update(plan, activation, shared, demand, budget)? {
-            UpdatePoll::Pending => return Ok(None),
-            UpdatePoll::Ready(inputs) => inputs,
-            UpdatePoll::Fault(fault) => {
-                Self::publish_match_value(
-                    plan,
-                    &self.layout,
-                    shared,
-                    owner,
-                    None,
-                    self.options.limits.max_state_bytes,
-                )?;
-                return Ok(Some(fault));
-            }
-        };
-        let (new, write) = match compute(
-            metadata.ty(),
-            operation,
-            &old,
-            &inputs,
-            self.options.limits.max_state_bytes,
-        ) {
-            Ok(value) => value,
-            Err(error) => {
-                Self::publish_match_value(
-                    plan,
-                    &self.layout,
-                    shared,
-                    owner,
-                    None,
-                    self.options.limits.max_state_bytes,
-                )?;
-                return Ok(Some(fault(error)));
+        let (old, (new, write)) = match update {
+            Ok(update) => update,
+            Err(step) => {
+                // A failed update clears its value outputs before its Failed edge.
+                Self::publish_match_value(plan, &self.layout, shared, owner, None, limit)?;
+                return Ok(Some(step));
             }
         };
         self.cells().publish_update(
@@ -168,18 +139,7 @@ impl Run {
                 compare: matches!(operation, UpdateOperation::CompareAndSet),
             },
         )?;
-        self.complete(
-            plan,
-            activation,
-            shared,
-            owner,
-            (
-                plan.nodes()[owner.index()].then(),
-                ControlOutcome::Then,
-                None,
-            ),
-        );
-        Ok(None)
+        Ok(Some((node.then(), ControlOutcome::Then, None)))
     }
 }
 

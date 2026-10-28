@@ -84,6 +84,79 @@ impl Run {
     }
 }
 impl Cells<'_> {
+    /// Gate, Do Once, Flip Flop, Register and Set. `value` is the consumed
+    /// demand: Register's store and Set have one, the others act without.
+    pub(super) fn step(
+        &mut self,
+        plan: &ControlPlan,
+        target: ExecTarget,
+        shared: &mut ActivationState,
+        function: Option<u64>,
+        value: Option<Value>,
+    ) -> Result<Step, RunError> {
+        let node = &plan.nodes()[target.index()];
+        let contract = DataError::KernelContract { node: node.node() };
+        Ok(match (node.operation(), value) {
+            (ControlOperation::Gate { state }, None) => {
+                let Some(Value::Bool(open)) = self.layout.state(plan, self.states, shared, *state)
+                else {
+                    return Err(contract.into());
+                };
+                let open = *open;
+                let next = match target.input() {
+                    ExecInput::Enter if open => {
+                        return Ok((node.then(), ControlOutcome::Then, None));
+                    }
+                    ExecInput::Enter => return Ok((None, ControlOutcome::Suppressed, None)),
+                    ExecInput::Open => true,
+                    ExecInput::Close => false,
+                    ExecInput::Toggle => !open,
+                    _ => return Err(RunError::InvalidState),
+                };
+                self.write_state(plan, shared, *state, Some(Value::Bool(next)))?;
+                (None, ControlOutcome::StateChanged, None)
+            }
+            (ControlOperation::DoOnce { state }, None) => {
+                if target.input() == ExecInput::Reset {
+                    self.write_state(plan, shared, *state, Some(Value::Bool(false)))?;
+                    (None, ControlOutcome::StateChanged, None)
+                } else if matches!(
+                    self.layout.state(plan, self.states, shared, *state),
+                    Some(Value::Bool(false))
+                ) {
+                    self.write_state(plan, shared, *state, Some(Value::Bool(true)))?;
+                    (node.then(), ControlOutcome::Then, None)
+                } else {
+                    (None, ControlOutcome::Suppressed, None)
+                }
+            }
+            (ControlOperation::FlipFlop { state, a, b }, None) => {
+                let Some(Value::Bool(previous)) =
+                    self.layout.state(plan, self.states, shared, *state)
+                else {
+                    return Err(contract.into());
+                };
+                let select_a = !previous;
+                self.write_state(plan, shared, *state, Some(Value::Bool(select_a)))?;
+                if select_a {
+                    (*a, ControlOutcome::FlipA, None)
+                } else {
+                    (*b, ControlOutcome::FlipB, None)
+                }
+            }
+            // Reset demands nothing; a store consumed `next`.
+            (ControlOperation::Register { state, .. }, value) => {
+                let value = value.or_else(|| plan.states()[*state].initial().cloned());
+                self.write_state(plan, shared, *state, value)?;
+                (node.then(), ControlOutcome::Then, None)
+            }
+            (ControlOperation::Set { variable, .. }, Some(value)) => {
+                self.set_variable(plan, shared, function, node, *variable, value)?;
+                (node.then(), ControlOutcome::Then, None)
+            }
+            _ => return Err(RunError::InvalidState),
+        })
+    }
     pub(super) fn write_state(
         &mut self,
         plan: &ControlPlan,
