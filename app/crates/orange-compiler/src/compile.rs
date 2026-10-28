@@ -737,8 +737,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     },
                 )
             } else {
-                resolver
-                    .resolve(document, node, sig, snapshot.clone())
+                BindingRequest::new(document, node, sig, snapshot.clone())
+                    .and_then(|request| resolver.resolve_binding(&request))
                     .map_err(|error| binding_error(node_id, error))?
             };
             if !matches_abi(

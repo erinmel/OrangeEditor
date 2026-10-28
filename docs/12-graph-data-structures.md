@@ -798,6 +798,14 @@ pub trait IteratorKernel {
 
 `ActionCx` exposes only the node's input and output slots, the node's own state cells, checked host-service handles for granted capabilities, the run clock and the node's entropy stream. A kernel cannot reach other slots, the scheduler or the document. This replaces the earlier `Complete | Suspend | Failed` outcome in [02](02-architecture.md), which could not select a Branch arm or an outcome group.
 
+Audit remediation (2026-10-27; `core/audit-remediation`):
+- **Data registers.** Dynamic data slots are dense `Value` registers with a one-byte state and a retained charge: 25 bytes per slot, down from 80 (`Option<FoldedValue>` plus charge) on x86_64-pc-windows-msvc. Full `ConstantFault` provenance lives in a register-keyed side store. An entry exists exactly while its register holds a fault, so the store never outgrows the slot count and needs no per-epoch sweep. Reads return `Result<&Value, &ConstantFault>`, the shape of `EvaluatedExport::outcome`. Charges and retained-byte accounting are unchanged.
+- **Single check.** A host input is checked once, then published through a private checked path. Zone results take the same path.
+- **Storage admission.** `data::activation_storage` sizes one activation from its own layout: registers, memo, reserved work, scratch, zone cells and entropy counters. Run startup adds its local cells, output cells and frame headers, then admits the total across all start and stop frames before building any.
+- **Strand transfers.** The mutually exclusive pending transfers (call, return, fault return, fork, unwind, body entry, wait) are one `Transfer` value. `yielded`, `reenter` and the cleanup budget stay independent, because they coexist with transfers. Idle pull scratch is lent to body and call children and returned on retire, return or unwind. Argument buffers return to the caller, an iteration frame no strand still captures is reused in place, and cancellation reuses run-owned traversal buffers. Logical identities (entropy, traces, timer order) never come from reused storage.
+- **Map checks.** Maps of at most 16 entries are checked and compared pairwise without allocating. Larger maps use one presized table. Duplicate rejection, order-independent equality and insertion-order iteration are unchanged.
+- **Dependency unions.** Host-input dependency unions are a k-way merge of strictly increasing slices with plan-wide scratch, costing O(Σ|sᵢ| log k). Identical sets still share one `Arc`, and checkpoints and item charges match the previous set semantics. Each node still stores its full transitive set, so a growing chain stays quadratic overall.
+
 ## 11. Invariants and complexity budgets
 
 | ID | Invariant |

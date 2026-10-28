@@ -3,9 +3,9 @@
 use std::fmt::Debug;
 use std::sync::Arc;
 
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{NodeInstance, SignatureSnapshot};
-use orange_model::id::PortKey;
+use orange_model::catalog::{ProviderKey, RegistrySnapshot};
+use orange_model::document::{ConfigValue, DefinitionRef, NodeInstance, SignatureSnapshot};
+use orange_model::id::{NodeId, PortKey};
 use orange_model::{GraphDocument, Value};
 
 /// Safe static error envelope. No input data belongs in these fields. The compiler
@@ -57,8 +57,83 @@ pub enum ResolveError {
     Contract,
 }
 
+/// The exact facts one executable node binds from: its ID, definition, provider,
+/// config and fresh signature, with the registry snapshot to retain. The compiler
+/// builds it only for nodes admitted from fresh validation, whose provider bindings
+/// passed exact package-lock checks. It exposes no other document or node data.
+pub struct BindingRequest<'a> {
+    document: &'a GraphDocument,
+    node: &'a NodeInstance,
+    provider: Option<ProviderKey>,
+    signature: &'a SignatureSnapshot,
+    snapshot: Arc<RegistrySnapshot>,
+}
+impl<'a> BindingRequest<'a> {
+    /// Extracts the node's exact provider from the document lock. A bound provider
+    /// without exactly one matching lock entry is [`ResolveError::Unavailable`].
+    pub fn new(
+        document: &'a GraphDocument,
+        node: &'a NodeInstance,
+        signature: &'a SignatureSnapshot,
+        snapshot: Arc<RegistrySnapshot>,
+    ) -> Result<Self, ResolveError> {
+        let provider = match &node.provider {
+            None => None,
+            Some(binding) => {
+                Some(ProviderKey::of(document, binding).ok_or(ResolveError::Unavailable)?)
+            }
+        };
+        Ok(Self {
+            document,
+            node,
+            provider,
+            signature,
+            snapshot,
+        })
+    }
+    pub fn node(&self) -> NodeId {
+        self.node.id
+    }
+    pub fn definition(&self) -> &'a DefinitionRef {
+        &self.node.definition
+    }
+    /// The exact locked provider, or `None` for a node without a provider binding,
+    /// such as a Core intrinsic.
+    pub fn provider(&self) -> Option<&ProviderKey> {
+        self.provider.as_ref()
+    }
+    pub fn config_version(&self) -> u32 {
+        self.node.config_version
+    }
+    pub fn config(&self) -> &'a ConfigValue {
+        &self.node.config
+    }
+    pub fn signature(&self) -> &'a SignatureSnapshot {
+        self.signature
+    }
+    pub fn snapshot(&self) -> &Arc<RegistrySnapshot> {
+        &self.snapshot
+    }
+}
+/// Debug reports identities only, never config values or the document.
+impl Debug for BindingRequest<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("BindingRequest")
+            .field("node", &self.node.id)
+            .field("definition", &self.node.definition)
+            .field("provider", &self.provider)
+            .field("config_version", &self.node.config_version)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Resolve exact providers/types/config once. Implementations must not invoke guest
 /// code or effects here. This trait is open to downstream trusted host implementations.
+///
+/// The compiler binds through [`resolve_binding`](Self::resolve_binding). Its default
+/// forwards to the original whole-document [`resolve`](Self::resolve), so existing
+/// implementors keep working. New implementors override `resolve_binding` and may
+/// implement `resolve` as `self.resolve_binding(&BindingRequest::new(..)?)`.
 pub trait PureKernelResolver {
     fn resolve(
         &self,
@@ -67,6 +142,15 @@ pub trait PureKernelResolver {
         signature: &SignatureSnapshot,
         snapshot: Arc<RegistrySnapshot>,
     ) -> Result<KernelBinding, ResolveError>;
+
+    fn resolve_binding(&self, request: &BindingRequest<'_>) -> Result<KernelBinding, ResolveError> {
+        self.resolve(
+            request.document,
+            request.node,
+            request.signature,
+            request.snapshot.clone(),
+        )
+    }
 }
 
 /// Trusted host-owned deterministic stream for one resolved node invocation. This
@@ -105,6 +189,8 @@ impl Debug for EntropyBinding {
 
 /// Binding only, not execution approval. Lowering must check fresh semantic evidence
 /// and seeded-entropy metadata before accepting this separate executable ABI.
+/// The compiler binds through `resolve_entropy_binding`, whose default forwards to
+/// `resolve_entropy` exactly as [`PureKernelResolver::resolve_binding`] does.
 pub trait EntropyKernelResolver: PureKernelResolver {
     fn resolve_entropy(
         &self,
@@ -113,6 +199,18 @@ pub trait EntropyKernelResolver: PureKernelResolver {
         signature: &SignatureSnapshot,
         snapshot: Arc<RegistrySnapshot>,
     ) -> Result<EntropyBinding, ResolveError>;
+
+    fn resolve_entropy_binding(
+        &self,
+        request: &BindingRequest<'_>,
+    ) -> Result<EntropyBinding, ResolveError> {
+        self.resolve_entropy(
+            request.document,
+            request.node,
+            request.signature,
+            request.snapshot.clone(),
+        )
+    }
 }
 
 #[cfg(test)]

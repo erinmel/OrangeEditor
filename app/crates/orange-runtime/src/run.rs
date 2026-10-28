@@ -101,6 +101,11 @@ pub struct RunLimits {
     pub max_state_bytes: usize,
     pub max_region_depth: usize,
     pub max_timers: usize,
+    /// Aggregate nominal storage that all start and On Stop frames reserve at
+    /// startup: data cells, memo stamps, work/scratch capacity, entropy counters
+    /// and run-owned frame cells, multiplied by the frame count. Values are
+    /// shared clones charged by `max_state_bytes`, not by this limit.
+    pub max_frame_storage_bytes: usize,
 }
 impl Default for RunLimits {
     fn default() -> Self {
@@ -114,6 +119,7 @@ impl Default for RunLimits {
             max_state_bytes: 16 * 1024 * 1024,
             max_region_depth: 1024,
             max_timers: 1024,
+            max_frame_storage_bytes: 64 * 1024 * 1024,
         }
     }
 }
@@ -240,6 +246,26 @@ impl StateLayout {
             output_count,
         }
     }
+    /// Nominal bytes one start or On Stop frame reserves at startup: its data
+    /// activation (sized by the data module that owns that layout) plus the run's
+    /// own local cells, output cells and frame headers.
+    fn frame_storage(&self, plan: &ControlPlan, local_cells: usize) -> Option<usize> {
+        use std::mem::size_of;
+        let header = size_of::<ActivationState>()
+            + size_of::<Strand>()
+            + size_of::<Region>()
+            + size_of::<Option<Box<ActivationState>>>();
+        [
+            (local_cells, size_of::<Option<Value>>()),
+            (self.output_count, size_of::<Option<FoldedValue>>()),
+            (1, header),
+        ]
+        .into_iter()
+        .try_fold(
+            crate::data::activation_storage(plan.data())?,
+            |sum, (count, bytes)| count.checked_mul(bytes)?.checked_add(sum),
+        )
+    }
 }
 
 #[derive(Default)]
@@ -266,27 +292,73 @@ impl PullState {
         self.completed_len = 0;
         self.call_values.clear();
     }
+    /// Lend idle scratch capacity to a structured child (body or call) that runs
+    /// while this strand waits as its continuation. An active pull stays put.
+    fn lend(&mut self) -> Self {
+        if self.active.is_some() {
+            return Self::default();
+        }
+        let mut lent = std::mem::take(self);
+        lent.reset();
+        lent
+    }
+    /// Take back scratch capacity from a finished child. Buffers hold no state
+    /// while idle: every new pull begins with `reset`.
+    fn recycle(&mut self, mut child: Self) {
+        child.reset();
+        self.keep_values(child.call_values);
+        if self.active.is_none() && child.inputs.capacity() > self.inputs.capacity() {
+            self.inputs = child.inputs;
+        }
+    }
+    fn keep_values(&mut self, mut values: Vec<Value>) {
+        if self.active.is_none() && values.capacity() > self.call_values.capacity() {
+            values.clear();
+            self.call_values = values;
+        }
+    }
 }
 
+/// The one ownership transfer a step requests from the actor. A node
+/// completion or cursor resume (including a callee completing the caller's
+/// Call) sets it, and `pump` takes it after that strand's step, so the former
+/// call/return/fault/fork/unwind/body/wait flags cannot coexist.
+#[derive(Default)]
+enum Transfer {
+    #[default]
+    None,
+    /// An unhandled fault outside a function retires the activation tree.
+    Fault,
+    /// Returned values, or an unhandled fault, leave the current function.
+    Return(Box<FunctionReturn>),
+    Call(PendingCall),
+    Fork(ControlIx),
+    Unwind {
+        region: u64,
+        is_break: bool,
+    },
+    /// Enter a structured body region; `Some` names its loop owner.
+    EnterBody(Option<ControlIx>),
+    Wait {
+        at: u64,
+        owner: ControlIx,
+    },
+}
 struct Strand {
     function: Option<u64>,
-    call: Option<Box<PendingCall>>,
-    returning: Option<Box<FunctionReturn>>,
-    call_fault: Option<Box<ConstantFault>>,
+    transfer: Transfer,
     cleanup_deadline: Option<u64>,
     iteration_context: Option<Arc<IterationFrame>>,
-    fork: Option<ControlIx>,
     id: u64,
     region: u64,
-    enter_body: Option<Option<ControlIx>>,
-    unwind: Option<(u64, bool)>,
-    faulted: bool,
     sequence: u64,
     entry: ControlIx,
     pc: Option<ExecTarget>,
     pull: PullState,
     stack: Vec<Cursor>,
-    waiting: Option<(u64, ControlIx)>,
+    /// Release the actor segment and rotate behind other ready strands at the
+    /// next transfer-free step. Independent of `transfer`: a loop resume sets
+    /// both, and the body entry leaves the flag on the waiting continuation.
     yielded: bool,
     reenter: Option<(ControlIx, u64)>,
     cleanup: bool,
@@ -368,6 +440,9 @@ pub struct Run {
     dirty_states: Vec<bool>,
     state_segment_indices: Vec<usize>,
     state_segment_writes: Vec<NodeId>,
+    /// Reused cancellation traversal buffers; empty between calls.
+    cancel_regions: Vec<u64>,
+    cancel_timers: Vec<(u64, u64)>,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -465,6 +540,13 @@ impl Run {
             &mut local_bytes,
             options.limits.max_state_bytes,
         )?;
+        // Every start and On Stop frame reserves its storage now, so admit the
+        // aggregate before constructing any of them.
+        layout
+            .frame_storage(&plan, locals.len() + local_states.len())
+            .and_then(|bytes| bytes.checked_mul(capacity))
+            .filter(|total| *total <= options.limits.max_frame_storage_bytes)
+            .ok_or(RunError::ResourceLimit)?;
         let prepared = if capacity > 0 {
             Some(PreparedData::new(plan.data().clone(), options.data.limits)?)
         } else {
@@ -514,23 +596,16 @@ impl Run {
             );
             let strand = Strand {
                 function: None,
-                call: None,
-                returning: None,
-                call_fault: None,
+                transfer: Transfer::None,
                 cleanup_deadline: None,
                 iteration_context: None,
-                fork: None,
                 id: sequence as u64,
                 region: sequence as u64,
-                enter_body: None,
-                unwind: None,
-                faulted: false,
                 sequence: sequence as u64,
                 entry,
                 pc: Some(entry.into()),
                 pull: PullState::default(),
                 stack: vec![],
-                waiting: None,
                 yielded: false,
                 reenter: None,
                 cleanup: false,
@@ -581,6 +656,8 @@ impl Run {
             dirty_states: vec![false; state_count],
             state_segment_indices: vec![],
             state_segment_writes: vec![],
+            cancel_regions: vec![],
+            cancel_timers: vec![],
         })
     }
     pub fn id(&self) -> u64 {
@@ -865,70 +942,57 @@ impl Run {
                 self.cancel_owned()?;
                 break;
             }
-            if activation.faulted && activation.function.is_some() {
-                let fault = activation.call_fault.take().ok_or(RunError::InvalidState)?;
-                if let Err(error) = self.leave_function(activation, FunctionReturn::Fault(*fault)) {
-                    return self.fail(error);
+            match std::mem::take(&mut activation.transfer) {
+                Transfer::Return(result) => {
+                    if let Err(error) = self.leave_function(activation, result) {
+                        return self.fail(error);
+                    }
                 }
-                continue;
-            }
-            if let Some(result) = activation.returning.take() {
-                if let Err(error) = self.leave_function(activation, *result) {
-                    return self.fail(error);
+                Transfer::Call(call) => {
+                    if let Err(error) = self.enter_function(activation, call) {
+                        return self.fail(error);
+                    }
                 }
-                continue;
-            }
-            if let Some(call) = activation.call.take() {
-                if let Err(error) = self.enter_function(activation, *call) {
-                    return self.fail(error);
+                // A function fault always carries its source to the caller.
+                Transfer::Fault if activation.function.is_some() => {
+                    return Err(RunError::InvalidState);
                 }
-                continue;
-            }
-            if activation.faulted {
-                self.retire_failed(activation)?;
-                continue;
-            }
-            if let Some(owner) = activation.fork.take() {
-                self.spawn_fork(activation, owner)?;
-                continue;
-            }
-            if let Some((region, is_break)) = activation.unwind.take() {
-                self.unwind_loop(activation, region, is_break)?;
-                continue;
-            }
-            if let Some(loop_owner) = activation.enter_body.take() {
-                self.enter_body(activation, loop_owner)?;
-                continue;
-            }
-            if let Some((at, owner)) = activation.waiting.take() {
-                self.segment_owner = None;
-                if self.timers.len() == self.options.limits.max_timers {
-                    return self.fail(RunError::ResourceLimit);
+                Transfer::Fault => self.retire_failed(activation)?,
+                Transfer::Fork(owner) => self.spawn_fork(activation, owner)?,
+                Transfer::Unwind { region, is_break } => {
+                    self.unwind_loop(activation, region, is_break)?;
                 }
-                let sequence = self.next_timer;
-                let Some(next) = sequence.checked_add(1) else {
-                    return self.fail(RunError::ResourceLimit);
-                };
-                self.next_timer = next;
-                self.timer_keys.insert(activation.id, (at, sequence));
-                self.timers.insert(
-                    (at, sequence),
-                    Timer {
-                        run: self.id,
-                        owner,
-                        activation,
-                    },
-                );
-            } else if activation.pc.is_some() || !activation.stack.is_empty() {
-                if activation.yielded {
+                Transfer::EnterBody(loop_owner) => self.enter_body(activation, loop_owner)?,
+                Transfer::Wait { at, owner } => {
                     self.segment_owner = None;
-                    activation.yielded = false;
-                    self.ready.push_back(activation.id, activation);
-                } else {
-                    self.ready.push_front(activation.id, activation);
+                    if self.timers.len() == self.options.limits.max_timers {
+                        return self.fail(RunError::ResourceLimit);
+                    }
+                    let sequence = self.next_timer;
+                    let Some(next) = sequence.checked_add(1) else {
+                        return self.fail(RunError::ResourceLimit);
+                    };
+                    self.next_timer = next;
+                    self.timer_keys.insert(activation.id, (at, sequence));
+                    self.timers.insert(
+                        (at, sequence),
+                        Timer {
+                            run: self.id,
+                            owner,
+                            activation,
+                        },
+                    );
                 }
-            } else {
-                self.retire_strand(activation)?;
+                Transfer::None if activation.pc.is_some() || !activation.stack.is_empty() => {
+                    if activation.yielded {
+                        self.segment_owner = None;
+                        activation.yielded = false;
+                        self.ready.push_back(activation.id, activation);
+                    } else {
+                        self.ready.push_front(activation.id, activation);
+                    }
+                }
+                Transfer::None => self.retire_strand(activation)?,
             }
         }
         if self.state == RunState::Faulted {
@@ -1149,7 +1213,7 @@ impl Run {
                                 activation.iteration_context.clone(),
                             )?;
                             activation.stack.push(Cursor::ForEach(Box::new(cursor)));
-                            activation.enter_body = Some(Some(ix));
+                            activation.transfer = Transfer::EnterBody(Some(ix));
                             (*body, ControlOutcome::Body, None)
                         }
                     }
@@ -1319,7 +1383,7 @@ impl Run {
             }
 
             ControlOperation::Fork { .. } => {
-                activation.fork = Some(ix);
+                activation.transfer = Transfer::Fork(ix);
                 (None, ControlOutcome::Forked, None)
             }
             ControlOperation::Entry => (node.then(), ControlOutcome::Then, None),
@@ -1360,7 +1424,7 @@ impl Run {
                         if activation.stack.len() == self.options.limits.max_region_depth {
                             return Err(RunError::ResourceLimit);
                         }
-                        activation.enter_body = Some(Some(ix));
+                        activation.transfer = Transfer::EnterBody(Some(ix));
                         activation.stack.push(Cursor::While {
                             owner: ix,
                             iterations: iterations + 1,
@@ -1397,7 +1461,7 @@ impl Run {
                         if activation.stack.len() == self.options.limits.max_region_depth {
                             return Err(RunError::ResourceLimit);
                         }
-                        activation.enter_body = Some(Some(ix));
+                        activation.transfer = Transfer::EnterBody(Some(ix));
                         activation.stack.push(Cursor::Count {
                             owner: ix,
                             next: 1,
@@ -1413,7 +1477,7 @@ impl Run {
                 let owner = node.loop_owner().ok_or(RunError::InvalidState)?;
                 let region = self.loop_region(activation.region, owner)?;
                 let is_break = matches!(node.operation(), ControlOperation::Break);
-                activation.unwind = Some((region, is_break));
+                activation.transfer = Transfer::Unwind { region, is_break };
                 (
                     None,
                     if is_break {
@@ -1442,7 +1506,7 @@ impl Run {
                             .ok()
                             .and_then(|d| self.now.checked_add(d))
                         {
-                            activation.waiting = Some((at, ix));
+                            activation.transfer = Transfer::Wait { at, owner: ix };
                             (node.then(), ControlOutcome::Suspended, None)
                         } else {
                             (
@@ -1466,7 +1530,7 @@ impl Run {
                 if activation.stack.len() == self.options.limits.max_region_depth {
                     return Err(RunError::ResourceLimit);
                 }
-                activation.enter_body = Some(None);
+                activation.transfer = Transfer::EnterBody(None);
                 activation
                     .stack
                     .push(Cursor::Sequence { owner: ix, next: 1 });
@@ -1581,23 +1645,24 @@ impl Run {
         if let Some(fault) = &fault {
             Self::publish_error(plan, &self.layout, shared, ix, fault);
         }
-        activation.call_fault =
-            if activation.function.is_some() && outcome == ControlOutcome::Failed && next.is_none()
-            {
-                fault.clone().map(Box::new)
-            } else {
-                None
-            };
+        if outcome == ControlOutcome::Failed && next.is_none() {
+            activation.stack.clear();
+            // Cleanup faults only end their own strand.
+            if !activation.cleanup {
+                activation.transfer = match (activation.function, &fault) {
+                    (Some(_), Some(fault)) => {
+                        Transfer::Return(Box::new(FunctionReturn::Fault(fault.clone())))
+                    }
+                    _ => Transfer::Fault,
+                };
+            }
+        }
         self.record(RunEvent {
             activation: activation.sequence,
             node: node.node(),
             outcome,
             fault,
         });
-        if outcome == ControlOutcome::Failed && next.is_none() {
-            activation.stack.clear();
-            activation.faulted = !activation.cleanup;
-        }
         if outcome == ControlOutcome::Failed
             && next.is_none()
             && !activation.cleanup
@@ -1633,7 +1698,7 @@ impl Run {
                     return Err(RunError::InvalidState);
                 };
                 if next < count {
-                    activation.enter_body = Some(Some(owner));
+                    activation.transfer = Transfer::EnterBody(Some(owner));
                     activation.stack.push(Cursor::Count {
                         owner,
                         next: next + 1,
@@ -1665,7 +1730,7 @@ impl Run {
                     return Err(RunError::InvalidState);
                 };
                 if next < steps.len() {
-                    activation.enter_body = Some(None);
+                    activation.transfer = Transfer::EnterBody(None);
                     activation.pc = steps[next];
                     activation.stack.push(Cursor::Sequence {
                         owner,

@@ -111,9 +111,9 @@ pub enum CodecError {
 pub enum ImportResource {
     /// Raw UTF-8 document bytes, checked before any JSON parsing.
     Bytes,
-    /// Parsed nodes across the root and all function bodies.
+    /// Nodes across the root and all function bodies, counted while parsing.
     Nodes,
-    /// Parsed edges across the root and all function bodies.
+    /// Edges across the root and all function bodies, counted while parsing.
     Edges,
 }
 

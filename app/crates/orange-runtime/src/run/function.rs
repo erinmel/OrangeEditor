@@ -6,9 +6,13 @@ pub(super) struct FunctionFrame {
     scope: usize,
     parent: Option<u64>,
     pub arguments: Vec<Value>,
-    locals: Vec<Option<Value>>,
-    versions: Vec<u64>,
+    locals: Box<[LocalCell]>,
     hold: Hold,
+}
+/// One frame-local cell and its write version, allocated together per call.
+struct LocalCell {
+    value: Option<Value>,
+    version: u64,
 }
 pub(super) struct PendingCall {
     owner: ControlIx,
@@ -103,18 +107,21 @@ impl Run {
         }
         Err(RunError::InvalidState)
     }
+    /// One frame lookup, then the local's slot in its scope's sorted table.
     fn frame_slot(
         &self,
         plan: &ControlPlan,
         frame: u64,
         variable: usize,
-    ) -> Result<usize, RunError> {
-        let scope = self.frames.get(&frame).ok_or(RunError::InvalidState)?.scope;
-        plan.function(scope)
+    ) -> Result<(&FunctionFrame, usize), RunError> {
+        let frame = self.frames.get(&frame).ok_or(RunError::InvalidState)?;
+        let slot = plan
+            .function(frame.scope)
             .ok_or(RunError::InvalidState)?
             .locals()
             .binary_search(&variable)
-            .map_err(|_| RunError::InvalidState)
+            .map_err(|_| RunError::InvalidState)?;
+        Ok((frame, slot))
     }
     pub(super) fn frame_value<'a>(
         &'a self,
@@ -122,8 +129,8 @@ impl Run {
         frame: u64,
         variable: usize,
     ) -> Result<Option<&'a Value>, RunError> {
-        let slot = self.frame_slot(plan, frame, variable)?;
-        Ok(self.frames[&frame].locals[slot].as_ref())
+        let (frame, slot) = self.frame_slot(plan, frame, variable)?;
+        Ok(frame.locals[slot].value.as_ref())
     }
     pub(super) fn prepare_frame_write(
         &self,
@@ -138,10 +145,10 @@ impl Run {
             retained,
             write,
         } = spec;
-        let slot = self.frame_slot(plan, frame, variable)?;
-        let frame = &self.frames[&frame];
+        let (frame, slot) = self.frame_slot(plan, frame, variable)?;
         let metadata = &plan.variables()[variable];
         let old = frame.locals[slot]
+            .value
             .as_ref()
             .and_then(|v| metadata.charge(v))
             .unwrap_or(16);
@@ -162,11 +169,12 @@ impl Run {
             self.options.limits.max_state_bytes,
         )?;
         let version = if write {
-            frame.versions[slot]
+            frame.locals[slot]
+                .version
                 .checked_add(1)
                 .ok_or(RunError::ResourceLimit)?
         } else {
-            frame.versions[slot]
+            frame.locals[slot].version
         };
         Ok(FrameWrite {
             slot,
@@ -191,8 +199,10 @@ impl Run {
             .get_mut(&frame)
             .expect("reserved actor-owned function frame");
         frame.hold = hold;
-        frame.locals[slot] = Some(value);
-        frame.versions[slot] = version;
+        frame.locals[slot] = LocalCell {
+            value: Some(value),
+            version,
+        };
         if !self.dirty[variable] {
             self.dirty[variable] = true;
             self.segment_indices.push(variable);
@@ -274,18 +284,23 @@ impl Run {
                 });
             }
         }
-        let values = std::mem::take(&mut strand.pull.call_values);
         if let Some(scope) = scope {
-            strand.call = Some(Box::new(PendingCall {
+            // Arguments move into exact frame storage; the pull scratch keeps
+            // its capacity for this strand and the callee it lends to.
+            let mut values = Vec::with_capacity(strand.pull.call_values.len());
+            values.append(&mut strand.pull.call_values);
+            strand.transfer = Transfer::Call(PendingCall {
                 owner,
                 scope,
                 values,
-            }));
+            });
         } else {
+            // The buffer travels with the result and returns to the caller's scratch.
+            let values = std::mem::take(&mut strand.pull.call_values);
             let bytes =
                 Self::values_charge(plan, demand, &values, self.options.limits.max_state_bytes)?;
             let hold = Hold::new(shared, bytes, 0, self.options.limits.max_state_bytes)?;
-            strand.returning = Some(Box::new(FunctionReturn::Values {
+            strand.transfer = Transfer::Return(Box::new(FunctionReturn::Values {
                 values,
                 hold: Some(hold),
             }));
@@ -367,12 +382,15 @@ impl Run {
         let locals = layout
             .locals()
             .iter()
-            .map(|&i| plan.variables()[i].initial().cloned())
+            .map(|&i| LocalCell {
+                value: plan.variables()[i].initial().cloned(),
+                version: 0,
+            })
             .collect();
-        let versions = vec![0; layout.locals().len()];
         let region = self.owner_id()?;
         let mut child = self.child_strand(&caller, region)?;
         child.id = caller.id;
+        child.pull = caller.pull.lend();
         child.function = Some(region);
         child.pc = layout.entry();
         caller.pc = None;
@@ -383,7 +401,6 @@ impl Run {
                 parent: caller.function,
                 arguments: call.values,
                 locals,
-                versions,
                 hold,
             },
         );
@@ -416,23 +433,26 @@ impl Run {
     pub(super) fn leave_function(
         &mut self,
         strand: Strand,
-        result: FunctionReturn,
+        result: Box<FunctionReturn>,
     ) -> Result<(), RunError> {
         let region = strand.function.ok_or(RunError::InvalidState)?;
-        let RegionKind::Function {
-            result: pending, ..
-        } = &mut self
+        let frame = self
             .regions
             .get_mut(&region)
-            .ok_or(RunError::InvalidState)?
-            .kind
+            .ok_or(RunError::InvalidState)?;
+        let RegionKind::Function {
+            result: pending, ..
+        } = &mut frame.kind
         else {
             return Err(RunError::InvalidState);
         };
         if pending.is_some() {
             return Err(RunError::InvalidState);
         }
-        *pending = Some(Box::new(result));
+        *pending = Some(result);
+        if let Some(caller) = frame.continuation.as_mut() {
+            caller.pull.recycle(strand.pull);
+        }
         self.cancel_region(region)?;
         self.complete_regions(region)
     }
@@ -462,15 +482,16 @@ impl Run {
         let result = match result {
             FunctionReturn::Values { values, hold } => {
                 drop(hold);
-                Self::publish_call_results(
+                let published = Self::publish_call_results(
                     &plan,
                     &self.layout,
                     &mut shared,
                     owner,
                     Some(&values),
                     self.options.limits.max_state_bytes,
-                )
-                .map(|()| (node.then(), ControlOutcome::Then, None))
+                );
+                caller.pull.keep_values(values);
+                published.map(|()| (node.then(), ControlOutcome::Then, None))
             }
             FunctionReturn::Fault(fault) => {
                 Ok((node.failed(), ControlOutcome::Failed, Some(fault)))

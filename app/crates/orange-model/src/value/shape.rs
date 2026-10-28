@@ -17,6 +17,11 @@ pub const MAP_ENTRY_CHARGE: usize = 32;
 /// Nominal retained bytes of an error envelope, before its code text.
 pub const ERROR_CHARGE: usize = 2 * VALUE_CHARGE;
 
+/// Maps with at most this many entries match keys pairwise, so checking and comparing
+/// the common small map allocates nothing. Larger maps use one presized hash table,
+/// keeping the cost linear.
+const SMALL_MAP: usize = 16;
+
 /// Supported Core leaves and recursively typed containers. Values follow the model's
 /// boxed/unboxed representation, not JSON null.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -269,11 +274,17 @@ impl ValueShape {
                 Ok(())
             }
             (Self::Map(key, ty), Value::Map(map)) if key.native_hash() => {
-                minimum(*left, map.entries.len(), MAP_ENTRY_CHARGE)?;
-                let mut keys = HashSet::new();
-                for (k, v) in &map.entries {
+                let entries = &map.entries;
+                minimum(*left, entries.len(), MAP_ENTRY_CHARGE)?;
+                let mut seen =
+                    (entries.len() > SMALL_MAP).then(|| HashSet::with_capacity(entries.len()));
+                for (i, (k, v)) in entries.iter().enumerate() {
                     key.check(k, left, depth + 1)?;
-                    if !keys.insert(k) {
+                    let repeated = match &mut seen {
+                        Some(keys) => !keys.insert(k),
+                        None => entries[..i].iter().any(|(other, _)| other == k),
+                    };
+                    if repeated {
                         return Err(InvalidType);
                     }
                     ty.check(v, left, depth + 1)?;
@@ -336,10 +347,24 @@ impl ValueShape {
                 if a.entries.len() != b.entries.len() {
                     return false;
                 }
-                let values: HashMap<_, _> = b.entries.iter().map(|(k, v)| (k, v)).collect();
+                // Both maps were checked, so each key has at most one match.
+                let index = (b.entries.len() > SMALL_MAP).then(|| {
+                    b.entries
+                        .iter()
+                        .map(|(k, v)| (k, v))
+                        .collect::<HashMap<_, _>>()
+                });
+                let find = |k: &Value| match &index {
+                    Some(values) => values.get(k).copied(),
+                    None => b
+                        .entries
+                        .iter()
+                        .find(|(other, _)| other == k)
+                        .map(|(_, v)| v),
+                };
                 a.entries
                     .iter()
-                    .all(|(k, v)| values.get(k).is_some_and(|other| inner.equal(v, other)))
+                    .all(|(k, v)| find(k).is_some_and(|other| inner.equal(v, other)))
             }
             _ => a == b,
         }
@@ -491,6 +516,56 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(ty.equal_values(&a, &b), Some(true));
         assert_eq!(ty.equal_values(&a, &c), Some(false));
+    }
+
+    #[test]
+    fn small_and_large_maps_reject_duplicates_and_compare_by_key() {
+        let map = |entries: Vec<(Value, Value)>| {
+            Value::Map(Arc::new(MapRepr {
+                entries: entries.into(),
+            }))
+        };
+        let ints = |keys: &[u64]| {
+            map(keys
+                .iter()
+                .map(|&k| (Value::U64(k), Value::I64(k as i64)))
+                .collect())
+        };
+        let ty = ValueShape::Map(Box::new(ValueShape::U64), Box::new(ValueShape::I64));
+        let nested = ValueShape::Map(Box::new(ValueShape::String), Box::new(ty.clone()));
+        let text = |s: &str| Value::Str(Arc::new(s.into()));
+        // Both sides of the pairwise/hash cutoff.
+        for n in [1, SMALL_MAP, SMALL_MAP + 1, 100] {
+            let keys: Vec<u64> = (0..n as u64).collect();
+            let reversed: Vec<u64> = keys.iter().rev().copied().collect();
+            let (a, b) = (ints(&keys), ints(&reversed));
+            assert_eq!(ty.equal_values(&a, &b), Some(true), "{n}");
+            let mut shifted = keys.clone();
+            shifted[n - 1] = n as u64; // Same length, one different key.
+            assert_eq!(ty.equal_values(&a, &ints(&shifted)), Some(false), "{n}");
+            let mut repeated = keys.clone();
+            repeated.push(0); // The repeat comes last, after the first key.
+            assert_eq!(
+                ty.checked_charge(&ints(&repeated), usize::MAX),
+                Err(InvalidType),
+                "{n}"
+            );
+            assert_eq!(
+                ty.equal_values(&ints(&repeated), &ints(&repeated)),
+                None,
+                "{n}"
+            );
+            // A duplicate inside a nested map is rejected; nested maps compare by key.
+            let outer = |inner| map(vec![(text("x"), inner)]);
+            assert_eq!(nested.equal_values(&outer(a), &outer(b)), Some(true), "{n}");
+            assert!(!nested.accepts(&outer(ints(&repeated))), "{n}");
+        }
+        // Equal values under different keys are not equal maps.
+        let swapped = map(vec![
+            (Value::U64(0), Value::I64(1)),
+            (Value::U64(1), Value::I64(0)),
+        ]);
+        assert_eq!(ty.equal_values(&ints(&[0, 1]), &swapped), Some(false));
     }
 
     #[test]

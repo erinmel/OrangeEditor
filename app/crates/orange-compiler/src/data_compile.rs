@@ -503,18 +503,19 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     .then_some(())
                     .ok_or(CompileError::KernelContract { node: node_id })
             };
-            let snapshot = self.plan.snapshot.clone();
+            let request = BindingRequest::new(document, node, sig, self.plan.snapshot.clone())
+                .map_err(|error| binding_error(node_id, error))?;
             if sig.kind == NodeKind::Pure {
                 let binding = self
                     .resolver
-                    .resolve(document, node, sig, snapshot)
+                    .resolve_binding(&request)
                     .map_err(|error| binding_error(node_id, error))?;
                 abi(&binding.inputs, &binding.outputs)?;
                 DataOperation::Pure(binding)
             } else {
                 let binding = self
                     .resolver
-                    .resolve_entropy(document, node, sig, snapshot)
+                    .resolve_entropy_binding(&request)
                     .map_err(|error| binding_error(node_id, error))?;
                 abi(&binding.inputs, &binding.outputs)?;
                 DataOperation::Entropy(binding)
