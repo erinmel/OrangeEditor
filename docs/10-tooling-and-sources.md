@@ -2070,4 +2070,11 @@ Branch `core/inference-plan-freshness` on `dev` c7fffe7 (same toolchain; Cargo.l
 - **Decision:** any content change makes a plan stale, a layout-only edit included. Plans are derived from exact content, so the host plans again instead of rebasing by semantic identity.
 - **Regressions:** a proposal planned before a newer user config edit is rejected and the user's value stays. Plans are also rejected after a layout edit, on a divergent clone and on a reloaded copy, and with a replaced registry snapshot. A fresh plan commits and one undo restores the document.
 
+### Instance-aware orphan edges — 2026-10-28
+
+Branch `core/instance-orphan-edges` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A16.
+
+- **Change:** one crate-private rule, `catalog::instance_port`, decides whether a port key names a port of a node under a signature, including variadic instances, bare variadic base ports and implicit ports. The validator's port lookup and `DocIndex::orphan_edges` both use it. `orphan_edges` now takes `&NodeInstance` instead of a `NodeId`; `DocIndex` stays structural and takes the resolved signature from the caller.
+- **Regressions:** on a Fork with active `branch#0`, edges from `branch#9`, from bare `branch` and from an undeclared port are reported identically by `E-PORT-UNKNOWN` and by the projection, and the active instance's edge by neither. Removing the active instance and undoing it keeps both views in agreement.
+
 **Checks:** `cargo test --workspace --locked --offline` passes with 950 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
