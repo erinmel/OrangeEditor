@@ -517,6 +517,98 @@ fn type_locks_append_coalesce_reject_another_codec_and_undo() {
     assert_eq!(content(&document), before);
 }
 
+#[test]
+fn exports_upsert_in_place_remove_and_undo() {
+    use orange_model::document::GraphExport;
+    let export = |id: &str, port: &str| GraphExport {
+        id: id.to_owned(),
+        node: nid(1),
+        port: port.parse().unwrap(),
+        extensions: Default::default(),
+    };
+
+    let mut document = empty_document();
+    let _ = document.apply([add(1)]).unwrap();
+    let before = content(&document);
+    let first = document
+        .apply([
+            DocCommand::UpsertExport(export("a", "true")),
+            DocCommand::UpsertExport(export("b", "true")),
+        ])
+        .unwrap();
+    let replaced = document
+        .apply([DocCommand::UpsertExport(export("a", "false"))])
+        .unwrap();
+    assert_eq!(
+        document.exports(),
+        [export("a", "false"), export("b", "true")]
+    );
+    assert!(!replaced.change_set.layout_only());
+
+    let removed = document
+        .apply([DocCommand::RemoveExport { id: "a".into() }])
+        .unwrap();
+    assert_eq!(document.exports(), [export("b", "true")]);
+    assert_rejected(
+        &mut document,
+        vec![DocCommand::RemoveExport { id: "a".into() }],
+        TxError::ExportNotFound("a".into()),
+    );
+
+    let _ = document.revert(removed.inverse).unwrap();
+    assert_eq!(
+        document.exports(),
+        [export("a", "false"), export("b", "true")]
+    );
+    let _ = document.revert(replaced.inverse).unwrap();
+    let _ = document.revert(first.inverse).unwrap();
+    assert_eq!(content(&document), before);
+}
+
+#[test]
+fn activation_policies_are_set_cleared_and_undone() {
+    use orange_model::document::{ActivationPolicy, FaultPolicy, OverflowPolicy, ReentrancyMode};
+    let policy = ActivationPolicy {
+        mode: ReentrancyMode::Queue,
+        max_parallel: None,
+        capacity: 4,
+        overflow: OverflowPolicy::DropOldest,
+        on_fault: FaultPolicy::Continue,
+        order: 0,
+        extensions: Default::default(),
+    };
+
+    let mut document = empty_document();
+    let _ = document.apply([add(1)]).unwrap();
+    let before = content(&document);
+    let set = document
+        .apply([DocCommand::SetActivation {
+            node: nid(1),
+            policy: Some(policy.clone()),
+        }])
+        .unwrap();
+    assert_eq!(document.node(nid(1)).unwrap().activation, Some(policy));
+    let cleared = document
+        .apply([DocCommand::SetActivation {
+            node: nid(1),
+            policy: None,
+        }])
+        .unwrap();
+    assert_eq!(document.node(nid(1)).unwrap().activation, None);
+    assert_rejected(
+        &mut document,
+        vec![DocCommand::SetActivation {
+            node: nid(2),
+            policy: None,
+        }],
+        TxError::NodeNotFound(nid(2)),
+    );
+
+    let _ = document.revert(cleared.inverse).unwrap();
+    let _ = document.revert(set.inverse).unwrap();
+    assert_eq!(content(&document), before);
+}
+
 /// A loaded document whose revision is `revision`.
 fn at_revision(revision: u64) -> GraphDocument {
     let mut value: serde_json::Value = serde_json::from_str(&saved(&empty_document())).unwrap();
