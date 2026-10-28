@@ -405,6 +405,41 @@ pub fn disposed_run_retained_bytes() -> usize {
     held.saturating_sub(crate::counter::live_bytes())
 }
 
+/// Background analysis latency on a 2,000-node add chain, as p50 over `config.runs`: a full
+/// analysis from submission to result, and a resubmission made right after an earlier one,
+/// which first waits for the superseded analysis to stop at its next pass boundary.
+pub fn analysis_worker_latency(config: Config) -> (std::time::Duration, std::time::Duration) {
+    use orange_model::validation::{AnalysisLimits, AnalysisWorker};
+    use std::time::Instant;
+    const LINKS: u32 = 2000;
+    let mut nodes = vec![math(10, "add", 0, 1)];
+    let mut edges = Vec::new();
+    for link in 1..LINKS {
+        nodes.push(math(10 + link, "add", 0, 1));
+        edges.push(edge(link, 9 + link, "sum", 10 + link, "a"));
+    }
+    let (document, registry) = Source::new(nodes, edges).analyzed();
+    let mut worker = AnalysisWorker::spawn(AnalysisLimits::default()).expect("worker thread");
+    let median = |mut samples: Vec<std::time::Duration>| {
+        samples.sort();
+        samples[samples.len() / 2]
+    };
+    let mut full = Vec::new();
+    let mut superseded = Vec::new();
+    for _ in 0..config.runs {
+        let start = Instant::now();
+        worker.submit(&document, &registry, Default::default());
+        assert!(worker.wait().is_some());
+        full.push(start.elapsed());
+        worker.submit(&document, &registry, Default::default());
+        let start = Instant::now();
+        worker.submit(&document, &registry, Default::default());
+        assert!(worker.wait().is_some());
+        superseded.push(start.elapsed());
+    }
+    (median(full), median(superseded))
+}
+
 #[cfg(test)]
 mod tests {
     /// Reserving the 10,000-item result before refusing it took about 80 KB.

@@ -79,6 +79,12 @@ impl Source {
         }
     }
 
+    /// The loaded document and its registry, ready for lowering.
+    pub fn analyzed(self) -> (GraphDocument, Arc<RegistrySnapshot>) {
+        let (_, snapshot, document, _) = self.checked();
+        (document, snapshot)
+    }
+
     /// Loads the saved graph and requires it to be ready for lowering.
     fn checked(
         self,
