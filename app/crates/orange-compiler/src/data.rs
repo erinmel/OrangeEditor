@@ -40,7 +40,10 @@ pub enum DataOperation {
     },
     And,
     Or,
-    Coalesce,
+    /// `boxed`: present values carry `Some` because the payload type can itself be None.
+    Coalesce {
+        boxed: bool,
+    },
     Try {
         boxed: bool,
     },

@@ -948,11 +948,13 @@ impl Frame {
                 return self.publish_value(plan, node, value.clone());
             }
             (DataOperation::And | DataOperation::Or, Value::Bool(_)) => 1,
-            (DataOperation::Coalesce, Value::None) => 1,
-            (DataOperation::Coalesce, Value::Some(value)) => {
+            (DataOperation::Coalesce { .. }, Value::None) => 1,
+            (DataOperation::Coalesce { boxed: true }, Value::Some(value)) => {
                 return self.publish_value(plan, node, value.as_ref().clone());
             }
-            (DataOperation::Coalesce, _) => return self.publish_value(plan, node, value.clone()),
+            (DataOperation::Coalesce { boxed: false }, _) => {
+                return self.publish_value(plan, node, value.clone());
+            }
             (DataOperation::Try { boxed }, _) => {
                 let value = if *boxed {
                     Value::Ok(Arc::new(value.clone()))

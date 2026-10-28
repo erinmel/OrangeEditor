@@ -317,26 +317,15 @@ fn interpret(
             let [value] = inputs else {
                 panic!("oracle try contract")
             };
-            let term =
-                orange_model::type_term::TypeTerm::parse(signature.ports[0].ty.as_ref().unwrap())
-                    .unwrap();
-            // Independent type walk: adjacent options use Some and hide the Err tag.
-            let exposed = term.core("result").is_some()
-                || term.core("error").is_some()
-                || term.core("option").is_some_and(|args| {
-                    args[0].core("result").is_some() || args[0].core("error").is_some()
-                });
-            return Ok(vec![if exposed {
-                Value::Ok(Arc::new(value.clone()))
-            } else {
-                value.clone()
-            }]);
+            let ty = term(signature, 0);
+            let success = Tagged::Ok(Box::new(Tagged::decode(&ty, value)));
+            return Ok(vec![success.encode(&result_of(ty))]);
         }
         "core/coalesce" => {
-            let value = match inputs {
-                [Value::None, fallback] => fallback.clone(),
-                [Value::Some(inner)] => inner.as_ref().clone(),
-                [present] => present.clone(),
+            let option = term(signature, 0);
+            let value = match (Tagged::decode(&option, &inputs[0]), inputs) {
+                (Tagged::None, [_, fallback]) => fallback.clone(),
+                (Tagged::Some(present), [_]) => present.encode(&option.core("option").unwrap()[0]),
                 _ => panic!("oracle coalesce contract"),
             };
             return Ok(vec![value]);
@@ -539,5 +528,106 @@ fn unsigned(
         "saturating" => Ok(raw.min(max)),
         "wrapping" => Ok(raw & max),
         _ => panic!("unknown oracle policy"),
+    }
+}
+
+fn term(
+    signature: &orange_model::document::SignatureSnapshot,
+    port: usize,
+) -> orange_model::type_term::TypeTerm {
+    orange_model::type_term::TypeTerm::parse(signature.ports[port].ty.as_ref().unwrap()).unwrap()
+}
+
+fn result_of(ty: orange_model::type_term::TypeTerm) -> orange_model::type_term::TypeTerm {
+    orange_model::type_term::TypeTerm::parse(&format!("core/result@1<{ty}>").parse().unwrap())
+        .unwrap()
+}
+
+/// Fully tagged semantic value. The oracle reasons about Option/Result here and only
+/// meets the compact runtime representation through `decode`/`encode`.
+#[derive(Debug, Clone, PartialEq)]
+enum Tagged {
+    None,
+    Some(Box<Tagged>),
+    Ok(Box<Tagged>),
+    Err(Value),
+    Leaf(Value),
+}
+
+/// Top-level runtime discriminants a compact value of `ty` can show, as bits.
+const NONE: u8 = 1;
+const ERR: u8 = 2;
+const WRAPPED: u8 = 4;
+fn bare_tags(ty: &orange_model::type_term::TypeTerm) -> u8 {
+    if let Some([inner]) = ty.core("option") {
+        // A wrapper is needed only when the payload could already look absent.
+        let inner = bare_tags(inner);
+        return if inner & NONE != 0 {
+            NONE | WRAPPED
+        } else {
+            inner | NONE
+        };
+    }
+    if let Some([inner]) = ty.core("result") {
+        let inner = bare_tags(inner);
+        return if inner & ERR != 0 {
+            ERR | WRAPPED
+        } else {
+            inner | ERR
+        };
+    }
+    if ty.core("error").is_some() {
+        ERR
+    } else {
+        WRAPPED
+    }
+}
+
+impl Tagged {
+    fn decode(ty: &orange_model::type_term::TypeTerm, value: &Value) -> Self {
+        if let Some([inner]) = ty.core("option") {
+            return match value {
+                Value::None => Self::None,
+                Value::Some(boxed) if bare_tags(inner) & NONE != 0 => {
+                    Self::Some(Box::new(Self::decode(inner, boxed)))
+                }
+                _ if bare_tags(inner) & NONE != 0 => panic!("oracle: unboxed nested option"),
+                value => Self::Some(Box::new(Self::decode(inner, value))),
+            };
+        }
+        if let Some([inner]) = ty.core("result") {
+            return match value {
+                Value::Err(_) => Self::Err(value.clone()),
+                Value::Ok(boxed) if bare_tags(inner) & ERR != 0 => {
+                    Self::Ok(Box::new(Self::decode(inner, boxed)))
+                }
+                _ if bare_tags(inner) & ERR != 0 => panic!("oracle: unboxed nested result"),
+                value => Self::Ok(Box::new(Self::decode(inner, value))),
+            };
+        }
+        Self::Leaf(value.clone())
+    }
+
+    fn encode(&self, ty: &orange_model::type_term::TypeTerm) -> Value {
+        let wrap = |inner: &orange_model::type_term::TypeTerm, tag: u8, v: &Self| {
+            let value = v.encode(inner);
+            if bare_tags(inner) & tag != 0 {
+                if tag == NONE {
+                    Value::Some(Arc::new(value))
+                } else {
+                    Value::Ok(Arc::new(value))
+                }
+            } else {
+                value
+            }
+        };
+        match (self, ty.core("option"), ty.core("result")) {
+            (Self::None, Some(_), _) => Value::None,
+            (Self::Some(v), Some([inner]), _) => wrap(inner, NONE, v),
+            (Self::Err(e), _, Some(_)) => e.clone(),
+            (Self::Ok(v), _, Some([inner])) => wrap(inner, ERR, v),
+            (Self::Leaf(v), None, None) => v.clone(),
+            _ => panic!("oracle: value does not match {ty}"),
+        }
     }
 }

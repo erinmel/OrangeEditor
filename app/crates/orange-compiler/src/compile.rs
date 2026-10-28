@@ -191,7 +191,7 @@ fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Opt
                     return Some(());
                 }
                 let some = object.get("some")?;
-                if !matches!(inner.as_ref(), ValueShape::Option(_)) {
+                if !inner.unboxed_none() {
                     *remaining = remaining.checked_add(VALUE_CHARGE)?;
                 }
                 visit(some, inner, remaining)
@@ -728,7 +728,9 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                         .ok_or(CompileError::ValidationIncomplete)?
                     {
                         crate::lazy::Lazy::Coalesce if choice.selected.is_none() => {
-                            crate::lazy::ProjectionMode::UnwrapOption
+                            crate::lazy::ProjectionMode::Option {
+                                boxed: port_type(node_id, &sig.ports[1])?.unboxed_none(),
+                            }
                         }
                         crate::lazy::Lazy::Try => crate::lazy::ProjectionMode::Result {
                             boxed: port_type(node_id, &sig.ports[0])?.unboxed_error(),
