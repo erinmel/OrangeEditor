@@ -311,6 +311,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "orange-measure"
+version = "0.0.0"
+dependencies = [
+ "orange-bundled",
+ "orange-compiler",
+ "orange-model",
+ "orange-runtime",
+ "serde_json",
+]
+
+[[package]]
 name = "orange-model"
 version = "0.0.0"
 dependencies = [

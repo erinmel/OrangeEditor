@@ -1,0 +1,73 @@
+//! Measurement baselines for core workloads: allocation count, allocated bytes, peak
+//! live bytes and the per-pump wall-time distribution.
+//!
+//! ```text
+//! cargo run --release -p orange-measure --locked -- [--budget N] [--warmup N] [--runs N] [FILTER]
+//! ```
+//!
+//! `FILTER` keeps workloads whose name contains it. Numbers describe the machine they ran
+//! on; they are evidence for choosing optimizations, not acceptance thresholds.
+
+mod counter;
+mod graph;
+mod harness;
+mod workloads;
+
+use harness::{Config, Row};
+
+#[global_allocator]
+static ALLOCATOR: counter::CountingAllocator = counter::CountingAllocator;
+
+type Workload = (&'static str, fn(Config) -> Row);
+
+const WORKLOADS: &[Workload] = &[
+    ("scalar-chain", workloads::scalar_chain),
+    ("function-call", workloads::function_call),
+    ("nested-for-each", workloads::nested_for_each),
+    ("fork-cancel", workloads::fork_cancel),
+    ("map-cas-16", workloads::map_cas_16),
+    ("map-cas-1000", workloads::map_cas_1000),
+];
+
+fn main() {
+    let mut config = Config {
+        budget: 64,
+        warmup: 3,
+        runs: 15,
+    };
+    let mut filter = String::new();
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        let mut number = |name: &str| -> usize {
+            args.next()
+                .and_then(|value| value.parse().ok())
+                .filter(|value| *value > 0)
+                .unwrap_or_else(|| panic!("{name} needs a positive integer"))
+        };
+        match arg.as_str() {
+            "--budget" => config.budget = number("--budget"),
+            "--warmup" => config.warmup = number("--warmup"),
+            "--runs" => config.runs = number("--runs"),
+            _ => filter = arg,
+        }
+    }
+    let profile = if cfg!(debug_assertions) {
+        "debug (not representative; use --release)"
+    } else {
+        "release"
+    };
+    println!(
+        "profile={profile} target={}-{} budget={} warmup={} runs={}",
+        std::env::consts::ARCH,
+        std::env::consts::OS,
+        config.budget,
+        config.warmup,
+        config.runs
+    );
+    let rows: Vec<Row> = WORKLOADS
+        .iter()
+        .filter(|(name, _)| name.contains(filter.as_str()))
+        .map(|(_, workload)| workload(config))
+        .collect();
+    harness::print_table(&rows);
+}
