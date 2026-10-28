@@ -7,18 +7,27 @@ pub(super) struct FunctionFrame {
     scope: usize,
     parent: Option<u64>,
     pub arguments: Vec<Value>,
-    locals: Box<[LocalCell]>,
+    locals: Vec<LocalCell>,
     hold: Hold,
 }
-/// One frame-local cell and its write version, allocated together per call.
+/// One frame-local cell and its write version.
 struct LocalCell {
     value: Option<Value>,
     version: u64,
 }
+/// A frame's argument and local buffers. Retired frames return them empty to
+/// `Run::spare_frames`, so a steady call loop reuses them instead of allocating.
+#[derive(Default)]
+pub(super) struct FrameStorage {
+    arguments: Vec<Value>,
+    locals: Vec<LocalCell>,
+}
+/// Enough spare storage for typical call depth; deeper recursion allocates.
+const SPARE_FRAMES: usize = 16;
 pub(super) struct PendingCall {
     owner: ControlIx,
     scope: usize,
-    values: Vec<Value>,
+    storage: FrameStorage,
 }
 pub(super) enum FunctionReturn {
     Values {
@@ -232,6 +241,16 @@ impl Run {
             shared.outputs[self.layout.outputs[input].expect("checked frame output")] = None;
         }
         shared.retained_bytes = retained;
+        let FunctionFrame {
+            mut arguments,
+            mut locals,
+            ..
+        } = frame;
+        if self.spare_frames.len() < SPARE_FRAMES {
+            arguments.clear();
+            locals.clear();
+            self.spare_frames.push(FrameStorage { arguments, locals });
+        }
         Ok(())
     }
     pub(super) fn execute_function(
@@ -287,14 +306,14 @@ impl Run {
             }
         }
         if let Some(scope) = scope {
-            // Arguments move into exact frame storage; the pull scratch keeps
+            // Arguments move into spare frame storage; the pull scratch keeps
             // its capacity for this strand and the callee it lends to.
-            let mut values = Vec::with_capacity(strand.pull.call_values.len());
-            values.append(&mut strand.pull.call_values);
+            let mut storage = self.spare_frames.pop().unwrap_or_default();
+            storage.arguments.append(&mut strand.pull.call_values);
             strand.transfer = Transfer::Call(PendingCall {
                 owner,
                 scope,
-                values,
+                storage,
             });
         } else {
             // The buffer travels with the result and returns to the caller's scratch.
@@ -302,10 +321,10 @@ impl Run {
             let bytes =
                 Self::values_charge(plan, demand, &values, self.options.limits.max_state_bytes)?;
             let hold = Hold::new(shared, bytes, 0, self.options.limits.max_state_bytes)?;
-            strand.transfer = Transfer::Return(Box::new(FunctionReturn::Values {
+            strand.transfer = Transfer::Return(FunctionReturn::Values {
                 values,
                 hold: Some(hold),
-            }));
+            });
             self.record(RunEvent {
                 activation: strand.sequence,
                 node: node.node(),
@@ -366,7 +385,7 @@ impl Run {
         let mut bytes = Self::values_charge(
             &plan,
             demand,
-            &call.values,
+            &call.storage.arguments,
             self.options.limits.max_state_bytes,
         )?;
         for &variable in layout.locals() {
@@ -381,14 +400,14 @@ impl Run {
                 .ok_or(RunError::ResourceLimit)?;
         }
         let hold = Hold::new(shared, bytes, 0, self.options.limits.max_state_bytes)?;
-        let locals = layout
-            .locals()
-            .iter()
-            .map(|&i| LocalCell {
-                value: plan.variables()[i].initial().cloned(),
-                version: 0,
-            })
-            .collect();
+        let FrameStorage {
+            arguments,
+            mut locals,
+        } = call.storage;
+        locals.extend(layout.locals().iter().map(|&i| LocalCell {
+            value: plan.variables()[i].initial().cloned(),
+            version: 0,
+        }));
         let region = self.owner_id()?;
         let mut child = self.child_strand(&caller, region)?;
         child.id = caller.id;
@@ -401,7 +420,7 @@ impl Run {
             FunctionFrame {
                 scope: call.scope,
                 parent: caller.function,
-                arguments: call.values,
+                arguments,
                 locals,
                 hold,
             },
@@ -435,7 +454,7 @@ impl Run {
     pub(super) fn leave_function(
         &mut self,
         strand: Strand,
-        result: Box<FunctionReturn>,
+        result: FunctionReturn,
     ) -> Result<(), RunError> {
         let region = strand.function.ok_or(RunError::InvalidState)?;
         let frame = self

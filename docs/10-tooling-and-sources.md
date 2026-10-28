@@ -1976,3 +1976,22 @@ Branch `core/map-check-alloc` from `dev` 4a13f48 (same toolchain; Cargo.lock unc
 **Checks:** `cargo test --workspace --locked` passes with 944 passed, 0 failed, 15 ignored, in 90 result groups. fmt, clippy `-D warnings`, rustdoc `-D warnings` and the metadata policy pass.
 
 **Next candidates:** calls and forks still make about 3 allocations each, because invocation and region storage are not pooled, and pump budgets count fine-grained work items.
+
+### Reused call frame storage — 2026-10-27
+
+Branch `core/call-frame-alloc` from `dev` 7e284d1 (same toolchain; Cargo.lock unchanged).
+
+- **Change:** a retired function frame returns its emptied argument and local buffers to the run, which keeps up to 16 for later calls. A call takes spare storage before falling back to a new allocation, so a steady call loop allocates nothing per call. Locals still start from their initial values on every call.
+- **Return:** a function's result travels unboxed in the strand transfer and the function region. This reverses the earlier boxing of rare results: `Strand` grows from 304 to 336 bytes, which costs less than one allocation per call.
+- **Measured** with `orange-measure`: release, same machine, 15 runs per workload. All existing function tests pass, including repeated calls that must see fresh locals.
+
+| Workload, per run | Allocations before → after | Bytes before → after | Run p50 before → after |
+|---|---:|---:|---:|
+| Function call + return, 1,000 calls | 3,038 → 41 | 113,423 → 10,831 | 1.22 → 1.07 ms |
+| Fork race + cancel region, 1,000 iterations | 3,032 → 3,032 | 747,944 → 813,392 | 1.18 → 1.17 ms |
+
+Fork bytes rise only because each branch strand is 32 bytes larger.
+
+**Checks:** `cargo test --workspace --locked` passes with 944 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings`, rustdoc `-D warnings` and the metadata policy pass.
+
+**Next candidates:** a fork still makes 3 allocations: its branch list and the boxed ordered set of its two branch regions. Pump budgets still count fine-grained work items.
