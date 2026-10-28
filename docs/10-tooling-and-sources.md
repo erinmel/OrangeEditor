@@ -2077,4 +2077,12 @@ Branch `core/instance-orphan-edges` on `dev` c7fffe7 (same toolchain; Cargo.lock
 - **Change:** one crate-private rule, `catalog::instance_port`, decides whether a port key names a port of a node under a signature, including variadic instances, bare variadic base ports and implicit ports. The validator's port lookup and `DocIndex::orphan_edges` both use it. `orphan_edges` now takes `&NodeInstance` instead of a `NodeId`; `DocIndex` stays structural and takes the resolved signature from the caller.
 - **Regressions:** on a Fork with active `branch#0`, edges from `branch#9`, from bare `branch` and from an undeclared port are reported identically by `E-PORT-UNKNOWN` and by the projection, and the active instance's edge by neither. Removing the active instance and undoing it keeps both views in agreement.
 
+### Redacted import errors — 2026-10-28
+
+Branch `core/redacted-import-errors` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A02 (SEC-001).
+
+- **Change:** `error::Rejected` holds text a check refused and formats only its character count. `IdError` variants, `CodecError::{UnsupportedFormat, DuplicateKey, DuplicateLock}` and the new `error::JsonError` (kind, line, column, `Rejected` parser detail) use it; `CodecError::Json` no longer wraps `serde_json::Error`. Both error enums gain `message_key()`.
+- **Regressions:** a sentinel with control characters placed in the graph ID, format tag, a duplicated object key, a duplicated package lock, a definition ID, a type expression, an enum token and a port ID never appears in the error's `Display` or `Debug` output, neither does any control character, every error has an import message key, and JSON errors keep a non-zero line and column. Existing tests read rejected text through `reveal`.
+- **Limitations:** deserializing `GraphDocument` with Serde directly returns the caller's `serde_json::Error`, whose own messages can quote input; hosts handling untrusted text use `from_json`.
+
 **Checks:** `cargo test --workspace --locked --offline` passes with 950 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
