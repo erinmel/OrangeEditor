@@ -73,4 +73,10 @@ fn main() {
         .map(|(_, workload)| workload(config))
         .collect();
     harness::print_table(&rows);
+    if "oversized-map-zone".contains(filter.as_str()) {
+        println!(
+            "oversized map zone: {} peak heap bytes before ResourceLimit",
+            workloads::oversized_map_zone_peak_bytes()
+        );
+    }
 }
