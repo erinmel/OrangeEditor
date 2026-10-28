@@ -1878,3 +1878,61 @@ Also fixed:
 - A fuller `StrandPhase` covering yield/reenter/cleanup.
 
 No NFR, allocator/RSS, MSRV rerun, exact-head CI or core-completion claim follows.
+
+### Measured runtime slice — 2026-10-27
+
+A second wave of three worktree agents continued the audit migration plan from `dev` 349b8e7, integrated on `core/measured-runtime`. Toolchain: Rust 1.99.1, x86_64-pc-windows-msvc. Cargo.lock gains only the local `orange-measure` entry, with no external version changes.
+
+Integrated results:
+- `cargo test --workspace --locked`: 944 passed, 0 failed, 15 ignored, in 90 result groups.
+- fmt, clippy `-D warnings`, rustdoc `-D warnings` and `node tools/check-cargo-metadata.mjs` all pass.
+- Not run locally, because the tools are not installed: the MSRV 1.97.1 build and cargo-deny. No external dependency was added.
+
+**Measurement harness.** The development-only binary crate `orange-measure` runs with:
+
+```
+cargo run --release -p orange-measure --locked -- [--budget 64] [--warmup 3] [--runs 15] [FILTER]
+```
+
+It never runs under `cargo test`. Each workload checks its own result. Allocation counts cover start, pumps, stop and dispose.
+
+This crate holds the repository's first `unsafe` code: one counting `unsafe impl GlobalAlloc` that forwards to `System`. Containment:
+- The crate declares its own lints instead of inheriting the workspace's: `unsafe_code = "deny"`, `unsafe_op_in_unsafe_fn = "deny"` and clippy `undocumented_unsafe_blocks = "deny"`. The single allowance is on that impl, and every block has a `SAFETY:` comment.
+- The four library crates still forbid unsafe code.
+- Earlier "no unsafe code" statements in this file refer to the library crates.
+
+**Integrated baseline.** Release build on an AMD Ryzen 9 9900X3D, Windows 11, budget 64, 3 warm-ups, 15 runs. Timings are single-machine and coarse below about 2 µs. p95 varied by up to about 40% between runs.
+
+| Workload | Units | Allocs/run | Bytes/run | Pump p50 / p95 µs | Run p50 ms |
+|---|---|---:|---:|---:|---:|
+| Scalar chain (16 adds) | 1,000 iterations | 34 | 12,977 | 1.3 / 1.5 | 1.45 |
+| Function call + return | 1,000 calls | 3,038 | 113,423 | 3.5 / 3.8 | 1.23 |
+| Nested for-each 32×32 | 1,024 items | 130 | 17,046 | 4.5 / 4.7 | 0.37 |
+| Fork race + cancel | 1,000 iterations | 3,032 | 747,944 | 10.6 / 11.1 | 1.18 |
+| Map CAS, 16 entries | 1,000 updates | 30 | 6,857 | 18.8 / 21.4 | 1.82 |
+| Map CAS, 1,000 entries | 1,000 updates | 3,032 | 55,387,753 | 499 / 583 | 47.9 |
+| Host map input, 16 entries | 1,000 epochs | 13 | 585 | 0.6 / 0.9 | 0.60 |
+| Host map input, 1,000 entries | 1,000 epochs | 1,013 | 18,448,585 | 15.4 / 15.8 | 15.8 |
+| Map zone, 10,000 items | 100,000 items | 174 | 3,423,589 | 1.2 / 1.4 | 16.1 |
+
+**Compare-and-set** re-validation was confirmed and removed. On the same machine, 1,000-entry map CAS went from 6,032 allocations, 127 MB and 106.9 ms per 1,000 updates to 3,032 allocations, 55 MB and 47.9 ms. 16-entry map CAS went from 3.27 ms to 1.82 ms.
+
+**Availability cones.** The re-walk finding was confirmed and fixed. Times for the ignored `availability_cost_by_shared_pure_cone` test, best of 5, release:
+
+| Cone × consumers | Before | After |
+|---|---:|---:|
+| 1,000 × 10 | 1.3 ms | 0.93 ms |
+| 1,000 × 1,000 | 49–53 ms | 2.9–3.3 ms |
+| 4,000 × 1,000 | 350–392 ms | 7.8–11.6 ms |
+
+A temporary side-by-side check showed identical diagnostics on 11,824 suite bodies and 2,000 random graphs. It was not committed.
+
+**Runtime handlers.** `execute` went from 525 lines to 75. Runtime long-function and complexity warnings went from 9 to 6.
+
+**Next candidates, ranked by the baseline:**
+1. Large-map validation on publish and CAS still allocates once per check above 16 entries. A host map of 1,000 entries costs about 18 KB per publish of the same shared value.
+2. Calls and forks make about 3 allocations each, because invocation and region storage are not pooled.
+3. The Map zone builder grows by doubling: about 342 KB allocated per epoch for an 80 KB result. Presizing it from the source length would help.
+4. Pump budgets count fine-grained work items, so a 64-unit budget covers about one 16-add iteration.
+
+Compiler-resolved frame-local addresses and per-body incremental analysis remain queued.
