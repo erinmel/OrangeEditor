@@ -526,3 +526,87 @@ fn hand_built_fragment_with_dangling_edges_pastes_only_internal_ones() {
     assert_eq!(connects[0].to.node, paste.nodes[&nid(3)]);
     let _ = document.apply(paste.commands).unwrap();
 }
+
+fn type_lock(ty: &str, codec: &str) -> orange_model::document::TypeLockEntry {
+    orange_model::document::TypeLockEntry {
+        ty: ty.parse().unwrap(),
+        codec: codec.to_owned(),
+        extensions: Default::default(),
+    }
+}
+
+fn has_type_codec_error(document: &GraphDocument) -> bool {
+    orange_model::validate(document, &registry())
+        .diagnostics
+        .iter()
+        .any(|diagnostic| diagnostic.code == orange_model::validation::DiagnosticCode::TypeCodec)
+}
+
+#[test]
+fn paste_keeps_an_unavailable_type_codec_unavailable() {
+    // The source locks i64 to a codec this registry cannot decode, so it is not runnable.
+    let mut source = fixture();
+    let _ = source
+        .apply([
+            DocCommand::RemoveTypeLock("core/i64@1".parse().unwrap()),
+            DocCommand::PutTypeLock(type_lock("core/i64@1", "org.example.missing-v1")),
+        ])
+        .unwrap();
+    assert!(has_type_codec_error(&source));
+
+    let fragment = Fragment::copy(&source, &registry(), &[nid(3)]).unwrap();
+    let mut target = empty_document();
+    assert!(!has_type_codec_error(&target));
+    let before = content(&target);
+    let paste = fragment
+        .paste(&target, BodyRef::Root, id_source(2))
+        .unwrap();
+    let committed = target.apply(paste.commands).unwrap();
+    assert_eq!(target.type_lock(), source.type_lock());
+    assert!(
+        has_type_codec_error(&target),
+        "the copy must not become runnable"
+    );
+
+    let _ = target.revert(committed.inverse).unwrap();
+    assert_eq!(content(&target), before);
+    assert!(target.type_lock().is_empty());
+}
+
+#[test]
+fn paste_reuses_matching_type_locks_and_rejects_another_codec_atomically() {
+    let source = fixture();
+    let fragment = Fragment::copy(&source, &registry(), &[nid(3)]).unwrap();
+
+    let mut matching = empty_document();
+    let _ = matching
+        .apply([DocCommand::PutTypeLock(source.type_lock()[1].clone())])
+        .unwrap();
+    let paste = fragment
+        .paste(&matching, BodyRef::Root, id_source(2))
+        .unwrap();
+    let _ = matching.apply(paste.commands).unwrap();
+    let types: Vec<&str> = matching
+        .type_lock()
+        .iter()
+        .map(|lock| lock.ty.as_str())
+        .collect();
+    assert_eq!(types, ["core/bool@1", "core/i64@1"]);
+
+    let mut conflicting = empty_document();
+    let _ = conflicting
+        .apply([DocCommand::PutTypeLock(type_lock(
+            "core/bool@1",
+            "org.example.other-v1",
+        ))])
+        .unwrap();
+    let before = content(&conflicting);
+    let paste = fragment
+        .paste(&conflicting, BodyRef::Root, id_source(3))
+        .unwrap();
+    assert!(matches!(
+        conflicting.apply(paste.commands),
+        Err(orange_model::TxError::TypeLockConflict(ty)) if ty.as_str() == "core/bool@1"
+    ));
+    assert_eq!(content(&conflicting), before);
+}
