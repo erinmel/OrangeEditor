@@ -1653,3 +1653,110 @@ mod variable_updates;
 
 #[path = "support/collection_iteration.rs"]
 mod collection_iteration;
+
+/// Resolves every math kernel to one that panics, as a buggy trusted provider might.
+struct PanickingResolver(orange_bundled::MathPackage);
+
+#[derive(Debug)]
+struct PanickingKernel;
+
+impl orange_compiler::PureKernel for PanickingKernel {
+    fn fold(
+        &self,
+        _: &[orange_model::Value],
+        _: &mut [orange_model::Value],
+    ) -> Result<(), orange_compiler::KernelFault> {
+        panic!("synthetic trusted provider panic")
+    }
+}
+
+impl orange_compiler::PureKernelResolver for PanickingResolver {
+    fn resolve(
+        &self,
+        doc: &orange_model::GraphDocument,
+        node: &orange_model::document::NodeInstance,
+        signature: &orange_model::document::SignatureSnapshot,
+        registry: std::sync::Arc<orange_model::catalog::RegistrySnapshot>,
+    ) -> Result<orange_compiler::KernelBinding, orange_compiler::ResolveError> {
+        let mut binding =
+            orange_compiler::PureKernelResolver::resolve(&self.0, doc, node, signature, registry)?;
+        binding.kernel = std::sync::Arc::new(PanickingKernel);
+        Ok(binding)
+    }
+}
+
+impl orange_compiler::EntropyKernelResolver for PanickingResolver {
+    fn resolve_entropy(
+        &self,
+        doc: &orange_model::GraphDocument,
+        node: &orange_model::document::NodeInstance,
+        signature: &orange_model::document::SignatureSnapshot,
+        registry: std::sync::Arc<orange_model::catalog::RegistrySnapshot>,
+    ) -> Result<orange_compiler::EntropyBinding, orange_compiler::ResolveError> {
+        orange_compiler::EntropyKernelResolver::resolve_entropy(
+            &self.0, doc, node, signature, registry,
+        )
+    }
+}
+
+#[test]
+fn a_panicking_provider_faults_the_run_until_it_is_stopped() {
+    use orange_runtime::{Run, RunError, RunOptions, RunState};
+    let (package, snapshot) = catalog();
+    let source = graph(
+        &package,
+        vec![
+            core(1, "on-start"),
+            var_node(2, "get-variable", 100),
+            math(3, "add", 0, 1),
+            var_node(4, "set-variable", 100),
+        ],
+        vec![
+            edge(1, 1, "then", 4, "in"),
+            edge(2, 2, "value", 3, "a"),
+            edge(3, 3, "sum", 4, "value"),
+        ],
+        vec![],
+    );
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&source).unwrap()).unwrap();
+    raw["variables"] = json!([variable(100, "run", "core/u64@1", Some(json!("1")))]);
+    let doc = from_json(&raw.to_string()).unwrap();
+    let analysis = analyze(&doc, &snapshot);
+    let plan = compile_control(
+        &doc,
+        snapshot.clone(),
+        &analysis,
+        &PanickingResolver(package),
+        CompileOptions::default(),
+    )
+    .unwrap();
+    let mut run = Run::start(
+        std::sync::Arc::new(plan),
+        &doc,
+        &snapshot,
+        1,
+        RunOptions::default(),
+    )
+    .unwrap();
+
+    let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.pump(1024)));
+    assert!(unwound.is_err());
+    // The lost activation is not reported as finished work.
+    assert_eq!(run.state(), RunState::Faulted);
+    assert_eq!(run.last_error(), Some(RunError::Interrupted));
+    assert!(matches!(run.pump(1024), Err(RunError::Interrupted)));
+    assert!(matches!(run.pump(1024), Err(RunError::InvalidState)));
+    assert!(matches!(run.advance_to(1), Err(RunError::InvalidState)));
+
+    // An explicit stop still cancels what remains and lets the host dispose of the run.
+    run.stop().unwrap();
+    for _ in 0..64 {
+        if run.state() == RunState::Stopped {
+            break;
+        }
+        run.pump(1024).unwrap();
+    }
+    assert_eq!(run.state(), RunState::Stopped);
+    assert_eq!(run.ownership().strands, 0);
+    run.dispose().unwrap();
+}
