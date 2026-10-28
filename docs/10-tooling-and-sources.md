@@ -2117,4 +2117,11 @@ Branch `core/add-conflict-evidence` on `dev` c7fffe7 (same toolchain; Cargo.lock
 - **Regressions:** saturating, checked, default (checked), mixed wrapping/saturating, float and duration Adds in two Fork branches report `E-WRITE-CONFLICT`; wrapping integer Adds and any pair under last-writer-wins do not. A call summary's Add no longer counts as evidence, while a summary's And still pairs with an And. The runtime test of concurrent Fork updates now declares wrapping overflow.
 - **Behavior change:** graphs that relied on the old blanket Add exemption are rejected until they use wrapping overflow or last-writer-wins.
 
+### Scalar contract cleanup — 2026-10-28
+
+Branch `core/scalar-contract` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit findings A18 and A19.
+
+- **Not:** `scalar::evaluate` now requires the `Bool` scalar for Not, as it already required a numeric scalar for arithmetic; `Not` with any numeric scalar is `InputContract`. The bundled catalog already resolves Not with `Bool`, so compiled graphs are unchanged. A unit test covers every scalar.
+- **Messages:** `ScalarError::message` is the one static fallback text and also its `Display`. The bundled math adapter and runtime Update use it and keep only their own `InputContract` wording. Codes and message keys are unchanged.
+
 **Checks:** `cargo test --workspace --locked --offline` passes with 950 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
