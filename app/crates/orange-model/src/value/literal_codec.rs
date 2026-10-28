@@ -322,7 +322,7 @@ impl<S: Schemas> Codec<'_, S> {
                     (Some(Json::Bool(true)), None) => Value::None,
                     (None, Some(some)) => {
                         let value = self.decode(some, inner, depth + 1)?;
-                        // Only a nested option boxes its inner layer (12 §7).
+                        // No result literals exist, so only nested options box here (12 §7).
                         if inner.core("option").is_some() {
                             Value::Some(Arc::new(value))
                         } else {

@@ -2013,3 +2013,11 @@ On `dev` b33a7d9 (same toolchain; Cargo.lock unchanged). No code change.
 - **Decision:** budgets stay operation bounds, as [03](03-data-and-execution.md) already states, not wall-time guarantees. Size-weighted charges for value-proportional work, such as collection equality and CAS, are deferred until slice latency (NFR-02) is qualified. The candidate is closed.
 
 **Next candidates:** a fork still makes 3 allocations, for its branch list and the boxed ordered set of its two branch regions.
+
+### Option/Result composition — 2026-10-28
+
+On `dev` fa9d983 (same toolchain; Cargo.lock unchanged). The change fixes audit finding A11, where Coalesce turned Ok(Some(None)) into Ok(None) for `option<result<option<option<i64>>>>`.
+
+- **Executed:** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked --offline -- -D warnings` and `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --locked --offline` pass. `cargo test --workspace --locked --offline` reports 947 passed, 0 failed and 15 ignored.
+- **New checks:** every option/result layering up to depth 6 over i64 is checked: each semantic value has one accepted compact encoding, and no two values share one. Known answers cover dynamic Coalesce over `option<result<option<option<i64>>>>` (None, Some(Ok(None)), Some(Ok(Some(None))), present payloads and Some(Err)), and constant Try over the new compositions against the tagged oracle.
+- **Not covered:** this does not requalify any NFR. The 15 ignored tests were not run, and Linux/macOS/MSRV were not exercised locally.

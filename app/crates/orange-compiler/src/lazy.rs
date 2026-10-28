@@ -114,8 +114,13 @@ impl Lazy {
 #[derive(Debug)]
 pub(crate) enum ProjectionMode {
     Value,
-    UnwrapOption,
-    Result { boxed: bool },
+    /// Present option value; `boxed` removes its `Some` layer.
+    Option {
+        boxed: bool,
+    },
+    Result {
+        boxed: bool,
+    },
 }
 pub(crate) fn binding(
     inputs: Box<[orange_model::id::PortKey]>,
@@ -156,7 +161,8 @@ impl PureKernel for Projection {
         };
         let value = self.index.and_then(|index| inputs.get(index)).ok_or(BAD)?;
         *output = match (&self.mode, value) {
-            (ProjectionMode::UnwrapOption, Value::Some(inner)) => inner.as_ref().clone(),
+            (ProjectionMode::Option { boxed: true }, Value::Some(inner)) => inner.as_ref().clone(),
+            (ProjectionMode::Option { boxed: true }, _) => return Err(BAD),
             (ProjectionMode::Result { boxed: true }, _) => Value::Ok(Arc::new(value.clone())),
             _ => value.clone(),
         };

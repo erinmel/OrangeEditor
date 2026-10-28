@@ -125,10 +125,14 @@ fn try_captures_graph_faults_without_changing_separately_exported_faults() {
 #[test]
 fn try_preserves_successful_none_and_result_option_composition() {
     let (package, snapshot) = catalog();
-    for inner in [
-        "core/i64@1",
-        "core/result@1<core/i64@1>",
-        "core/option@1<core/result@1<core/i64@1>>",
+    let boxed = Value::Ok(Arc::new(Value::None));
+    for (inner, expected) in [
+        ("core/i64@1", Value::None),
+        ("core/result@1<core/i64@1>", boxed.clone()),
+        ("core/option@1<core/result@1<core/i64@1>>", Value::None),
+        // The unboxed success can be None, so the option boxes and hides the Err tag.
+        ("core/result@1<core/option@1<core/i64@1>>", Value::None),
+        ("core/result@1<core/result@1<core/i64@1>>", boxed.clone()),
     ] {
         let option = format!("core/option@1<{inner}>");
         let none = typed_literal(&snapshot, &option, &Value::None);
@@ -139,11 +143,6 @@ fn try_preserves_successful_none_and_result_option_composition() {
             vec![export(1, "result")],
         );
         let plan = compile(&doc, snapshot.clone(), &package);
-        let expected = if inner.starts_with("core/result") {
-            Value::Ok(Arc::new(Value::None))
-        } else {
-            Value::None
-        };
         assert_eq!(
             plan.constants()[plan.exports()[0].slot.index()],
             FoldedValue::Value(expected.clone())

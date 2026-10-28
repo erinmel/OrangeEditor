@@ -490,7 +490,9 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 }
                 Lazy::And => DataOperation::And,
                 Lazy::Or => DataOperation::Or,
-                Lazy::Coalesce => DataOperation::Coalesce,
+                Lazy::Coalesce => DataOperation::Coalesce {
+                    boxed: port_type(node_id, &sig.ports[1])?.unboxed_none(),
+                },
                 Lazy::Try => DataOperation::Try {
                     boxed: port_type(node_id, &sig.ports[0])?.unboxed_error(),
                 },

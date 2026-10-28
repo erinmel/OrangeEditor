@@ -591,7 +591,7 @@ pub enum Value {
     Str(ArcStr), Bytes(ArcBytes),
     List(Arc<ListRepr>), Map(Arc<MapRepr>), Record(Arc<RecordRepr>),
     Enum { tag: u32, payload: Option<Arc<Value>> },
-    None, Some(Arc<Value>),                  // Some is boxed only for nested option<option<T>>
+    None, Some(Arc<Value>),                  // only payloads that can be a bare None
     Err(Arc<NodeError>),                     // only inside result<T>
     Ok(Arc<Value>),                          // only ambiguous result success payloads
     Json(Arc<JsonRepr>),
@@ -604,7 +604,7 @@ pub struct MapRepr { /* insertion-ordered; unique keys, restricted per 11 §5.2 
 pub enum JsonRepr { Null, Bool(bool), Number(NumberText), String(ArcStr), Array(Box<[JsonRepr]>), Object(/* ordered */) }
 ```
 
-- `option<T>` is `None`, or the unboxed `T` value (static types disambiguate). Nesting boxes the inner layer. `result<T>` is `Err(…)` or the unboxed `T`, except a success whose static payload type can carry an unboxed Err uses `Ok(Arc<Value>)`. This includes nested Result, Option<Result>, and core/error; adjacent nested options already hide the inner tag in Some. Box selection is static, including a successful None payload. Thus Ok(Err) cannot collapse into an outer Err. **Missing** exists only as an absent record field or JSON key, never as a free-standing `Value`. Together these make None, missing, JSON null and Error distinct by construction (FR-08).
+- `option<T>` is `None`, or the unboxed `T` value (static types disambiguate). `result<T>` is `Err(…)` or the unboxed `T`. A layer boxes only when its payload type can itself show the layer's own tag bare: `option<T>` uses `Some(Arc<Value>)` when a valid `T` can be a bare `None`, and `result<T>` uses `Ok(Arc<Value>)` when a valid `T` can be a bare `Err`. The two rules compose through each other. A bare `None` comes from an option, or from a result whose success is unboxed and whose payload can be a bare `None`. A bare `Err` comes from a result, `core/error`, or an option that does not box and whose payload can be a bare `Err`. So `option<option<T>>` and `option<result<option<T>>>` box Some, while `option<result<result<T>>>` does not, because the boxed `Ok` already hides the inner None. Box selection is static, including a successful None payload. Every compact value therefore decodes to one semantic value, so Some(Ok(None)) cannot collapse into None, and Ok(Err) cannot collapse into an outer Err. **Missing** exists only as an absent record field or JSON key, never as a free-standing `Value`. Together these make None, missing, JSON null and Error distinct by construction (FR-08).
 - Clone is an `Arc` increment. Mutation-style nodes consume a uniquely owned value or copy on write ([03](03-data-and-execution.md)).
 - Records are addressed by compiled field index, never by name at run time.
 - Secrets are never `Value`s. Brokers hold them ([05](05-services-and-platforms.md)).

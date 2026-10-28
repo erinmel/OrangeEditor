@@ -1090,6 +1090,55 @@ fn epoch_coalesce_distinguishes_absent_present_and_nested_some_none() {
 }
 
 #[test]
+fn coalesce_keeps_option_presence_inside_an_unboxed_result_success() {
+    // option<result<T>> where T is itself optional: the result success is unboxed, so
+    // the outer option must box to keep Some(Ok(None)) apart from None.
+    const PAYLOAD: &str = "core/option@1<core/option@1<core/i64@1>>";
+    let inner = format!("core/result@1<{PAYLOAD}>");
+    let (package, snapshot) = catalog();
+    let mut raw: serde_json::Value =
+        serde_json::from_str(&to_json(&graph(&package, vec![], vec![], vec![])).unwrap()).unwrap();
+    raw["variables"] = json!([{"id":id(10),"name":"state","type":format!("core/option@1<{inner}>"),"scope":"run"}]);
+    raw["nodes"] = json!([
+        {"id":id(1),"definition_id":"core/get-variable","definition_version":1,"config_version":1,"config":{"variable":id(10)}},
+        {"id":id(2),"definition_id":"core/coalesce","definition_version":1,"config_version":1,"config":{},"type_pins":{"T":inner}},
+        {"id":id(3),"definition_id":"core/try","definition_version":1,"config_version":1,"config":{},"type_pins":{"T":PAYLOAD},
+            "inputs":{"value":{"type":PAYLOAD,"value":{"some":{"some":"7"}}}}}]);
+    raw["edges"] = json!([
+        edge(1, 1, "value", 2, "value"),
+        edge(2, 3, "result", 2, "fallback")
+    ]);
+    raw["exports"] = json!([export(2, "result")]);
+    let doc = from_json(&raw.to_string()).unwrap();
+    let plan = Arc::new(compile(&doc, snapshot.clone(), &Counting::new(package)));
+    let some = |value: Value| Value::Some(Arc::new(value));
+    let error = Value::Err(Arc::new(orange_model::value::NodeError {
+        code: "core/Test".into(),
+        node: None,
+    }));
+    for (input, expected) in [
+        (Value::None, some(Value::I64(7))), // None -> fallback Ok(Some(Some(7)))
+        (some(Value::None), Value::None),   // Some(Ok(None)) -> Ok(None)
+        (some(some(Value::None)), some(Value::None)), // Some(Ok(Some(None)))
+        (some(some(Value::I64(5))), some(Value::I64(5))),
+        (some(error.clone()), error.clone()), // Some(Err) -> Err
+    ] {
+        let mut frame = start(plan.clone(), &doc, &snapshot, 0, 0, DataOptions::default());
+        frame.begin_epoch().unwrap();
+        frame.set_input(0, input.clone()).unwrap();
+        assert_eq!(
+            frame.export(0).unwrap().unwrap().outcome,
+            Ok(&expected),
+            "{input:?}"
+        );
+    }
+    let mut frame = start(plan, &doc, &snapshot, 0, 0, DataOptions::default());
+    frame.begin_epoch().unwrap();
+    // A present value must carry its Some box; the bare payload is not admitted.
+    assert!(frame.set_input(0, Value::I64(5)).is_err());
+}
+
+#[test]
 fn activation_fuel_spans_epochs_and_exhaustion_is_sticky() {
     let (package, snapshot) = catalog();
     let doc = graph(
