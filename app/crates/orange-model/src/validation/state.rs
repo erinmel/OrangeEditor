@@ -28,7 +28,25 @@ use super::diagnostic::{Diagnostic, DiagnosticCode, Subject, sort_diagnostics};
 use super::functions::{FunctionSummary, LeafEffects};
 use super::regions::{RegionIndex, RegionKind, RegionRoot};
 
-type Writes = BTreeMap<VariableId, BTreeSet<WriteOperation>>;
+type Writes = BTreeMap<VariableId, BTreeSet<Write>>;
+
+/// One write to a variable. `wrapping` records that it is a core `update-variable` Add whose
+/// integer overflow policy is `wrapping`, the evidence an Add exemption needs; calls and
+/// package effects carry no such evidence.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct Write {
+    operation: WriteOperation,
+    wrapping: bool,
+}
+
+impl Write {
+    fn of(operation: WriteOperation) -> Self {
+        Self {
+            operation,
+            wrapping: false,
+        }
+    }
+}
 
 /// Checks every Fork against the region index. Read-only; nodes or functions without
 /// accepted metadata contribute no writes (their own diagnostics keep the report invalid).
@@ -206,7 +224,7 @@ fn region_members(
 fn compatible(
     document: &GraphDocument,
     variable: VariableId,
-    writing: &[&BTreeSet<WriteOperation>],
+    writing: &[&BTreeSet<Write>],
 ) -> bool {
     let Some(decl) = document.variables().get(&variable) else {
         return true;
@@ -214,16 +232,14 @@ fn compatible(
     if decl.conflict == ConflictPolicy::LastWriterWins {
         return true;
     }
-    let operations: BTreeSet<_> = writing.iter().flat_map(|ops| ops.iter().copied()).collect();
+    let writes: BTreeSet<Write> = writing.iter().flat_map(|ops| ops.iter().copied()).collect();
+    let operations: BTreeSet<_> = writes.iter().map(|write| write.operation).collect();
     let mut iter = operations.iter();
     let (Some(&operation), None) = (iter.next(), iter.next()) else {
         return false;
     };
-    match operation {
-        WriteOperation::Add | WriteOperation::And | WriteOperation::Or | WriteOperation::Xor => {
-            true
-        }
-        WriteOperation::Min | WriteOperation::Max => TypeTerm::parse(&decl.ty)
+    let core_scalar = |names: &[&str]| {
+        TypeTerm::parse(&decl.ty)
             .ok()
             .as_ref()
             .and_then(TypeTerm::named)
@@ -231,18 +247,26 @@ fn compatible(
                 named.namespace == "core"
                     && named.major == 1
                     && named.args.is_empty()
-                    && matches!(
-                        named.name.as_str(),
-                        "i32"
-                            | "i64"
-                            | "u32"
-                            | "u64"
-                            | "bool"
-                            | "string"
-                            | "duration"
-                            | "timestamp"
-                    )
-            }),
+                    && names.contains(&named.name.as_str())
+            })
+    };
+    match operation {
+        // Only fixed-width wrapping integer addition commutes exactly: checked additions can
+        // fault at an order-dependent point, and saturation or float rounding change the sum.
+        WriteOperation::Add => {
+            writes.iter().all(|write| write.wrapping) && core_scalar(&["i32", "i64", "u32", "u64"])
+        }
+        WriteOperation::And | WriteOperation::Or | WriteOperation::Xor => true,
+        WriteOperation::Min | WriteOperation::Max => core_scalar(&[
+            "i32",
+            "i64",
+            "u32",
+            "u64",
+            "bool",
+            "string",
+            "duration",
+            "timestamp",
+        ]),
         _ => false,
     }
 }
@@ -270,10 +294,15 @@ fn collect_writes(
                     .and_then(Value::as_str)
                     .and_then(WriteOperation::parse_update)
             };
+            let wrapping =
+                node.config.get("int_overflow").and_then(Value::as_str) == Some("wrapping");
             if let (Some(operation), Some(decl)) = (operation, document.variables().get(&variable))
                 && matches!(decl.scope, VarScope::Local | VarScope::Run)
             {
-                writes.entry(variable).or_default().insert(operation);
+                writes.entry(variable).or_default().insert(Write {
+                    operation,
+                    wrapping: wrapping && operation == WriteOperation::Add,
+                });
             }
         }
         ids::CALL if core => {
@@ -281,7 +310,10 @@ fn collect_writes(
                 && let Some(summary) = summaries.get(&callee)
             {
                 for (variable, operations) in &summary.run_writes {
-                    writes.entry(*variable).or_default().extend(operations);
+                    writes
+                        .entry(*variable)
+                        .or_default()
+                        .extend(operations.iter().copied().map(Write::of));
                 }
             }
         }
@@ -297,7 +329,7 @@ fn collect_writes(
                         writes
                             .entry(item.variable)
                             .or_default()
-                            .insert(item.operation);
+                            .insert(Write::of(item.operation));
                     }
                 }
             }

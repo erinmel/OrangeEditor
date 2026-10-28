@@ -690,12 +690,18 @@ fn fork_updates_share_local_cells_and_serialize_dynamic_operands() {
         let mut fork = core(2, "fork");
         fork["config"] = json!({"join":"all"});
         fork["variadic"] = json!({"branch":{"order":[7,2],"next":8}});
+        // Wrapping integer addition is the evidence that lets two branches add concurrently.
+        let wrapping_add = |n| {
+            let mut node = update(n, 100, "add", "core/u64@1", json!(0), None);
+            node["config"]["int_overflow"] = json!("wrapping");
+            node
+        };
         let (doc, plan) = state_plan(
             vec![
                 core(1, "on-start"),
                 fork,
-                update(3, 100, "add", "core/u64@1", json!(0), None),
-                update(4, 100, "add", "core/u64@1", json!(0), None),
+                wrapping_add(3),
+                wrapping_add(4),
                 math(5, "add", 0, 1),
                 var_node(6, "get-variable", 100),
                 var_node(7, "set-variable", 101),
