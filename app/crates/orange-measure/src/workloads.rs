@@ -197,11 +197,10 @@ fn map_entries(entries: u64) -> Json {
 
 /// The `map_entries` value as the runtime represents it.
 fn map_value(entries: u64) -> Value {
-    Value::Map(Arc::new(MapRepr {
-        entries: (0..entries)
-            .map(|i| (Value::Str(Arc::new(format!("k{i:05}"))), Value::U64(i)))
-            .collect(),
-    }))
+    let entries: Vec<_> = (0..entries)
+        .map(|i| (Value::Str(Arc::new(format!("k{i:05}"))), Value::U64(i)))
+        .collect();
+    Value::Map(Arc::new(MapRepr::new(entries).expect("keys are distinct")))
 }
 
 /// Count(1000) whose body compare-and-sets a map variable to an equal literal, with

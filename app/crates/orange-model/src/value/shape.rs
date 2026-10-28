@@ -2,11 +2,12 @@
 //! [`Value`] against it (12 §7). Shapes come from the parsed [`TypeTerm`], never from
 //! type-expression text, and own the option/result boxing rule and nominal byte charges.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
+use std::sync::Arc;
 
 use thiserror::Error;
 
-use super::{ListRepr, Value};
+use super::{ListRepr, SMALL_MAP, Value};
 use crate::id::TypeExpr;
 use crate::type_term::{MAX_NESTING, TypeTerm};
 
@@ -16,11 +17,6 @@ pub const VALUE_CHARGE: usize = 16;
 pub const MAP_ENTRY_CHARGE: usize = 32;
 /// Nominal retained bytes of an error envelope, before its code text.
 pub const ERROR_CHARGE: usize = 2 * VALUE_CHARGE;
-
-/// Maps with at most this many entries match keys pairwise, so checking and comparing
-/// the common small map allocates nothing. Larger maps use one presized hash table,
-/// keeping the cost linear.
-const SMALL_MAP: usize = 16;
 
 /// Supported Core leaves and recursively typed containers. Values follow the model's
 /// boxed/unboxed representation, not JSON null.
@@ -274,19 +270,11 @@ impl ValueShape {
                 Ok(())
             }
             (Self::Map(key, ty), Value::Map(map)) if key.native_hash() => {
-                let entries = &map.entries;
+                // Keys are unique by construction (`MapRepr::new`).
+                let entries = map.entries();
                 minimum(*left, entries.len(), MAP_ENTRY_CHARGE)?;
-                let mut seen =
-                    (entries.len() > SMALL_MAP).then(|| HashSet::with_capacity(entries.len()));
-                for (i, (k, v)) in entries.iter().enumerate() {
+                for (k, v) in entries {
                     key.check(k, left, depth + 1)?;
-                    let repeated = match &mut seen {
-                        Some(keys) => !keys.insert(k),
-                        None => entries[..i].iter().any(|(other, _)| other == k),
-                    };
-                    if repeated {
-                        return Err(InvalidType);
-                    }
                     ty.check(v, left, depth + 1)?;
                 }
                 Ok(())
@@ -344,26 +332,33 @@ impl ValueShape {
                 let (Value::Map(a), Value::Map(b)) = (a, b) else {
                     return false;
                 };
-                if a.entries.len() != b.entries.len() {
+                if Arc::ptr_eq(a, b) {
+                    return true;
+                }
+                let (a, b) = (a.entries(), b.entries());
+                if a.len() != b.len() {
                     return false;
                 }
-                // Both maps were checked, so each key has at most one match.
-                let index = (b.entries.len() > SMALL_MAP).then(|| {
-                    b.entries
-                        .iter()
-                        .map(|(k, v)| (k, v))
-                        .collect::<HashMap<_, _>>()
-                });
+                // Equal maps usually share insertion order: walk both while the keys agree.
+                // Keys are unique, so the rest of `a` can only match the rest of `b`.
+                let mut same = 0;
+                for ((ka, va), (kb, vb)) in a.iter().zip(b) {
+                    if ka != kb {
+                        break;
+                    }
+                    if !inner.equal(va, vb) {
+                        return false;
+                    }
+                    same += 1;
+                }
+                let (a, b) = (&a[same..], &b[same..]);
+                let index = (b.len() > SMALL_MAP)
+                    .then(|| b.iter().map(|(k, v)| (k, v)).collect::<HashMap<_, _>>());
                 let find = |k: &Value| match &index {
                     Some(values) => values.get(k).copied(),
-                    None => b
-                        .entries
-                        .iter()
-                        .find(|(other, _)| other == k)
-                        .map(|(_, v)| v),
+                    None => b.iter().find(|(other, _)| other == k).map(|(_, v)| v),
                 };
-                a.entries
-                    .iter()
+                a.iter()
                     .all(|(k, v)| find(k).is_some_and(|other| inner.equal(v, other)))
             }
             _ => a == b,
@@ -374,7 +369,7 @@ impl ValueShape {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::value::{ListBuilder, ListPushError, MapRepr, NodeError};
+    use crate::value::{DuplicateKey, ListBuilder, ListPushError, MapRepr, NodeError};
     use std::sync::Arc;
 
     fn shape(text: &str) -> Option<ValueShape> {
@@ -475,15 +470,6 @@ mod tests {
             list.checked_charge(&Value::List(Arc::new(ListRepr::I64(vec![1].into()))), 64),
             Err(InvalidType)
         );
-        let map = ValueShape::Map(Box::new(ValueShape::U64), Box::new(ValueShape::String));
-        let duplicate = Value::Map(Arc::new(MapRepr {
-            entries: vec![
-                (Value::U64(1), Value::Str(Arc::new("a".into()))),
-                (Value::U64(1), Value::Str(Arc::new("b".into()))),
-            ]
-            .into(),
-        }));
-        assert_eq!(map.checked_charge(&duplicate, 1024), Err(InvalidType));
         assert!(!ValueShape::List(Box::new(ValueShape::F64)).native_eq());
         // Bare and result errors charge the same envelope.
         let code = "core/Test";
@@ -509,10 +495,10 @@ mod tests {
                 Value::List(Arc::new(ListRepr::I32(vec![n].into()))),
             )
         };
-        let map = |entries| Value::Map(Arc::new(MapRepr { entries }));
-        let a = map(vec![entry("z", 1), entry("a", 2)].into());
-        let b = map(vec![entry("a", 2), entry("z", 1)].into());
-        let c = map(vec![entry("a", 2), entry("z", 3)].into());
+        let map = |entries: Vec<_>| Value::Map(Arc::new(MapRepr::new(entries).unwrap()));
+        let a = map(vec![entry("z", 1), entry("a", 2)]);
+        let b = map(vec![entry("a", 2), entry("z", 1)]);
+        let c = map(vec![entry("a", 2), entry("z", 3)]);
         assert_ne!(a, b);
         assert_eq!(ty.equal_values(&a, &b), Some(true));
         assert_eq!(ty.equal_values(&a, &c), Some(false));
@@ -520,45 +506,39 @@ mod tests {
 
     #[test]
     fn small_and_large_maps_reject_duplicates_and_compare_by_key() {
-        let map = |entries: Vec<(Value, Value)>| {
-            Value::Map(Arc::new(MapRepr {
-                entries: entries.into(),
-            }))
-        };
-        let ints = |keys: &[u64]| {
-            map(keys
-                .iter()
+        let map =
+            |entries: Vec<(Value, Value)>| Value::Map(Arc::new(MapRepr::new(entries).unwrap()));
+        let pairs = |keys: &[u64]| -> Vec<(Value, Value)> {
+            keys.iter()
                 .map(|&k| (Value::U64(k), Value::I64(k as i64)))
-                .collect())
+                .collect()
         };
+        let ints = |keys: &[u64]| map(pairs(keys));
         let ty = ValueShape::Map(Box::new(ValueShape::U64), Box::new(ValueShape::I64));
         let nested = ValueShape::Map(Box::new(ValueShape::String), Box::new(ty.clone()));
         let text = |s: &str| Value::Str(Arc::new(s.into()));
         // Both sides of the pairwise/hash cutoff.
-        for n in [1, SMALL_MAP, SMALL_MAP + 1, 100] {
+        for n in [2, SMALL_MAP, SMALL_MAP + 1, 100] {
             let keys: Vec<u64> = (0..n as u64).collect();
             let reversed: Vec<u64> = keys.iter().rev().copied().collect();
             let (a, b) = (ints(&keys), ints(&reversed));
             assert_eq!(ty.equal_values(&a, &b), Some(true), "{n}");
+            // A shared prefix, then the same keys in another order.
+            let mut tail_swapped = keys.clone();
+            tail_swapped.swap(n - 2, n - 1);
+            assert_eq!(ty.equal_values(&a, &ints(&tail_swapped)), Some(true), "{n}");
             let mut shifted = keys.clone();
             shifted[n - 1] = n as u64; // Same length, one different key.
             assert_eq!(ty.equal_values(&a, &ints(&shifted)), Some(false), "{n}");
+            let mut changed = pairs(&keys);
+            changed[n - 1].1 = Value::I64(-1); // Same keys in order, one different value.
+            assert_eq!(ty.equal_values(&a, &map(changed)), Some(false), "{n}");
             let mut repeated = keys.clone();
             repeated.push(0); // The repeat comes last, after the first key.
-            assert_eq!(
-                ty.checked_charge(&ints(&repeated), usize::MAX),
-                Err(InvalidType),
-                "{n}"
-            );
-            assert_eq!(
-                ty.equal_values(&ints(&repeated), &ints(&repeated)),
-                None,
-                "{n}"
-            );
-            // A duplicate inside a nested map is rejected; nested maps compare by key.
+            assert_eq!(MapRepr::new(pairs(&repeated)), Err(DuplicateKey), "{n}");
+            // Nested maps compare by key.
             let outer = |inner| map(vec![(text("x"), inner)]);
             assert_eq!(nested.equal_values(&outer(a), &outer(b)), Some(true), "{n}");
-            assert!(!nested.accepts(&outer(ints(&repeated))), "{n}");
         }
         // Equal values under different keys are not equal maps.
         let swapped = map(vec![

@@ -62,9 +62,7 @@ fn typed_value() -> impl Strategy<Value = Typed> {
                         .collect();
                     typed(
                         &format!("core/map@1<core/string@1,{}>", value.ty),
-                        Value::Map(Arc::new(MapRepr {
-                            entries: entries.into(),
-                        })),
+                        Value::Map(Arc::new(MapRepr::new(entries).unwrap())),
                     )
                 }),
             (inner, any::<bool>()).prop_map(|(inner, some)| {

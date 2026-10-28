@@ -574,9 +574,7 @@ fn bytes_lists_and_timestamp_updates_use_the_existing_atomic_contract() {
     drain(&mut run, 1);
     assert_eq!(
         run.variable(id(100).parse().unwrap()),
-        Some(&Value::Map(Arc::new(MapRepr {
-            entries: Box::new([])
-        })))
+        Some(&Value::Map(Arc::default()))
     );
 }
 #[test]
@@ -632,13 +630,13 @@ fn pure_collection_exports_preserve_typed_values_and_map_order() {
         (
             "core/map@1<core/string@1,core/u64@1>",
             json!([["z", "7"], ["a", "2"]]),
-            Value::Map(Arc::new(MapRepr {
-                entries: vec![
+            Value::Map(Arc::new(
+                MapRepr::new(vec![
                     (Value::Str(Arc::new("z".into())), Value::U64(7)),
                     (Value::Str(Arc::new("a".into())), Value::U64(2)),
-                ]
-                .into(),
-            })),
+                ])
+                .unwrap(),
+            )),
         ),
     ] {
         let mut node = core(1, "select");
@@ -694,27 +692,23 @@ fn malformed_or_oversized_host_maps_are_rejected_before_cache_publication() {
     )
     .unwrap();
     data.begin_epoch().unwrap();
-    let key = Value::Str(Arc::new("key".into()));
-    let duplicate = Value::Map(Arc::new(MapRepr {
-        entries: vec![(key.clone(), Value::U64(1)), (key, Value::U64(2))].into(),
-    }));
+    // A host cannot build a map with a repeated key; a wrongly typed one is refused.
+    let wrong_key = Value::Map(Arc::new(
+        MapRepr::new(vec![(Value::U64(1), Value::U64(1))]).unwrap(),
+    ));
     assert_eq!(
-        data.set_input(index, duplicate),
+        data.set_input(index, wrong_key),
         Err(DataError::InvalidInput { index })
     );
-    let huge = Value::Map(Arc::new(MapRepr {
-        entries: vec![(Value::Str(Arc::new("X".repeat(4096))), Value::U64(1))].into(),
-    }));
+    let huge = Value::Map(Arc::new(
+        MapRepr::new(vec![(
+            Value::Str(Arc::new("X".repeat(4096))),
+            Value::U64(1),
+        )])
+        .unwrap(),
+    ));
     assert_eq!(data.set_input(index, huge), Err(DataError::ResourceLimit));
-    assert_eq!(
-        data.set_input(
-            index,
-            Value::Map(Arc::new(MapRepr {
-                entries: Box::new([])
-            }))
-        ),
-        Ok(())
-    );
+    assert_eq!(data.set_input(index, Value::Map(Arc::default())), Ok(()));
 }
 #[test]
 fn suspended_iteration_can_move_to_another_host_thread_before_stop() {

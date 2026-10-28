@@ -56,7 +56,7 @@ impl ForEachCursor {
 pub(super) fn collection_len(value: &Value) -> Option<usize> {
     match value {
         Value::List(items) => Some(items.len()),
-        Value::Map(map) => Some(map.entries.len()),
+        Value::Map(map) => Some(map.entries().len()),
         _ => None,
     }
 }
@@ -88,7 +88,7 @@ fn frame(
         ),
         Value::Map(map) => {
             let (k, v) = map
-                .entries
+                .entries()
                 .get(index as usize)
                 .ok_or(RunError::InvalidState)?;
             (k.clone(), Some(v.clone()))
