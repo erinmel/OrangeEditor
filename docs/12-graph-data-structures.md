@@ -563,7 +563,7 @@ Implementation notes (WU-00/00b.4, `orange_model::value::literal_codec`):
 - **Schemas:** record and enum layouts come from a `Schemas` provider (the registry later).
 - **Nesting budget:** 64 levels for types and literals (proposed).
 - **JSON text budget:** `core/json@1` text may nest arrays and objects at most 64 levels and hold at most 1 MiB (`MAX_JSON_TEXT_BYTES`, proposed). Both are checked before parsing, and failures report `TooDeep` and `TooLarge`.
-- **Map keys:** duplicate keys are detected with a hash set. `Value` implements `Eq` and `Hash` consistently with its structural equality, so the check takes expected linear time.
+- **Map keys:** maps are built only by `MapRepr::new` (or empty by `Default`), which rejects a repeated key (`DuplicateKey`; the codec reports `LiteralError::DuplicateMapKey`). Up to 16 entries are compared pairwise; larger maps use one presized hash set. `Value` implements `Eq` and `Hash` consistently with its structural equality, so the check takes expected linear time. Because keys are unique by construction, encoding, shape checks and equality never search for duplicates.
 
 ### 6.2 Presentation message wire contract
 
@@ -600,7 +600,7 @@ pub enum Value {
 pub enum ListRepr { Bool(BitBox), I32(Box<[i32]>), I64(Box<[i64]>), U32(Box<[u32]>), U64(Box<[u64]>),
                     F32(Box<[f32]>), F64(Box<[f64]>), Str(Box<[ArcStr]>), Values(Box<[Value]>) }
 pub struct RecordRepr { pub ty: TypeKey, pub fields: Box<[Option<Value>]> } // schema order; None = absent
-pub struct MapRepr { /* insertion-ordered; keys restricted per 11 §5.2 */ }
+pub struct MapRepr { /* insertion-ordered; unique keys, restricted per 11 §5.2 */ }
 pub enum JsonRepr { Null, Bool(bool), Number(NumberText), String(ArcStr), Array(Box<[JsonRepr]>), Object(/* ordered */) }
 ```
 
