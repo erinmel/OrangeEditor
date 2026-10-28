@@ -464,33 +464,37 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
         build_node(context, &mut cfg, &targets, node.id);
     }
 
-    // Consumers: owned exec nodes, reading their data inputs and the cones behind them.
+    // Consumers: owned exec nodes, reading their data inputs and the cones behind them. A
+    // cone does not depend on its consumer, so it is collected once per producer and only
+    // the consumer-dependent requirement is evaluated per consumer.
+    let mut cones: BTreeMap<NodeId, Vec<&DataEdge>> = BTreeMap::new();
     let mut uses = AvailabilityUses::new();
     for consumer in body.nodes.keys() {
         let Some(region) = regions.owners.get(consumer) else {
             continue;
         };
         let top = top_of(regions, region);
-        let mut stack: Vec<(&DataEdge, &Edge)> = Vec::new();
-        for item in incoming.get(consumer).into_iter().flatten() {
-            stack.push((item, item.edge));
-        }
         let mut visited = BTreeSet::new();
-        while let Some((item, direct)) = stack.pop() {
-            if !visited.insert(item.edge.id) {
-                continue;
-            }
-            let producer = item.edge.from.node;
-            if matches!(
-                resolved.get(&producer).map(|signature| signature.kind),
-                Some(NodeKind::Pure | NodeKind::Volatile)
-            ) && !regions.owners.contains_key(&producer)
-            {
-                for upstream in incoming.get(&producer).into_iter().flatten() {
-                    stack.push((upstream, direct));
+        // Highest edge id first: a cone edge behind several inputs is reported on the
+        // highest one.
+        for item in incoming.get(consumer).into_iter().flatten().rev() {
+            let direct = item.edge;
+            let producer = direct.from.node;
+            let behind: &[&DataEdge] = if expands(context, producer) {
+                cones
+                    .entry(producer)
+                    .or_insert_with(|| cone(context, &incoming, producer))
+            } else {
+                &[]
+            };
+            for item in std::iter::once(item).chain(behind.iter().copied()) {
+                if !visited.insert(item.edge.id) {
+                    continue;
                 }
-            }
-            if let Some(requirement) = requirement(context, item, region, &top) {
+                let producer = item.edge.from.node;
+                let Some(requirement) = requirement(context, item, region, &top) else {
+                    continue;
+                };
                 let subject = Subject::new(
                     Some(*consumer),
                     Some(direct.to.port.clone()),
@@ -534,6 +538,46 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
             }
         }
     }
+}
+
+/// True for an unowned pure or volatile producer, whose inputs its consumers read lazily.
+fn expands(context: &Context, producer: NodeId) -> bool {
+    matches!(
+        context
+            .resolved
+            .get(&producer)
+            .map(|signature| signature.kind),
+        Some(NodeKind::Pure | NodeKind::Volatile)
+    ) && !context.regions.owners.contains_key(&producer)
+}
+
+/// The edges behind an expanding `producer` that may carry a requirement: every input edge
+/// reachable upstream through expanding producers, keeping only payload, iteration and
+/// execution sources ([`requirement`] ignores the rest), each once.
+fn cone<'e, 'a>(
+    context: &Context,
+    incoming: &'e BTreeMap<NodeId, Vec<DataEdge<'a>>>,
+    producer: NodeId,
+) -> Vec<&'e DataEdge<'a>> {
+    let mut cone = Vec::new();
+    let mut visited = BTreeSet::new();
+    let mut stack: Vec<_> = incoming.get(&producer).into_iter().flatten().collect();
+    while let Some(item) = stack.pop() {
+        if !visited.insert(item.edge.id) {
+            continue;
+        }
+        let upstream = item.edge.from.node;
+        if expands(context, upstream) {
+            stack.extend(incoming.get(&upstream).into_iter().flatten());
+        }
+        if !matches!(
+            item.from.source,
+            None | Some(OutputSource::Computed | OutputSource::State)
+        ) {
+            cone.push(item);
+        }
+    }
+    cone
 }
 
 fn requirement(
