@@ -190,6 +190,20 @@ impl ListBuilder {
         })
     }
 
+    /// Reserve room for exactly `additional` more elements, for a producer that knows its
+    /// result length, so the list is built in one allocation instead of by doubling.
+    pub fn reserve(&mut self, additional: usize) -> Result<(), ListPushError> {
+        macro_rules! reserve {
+            ($($variant:ident),*) => {
+                match &mut self.0 {
+                    $(Packed::$variant(items) => items.try_reserve_exact(additional),)*
+                }
+            };
+        }
+        reserve!(Bool, I32, I64, U32, U64, F32, F64, Str, Values)
+            .map_err(|_| ListPushError::Capacity)
+    }
+
     pub fn push(&mut self, value: Value) -> Result<(), ListPushError> {
         macro_rules! push {
             ($($variant:ident),*) => {

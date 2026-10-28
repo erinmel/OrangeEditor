@@ -277,16 +277,17 @@ impl<S: Schemas> Codec<'_, S> {
             ("list", items) => {
                 let [element] = args(term, items)?;
                 let array = json.as_array().ok_or_else(|| mismatch(term))?;
+                let list_error = |error| match error {
+                    ListPushError::Mismatch => mismatch(term),
+                    ListPushError::Capacity => LiteralError::TooLarge {
+                        ty: term.to_string(),
+                    },
+                };
                 let mut list = ListBuilder::new(ValueShape::resolve(element).as_ref());
+                list.reserve(array.len()).map_err(list_error)?;
                 for item in array {
-                    list.push(self.decode(item, element, depth + 1)?).map_err(
-                        |error| match error {
-                            ListPushError::Mismatch => mismatch(term),
-                            ListPushError::Capacity => LiteralError::TooLarge {
-                                ty: term.to_string(),
-                            },
-                        },
-                    )?;
+                    list.push(self.decode(item, element, depth + 1)?)
+                        .map_err(list_error)?;
                 }
                 Value::List(Arc::new(list.finish()))
             }

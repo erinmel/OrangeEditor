@@ -113,7 +113,13 @@ impl ZoneMachine {
                 let ValueShape::List(element) = result else {
                     return Err(MachineError::Contract);
                 };
-                machine.builder = Some(ListBuilder::new(Some(element)));
+                let mut builder = ListBuilder::new(Some(element));
+                // Map's result has exactly the source's length; Filter's is unknown. The
+                // reservation is at most one more list of the already-retained source's size.
+                if kind == ZoneKind::Map {
+                    builder.reserve(items.len())?;
+                }
+                machine.builder = Some(builder);
                 // An empty list charges one value; each push adds its checked element charge.
                 machine.builder_charge = VALUE_CHARGE;
                 machine.source = Some(items.clone());
