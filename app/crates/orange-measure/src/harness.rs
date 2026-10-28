@@ -175,6 +175,13 @@ impl RunSession {
     }
 }
 
+impl RunSession {
+    /// The run, for a caller that inspects it after the session ends.
+    pub fn into_run(self) -> Run {
+        self.run
+    }
+}
+
 impl Session for RunSession {
     type Outcome = (Option<Value>, usize);
 

@@ -79,4 +79,10 @@ fn main() {
             workloads::oversized_map_zone_peak_bytes()
         );
     }
+    if "disposed-run".contains(filter.as_str()) {
+        println!(
+            "disposed run: {} heap bytes released only on drop",
+            workloads::disposed_run_retained_bytes()
+        );
+    }
 }
