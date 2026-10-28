@@ -223,3 +223,5 @@ Option/Result composition trace (2026-10-28; FR-08/45):
 Saved graph JSON, literals and diagnostics are unchanged. Values whose type nests an option inside an unboxed result success now carry the `Some` box. Executed qualification is recorded in 10.
 
 Checked document construction trace (2026-10-28; FR-05, NFR-05; ADR-15/21): Serde deserialization of `GraphDocument` now passes the importer's format, version, cross-body identity and lock checks, so a document `from_json` refuses cannot reach analysis or compilation through the ordinary Serde trait. Unknown-field round trips, importer error order and saved bytes are unchanged. Duplicate-key and quota checks remain with the bounded importer. Verification is recorded in 10.
+
+Type lock preservation trace (2026-10-28; FR-02/05): copy/paste now carries every source type lock and merges it with the new `PutTypeLock` command, so data whose codec is unavailable stays unavailable after paste, matching locks are reused, and a conflicting target lock rejects the whole paste. `RemoveTypeLock` makes a codec change explicit. Saved graph JSON is unchanged. Verification is recorded in 10.
