@@ -22,14 +22,14 @@ use crate::document::{
     GraphDocument, NodeInstance, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind,
     Suspends, SuspensionContractIssue, VarScope, suspension_contract_issue,
 };
-use crate::edit::DeclId;
+use crate::id::DeclId;
 use crate::id::{DefinitionId, PortId};
+use crate::origin::HostOrigin;
 use crate::type_term::TypeTerm;
 use crate::types::{
     CapabilityError, CapabilityRequest, Constraint, NumericOperation, TypeRegistry,
     TypeResolveError,
 };
-use crate::validation::HostOrigin;
 use crate::variable::WriteOperation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]

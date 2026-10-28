@@ -13,7 +13,7 @@ use crate::document::{
     BodyRef, FunctionDecl, GraphDocument, NodeInstance, PortDescriptor, PortDirection, PortKind,
     TypeParam,
 };
-use crate::edit::DeclId;
+use crate::id::DeclId;
 use crate::id::FunctionId;
 use crate::type_term::TypeTerm;
 

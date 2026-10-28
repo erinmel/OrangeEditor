@@ -3,7 +3,8 @@
 //! Contracts: `docs/12-graph-data-structures.md` (layout, JSON, transactions, values) and
 //! `docs/11-graph-language.md` (semantics). No Bevy, rendering, async or I/O dependency.
 //!
-//! Layers, lowest first: `id` and `type_term` (identifiers and type syntax); `document`
+//! Layers, lowest first: `id`, `type_term` and `origin` (identifiers, declaration identity,
+//! type syntax and host provenance); `document`
 //! (persisted structures and the v1 JSON codec); `catalog` (host node contracts and provider
 //! identity); `value` (runtime values and the typed literal codec); `edit` (transactions and
 //! undo); `index`, `signature` and `paste` (derived lookups, semantic signatures and
@@ -19,6 +20,7 @@ pub mod error;
 pub mod id;
 pub mod index;
 pub mod inference;
+pub mod origin;
 pub mod paste;
 pub mod scalar;
 pub mod signature;

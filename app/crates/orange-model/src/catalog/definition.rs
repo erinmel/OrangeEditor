@@ -8,7 +8,7 @@ use crate::config_pointer::pointer_get;
 use crate::document::{
     ConfigValue, DefinitionRef, NodeKind, PortDescriptor, Suspends, TypeParam, TypeParamName,
 };
-use crate::edit::DeclId;
+use crate::id::DeclId;
 use crate::id::TypeExpr;
 
 /// Host-supplied contract of one definition version: its declared ports before type
