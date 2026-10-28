@@ -176,3 +176,50 @@ fn newer_version_is_reported_before_duplicate_keys() {
         Err(CodecError::UnsupportedVersion { found: 2 })
     ));
 }
+
+/// Rejected input reaches neither `Display` nor `Debug`: an imported field may hold
+/// anything, a credential pasted by mistake included. Positions stay available.
+#[test]
+fn rejected_input_never_reaches_error_formatting() {
+    const SENTINEL: &str = "SENTINEL-7c1e\u{7}\n";
+    let base = minimal_document(json!({"nodes": [branch_node(1)]}));
+    let lock = json!({"id": SENTINEL, "version": "1", "content_digest": format!("sha256:{}", "a".repeat(64))});
+    let key = serde_json::to_string(SENTINEL).unwrap();
+    let cases = [
+        minimal_document(json!({"graph_id": SENTINEL})),
+        json!({"format": SENTINEL, "format_version": 1}).to_string(),
+        base.replacen(
+            "\"config\":{}",
+            &format!("\"config\":{{{key}:1,{key}:2}}"),
+            1,
+        ),
+        minimal_document(json!({"package_lock": [lock.clone(), lock]})),
+        minimal_document(
+            json!({"nodes": [{"id": node_id(1), "definition_id": SENTINEL,
+            "definition_version": 1, "config_version": 1, "config": {}}]}),
+        ),
+        minimal_document(
+            json!({"variables": [{"id": "30000000-0000-4000-8000-000000000001",
+            "name": "x", "type": SENTINEL, "scope": "run"}]}),
+        ),
+        minimal_document(
+            json!({"variables": [{"id": "30000000-0000-4000-8000-000000000001",
+            "name": "x", "type": "core/i64@1", "scope": SENTINEL}]}),
+        ),
+        minimal_document(json!({"nodes": [branch_node(1), branch_node(2)],
+            "edges": [{"id": common::edge_id(1), "from": {"node": node_id(1), "port": SENTINEL},
+                "to": {"node": node_id(2), "port": "in"}}]})),
+    ];
+    for text in cases {
+        let error = from_json(&text).unwrap_err();
+        for shown in [error.to_string(), format!("{error:?}")] {
+            assert!(!shown.contains("SENTINEL"), "{shown}");
+            assert!(!shown.chars().any(char::is_control), "{shown:?}");
+        }
+        assert!(error.message_key().starts_with("core/import-"));
+        if let CodecError::Json(json) = &error {
+            assert!(json.line > 0 && json.column > 0, "{json}");
+            assert!(!json.detail.reveal().is_empty());
+        }
+    }
+}
