@@ -1,10 +1,12 @@
 //! Checked immutable data and bounded structured-control plans.
-//! Pure/seeded data demand supports Select/And/Or/Coalesce/Try. Control plans
-//! additionally admit the documented entries, Get/Set, branches, Sequence,
-//! Count/While/ForEach, Fork, scalar Switch, Match-result, Gate/DoOnce/FlipFlop/Register
-//! plus Core variable updates and virtual Wait/Yield. Pure/data
-//! plans support bounded graph-local Pure calls; data plans also support seeded
-//! volatile calls. Other volatile/action/async calls and services remain unsupported.
+//!
+//! Current profile: pure/seeded data demand supports Select/And/Or/Coalesce/Try, the
+//! Repeat, Fold, Map and Filter iteration zones, and bounded graph-local Pure calls; data
+//! plans also support seeded volatile calls. Control plans additionally admit the
+//! documented entries, Get/Set, branches, Sequence, Count/While/ForEach, Fork, scalar
+//! Switch, Match-result, Gate/DoOnce/FlipFlop/Register, Core variable updates, virtual
+//! Wait/Yield and graph-local Action/Async calls. Events, package-provided function bodies,
+//! clock readers and host services remain unsupported. The README tracks this profile.
 
 mod calls;
 mod compile;
