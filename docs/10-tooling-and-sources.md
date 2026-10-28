@@ -1956,3 +1956,23 @@ Branch `core/zone-builder-capacity` from `dev` 75caaef (same toolchain; Cargo.lo
 **Checks:** `cargo test --workspace --locked` passes with 944 passed, 0 failed, 15 ignored, in 90 result groups. fmt, clippy `-D warnings`, rustdoc `-D warnings` and the metadata policy pass.
 
 **Frame-local addresses deferred.** The compiler-resolved frame-local addresses step was measured and not taken. It would remove only a binary search over one function's few local variables per access. The function-call workload is dominated by its 3 allocations per call. Encoding slot indices into public compiled plan types would add surface for no measurable gain, so it stays deferred until a workload shows local-access cost.
+
+### Unique map keys by construction — 2026-10-27
+
+Branch `core/map-check-alloc` from `dev` 4a13f48 (same toolchain; Cargo.lock unchanged).
+
+- **Change:** `MapRepr`'s entries are private. `MapRepr::new` checks key uniqueness once, when a map is built, and returns `DuplicateKey` otherwise; `entries()` reads them. Shape checks no longer search for duplicates, and encoding drops its duplicate set. Decoding builds through `MapRepr::new`, so a literal's keys are checked once instead of twice.
+- **Equality:** map equality returns at once for the same shared map, then walks both maps while their keys agree in order. Only the remaining, differently ordered tail is matched by key, pairwise up to 16 entries, otherwise through one presized index. Order-independent equality is unchanged.
+- **Behavior:** a host can no longer build a map with a repeated key, so host-input admission cannot meet one. Codec errors are unchanged, except that a malformed later entry is now reported before a repeated key.
+- **Measured** with `orange-measure` map workloads: release, same machine, 15 runs per workload. All existing map tests pass, with duplicate cases moved to `MapRepr::new`.
+
+| Workload, per run | Allocations before → after | Bytes before → after | Run p50 before → after |
+|---|---:|---:|---:|
+| Map CAS, 1,000 entries, 1,000 updates | 3,032 → 30 | 55,387,753 → 6,857 | 47.4 → 10.8 ms |
+| Map CAS, 16 entries, 1,000 updates | 30 → 30 | 6,857 → 6,857 | 1.80 → 0.53 ms |
+| Host map input, 1,000 entries, 1,000 epochs | 1,013 → 13 | 18,448,585 → 585 | 15.8 → 3.8 ms |
+| Host map input, 16 entries, 1,000 epochs | 13 → 13 | 585 → 585 | 0.59 → 0.15 ms |
+
+**Checks:** `cargo test --workspace --locked` passes with 944 passed, 0 failed, 15 ignored, in 90 result groups. fmt, clippy `-D warnings`, rustdoc `-D warnings` and the metadata policy pass.
+
+**Next candidates:** calls and forks still make about 3 allocations each, because invocation and region storage are not pooled, and pump budgets count fine-grained work items.

@@ -11,6 +11,7 @@ mod base64;
 pub mod literal_codec;
 pub mod shape;
 
+use std::collections::HashSet;
 use std::hash::{Hash, Hasher};
 use std::mem::discriminant;
 use std::sync::Arc;
@@ -239,10 +240,41 @@ impl ListBuilder {
     }
 }
 
-/// Insertion-ordered entries with unique, non-float keys (11 §5.2).
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+/// Insertion-ordered entries with unique, non-float keys (11 §5.2). Uniqueness is checked
+/// once, when the map is built, so shape checks and comparisons never search for
+/// duplicates.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct MapRepr {
-    pub entries: Box<[(Value, Value)]>,
+    entries: Box<[(Value, Value)]>,
+}
+
+/// [`MapRepr::new`] was given the same key twice.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DuplicateKey;
+
+/// Maps with at most this many entries match keys pairwise, so building and comparing the
+/// common small map allocates nothing. Larger maps use one presized hash table, keeping
+/// the cost linear.
+const SMALL_MAP: usize = 16;
+
+impl MapRepr {
+    pub fn new(entries: impl Into<Box<[(Value, Value)]>>) -> Result<Self, DuplicateKey> {
+        let entries = entries.into();
+        let unique = if entries.len() <= SMALL_MAP {
+            entries
+                .iter()
+                .enumerate()
+                .all(|(i, (k, _))| entries[..i].iter().all(|(other, _)| other != k))
+        } else {
+            let mut seen = HashSet::with_capacity(entries.len());
+            entries.iter().all(|(k, _)| seen.insert(k))
+        };
+        unique.then_some(Self { entries }).ok_or(DuplicateKey)
+    }
+
+    pub fn entries(&self) -> &[(Value, Value)] {
+        &self.entries
+    }
 }
 
 /// Fields in schema order; `None` is an absent (missing) optional field.

@@ -8,7 +8,7 @@ use orange_model::type_term::TypeTerm;
 use orange_model::value::literal_codec::{
     EnumSchema, FieldSchema, RecordSchema, SchemaSet, VariantSchema, decode, encode,
 };
-use orange_model::value::{JsonText, ListRepr, MapRepr, RecordRepr};
+use orange_model::value::{DuplicateKey, JsonText, ListRepr, MapRepr, RecordRepr};
 use orange_model::{LiteralError, Value};
 use serde_json::{Value as Json, json};
 
@@ -123,13 +123,13 @@ fn maps_keep_order_and_reject_duplicates_and_float_keys() {
     round_trip(
         "core/map@1<core/string@1,core/i32@1>",
         json!([["b", 1], ["a", 2]]),
-        Value::Map(Arc::new(MapRepr {
-            entries: vec![
+        Value::Map(Arc::new(
+            MapRepr::new(vec![
                 (str_value("b"), Value::I32(1)),
                 (str_value("a"), Value::I32(2)),
-            ]
-            .into(),
-        })),
+            ])
+            .unwrap(),
+        )),
     );
     assert_eq!(
         decode_err(
@@ -325,24 +325,20 @@ fn every_literal_in_the_saved_graph_example_decodes() {
 
 #[test]
 fn map_encoding_rejects_what_decoding_rejects() {
-    let encode_map = |ty: &str, entries: Vec<(Value, Value)>| {
-        let value = Value::Map(Arc::new(MapRepr {
-            entries: entries.into(),
-        }));
-        encode(&ty.parse().unwrap(), &value, &schemas())
-    };
+    // A map with a repeated key cannot be built, so there is nothing to encode.
     assert_eq!(
-        encode_map(
-            "core/map@1<core/string@1,core/i32@1>",
-            vec![
-                (str_value("repeat"), Value::I32(1)),
-                (str_value("repeat"), Value::I32(2))
-            ]
-        ),
-        Err(LiteralError::DuplicateMapKey)
+        MapRepr::new(vec![
+            (str_value("repeat"), Value::I32(1)),
+            (str_value("repeat"), Value::I32(2))
+        ]),
+        Err(DuplicateKey)
     );
     assert_eq!(
-        encode_map("core/map@1<core/f64@1,core/i32@1>", vec![]),
+        encode(
+            &"core/map@1<core/f64@1,core/i32@1>".parse().unwrap(),
+            &Value::Map(Arc::default()),
+            &schemas()
+        ),
         Err(LiteralError::FloatMapKey {
             ty: "core/f64@1".into()
         }),

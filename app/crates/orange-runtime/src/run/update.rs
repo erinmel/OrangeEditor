@@ -461,12 +461,11 @@ mod tests {
         .unwrap()
     }
     fn map(entries: &[(i64, i64)]) -> Value {
-        Value::Map(Arc::new(MapRepr {
-            entries: entries
-                .iter()
-                .map(|&(k, v)| (Value::I64(k), Value::I64(v)))
-                .collect(),
-        }))
+        let entries: Vec<_> = entries
+            .iter()
+            .map(|&(k, v)| (Value::I64(k), Value::I64(v)))
+            .collect();
+        Value::Map(Arc::new(MapRepr::new(entries).unwrap()))
     }
     fn list(values: Vec<Value>) -> Value {
         Value::List(Arc::new(ListRepr::Values(values.into())))

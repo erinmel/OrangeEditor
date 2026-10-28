@@ -9,7 +9,7 @@
 //! Unknown record fields and enum variants survive storage because the document keeps the
 //! raw literal; only decoding them to a `Value` fails (03).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
 
@@ -296,7 +296,6 @@ impl<S: Schemas> Codec<'_, S> {
                 self.schemas.validate_map_key(key)?;
                 let pairs = json.as_array().ok_or_else(|| mismatch(term))?;
                 let mut entries: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
-                let mut keys = HashSet::with_capacity(pairs.len());
                 for pair in pairs {
                     let [k, v] = pair
                         .as_array()
@@ -305,15 +304,13 @@ impl<S: Schemas> Codec<'_, S> {
                     else {
                         return Err(mismatch(term));
                     };
-                    let k = self.decode(k, key, depth + 1)?;
-                    if !keys.insert(k.clone()) {
-                        return Err(LiteralError::DuplicateMapKey);
-                    }
-                    entries.push((k, self.decode(v, value, depth + 1)?));
+                    entries.push((
+                        self.decode(k, key, depth + 1)?,
+                        self.decode(v, value, depth + 1)?,
+                    ));
                 }
-                Value::Map(Arc::new(MapRepr {
-                    entries: entries.into(),
-                }))
+                let map = MapRepr::new(entries).map_err(|_| LiteralError::DuplicateMapKey)?;
+                Value::Map(Arc::new(map))
             }
             ("option", items) => {
                 let [inner] = args(term, items)?;
@@ -460,11 +457,7 @@ impl<S: Schemas> Codec<'_, S> {
             ("map", items, Value::Map(map)) => {
                 let [key, value] = args(term, items)?;
                 self.schemas.validate_map_key(key)?;
-                let mut seen = HashSet::with_capacity(map.entries.len());
-                let pairs = map.entries.iter().map(|(k, v)| {
-                    if !seen.insert(k) {
-                        return Err(LiteralError::DuplicateMapKey);
-                    }
+                let pairs = map.entries().iter().map(|(k, v)| {
                     Ok(json!([
                         self.encode(k, key, depth + 1)?,
                         self.encode(v, value, depth + 1)?
