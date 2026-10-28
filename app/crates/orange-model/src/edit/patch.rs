@@ -138,6 +138,39 @@ impl Patch {
         })
     }
 
+    /// How deep the saved document nests at the patched entry: the containers above the
+    /// entry plus the entry's own nesting. A removal adds nothing, so it reports 0.
+    pub fn nesting(&self) -> usize {
+        use crate::document::nesting::nesting;
+        // The root object and the list or map holding a top-level entry.
+        const TOP: usize = 2;
+        // A function body's entry also sits in its function object and that body's list.
+        let within = |body: &BodyRef| match body {
+            BodyRef::Root => TOP,
+            BodyRef::Function(_) => TOP + 2,
+        };
+        let below = match self {
+            Patch::Node { body, entry, .. } => {
+                entry.as_ref().map(|e| within(body) + nesting(&*e.value))
+            }
+            Patch::Edge { body, entry, .. } => {
+                entry.as_ref().map(|e| within(body) + nesting(&e.value))
+            }
+            Patch::Variable { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
+            Patch::Event { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
+            Patch::Function { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&*e.value)),
+            Patch::Signature { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
+            Patch::PackageLock { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
+            Patch::TypeLock { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
+            Patch::Export { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
+            // The root and editor objects, then one object per key above the leaf.
+            Patch::Editor { path, entry } => {
+                entry.as_ref().map(|e| 1 + path.len() + nesting(&e.value))
+            }
+        };
+        below.unwrap_or(0)
+    }
+
     /// True for edits that only change layout (12 §3.3 `layout_only`).
     pub fn is_layout(&self) -> bool {
         matches!(self, Patch::Editor { .. })

@@ -104,6 +104,9 @@ pub enum CodecError {
         max: usize,
         actual: usize,
     },
+    /// Objects and arrays nest deeper than the shared document budget.
+    #[error("graph document nests JSON deeper than {max} levels")]
+    NestingLimit { max: usize },
 }
 
 /// Resource dimension checked by the graph document importer.
@@ -192,6 +195,10 @@ pub enum TxError {
     RevisionExhausted,
     #[error("a layout path needs at least one key")]
     EmptyLayoutPath,
+    /// The edit would make the saved document nest deeper than the shared budget, so it
+    /// could not be read back.
+    #[error("the edit would nest the saved document deeper than {max} JSON levels")]
+    NestingLimit { max: usize },
     #[error("layout path `{path}` passes through a value that is not an object")]
     LayoutPathConflict { path: String },
     #[error("inverse applies to content state {expected}, but the document is in state {actual}")]
