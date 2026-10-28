@@ -16,8 +16,8 @@ use super::patch::{Patch, Placed, editor_placement, placement};
 use crate::document::literal::Literal;
 use crate::document::{
     BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument, NodeInstance,
-    PackageLockEntry, PortRef, ProviderBinding, SignatureSnapshot, TypeParamName, VariableDecl,
-    VariadicState, fresh_state_id,
+    PackageLockEntry, PortRef, ProviderBinding, SignatureSnapshot, TypeLockEntry, TypeParamName,
+    VariableDecl, VariadicState, fresh_state_id,
 };
 use crate::error::TxError;
 use crate::id::{
@@ -103,6 +103,12 @@ pub enum DocCommand {
     /// the same digest again changes nothing; a different digest for a locked package
     /// version is rejected. Pair it with any `AddNode` or `Rebind` naming that version.
     PutPackageLock(PackageLockEntry),
+    /// Locks a type to a codec, appended to `type_lock`. Putting the same codec again changes
+    /// nothing; a different codec for a locked type is rejected, so an interpretation is
+    /// never replaced silently. Changing a codec is an explicit `RemoveTypeLock` then `PutTypeLock`.
+    PutTypeLock(TypeLockEntry),
+    /// Removes the lock entry for a type. Its values then use the registry's codec.
+    RemoveTypeLock(TypeExpr),
     Layout(LayoutCommand),
 }
 
@@ -506,6 +512,41 @@ impl Journal {
                         )
                     }
                 }
+            }
+            DocCommand::PutTypeLock(entry) => {
+                match document
+                    .type_lock
+                    .iter()
+                    .find(|locked| locked.ty == entry.ty)
+                {
+                    Some(locked) if locked.codec == entry.codec => Ok(()),
+                    Some(_) => Err(TxError::TypeLockConflict(entry.ty)),
+                    None => {
+                        let index = document.type_lock.len();
+                        self.patch(
+                            document,
+                            Patch::TypeLock {
+                                key: entry.ty.clone(),
+                                entry: Some(Placed {
+                                    index,
+                                    value: entry,
+                                }),
+                            },
+                        )
+                    }
+                }
+            }
+            DocCommand::RemoveTypeLock(ty) => {
+                if !document.type_lock.iter().any(|locked| locked.ty == ty) {
+                    return Err(TxError::TypeLockNotFound(ty));
+                }
+                self.patch(
+                    document,
+                    Patch::TypeLock {
+                        key: ty,
+                        entry: None,
+                    },
+                )
             }
             DocCommand::SetSignature { node, key } => {
                 if !document.signatures.contains_key(&key) {

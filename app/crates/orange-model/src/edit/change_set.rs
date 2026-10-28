@@ -178,7 +178,9 @@ impl Tracker {
                     .entry(DeclId::Function(*id))
                     .or_insert(entry.is_some());
             }
-            Patch::Signature { .. } | Patch::PackageLock { .. } => self.global_dirty = true,
+            Patch::Signature { .. } | Patch::PackageLock { .. } | Patch::TypeLock { .. } => {
+                self.global_dirty = true
+            }
             Patch::Editor { .. } => {}
         }
     }
