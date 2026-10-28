@@ -4,7 +4,6 @@ mod common;
 
 use common::generic::{add, core_converters, data_edge, registry_builder};
 use common::{minimal_document, node_id};
-use orange_model::catalog::ProviderKey;
 use orange_model::id::NodeId;
 use orange_model::inference::infer_components;
 use orange_model::{DocIndex, GraphDocument, from_json};
@@ -46,7 +45,7 @@ fn same_definition_nodes_use_independent_declared_contracts_for_inference() {
 }
 
 #[test]
-fn duplicate_package_locks_have_no_provider_key() {
+fn duplicate_package_locks_are_rejected_before_provider_lookup() {
     let lock = |digest: char| {
         json!({
             "id":"org.test.provider","version":"1.0.0",
@@ -58,11 +57,15 @@ fn duplicate_package_locks_have_no_provider_key() {
         "config_version":1,"config":{},
         "provider":{"package":"org.test.provider","version":"1.0.0","id":"implementation"}
     });
-    let document: GraphDocument = serde_json::from_value(json!({
+    // Ambiguous locks never reach provider resolution: Serde construction refuses them.
+    let error = serde_json::from_value::<GraphDocument>(json!({
         "format_version":1,"graph_id":"a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6","revision":0,
         "package_lock":[lock('a'), lock('b')],"nodes":[node],"edges":[]
     }))
-    .unwrap();
-    let binding = document.node(id(1)).unwrap().provider.as_ref().unwrap();
-    assert!(ProviderKey::of(&document, binding).is_none());
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("duplicate package lock identity")
+    );
 }

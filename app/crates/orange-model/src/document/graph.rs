@@ -4,7 +4,7 @@ use std::collections::{BTreeMap, HashMap};
 use std::sync::OnceLock;
 
 use indexmap::IndexMap;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use serde_json::{Map, Value as Json};
 
 use super::literal::Literal;
@@ -22,42 +22,84 @@ pub(crate) fn fresh_state_id() -> u64 {
 }
 
 /// The format v1 document, without the `"format"` envelope tag, which the codec owns.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+///
+/// Serde deserialization is checked: it applies the same version, cross-body identity and
+/// lock checks as [`from_json`](crate::from_json), and accepts an optional `"format"` tag
+/// only when it names this format. Duplicate-key detection and import quotas need the
+/// text, so they stay with the bounded JSON importer.
+#[derive(Debug, Clone)]
 pub struct GraphDocument {
     pub(crate) format_version: u32,
     pub(crate) graph_id: GraphId,
     pub(crate) revision: u64,
     /// Identifies the content within this session; see [`GraphDocument::state_id`].
-    #[serde(skip, default = "fresh_state_id")]
     pub(crate) state_id: u64,
-    #[serde(skip, default = "fresh_state_id")]
     pub(crate) semantic_state_id: u64,
-    #[serde(default)]
     pub(crate) package_lock: Vec<PackageLockEntry>,
-    #[serde(default)]
     pub(crate) type_lock: Vec<TypeLockEntry>,
-    #[serde(default, with = "crate::document::keyed")]
     pub(crate) variables: IndexMap<VariableId, VariableDecl>,
-    #[serde(default, with = "crate::document::keyed")]
     pub(crate) events: IndexMap<EventDeclId, EventDecl>,
-    #[serde(default)]
     pub(crate) signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     /// Top-level body, persisted as the document's own `nodes` and `edges`.
-    #[serde(flatten)]
     pub(crate) root: GraphBody,
-    #[serde(default, with = "crate::document::keyed")]
     pub(crate) functions: IndexMap<FunctionId, FunctionDecl>,
-    #[serde(default)]
     pub(crate) exports: Vec<GraphExport>,
     /// Layout only; never read by the compiler. Typed by the editor work, opaque here.
-    #[serde(default)]
     pub(crate) editor: Map<String, Json>,
-    #[serde(flatten)]
     pub(crate) extensions: Extensions,
     /// The body holding each node: built on the first lookup, then kept current by every
     /// patch, so lookups stay constant-time across edits. Derived state, never compared.
-    #[serde(skip)]
     pub(crate) node_bodies: OnceLock<HashMap<NodeId, BodyRef>>,
+}
+
+/// The wire layout of [`GraphDocument`], the one place its Serde attributes live. Its
+/// generated functions are private, so the unchecked deserializer stays inside the crate;
+/// Serde checks at compile time that the field list matches the document.
+#[derive(Serialize, Deserialize)]
+#[serde(remote = "GraphDocument")]
+pub(crate) struct DocumentWire {
+    format_version: u32,
+    graph_id: GraphId,
+    revision: u64,
+    #[serde(skip, default = "fresh_state_id")]
+    state_id: u64,
+    #[serde(skip, default = "fresh_state_id")]
+    semantic_state_id: u64,
+    #[serde(default)]
+    package_lock: Vec<PackageLockEntry>,
+    #[serde(default)]
+    type_lock: Vec<TypeLockEntry>,
+    #[serde(default, with = "crate::document::keyed")]
+    variables: IndexMap<VariableId, VariableDecl>,
+    #[serde(default, with = "crate::document::keyed")]
+    events: IndexMap<EventDeclId, EventDecl>,
+    #[serde(default)]
+    signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
+    #[serde(flatten)]
+    root: GraphBody,
+    #[serde(default, with = "crate::document::keyed")]
+    functions: IndexMap<FunctionId, FunctionDecl>,
+    #[serde(default)]
+    exports: Vec<GraphExport>,
+    #[serde(default)]
+    editor: Map<String, Json>,
+    #[serde(flatten)]
+    extensions: Extensions,
+    #[serde(skip)]
+    node_bodies: OnceLock<HashMap<NodeId, BodyRef>>,
+}
+
+impl Serialize for GraphDocument {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        DocumentWire::serialize(self, serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for GraphDocument {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let document = DocumentWire::deserialize(deserializer)?;
+        super::codec::admit(document).map_err(de::Error::custom)
+    }
 }
 
 impl PartialEq for GraphDocument {
