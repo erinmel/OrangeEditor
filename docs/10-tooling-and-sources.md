@@ -2093,4 +2093,11 @@ Branch `core/zone-admission` on `dev` c7fffe7 (same toolchain; Cargo.lock unchan
 - **Measured** with `orange-measure` (release, same machine): a 10,000-item `u64` Map under a 161,024-byte retained limit peaked at 80,104 heap bytes before being refused; it now allocates nothing before refusing. The 10,000-item map-zone workload still succeeds with its preallocation. A unit test under the counting allocator fails above 16 KiB.
 - **Behavior change:** the existing quota-failure test now sees the refusal before any element is computed, instead of after part of the result was built; the next smaller epoch still succeeds.
 
+### Disposal releases run storage — 2026-10-28
+
+Branch `core/dispose-releases-storage` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A04.
+
+- **Change:** `Run::dispose` replaces its containers instead of clearing them, so their capacity is freed, and empties the spare frame pool and the cancellation traversal buffers. The terminal summary stays readable.
+- **Measured** with `orange-measure` (release, same machine): after the function-call workload, stop and dispose, the run held 6,040 heap bytes that were released only on drop; it now holds 8. The function-call workload still makes 41 allocations per 1,000 calls, so the active frame pool is unchanged. `orange-measure` prints the disposed-run figure and a unit test under its counting allocator fails above 1 KiB.
+
 **Checks:** `cargo test --workspace --locked --offline` passes with 950 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
