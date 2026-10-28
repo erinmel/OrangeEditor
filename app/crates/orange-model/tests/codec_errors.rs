@@ -10,9 +10,11 @@ use serde_json::json;
 fn assert_json_error(source: &str, needle: &str) {
     match from_json(source) {
         Err(CodecError::Json(error)) => {
+            // The parser detail is only reachable through the explicit reveal path.
             assert!(
-                error.to_string().contains(needle),
-                "expected `{needle}` in: {error}"
+                error.detail.reveal().contains(needle),
+                "expected `{needle}` in: {}",
+                error.detail.reveal()
             );
         }
         other => panic!("expected a JSON error mentioning `{needle}`, got {other:?}"),
@@ -23,7 +25,7 @@ fn assert_json_error(source: &str, needle: &str) {
 fn wrong_format_tag() {
     let source = json!({"format": "orange.type", "format_version": 1}).to_string();
     assert!(
-        matches!(from_json(&source), Err(CodecError::UnsupportedFormat { found }) if found == "orange.type")
+        matches!(from_json(&source), Err(CodecError::UnsupportedFormat { found }) if found.reveal() == "orange.type")
     );
 }
 
@@ -122,7 +124,7 @@ fn unknown_enum_token() {
 #[test]
 fn duplicate_object_keys_are_rejected_at_any_depth() {
     let duplicate = |source: &str| match from_json(source) {
-        Err(CodecError::DuplicateKey { key }) => key,
+        Err(CodecError::DuplicateKey { key }) => key.reveal().to_owned(),
         other => panic!("expected a duplicate key error, got {other:?}"),
     };
     let base = minimal_document(json!({"nodes": [branch_node(1)]}));

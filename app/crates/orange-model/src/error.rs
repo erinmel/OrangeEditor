@@ -1,4 +1,10 @@
 //! Error types. Messages name the offending identifier or field, never document contents.
+//!
+//! Text that failed a check came from outside, a document or a host string, and may hold
+//! anything. Errors keep it as [`Rejected`], which never appears in `Display` or `Debug`
+//! output; a host that chooses to show it calls [`Rejected::reveal`] (13 §2).
+
+use std::fmt;
 
 use thiserror::Error;
 
@@ -6,29 +12,145 @@ use crate::id::{
     EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, TypeExpr, VariableId,
 };
 
+/// Input text an error refers to. Formatting shows only its length in characters.
+#[derive(Clone, PartialEq, Eq)]
+pub struct Rejected(String);
+
+impl Rejected {
+    /// The rejected text itself, for a host-controlled diagnostic path.
+    pub fn reveal(&self) -> &str {
+        &self.0
+    }
+}
+
+impl From<&str> for Rejected {
+    fn from(text: &str) -> Self {
+        Self(text.to_owned())
+    }
+}
+
+impl From<String> for Rejected {
+    fn from(text: String) -> Self {
+        Self(text)
+    }
+}
+
+impl fmt::Debug for Rejected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "Rejected({self})")
+    }
+}
+
+impl fmt::Display for Rejected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "<{} chars>", self.0.chars().count())
+    }
+}
+
 /// An identifier that violates its syntax rule or collides during generation (12 §2).
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum IdError {
     #[error("generated {kind} id `{id}` is already occupied")]
     GeneratedCollision { kind: &'static str, id: String },
-    #[error("`{text}` is not a canonical lowercase hyphenated UUID")]
-    NonCanonicalUuid { text: String },
-    #[error("UUID `{text}` has version {version}; only v4 and v7 are allowed")]
-    UnsupportedUuidVersion { text: String, version: usize },
-    #[error("`{text}` is not a port id (expected [a-z][a-z0-9_]{{0,63}})")]
-    InvalidPortId { text: String },
+    #[error("value is not a canonical lowercase hyphenated UUID")]
+    NonCanonicalUuid { text: Rejected },
+    #[error("UUID has version {version}; only v4 and v7 are allowed")]
+    UnsupportedUuidVersion { text: Rejected, version: usize },
+    #[error("value is not a port id (expected [a-z][a-z0-9_]{{0,63}})")]
+    InvalidPortId { text: Rejected },
     #[error(
-        "`{text}` is not a port key (expected `port_id` or `port_id#k` with canonical k <= 65535)"
+        "value is not a port key (expected `port_id` or `port_id#k` with canonical k <= 65535)"
     )]
-    InvalidPortKey { text: String },
-    #[error("`{text}` is not a definition id (expected `namespace/name`)")]
-    InvalidDefinitionId { text: String },
-    #[error("`{text}` is not a canonical type expression (11 §5.1)")]
-    InvalidTypeExpr { text: String },
-    #[error("`{text}` nests deeper than the type expression budget")]
-    TypeTooDeep { text: String },
+    InvalidPortKey { text: Rejected },
+    #[error("value is not a definition id (expected `namespace/name`)")]
+    InvalidDefinitionId { text: Rejected },
+    #[error("value is not a canonical type expression (11 §5.1)")]
+    InvalidTypeExpr { text: Rejected },
+    #[error("type expression nests deeper than its budget")]
+    TypeTooDeep { text: Rejected },
     #[error("{what} must not be empty or padded with whitespace")]
     Blank { what: &'static str },
+}
+
+impl IdError {
+    /// Stable message key for host presentation (13 §2).
+    pub const fn message_key(&self) -> &'static str {
+        match self {
+            Self::GeneratedCollision { .. } => "core/id-generated-collision",
+            Self::NonCanonicalUuid { .. } => "core/id-non-canonical-uuid",
+            Self::UnsupportedUuidVersion { .. } => "core/id-unsupported-uuid-version",
+            Self::InvalidPortId { .. } => "core/id-invalid-port-id",
+            Self::InvalidPortKey { .. } => "core/id-invalid-port-key",
+            Self::InvalidDefinitionId { .. } => "core/id-invalid-definition-id",
+            Self::InvalidTypeExpr { .. } => "core/id-invalid-type-expr",
+            Self::TypeTooDeep { .. } => "core/id-type-too-deep",
+            Self::Blank { .. } => "core/id-blank",
+        }
+    }
+}
+
+/// What kind of JSON failure an import hit.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum JsonErrorKind {
+    /// Not well-formed JSON.
+    Syntax,
+    /// Well-formed JSON that does not have the document's shape or violates an identifier
+    /// or collection rule.
+    Data,
+    /// The text ended early.
+    Eof,
+    /// Reading or writing failed.
+    Io,
+}
+
+impl fmt::Display for JsonErrorKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Syntax => "syntax",
+            Self::Data => "data",
+            Self::Eof => "unexpected end",
+            Self::Io => "I/O",
+        })
+    }
+}
+
+/// A JSON failure reduced to what is safe to show: its kind and position. The parser's own
+/// message can quote document text, so it is kept only as [`Rejected`] detail.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct JsonError {
+    pub kind: JsonErrorKind,
+    /// 1-based line, or 0 when no position applies.
+    pub line: usize,
+    /// 1-based column, or 0 when no position applies.
+    pub column: usize,
+    pub detail: Rejected,
+}
+
+impl fmt::Display for JsonError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "{} error at line {}, column {}",
+            self.kind, self.line, self.column
+        )
+    }
+}
+
+impl From<serde_json::Error> for JsonError {
+    fn from(error: serde_json::Error) -> Self {
+        use serde_json::error::Category;
+        Self {
+            kind: match error.classify() {
+                Category::Syntax => JsonErrorKind::Syntax,
+                Category::Data => JsonErrorKind::Data,
+                Category::Eof => JsonErrorKind::Eof,
+                Category::Io => JsonErrorKind::Io,
+            },
+            line: error.line(),
+            column: error.column(),
+            detail: error.to_string().into(),
+        }
+    }
 }
 
 /// A literal that violates 12 §6.1, in its wire shape or for its type. `ty` names the type
@@ -82,21 +204,21 @@ pub enum CodecError {
     /// Malformed JSON, a missing/invalid field, or an invariant enforced while parsing
     /// (identifier syntax, duplicate IDs within one collection, unknown enum token).
     #[error("invalid graph document: {0}")]
-    Json(#[from] serde_json::Error),
-    #[error("unsupported document format `{found}` (expected `orange.graph`)")]
-    UnsupportedFormat { found: String },
+    Json(JsonError),
+    #[error("unsupported document format (expected `orange.graph`)")]
+    UnsupportedFormat { found: Rejected },
     #[error("unsupported format_version {found} (this build reads version 1)")]
     UnsupportedVersion { found: u32 },
     #[error("duplicate {kind} id `{id}` across graph bodies")]
     DuplicateId { kind: &'static str, id: String },
     /// A JSON object repeats a key, at any depth. `key` is the first repeat in document
     /// order, cut to 64 characters.
-    #[error("duplicate JSON object key {key:?}")]
-    DuplicateKey { key: String },
-    #[error("duplicate {kind} lock identity `{identity}`")]
+    #[error("duplicate JSON object key")]
+    DuplicateKey { key: Rejected },
+    #[error("duplicate {kind} lock identity")]
     DuplicateLock {
         kind: &'static str,
-        identity: String,
+        identity: Rejected,
     },
     #[error("graph import exceeds {resource} limit: {actual} > {max}")]
     ImportLimitExceeded {
@@ -107,6 +229,28 @@ pub enum CodecError {
     /// Objects and arrays nest deeper than the shared document budget.
     #[error("graph document nests JSON deeper than {max} levels")]
     NestingLimit { max: usize },
+}
+
+impl From<serde_json::Error> for CodecError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error.into())
+    }
+}
+
+impl CodecError {
+    /// Stable message key for host presentation (13 §2).
+    pub const fn message_key(&self) -> &'static str {
+        match self {
+            Self::Json(_) => "core/import-json",
+            Self::UnsupportedFormat { .. } => "core/import-unsupported-format",
+            Self::UnsupportedVersion { .. } => "core/import-unsupported-version",
+            Self::DuplicateId { .. } => "core/import-duplicate-id",
+            Self::DuplicateKey { .. } => "core/import-duplicate-key",
+            Self::DuplicateLock { .. } => "core/import-duplicate-lock",
+            Self::ImportLimitExceeded { .. } => "core/import-limit-exceeded",
+            Self::NestingLimit { .. } => "core/import-nesting-limit",
+        }
+    }
 }
 
 /// Resource dimension checked by the graph document importer.

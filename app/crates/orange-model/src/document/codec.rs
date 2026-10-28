@@ -336,7 +336,7 @@ pub fn from_json_with_limits(
     let header: Header = serde_json::from_str(text)?;
     if header.format != FORMAT {
         return Err(CodecError::UnsupportedFormat {
-            found: header.format,
+            found: header.format.into(),
         });
     }
     if header.format_version != FORMAT_VERSION {
@@ -346,7 +346,7 @@ pub fn from_json_with_limits(
     }
     // After the version gate, so a newer document still reports its version.
     if let Some(key) = header.duplicate {
-        return Err(CodecError::DuplicateKey { key });
+        return Err(CodecError::DuplicateKey { key: key.into() });
     }
     enforce_limit(ImportResource::Nodes, header.counts.nodes, limits.max_nodes)?;
     enforce_limit(ImportResource::Edges, header.counts.edges, limits.max_edges)?;
@@ -371,7 +371,8 @@ pub(crate) fn admit(mut document: GraphDocument) -> Result<GraphDocument, CodecE
         return Err(CodecError::UnsupportedFormat {
             found: format
                 .as_str()
-                .map_or_else(|| format.to_string(), str::to_owned),
+                .map_or_else(|| format.to_string(), str::to_owned)
+                .into(),
         });
     }
     if document.format_version != FORMAT_VERSION {
@@ -435,7 +436,7 @@ fn check_unique_locks(document: &GraphDocument) -> Result<(), CodecError> {
         if !packages.insert(identity) {
             return Err(CodecError::DuplicateLock {
                 kind: "package",
-                identity: format!("{}@{}", lock.id, lock.version),
+                identity: format!("{}@{}", lock.id, lock.version).into(),
             });
         }
     }
@@ -446,7 +447,7 @@ fn check_unique_locks(document: &GraphDocument) -> Result<(), CodecError> {
         if !types.insert(identity) {
             return Err(CodecError::DuplicateLock {
                 kind: "type",
-                identity: identity.to_owned(),
+                identity: identity.into(),
             });
         }
     }
