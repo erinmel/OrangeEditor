@@ -396,6 +396,7 @@ Function review corrections (2026-10-27): retiring a function also clears its ow
 
 Audit remediation (2026-10-27):
 - **Import quotas.** Node and edge quotas are counted by the streaming pre-pass that also detects duplicate keys. An over-quota document is rejected before any node or edge is built, and the version gate still runs first. A document within quota is still buffered in proportion to its size, bounded by `max_bytes`.
+- **Checked Serde construction (2026-10-28).** Deserializing `GraphDocument` through Serde applies the importer's format, version, cross-body identity and lock checks, so an unsupported or structurally ambiguous document cannot reach analysis or compilation through the ordinary Serde trait. Duplicate keys and quotas remain importer-only ([12](12-graph-data-structures.md)).
 - **Startup admission.** `RunLimits::max_frame_storage_bytes` (default 64 MiB) bounds the nominal storage reserved by all start and stop frames, checked before any is built. Over the limit, startup fails with `RunError::ResourceLimit`. A plan near the `DataLimits` maximums fits only a few frames under the default, so hosts with large graphs raise this limit deliberately.
 - **Open observation.** A yield set when a loop resumes is not applied as the body is entered. It stays on the waiting caller and takes effect at that strand's next step without a transfer. This keeps existing behavior; whether it is intended remains open.
 
