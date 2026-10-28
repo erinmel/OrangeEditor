@@ -2042,3 +2042,12 @@ Branch `core/paste-type-locks` on `dev` c7fffe7 (same toolchain; Cargo.lock unch
 - **Limitations:** the precise set of types a copy depends on is not computed, so unrelated source locks travel too. An unrelated unavailable or conflicting lock can therefore block a paste or make the target unready; this fails closed. Export and activation-policy commands from A05 remain open.
 
 **Checks:** `cargo test --workspace --locked --offline` passes with 952 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Export and activation commands — 2026-10-28
+
+Branch `core/export-policy-commands` on `dev` 3b58100, after #40 (same toolchain; Cargo.lock unchanged). Closes the remaining part of audit finding A05.
+
+- **Change:** `DocCommand::UpsertExport`, `RemoveExport` and `SetActivation`. Exports are a reversible keyed slot like the lock lists and mark the change set globally dirty; activation edits go through the ordinary node patch. Import-only metadata is documented in 12 §3.3.
+- **Regressions:** upsert appends, replaces in place and is undone exactly; removing a missing export is rejected without change; activation policies are set, cleared and undone, and a missing node is rejected. End to end, a bundled math graph gains its export through a command, compiles to the expected constant, reports a retargeted export through analysis, and undoes back to the compilable graph.
+
+**Checks:** `cargo test --workspace --locked --offline` passes with 955 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
