@@ -801,8 +801,8 @@ fn map_builder_quota_failure_releases_machine_and_allows_a_smaller_next_epoch() 
         }
     }
     assert!(rejected);
-    assert!(resolver.folds.load(Ordering::Relaxed) > 0);
-    assert!(resolver.folds.load(Ordering::Relaxed) < 100);
+    // The 100-item result cannot fit, so it is refused before any element is computed.
+    assert_eq!(resolver.folds.load(Ordering::Relaxed), 0);
     active.begin_epoch().unwrap();
     active.set_input(input, list(vec![7, 2])).unwrap();
     let orange_model::Value::List(values) = result(&mut active, 1).unwrap() else {
