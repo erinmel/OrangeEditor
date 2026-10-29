@@ -2251,3 +2251,12 @@ Branch `core/list-eq-fast-path` on `dev` (same toolchain; Cargo.lock unchanged).
 - **Measured** with `orange-measure string-list-eq` (release, same machine, 15 runs): comparing two 65,536-element string lists sharing one string 16 times took 32.58 ms p50 before and 0.21 ms after. This isolates reference-count work in a sharing-heavy case; it is not an end-to-end graph speedup.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### MapRepr construction contract — 2026-10-28
+
+Branch `core/map-repr-contract` on `dev` (same toolchain; Cargo.lock unchanged). Addresses finding F10 of the final quality review.
+
+- **Change:** `MapRepr` documentation promised non-float keys although `MapRepr::new` checks only structural key uniqueness. It now states that it is untyped storage and that key eligibility (no floats, language `hash` and `eq`) is enforced by the registry-aware literal codec and by value shape checks. No behavior changes: registered package key types stay possible.
+- **Regressions:** a map built with a float key is refused by the shape check for both a `u64` and an `f64` key type.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
