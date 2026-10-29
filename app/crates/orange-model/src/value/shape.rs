@@ -579,6 +579,17 @@ mod tests {
         );
     }
 
+    /// `MapRepr` is untyped storage and accepts a float key; the typed shape check refuses it.
+    #[test]
+    fn float_map_keys_are_refused_at_the_shape_boundary() {
+        let floats = MapRepr::new(vec![(Value::F64(1.0), Value::U64(1))]).unwrap();
+        let value = Value::Map(Arc::new(floats));
+        for key in [ValueShape::U64, ValueShape::F64] {
+            let ty = ValueShape::Map(Box::new(key), Box::new(ValueShape::U64));
+            assert!(ty.checked_charge(&value, usize::MAX).is_err(), "{ty:?}");
+        }
+    }
+
     #[test]
     fn map_equality_ignores_order_but_checks_nested_values() {
         let ty = ValueShape::Map(

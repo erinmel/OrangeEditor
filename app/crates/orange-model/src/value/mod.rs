@@ -243,9 +243,13 @@ impl ListBuilder {
     }
 }
 
-/// Insertion-ordered entries with unique, non-float keys (11 §5.2). Uniqueness is checked
-/// once, when the map is built, so shape checks and comparisons never search for
-/// duplicates.
+/// Insertion-ordered entries with structurally unique keys. Uniqueness is checked once, when
+/// the map is built, so shape checks and comparisons never search for duplicates.
+///
+/// This is untyped storage: it does not know the map's key type, so it accepts any key,
+/// floats included. Key eligibility (11 §5.2: no floats, language `hash` and `eq`) is
+/// enforced at the typed boundaries, by the registry-aware literal codec and by value shape
+/// checks before execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
 pub struct MapRepr {
     entries: Box<[(Value, Value)]>,
@@ -262,6 +266,8 @@ pub struct DuplicateKey;
 const SMALL_MAP: usize = 16;
 
 impl MapRepr {
+    /// Builds a map from `entries`, refusing a repeated key. Keys are compared as values;
+    /// their eligibility for a map type is checked elsewhere (see [`MapRepr`]).
     pub fn new(entries: impl Into<Box<[(Value, Value)]>>) -> Result<Self, DuplicateKey> {
         let entries = entries.into();
         let unique = if entries.len() <= SMALL_MAP {
