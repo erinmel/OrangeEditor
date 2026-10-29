@@ -2205,3 +2205,13 @@ Branch `core/analysis-request-identity` on `dev` c86b8a9 (same toolchain; Cargo.
 - **Limitations:** one pass is still not interruptible, so a superseded or shut-down analysis runs to its next pass boundary; per-body incremental analysis remains V12 work and NFR-15 is not requalified. The snapshot is a full document copy that the host makes; structural sharing is not introduced. The worker stays in `orange-model` until a host composition crate exists.
 
 **Checks:** `cargo test --workspace --locked` passes with 972 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Canonical config pointer array indices — 2026-10-28
+
+Branch `core/canonical-pointer-index` on `dev` c86b8a9 (same toolchain; Cargo.lock unchanged). Addresses finding F04 of the final quality review.
+
+- **Change:** the config pointer helper shared by reference discovery and paste rewriting accepts an array token only as an RFC 6901 §4 index. `usize::from_str` had also accepted a leading `+`, so `/targets/+0` resolved and rewrote element zero while serde_json's pointer lookup rejects it.
+- **Regressions:** `0` and `1` select elements; `01`, `+0`, `+1`, `-` and an overflowing index select nothing and are never rewritten; object keys literally named `+0` and `0` and escaped names still resolve; serde_json's `Value::pointer` agrees on every array token tested.
+- **Limitations:** pointers are still parsed on every lookup rather than once at registry publication.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
