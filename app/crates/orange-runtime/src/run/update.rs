@@ -351,18 +351,10 @@ fn compute(
             code: error.code(),
             message_key: error.message_key(),
             message: match error {
-                orange_model::scalar::ScalarError::NumericOverflow => {
-                    "Numeric arithmetic overflowed."
-                }
-                orange_model::scalar::ScalarError::DivideByZero => {
-                    "Division requires a nonzero divisor."
-                }
-                orange_model::scalar::ScalarError::NonFinite => {
-                    "Finite arithmetic requires finite inputs and results."
-                }
                 orange_model::scalar::ScalarError::InputContract => {
                     "Update inputs violate the resolved contract."
                 }
+                other => other.message(),
             },
         })?,
         UpdateOperation::Min | UpdateOperation::Max => {

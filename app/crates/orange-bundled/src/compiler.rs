@@ -109,12 +109,8 @@ impl PureKernel for Native {
                     code: error.code(),
                     message_key: error.message_key(),
                     message: match error {
-                        crate::KernelError::NumericOverflow => "Numeric arithmetic overflowed.",
-                        crate::KernelError::DivideByZero => "Division requires a nonzero divisor.",
-                        crate::KernelError::NonFinite => {
-                            "Finite arithmetic requires finite inputs and results."
-                        }
                         crate::KernelError::InputContract => CONTRACT.message,
+                        other => other.message(),
                     },
                 })?;
             }

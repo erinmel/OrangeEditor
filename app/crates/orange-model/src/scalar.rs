@@ -1,6 +1,5 @@
 //! Language-owned scalar arithmetic, shared by bundled kernels and state actions.
 use crate::Value;
-use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Operation {
@@ -37,17 +36,21 @@ pub enum FloatPolicy {
 
 /// Scalar execution failures. Runtime orchestration adds node/activation provenance
 /// and the full redacted MessageRef envelope; this layer never interpolates values.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScalarError {
-    #[error("Numeric arithmetic overflowed.")]
     NumericOverflow,
-    #[error("Division requires a nonzero divisor.")]
     DivideByZero,
-    #[error("Finite arithmetic requires finite inputs and results.")]
     NonFinite,
-    #[error("Kernel inputs violate the resolved contract.")]
     InputContract,
 }
+
+impl std::fmt::Display for ScalarError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.message())
+    }
+}
+
+impl std::error::Error for ScalarError {}
 
 impl ScalarError {
     pub const fn code(self) -> &'static str {
@@ -56,6 +59,17 @@ impl ScalarError {
             Self::DivideByZero => "core/DivideByZero",
             Self::NonFinite => "core/NonFinite",
             Self::InputContract => "core/InternalFault",
+        }
+    }
+
+    /// The safe static fallback text, also its `Display`. Adapters that describe
+    /// `InputContract` in their own context replace only that case.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::NumericOverflow => "Numeric arithmetic overflowed.",
+            Self::DivideByZero => "Division requires a nonzero divisor.",
+            Self::NonFinite => "Finite arithmetic requires finite inputs and results.",
+            Self::InputContract => "Kernel inputs violate the resolved contract.",
         }
     }
 
@@ -69,7 +83,8 @@ impl ScalarError {
     }
 }
 
-/// Evaluates exact scalar inputs using resolved arithmetic policies.
+/// Evaluates exact scalar inputs using resolved arithmetic policies. Not requires the
+/// `Bool` scalar and arithmetic a numeric one; any other combination is `InputContract`.
 pub fn evaluate(
     operation: Operation,
     scalar: Scalar,
@@ -79,7 +94,7 @@ pub fn evaluate(
 ) -> Result<Value, ScalarError> {
     if operation == Operation::Not {
         return match inputs {
-            [Value::Bool(value)] => Ok(Value::Bool(!value)),
+            [Value::Bool(value)] if scalar == Scalar::Bool => Ok(Value::Bool(!value)),
             _ => Err(ScalarError::InputContract),
         };
     }
@@ -152,5 +167,42 @@ pub fn evaluate(
         Scalar::F32 => float!(F32),
         Scalar::F64 => float!(F64),
         Scalar::Bool => Err(ScalarError::InputContract),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn not_requires_the_bool_scalar_and_arithmetic_a_numeric_one() {
+        let not = |scalar| {
+            evaluate(
+                Operation::Not,
+                scalar,
+                Overflow::Checked,
+                FloatPolicy::Finite,
+                &[Value::Bool(true)],
+            )
+        };
+        assert_eq!(not(Scalar::Bool), Ok(Value::Bool(false)));
+        for scalar in [
+            Scalar::I32,
+            Scalar::I64,
+            Scalar::U32,
+            Scalar::U64,
+            Scalar::F32,
+            Scalar::F64,
+        ] {
+            assert_eq!(not(scalar), Err(ScalarError::InputContract), "{scalar:?}");
+        }
+        let add = evaluate(
+            Operation::Add,
+            Scalar::Bool,
+            Overflow::Checked,
+            FloatPolicy::Finite,
+            &[Value::Bool(true), Value::Bool(false)],
+        );
+        assert_eq!(add, Err(ScalarError::InputContract));
     }
 }
