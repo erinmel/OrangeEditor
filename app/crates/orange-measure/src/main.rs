@@ -85,6 +85,12 @@ fn main() {
             workloads::oversized_json_literal_allocated_bytes()
         );
     }
+    if "string-list-eq".contains(filter.as_str()) {
+        println!(
+            "string list equality (65536 shared elements, 16 compares) p50: {:.3} ms",
+            workloads::string_list_equality(config).as_secs_f64() * 1e3
+        );
+    }
     if "disposed-run".contains(filter.as_str()) {
         println!(
             "disposed run: {} heap bytes released only on drop",
