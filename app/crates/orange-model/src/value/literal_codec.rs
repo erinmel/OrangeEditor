@@ -258,7 +258,7 @@ impl<S: Schemas> Codec<'_, S> {
                 Value::Bytes(Arc::new(bytes))
             }
             ("json", []) => {
-                let text = JsonText::new(string()?.to_owned()).map_err(|error| match error {
+                let text = JsonText::try_from(string()?).map_err(|error| match error {
                     JsonTextError::TooDeep => LiteralError::TooDeep,
                     JsonTextError::TooLarge { .. } => LiteralError::TooLarge {
                         ty: term.to_string(),

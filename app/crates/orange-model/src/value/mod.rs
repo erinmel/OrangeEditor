@@ -298,21 +298,37 @@ impl JsonText {
     /// Accepts valid JSON text of at most [`MAX_JSON_TEXT_BYTES`] bytes whose arrays and
     /// objects nest at most [`MAX_NESTING`] deep. Size and depth are checked before parsing.
     pub fn new(text: String) -> Result<Self, JsonTextError> {
+        Self::check(&text)?;
+        Ok(Self(text))
+    }
+
+    /// Checks borrowed text before copying it, so rejected text is never copied.
+    fn check(text: &str) -> Result<(), JsonTextError> {
         if text.len() > MAX_JSON_TEXT_BYTES {
             return Err(JsonTextError::TooLarge {
                 len: text.len(),
                 max: MAX_JSON_TEXT_BYTES,
             });
         }
-        if nests_deeper_than(&text, MAX_NESTING) {
+        if nests_deeper_than(text, MAX_NESTING) {
             return Err(JsonTextError::TooDeep);
         }
-        serde_json::from_str::<serde::de::IgnoredAny>(&text)?;
-        Ok(Self(text))
+        serde_json::from_str::<serde::de::IgnoredAny>(text)?;
+        Ok(())
     }
 
     pub fn as_str(&self) -> &str {
         &self.0
+    }
+}
+
+impl TryFrom<&str> for JsonText {
+    type Error = JsonTextError;
+
+    /// Like [`JsonText::new`], but copies `text` only once it is accepted.
+    fn try_from(text: &str) -> Result<Self, JsonTextError> {
+        Self::check(text)?;
+        Ok(Self(text.to_owned()))
     }
 }
 
@@ -480,6 +496,13 @@ mod tests {
         assert!(JsonText::new("{\"n\": 1.50}".into()).is_ok());
         assert!(JsonText::new("null".into()).is_ok());
         assert!(JsonText::new("{".into()).is_err());
+        // The borrowed constructor applies the same checks.
+        for text in ["{\"n\": 1.50}", "null", "{"] {
+            assert_eq!(
+                JsonText::try_from(text).ok(),
+                JsonText::new(text.into()).ok()
+            );
+        }
     }
 
     fn nested_arrays(levels: usize) -> String {
