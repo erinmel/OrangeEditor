@@ -2151,3 +2151,13 @@ Branch `core/narrow-resolvers` on `dev` c7fffe7 (same toolchain; Cargo.lock unch
 - **Breaking:** a downstream resolver that implemented only the old whole-document methods must implement the request methods. Every in-repository resolver was converted; the test of the old forwarding default was removed, and the narrow-only resolver test now needs no stub.
 
 **Checks:** `cargo test --workspace --locked --offline` passes with 948 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### First-party dependency policy — 2026-10-28
+
+Branch `core/dependency-policy` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A09.
+
+- **Change:** `tools/check-cargo-metadata.mjs` classifies every workspace member as core or host and enforces the first-party dependency matrix of 15, separately for normal and development dependencies. Core product graphs, following only normal and build edges, may not contain network, async-runtime, TLS, audio or OS-service crates; the existing UI/engine checks are unchanged. An unclassified member fails.
+- **Fixtures:** 18 self-test cases, up from 9, including a core crate depending upward, a core crate depending on a host crate, an unclassified member, bundled shipping a runtime dependency, a transitive async runtime in core, and allowed cases for bundled's dev-only runtime use, a service crate only in core tests and services in a host.
+- **Limitations:** Cargo metadata cannot see `std::fs` or other standard-library I/O.
+
+**Checks:** `node tools/check-cargo-metadata.mjs --self-test` passes 18 fixtures; `node tools/check-cargo-metadata.mjs` passes on the workspace; `--msrv` derives 1.97.1.
