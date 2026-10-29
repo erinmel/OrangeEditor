@@ -112,7 +112,9 @@ fn g29_missing_package_keeps_snapshot_and_edges_and_drift_finds_orphans() {
     let stored = &document.signatures()[document.node(log).unwrap().signature.as_ref().unwrap()];
     assert!(stored.declares_port(&"value".parse().unwrap()));
     assert!(
-        index.orphan_edges(log, stored).is_empty(),
+        index
+            .orphan_edges(document.node(log).unwrap(), stored)
+            .is_empty(),
         "`in` is implicit for actions"
     );
     let edges: Vec<EdgeId> = index.incident(log).collect();
@@ -134,7 +136,7 @@ fn g29_missing_package_keeps_snapshot_and_edges_and_drift_finds_orphans() {
         }
     );
     assert_eq!(
-        index.orphan_edges(log, &resolved),
+        index.orphan_edges(document.node(log).unwrap(), &resolved),
         [eid(11)],
         "edge to `value` is orphaned"
     );

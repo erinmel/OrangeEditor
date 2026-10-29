@@ -7,7 +7,7 @@ use std::rc::Rc;
 
 use thiserror::Error;
 
-use crate::catalog::{implicit_port, is_intrinsic};
+use crate::catalog::{instance_port, is_intrinsic};
 use crate::document::{GraphDocument, PortDescriptor, PortRef, SignatureSnapshot};
 use crate::id::NodeId;
 
@@ -119,41 +119,7 @@ pub(crate) fn lookup_port(
             .ok_or(PortLookupError::MissingMetadata)?,
     };
 
-    if let Some(index) = port.port.instance() {
-        let state = node
-            .variadic
-            .get(port.port.port())
-            .ok_or(PortLookupError::UnknownPort)?;
-        if !state.order.contains(&index) {
-            return Err(PortLookupError::UnknownPort);
-        }
-        let declared = snapshot
-            .ports
-            .iter()
-            .find(|candidate| candidate.port_id == *port.port.port())
-            .ok_or(PortLookupError::UnknownPort)?;
-        if declared.variadic.is_none() {
-            return Err(PortLookupError::UnknownPort);
-        }
-        return Ok(declared.clone());
-    }
-
-    if node.variadic.contains_key(port.port.port())
-        || snapshot
-            .ports
-            .iter()
-            .any(|p| p.port_id == *port.port.port() && p.variadic.is_some())
-    {
-        return Err(PortLookupError::UnknownPort);
-    }
-    if let Some(declared) = snapshot
-        .ports
-        .iter()
-        .find(|p| p.port_id == *port.port.port())
-    {
-        return Ok(declared.clone());
-    }
-    implicit_port(definition, snapshot, port.port.port()).ok_or(PortLookupError::UnknownPort)
+    instance_port(node, snapshot, &port.port).ok_or(PortLookupError::UnknownPort)
 }
 
 #[cfg(test)]
