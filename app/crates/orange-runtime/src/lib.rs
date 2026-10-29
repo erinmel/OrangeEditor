@@ -5,6 +5,9 @@
 //! graph-local Action/Async calls and staged stop/disposal for the admitted control
 //! subset, including Fork joins, typed collection iteration and atomic state. Events and
 //! general host resources and services remain open.
+// Product code reports failures as typed errors; each remaining panic is a documented
+// internal invariant (10, "Panic policy").
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod cancel;
 mod data;

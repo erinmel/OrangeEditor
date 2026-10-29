@@ -307,6 +307,10 @@ impl TypeRegistry {
 
     /// Creates a registry containing only v1 core types and constructors.
     pub fn core() -> Self {
+        #[expect(
+            clippy::expect_used,
+            reason = "the built-in core type table is fixed and covered by the core registry tests"
+        )]
         TypeRegistryBuilder::core()
             .build()
             .expect("the built-in core type table has valid schemas")

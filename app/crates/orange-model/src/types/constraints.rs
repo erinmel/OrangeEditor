@@ -330,6 +330,10 @@ fn constraint_evidence(
         return Ok(None);
     };
     let id = NamedTypeId::from_term(named);
+    #[expect(
+        clippy::expect_used,
+        reason = "named terms reach here only after validation against this registry"
+    )]
     let definition = registry.definitions.get(&id).expect("term was validated");
     if let Some(implementation) =
         registry.explicit_constraint_implementation(term, &ConstraintId::Core(constraint))

@@ -304,7 +304,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
             {
                 ports.push(PortDescriptor::data_out(
                     "error",
-                    "core/error@1".parse().expect("fixed type"),
+                    orange_model::id::fixed_id("core/error@1"),
                     orange_model::document::OutputSource::Execution,
                 ));
             }

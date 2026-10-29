@@ -14,8 +14,8 @@ use super::{
 };
 use crate::config_pointer::pointer_parts;
 use crate::conversion::{
-    ConversionClass, ConverterConfig, ConverterProvider, ConverterRegistry,
-    ConverterRegistryBuilder, ExplicitConverterChoice,
+    ConverterConfig, ConverterProvider, ConverterRegistry, ConverterRegistryBuilder,
+    ExplicitConverterChoice,
 };
 use crate::document::DefinitionRef;
 use crate::document::{
@@ -236,6 +236,10 @@ impl RegistryBuilder {
     /// Starts with the core type registry and core conversions.
     pub fn core(origin: HostOrigin) -> Self {
         let types = Arc::new(TypeRegistry::core());
+        #[expect(
+            clippy::expect_used,
+            reason = "the built-in conversions are fixed and covered by the core registry tests"
+        )]
         let converters = ConverterRegistryBuilder::with_core_conversions(Arc::clone(&types))
             .expect("the built-in core conversions are valid")
             .build();
@@ -796,6 +800,10 @@ impl Registered {
 impl RegistrySnapshot {
     /// A snapshot of the core types, conversions and intrinsic node definitions.
     pub fn core(origin: HostOrigin) -> Arc<Self> {
+        #[expect(
+            clippy::expect_used,
+            reason = "the built-in registry is fixed and covered by the core registry tests"
+        )]
         RegistryBuilder::core(origin)
             .build()
             .expect("the built-in registry is valid")
@@ -958,12 +966,11 @@ impl RegistrySnapshot {
             PortDescriptor::data_in("value", definition.from.clone()),
             PortDescriptor::data_out("result", definition.to.clone(), OutputSource::Computed),
         ];
-        if definition.class == ConversionClass::Lossy {
+        // Only lossy conversions declare a loss output.
+        if let Some(loss) = definition.loss_output_type() {
             ports.push(PortDescriptor::data_out(
                 "loss",
-                definition
-                    .loss_output_type()
-                    .expect("lossy entries declare loss output"),
+                loss,
                 OutputSource::Computed,
             ));
         }
@@ -1000,15 +1007,13 @@ impl RegistrySnapshot {
             EventAccess::Await => vec![
                 PortDescriptor::data_in(
                     "timeout",
-                    "core/option@1<core/duration@1>"
-                        .parse()
-                        .expect("intrinsic type expression is valid"),
+                    crate::id::fixed_id("core/option@1<core/duration@1>"),
                 )
                 .optional(),
                 PortDescriptor::exec_out("then"),
                 PortDescriptor::exec_out("timed_out"),
                 PortDescriptor {
-                    available_on: Some(vec!["then".parse().expect("port id is valid")]),
+                    available_on: Some(vec![crate::port_id!("then")]),
                     ..PortDescriptor::data_out("payload", payload, OutputSource::Execution)
                 },
             ],

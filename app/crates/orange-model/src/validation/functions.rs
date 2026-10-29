@@ -649,6 +649,10 @@ pub(crate) fn find_cycles(
     let mut witnesses = Vec::new();
     let mut cyclic = BTreeSet::new();
     for component in super::graph::strongly_connected_components(&ordered) {
+        #[expect(
+            clippy::expect_used,
+            reason = "strongly connected components are never empty"
+        )]
         let start = *component.first().expect("components are nonempty");
         let is_cycle = component.len() > 1
             || adjacency
@@ -748,6 +752,10 @@ pub(crate) fn callee_first_order(
         pending.remove(&id);
         result.push(id);
         for dependent in dependents.get(&id).into_iter().flatten() {
+            #[expect(
+                clippy::expect_used,
+                reason = "every dependent was counted when the graph was built"
+            )]
             let count = dependency_count
                 .get_mut(dependent)
                 .expect("known dependent");

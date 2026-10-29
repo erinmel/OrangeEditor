@@ -373,10 +373,7 @@ impl<S: Schemas> Codec<'_, S> {
                     }),
                 })
                 .collect::<Result<_, _>>()?;
-            let ty = term
-                .to_string()
-                .parse()
-                .expect("a parsed type re-displays as a non-blank expression");
+            let ty = term.to_type_expr();
             return Ok(Value::Record(Arc::new(RecordRepr { ty, fields })));
         }
         if let Some(schema) = self.schemas.enumeration(named) {

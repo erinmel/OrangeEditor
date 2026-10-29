@@ -378,6 +378,10 @@ fn check_body(
             report(DiagnosticCode::RegionAmbiguous, at(*node));
             continue;
         }
+        #[expect(
+            clippy::expect_used,
+            reason = "a region conflict involves at least one region"
+        )]
         let home = edges
             .values()
             .find_map(|(_, _, root)| *root)
@@ -503,7 +507,7 @@ fn check_body(
 /// other entries, all distinct, of the JSON kind of the key type (integers, `bool` and
 /// `string`; other key types are only checked for presence and uniqueness).
 fn switch_cases_valid(node: &crate::document::NodeInstance, signature: &SignatureSnapshot) -> bool {
-    let case = "case".parse().expect("port id is valid");
+    let case = crate::port_id!("case");
     let order: &[u16] = node
         .variadic
         .get(&case)

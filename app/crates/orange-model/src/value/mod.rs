@@ -142,6 +142,7 @@ impl ListRepr {
         }
         Some(packed!(Bool, I32, I64, U32, U64, F32, F64, Str))
     }
+    #[expect(clippy::expect_used, reason = "every index below `len` is in range")]
     pub fn iter(&self) -> impl Iterator<Item = Value> + '_ {
         (0..self.len()).map(|index| self.get(index).expect("index is in range"))
     }

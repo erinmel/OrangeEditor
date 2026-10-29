@@ -10,6 +10,9 @@
 //! undo); `index`, `signature` and `paste` (derived lookups, semantic signatures and
 //! copy/paste); `validation` (one read-only `validate` entry point over node, input,
 //! connection and function passes).
+// Product code reports failures as typed errors; each remaining panic is a documented
+// internal invariant (10, "Panic policy").
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod catalog;
 mod config_pointer;

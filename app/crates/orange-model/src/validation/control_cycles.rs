@@ -190,6 +190,10 @@ fn cyclic_components(graph: &Graph) -> Vec<BTreeSet<NodeId>> {
 /// Closed path through `component`, starting at its lowest node, found by depth-first search
 /// over ordered successors so the result is deterministic.
 fn cycle_witness(graph: &Graph, component: &BTreeSet<NodeId>) -> Vec<NodeId> {
+    #[expect(
+        clippy::expect_used,
+        reason = "strongly connected components are never empty"
+    )]
     let start = *component.first().expect("components are non-empty");
     let inside = |node: NodeId| -> Vec<NodeId> {
         successors(graph, node)

@@ -250,7 +250,7 @@ pub(crate) fn marker_contract(
     let entry = node.definition.id.as_str() == ids::FUNCTION_ENTRY;
     let mut ports = Vec::new();
     for port in interface {
-        let ty = port.ty.expect("projected interface ports are typed");
+        let ty = port.ty.ok_or(CallInterfaceError::InvalidInterface)?;
         match (entry, port.direction) {
             (true, crate::document::PortDirection::Input) => {
                 ports.push(PortDescriptor::data_out(

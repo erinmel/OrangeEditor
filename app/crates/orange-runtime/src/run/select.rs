@@ -34,7 +34,7 @@ impl Run {
             (ControlOperation::MatchResult { err, .. }, Some(Value::Err(error))) => {
                 Self::publish_match_value(plan, layout, shared, ix, None, limit)?;
                 for &i in plan.error_targets(ix) {
-                    shared.outputs[layout.outputs[i].expect("checked output")] =
+                    shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
                         Some(FoldedValue::Value(Value::Err(error.clone())));
                 }
                 (*err, ControlOutcome::MatchedErr, None)
@@ -47,7 +47,7 @@ impl Run {
                 };
                 Self::publish_match_value(plan, layout, shared, ix, Some(value), limit)?;
                 for &i in plan.error_targets(ix) {
-                    shared.outputs[layout.outputs[i].expect("checked output")] = None;
+                    shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] = None;
                 }
                 (*ok, ControlOutcome::MatchedOk, None)
             }

@@ -85,7 +85,7 @@ impl Run {
                         next: 1,
                         count,
                     });
-                    Self::publish_index(plan, &self.layout, shared, ix, Some(0));
+                    Self::publish_index(plan, &self.layout, shared, ix, Some(0))?;
                     (*body, ControlOutcome::Body, None)
                 }
                 _ => return Err(contract.into()),
@@ -159,7 +159,7 @@ impl Run {
                         next: next + 1,
                         count,
                     });
-                    Self::publish_index(plan, &self.layout, shared, owner, Some(next));
+                    Self::publish_index(plan, &self.layout, shared, owner, Some(next))?;
                     activation.pc = *body;
                     activation.yielded = true;
                     self.record(RunEvent {
@@ -169,7 +169,7 @@ impl Run {
                         fault: None,
                     });
                 } else {
-                    Self::publish_index(plan, &self.layout, shared, owner, None);
+                    Self::publish_index(plan, &self.layout, shared, owner, None)?;
                     activation.pc = *completed;
                     self.record(RunEvent {
                         activation: activation.sequence,

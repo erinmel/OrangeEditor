@@ -2269,3 +2269,12 @@ Branch `core/typed-runtime-ids` on `dev` (same toolchain; Cargo.lock unchanged).
 - **Limitations:** sibling run modules still receive `&mut Run`; ownership, function and loop code still reach the scheduler, frames and stores directly. Grouping ownership state and narrowing step contexts beyond `Cells` remain F07 work.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Panic policy — 2026-10-28
+
+Branch `core/unwrap-audit` on `dev` (same toolchain; Cargo.lock unchanged). Addresses the unwrap/expect criterion of the final quality review.
+
+- **Rule:** `orange-model`, `orange-compiler`, `orange-runtime` and `orange-bundled` warn on `clippy::unwrap_used` and `clippy::expect_used` in library code, and CI runs clippy with `-D warnings`. Tests, examples and `orange-measure` are exempt. Input, lifecycle and other fallible paths return typed errors. A panic remains only for an internal invariant, written as `#[expect(clippy::expect_used, reason = "...")]` on the statement or function that states why it cannot fail.
+- **Fixed names:** `port_id!("then")` checks a port literal at compile time. `id::fixed_id` is the one documented parse for identifiers spelled in source code; it accepts only `'static` text, so document and host input cannot reach it, and the identifier tables it parses are covered by tests. Call and return ports carry `PortId` instead of reparsing their names, and printed type terms and signature digests convert to their identifiers without a parse.
+- **Runtime:** run and data stepping already report broken actor state as `RunError::InvalidState` and data kernel mismatches as `DataError::KernelContract`; their remaining `unwrap` and `expect` calls now use those errors, so the run faults instead of panicking. The output-publishing helpers and the step completion paths return `Result` for this. A collapsed ownership spill no longer needs a panic, and the data work loop ends when its stack is empty. Allocation counts and peak bytes in `orange-measure` are unchanged.
+- **Invariants kept loud:** ready-queue links, the frame a prepared write just found, built-in registries, strongly connected components, dependency counts, rollback of patches that just applied, resolved converters, slot positions, list indexes and JSON number conversions keep their panic with a stated reason. Replacing them with defaults or skipped work would hide bugs. Trusted callback panics still propagate as before.

@@ -85,6 +85,7 @@ impl<T> ReadyQueue<T> {
         }
         slot
     }
+    #[expect(clippy::expect_used, reason = "a linked slot always holds a node")]
     pub fn push_front(&mut self, id: StrandId, value: T) {
         if !self.indexed {
             if let Some((old_id, old)) = self.single.take() {
@@ -105,6 +106,7 @@ impl<T> ReadyQueue<T> {
         }
         self.first = Some(slot);
     }
+    #[expect(clippy::expect_used, reason = "a linked slot always holds a node")]
     pub fn push_back(&mut self, id: StrandId, value: T) {
         if !self.indexed {
             if let Some((old_id, old)) = self.single.take() {
@@ -125,6 +127,7 @@ impl<T> ReadyQueue<T> {
         }
         self.last = Some(slot);
     }
+    #[expect(clippy::expect_used, reason = "a linked slot always holds a node")]
     fn take(&mut self, slot: usize) -> Option<T> {
         let node = self.nodes[slot].take()?;
         if let Some(previous) = node.previous {

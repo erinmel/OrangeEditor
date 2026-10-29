@@ -387,10 +387,7 @@ fn exec_outputs(
     }
     for name in signature.implicit_ports() {
         if !matches!(name, "in" | "error") {
-            ports.insert(PortKey::new(
-                name.parse().expect("implicit port id is valid"),
-                None,
-            ));
+            ports.insert(PortKey::new(crate::id::fixed_id(name), None));
         }
     }
     ports
@@ -620,7 +617,7 @@ fn requirement(
                 return Some(Requirement::Diagnose(DiagnosticCode::CrossActivation));
             }
             let outcomes: BTreeSet<PortId> = item.from.available_on.as_ref().map_or_else(
-                || BTreeSet::from(["then".parse().expect("port id is valid")]),
+                || BTreeSet::from([crate::port_id!("then")]),
                 |list| list.iter().cloned().collect(),
             );
             Some(Requirement::Execution(outcomes))
@@ -667,7 +664,7 @@ fn build_node(
             return;
         }
         ids::SEQUENCE => {
-            let then = "then".parse().expect("port id is valid");
+            let then = crate::port_id!("then");
             let steps: Vec<_> = node
                 .variadic
                 .get(&then)
@@ -711,7 +708,7 @@ fn build_node(
                 cfg.add(here.clone(), Vertex::Join(id), None);
             }
             cfg.forks.insert(id, fork);
-            let completed = PortKey::new("completed".parse().expect("port id is valid"), None);
+            let completed = PortKey::new(crate::port_id!("completed"), None);
             cfg.goto(
                 &Vertex::Join(id),
                 targets,

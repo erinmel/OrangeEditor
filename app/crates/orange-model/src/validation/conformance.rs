@@ -84,12 +84,12 @@ impl ReturnFlow {
             .values()
             .filter(|node| node.definition.id.as_str() == ids::SEQUENCE)
         {
-            let Some(order) = node.variadic.get(&"then".parse().expect("fixed port")) else {
+            let Some(order) = node.variadic.get(&crate::port_id!("then")) else {
                 continue;
             };
             let mut continuation = None;
             for &key in order.order.iter().rev() {
-                let port = PortKey::new("then".parse().expect("fixed port"), Some(key));
+                let port = PortKey::new(crate::port_id!("then"), Some(key));
                 next.insert(
                     super::regions::RegionRoot {
                         node: node.id,
@@ -276,16 +276,13 @@ impl Check<'_> {
             };
             let definition = node.definition.id.as_str();
             if definition == ids::SEQUENCE {
-                let Some(order) = node.variadic.get(&"then".parse().expect("fixed port")) else {
+                let Some(order) = node.variadic.get(&crate::port_id!("then")) else {
                     self.provable = false;
                     continue;
                 };
                 let target = order.order.iter().find_map(|&key| {
                     flow.edges.get(&node_id).and_then(|ports| {
-                        ports.get(&PortKey::new(
-                            "then".parse().expect("fixed port"),
-                            Some(key),
-                        ))
+                        ports.get(&PortKey::new(crate::port_id!("then"), Some(key)))
                     })
                 });
                 if let Some(targets) = target {
@@ -345,7 +342,7 @@ impl Check<'_> {
                     .implicit_ports()
                     .into_iter()
                     .filter(|name| matches!(*name, "then" | "body" | "completed"))
-                    .map(|name| name.parse().expect("fixed port")),
+                    .map(crate::id::fixed_id),
             );
             for port in ports {
                 if matches!(port.port().as_str(), "failed" | "cancelled")

@@ -30,7 +30,7 @@ pub(super) fn check_availability(definition: &NodeDefinition) -> Result<(), Regi
         if name == "then" && intrinsic(id.as_str()).is_some_and(|rule| rule.terminator) {
             continue;
         }
-        outcomes.insert(name.parse().expect("implicit port IDs are valid"));
+        outcomes.insert(crate::id::fixed_id(name));
     }
 
     for port in ports {
@@ -39,7 +39,7 @@ pub(super) fn check_availability(definition: &NodeDefinition) -> Result<(), Regi
                 && port.direction == PortDirection::Output
                 && port.source == Some(OutputSource::Execution)
             {
-                let default: PortId = "then".parse().expect("implicit port ID is valid");
+                let default: PortId = crate::port_id!("then");
                 if !outcomes.contains(&default) {
                     return Err(RegistryError::AvailableOnOutcome {
                         definition: id.clone(),

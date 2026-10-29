@@ -36,6 +36,11 @@ pub struct NamedTerm {
 }
 
 impl TypeTerm {
+    /// This term as a type expression; printing a parsed term never fails.
+    pub(crate) fn to_type_expr(&self) -> crate::id::TypeExpr {
+        crate::id::TypeExpr::from_canonical(self.to_string())
+    }
+
     pub fn parse(expr: &TypeExpr) -> Result<Self, IdError> {
         let text = expr.as_str();
         let invalid = || IdError::InvalidTypeExpr { text: text.into() };
