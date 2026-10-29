@@ -193,6 +193,17 @@ pub struct ControlCell<Id> {
     ty: ValueShape,
     initial: Option<Value>,
 }
+/// Debug shows metadata and whether an initial value exists, never the value itself.
+impl<Id: std::fmt::Debug> std::fmt::Debug for ControlCell<Id> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ControlCell")
+            .field("id", &self.id)
+            .field("scope", &self.scope)
+            .field("ty", &self.ty)
+            .field("has_initial", &self.initial.is_some())
+            .finish()
+    }
+}
 impl<Id: Copy> ControlCell<Id> {
     pub fn id(&self) -> Id {
         self.id

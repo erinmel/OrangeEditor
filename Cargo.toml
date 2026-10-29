@@ -21,6 +21,7 @@ uuid = { version = "=1.28.0", features = ["serde"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
+missing_debug_implementations = "warn"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }

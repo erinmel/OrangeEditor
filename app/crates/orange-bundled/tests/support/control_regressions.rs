@@ -40,6 +40,14 @@ fn initializers_and_data_constants_share_one_retained_budget() {
         .filter_map(|v| v.initial().and_then(|i| v.charge(i)))
         .sum();
     assert_eq!(initial + plan.data().initial_charge().unwrap(), 356);
+    // Cell Debug shows metadata, never the initial value.
+    for variable in plan.variables() {
+        let shown = format!("{variable:?}");
+        if let Some(value) = variable.initial() {
+            assert!(shown.contains("has_initial: true"), "{shown}");
+            assert!(!shown.contains(&format!("{value:?}")), "{shown}");
+        }
+    }
 }
 
 use orange_model::Value;

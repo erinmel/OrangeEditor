@@ -51,9 +51,11 @@ impl Debug for KernelBinding {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 pub enum ResolveError {
+    #[error("no kernel is available for the node")]
     Unavailable,
+    #[error("the node violates the kernel's contract")]
     Contract,
 }
 
