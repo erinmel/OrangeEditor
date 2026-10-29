@@ -690,10 +690,7 @@ impl Run {
                 cleanup_remaining: options.max_cleanup_operations,
                 pull_owner: None,
                 data: DataActivation::from_prepared(
-                    prepared
-                        .as_ref()
-                        .expect("entry capacity was admitted")
-                        .clone(),
+                    prepared.as_ref().ok_or(RunError::InvalidState)?.clone(),
                     document.revision(),
                     seed,
                     sequence as u64,
@@ -982,7 +979,9 @@ impl Run {
                 }
                 self.record(RunEvent {
                     activation: timer.activation.sequence,
-                    node: self.plan.as_ref().unwrap().nodes()[timer.owner.index()].node(),
+                    node: self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()
+                        [timer.owner.index()]
+                    .node(),
                     outcome: ControlOutcome::Then,
                     fault: None,
                 });
@@ -1012,7 +1011,7 @@ impl Run {
                 remaining.min(activation.cleanup_remaining).min(
                     self.activations[activation.sequence as usize]
                         .as_ref()
-                        .unwrap()
+                        .ok_or(RunError::InvalidState)?
                         .cleanup_remaining,
                 )
             } else {
@@ -1135,6 +1134,7 @@ impl Run {
         }
         // A pending mutation owns its read/compute/write segment across host slices.
         // Explicit suspension still releases ownership; read-only pulls may rotate.
+        let control = self.plan.as_deref().ok_or(RunError::InvalidState)?;
         if remaining == 0
             && self.ready.front().is_some_and(|a| {
                 Some(a.id) == last
@@ -1142,7 +1142,7 @@ impl Run {
                         || (a.pull.active.is_some()
                             && a.pc.is_some_and(|pc| {
                                 matches!(
-                                    self.plan.as_ref().unwrap().nodes()[pc.index()].operation(),
+                                    control.nodes()[pc.index()].operation(),
                                     ControlOperation::Set { .. }
                                         | ControlOperation::Call { .. }
                                         | ControlOperation::Return { .. }
@@ -1244,7 +1244,7 @@ impl Run {
         }
         let operation = node.operation();
         if activation.cleanup && !cleanup_safe(operation) {
-            self.refuse_in_cleanup(plan, activation, shared, ix);
+            self.refuse_in_cleanup(plan, activation, shared, ix)?;
             return Ok(());
         }
         let value = match demand_root(operation, target.input()) {
@@ -1264,7 +1264,7 @@ impl Run {
                             self.options.limits.max_state_bytes,
                         )?;
                     }
-                    self.complete(plan, activation, shared, ix, failed(node, fault));
+                    self.complete(plan, activation, shared, ix, failed(node, fault))?;
                     return Ok(());
                 }
             },
@@ -1307,8 +1307,7 @@ impl Run {
             | ControlOperation::Yield
             | ControlOperation::Wait { .. } => schedule(self.now, node, ix, activation, value)?,
         };
-        self.complete(plan, activation, shared, ix, step);
-        Ok(())
+        self.complete(plan, activation, shared, ix, step)
     }
     /// Cleanup never publishes ordinary results or revives a held caller: Return
     /// is cancelled, and any other unsafe node fails at itself.
@@ -1318,7 +1317,7 @@ impl Run {
         activation: &mut Strand,
         shared: &mut ActivationState,
         ix: ControlIx,
-    ) {
+    ) -> Result<(), RunError> {
         let node = &plan.nodes()[ix.index()];
         if matches!(node.operation(), ControlOperation::Return { .. }) {
             activation.pc = None;
@@ -1331,7 +1330,7 @@ impl Run {
                 outcome: ControlOutcome::Cancelled,
                 fault: None,
             });
-            return;
+            return Ok(());
         }
         let fault = ConstantFault {
             source: node.node(),
@@ -1341,7 +1340,7 @@ impl Run {
                 message: "This operation is not permitted during cancellation cleanup.",
             },
         };
-        Self::publish_error(plan, &self.layout, shared, ix, &fault);
+        Self::publish_error(plan, &self.layout, shared, ix, &fault)?;
         self.record(RunEvent {
             activation: activation.sequence,
             node: node.node(),
@@ -1353,6 +1352,7 @@ impl Run {
         if activation.pc.is_none() {
             activation.stack.clear();
         }
+        Ok(())
     }
     fn complete(
         &mut self,
@@ -1361,13 +1361,13 @@ impl Run {
         shared: &mut ActivationState,
         ix: ControlIx,
         (next, outcome, fault): (Option<ExecTarget>, ControlOutcome, Option<ConstantFault>),
-    ) {
+    ) -> Result<(), RunError> {
         let node = &plan.nodes()[ix.index()];
         shared.pull_owner = None;
         activation.pull.reset();
         activation.reenter = None;
         if let Some(fault) = &fault {
-            Self::publish_error(plan, &self.layout, shared, ix, fault);
+            Self::publish_error(plan, &self.layout, shared, ix, fault)?;
         }
         if outcome == ControlOutcome::Failed && next.is_none() {
             activation.stack.clear();
@@ -1396,6 +1396,7 @@ impl Run {
             self.transition(RunState::Faulted);
         }
         activation.pc = next;
+        Ok(())
     }
     fn consume(
         &self,
@@ -1527,12 +1528,22 @@ impl Run {
                     })
                 })?;
                 shared.data.set_input_outcome(index, value)?;
-                activation.pull.active.as_mut().expect("active pull").input = None;
+                activation
+                    .pull
+                    .active
+                    .as_mut()
+                    .ok_or(RunError::InvalidState)?
+                    .input = None;
             }
             match shared.data.poll_host_export(root, budget)? {
                 HostPoll::Pending => return Ok(None),
                 HostPoll::Input(index) => {
-                    activation.pull.active.as_mut().expect("active pull").input = Some(index)
+                    activation
+                        .pull
+                        .active
+                        .as_mut()
+                        .ok_or(RunError::InvalidState)?
+                        .input = Some(index)
                 }
                 HostPoll::Ready(Some(value)) => {
                     return Ok(Some(match value.outcome {
@@ -1556,7 +1567,7 @@ impl Run {
         let mut new = 0usize;
         for &i in plan.value_targets(owner) {
             let slot = plan.data().nodes()[plan.data().host_inputs()[i].index()].outputs()[0];
-            let cell = layout.outputs[i].expect("checked execution output");
+            let cell = layout.outputs[i].ok_or(RunError::InvalidState)?;
             let charge = |value: &Value| {
                 plan.data()
                     .value_charge(slot, value)
@@ -1587,7 +1598,7 @@ impl Run {
             .ok_or(RunError::ResourceLimit)?;
         shared.retained_bytes = retained;
         for &i in plan.value_targets(owner) {
-            shared.outputs[layout.outputs[i].expect("checked execution output")] =
+            shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
                 value.clone().map(FoldedValue::Value);
         }
         Ok(())
@@ -1598,11 +1609,12 @@ impl Run {
         shared: &mut ActivationState,
         owner: ControlIx,
         index: Option<i64>,
-    ) {
+    ) -> Result<(), RunError> {
         for &i in plan.index_targets(owner) {
-            shared.outputs[layout.outputs[i].expect("checked execution output")] =
+            shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
                 index.map(|i| FoldedValue::Value(Value::I64(i)));
         }
+        Ok(())
     }
     fn publish_error(
         plan: &ControlPlan,
@@ -1610,15 +1622,16 @@ impl Run {
         shared: &mut ActivationState,
         owner: ControlIx,
         fault: &ConstantFault,
-    ) {
+    ) -> Result<(), RunError> {
         for &i in plan.error_targets(owner) {
-            shared.outputs[layout.outputs[i].expect("checked execution output")] = Some(
+            shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] = Some(
                 FoldedValue::Value(Value::Err(Arc::new(orange_model::value::NodeError {
                     code: fault.fault.code.into(),
                     node: Some(fault.source),
                 }))),
             );
         }
+        Ok(())
     }
     pub fn stop(&mut self) -> Result<(), RunError> {
         self.request_stop(StopMode::Immediate)

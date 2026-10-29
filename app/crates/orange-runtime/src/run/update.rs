@@ -259,7 +259,7 @@ impl Cells<'_> {
         // All admission is complete. Subsequent stores are infallible typed copies.
         for &i in plan.value_targets(owner) {
             let value = projection(i)?.clone();
-            shared.outputs[self.layout.outputs[i].expect("checked execution output")] =
+            shared.outputs[self.layout.outputs[i].ok_or(RunError::InvalidState)?] =
                 Some(FoldedValue::Value(value));
         }
         shared.retained_bytes = retained;

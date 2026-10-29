@@ -169,6 +169,10 @@ impl Cells<'_> {
             hold,
             version,
         } = reservation;
+        #[expect(
+            clippy::expect_used,
+            reason = "`prepare_frame_write` found this frame and nothing ran in between"
+        )]
         let frame = self
             .frames
             .get_mut(&frame)
@@ -238,7 +242,7 @@ impl Run {
             .checked_sub(removed)
             .ok_or(RunError::InvalidState)?;
         for &input in layout.projections() {
-            shared.outputs[self.layout.outputs[input].expect("checked frame output")] = None;
+            shared.outputs[self.layout.outputs[input].ok_or(RunError::InvalidState)?] = None;
         }
         shared.retained_bytes = retained;
         let FunctionFrame {
@@ -294,7 +298,7 @@ impl Run {
                         shared,
                         owner,
                         (node.failed(), ControlOutcome::Failed, Some(fault)),
-                    );
+                    )?;
                     return Ok(());
                 }
             }
@@ -519,7 +523,7 @@ impl Run {
             }
         };
         let result =
-            result.map(|outcome| self.complete(&plan, caller, &mut shared, owner, outcome));
+            result.and_then(|outcome| self.complete(&plan, caller, &mut shared, owner, outcome));
         self.activations[caller.sequence as usize] = Some(shared);
         result
     }
@@ -575,7 +579,7 @@ impl Run {
             let HostSource::CallOutput(_, index) = plan.host_sources()[input] else {
                 unreachable!("checked call projection")
             };
-            shared.outputs[layout.outputs[input].expect("checked call output")] =
+            shared.outputs[layout.outputs[input].ok_or(RunError::InvalidState)?] =
                 values.map(|values| FoldedValue::Value(values[index].clone()));
         }
         shared.retained_bytes = retained;

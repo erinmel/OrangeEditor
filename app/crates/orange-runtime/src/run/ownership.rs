@@ -67,8 +67,10 @@ impl<T: Copy + Ord> IdSet<T> {
             Self::One(_) => false,
             Self::Many(ids) => {
                 let removed = ids.remove(id);
-                if ids.len() == 1 {
-                    *self = Self::One(*ids.first().expect("nonempty ownership spill"));
+                if ids.len() == 1
+                    && let Some(&only) = ids.first()
+                {
+                    *self = Self::One(only);
                 }
                 removed
             }
@@ -145,7 +147,7 @@ impl Run {
         caller.pc = None;
         self.regions
             .get_mut(&caller.region)
-            .unwrap()
+            .ok_or(RunError::InvalidState)?
             .children
             .insert(region);
         self.regions.insert(
@@ -209,7 +211,7 @@ impl Run {
             if !r.live.is_empty() || !r.children.is_empty() {
                 return Ok(());
             }
-            let mut r = self.regions.remove(&id).unwrap();
+            let mut r = self.regions.remove(&id).ok_or(RunError::InvalidState)?;
             for frame in r.frames.iter().flat_map(|frames| frames.iter()) {
                 self.retire_frame(frame, r.activation)?;
             }
@@ -259,12 +261,12 @@ impl Run {
                         .and_then(Option::as_mut)
                         .ok_or(RunError::InvalidState)?;
                     Self::publish_index(
-                        self.plan.as_ref().unwrap(),
+                        self.plan.as_ref().ok_or(RunError::InvalidState)?,
                         &self.layout,
                         shared,
                         owner,
                         None,
-                    );
+                    )?;
                 }
             }
 
@@ -276,7 +278,8 @@ impl Run {
             {
                 self.record(RunEvent {
                     activation: r.activation,
-                    node: self.plan.as_ref().unwrap().nodes()[owner.index()].node(),
+                    node: self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()[owner.index()]
+                        .node(),
                     outcome: ControlOutcome::Completed,
                     fault: None,
                 });
@@ -368,7 +371,7 @@ impl Run {
         caller.pc = *completed;
         self.regions
             .get_mut(&caller.region)
-            .unwrap()
+            .ok_or(RunError::InvalidState)?
             .children
             .insert(group);
         let parent = caller.region;
@@ -426,7 +429,7 @@ impl Run {
         let caller = r.continuation.take();
         self.record(RunEvent {
             activation,
-            node: self.plan.as_ref().unwrap().nodes()[owner.index()].node(),
+            node: self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()[owner.index()].node(),
             outcome: ControlOutcome::Completed,
             fault: None,
         });
@@ -596,7 +599,10 @@ impl Run {
                     .ok_or(RunError::InvalidState)?
                     .retired_cursor = Some(Box::new(retired));
             }
-            caller.pc = match self.plan.as_ref().unwrap().nodes()[owner.index()].operation() {
+            caller.pc = match self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()
+                [owner.index()]
+            .operation()
+            {
                 ControlOperation::Count { completed, .. }
                 | ControlOperation::While { completed, .. }
                 | ControlOperation::ForEach { completed, .. } => *completed,
@@ -605,7 +611,10 @@ impl Run {
         } else {
             caller.yielded = true;
         }
-        self.regions.get_mut(&region).unwrap().continuation = Some(caller);
+        self.regions
+            .get_mut(&region)
+            .ok_or(RunError::InvalidState)?
+            .continuation = Some(caller);
         self.cancel_region(region)?;
         self.complete_regions(region)
     }

@@ -770,7 +770,7 @@ impl Frame {
         self.replace_charge(self.old_charge(node)?, new)?;
         for slot in node.outputs() {
             let index = self.prepared.dynamic_slots[slot.index()]
-                .expect("publication checked dynamic targets");
+                .ok_or(DataError::KernelContract { node: node.node() })?;
             self.registers.set_fault(index, fault.clone(), charge);
         }
         self.memo[node.index().index()] = Some(stamp);
@@ -830,7 +830,7 @@ impl Frame {
             .zip(self.output_charges.drain(..))
         {
             let index = self.prepared.dynamic_slots[slot.index()]
-                .expect("publication checked dynamic targets");
+                .ok_or(DataError::KernelContract { node: node.node() })?;
             self.registers.set_value(index, value, charge);
         }
         self.memo[node.index().index()] = Some(stamp);
@@ -994,7 +994,9 @@ impl Frame {
                 return Ok(Drive::Pending);
             }
             *budget -= 1;
-            let work = self.work.pop().expect("nonempty work stack");
+            let Some(work) = self.work.pop() else {
+                break;
+            };
             match work {
                 Work::Enter(index) => {
                     let node = &plan.nodes()[index.index()];
