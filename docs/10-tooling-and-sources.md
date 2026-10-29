@@ -2222,4 +2222,12 @@ Branch `core/redacted-literal-errors` on `dev` c86b8a9 (same toolchain; Cargo.lo
 - **Regressions:** a record literal with an unknown field and an enum literal with an unknown variant, both named by a synthetic marker, format without the marker, reveal it on request and report their message keys; the existing literal tests still match these errors by value.
 - **Limitations:** `MissingField` and the `ty` fields still name schema-declared fields and registry types, which are not literal input.
 
+### JSON text checked before copying — 2026-10-28
+
+Branch `core/borrowed-json-text-check` on `dev` c86b8a9 (same toolchain; Cargo.lock unchanged). Addresses finding F06 of the final quality review.
+
+- **Change:** `JsonText` checks size, nesting and syntax on borrowed text. `JsonText::new(String)` keeps owned input; the new `TryFrom<&str>` copies only accepted text. Literal decoding and the bundled conversion loss flag use the borrowed form, so a rejected `core/json@1` literal is no longer copied first. Valid text is still parsed once.
+- **Regressions:** `orange-measure` asserts that refusing an 8 MiB JSON literal against the 1 MiB budget allocates under 64 KiB; it measured 8,618,812 bytes before the change and 56 bytes after. `TryFrom<&str>` and `new` agree on valid and malformed text.
+- **Limitations:** list, map and record decoding still have no aggregate byte or element budget across a whole literal.
+
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
