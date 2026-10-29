@@ -31,7 +31,7 @@ mod ids;
 mod ready;
 mod timers;
 mod update;
-use ids::{FrameId, RegionId, StrandId};
+use ids::{FrameId, OwnerIds, RegionId, StrandId};
 use ownership::{IdSet, Region, RegionKind};
 use ready::ReadyQueue;
 use timers::{TimerKey, Timers};
@@ -540,7 +540,7 @@ pub struct Run {
     ready: ReadyQueue<Strand>,
     activations: Vec<Option<Box<ActivationState>>>,
     regions: BTreeMap<RegionId, Region>,
-    next_owner: u64,
+    owner_ids: OwnerIds,
     live_strands: usize,
     trace: VecDeque<RunEvent>,
     trace_dropped: u64,
@@ -705,14 +705,14 @@ impl Run {
                 outputs: vec![None; layout.output_count],
             })));
             regions.insert(
-                RegionId::new(sequence as u64),
+                RegionId::root(sequence as u64),
                 Region {
                     frames: None,
                     retired_cursor: None,
                     parent: None,
                     activation: sequence as u64,
                     depth: 0,
-                    live: IdSet::one(StrandId::new(sequence as u64)),
+                    live: IdSet::one(StrandId::root(sequence as u64)),
                     children: IdSet::default(),
                     continuation: None,
                     kind: RegionKind::Root,
@@ -723,8 +723,8 @@ impl Run {
                 transfer: Transfer::None,
                 cleanup_deadline: None,
                 iteration_context: None,
-                id: StrandId::new(sequence as u64),
-                region: RegionId::new(sequence as u64),
+                id: StrandId::root(sequence as u64),
+                region: RegionId::root(sequence as u64),
                 sequence: sequence as u64,
                 entry,
                 pc: Some(entry.into()),
@@ -753,7 +753,7 @@ impl Run {
             ready,
             activations,
             regions,
-            next_owner: capacity as u64,
+            owner_ids: OwnerIds::after_roots(capacity as u64),
             live_strands: capacity,
             trace: VecDeque::new(),
             trace_dropped: 0,

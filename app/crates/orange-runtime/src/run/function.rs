@@ -408,7 +408,7 @@ impl Run {
             value: plan.variables()[i].initial().cloned(),
             version: 0,
         }));
-        let region = RegionId::new(self.owner_id()?);
+        let region = self.owner_ids.region()?;
         let mut child = self.child_strand(&caller, region)?;
         child.id = caller.id;
         child.pull = caller.pull.lend();

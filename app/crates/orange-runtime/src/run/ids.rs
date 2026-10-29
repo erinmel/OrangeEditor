@@ -2,6 +2,8 @@
 //! are drawn from the run's one owner counter; a frame has no identity of its own, only
 //! that of the function region that owns it. The types keep the three from being mixed up.
 
+use super::RunError;
+
 macro_rules! owner_id {
     ($(#[$doc:meta])* $name:ident) => {
         $(#[$doc])*
@@ -24,16 +26,44 @@ owner_id!(
 );
 
 impl StrandId {
-    /// Wraps a value from the owner counter.
-    pub(super) const fn new(raw: u64) -> Self {
-        Self(raw)
+    /// The first strand of activation `activation`.
+    pub(super) const fn root(activation: u64) -> Self {
+        Self(activation)
     }
 }
 
 impl RegionId {
-    /// Wraps a value from the owner counter.
-    pub(super) const fn new(raw: u64) -> Self {
-        Self(raw)
+    /// The root region of activation `activation`.
+    pub(super) const fn root(activation: u64) -> Self {
+        Self(activation)
+    }
+}
+
+/// Mints every strand and region identity after the roots. Activation `n` owns the root
+/// identities `n`, and the counter starts above every activation, so minted identities
+/// never collide with roots and are never reused within a run.
+pub(super) struct OwnerIds {
+    next: u64,
+}
+
+impl OwnerIds {
+    pub(super) const fn after_roots(activations: u64) -> Self {
+        Self { next: activations }
+    }
+    /// Whether `count` more identities can still be minted.
+    pub(super) fn has_room(&self, count: u64) -> bool {
+        self.next.checked_add(count).is_some()
+    }
+    pub(super) fn strand(&mut self) -> Result<StrandId, RunError> {
+        self.mint().map(StrandId)
+    }
+    pub(super) fn region(&mut self) -> Result<RegionId, RunError> {
+        self.mint().map(RegionId)
+    }
+    fn mint(&mut self) -> Result<u64, RunError> {
+        let id = self.next;
+        self.next = id.checked_add(1).ok_or(RunError::ResourceLimit)?;
+        Ok(id)
     }
 }
 

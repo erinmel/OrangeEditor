@@ -113,11 +113,6 @@ pub(super) struct Region {
     pub kind: RegionKind,
 }
 impl Run {
-    pub(super) fn owner_id(&mut self) -> Result<u64, RunError> {
-        let id = self.next_owner;
-        self.next_owner = id.checked_add(1).ok_or(RunError::ResourceLimit)?;
-        Ok(id)
-    }
     pub(super) fn enter_body(
         &mut self,
         mut caller: Strand,
@@ -131,11 +126,11 @@ impl Run {
         if self.live_strands >= self.options.limits.max_strands
             || self.regions.len() >= self.options.limits.max_regions
             || depth > self.options.limits.max_region_depth
-            || self.next_owner.checked_add(2).is_none()
+            || !self.owner_ids.has_room(2)
         {
             return self.fail(RunError::ResourceLimit);
         }
-        let region = RegionId::new(self.owner_id()?);
+        let region = self.owner_ids.region()?;
         let mut child = self.child_strand(&caller, region)?;
         if let Some(owner) = loop_owner
             && let Some(Cursor::ForEach(cursor)) = caller.stack.last()
@@ -181,7 +176,7 @@ impl Run {
             transfer: Transfer::None,
             cleanup_deadline: caller.cleanup_deadline,
             iteration_context: caller.iteration_context.clone(),
-            id: StrandId::new(self.owner_id()?),
+            id: self.owner_ids.strand()?,
             region,
             sequence: caller.sequence,
             entry: caller.entry,
@@ -344,15 +339,14 @@ impl Run {
                 .ok()
                 .and_then(|n| n.checked_mul(2))
                 .and_then(|n| n.checked_add(1))
-                .and_then(|n| self.next_owner.checked_add(n))
-                .is_none()
+                .is_none_or(|n| !self.owner_ids.has_room(n))
         {
             return self.fail(RunError::ResourceLimit);
         }
-        let group = RegionId::new(self.owner_id()?);
+        let group = self.owner_ids.region()?;
         let mut children = Vec::with_capacity(n);
         for target in branches {
-            let region = RegionId::new(self.owner_id()?);
+            let region = self.owner_ids.region()?;
             let mut child = self.child_strand(&caller, region)?;
             child.pc = *target;
             self.regions.insert(

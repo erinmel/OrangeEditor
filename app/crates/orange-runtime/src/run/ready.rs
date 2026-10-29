@@ -191,16 +191,16 @@ mod tests {
             let id = random >> 32 & 63;
             match random & 7 {
                 0 | 1 if !reference.contains(&id) => {
-                    queue.push_front(StrandId::new(id), id);
+                    queue.push_front(StrandId::root(id), id);
                     reference.push_front(id);
                 }
                 2 | 3 if !reference.contains(&id) => {
-                    queue.push_back(StrandId::new(id), id);
+                    queue.push_back(StrandId::root(id), id);
                     reference.push_back(id);
                 }
                 4 | 5 => {
                     assert_eq!(
-                        queue.remove(StrandId::new(id)),
+                        queue.remove(StrandId::root(id)),
                         reference
                             .iter()
                             .position(|&n| n == id)
