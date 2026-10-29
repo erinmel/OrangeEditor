@@ -85,4 +85,12 @@ fn main() {
             workloads::disposed_run_retained_bytes()
         );
     }
+    if "analysis-worker".contains(filter.as_str()) {
+        let (full, superseded) = workloads::analysis_worker_latency(config);
+        println!(
+            "analysis worker (2000 nodes): full p50 {:.3} ms, resubmission p50 {:.3} ms",
+            full.as_secs_f64() * 1e3,
+            superseded.as_secs_f64() * 1e3
+        );
+    }
 }

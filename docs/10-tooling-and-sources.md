@@ -2161,3 +2161,14 @@ Branch `core/dependency-policy` on `dev` c7fffe7 (same toolchain; Cargo.lock unc
 - **Limitations:** Cargo metadata cannot see `std::fs` or other standard-library I/O.
 
 **Checks:** `node tools/check-cargo-metadata.mjs --self-test` passes 18 fixtures; `node tools/check-cargo-metadata.mjs` passes on the workspace; `--msrv` derives 1.97.1.
+
+### Background analysis worker — 2026-10-28
+
+Branch `core/analysis-worker` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Addresses audit finding A06's first remediation step.
+
+- **Change:** `validation::AnalysisWorker` owns a thread that runs `analyze_with_options` on submitted document copies. A new submission cancels the previous one through the existing cooperative flag; superseded queued jobs are skipped and cancelled results are never published. `current` filters by `ValidationAnalysis::is_current`, so results bind to the semantic state and registry generation. Dropping the worker cancels and joins it.
+- **Regressions:** after 20 rapid edits each submitted, the published result equals a direct `analyze` of the newest content and is not current for any earlier one. A layout edit keeps the result current; a semantic edit, an undo to content not submitted since, and a replaced registry withhold it until resubmission. A worker with no submissions reports none and drops cleanly with a job in flight.
+- **Measured** with `orange-measure` (release, same machine, 15 runs): full analysis of a 2,000-node add chain took 2.14 ms p50 from submission to result; a resubmission right after another took 2.12 ms p50.
+- **Limitations:** cancellation is still observed only between passes, and semantic edits still rerun the combined analysis; per-body incremental analysis remains V12 work, and NFR-15 is not requalified. Submitting copies the document.
+
+**Checks:** `cargo test --workspace --locked --offline` passes with 952 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
