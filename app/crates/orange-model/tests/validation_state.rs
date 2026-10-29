@@ -89,6 +89,15 @@ fn update(n: u8, operation: &str) -> N {
     )
 }
 
+/// An Add update with an explicit integer overflow policy.
+fn add_with(n: u8, overflow: &str) -> N {
+    exec(
+        n,
+        "core/update-variable",
+        json!({"variable": VAR, "operation": "add", "int_overflow": overflow}),
+    )
+}
+
 fn call(n: u8) -> N {
     exec(n, "core/call", json!({"function": FUNCTION}))
 }
@@ -201,18 +210,62 @@ fn two_branches_setting_one_variable_conflict() {
 fn last_writer_wins_and_same_commutative_update_are_exempt() {
     let (nodes, edges) = two_branches(set(3), set(4));
     assert!(conflicts(I64, "last-writer-wins", nodes, edges, &[]).is_empty());
-    for operation in ["add", "and", "or", "xor", "min", "max"] {
+    for operation in ["and", "or", "xor", "min", "max"] {
         let (nodes, edges) = two_branches(update(3, operation), update(4, operation));
-        let ty = if operation == "add" {
-            I64
-        } else {
-            "core/u32@1"
-        };
         assert!(
-            conflicts(ty, "reject", nodes, edges, &[]).is_empty(),
+            conflicts("core/u32@1", "reject", nodes, edges, &[]).is_empty(),
             "{operation}"
         );
     }
+    for ty in [I64, "core/u32@1"] {
+        let (nodes, edges) = two_branches(add_with(3, "wrapping"), add_with(4, "wrapping"));
+        assert!(
+            conflicts(ty, "reject", nodes, edges, &[]).is_empty(),
+            "{ty}"
+        );
+    }
+}
+
+/// Add commutes exactly only as fixed-width wrapping integer addition. Saturation near a
+/// bound, checked faults and float rounding depend on branch order (11 §11.2).
+#[test]
+fn add_is_exempt_only_with_wrapping_integer_evidence() {
+    let conflict = |ty: &str, a: N, b: N| {
+        let (nodes, edges) = two_branches(a, b);
+        conflicts(ty, "reject", nodes, edges, &[]) == [DiagnosticCode::WriteConflict]
+    };
+    assert!(conflict(
+        I64,
+        add_with(3, "saturating"),
+        add_with(4, "saturating")
+    ));
+    assert!(conflict(
+        I64,
+        add_with(3, "checked"),
+        add_with(4, "checked")
+    ));
+    assert!(
+        conflict(I64, update(3, "add"), update(4, "add")),
+        "checked by default"
+    );
+    assert!(conflict(
+        I64,
+        add_with(3, "wrapping"),
+        add_with(4, "saturating")
+    ));
+    assert!(conflict(
+        "core/f64@1",
+        add_with(3, "wrapping"),
+        add_with(4, "wrapping")
+    ));
+    assert!(conflict(
+        "core/duration@1",
+        add_with(3, "wrapping"),
+        add_with(4, "wrapping")
+    ));
+    // Explicit last-writer-wins accepts the order dependence.
+    let (nodes, edges) = two_branches(add_with(3, "saturating"), add_with(4, "saturating"));
+    assert!(conflicts(I64, "last-writer-wins", nodes, edges, &[]).is_empty());
 }
 
 #[test]
@@ -289,8 +342,14 @@ fn function_call_writes_come_from_the_callee_summary() {
         conflicts(I64, "reject", nodes, edges, &[WriteOperation::Add]),
         [DiagnosticCode::WriteConflict]
     );
-    let (nodes, edges) = two_branches(call(3), update(4, "add"));
-    assert!(conflicts(I64, "reject", nodes, edges, &[WriteOperation::Add]).is_empty());
+    // A summary records the operation but not its overflow policy, so it is no evidence.
+    let (nodes, edges) = two_branches(call(3), add_with(4, "wrapping"));
+    assert_eq!(
+        conflicts(I64, "reject", nodes, edges, &[WriteOperation::Add]),
+        [DiagnosticCode::WriteConflict]
+    );
+    let (nodes, edges) = two_branches(call(3), update(4, "and"));
+    assert!(conflicts("core/u32@1", "reject", nodes, edges, &[WriteOperation::And]).is_empty());
     let (nodes, edges) = two_branches(call(3), update(4, "add"));
     assert_eq!(
         conflicts(

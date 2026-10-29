@@ -241,3 +241,5 @@ Map admission trace (2026-10-28; NFR-05): a Map zone whose known-length result c
 Run disposal trace (2026-10-28; NFR-05): `Run::dispose` now releases the run's working storage, pooled frame buffers included, and keeps only a terminal summary. Active runs still reuse frame buffers. Verification is recorded in 10.
 
 Provider panic boundary trace (2026-10-28; FR-08, NFR-05): a run whose pump unwinds through a panicking trusted provider callback now reports `Faulted` with `RunError::Interrupted` and refuses further work until the host stops it, instead of looking runnable while its activation is lost. Explicit stop and dispose still recover it. Verification is recorded in 10.
+
+Write-conflict evidence trace (2026-10-28; FR-12/44; ADR-15): parallel Fork branches may both Add to a variable only when the result is order-independent by construction: a core fixed-width integer and wrapping overflow on every writer. Saturating, checked, float and duration Adds, and Adds through calls or package effects, now conflict unless the variable declares last-writer-wins. Verification is recorded in 10.

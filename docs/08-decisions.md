@@ -255,6 +255,8 @@ E3 implementation note (2026-10-24, ADR-15/21): checked control plans retain ori
 
 Core integrity clarification (2026-10-22, ADR-15/21): editing and embedding APIs must preserve user data independently of identity text, reject ambiguous lock identities and detect stale semantic evidence. Typed configuration reference metadata is host-owned and exact-versioned; packages cannot redefine intrinsic reference/control meaning. Authoring composes atomic transactions, so wire insertion and later collapse-to-function can remain separate from presentation and execution. These corrections do not freeze the SDK or qualify incremental performance.
 
+Write-conflict evidence note (2026-10-28, ADR-15): the Fork Add exemption promises an order-independent final value, so it requires exact evidence, a core fixed-width integer with wrapping overflow on every writer, instead of inferring commutativity from the operation name. Other Add combinations are `E-WRITE-CONFLICT` unless the variable opts into last-writer-wins ([11 §11.2](11-graph-language.md)).
+
 Checked construction note (2026-10-28, ADR-15/21): structural document invariants are admission rules for every public construction from serialized data, not only for `from_json`. Serde `Deserialize` shares the importer's checks, and the unchecked wire form stays crate-private. Graph JSON and the importer contract are unchanged.
 
 | ID | Owner / deadline | Recommended default and practical consequence |
