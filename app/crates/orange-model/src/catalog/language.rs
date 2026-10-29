@@ -59,12 +59,10 @@ pub(crate) fn implicit_port(
         "in" => PortDescriptor::exec_in(name),
         "failed" | "cancelled" | "then" | "body" | "completed" => PortDescriptor::exec_out(name),
         "error" => PortDescriptor {
-            available_on: Some(vec!["failed".parse().expect("port id is valid")]),
+            available_on: Some(vec![crate::port_id!("failed")]),
             ..PortDescriptor::data_out(
                 name,
-                "core/error@1"
-                    .parse()
-                    .expect("intrinsic type expression is valid"),
+                crate::id::fixed_id("core/error@1"),
                 OutputSource::Execution,
             )
         },

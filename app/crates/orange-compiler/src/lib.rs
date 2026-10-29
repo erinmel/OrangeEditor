@@ -7,6 +7,9 @@
 //! Switch, Match-result, Gate/DoOnce/FlipFlop/Register, Core variable updates, virtual
 //! Wait/Yield and graph-local Action/Async calls. Events, package-provided function bodies,
 //! clock readers and host services remain unsupported. The README tracks this profile.
+// Product code reports failures as typed errors; each remaining panic is a documented
+// internal invariant (10, "Panic policy").
+#![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod calls;
 mod compile;

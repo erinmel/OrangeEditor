@@ -285,6 +285,10 @@ impl Journal {
 
     fn rollback(self, document: &mut GraphDocument) {
         for inverse in self.inverses.into_iter().rev() {
+            #[expect(
+                clippy::expect_used,
+                reason = "rollback runs inverses of patches that just applied; failure is a bug"
+            )]
             inverse
                 .apply(document)
                 .expect("the inverse of an applied patch always applies");

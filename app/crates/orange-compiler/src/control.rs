@@ -971,22 +971,22 @@ struct NodeLowering<'a, 'c> {
 }
 
 impl NodeLowering<'_, '_> {
-    fn target(&self, (scope, id): ControlKey, name: &str) -> Option<ExecTarget> {
+    fn target(&self, (scope, id): ControlKey, name: &'static str) -> Option<ExecTarget> {
         self.edges
-            .get(&(scope, id, name.parse().expect("fixed port")))
+            .get(&(scope, id, orange_model::id::fixed_id(name)))
             .copied()
     }
-    fn input(&mut self, (scope, id): ControlKey, port: &str) -> usize {
+    fn input(&mut self, (scope, id): ControlKey, port: orange_model::id::PortId) -> usize {
         input_root(&mut self.roots, scope, id, port)
     }
     /// Targets of a variadic exec output, in instance order.
     fn variadic_targets(
         &mut self,
         key: ControlKey,
-        port: &str,
+        port: &'static str,
     ) -> Result<Vec<Option<ExecTarget>>, CompileError> {
         let cx = self.cx;
-        let name: orange_model::id::PortId = port.parse().expect("fixed port");
+        let name: orange_model::id::PortId = orange_model::id::fixed_id(port);
         let state = cx
             .node(key)
             .variadic
@@ -1059,7 +1059,7 @@ impl NodeLowering<'_, '_> {
                     .map(|p| p.port_id.clone())
                     .collect();
                 let demand = UpdateDemand {
-                    roots: ports.iter().map(|p| self.input(key, p.as_str())).collect(),
+                    roots: ports.into_iter().map(|p| self.input(key, p)).collect(),
                     inputs: Arc::from([]),
                 };
                 if definition == ids::CALL {
@@ -1077,9 +1077,9 @@ impl NodeLowering<'_, '_> {
                 let operation = update::resolve(id, &node.config, self.variables[variable].ty())?;
                 let mut operands = Vec::new();
                 if matches!(operation, UpdateOperation::CompareAndSet) {
-                    operands.push(self.input(key, "expected"));
+                    operands.push(self.input(key, orange_model::port_id!("expected")));
                 }
-                operands.push(self.input(key, "value"));
+                operands.push(self.input(key, orange_model::port_id!("value")));
                 ControlOperation::Update {
                     variable,
                     operation,
@@ -1102,7 +1102,7 @@ impl NodeLowering<'_, '_> {
             },
             ids::REGISTER => ControlOperation::Register {
                 state: self.state_nodes[&key],
-                next: self.input(key, "next"),
+                next: self.input(key, orange_model::port_id!("next")),
             },
             ids::SWITCH => self.switch(key)?,
             ids::MATCH_RESULT => {
@@ -1111,7 +1111,7 @@ impl NodeLowering<'_, '_> {
                     return Err(CompileError::ValidationIncomplete);
                 };
                 ControlOperation::MatchResult {
-                    result: self.input(key, "result"),
+                    result: self.input(key, orange_model::port_id!("result")),
                     boxed: inner.unboxed_error(),
                     ok: self.target(key, "ok"),
                     err: self.target(key, "err"),
@@ -1127,13 +1127,13 @@ impl NodeLowering<'_, '_> {
                 ControlOperation::Entry
             }
             ids::BRANCH => ControlOperation::Branch {
-                condition: self.input(key, "condition"),
+                condition: self.input(key, orange_model::port_id!("condition")),
                 when_true: self.target(key, "true"),
                 when_false: self.target(key, "false"),
             },
             ids::SET_VARIABLE => ControlOperation::Set {
                 variable: self.variable_nodes[&id],
-                value: self.input(key, "value"),
+                value: self.input(key, orange_model::port_id!("value")),
             },
             ids::SEQUENCE => ControlOperation::Sequence {
                 steps: self.variadic_targets(key, "then")?.into(),
@@ -1155,20 +1155,20 @@ impl NodeLowering<'_, '_> {
             }
             ids::YIELD => ControlOperation::Yield,
             ids::WAIT => ControlOperation::Wait {
-                duration: self.input(key, "duration"),
+                duration: self.input(key, orange_model::port_id!("duration")),
             },
             ids::FOR_EACH => ControlOperation::ForEach {
-                items: self.input(key, "items"),
+                items: self.input(key, orange_model::port_id!("items")),
                 body: self.target(key, "body"),
                 completed: self.target(key, "completed"),
             },
             ids::COUNT => ControlOperation::Count {
-                count: self.input(key, "count"),
+                count: self.input(key, orange_model::port_id!("count")),
                 body: self.target(key, "body"),
                 completed: self.target(key, "completed"),
             },
             ids::WHILE => {
-                let condition = self.input(key, "condition");
+                let condition = self.input(key, orange_model::port_id!("condition"));
                 let max_iterations = node
                     .config
                     .get("max_iterations")
@@ -1213,7 +1213,7 @@ impl NodeLowering<'_, '_> {
                 port: port_key(port),
             });
         }
-        let case: orange_model::id::PortId = "case".parse().expect("fixed port");
+        let case: orange_model::id::PortId = orange_model::port_id!("case");
         let state = node
             .variadic
             .get(&case)
@@ -1251,7 +1251,7 @@ impl NodeLowering<'_, '_> {
             return Err(CompileError::ValidationIncomplete);
         }
         Ok(ControlOperation::Switch {
-            key: self.input(key, "key"),
+            key: self.input(key, orange_model::port_id!("key")),
             cases: cases.into(),
             default: self.target(key, "default"),
         })
@@ -1347,13 +1347,18 @@ fn host_source(
     }
 }
 
-fn input_root(roots: &mut Vec<DemandRoot>, scope: usize, node: NodeId, port: &str) -> usize {
+fn input_root(
+    roots: &mut Vec<DemandRoot>,
+    scope: usize,
+    node: NodeId,
+    port: orange_model::id::PortId,
+) -> usize {
     let index = roots.len();
     roots.push(DemandRoot {
         scope,
-        id: format!("{node}/{port}"),
+        id: format!("{node}/{}", port.as_str()),
         node,
-        port: port.parse().expect("fixed input port"),
+        port: orange_model::id::PortKey::new(port, None),
         input: true,
     });
     index

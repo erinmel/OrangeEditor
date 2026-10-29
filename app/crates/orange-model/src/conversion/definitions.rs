@@ -225,8 +225,7 @@ impl ConverterDefinition {
 
     /// The visible loss metadata port required by every lossy converter.
     pub fn loss_output_type(&self) -> Option<TypeExpr> {
-        (self.class == ConversionClass::Lossy)
-            .then(|| "core/json@1".parse().expect("core/json@1 is canonical"))
+        (self.class == ConversionClass::Lossy).then(|| crate::id::fixed_id("core/json@1"))
     }
 
     /// Validates and fills policy defaults. Unknown options and choices are rejected.

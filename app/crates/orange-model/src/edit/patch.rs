@@ -360,6 +360,10 @@ fn set_slot<K, V>(
 ) -> Option<Placed<V>> {
     if let Some(entry) = entry {
         if slots.position(&key) == Some(entry.index) {
+            #[expect(
+                clippy::expect_used,
+                reason = "a key with a position exists in the slots"
+            )]
             let old = slots
                 .replace(&key, entry.value)
                 .expect("position implies key exists");

@@ -184,6 +184,10 @@ pub fn canonical_json(snapshot: &SignatureSnapshot) -> String {
     {
         normalized.suspends = None;
     }
+    #[expect(
+        clippy::expect_used,
+        reason = "a snapshot has only string-keyed maps, so it always serializes"
+    )]
     let value = serde_json::to_value(&normalized).expect("snapshots always serialize");
     sorted(value).to_string()
 }
@@ -209,9 +213,7 @@ fn sorted(value: Json) -> Json {
 pub fn semantic_key(snapshot: &SignatureSnapshot) -> SignatureKey {
     let digest = Sha256::digest(canonical_json(snapshot).as_bytes());
     let hex: String = digest.iter().map(|byte| format!("{byte:02x}")).collect();
-    format!("sha256:{hex}")
-        .parse()
-        .expect("a sha256 key is never blank")
+    SignatureKey::from_canonical(format!("sha256:{hex}"))
 }
 
 impl SignatureSnapshot {

@@ -186,6 +186,10 @@ fn satisfies_object(object: &Map<String, Value>, schema: &Map<String, Value>) ->
 
 /// JSON retains signed/unsigned 64-bit integers separately from binary64 numbers. Never
 /// round an integer to f64 before comparing a bound (adjacent integers above 2^53 merge).
+#[expect(
+    clippy::expect_used,
+    reason = "without serde_json's arbitrary_precision every JSON number has a finite f64"
+)]
 fn compare_numbers(left: &Number, right: &Number) -> Ordering {
     let integer = |number: &Number| {
         number
@@ -207,6 +211,7 @@ fn compare_numbers(left: &Number, right: &Number) -> Ordering {
     }
 }
 
+#[expect(clippy::expect_used, reason = "callers pass only finite JSON numbers")]
 fn compare_integer_float(integer: i128, float: f64) -> Ordering {
     // All JSON integers fit strictly inside i128. A saturating cast of a float outside
     // i128's range therefore orders correctly too. Within range, truncation is exact;

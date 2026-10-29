@@ -105,17 +105,82 @@ impl PortId {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// A port ID that [`port_id!`](crate::port_id) checked at compile time.
+    #[doc(hidden)]
+    pub fn from_checked(text: CheckedPortId) -> Self {
+        Self(text.0.to_owned())
+    }
+}
+
+/// Parses an identifier spelled in source code: a literal or a name from a fixed table.
+/// Taking only `'static` text keeps document and host input out; the identifier tables are
+/// covered by tests, so a failure here is a programming error, not an input error.
+#[doc(hidden)]
+pub fn fixed_id<T: FromStr>(text: &'static str) -> T {
+    #[expect(
+        clippy::expect_used,
+        reason = "fixed identifiers are source text that tests parse; never document input"
+    )]
+    text.parse().ok().expect("fixed identifier is valid")
+}
+
+/// True if `text` matches `[a-z][a-z0-9_]{0,63}`.
+const fn is_port_id(text: &str) -> bool {
+    let bytes = text.as_bytes();
+    if bytes.is_empty() || bytes.len() > 64 || !bytes[0].is_ascii_lowercase() {
+        return false;
+    }
+    let mut i = 1;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if !(b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_') {
+            return false;
+        }
+        i += 1;
+    }
+    true
+}
+
+/// A port ID literal validated during compilation; build one with [`port_id!`](crate::port_id).
+#[doc(hidden)]
+#[derive(Debug, Clone, Copy)]
+pub struct CheckedPortId(&'static str);
+
+impl CheckedPortId {
+    /// Fails compilation when evaluated in a `const` context with an invalid `text`.
+    pub const fn new(text: &'static str) -> Self {
+        assert!(
+            is_port_id(text),
+            "not a port id: expected [a-z][a-z0-9_]{{0,63}}"
+        );
+        Self(text)
+    }
+}
+
+/// A [`PortId`] from a string literal, validated at compile time, so fixed port names
+/// need no runtime parse that could fail.
+///
+/// ```
+/// let then = orange_model::port_id!("then");
+/// assert_eq!(then.as_str(), "then");
+/// ```
+///
+/// ```compile_fail
+/// let bad = orange_model::port_id!("Then");
+/// ```
+#[macro_export]
+macro_rules! port_id {
+    ($text:literal) => {
+        $crate::id::PortId::from_checked(const { $crate::id::CheckedPortId::new($text) })
+    };
 }
 
 impl FromStr for PortId {
     type Err = IdError;
 
     fn from_str(text: &str) -> Result<Self, IdError> {
-        let mut chars = text.chars();
-        let valid = chars.next().is_some_and(|c| c.is_ascii_lowercase())
-            && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
-            && text.len() <= 64;
-        if valid {
+        if is_port_id(text) {
             Ok(Self(text.to_owned()))
         } else {
             Err(IdError::InvalidPortId { text: text.into() })
@@ -240,6 +305,13 @@ macro_rules! opaque_text {
         impl $name {
             pub fn as_str(&self) -> &str {
                 &self.0
+            }
+
+            /// Wraps text this crate produced in canonical form, which is never blank.
+            #[allow(dead_code, reason = "not every identifier is produced in canonical form")]
+            pub(crate) fn from_canonical(text: String) -> Self {
+                debug_assert!(!text.is_empty() && text.trim() == text);
+                Self(text)
             }
         }
 

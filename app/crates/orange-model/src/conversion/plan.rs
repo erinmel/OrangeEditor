@@ -221,6 +221,10 @@ pub fn plan_connection_indexed(
             None
         }
         Wire::Convert(resolved) => {
+            #[expect(
+                clippy::expect_used,
+                reason = "the converter was resolved from this registry, so its entry exists"
+            )]
             let definition = converters
                 .entry(&resolved.entry)
                 .expect("a resolved converter names a registered entry");
@@ -380,8 +384,8 @@ fn fresh_edge(
     Ok(id)
 }
 
-fn key_of(port: &str) -> PortKey {
-    PortKey::new(port.parse().expect("fixed port IDs are valid"), None)
+fn key_of(port: &'static str) -> PortKey {
+    PortKey::new(crate::id::fixed_id(port), None)
 }
 
 /// The persisted `core/convert` instance (12 §5) and its signature snapshot. The caller
@@ -408,7 +412,7 @@ fn convert_node(
     let instance = NodeInstance {
         id,
         definition: DefinitionRef {
-            id: ids::CONVERT.parse().expect("core/convert is canonical"),
+            id: crate::id::fixed_id(ids::CONVERT),
             version: 1,
         },
         config_version: 1,

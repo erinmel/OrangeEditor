@@ -648,10 +648,7 @@ fn check_argument(
     term: &TypeTerm,
     rigid: &[TypeParam],
 ) -> Result<TypeExpr, InferenceIssue> {
-    let ty: TypeExpr = term
-        .to_string()
-        .parse()
-        .expect("a concrete type term prints as a nonblank type expression");
+    let ty = term.to_type_expr();
     let rigid_names: Vec<String> = rigid.iter().map(|param| param.name.clone()).collect();
     types
         .validate_scoped(term, &rigid_names)

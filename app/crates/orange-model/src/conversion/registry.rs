@@ -216,6 +216,7 @@ impl ConverterRegistryBuilder {
             });
         }
         let key = self.insert_entry(definition, TypeOwner::Core)?;
+        #[expect(clippy::expect_used, reason = "`insert_entry` just inserted this key")]
         let state = self.entries.get_mut(&key).expect("entry was inserted");
         state.providers.insert(ConverterProvider::Core);
         state.new_binding_default = Some(ConverterProvider::Core);

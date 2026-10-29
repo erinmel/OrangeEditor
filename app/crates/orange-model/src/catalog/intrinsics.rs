@@ -9,19 +9,19 @@ use crate::document::{
 };
 use crate::id::TypeExpr;
 
-fn ty(text: &str) -> TypeExpr {
-    text.parse().expect("intrinsic type expression is valid")
+fn ty(text: &'static str) -> TypeExpr {
+    crate::id::fixed_id(text)
 }
 
 fn definition(
-    id: &str,
+    id: &'static str,
     kind: NodeKind,
     suspends: Option<Suspends>,
     ports: Vec<PortDescriptor>,
 ) -> NodeDefinition {
     NodeDefinition {
         definition: DefinitionRef {
-            id: id.parse().expect("intrinsic definition id is valid"),
+            id: crate::id::fixed_id(id),
             version: 1,
         },
         config_version: 1,
@@ -49,7 +49,7 @@ fn generic(mut base: NodeDefinition, name: &str, constraints: &[&str]) -> NodeDe
 
 /// A variable node: its single `value` port is typed by the referenced declaration.
 fn variable_definition(
-    id: &str,
+    id: &'static str,
     kind: NodeKind,
     suspends: Option<Suspends>,
     access: VariableAccess,
@@ -71,7 +71,7 @@ fn variable_definition(
 
 /// An event node: its `payload` port is typed by the referenced event declaration.
 fn event_definition(
-    id: &str,
+    id: &'static str,
     kind: NodeKind,
     suspends: Option<Suspends>,
     access: EventAccess,
@@ -274,13 +274,8 @@ fn lazy_pure_definitions() -> Vec<NodeDefinition> {
 }
 
 /// `available_on` outcomes of an execution-sourced output.
-fn on(mut port: PortDescriptor, outcomes: &[&str]) -> PortDescriptor {
-    port.available_on = Some(
-        outcomes
-            .iter()
-            .map(|id| id.parse().expect("intrinsic port id is valid"))
-            .collect(),
-    );
+fn on(mut port: PortDescriptor, outcomes: &[&'static str]) -> PortDescriptor {
+    port.available_on = Some(outcomes.iter().map(|&id| crate::id::fixed_id(id)).collect());
     port
 }
 
