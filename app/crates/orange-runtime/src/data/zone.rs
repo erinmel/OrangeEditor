@@ -114,9 +114,18 @@ impl ZoneMachine {
                     return Err(MachineError::Contract);
                 };
                 let mut builder = ListBuilder::new(Some(element));
-                // Map's result has exactly the source's length; Filter's is unknown. The
-                // reservation is at most one more list of the already-retained source's size.
+                // Map's result has exactly the source's length; Filter's is unknown. Every
+                // element charges at least one value, so a result that cannot fit is refused
+                // before its storage is reserved, whatever the output element's width.
                 if kind == ZoneKind::Map {
+                    let minimum = items
+                        .len()
+                        .checked_add(1)
+                        .and_then(|values| values.checked_mul(VALUE_CHARGE))
+                        .ok_or(MachineError::Limit)?;
+                    if minimum > free {
+                        return Err(MachineError::Limit);
+                    }
                     builder.reserve(items.len())?;
                 }
                 machine.builder = Some(builder);

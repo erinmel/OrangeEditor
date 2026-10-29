@@ -235,3 +235,5 @@ Inference plan freshness trace (2026-10-28; FR-03/44): detached inference plans 
 Orphan projection trace (2026-10-28; FR-02/03): `DocIndex::orphan_edges` now takes the node instance and uses the validator's port rule, so stale variadic instances, bare variadic base ports and undeclared ports are orphans in both the authoring projection and `E-PORT-UNKNOWN`. Raw edges stay in the document for repair. Verification is recorded in 10.
 
 Redacted import errors trace (2026-10-28; FR-05, NFR-05; 13 §2): import and identifier errors no longer echo rejected input through `Display` or `Debug`. They expose stable message keys, keep JSON line and column, and hold rejected text behind an explicit `reveal`. Verification is recorded in 10.
+
+Map admission trace (2026-10-28; NFR-05): a Map zone whose known-length result cannot fit the remaining retained-byte limit is now refused before its result storage is reserved or any element runs. Results that fit keep their preallocation. Verification is recorded in 10.

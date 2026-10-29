@@ -400,6 +400,7 @@ Audit remediation (2026-10-27):
 - **Type locks on paste (2026-10-28).** Copy/paste carries every source type lock and merges it under the lock conflict rule, so pasted values keep the source's codec contract. Type locks have explicit edit commands; see [12](12-graph-data-structures.md).
 - **Nesting budget (2026-10-28).** Editing, saving and loading share one 64-level JSON nesting budget, so an edit that commits can always be reopened; see [12](12-graph-data-structures.md).
 - **Startup admission.** `RunLimits::max_frame_storage_bytes` (default 64 MiB) bounds the nominal storage reserved by all start and stop frames, checked before any is built. Over the limit, startup fails with `RunError::ResourceLimit`. A plan near the `DataLimits` maximums fits only a few frames under the default, so hosts with large graphs raise this limit deliberately.
+- **Map admission (2026-10-28).** A Map zone knows its result length, and every element charges at least one value, so a result whose minimum charge exceeds the remaining retained-byte capacity is refused with `ResourceLimit` before its storage is reserved or any element is computed. A result that fits is still preallocated; variable-size elements are still charged one by one.
 - **Open observation.** A yield set when a loop resumes is not applied as the body is entered. It stays on the waiting caller and takes effect at that strand's next step without a transfer. This keeps existing behavior; whether it is intended remains open.
 
 Runtime handlers and compare-and-set (2026-10-27):

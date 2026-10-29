@@ -3,10 +3,12 @@
 
 use crate::graph::*;
 use crate::harness::{Config, DataInput, DataSession, Row, RunSession, measure};
+use orange_compiler::DataPlan;
+use orange_model::GraphDocument;
 use orange_model::Value;
 use orange_model::id::VariableId;
 use orange_model::value::{ListRepr, MapRepr};
-use orange_runtime::DataLimits;
+use orange_runtime::{DataActivation, DataError, DataLimits, DataOptions, DataPoll};
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
 
@@ -301,11 +303,11 @@ fn zone(n: u32, end: bool, pins: Json) -> Json {
         "config":{"zone":"z"},"type_pins":pins,"inputs":{}})
 }
 
-/// A Map zone that adds one to each item of a 10,000-item `u64` host list, pulled in
-/// ten epochs.
-pub fn map_zone(config: Config) -> Row {
-    const ITEMS: u64 = 10_000;
-    const EPOCHS: u64 = 10;
+const MAP_ITEMS: u64 = 10_000;
+
+/// A Map zone adding one to each item of a `u64` host list: the document, plan and the
+/// host input's index.
+fn map_zone_graph() -> (GraphDocument, Arc<DataPlan>, usize) {
     let mut source = Source::new(
         vec![
             zone(1, false, json!({"T":U64})),
@@ -321,10 +323,20 @@ pub fn map_zone(config: Config) -> Row {
     );
     source.exports = vec![export(3, "result")];
     source.variables = vec![run_variable(TOTAL, "core/list@1<core/u64@1>", None)];
-    let (document, plan, index) = source.data(4);
-    let list = |items: std::ops::Range<u64>| Value::List(Arc::new(ListRepr::U64(items.collect())));
-    let value = list(0..ITEMS);
-    let expected = list(1..ITEMS + 1);
+    source.data(4)
+}
+
+fn u64_list(items: std::ops::Range<u64>) -> Value {
+    Value::List(Arc::new(ListRepr::U64(items.collect())))
+}
+
+/// The Map zone over a 10,000-item host list, pulled in ten epochs.
+pub fn map_zone(config: Config) -> Row {
+    const ITEMS: u64 = MAP_ITEMS;
+    const EPOCHS: u64 = 10;
+    let (document, plan, index) = map_zone_graph();
+    let value = u64_list(0..ITEMS);
+    let expected = u64_list(1..ITEMS + 1);
     let input = DataInput {
         index,
         value: &value,
@@ -343,4 +355,48 @@ pub fn map_zone(config: Config) -> Row {
         || DataSession::start(&plan, &document, &input, config.budget, limits),
         |result| assert_eq!(result.as_ref(), Some(&expected)),
     )
+}
+
+/// Heap the Map zone allocates while being refused when the retained-byte limit leaves
+/// about 1 KiB beyond its 10,000-item source: the result cannot fit, so nothing
+/// result-sized should be reserved.
+pub fn oversized_map_zone_peak_bytes() -> usize {
+    let (document, plan, index) = map_zone_graph();
+    let value = u64_list(0..MAP_ITEMS);
+    let options = DataOptions {
+        limits: DataLimits {
+            max_operations: 1_000_000,
+            max_retained_bytes: 161_024,
+            ..DataLimits::default()
+        },
+        cancel: None,
+    };
+    let mut activation =
+        DataActivation::start(plan.clone(), &document, plan.snapshot(), 17, 1, options)
+            .expect("activation starts");
+    activation.begin_epoch().expect("epoch");
+    activation.set_input(index, value).expect("host input");
+    let window = crate::counter::Snapshot::start();
+    loop {
+        match activation.poll_export(0, &mut 64) {
+            Ok(DataPoll::Pending) => continue,
+            Err(DataError::ResourceLimit) => break,
+            Err(error) => panic!("expected the result to exceed the limit, got {error:?}"),
+            Ok(DataPoll::Ready(_)) => panic!("the result unexpectedly fit"),
+        }
+    }
+    window.finish().peak_live_bytes
+}
+
+#[cfg(test)]
+mod tests {
+    /// Reserving the 10,000-item result before refusing it took about 80 KB.
+    #[test]
+    fn an_impossible_map_result_is_refused_before_reserving_it() {
+        let peak = super::oversized_map_zone_peak_bytes();
+        assert!(
+            peak < 16 * 1024,
+            "refusing the map zone peaked at {peak} bytes"
+        );
+    }
 }
