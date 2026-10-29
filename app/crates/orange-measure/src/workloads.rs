@@ -406,6 +406,28 @@ pub fn oversized_json_literal_allocated_bytes() -> u64 {
     allocated
 }
 
+/// Comparing two separate 65,536-element string lists whose elements share one string, as
+/// p50 over `config.runs` of 16 comparisons.
+pub fn string_list_equality(config: Config) -> std::time::Duration {
+    use orange_model::value::ListRepr;
+    use std::sync::Arc;
+    use std::time::Instant;
+    let shared = Arc::new("shared".to_owned());
+    let list = || ListRepr::Str(vec![Arc::clone(&shared); 1 << 16].into());
+    let (a, b) = (list(), list());
+    let mut samples: Vec<_> = (0..config.runs)
+        .map(|_| {
+            let start = Instant::now();
+            for _ in 0..16 {
+                assert!(std::hint::black_box(&a) == std::hint::black_box(&b));
+            }
+            start.elapsed()
+        })
+        .collect();
+    samples.sort();
+    samples[samples.len() / 2]
+}
+
 /// Heap bytes a run still holds after the function-call workload, stop and dispose; they are
 /// released only when the disposed run is dropped. Disposal should release its storage.
 pub fn disposed_run_retained_bytes() -> usize {
