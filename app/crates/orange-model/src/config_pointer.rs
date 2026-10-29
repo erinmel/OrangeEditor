@@ -73,9 +73,61 @@ fn set_nested(value: &mut Json, parts: &mut VecDeque<String>, replacement: Json)
     set_nested(child, parts, replacement)
 }
 
+/// An RFC 6901 §4 array index: `0` or a nonzero ASCII digit followed by ASCII digits.
+/// `usize::from_str` alone would also accept a leading `+`.
 fn array_index(part: &str) -> Option<usize> {
-    if part.is_empty() || (part.len() > 1 && part.starts_with('0')) {
+    if part.is_empty()
+        || !part.bytes().all(|byte| byte.is_ascii_digit())
+        || (part.len() > 1 && part.starts_with('0'))
+    {
         return None;
     }
     part.parse().ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    fn config() -> ConfigValue {
+        json!({"targets": ["a", "b"], "named": {"+0": "key", "0": "zero", "a/b~": "escaped"}})
+            .as_object()
+            .unwrap()
+            .clone()
+    }
+
+    #[test]
+    fn array_tokens_follow_rfc_6901_and_object_keys_stay_literal() {
+        let config = config();
+        let get = |pointer: &str| pointer_get(&config, pointer);
+        assert_eq!(get("/targets/0"), Some(&json!("a")));
+        assert_eq!(get("/targets/1"), Some(&json!("b")));
+        for noncanonical in ["/targets/01", "/targets/+0", "/targets/+1", "/targets/-"] {
+            assert_eq!(get(noncanonical), None, "{noncanonical}");
+        }
+        assert_eq!(get("/targets/99999999999999999999999"), None);
+        assert_eq!(get("/named/+0"), Some(&json!("key")));
+        assert_eq!(get("/named/0"), Some(&json!("zero")));
+        assert_eq!(get("/named/a~1b~0"), Some(&json!("escaped")));
+        // serde_json's own pointer lookup agrees on every array token.
+        let whole = Json::Object(config.clone());
+        for token in ["0", "1", "01", "+0", "+1", "-"] {
+            let pointer = format!("/targets/{token}");
+            assert_eq!(get(&pointer), whole.pointer(&pointer), "{pointer}");
+        }
+    }
+
+    #[test]
+    fn a_noncanonical_array_token_is_never_rewritten() {
+        let mut config = config();
+        assert!(!pointer_set(&mut config, "/targets/+0", json!("x")));
+        assert!(pointer_set(&mut config, "/named/+0", json!("x")));
+        assert!(pointer_set(&mut config, "/targets/0", json!("y")));
+        assert_eq!(
+            Json::Object(config),
+            json!({"targets": ["y", "b"], "named": {"+0": "x", "0": "zero", "a/b~": "escaped"}})
+        );
+    }
 }
