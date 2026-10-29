@@ -10,7 +10,7 @@ use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{FaultPolicy, VarScope};
 use orange_model::id::{NodeId, VariableId};
 use orange_model::{GraphDocument, Value};
-use std::collections::{BTreeMap, HashMap, VecDeque};
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
@@ -29,10 +29,12 @@ mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod ids;
 mod ready;
+mod timers;
 mod update;
 use ids::{FrameId, RegionId, StrandId};
 use ownership::{IdSet, Region, RegionKind};
 use ready::ReadyQueue;
+use timers::{TimerKey, Timers};
 
 static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 fn run_identity() -> Result<u64, RunError> {
@@ -549,9 +551,7 @@ pub struct Run {
     state_bytes: usize,
     versions: Vec<u64>,
     now: u64,
-    next_timer: u64,
-    timer_keys: HashMap<StrandId, (u64, u64)>,
-    timers: BTreeMap<(u64, u64), Timer>,
+    timers: Timers,
     transitions: Vec<RunState>,
     deadline: Option<u64>,
     last_error: Option<RunError>,
@@ -563,7 +563,7 @@ pub struct Run {
     segment: SegmentWrites,
     /// Reused cancellation traversal buffers; empty between calls.
     cancel_regions: Vec<RegionId>,
-    cancel_timers: Vec<(u64, u64)>,
+    cancel_timers: Vec<TimerKey>,
     /// Set while `pump` runs. Still set on the next call only if a trusted callback
     /// panicked through a pump, which can leave work taken out of the run's stores.
     pump_open: bool,
@@ -764,9 +764,7 @@ impl Run {
             states,
             state_bytes,
             now: 0,
-            next_timer: 0,
-            timer_keys: HashMap::new(),
-            timers: BTreeMap::new(),
+            timers: Timers::default(),
             transitions: vec![RunState::Created, RunState::Starting, RunState::Running],
             deadline: None,
             last_error: None,
@@ -977,14 +975,8 @@ impl Run {
             if self.state == RunState::Stopped {
                 break;
             }
-            if self
-                .timers
-                .first_key_value()
-                .is_some_and(|((at, _), _)| *at <= self.now)
-            {
+            if let Some(timer) = self.timers.pop_due(self.now) {
                 remaining -= 1;
-                let (_, timer) = self.timers.pop_first().expect("due timer");
-                self.timer_keys.remove(&timer.activation.id);
                 if timer.run != self.id {
                     return self.fail(RunError::InvalidState);
                 }
@@ -1116,23 +1108,15 @@ impl Run {
                 Transfer::EnterBody(loop_owner) => self.enter_body(activation, loop_owner)?,
                 Transfer::Wait { at, owner } => {
                     self.segment_owner = None;
-                    if self.timers.len() == self.options.limits.max_timers {
+                    let timer = Timer {
+                        run: self.id,
+                        owner,
+                        activation,
+                    };
+                    let max = self.options.limits.max_timers;
+                    if self.timers.schedule(at, timer, max).is_err() {
                         return self.fail(RunError::ResourceLimit);
                     }
-                    let sequence = self.next_timer;
-                    let Some(next) = sequence.checked_add(1) else {
-                        return self.fail(RunError::ResourceLimit);
-                    };
-                    self.next_timer = next;
-                    self.timer_keys.insert(activation.id, (at, sequence));
-                    self.timers.insert(
-                        (at, sequence),
-                        Timer {
-                            run: self.id,
-                            owner,
-                            activation,
-                        },
-                    );
                 }
                 Transfer::None if activation.pc.is_some() || !activation.stack.is_empty() => {
                     if activation.yielded {
@@ -1184,18 +1168,14 @@ impl Run {
             return self.fail(RunError::ResourceLimit);
         }
         self.finish_if_idle();
-        let timer = self.timers.first_key_value().map(|((at, _), _)| *at);
+        let timer = self.timers.next_at();
         let next_wakeup = match (timer, self.deadline) {
             (Some(a), Some(b)) => Some(a.min(b)),
             (a, b) => a.or(b),
         };
         Ok(RunProgress {
             operations: count,
-            ready: !self.ready.is_empty()
-                || self
-                    .timers
-                    .first_key_value()
-                    .is_some_and(|((at, _), _)| *at <= self.now),
+            ready: !self.ready.is_empty() || self.timers.is_due(self.now),
             next_wakeup,
         })
     }
@@ -1236,7 +1216,6 @@ impl Run {
         self.stop_ready.clear();
         self.ready.clear();
         self.timers.clear();
-        self.timer_keys.clear();
         self.regions.clear();
         self.frames.clear();
         self.activations.clear();
@@ -1715,8 +1694,7 @@ impl Run {
         self.layout = StateLayout::default();
         self.versions = Vec::new();
         self.state_bytes = 0;
-        self.timer_keys = HashMap::new();
-        self.timers = BTreeMap::new();
+        self.timers.release();
         self.stop_ready = VecDeque::new();
         self.segment = SegmentWrites::default();
         self.segment_owner = None;

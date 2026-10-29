@@ -485,7 +485,7 @@ impl Run {
                         .cleanup_truncated
                         .saturating_add(u64::from(queued.cleanup));
                 }
-                if let Some(key) = self.timer_keys.remove(&strand) {
+                if let Some(key) = self.timers.detach(strand) {
                     timer_keys.push(key);
                 }
             }
@@ -497,7 +497,7 @@ impl Run {
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
         // Timer keys preserve the original cancellation/outcome order.
         for &key in timer_keys.iter() {
-            let mut timer = self.timers.remove(&key).ok_or(RunError::InvalidState)?;
+            let mut timer = self.timers.remove(key).ok_or(RunError::InvalidState)?;
             let node = &plan.nodes()[timer.owner.index()];
             self.record(RunEvent {
                 activation: timer.activation.sequence,
