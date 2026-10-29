@@ -148,12 +148,14 @@ impl ListRepr {
 }
 
 /// Why [`ListBuilder::push`] refused an element. Nothing is appended on error.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[non_exhaustive]
 pub enum ListPushError {
     /// The element is not stored as the builder's packed element type.
+    #[error("list element does not match the packed element type")]
     Mismatch,
     /// The allocation could not grow.
+    #[error("list allocation could not grow")]
     Capacity,
 }
 
@@ -250,7 +252,8 @@ pub struct MapRepr {
 }
 
 /// [`MapRepr::new`] was given the same key twice.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("map entries repeat a key")]
 pub struct DuplicateKey;
 
 /// Maps with at most this many entries match keys pairwise, so building and comparing the

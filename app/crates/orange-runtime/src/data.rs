@@ -268,6 +268,8 @@ pub(crate) struct CleanupScope {
     cancel: Option<CancelToken>,
 }
 /// A suspended pull retains its work stack and current consumption epoch.
+/// Debug shows the export metadata only, never its value.
+#[derive(Debug)]
 pub enum DataPoll<'a> {
     Pending,
     Ready(Option<EvaluatedExport<'a>>),

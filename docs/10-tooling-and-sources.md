@@ -2231,3 +2231,13 @@ Branch `core/borrowed-json-text-check` on `dev` c86b8a9 (same toolchain; Cargo.l
 - **Limitations:** list, map and record decoding still have no aggregate byte or element budget across a whole literal.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Public trait surfaces — 2026-10-28
+
+Branch `core/public-trait-surfaces` on `dev` (same toolchain; Cargo.lock unchanged). Addresses finding F08 of the final quality review.
+
+- **Change:** `ControlCell` gains a metadata-only Debug that shows whether an initial value exists but not the value; `DataPoll` derives Debug through the already payload-free `EvaluatedExport` formatter. `ListPushError`, `DuplicateKey` and `ResolveError` implement Display and `std::error::Error` with static text. The workspace enables `missing_debug_implementations`, so a new public type without Debug fails clippy `-D warnings`.
+- **Unchanged on purpose:** `Run`, `DataActivation` and `TypeRegistry` still implement neither Clone nor Default.
+- **Regressions:** cell Debug in a compiled plan with initial values shows `has_initial: true` and none of the values.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
