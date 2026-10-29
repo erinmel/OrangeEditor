@@ -1286,6 +1286,40 @@ fn empty_pure_evaluation_and_missing_export_have_explicit_results() {
 fn id(n: u32) -> String {
     format!("10000000-0000-4000-8000-{n:012x}")
 }
+#[test]
+fn exports_authored_through_commands_compile_and_undo() {
+    use orange_model::DocCommand;
+    use orange_model::document::GraphExport;
+    let (package, snapshot) = catalog();
+    let mut doc = graph(&package, vec![node(1, "divide", 42, 6)], vec![], vec![]);
+    let quotient: GraphExport = serde_json::from_value(export(1, "quotient")).unwrap();
+    let added = doc
+        .apply([DocCommand::UpsertExport(quotient.clone())])
+        .unwrap();
+    let resolver = Counting::new(package);
+    let plan = compile(&doc, snapshot.clone(), &resolver);
+    assert_eq!(
+        plan.constants()[plan.exports()[0].slot.index()],
+        FoldedValue::Value(Value::I64(7))
+    );
+
+    // Retargeting the same export ID to an input port is reported by analysis, not stored
+    // as a second export; undo restores the compilable graph.
+    let retargeted = doc
+        .apply([DocCommand::UpsertExport(GraphExport {
+            port: "a".parse().unwrap(),
+            ..quotient
+        })])
+        .unwrap();
+    assert_eq!(doc.exports().len(), 1);
+    assert!(!analyze(&doc, &snapshot).is_ready_for_lowering(&doc, &snapshot));
+    let _ = doc.revert(retargeted.inverse).unwrap();
+    let plan = compile(&doc, snapshot.clone(), &resolver);
+    assert_eq!(plan.exports().len(), 1);
+    let _ = doc.revert(added.inverse).unwrap();
+    assert!(doc.exports().is_empty());
+}
+
 fn catalog() -> (MathPackage, Arc<RegistrySnapshot>) {
     let digest = format!("sha256:{}", "a".repeat(64));
     let package = MathPackage::new(digest.clone()).unwrap();

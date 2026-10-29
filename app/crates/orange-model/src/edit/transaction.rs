@@ -15,9 +15,9 @@ use super::change_set::{ChangeSet, Tracker};
 use super::patch::{Patch, Placed, editor_placement, placement};
 use crate::document::literal::Literal;
 use crate::document::{
-    BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument, NodeInstance,
-    PackageLockEntry, PortRef, ProviderBinding, SignatureSnapshot, TypeLockEntry, TypeParamName,
-    VariableDecl, VariadicState, fresh_state_id,
+    ActivationPolicy, BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument,
+    GraphExport, NodeInstance, PackageLockEntry, PortRef, ProviderBinding, SignatureSnapshot,
+    TypeLockEntry, TypeParamName, VariableDecl, VariadicState, fresh_state_id,
 };
 use crate::error::TxError;
 use crate::id::{
@@ -109,6 +109,17 @@ pub enum DocCommand {
     PutTypeLock(TypeLockEntry),
     /// Removes the lock entry for a type. Its values then use the registry's codec.
     RemoveTypeLock(TypeExpr),
+    /// Replaces the export with the same ID in place, or appends a new one. The target is
+    /// not checked here; the validator reports a missing or unsuitable port.
+    UpsertExport(GraphExport),
+    RemoveExport {
+        id: String,
+    },
+    /// Sets (or with `None`, clears) a node's activation policy; the validator checks it.
+    SetActivation {
+        node: NodeId,
+        policy: Option<ActivationPolicy>,
+    },
     Layout(LayoutCommand),
 }
 
@@ -535,6 +546,41 @@ impl Journal {
                         )
                     }
                 }
+            }
+            DocCommand::UpsertExport(export) => {
+                let index = document
+                    .exports
+                    .iter()
+                    .position(|existing| existing.id == export.id)
+                    .unwrap_or(document.exports.len());
+                self.patch(
+                    document,
+                    Patch::Export {
+                        key: export.id.clone(),
+                        entry: Some(Placed {
+                            index,
+                            value: export,
+                        }),
+                    },
+                )
+            }
+            DocCommand::RemoveExport { id } => {
+                if !document.exports.iter().any(|existing| existing.id == id) {
+                    return Err(TxError::ExportNotFound(id));
+                }
+                self.patch(
+                    document,
+                    Patch::Export {
+                        key: id,
+                        entry: None,
+                    },
+                )
+            }
+            DocCommand::SetActivation { node, policy } => {
+                self.modify_node(document, node, |node| {
+                    node.activation = policy;
+                    Ok(())
+                })
             }
             DocCommand::RemoveTypeLock(ty) => {
                 if !document.type_lock.iter().any(|locked| locked.ty == ty) {
