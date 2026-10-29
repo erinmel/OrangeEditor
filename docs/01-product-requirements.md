@@ -233,3 +233,5 @@ Nesting budget trace (2026-10-28; FR-05, NFR-05): editing, saving and loading sh
 Inference plan freshness trace (2026-10-28; FR-03/44): detached inference plans now record the document content state and registry snapshot they were made against, expose read-only commands and commit only through `inference::apply_plan`, which rejects a stale plan without changing the document. Synchronous `apply_inferred` is unchanged. Verification is recorded in 10.
 
 Orphan projection trace (2026-10-28; FR-02/03): `DocIndex::orphan_edges` now takes the node instance and uses the validator's port rule, so stale variadic instances, bare variadic base ports and undeclared ports are orphans in both the authoring projection and `E-PORT-UNKNOWN`. Raw edges stay in the document for repair. Verification is recorded in 10.
+
+Redacted import errors trace (2026-10-28; FR-05, NFR-05; 13 §2): import and identifier errors no longer echo rejected input through `Display` or `Debug`. They expose stable message keys, keep JSON line and column, and hold rejected text behind an explicit `reveal`. Verification is recorded in 10.

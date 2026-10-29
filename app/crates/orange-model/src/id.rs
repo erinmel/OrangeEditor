@@ -50,7 +50,7 @@ macro_rules! uuid_id {
             pub fn from_uuid(uuid: Uuid) -> Result<Self, IdError> {
                 match uuid.get_version_num() {
                     4 | 7 => Ok(Self(uuid)),
-                    version => Err(IdError::UnsupportedUuidVersion { text: uuid.to_string(), version }),
+                    version => Err(IdError::UnsupportedUuidVersion { text: uuid.to_string().into(), version }),
                 }
             }
 
@@ -93,9 +93,7 @@ uuid_id! {
 fn parse_canonical_uuid(text: &str) -> Result<Uuid, IdError> {
     match Uuid::parse_str(text) {
         Ok(uuid) if uuid.hyphenated().to_string() == text => Ok(uuid),
-        _ => Err(IdError::NonCanonicalUuid {
-            text: text.to_owned(),
-        }),
+        _ => Err(IdError::NonCanonicalUuid { text: text.into() }),
     }
 }
 
@@ -120,9 +118,7 @@ impl FromStr for PortId {
         if valid {
             Ok(Self(text.to_owned()))
         } else {
-            Err(IdError::InvalidPortId {
-                text: text.to_owned(),
-            })
+            Err(IdError::InvalidPortId { text: text.into() })
         }
     }
 }
@@ -161,9 +157,7 @@ impl FromStr for PortKey {
     type Err = IdError;
 
     fn from_str(text: &str) -> Result<Self, IdError> {
-        let invalid = || IdError::InvalidPortKey {
-            text: text.to_owned(),
-        };
+        let invalid = || IdError::InvalidPortKey { text: text.into() };
         let (port, instance) = match text.split_once('#') {
             None => (text, None),
             Some((port, k)) => {
@@ -223,9 +217,7 @@ impl FromStr for DefinitionId {
         if valid {
             Ok(Self(text.to_owned()))
         } else {
-            Err(IdError::InvalidDefinitionId {
-                text: text.to_owned(),
-            })
+            Err(IdError::InvalidDefinitionId { text: text.into() })
         }
     }
 }

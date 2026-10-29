@@ -55,7 +55,7 @@ fn duplicate_type_lock_identity_is_rejected_even_when_codec_differs() {
         Err(CodecError::DuplicateLock {
             kind: "type",
             identity,
-        }) if identity == "core/i64@1"
+        }) if identity.reveal() == "core/i64@1"
     ));
 }
 
@@ -180,7 +180,7 @@ fn refused_documents() -> Vec<(String, &'static str)> {
         ),
         (
             minimal_document(json!({"format": "other.graph"})),
-            "unsupported document format `other.graph`",
+            "unsupported document format",
         ),
         (
             minimal_document(json!({

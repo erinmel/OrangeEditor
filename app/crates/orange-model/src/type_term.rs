@@ -38,9 +38,7 @@ pub struct NamedTerm {
 impl TypeTerm {
     pub fn parse(expr: &TypeExpr) -> Result<Self, IdError> {
         let text = expr.as_str();
-        let invalid = || IdError::InvalidTypeExpr {
-            text: text.to_owned(),
-        };
+        let invalid = || IdError::InvalidTypeExpr { text: text.into() };
         let mut parser = Parser {
             text: text.as_bytes(),
             pos: 0,
@@ -48,9 +46,7 @@ impl TypeTerm {
         };
         let term = parser.term(0);
         if parser.too_deep {
-            return Err(IdError::TypeTooDeep {
-                text: text.to_owned(),
-            });
+            return Err(IdError::TypeTooDeep { text: text.into() });
         }
         let term = term.ok_or_else(invalid)?;
         if parser.pos != text.len() || term.to_string() != text {
