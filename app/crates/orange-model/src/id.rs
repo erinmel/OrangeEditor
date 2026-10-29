@@ -361,3 +361,13 @@ mod tests {
         }
     }
 }
+
+/// A graph-level declaration.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DeclId {
+    Variable(VariableId),
+    Event(EventDeclId),
+    /// Nodes and edges inside a replaced or removed function body are reported through
+    /// their function, not individually.
+    Function(FunctionId),
+}

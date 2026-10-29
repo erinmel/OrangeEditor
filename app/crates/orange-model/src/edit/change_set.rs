@@ -4,17 +4,9 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use super::patch::Patch;
 use crate::document::GraphDocument;
-use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, VariableId};
+use crate::id::{EdgeId, NodeId};
 
-/// A graph-level declaration.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum DeclId {
-    Variable(VariableId),
-    Event(EventDeclId),
-    /// Nodes and edges inside a replaced or removed function body are reported through
-    /// their function, not individually.
-    Function(FunctionId),
-}
+pub use crate::id::DeclId;
 
 /// Net effect on one ID space. An ID added and removed in the same transaction is absent.
 #[derive(Debug, Clone, PartialEq, Eq)]
