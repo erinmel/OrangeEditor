@@ -15,7 +15,7 @@ enum UpdatePoll {
     Ready(UpdateOperands),
 }
 struct UpdateCommit<'a> {
-    frame: Option<u64>,
+    frame: Option<FrameId>,
     owner: ControlIx,
     variable: usize,
     old: &'a Value,

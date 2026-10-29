@@ -2259,4 +2259,13 @@ Branch `core/map-repr-contract` on `dev` (same toolchain; Cargo.lock unchanged).
 - **Change:** `MapRepr` documentation promised non-float keys although `MapRepr::new` checks only structural key uniqueness. It now states that it is untyped storage and that key eligibility (no floats, language `hash` and `eq`) is enforced by the registry-aware literal codec and by value shape checks. No behavior changes: registered package key types stay possible.
 - **Regressions:** a map built with a float key is refused by the shape check for both a `u64` and an `f64` key type.
 
+### Typed run identities and timer ownership — 2026-10-28
+
+Branch `core/typed-runtime-ids` on `dev` (same toolchain; Cargo.lock unchanged). Addresses the first slices of finding F07 of the final quality review.
+
+- **Change:** strands, regions and function frames use `StrandId`, `RegionId` and `FrameId` instead of plain `u64`. A frame has no identity of its own: it takes its function region's identity only through `FrameId::of_region` and `RegionId::of_frame`. `OwnerIds` is the only place that mints strand and region identities after the activation roots. The ready queue, ownership sets, pull owner, segment owner and loop unwinding carry the typed identities. `Timers` owns the timer order and the strand-to-timer directory together, so stepping and cancellation call its operations instead of editing two maps.
+- **Unchanged:** behavior, ownership counts and the single-owner actor model; no locks or shared state were introduced.
+- **Measured** with `orange-measure` (release, same machine, 15 runs per workload) against `dev` 8bebb3f: allocations per run and peak live bytes are identical for every workload, and pump times stay within run-to-run noise.
+- **Limitations:** sibling run modules still receive `&mut Run`; ownership, function and loop code still reach the scheduler, frames and stores directly. Grouping ownership state and narrowing step contexts beyond `Cells` remain F07 work.
+
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

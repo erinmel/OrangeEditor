@@ -1,8 +1,9 @@
 //! Ordered ready work with direct strand removal. Reusable slots keep ordinary
 //! front/back scheduling on dense links; hashing is only the identity directory.
+use super::ids::StrandId;
 use std::collections::HashMap;
 struct Link<T> {
-    id: u64,
+    id: StrandId,
     previous: Option<usize>,
     next: Option<usize>,
     value: T,
@@ -10,8 +11,8 @@ struct Link<T> {
 pub(super) struct ReadyQueue<T> {
     nodes: Vec<Option<Link<T>>>,
     free: Vec<usize>,
-    index: HashMap<u64, usize>,
-    single: Option<(u64, T)>,
+    index: HashMap<StrandId, usize>,
+    single: Option<(StrandId, T)>,
     indexed: bool,
     first: Option<usize>,
     last: Option<usize>,
@@ -49,7 +50,13 @@ impl<T> ReadyQueue<T> {
             self.single.as_ref().map(|(_, value)| value)
         }
     }
-    fn insert(&mut self, id: u64, value: T, previous: Option<usize>, next: Option<usize>) -> usize {
+    fn insert(
+        &mut self,
+        id: StrandId,
+        value: T,
+        previous: Option<usize>,
+        next: Option<usize>,
+    ) -> usize {
         let entry = if self.indexed {
             match self.index.entry(id) {
                 std::collections::hash_map::Entry::Vacant(entry) => Some(entry),
@@ -78,7 +85,7 @@ impl<T> ReadyQueue<T> {
         }
         slot
     }
-    pub fn push_front(&mut self, id: u64, value: T) {
+    pub fn push_front(&mut self, id: StrandId, value: T) {
         if !self.indexed {
             if let Some((old_id, old)) = self.single.take() {
                 assert_ne!(old_id, id, "a strand is queued at most once");
@@ -98,7 +105,7 @@ impl<T> ReadyQueue<T> {
         }
         self.first = Some(slot);
     }
-    pub fn push_back(&mut self, id: u64, value: T) {
+    pub fn push_back(&mut self, id: StrandId, value: T) {
         if !self.indexed {
             if let Some((old_id, old)) = self.single.take() {
                 assert_ne!(old_id, id, "a strand is queued at most once");
@@ -149,7 +156,7 @@ impl<T> ReadyQueue<T> {
         }
         self.take(first)
     }
-    pub fn remove(&mut self, id: u64) -> Option<T> {
+    pub fn remove(&mut self, id: StrandId) -> Option<T> {
         if !self.indexed {
             if self.single.as_ref().is_none_or(|(queued, _)| *queued != id) {
                 return None;
@@ -184,16 +191,16 @@ mod tests {
             let id = random >> 32 & 63;
             match random & 7 {
                 0 | 1 if !reference.contains(&id) => {
-                    queue.push_front(id, id);
+                    queue.push_front(StrandId::root(id), id);
                     reference.push_front(id);
                 }
                 2 | 3 if !reference.contains(&id) => {
-                    queue.push_back(id, id);
+                    queue.push_back(StrandId::root(id), id);
                     reference.push_back(id);
                 }
                 4 | 5 => {
                     assert_eq!(
-                        queue.remove(id),
+                        queue.remove(StrandId::root(id)),
                         reference
                             .iter()
                             .position(|&n| n == id)

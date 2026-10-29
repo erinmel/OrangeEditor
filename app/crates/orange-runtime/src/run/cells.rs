@@ -91,7 +91,7 @@ impl Cells<'_> {
         plan: &ControlPlan,
         target: ExecTarget,
         shared: &mut ActivationState,
-        function: Option<u64>,
+        function: Option<FrameId>,
         value: Option<Value>,
     ) -> Result<Step, RunError> {
         let node = &plan.nodes()[target.index()];
@@ -206,7 +206,7 @@ impl Cells<'_> {
         &mut self,
         plan: &ControlPlan,
         shared: &mut ActivationState,
-        function: Option<u64>,
+        function: Option<FrameId>,
         node: &ControlNode,
         variable: usize,
         value: Value,
