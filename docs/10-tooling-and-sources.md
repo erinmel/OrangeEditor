@@ -2194,3 +2194,14 @@ At budget 64 the slowest pump of any workload was 73.7 µs (1,000-entry map CAS)
 - **Limitations:** snapshotting a consumer's host inputs and traversing cancelled region trees are still single items, and Set publication of a large value is not weighted. Budgets remain operation bounds; NFR-02 slice latency is not qualified.
 
 **Checks:** `cargo test --workspace --locked --offline` passes with 949 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Analysis request identity and worker lifecycle — 2026-10-28
+
+Branch `core/analysis-request-identity` on `dev` c86b8a9 (same toolchain; Cargo.lock unchanged). Addresses findings F01–F03 of the final quality review.
+
+- **Change:** every `AnalysisWorker::submit` returns a new `AnalysisRequestId`, and `current`/`wait` publish only the newest request's analysis, so effect-only changes on the same document and registry no longer return an earlier report. The two unbounded channels are replaced by a capacity-one mailbox: a newer submission replaces the pending one and a newer result the finished one, and a superseded result is never published. `submit` takes a host-built `Arc<GraphDocument>` snapshot instead of cloning on the caller's thread and fails with `AnalysisWorkerError` once the worker is shut down or stopped. `request_shutdown` returns without waiting, `join` waits and reports a panicked thread, and dropping no longer joins.
+- **Regressions:** a worker submitted changed effects for the same document returns the report for those effects, and returning to the first effects is a new request; after 200 submissions at most one superseded snapshot is retained beside the newest, and none after the result; shutdown refuses new submissions and joins cleanly. The earlier rapid-edit, layout, undo and registry tests still pass.
+- **Measured** with `orange-measure analysis-worker` (release, same machine, 9 runs, 2,000-node add chain, p50): snapshot 2.69 ms, submit 0.83 ms, full analysis 47.97 ms, resubmission 45.91 ms, shutdown request under 0.01 ms, join 1.43 ms. The 2.14 ms figures recorded with the first worker measured `wait` returning the cached result for the same document, the defect fixed here. Submit includes releasing the previous result; join here follows a submission the thread had not yet started.
+- **Limitations:** one pass is still not interruptible, so a superseded or shut-down analysis runs to its next pass boundary; per-body incremental analysis remains V12 work and NFR-15 is not requalified. The snapshot is a full document copy that the host makes; structural sharing is not introduced. The worker stays in `orange-model` until a host composition crate exists.
+
+**Checks:** `cargo test --workspace --locked` passes with 972 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

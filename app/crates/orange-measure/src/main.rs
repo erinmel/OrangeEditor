@@ -86,11 +86,17 @@ fn main() {
         );
     }
     if "analysis-worker".contains(filter.as_str()) {
-        let (full, superseded) = workloads::analysis_worker_latency(config);
+        let times = workloads::analysis_worker_latency(config);
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1e3;
         println!(
-            "analysis worker (2000 nodes): full p50 {:.3} ms, resubmission p50 {:.3} ms",
-            full.as_secs_f64() * 1e3,
-            superseded.as_secs_f64() * 1e3
+            "analysis worker (2000 nodes) p50: snapshot {:.3} ms, submit {:.3} ms, \
+             full {:.3} ms, resubmission {:.3} ms, shutdown request {:.3} ms, join {:.3} ms",
+            ms(times.snapshot),
+            ms(times.submit),
+            ms(times.full),
+            ms(times.superseded),
+            ms(times.shutdown),
+            ms(times.join)
         );
     }
 }

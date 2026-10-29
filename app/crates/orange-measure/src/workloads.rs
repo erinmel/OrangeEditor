@@ -405,12 +405,27 @@ pub fn disposed_run_retained_bytes() -> usize {
     held.saturating_sub(crate::counter::live_bytes())
 }
 
-/// Background analysis latency on a 2,000-node add chain, as p50 over `config.runs`: a full
-/// analysis from submission to result, and a resubmission made right after an earlier one,
-/// which first waits for the superseded analysis to stop at its next pass boundary.
-pub fn analysis_worker_latency(config: Config) -> (std::time::Duration, std::time::Duration) {
+/// Background analysis on a 2,000-node add chain, as p50 over `config.runs`.
+pub struct AnalysisWorkerTimes {
+    /// Building the immutable document snapshot the host submits.
+    pub snapshot: std::time::Duration,
+    /// Handing a snapshot to the worker.
+    pub submit: std::time::Duration,
+    /// A full analysis from submission to result.
+    pub full: std::time::Duration,
+    /// A resubmission made right after an earlier one, which first waits for the
+    /// superseded analysis to stop at its next pass boundary.
+    pub superseded: std::time::Duration,
+    /// Requesting shutdown while an analysis runs.
+    pub shutdown: std::time::Duration,
+    /// Joining the thread after that request.
+    pub join: std::time::Duration,
+}
+
+pub fn analysis_worker_latency(config: Config) -> AnalysisWorkerTimes {
     use orange_model::validation::{AnalysisLimits, AnalysisWorker};
-    use std::time::Instant;
+    use std::sync::Arc;
+    use std::time::{Duration, Instant};
     const LINKS: u32 = 2000;
     let mut nodes = vec![math(10, "add", 0, 1)];
     let mut edges = Vec::new();
@@ -419,25 +434,55 @@ pub fn analysis_worker_latency(config: Config) -> (std::time::Duration, std::tim
         edges.push(edge(link, 9 + link, "sum", 10 + link, "a"));
     }
     let (document, registry) = Source::new(nodes, edges).analyzed();
-    let mut worker = AnalysisWorker::spawn(AnalysisLimits::default()).expect("worker thread");
-    let median = |mut samples: Vec<std::time::Duration>| {
+    let spawn = || AnalysisWorker::spawn(AnalysisLimits::default()).expect("worker thread");
+    let median = |mut samples: Vec<Duration>| {
         samples.sort();
         samples[samples.len() / 2]
     };
-    let mut full = Vec::new();
-    let mut superseded = Vec::new();
+    let timed = |samples: &mut Vec<Duration>, start: Instant| samples.push(start.elapsed());
+    let (mut snapshot, mut submit, mut full, mut superseded, mut shutdown, mut join) =
+        Default::default();
+    let mut worker = spawn();
     for _ in 0..config.runs {
         let start = Instant::now();
-        worker.submit(&document, &registry, Default::default());
-        assert!(worker.wait().is_some());
-        full.push(start.elapsed());
-        worker.submit(&document, &registry, Default::default());
+        let copy = Arc::new(document.clone());
+        timed(&mut snapshot, start);
         let start = Instant::now();
-        worker.submit(&document, &registry, Default::default());
+        worker
+            .submit(Arc::clone(&copy), &registry, Default::default())
+            .expect("submit");
+        timed(&mut submit, start);
         assert!(worker.wait().is_some());
-        superseded.push(start.elapsed());
+        timed(&mut full, start);
+        worker
+            .submit(Arc::clone(&copy), &registry, Default::default())
+            .expect("submit");
+        let start = Instant::now();
+        worker
+            .submit(Arc::clone(&copy), &registry, Default::default())
+            .expect("submit");
+        assert!(worker.wait().is_some());
+        timed(&mut superseded, start);
+
+        let mut stopping = spawn();
+        stopping
+            .submit(copy, &registry, Default::default())
+            .expect("submit");
+        let start = Instant::now();
+        stopping.request_shutdown();
+        timed(&mut shutdown, start);
+        let start = Instant::now();
+        stopping.join().expect("join");
+        timed(&mut join, start);
     }
-    (median(full), median(superseded))
+    AnalysisWorkerTimes {
+        snapshot: median(snapshot),
+        submit: median(submit),
+        full: median(full),
+        superseded: median(superseded),
+        shutdown: median(shutdown),
+        join: median(join),
+    }
 }
 
 #[cfg(test)]

@@ -113,3 +113,5 @@ Control review corrections (2026-10-24): demand-driven host input publication, s
 Diagnostic declaration reuse (2026-10-24): one internal declaration now generates DiagnosticCode variants/serde names, stable codes, translation keys, severity and safe fallback text. Existing enum ordering, wire identifiers, fallbacks, typed/redacted arguments and host-owned presentation remain unchanged; no catalogue/schema migration is required.
 
 Structured Fork execution (2026-10-25) adds a typed Forked trace outcome and metadata-only owner counts, reusing the existing run/data limit and cancellation message keys. Branch order, joins, error provenance and provider identities do not depend on locale or display labels. No new catalogue or persisted graph fields are introduced.
+
+Background analysis worker (2026-10-28): `AnalysisWorkerError` exposes `core/analysis-worker-closed` ("the analysis worker has shut down") after the host requested shutdown and `core/analysis-worker-panicked` ("the analysis worker stopped unexpectedly") when its thread stopped on its own. Neither carries arguments, graph content or diagnostics; presentation stays host-owned.
