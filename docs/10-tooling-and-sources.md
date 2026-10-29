@@ -2125,3 +2125,11 @@ Branch `core/scalar-contract` on `dev` c7fffe7 (same toolchain; Cargo.lock uncha
 - **Messages:** `ScalarError::message` is the one static fallback text and also its `Display`. The bundled math adapter and runtime Update use it and keep only their own `InputContract` wording. Codes and message keys are unchanged.
 
 **Checks:** `cargo test --workspace --locked --offline` passes with 950 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Crate documentation refresh — 2026-10-28
+
+Branch `core/crate-docs` on `dev` c7fffe7. Closes audit finding A20.
+
+- **Change:** the `orange-compiler` and `orange-runtime` crate docs now state the current profile, including iteration zones and graph-local Action/Async calls, and name what remains unsupported: events, package-provided function bodies, clock readers and host services. Two README sentences that still listed zones as open now match the implemented zone runtime, and the README gains one sentence on zone execution. No code changed.
+
+**Checks:** rustdoc `-D warnings` passes.

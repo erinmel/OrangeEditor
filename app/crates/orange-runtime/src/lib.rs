@@ -1,7 +1,10 @@
 //! Checked data epochs and host-driven structured control with virtual time.
-//! Run owns bounded scheduling, local/run cells and staged stop/disposal for the
-//! admitted subset, including Fork joins, typed collection iteration and atomic state.
-//! Action/async functions, events and general host resources remain open.
+//!
+//! Current profile: `DataActivation` evaluates checked data plans, iteration zones
+//! included. `Run` owns bounded scheduling, local/run cells, invocation frames for
+//! graph-local Action/Async calls and staged stop/disposal for the admitted control
+//! subset, including Fork joins, typed collection iteration and atomic state. Events and
+//! general host resources and services remain open.
 
 mod cancel;
 mod data;
