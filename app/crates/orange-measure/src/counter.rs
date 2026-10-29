@@ -25,6 +25,11 @@ fn released(size: usize) {
     LIVE_BYTES.fetch_sub(size, Relaxed);
 }
 
+/// Heap bytes currently allocated through this allocator.
+pub fn live_bytes() -> usize {
+    LIVE_BYTES.load(Relaxed)
+}
+
 #[allow(unsafe_code)]
 // SAFETY: each method passes the caller's pointer and layout unchanged to `System`, which
 // implements the `GlobalAlloc` contract, and returns its result unchanged. The bookkeeping

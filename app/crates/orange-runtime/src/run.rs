@@ -1653,19 +1653,30 @@ impl Run {
         if self.state != RunState::Stopped {
             return Err(RunError::InvalidState);
         }
+        // Disposal releases the run's storage, pooled frame buffers and reusable traversal
+        // buffers included. Replacing each container frees its capacity, which clearing
+        // would keep. Only the terminal summary stays: identity, options, state history,
+        // last error, counters and the virtual clock.
         self.plan = None;
-        self.frames.clear();
-        self.activations.clear();
-        self.variables.clear();
-        self.states.clear();
+        self.frames = BTreeMap::new();
+        self.spare_frames = Vec::new();
+        self.ready = ReadyQueue::with_capacity(0);
+        self.activations = Vec::new();
+        self.regions = BTreeMap::new();
+        self.variables = Vec::new();
+        self.states = Vec::new();
         self.layout = StateLayout::default();
-        self.versions.clear();
+        self.versions = Vec::new();
         self.state_bytes = 0;
-        self.stop_ready.clear();
+        self.timer_keys = HashMap::new();
+        self.timers = BTreeMap::new();
+        self.stop_ready = VecDeque::new();
         self.segment = SegmentWrites::default();
         self.segment_owner = None;
         self.last_segment = None;
-        self.trace.clear();
+        self.trace = VecDeque::new();
+        self.cancel_regions = Vec::new();
+        self.cancel_timers = Vec::new();
         self.transition(RunState::Disposed);
         Ok(())
     }

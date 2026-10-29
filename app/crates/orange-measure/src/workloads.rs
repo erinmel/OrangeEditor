@@ -3,11 +3,10 @@
 
 use crate::graph::*;
 use crate::harness::{Config, DataInput, DataSession, Row, RunSession, measure};
-use orange_compiler::DataPlan;
-use orange_model::GraphDocument;
-use orange_model::Value;
+use orange_compiler::{ControlPlan, DataPlan};
 use orange_model::id::VariableId;
 use orange_model::value::{ListRepr, MapRepr};
+use orange_model::{GraphDocument, Value};
 use orange_runtime::{DataActivation, DataError, DataLimits, DataOptions, DataPoll};
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
@@ -59,7 +58,7 @@ pub fn scalar_chain(config: Config) -> Row {
 /// Count(1000) whose body calls a graph-local action function and stores its result, so
 /// every iteration enters one call frame, writes a fresh local cell and returns. The
 /// function sets a local to its argument, then returns that local plus one.
-pub fn function_call(config: Config) -> Row {
+fn function_call_graph() -> (GraphDocument, Arc<ControlPlan>) {
     const LOCAL: u32 = 101;
     let function = json!({"id":id(200),"name":"increment","kind":"action",
         "inputs":[port("value","input",U64)],"outputs":[port("result","output",U64)],
@@ -89,7 +88,11 @@ pub fn function_call(config: Config) -> Row {
     );
     source.variables = vec![run_variable(TOTAL, U64, Some(json!("0"))), local];
     source.functions = vec![function];
-    let (document, plan) = source.control();
+    source.control()
+}
+
+pub fn function_call(config: Config) -> Row {
+    let (document, plan) = function_call_graph();
     measure(
         "function call + return".into(),
         ITERATIONS,
@@ -388,6 +391,20 @@ pub fn oversized_map_zone_peak_bytes() -> usize {
     window.finish().peak_live_bytes
 }
 
+/// Heap bytes a run still holds after the function-call workload, stop and dispose; they are
+/// released only when the disposed run is dropped. Disposal should release its storage.
+pub fn disposed_run_retained_bytes() -> usize {
+    let (document, plan) = function_call_graph();
+    let mut session = RunSession::start(&plan, &document, total(), 64);
+    while crate::harness::Session::step(&mut session) {}
+    let mut run = session.into_run();
+    run.stop().expect("stop");
+    run.dispose().expect("dispose");
+    let held = crate::counter::live_bytes();
+    drop(run);
+    held.saturating_sub(crate::counter::live_bytes())
+}
+
 #[cfg(test)]
 mod tests {
     /// Reserving the 10,000-item result before refusing it took about 80 KB.
@@ -397,6 +414,16 @@ mod tests {
         assert!(
             peak < 16 * 1024,
             "refusing the map zone peaked at {peak} bytes"
+        );
+    }
+
+    /// Before disposal released its pools, a disposed function-call run held about 6 KiB.
+    #[test]
+    fn a_disposed_run_holds_almost_no_heap() {
+        let retained = super::disposed_run_retained_bytes();
+        assert!(
+            retained < 1024,
+            "a disposed run still holds {retained} bytes"
         );
     }
 }

@@ -237,3 +237,5 @@ Orphan projection trace (2026-10-28; FR-02/03): `DocIndex::orphan_edges` now tak
 Redacted import errors trace (2026-10-28; FR-05, NFR-05; 13 §2): import and identifier errors no longer echo rejected input through `Display` or `Debug`. They expose stable message keys, keep JSON line and column, and hold rejected text behind an explicit `reveal`. Verification is recorded in 10.
 
 Map admission trace (2026-10-28; NFR-05): a Map zone whose known-length result cannot fit the remaining retained-byte limit is now refused before its result storage is reserved or any element runs. Results that fit keep their preallocation. Verification is recorded in 10.
+
+Run disposal trace (2026-10-28; NFR-05): `Run::dispose` now releases the run's working storage, pooled frame buffers included, and keeps only a terminal summary. Active runs still reuse frame buffers. Verification is recorded in 10.
