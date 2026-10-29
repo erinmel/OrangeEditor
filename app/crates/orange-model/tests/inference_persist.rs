@@ -4,8 +4,12 @@ mod common;
 
 use common::generic::{add, data_edge, document, registry, source, typed_source};
 use common::{body, content, eid, function, function_id, minimal_document, nid, node_id, saved};
+use orange_model::conversion::PlanApplyError;
 use orange_model::document::{Edge, NodeInstance};
-use orange_model::inference::{InferenceIssue, apply_inferred, apply_inferred_indexed, plan_edit};
+use orange_model::edit::LayoutCommand;
+use orange_model::inference::{
+    InferenceIssue, apply_inferred, apply_inferred_indexed, apply_plan, plan_edit,
+};
 use orange_model::{BodyRef, DocCommand, DocIndex, GraphDocument, TxError, from_json};
 use serde_json::{Value as Json, json};
 
@@ -931,4 +935,67 @@ fn concrete_edges_at_a_generic_node_are_left_to_the_validator() {
     .unwrap();
     assert!(done.issues.is_empty(), "{:?}", done.issues);
     assert_eq!(type_arg(&doc, 3).as_deref(), Some("core/i32@1"));
+}
+
+#[test]
+fn detached_plans_apply_only_to_the_state_they_were_planned_for() {
+    let set = |marker: &str| DocCommand::SetConfig {
+        node: nid(1),
+        config_version: 1,
+        config: json!({ "marker": marker }).as_object().unwrap().clone(),
+    };
+    let marker = |doc: &GraphDocument| doc.node(nid(1)).unwrap().config.get("marker").cloned();
+    let registry = registry(None);
+    let fresh = || document(vec![add(1, json!({}))], vec![]);
+    let plan_on = |doc: &GraphDocument| plan_edit(doc, [set("old-proposal")], &registry).unwrap();
+    let stale = |doc: &mut GraphDocument, plan| {
+        let before = content(doc);
+        let rejected = apply_plan(doc, &registry, plan);
+        assert!(
+            matches!(rejected, Err(PlanApplyError::StaleDocument { .. })),
+            "{rejected:?}"
+        );
+        assert_eq!(content(doc), before);
+    };
+
+    // A newer user edit wins over the older proposal.
+    let mut doc = fresh();
+    let plan = plan_on(&doc);
+    let _ = doc.apply([set("user")]).unwrap();
+    stale(&mut doc, plan);
+    assert_eq!(marker(&doc), Some(json!("user")));
+
+    // Layout edits, divergent clones and reloads are stale as well: the content state differs.
+    let mut doc = fresh();
+    let plan = plan_on(&doc);
+    let _ = doc
+        .apply([DocCommand::Layout(LayoutCommand::Set {
+            path: vec!["zoom".into()],
+            value: Some(json!(2)),
+        })])
+        .unwrap();
+    stale(&mut doc, plan);
+    let doc = fresh();
+    let plan = plan_on(&doc);
+    let mut clone = doc.clone();
+    let _ = clone.apply([set("clone")]).unwrap();
+    stale(&mut clone, plan.clone());
+    let mut reloaded = from_json(&saved(&doc)).unwrap();
+    stale(&mut reloaded, plan);
+
+    // A replaced registry snapshot is stale even when the document is not.
+    let mut doc = fresh();
+    let plan = plan_on(&doc);
+    let other = common::generic::registry(Some(vec![]));
+    assert!(matches!(
+        apply_plan(&mut doc, &other, plan.clone()),
+        Err(PlanApplyError::StaleRegistry)
+    ));
+
+    // A fresh plan commits as one undo step.
+    let before = content(&doc);
+    let applied = apply_plan(&mut doc, &registry, plan).unwrap();
+    assert_eq!(marker(&doc), Some(json!("old-proposal")));
+    let _ = doc.revert(applied.committed.inverse).unwrap();
+    assert_eq!(content(&doc), before);
 }

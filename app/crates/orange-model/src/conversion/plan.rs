@@ -25,7 +25,8 @@ use crate::document::{
     PackageLockEntry, PortDescriptor, PortDirection, PortKind, PortRef, ProviderBinding,
     SignatureSnapshot,
 };
-use crate::edit::{Committed, DocCommand};
+pub use crate::edit::PlanApplyError;
+use crate::edit::{Committed, DocCommand, Preconditions};
 use crate::error::{IdError, TxError};
 use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 use crate::index::DocIndex;
@@ -83,14 +84,6 @@ impl ConnectionPlan {
     pub fn commands(&self) -> &[DocCommand] {
         &self.commands
     }
-}
-
-/// What a plan was made against. Revision alone is insufficient across clones and reloads,
-/// so the document side is its content-state identity.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct Preconditions {
-    document_state: u64,
-    registry_generation: u64,
 }
 
 /// A request that cannot be planned at all, as opposed to one that needs a choice.
@@ -286,10 +279,7 @@ pub fn plan_connection_indexed(
         replaced,
         edges,
         converter,
-        preconditions: Preconditions {
-            document_state: document.state_id(),
-            registry_generation: registry.generation(),
-        },
+        preconditions: inferred.preconditions,
     })))
 }
 
@@ -455,17 +445,6 @@ fn data_port(id: &str, direction: PortDirection, ty: &TypeExpr) -> PortDescripto
     }
 }
 
-/// Why a plan could not be applied.
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
-pub enum PlanApplyError {
-    #[error("the document changed since the plan was made (state {expected}, now {actual})")]
-    StaleDocument { expected: u64, actual: u64 },
-    #[error("the registry snapshot was replaced since the plan was made")]
-    StaleRegistry,
-    #[error(transparent)]
-    Edit(#[from] TxError),
-}
-
 /// Applies `plan` as one transaction: one revision bump and one undo step covering the
 /// replaced wire, the converter, its edges and the inferred updates.
 ///
@@ -479,19 +458,7 @@ pub fn apply_connection(
     registry: &RegistrySnapshot,
     plan: ConnectionPlan,
 ) -> Result<Committed, PlanApplyError> {
-    let Preconditions {
-        document_state,
-        registry_generation,
-    } = plan.preconditions;
-    if document.state_id() != document_state {
-        return Err(PlanApplyError::StaleDocument {
-            expected: document_state,
-            actual: document.state_id(),
-        });
-    }
-    if registry.generation() != registry_generation {
-        return Err(PlanApplyError::StaleRegistry);
-    }
+    plan.preconditions.check(document, registry)?;
     Ok(document.apply(plan.commands)?)
 }
 
@@ -529,10 +496,7 @@ mod tests {
             replaced: vec![],
             edges: vec![],
             converter: None,
-            preconditions: Preconditions {
-                document_state: document.state_id(),
-                registry_generation: registry.generation(),
-            },
+            preconditions: Preconditions::capture(&document, &registry),
         };
         let (revision, state) = (document.revision(), document.state_id());
 

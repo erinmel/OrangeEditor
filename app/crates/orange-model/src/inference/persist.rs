@@ -4,7 +4,8 @@
 //! generic components that edit touched, and returns the edit followed by the commands that
 //! bring each component's `type_args` and signature references up to date. The document is
 //! not modified. [`apply_inferred`] commits that list as one transaction, so one undo
-//! restores the edit and its inferred bindings together. Storage commands stay structural
+//! restores the edit and its inferred bindings together. A plan kept for later is applied
+//! with [`apply_plan`], which refuses it once the document or registry has changed. Storage commands stay structural
 //! and loading never infers.
 //!
 //! Inference issues never block a commit: an ambiguous or conflicting component is still a
@@ -19,7 +20,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 use super::component::{ComponentInference, InferenceIssue, infer_components};
 use crate::catalog::{RegistrySnapshot, TypeArgs, call_interface};
 use crate::document::{DefinitionRef, GraphDocument, SignatureSnapshot};
-use crate::edit::{ChangeSet, Committed, DeclId, DocCommand};
+use crate::edit::{ChangeSet, Committed, DeclId, DocCommand, PlanApplyError, Preconditions};
 use crate::error::TxError;
 use crate::id::{EdgeId, NodeId, SignatureKey};
 use crate::index::DocIndex;
@@ -27,13 +28,22 @@ use crate::signature::{project_with_suspension, semantic_key};
 
 /// An edit plus the commands that persist its inference result.
 ///
-/// Valid only for the document it was planned against.
+/// Valid only for the document content state and registry snapshot it was planned against;
+/// [`apply_plan`] enforces that. Its commands are read-only so they stay consistent with
+/// those preconditions.
 #[derive(Debug, Clone, PartialEq)]
 pub struct InferencePlan {
-    /// The originating commands, then the inferred updates in component and node order.
-    pub commands: Vec<DocCommand>,
+    pub(crate) commands: Vec<DocCommand>,
     /// Outcomes of every inferred component, in the same order.
     pub issues: Vec<InferenceIssue>,
+    pub(crate) preconditions: Preconditions,
+}
+
+impl InferencePlan {
+    /// The originating commands, then the inferred updates in component and node order.
+    pub fn commands(&self) -> &[DocCommand] {
+        &self.commands
+    }
 }
 
 /// A committed edit together with the inference outcomes it produced.
@@ -107,6 +117,8 @@ fn plan_in_place(
     edit: impl IntoIterator<Item = DocCommand>,
     registry: &RegistrySnapshot,
 ) -> Result<InferencePlan, TxError> {
+    // Trial edits restore the content state, so this is the state the plan describes.
+    let preconditions = Preconditions::capture(document, registry);
     let mut commands: Vec<DocCommand> = edit.into_iter().collect();
     // Removed and replaced edges and nodes exist only in the original document, so their
     // neighbours are read there, from the change the edit makes.
@@ -143,7 +155,11 @@ fn plan_in_place(
     });
     let (updates, issues) = planned?;
     commands.extend(updates);
-    Ok(InferencePlan { commands, issues })
+    Ok(InferencePlan {
+        commands,
+        issues,
+        preconditions,
+    })
 }
 
 /// Runs `plan` with `index`. If it unwinds, `index` may describe trial content under the
@@ -190,6 +206,23 @@ pub fn apply_inferred_indexed(
     index.update(document, &committed.change_set);
     Ok(InferredCommit {
         committed,
+        issues: plan.issues,
+    })
+}
+
+/// Commits a detached `plan` as one transaction, like [`apply_inferred`].
+///
+/// The document content state and registry snapshot must still be the ones the plan was
+/// made against. Any edit since, a layout change, undo, divergent clone or reload
+/// included, or a replaced registry rejects it without changing the document; plan again.
+pub fn apply_plan(
+    document: &mut GraphDocument,
+    registry: &RegistrySnapshot,
+    plan: InferencePlan,
+) -> Result<InferredCommit, PlanApplyError> {
+    plan.preconditions.check(document, registry)?;
+    Ok(InferredCommit {
+        committed: document.apply(plan.commands)?,
         issues: plan.issues,
     })
 }

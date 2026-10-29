@@ -2061,3 +2061,13 @@ Branch `core/nesting-budget` on `dev` c7fffe7 (same toolchain; Cargo.lock unchan
 - **Limitations:** byte and node/edge quotas remain import policy, not edit limits; `from_json_with_limits` reopens a larger edited document. Measuring a patch walks the patched entry once.
 
 **Checks:** `cargo test --workspace --locked --offline` passes with 953 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Inference plan freshness — 2026-10-28
+
+Branch `core/inference-plan-freshness` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A15.
+
+- **Change:** `InferencePlan` records its preconditions and makes `commands` read-only (`commands()`). `inference::apply_plan` checks them and commits the plan as one transaction. Connection and inference plans share one `edit::PlanApplyError` and precondition check; `conversion::PlanApplyError` remains the same type.
+- **Decision:** any content change makes a plan stale, a layout-only edit included. Plans are derived from exact content, so the host plans again instead of rebasing by semantic identity.
+- **Regressions:** a proposal planned before a newer user config edit is rejected and the user's value stays. Plans are also rejected after a layout edit, on a divergent clone and on a reloaded copy, and with a replaced registry snapshot. A fresh plan commits and one undo restores the document.
+
+**Checks:** `cargo test --workspace --locked --offline` passes with 950 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
