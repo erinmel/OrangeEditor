@@ -379,3 +379,30 @@ fn large_maps_decode_and_encode_with_hashed_key_checks() {
         LiteralError::DuplicateMapKey
     );
 }
+
+/// Unknown field and variant names come from the rejected input, so default formatting
+/// shows only their length; the host reaches the text through `reveal`.
+#[test]
+fn unknown_record_fields_and_enum_variants_are_redacted() {
+    let marker = "private-marker-7f3a";
+    let field = decode_err("org.example/point@1", json!({"f-x": "1", marker: 1}));
+    let variant = decode_err(
+        "org.example.media/playback-state@1",
+        json!({"variant": marker}),
+    );
+    for (error, key) in [
+        (&field, "core/literal-unknown-field"),
+        (&variant, "core/literal-unknown-variant"),
+    ] {
+        assert!(!error.to_string().contains(marker), "{error}");
+        assert!(!format!("{error:?}").contains(marker), "{error:?}");
+        assert_eq!(error.message_key(), key);
+    }
+    match (field, variant) {
+        (LiteralError::UnknownField { field }, LiteralError::UnknownVariant { variant }) => {
+            assert_eq!(field.reveal(), marker);
+            assert_eq!(variant.reveal(), marker);
+        }
+        other => panic!("{other:?}"),
+    }
+}

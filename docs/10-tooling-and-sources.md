@@ -2214,4 +2214,12 @@ Branch `core/canonical-pointer-index` on `dev` c86b8a9 (same toolchain; Cargo.lo
 - **Regressions:** `0` and `1` select elements; `01`, `+0`, `+1`, `-` and an overflowing index select nothing and are never rewritten; object keys literally named `+0` and `0` and escaped names still resolve; serde_json's `Value::pointer` agrees on every array token tested.
 - **Limitations:** pointers are still parsed on every lookup rather than once at registry publication.
 
+### Redacted literal decoding errors — 2026-10-28
+
+Branch `core/redacted-literal-errors` on `dev` c86b8a9 (same toolchain; Cargo.lock unchanged). Addresses finding F05 of the final quality review.
+
+- **Change:** `LiteralError::UnknownField` and `UnknownVariant` carry the rejected name as `Rejected`, so default Display and Debug no longer print arbitrary literal text; `reveal` is the controlled path. `LiteralError::message_key` adds stable `core/literal-*` keys.
+- **Regressions:** a record literal with an unknown field and an enum literal with an unknown variant, both named by a synthetic marker, format without the marker, reveal it on request and report their message keys; the existing literal tests still match these errors by value.
+- **Limitations:** `MissingField` and the `ty` fields still name schema-declared fields and registry types, which are not literal input.
+
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

@@ -359,7 +359,7 @@ impl<S: Schemas> Codec<'_, S> {
                 .find(|key| !schema.fields.iter().any(|f| &f.field_id == *key))
             {
                 return Err(LiteralError::UnknownField {
-                    field: field.clone(),
+                    field: field.as_str().into(),
                 });
             }
             let fields = schema
@@ -390,7 +390,7 @@ impl<S: Schemas> Codec<'_, S> {
                 .enumerate()
                 .find(|(_, v)| v.variant_id == variant)
                 .ok_or_else(|| LiteralError::UnknownVariant {
-                    variant: variant.to_owned(),
+                    variant: variant.into(),
                 })?;
             let expected_keys = 1 + usize::from(declared.payload.is_some());
             if object.len() != expected_keys {

@@ -188,14 +188,41 @@ pub enum LiteralError {
     DuplicateMapKey,
     #[error("record literal lacks required field `{field}`")]
     MissingField { field: String },
-    #[error("record literal has unknown field `{field}`")]
-    UnknownField { field: String },
-    #[error("enum literal has unknown variant `{variant}`")]
-    UnknownVariant { variant: String },
+    #[error("record literal has an unknown field")]
+    UnknownField { field: Rejected },
+    #[error("enum literal has an unknown variant")]
+    UnknownVariant { variant: Rejected },
     #[error("literal nests deeper than the codec budget")]
     TooDeep,
     #[error("literal for `{ty}` exceeds the codec size budget")]
     TooLarge { ty: String },
+}
+
+impl LiteralError {
+    /// Stable message key for host presentation (13 §2).
+    pub const fn message_key(&self) -> &'static str {
+        match self {
+            Self::PayloadCount => "core/literal-payload-count",
+            Self::InvalidBits => "core/literal-invalid-bits",
+            Self::InvalidType(error) => error.message_key(),
+            Self::UnresolvedParameter { .. } => "core/literal-unresolved-parameter",
+            Self::NoLiteralForm { .. } => "core/literal-no-literal-form",
+            Self::UnknownType { .. } => "core/literal-unknown-type",
+            Self::TypeMismatch { .. } => "core/literal-type-mismatch",
+            Self::ValueMismatch { .. } => "core/literal-value-mismatch",
+            Self::OutOfRange { .. } => "core/literal-out-of-range",
+            Self::NonCanonical { .. } => "core/literal-non-canonical",
+            Self::InvalidSecretRef => "core/literal-invalid-secret-ref",
+            Self::FloatMapKey { .. } => "core/literal-float-map-key",
+            Self::IneligibleMapKey { .. } => "core/literal-ineligible-map-key",
+            Self::DuplicateMapKey => "core/literal-duplicate-map-key",
+            Self::MissingField { .. } => "core/literal-missing-field",
+            Self::UnknownField { .. } => "core/literal-unknown-field",
+            Self::UnknownVariant { .. } => "core/literal-unknown-variant",
+            Self::TooDeep => "core/literal-too-deep",
+            Self::TooLarge { .. } => "core/literal-too-large",
+        }
+    }
 }
 
 /// Failure to load or save a graph document.
