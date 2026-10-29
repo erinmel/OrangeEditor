@@ -2241,3 +2241,13 @@ Branch `core/public-trait-surfaces` on `dev` (same toolchain; Cargo.lock unchang
 - **Regressions:** cell Debug in a compiled plan with initial values shows `has_initial: true` and none of the values.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Same-storage list equality — 2026-10-28
+
+Branch `core/list-eq-fast-path` on `dev` (same toolchain; Cargo.lock unchanged). Addresses finding F09 of the final quality review.
+
+- **Change:** `ListRepr` equality compares two lists with the same packed storage slice to slice: integers and booleans directly, floats by bits, strings by pointer then content, generic values by `Value` equality. Mixed storage still compares element values, and hashing is unchanged, so Eq and Hash keep agreeing across storages.
+- **Regressions:** NaN lists are equal and `0.0`/`-0.0` lists differ in both float widths; shared, separately allocated and different strings compare as expected; every same-storage result matches element-wise equality, and equal lists hash alike, also against a generic `Values` copy.
+- **Measured** with `orange-measure string-list-eq` (release, same machine, 15 runs): comparing two 65,536-element string lists sharing one string 16 times took 32.58 ms p50 before and 0.21 ms after. This isolates reference-count work in a sharing-heavy case; it is not an end-to-end graph speedup.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
