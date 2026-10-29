@@ -27,8 +27,10 @@ use cells::SegmentWrites;
 use function::{FrameStorage, FunctionFrame, FunctionReturn, PendingCall, find_frame, frame_value};
 mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
+mod ids;
 mod ready;
 mod update;
+use ids::{FrameId, RegionId, StrandId};
 use ownership::{IdSet, Region, RegionKind};
 use ready::ReadyQueue;
 
@@ -356,7 +358,7 @@ enum Transfer {
     Call(PendingCall),
     Fork(ControlIx),
     Unwind {
-        region: u64,
+        region: RegionId,
         is_break: bool,
     },
     /// Enter a structured body region; `Some` names its loop owner.
@@ -367,12 +369,12 @@ enum Transfer {
     },
 }
 struct Strand {
-    function: Option<u64>,
+    function: Option<FrameId>,
     transfer: Transfer,
     cleanup_deadline: Option<u64>,
     iteration_context: Option<Arc<IterationFrame>>,
-    id: u64,
-    region: u64,
+    id: StrandId,
+    region: RegionId,
     sequence: u64,
     entry: ControlIx,
     pc: Option<ExecTarget>,
@@ -395,7 +397,7 @@ struct ActivationState {
     owned_bytes: Arc<std::sync::atomic::AtomicUsize>,
     cleanup_scope: Option<CleanupScope>,
     cleanup_remaining: usize,
-    pull_owner: Option<u64>,
+    pull_owner: Option<StrandId>,
     data: DataActivation,
     locals: Vec<Option<Value>>,
     states: Vec<Option<Value>>,
@@ -527,7 +529,7 @@ fn schedule(
 /// let run = orange_runtime::Run::default();
 /// ```
 pub struct Run {
-    frames: BTreeMap<u64, FunctionFrame>,
+    frames: BTreeMap<FrameId, FunctionFrame>,
     spare_frames: Vec<FrameStorage>,
     id: u64,
     plan: Option<Arc<ControlPlan>>,
@@ -535,7 +537,7 @@ pub struct Run {
     state: RunState,
     ready: ReadyQueue<Strand>,
     activations: Vec<Option<Box<ActivationState>>>,
-    regions: BTreeMap<u64, Region>,
+    regions: BTreeMap<RegionId, Region>,
     next_owner: u64,
     live_strands: usize,
     trace: VecDeque<RunEvent>,
@@ -548,7 +550,7 @@ pub struct Run {
     versions: Vec<u64>,
     now: u64,
     next_timer: u64,
-    timer_keys: HashMap<u64, (u64, u64)>,
+    timer_keys: HashMap<StrandId, (u64, u64)>,
     timers: BTreeMap<(u64, u64), Timer>,
     transitions: Vec<RunState>,
     deadline: Option<u64>,
@@ -556,11 +558,11 @@ pub struct Run {
     cancel_observed: bool,
     cleanup_truncated: u64,
     stop_ready: VecDeque<Strand>,
-    segment_owner: Option<u64>,
+    segment_owner: Option<StrandId>,
     last_segment: Option<u64>,
     segment: SegmentWrites,
     /// Reused cancellation traversal buffers; empty between calls.
-    cancel_regions: Vec<u64>,
+    cancel_regions: Vec<RegionId>,
     cancel_timers: Vec<(u64, u64)>,
     /// Set while `pump` runs. Still set on the next call only if a trusted callback
     /// panicked through a pump, which can leave work taken out of the run's stores.
@@ -703,14 +705,14 @@ impl Run {
                 outputs: vec![None; layout.output_count],
             })));
             regions.insert(
-                sequence as u64,
+                RegionId::new(sequence as u64),
                 Region {
                     frames: None,
                     retired_cursor: None,
                     parent: None,
                     activation: sequence as u64,
                     depth: 0,
-                    live: IdSet::one(sequence as u64),
+                    live: IdSet::one(StrandId::new(sequence as u64)),
                     children: IdSet::default(),
                     continuation: None,
                     kind: RegionKind::Root,
@@ -721,8 +723,8 @@ impl Run {
                 transfer: Transfer::None,
                 cleanup_deadline: None,
                 iteration_context: None,
-                id: sequence as u64,
-                region: sequence as u64,
+                id: StrandId::new(sequence as u64),
+                region: RegionId::new(sequence as u64),
                 sequence: sequence as u64,
                 entry,
                 pc: Some(entry.into()),

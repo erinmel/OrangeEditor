@@ -5,7 +5,7 @@ use super::*;
 
 pub(super) struct FunctionFrame {
     scope: usize,
-    parent: Option<u64>,
+    parent: Option<FrameId>,
     pub arguments: Vec<Value>,
     locals: Vec<LocalCell>,
     hold: Hold,
@@ -57,7 +57,7 @@ impl FunctionFrame {
     }
 }
 pub(super) struct FrameWriteSpec<'a> {
-    pub frame: u64,
+    pub frame: FrameId,
     pub variable: usize,
     pub value: &'a Value,
     pub retained: usize,
@@ -68,13 +68,13 @@ pub(super) struct FrameWrite {
     hold: Hold,
     version: u64,
 }
-pub(super) type Frames = BTreeMap<u64, FunctionFrame>;
+pub(super) type Frames = BTreeMap<FrameId, FunctionFrame>;
 /// The nearest frame of `scope` on the strand's lexical frame chain.
 pub(super) fn find_frame(
     frames: &Frames,
-    mut id: Option<u64>,
+    mut id: Option<FrameId>,
     scope: usize,
-) -> Result<u64, RunError> {
+) -> Result<FrameId, RunError> {
     while let Some(current) = id {
         let frame = frames.get(&current).ok_or(RunError::InvalidState)?;
         if frame.scope == scope {
@@ -88,7 +88,7 @@ pub(super) fn find_frame(
 fn frame_slot<'a>(
     frames: &'a Frames,
     plan: &ControlPlan,
-    frame: u64,
+    frame: FrameId,
     variable: usize,
 ) -> Result<(&'a FunctionFrame, usize), RunError> {
     let frame = frames.get(&frame).ok_or(RunError::InvalidState)?;
@@ -103,7 +103,7 @@ fn frame_slot<'a>(
 pub(super) fn frame_value<'a>(
     frames: &'a Frames,
     plan: &ControlPlan,
-    frame: u64,
+    frame: FrameId,
     variable: usize,
 ) -> Result<Option<&'a Value>, RunError> {
     let (frame, slot) = frame_slot(frames, plan, frame, variable)?;
@@ -159,7 +159,7 @@ impl Cells<'_> {
     pub(super) fn commit_frame_write(
         &mut self,
         plan: &ControlPlan,
-        frame: u64,
+        frame: FrameId,
         variable: usize,
         value: Value,
         reservation: FrameWrite,
@@ -185,7 +185,7 @@ impl Cells<'_> {
         &mut self,
         plan: &ControlPlan,
         shared: &ActivationState,
-        frame: u64,
+        frame: FrameId,
         variable: usize,
         value: Value,
     ) -> Result<(), RunError> {
@@ -205,7 +205,7 @@ impl Cells<'_> {
     }
 }
 impl Run {
-    pub(super) fn retire_frame(&mut self, id: u64, activation: u64) -> Result<(), RunError> {
+    pub(super) fn retire_frame(&mut self, id: FrameId, activation: u64) -> Result<(), RunError> {
         let frame = self.frames.remove(&id).ok_or(RunError::InvalidState)?;
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?;
         let layout = plan.function(frame.scope).ok_or(RunError::InvalidState)?;
@@ -408,15 +408,15 @@ impl Run {
             value: plan.variables()[i].initial().cloned(),
             version: 0,
         }));
-        let region = self.owner_id()?;
+        let region = RegionId::new(self.owner_id()?);
         let mut child = self.child_strand(&caller, region)?;
         child.id = caller.id;
         child.pull = caller.pull.lend();
-        child.function = Some(region);
+        child.function = Some(FrameId::of_region(region));
         child.pc = layout.entry();
         caller.pc = None;
         self.frames.insert(
-            region,
+            FrameId::of_region(region),
             FunctionFrame {
                 scope: call.scope,
                 parent: caller.function,
@@ -456,7 +456,7 @@ impl Run {
         strand: Strand,
         result: FunctionReturn,
     ) -> Result<(), RunError> {
-        let region = strand.function.ok_or(RunError::InvalidState)?;
+        let region = RegionId::of_frame(strand.function.ok_or(RunError::InvalidState)?);
         let frame = self
             .regions
             .get_mut(&region)

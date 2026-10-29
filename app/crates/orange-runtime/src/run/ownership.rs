@@ -5,20 +5,20 @@ use std::collections::BTreeSet;
 /// Region ownership is usually a singleton. Keep that case allocation-free;
 /// only Fork/cleanup fan-out needs an ordered spill set.
 #[derive(Default)]
-pub(super) enum IdSet {
+pub(super) enum IdSet<T> {
     #[default]
     Empty,
-    One(u64),
+    One(T),
     // Only the uncommon spill is boxed, keeping every serial region header
     // compact. Inlining the collection enlarges both ownership fields.
     #[expect(
         clippy::box_collection,
         reason = "boxed spill keeps the common singleton representation compact"
     )]
-    Many(Box<BTreeSet<u64>>),
+    Many(Box<BTreeSet<T>>),
 }
-impl IdSet {
-    pub fn one(id: u64) -> Self {
+impl<T: Copy + Ord> IdSet<T> {
+    pub fn one(id: T) -> Self {
         Self::One(id)
     }
     pub fn len(&self) -> usize {
@@ -31,7 +31,7 @@ impl IdSet {
     pub fn is_empty(&self) -> bool {
         matches!(self, Self::Empty)
     }
-    pub fn iter(&self) -> impl Iterator<Item = u64> {
+    pub fn iter(&self) -> impl Iterator<Item = T> {
         let (one, many) = match self {
             Self::Empty => (None, None),
             Self::One(id) => (Some(*id), None),
@@ -43,7 +43,7 @@ impl IdSet {
     pub fn clear(&mut self) {
         *self = Self::Empty;
     }
-    pub fn insert(&mut self, id: u64) -> bool {
+    pub fn insert(&mut self, id: T) -> bool {
         match self {
             Self::Empty => {
                 *self = Self::One(id);
@@ -57,7 +57,7 @@ impl IdSet {
             Self::Many(ids) => ids.insert(id),
         }
     }
-    pub fn remove(&mut self, id: &u64) -> bool {
+    pub fn remove(&mut self, id: &T) -> bool {
         match self {
             Self::Empty => false,
             Self::One(old) if old == id => {
@@ -75,8 +75,8 @@ impl IdSet {
         }
     }
 }
-impl FromIterator<u64> for IdSet {
-    fn from_iter<T: IntoIterator<Item = u64>>(values: T) -> Self {
+impl<T: Copy + Ord> FromIterator<T> for IdSet<T> {
+    fn from_iter<I: IntoIterator<Item = T>>(values: I) -> Self {
         let mut out = Self::default();
         for id in values {
             out.insert(id);
@@ -102,13 +102,13 @@ pub(super) enum RegionKind {
     },
 }
 pub(super) struct Region {
-    pub frames: Option<Box<IdSet>>,
+    pub frames: Option<Box<IdSet<FrameId>>>,
     pub retired_cursor: Option<Box<Cursor>>,
-    pub parent: Option<u64>,
+    pub parent: Option<RegionId>,
     pub activation: u64,
     pub depth: usize,
-    pub live: IdSet,
-    pub children: IdSet,
+    pub live: IdSet<StrandId>,
+    pub children: IdSet<RegionId>,
     pub continuation: Option<Strand>,
     pub kind: RegionKind,
 }
@@ -135,7 +135,7 @@ impl Run {
         {
             return self.fail(RunError::ResourceLimit);
         }
-        let region = self.owner_id()?;
+        let region = RegionId::new(self.owner_id()?);
         let mut child = self.child_strand(&caller, region)?;
         if let Some(owner) = loop_owner
             && let Some(Cursor::ForEach(cursor)) = caller.stack.last()
@@ -174,14 +174,14 @@ impl Run {
     pub(super) fn child_strand(
         &mut self,
         caller: &Strand,
-        region: u64,
+        region: RegionId,
     ) -> Result<Strand, RunError> {
         Ok(Strand {
             function: caller.function,
             transfer: Transfer::None,
             cleanup_deadline: caller.cleanup_deadline,
             iteration_context: caller.iteration_context.clone(),
-            id: self.owner_id()?,
+            id: StrandId::new(self.owner_id()?),
             region,
             sequence: caller.sequence,
             entry: caller.entry,
@@ -208,7 +208,7 @@ impl Run {
         self.live_strands -= 1;
         self.complete_regions(strand.region)
     }
-    pub(super) fn complete_regions(&mut self, mut id: u64) -> Result<(), RunError> {
+    pub(super) fn complete_regions(&mut self, mut id: RegionId) -> Result<(), RunError> {
         loop {
             let r = self.regions.get(&id).ok_or(RunError::InvalidState)?;
             if !r.live.is_empty() || !r.children.is_empty() {
@@ -219,7 +219,7 @@ impl Run {
                 self.retire_frame(frame, r.activation)?;
             }
             if let RegionKind::Function { owner, result } = r.kind {
-                self.retire_frame(id, r.activation)?;
+                self.retire_frame(FrameId::of_region(id), r.activation)?;
                 let result = match result {
                     Some(result) => result,
                     None => {
@@ -349,10 +349,10 @@ impl Run {
         {
             return self.fail(RunError::ResourceLimit);
         }
-        let group = self.owner_id()?;
+        let group = RegionId::new(self.owner_id()?);
         let mut children = Vec::with_capacity(n);
         for target in branches {
-            let region = self.owner_id()?;
+            let region = RegionId::new(self.owner_id()?);
             let mut child = self.child_strand(&caller, region)?;
             child.pc = *target;
             self.regions.insert(
@@ -417,7 +417,7 @@ impl Run {
         self.segment_owner = None;
         Ok(())
     }
-    fn release_first_join(&mut self, id: u64) -> Result<(), RunError> {
+    fn release_first_join(&mut self, id: RegionId) -> Result<(), RunError> {
         let r = self.regions.get_mut(&id).ok_or(RunError::InvalidState)?;
         let RegionKind::Join { owner, mode, fired } = &mut r.kind else {
             return Ok(());
@@ -449,7 +449,7 @@ impl Run {
 
     /// Retire normal descendants immediately, retaining cancelled wait cleanup
     /// in the same region so ancestors still observe its lifetime barrier.
-    pub(super) fn cancel_region(&mut self, root: u64) -> Result<(), RunError> {
+    pub(super) fn cancel_region(&mut self, root: RegionId) -> Result<(), RunError> {
         // Reuse the actor's traversal buffers; they are empty between calls.
         let mut ids = std::mem::take(&mut self.cancel_regions);
         let mut timer_keys = std::mem::take(&mut self.cancel_timers);
@@ -462,8 +462,8 @@ impl Run {
     }
     fn cancel_owned_regions(
         &mut self,
-        root: u64,
-        ids: &mut Vec<u64>,
+        root: RegionId,
+        ids: &mut Vec<RegionId>,
         timer_keys: &mut Vec<(u64, u64)>,
     ) -> Result<(), RunError> {
         // Traverse only owned descendants. Logical strand IDs may also identify
@@ -526,7 +526,7 @@ impl Run {
                 && let Some(region) = self.regions.remove(&id)
             {
                 if matches!(region.kind, RegionKind::Function { .. }) {
-                    retained_frames.insert(id);
+                    retained_frames.insert(FrameId::of_region(id));
                 }
                 for frame in region.frames.iter().flat_map(|frames| frames.iter()) {
                     retained_frames.insert(frame);
@@ -563,7 +563,11 @@ impl Run {
         // Completion is performed by the caller after its own bookkeeping.
         Ok(())
     }
-    pub(super) fn loop_region(&self, mut id: u64, owner: ControlIx) -> Result<u64, RunError> {
+    pub(super) fn loop_region(
+        &self,
+        mut id: RegionId,
+        owner: ControlIx,
+    ) -> Result<RegionId, RunError> {
         loop {
             let r = self.regions.get(&id).ok_or(RunError::InvalidState)?;
             if matches!(r.kind, RegionKind::Body { loop_owner: Some(active) } if active == owner) {
@@ -575,7 +579,7 @@ impl Run {
     pub(super) fn unwind_loop(
         &mut self,
         strand: Strand,
-        region: u64,
+        region: RegionId,
         is_break: bool,
     ) -> Result<(), RunError> {
         let mut caller = self
@@ -626,8 +630,8 @@ mod tests {
     use super::*;
     #[test]
     fn inline_ownership_ids_preserve_order_through_spill_and_removal() {
-        assert!(std::mem::size_of::<IdSet>() <= 2 * std::mem::size_of::<u64>());
-        let mut actual = IdSet::default();
+        assert!(std::mem::size_of::<IdSet<u64>>() <= 2 * std::mem::size_of::<u64>());
+        let mut actual = IdSet::<u64>::default();
         let mut expected = BTreeSet::new();
         let mut random = 11u64;
         for _ in 0..20_000 {
