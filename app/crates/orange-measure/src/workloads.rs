@@ -391,6 +391,21 @@ pub fn oversized_map_zone_peak_bytes() -> usize {
     window.finish().peak_live_bytes
 }
 
+/// Heap bytes allocated while refusing an 8 MiB `core/json@1` literal against the 1 MiB
+/// JSON text budget. Refusal should not copy the rejected text.
+pub fn oversized_json_literal_allocated_bytes() -> u64 {
+    use orange_model::document::literal::Literal;
+    use orange_model::value::literal_codec::{SchemaSet, decode};
+    let text = format!("\"{}\"", "x".repeat(8 << 20));
+    let literal = Literal::value("core/json@1".parse().expect("type"), text.into());
+    let schemas = SchemaSet::default();
+    let window = crate::counter::Snapshot::start();
+    let result = decode(&literal, &schemas);
+    let allocated = window.finish().allocated_bytes;
+    assert!(result.is_err(), "the oversized literal was accepted");
+    allocated
+}
+
 /// Heap bytes a run still holds after the function-call workload, stop and dispose; they are
 /// released only when the disposed run is dropped. Disposal should release its storage.
 pub fn disposed_run_retained_bytes() -> usize {
@@ -494,6 +509,16 @@ mod tests {
         assert!(
             peak < 16 * 1024,
             "refusing the map zone peaked at {peak} bytes"
+        );
+    }
+
+    /// Decoding copied the whole 8 MiB literal before refusing it.
+    #[test]
+    fn an_oversized_json_literal_is_refused_without_copying_it() {
+        let allocated = super::oversized_json_literal_allocated_bytes();
+        assert!(
+            allocated < 64 * 1024,
+            "refusing the JSON literal allocated {allocated} bytes"
         );
     }
 

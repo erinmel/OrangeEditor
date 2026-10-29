@@ -156,7 +156,7 @@ fn loss_flag(lost: bool) -> Result<Value, BindingError> {
     } else {
         r#"{"lost":false}"#
     };
-    let json = JsonText::new(text.to_owned()).map_err(|_| BindingError::Unavailable)?;
+    let json = JsonText::try_from(text).map_err(|_| BindingError::Unavailable)?;
     Ok(Value::Json(Arc::new(json)))
 }
 
