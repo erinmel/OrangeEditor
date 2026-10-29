@@ -7,10 +7,10 @@ use orange_model::catalog::{NodeContract, ProviderKey, RegistrySnapshot};
 use orange_model::document::{DefinitionRef, NodeKind};
 use orange_model::id::{FunctionId, NodeId};
 use orange_model::validation::{
-    Diagnostic, DiagnosticCode, FunctionEvidence, HostOrigin, LeafEffects, ValidationCheck,
-    VariableWrite, WriteOperation, analyze, analyze_functions, analyze_with_effects,
-    sort_diagnostics, validate, validate_connections, validate_data_cycles, validate_inputs,
-    validate_nodes, validate_regions, validate_with_effects,
+    AnalysisLimits, AnalysisWorker, Diagnostic, DiagnosticCode, FunctionEvidence, HostOrigin,
+    LeafEffects, ValidationCheck, VariableWrite, WriteOperation, analyze, analyze_functions,
+    analyze_with_effects, sort_diagnostics, validate, validate_connections, validate_data_cycles,
+    validate_inputs, validate_nodes, validate_regions, validate_with_effects,
 };
 use orange_model::{GraphDocument, ValidationReport, from_json, to_json};
 use serde_json::{Value, json};
@@ -378,6 +378,48 @@ fn a_package_action_leaf_needs_host_supplied_effects() {
         with.functions[&function].run_writes[&VAR.parse().unwrap()],
         [WriteOperation::Add].into()
     );
+}
+
+/// Effect evidence changes the report without changing the document or registry, so the
+/// worker must tell requests apart by their own identity.
+#[test]
+fn the_analysis_worker_publishes_the_report_for_changed_effects() {
+    let doc = std::sync::Arc::new(document(
+        json!([]),
+        json!([]),
+        run_variable(),
+        function_with(json!([node(LEAF, "example/act", json!({}))]), "action"),
+    ));
+    let registry = registry();
+    let write = VariableWrite {
+        variable: VAR.parse().unwrap(),
+        operation: WriteOperation::Add,
+    };
+    let effects = BTreeMap::from([(LEAF.parse().unwrap(), LeafEffects::Known(vec![write]))]);
+    let without = analyze(&doc, &registry);
+    let with = analyze_with_effects(&doc, &registry, effects.clone());
+    assert_ne!(without.report(), with.report());
+
+    let mut worker = AnalysisWorker::spawn(AnalysisLimits::default()).unwrap();
+    let first = worker
+        .submit(doc.clone(), &registry, BTreeMap::new())
+        .unwrap();
+    assert_eq!(worker.wait().unwrap().report(), without.report());
+    let second = worker.submit(doc.clone(), &registry, effects).unwrap();
+    assert!(second > first);
+    // The earlier result belongs to the same content but not to the newest request.
+    assert!(
+        worker
+            .current(&doc, &registry)
+            .is_none_or(|a| a.report() == with.report())
+    );
+    assert_eq!(worker.wait().unwrap().report(), with.report());
+    // Returning to the first evidence is a new request too, never the first result.
+    worker
+        .submit(doc.clone(), &registry, BTreeMap::new())
+        .unwrap();
+    assert_eq!(worker.wait().unwrap().report(), without.report());
+    worker.join().unwrap();
 }
 
 #[test]
