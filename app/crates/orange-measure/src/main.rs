@@ -79,6 +79,12 @@ fn main() {
             workloads::oversized_map_zone_peak_bytes()
         );
     }
+    if "oversized-json-literal".contains(filter.as_str()) {
+        println!(
+            "oversized json literal: {} heap bytes allocated before TooLarge",
+            workloads::oversized_json_literal_allocated_bytes()
+        );
+    }
     if "disposed-run".contains(filter.as_str()) {
         println!(
             "disposed run: {} heap bytes released only on drop",
