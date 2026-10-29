@@ -120,19 +120,13 @@ impl Run {
         mut caller: Strand,
         loop_owner: Option<ControlIx>,
     ) -> Result<(), RunError> {
-        let parent = self
-            .regions
-            .get(&caller.region)
-            .ok_or(RunError::InvalidState)?;
-        let depth = parent.depth + 1;
-        if self.live_strands >= self.options.limits.max_strands
-            || self.regions.len() >= self.options.limits.max_regions
+        let depth = self.regions.get(caller.region)?.depth + 1;
+        if !self.regions.has_room(1, 1, &self.options.limits)
             || depth > self.options.limits.max_region_depth
-            || !self.owner_ids.has_room(2)
         {
             return self.fail(RunError::ResourceLimit);
         }
-        let region = self.owner_ids.region()?;
+        let region = self.regions.mint_region()?;
         let mut child = self.child_strand(&caller, region)?;
         if let Some(owner) = loop_owner
             && let Some(Cursor::ForEach(cursor)) = caller.stack.last()
@@ -145,12 +139,7 @@ impl Run {
         child.id = caller.id;
         child.pull = caller.pull.lend();
         caller.pc = None;
-        self.regions
-            .get_mut(&caller.region)
-            .ok_or(RunError::InvalidState)?
-            .children
-            .insert(region);
-        self.regions.insert(
+        self.regions.open(
             region,
             Region {
                 frames: None,
@@ -163,8 +152,7 @@ impl Run {
                 continuation: Some(caller),
                 kind: RegionKind::Body { loop_owner },
             },
-        );
-        self.live_strands += 1;
+        )?;
         self.ready.push_front(child.id, child);
         Ok(())
     }
@@ -178,7 +166,7 @@ impl Run {
             transfer: Transfer::None,
             cleanup_deadline: caller.cleanup_deadline,
             iteration_context: caller.iteration_context.clone(),
-            id: self.owner_ids.strand()?,
+            id: self.regions.mint_strand()?,
             region,
             sequence: caller.sequence,
             entry: caller.entry,
@@ -192,26 +180,17 @@ impl Run {
         })
     }
     pub(super) fn retire_strand(&mut self, strand: Strand) -> Result<(), RunError> {
-        let region = self
-            .regions
-            .get_mut(&strand.region)
-            .ok_or(RunError::InvalidState)?;
-        if !region.live.remove(&strand.id) {
-            return Err(RunError::InvalidState);
-        }
+        let region = self.regions.retire_strand(strand.region, strand.id)?;
         if let Some(caller) = region.continuation.as_mut() {
             caller.pull.recycle(strand.pull);
         }
-        self.live_strands -= 1;
         self.complete_regions(strand.region)
     }
     pub(super) fn complete_regions(&mut self, mut id: RegionId) -> Result<(), RunError> {
         loop {
-            let r = self.regions.get(&id).ok_or(RunError::InvalidState)?;
-            if !r.live.is_empty() || !r.children.is_empty() {
+            let Some(mut r) = self.regions.take_if_done(id)? else {
                 return Ok(());
-            }
-            let mut r = self.regions.remove(&id).ok_or(RunError::InvalidState)?;
+            };
             for frame in r.frames.iter().flat_map(|frames| frames.iter()) {
                 self.retire_frame(frame, r.activation)?;
             }
@@ -288,17 +267,9 @@ impl Run {
                 self.ready.push_front(caller.id, caller);
             }
             if let Some(parent) = r.parent {
-                if !self
-                    .regions
-                    .get_mut(&parent)
-                    .ok_or(RunError::InvalidState)?
-                    .children
-                    .remove(&id)
-                {
-                    return Err(RunError::InvalidState);
-                }
+                self.regions.detach(parent, id)?;
                 self.release_first_join(parent)?;
-                if !self.regions.contains_key(&parent) {
+                if !self.regions.contains(parent) {
                     return Ok(());
                 }
                 id = parent;
@@ -323,57 +294,22 @@ impl Run {
             return Err(RunError::InvalidState);
         };
         let n = branches.len();
-        let depth = self.regions[&caller.region].depth;
-        if n > self
-            .options
-            .limits
-            .max_strands
-            .saturating_sub(self.live_strands)
-            || n.checked_add(1).is_none_or(|count| {
-                count
-                    > self
-                        .options
-                        .limits
-                        .max_regions
-                        .saturating_sub(self.regions.len())
-            })
+        let depth = self.regions.get(caller.region)?.depth;
+        if n.checked_add(1)
+            .is_none_or(|regions| !self.regions.has_room(n, regions, &self.options.limits))
             || depth.saturating_add(2) > self.options.limits.max_region_depth
-            || u64::try_from(n)
-                .ok()
-                .and_then(|n| n.checked_mul(2))
-                .and_then(|n| n.checked_add(1))
-                .is_none_or(|n| !self.owner_ids.has_room(n))
         {
             return self.fail(RunError::ResourceLimit);
         }
-        let group = self.owner_ids.region()?;
+        let group = self.regions.mint_region()?;
         let mut children = Vec::with_capacity(n);
         for target in branches {
-            let region = self.owner_ids.region()?;
+            let region = self.regions.mint_region()?;
             let mut child = self.child_strand(&caller, region)?;
             child.pc = *target;
-            self.regions.insert(
-                region,
-                Region {
-                    frames: None,
-                    retired_cursor: None,
-                    parent: Some(group),
-                    activation: caller.sequence,
-                    depth: depth + 2,
-                    live: IdSet::one(child.id),
-                    children: IdSet::default(),
-                    continuation: None,
-                    kind: RegionKind::Branch,
-                },
-            );
             children.push(child);
         }
         caller.pc = *completed;
-        self.regions
-            .get_mut(&caller.region)
-            .ok_or(RunError::InvalidState)?
-            .children
-            .insert(group);
         let parent = caller.region;
         let activation = caller.sequence;
         let detach = *join == ForkJoin::Detach;
@@ -389,7 +325,7 @@ impl Run {
         } else {
             Some(caller)
         };
-        self.regions.insert(
+        self.regions.open(
             group,
             Region {
                 frames: None,
@@ -398,7 +334,7 @@ impl Run {
                 activation,
                 depth: depth + 1,
                 live: IdSet::default(),
-                children: children.iter().map(|s| s.region).collect(),
+                children: IdSet::default(),
                 continuation,
                 kind: RegionKind::Join {
                     owner,
@@ -406,8 +342,23 @@ impl Run {
                     fired: detach,
                 },
             },
-        );
-        self.live_strands += n;
+        )?;
+        for child in &children {
+            self.regions.open(
+                child.region,
+                Region {
+                    frames: None,
+                    retired_cursor: None,
+                    parent: Some(group),
+                    activation,
+                    depth: depth + 2,
+                    live: IdSet::one(child.id),
+                    children: IdSet::default(),
+                    continuation: None,
+                    kind: RegionKind::Branch,
+                },
+            )?;
+        }
         for child in children.into_iter().rev() {
             self.ready.push_front(child.id, child);
         }
@@ -415,7 +366,7 @@ impl Run {
         Ok(())
     }
     fn release_first_join(&mut self, id: RegionId) -> Result<(), RunError> {
-        let r = self.regions.get_mut(&id).ok_or(RunError::InvalidState)?;
+        let r = self.regions.get_mut(id)?;
         let RegionKind::Join { owner, mode, fired } = &mut r.kind else {
             return Ok(());
         };
@@ -465,18 +416,9 @@ impl Run {
     ) -> Result<(), RunError> {
         // Traverse only owned descendants. Logical strand IDs may also identify
         // held serial continuations; only one queued/timed strand has that ID.
-        // `ids` is both the visited list and the breadth-first worklist.
-        ids.push(root);
-        let mut next = 0;
-        let mut retired = 0usize;
-        while let Some(&id) = ids.get(next) {
-            next += 1;
-            let region = self.regions.get(&id).ok_or(RunError::InvalidState)?;
-            ids.extend(region.children.iter());
-            retired = retired
-                .checked_add(region.live.len())
-                .ok_or(RunError::InvalidState)?;
-            for strand in region.live.iter() {
+        let retired = self.regions.subtree(root, ids)?;
+        for &id in ids.iter() {
+            for strand in self.regions.get(id)?.live.iter() {
                 if let Some(queued) = self.ready.remove(strand) {
                     self.cleanup_truncated = self
                         .cleanup_truncated
@@ -490,7 +432,6 @@ impl Run {
         // Timer keys are unique, so sorting reproduces the ordered-set walk.
         timer_keys.sort_unstable();
         let mut cleanup = Vec::new();
-        let mut retained_frames = IdSet::default();
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
         // Timer keys preserve the original cancellation/outcome order.
         for &key in timer_keys.iter() {
@@ -518,32 +459,9 @@ impl Run {
                 cleanup.push(timer.activation);
             }
         }
-        for &id in ids.iter() {
-            if id != root
-                && let Some(region) = self.regions.remove(&id)
-            {
-                if matches!(region.kind, RegionKind::Function { .. }) {
-                    retained_frames.insert(FrameId::of_region(id));
-                }
-                for frame in region.frames.iter().flat_map(|frames| frames.iter()) {
-                    retained_frames.insert(frame);
-                }
-            }
-        }
-        let r = self.regions.get_mut(&root).ok_or(RunError::InvalidState)?;
-        for frame in retained_frames.iter() {
-            r.frames
-                .get_or_insert_with(|| Box::new(IdSet::default()))
-                .insert(frame);
-        }
-        r.live = cleanup.iter().map(|s| s.id).collect();
-        r.children.clear();
-        let activation = r.activation;
-        self.live_strands = self
-            .live_strands
-            .checked_sub(retired)
-            .and_then(|n| n.checked_add(cleanup.len()))
-            .ok_or(RunError::InvalidState)?;
+        let activation =
+            self.regions
+                .prune(ids, retired, cleanup.iter().map(|s| s.id).collect())?;
         if let Some(shared) = self
             .activations
             .get_mut(activation as usize)
@@ -560,18 +478,8 @@ impl Run {
         // Completion is performed by the caller after its own bookkeeping.
         Ok(())
     }
-    pub(super) fn loop_region(
-        &self,
-        mut id: RegionId,
-        owner: ControlIx,
-    ) -> Result<RegionId, RunError> {
-        loop {
-            let r = self.regions.get(&id).ok_or(RunError::InvalidState)?;
-            if matches!(r.kind, RegionKind::Body { loop_owner: Some(active) } if active == owner) {
-                return Ok(id);
-            }
-            id = r.parent.ok_or(RunError::InvalidState)?;
-        }
+    pub(super) fn loop_region(&self, id: RegionId, owner: ControlIx) -> Result<RegionId, RunError> {
+        self.regions.loop_region(id, owner)
     }
     pub(super) fn unwind_loop(
         &mut self,
@@ -581,11 +489,12 @@ impl Run {
     ) -> Result<(), RunError> {
         let mut caller = self
             .regions
-            .get_mut(&region)
-            .and_then(|r| r.continuation.take())
+            .get_mut(region)?
+            .continuation
+            .take()
             .ok_or(RunError::InvalidState)?;
         caller.pull.recycle(strand.pull);
-        let owner = match self.regions[&region].kind {
+        let owner = match self.regions.get(region)?.kind {
             RegionKind::Body {
                 loop_owner: Some(owner),
             } => owner,
@@ -594,10 +503,7 @@ impl Run {
         if is_break {
             let retired = caller.stack.pop().ok_or(RunError::InvalidState)?;
             if !matches!(retired, Cursor::ForEach(_)) {
-                self.regions
-                    .get_mut(&region)
-                    .ok_or(RunError::InvalidState)?
-                    .retired_cursor = Some(Box::new(retired));
+                self.regions.get_mut(region)?.retired_cursor = Some(Box::new(retired));
             }
             caller.pc = match self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()
                 [owner.index()]
@@ -611,18 +517,12 @@ impl Run {
         } else {
             caller.yielded = true;
         }
-        self.regions
-            .get_mut(&region)
-            .ok_or(RunError::InvalidState)?
-            .continuation = Some(caller);
+        self.regions.get_mut(region)?.continuation = Some(caller);
         self.cancel_region(region)?;
         self.complete_regions(region)
     }
     pub(super) fn retire_failed(&mut self, strand: Strand) -> Result<(), RunError> {
-        let mut root = strand.region;
-        while let Some(parent) = self.regions[&root].parent {
-            root = parent;
-        }
+        let root = self.regions.root_of(strand.region)?;
         self.cancel_region(root)?;
         self.complete_regions(root)
     }

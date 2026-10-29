@@ -29,11 +29,13 @@ mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod ids;
 mod ready;
+mod regions;
 mod timers;
 mod update;
-use ids::{FrameId, OwnerIds, RegionId, StrandId};
+use ids::{FrameId, RegionId, StrandId};
 use ownership::{IdSet, Region, RegionKind};
 use ready::ReadyQueue;
+use regions::Regions;
 use timers::{TimerKey, Timers};
 
 static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
@@ -539,9 +541,7 @@ pub struct Run {
     state: RunState,
     ready: ReadyQueue<Strand>,
     activations: Vec<Option<Box<ActivationState>>>,
-    regions: BTreeMap<RegionId, Region>,
-    owner_ids: OwnerIds,
-    live_strands: usize,
+    regions: Regions,
     trace: VecDeque<RunEvent>,
     trace_dropped: u64,
     operations: usize,
@@ -613,7 +613,7 @@ impl Run {
         if capacity > options.limits.max_strands || capacity > options.limits.max_regions {
             return Err(RunError::ResourceLimit);
         }
-        let mut regions = BTreeMap::new();
+        let mut regions = Regions::after_roots(capacity as u64);
         let mut ready = ReadyQueue::with_capacity(capacity);
         let mut activations = Vec::with_capacity(capacity);
         let mut stop_ready = VecDeque::with_capacity(plan.stops().len());
@@ -701,7 +701,7 @@ impl Run {
                 local_bytes,
                 outputs: vec![None; layout.output_count],
             })));
-            regions.insert(
+            regions.open(
                 RegionId::root(sequence as u64),
                 Region {
                     frames: None,
@@ -714,7 +714,7 @@ impl Run {
                     continuation: None,
                     kind: RegionKind::Root,
                 },
-            );
+            )?;
             let strand = Strand {
                 function: None,
                 transfer: Transfer::None,
@@ -750,8 +750,6 @@ impl Run {
             ready,
             activations,
             regions,
-            owner_ids: OwnerIds::after_roots(capacity as u64),
-            live_strands: capacity,
             trace: VecDeque::new(),
             trace_dropped: 0,
             operations: 0,
@@ -806,7 +804,7 @@ impl Run {
     pub fn ownership(&self) -> RunOwnership {
         RunOwnership {
             activations: self.activations.iter().flatten().count(),
-            strands: self.live_strands,
+            strands: self.regions.live_strands(),
             regions: self.regions.len(),
             timers: self.timers.len(),
         }
@@ -1219,7 +1217,6 @@ impl Run {
         self.regions.clear();
         self.frames.clear();
         self.activations.clear();
-        self.live_strands = 0;
         self.deadline = None;
         self.transition(RunState::Stopped);
     }
@@ -1672,12 +1669,7 @@ impl Run {
         self.transition(RunState::Cancelling);
         self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
         self.stop_ready.clear();
-        let roots: Vec<_> = self
-            .regions
-            .iter()
-            .filter(|(_, r)| r.parent.is_none())
-            .map(|(id, _)| *id)
-            .collect();
+        let roots = self.regions.roots();
         for root in roots {
             self.cancel_region(root)?;
             self.complete_regions(root)?;
@@ -1701,7 +1693,7 @@ impl Run {
         self.spare_frames = Vec::new();
         self.ready = ReadyQueue::with_capacity(0);
         self.activations = Vec::new();
-        self.regions = BTreeMap::new();
+        self.regions.release();
         self.variables = Vec::new();
         self.states = Vec::new();
         self.layout = StateLayout::default();

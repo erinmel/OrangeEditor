@@ -367,15 +367,9 @@ impl Run {
     ) -> Result<(), RunError> {
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
         let layout = plan.function(call.scope).ok_or(RunError::InvalidState)?;
-        let depth = self
-            .regions
-            .get(&caller.region)
-            .ok_or(RunError::InvalidState)?
-            .depth
-            + 1;
+        let depth = self.regions.get(caller.region)?.depth + 1;
         if depth > self.options.limits.max_region_depth
-            || self.regions.len() >= self.options.limits.max_regions
-            || self.live_strands >= self.options.limits.max_strands
+            || !self.regions.has_room(1, 1, &self.options.limits)
         {
             return self.fail(RunError::ResourceLimit);
         }
@@ -412,7 +406,7 @@ impl Run {
             value: plan.variables()[i].initial().cloned(),
             version: 0,
         }));
-        let region = self.owner_ids.region()?;
+        let region = self.regions.mint_region()?;
         let mut child = self.child_strand(&caller, region)?;
         child.id = caller.id;
         child.pull = caller.pull.lend();
@@ -429,12 +423,7 @@ impl Run {
                 hold,
             },
         );
-        self.regions
-            .get_mut(&caller.region)
-            .ok_or(RunError::InvalidState)?
-            .children
-            .insert(region);
-        self.regions.insert(
+        self.regions.open(
             region,
             Region {
                 frames: None,
@@ -450,8 +439,7 @@ impl Run {
                     result: None,
                 },
             },
-        );
-        self.live_strands += 1;
+        )?;
         self.ready.push_front(child.id, child);
         Ok(())
     }
@@ -461,10 +449,7 @@ impl Run {
         result: FunctionReturn,
     ) -> Result<(), RunError> {
         let region = RegionId::of_frame(strand.function.ok_or(RunError::InvalidState)?);
-        let frame = self
-            .regions
-            .get_mut(&region)
-            .ok_or(RunError::InvalidState)?;
+        let frame = self.regions.get_mut(region)?;
         let RegionKind::Function {
             result: pending, ..
         } = &mut frame.kind
