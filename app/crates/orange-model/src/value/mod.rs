@@ -451,9 +451,34 @@ impl Hash for Value {
 }
 
 /// Lists are equal when their elements are, whatever the storage.
+/// Equal storage compares the slices directly, without building a [`Value`] per element;
+/// floats still compare by bits. Mixed storage compares element values.
 impl PartialEq for ListRepr {
     fn eq(&self, other: &Self) -> bool {
-        self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a == b)
+        use ListRepr as L;
+        match (self, other) {
+            (L::Bool(a), L::Bool(b)) => a == b,
+            (L::I32(a), L::I32(b)) => a == b,
+            (L::I64(a), L::I64(b)) => a == b,
+            (L::U32(a), L::U32(b)) => a == b,
+            (L::U64(a), L::U64(b)) => a == b,
+            (L::F32(a), L::F32(b)) => a
+                .iter()
+                .map(|x| x.to_bits())
+                .eq(b.iter().map(|x| x.to_bits())),
+            (L::F64(a), L::F64(b)) => a
+                .iter()
+                .map(|x| x.to_bits())
+                .eq(b.iter().map(|x| x.to_bits())),
+            (L::Str(a), L::Str(b)) => {
+                a.len() == b.len()
+                    && a.iter()
+                        .zip(b.iter())
+                        .all(|(x, y)| Arc::ptr_eq(x, y) || x == y)
+            }
+            (L::Values(a), L::Values(b)) => a == b,
+            _ => self.len() == other.len() && self.iter().zip(other.iter()).all(|(a, b)| a == b),
+        }
     }
 }
 
@@ -492,6 +517,55 @@ mod tests {
         let typed = ListRepr::I64(vec![1, 2].into());
         let boxed = ListRepr::Values(vec![Value::I64(1), Value::I64(2)].into());
         assert_eq!(typed, boxed);
+    }
+
+    #[test]
+    fn same_storage_equality_matches_element_equality() {
+        use std::hash::{BuildHasher, RandomState};
+        let hasher = RandomState::new();
+        let shared = Arc::new("x".to_owned());
+        let floats = |items: &[f64]| ListRepr::F64(items.into());
+        let strings = |items: Vec<Arc<String>>| ListRepr::Str(items.into());
+        let cases = [
+            (floats(&[f64::NAN, 1.0]), floats(&[f64::NAN, 1.0]), true),
+            (floats(&[0.0]), floats(&[-0.0]), false),
+            (
+                ListRepr::F32([f32::NAN].into()),
+                ListRepr::F32([f32::NAN].into()),
+                true,
+            ),
+            (
+                strings(vec![shared.clone()]),
+                strings(vec![shared.clone()]),
+                true,
+            ),
+            (
+                strings(vec![shared.clone()]),
+                strings(vec![Arc::new("x".into())]),
+                true,
+            ),
+            (
+                strings(vec![shared.clone()]),
+                strings(vec![Arc::new("y".into())]),
+                false,
+            ),
+            (
+                ListRepr::I64([1, 2].into()),
+                ListRepr::I64([1].into()),
+                false,
+            ),
+        ];
+        for (a, b, equal) in cases {
+            let elementwise = a.len() == b.len() && a.iter().zip(b.iter()).all(|(x, y)| x == y);
+            assert_eq!(a == b, equal, "{a:?} vs {b:?}");
+            assert_eq!(elementwise, equal, "{a:?} vs {b:?}");
+            if equal {
+                assert_eq!(hasher.hash_one(&a), hasher.hash_one(&b));
+                let boxed = ListRepr::Values(a.iter().collect::<Vec<_>>().into());
+                assert_eq!(boxed, b);
+                assert_eq!(hasher.hash_one(&boxed), hasher.hash_one(&b));
+            }
+        }
     }
 
     #[test]
