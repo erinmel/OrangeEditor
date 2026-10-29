@@ -12,6 +12,12 @@
 //! The `package_lock` entries of copied provider bindings travel too and are put into the
 //! target, so a paste across documents keeps every binding locked. A target that locks the
 //! same package version to another digest rejects the paste (`PackageLockConflict`).
+//!
+//! Every source `type_lock` entry travels as well. Copied literals, declarations, signatures
+//! and nominal schemas can name a locked type, and the precise closure is not computed yet,
+//! so the whole lock list is kept rather than risk dropping a codec requirement. A target
+//! that locks the same type to another codec rejects the paste (`TypeLockConflict`); a
+//! matching lock is reused.
 //! Layout of pasted nodes is the editor's concern.
 
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -23,7 +29,7 @@ use crate::catalog::{ReferenceError, ReferenceField, ReferenceKind, RegistrySnap
 use crate::config_pointer::{pointer_get, pointer_set};
 use crate::document::{
     BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
-    PackageLockEntry, SignatureSnapshot, VariableDecl,
+    PackageLockEntry, SignatureSnapshot, TypeLockEntry, VariableDecl,
 };
 use crate::edit::{DeclId, DocCommand};
 use crate::error::{IdError, PasteError};
@@ -44,6 +50,8 @@ pub struct Fragment {
     pub signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     /// Source lock entries of the package versions those nodes are bound to, in source order.
     pub package_lock: Vec<PackageLockEntry>,
+    /// Every source type lock, in source order, so pasted values keep their codec contract.
+    pub type_lock: Vec<TypeLockEntry>,
     /// Typed config references captured while copying. Constructors populate these; callers
     /// building fragments directly may leave the list empty to preserve config data verbatim.
     pub references: Vec<ConfigReference>,
@@ -117,7 +125,8 @@ impl Fragment {
         Ok(fragment)
     }
 
-    /// Adds every declaration, signature and lock entry reachable from the fragment's nodes.
+    /// Adds every declaration, signature and package lock reachable from the fragment's
+    /// nodes, and all of the source's type locks.
     fn capture_references(&mut self, document: &GraphDocument, registry: &RegistrySnapshot) {
         let mut pending: Vec<NodeInstance> = self.nodes.clone();
         let mut seen_nodes = HashSet::new();
@@ -177,6 +186,7 @@ impl Fragment {
             .filter(|entry| bound.contains(&(entry.id.clone(), entry.version.clone())))
             .cloned()
             .collect();
+        self.type_lock = document.type_lock().to_vec();
     }
 
     /// Commands that paste the fragment into `body` of `target` as one transaction. New IDs
@@ -288,6 +298,7 @@ impl Fragment {
             .cloned()
             .map(DocCommand::PutPackageLock)
             .collect();
+        commands.extend(self.type_lock.iter().cloned().map(DocCommand::PutTypeLock));
         commands.extend(
             rekeyed
                 .into_iter()

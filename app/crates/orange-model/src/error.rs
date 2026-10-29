@@ -3,7 +3,7 @@
 use thiserror::Error;
 
 use crate::id::{
-    EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, VariableId,
+    EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, TypeExpr, VariableId,
 };
 
 /// An identifier that violates its syntax rule or collides during generation (12 §2).
@@ -182,6 +182,10 @@ pub enum TxError {
     SignatureNotFound(SignatureKey),
     #[error("package `{package}` {version} is already locked to a different content digest")]
     PackageLockConflict { package: String, version: String },
+    #[error("type `{0}` is already locked to a different codec")]
+    TypeLockConflict(TypeExpr),
+    #[error("type `{0}` has no lock entry")]
+    TypeLockNotFound(TypeExpr),
     #[error("the document revision counter is exhausted")]
     RevisionExhausted,
     #[error("a layout path needs at least one key")]

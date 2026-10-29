@@ -146,7 +146,7 @@ param   = "$" ident                              ; only inside definitions
 namespace = ident { "." ident }   name = ident { "-" ident }   major = 1*DIGIT
 ```
 
-The editor displays short forms (`list<string>`). Persisted documents and wire contracts use only the canonical form. A type lock records `named` without parameters, plus codec version.
+The editor displays short forms (`list<string>`). Persisted documents and wire contracts use only the canonical form. A type lock records `named` without parameters, plus codec version. Editing never drops or replaces a lock implicitly: copy/paste carries locks to the target, and a different codec for a locked type needs an explicit lock change ([12 §3.3](12-graph-data-structures.md)). Installing package metadata alone never supplies a missing decoder.
 
 ### 5.2 Core types (format v1)
 

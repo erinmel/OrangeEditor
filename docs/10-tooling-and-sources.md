@@ -2031,3 +2031,14 @@ Branch `core/checked-document-serde` on `dev` 458f9b0, after #38 (same toolchain
 - **Limitations:** duplicate JSON keys and node/edge quotas need the text and stay importer-only. Import error messages still echo rejected input (A02).
 
 **Checks:** `cargo test --workspace --locked --offline` passes with 949 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Type locks on copy/paste — 2026-10-28
+
+Branch `core/paste-type-locks` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A14 and the type-lock part of A05.
+
+- **Commands:** `DocCommand::PutTypeLock` appends a lock, reuses a matching one and rejects another codec (`TxError::TypeLockConflict`). `DocCommand::RemoveTypeLock` removes an existing lock (`TxError::TypeLockNotFound` otherwise). Both are reversible patches and mark the change set globally dirty.
+- **Paste:** `Fragment` gains `type_lock`. Copy keeps every source type lock; paste emits `PutTypeLock` for each before any node, in the same transaction.
+- **Regressions:** a node whose source locks i64 to an unavailable codec still reports `E-TYPE-CODEC` after it is pasted into an empty document, and undo restores the empty lock list. A matching target lock is reused without a duplicate. A conflicting target lock rejects the paste and leaves the target unchanged. Transaction tests cover append order, reuse, conflict, missing removal, explicit codec change and undo.
+- **Limitations:** the precise set of types a copy depends on is not computed, so unrelated source locks travel too. An unrelated unavailable or conflicting lock can therefore block a paste or make the target unready; this fails closed. Export and activation-policy commands from A05 remain open.
+
+**Checks:** `cargo test --workspace --locked --offline` passes with 952 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

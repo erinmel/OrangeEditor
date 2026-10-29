@@ -10,10 +10,10 @@ use serde_json::{Map, Value as Json};
 
 use crate::document::{
     BodyRef, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
-    PackageLockEntry, SignatureSnapshot, VariableDecl,
+    PackageLockEntry, SignatureSnapshot, TypeLockEntry, VariableDecl,
 };
 use crate::error::TxError;
-use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, VariableId};
+use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, TypeExpr, VariableId};
 
 /// A value and its position in an ordered collection.
 #[derive(Debug, Clone, PartialEq)]
@@ -56,6 +56,11 @@ pub(crate) enum Patch {
     PackageLock {
         key: (String, String),
         entry: Option<Placed<PackageLockEntry>>,
+    },
+    /// A `type_lock` entry, keyed by its type identity.
+    TypeLock {
+        key: TypeExpr,
+        entry: Option<Placed<TypeLockEntry>>,
     },
     Editor {
         path: Vec<String>,
@@ -115,6 +120,10 @@ impl Patch {
             Patch::PackageLock { key, entry } => {
                 let old = set_slot(&mut document.package_lock, key.clone(), entry);
                 Patch::PackageLock { key, entry: old }
+            }
+            Patch::TypeLock { key, entry } => {
+                let old = set_slot(&mut document.type_lock, key.clone(), entry);
+                Patch::TypeLock { key, entry: old }
             }
             Patch::Editor { path, entry } => set_path(&mut document.editor, path, entry)?,
         })
@@ -209,6 +218,31 @@ impl Slots<(String, String), PackageLockEntry> for Vec<PackageLockEntry> {
         key: &(String, String),
         value: PackageLockEntry,
     ) -> Option<PackageLockEntry> {
+        let index = self.position(key)?;
+        Some(std::mem::replace(&mut self[index], value))
+    }
+}
+
+/// Type locks are an ordered list keyed by the entry's own type identity.
+impl Slots<TypeExpr, TypeLockEntry> for Vec<TypeLockEntry> {
+    fn take(&mut self, key: &TypeExpr) -> Option<Placed<TypeLockEntry>> {
+        let index = self.position(key)?;
+        Some(Placed {
+            index,
+            value: self.remove(index),
+        })
+    }
+
+    fn put(&mut self, _key: TypeExpr, entry: Placed<TypeLockEntry>) {
+        let index = entry.index.min(self.len());
+        self.insert(index, entry.value);
+    }
+
+    fn position(&self, key: &TypeExpr) -> Option<usize> {
+        self.iter().position(|entry| &entry.ty == key)
+    }
+
+    fn replace(&mut self, key: &TypeExpr, value: TypeLockEntry) -> Option<TypeLockEntry> {
         let index = self.position(key)?;
         Some(std::mem::replace(&mut self[index], value))
     }

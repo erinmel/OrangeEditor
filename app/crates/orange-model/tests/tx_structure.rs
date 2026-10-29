@@ -459,6 +459,64 @@ fn put_package_lock_appends_is_idempotent_rejects_another_digest_and_undoes() {
     assert_eq!(content(&document), before);
 }
 
+#[test]
+fn type_locks_append_coalesce_reject_another_codec_and_undo() {
+    use orange_model::document::TypeLockEntry;
+    let lock = |ty: &str, codec: &str| TypeLockEntry {
+        ty: ty.parse().unwrap(),
+        codec: codec.to_owned(),
+        extensions: Default::default(),
+    };
+
+    let mut document = empty_document();
+    let before = content(&document);
+    let first = document
+        .apply([
+            DocCommand::PutTypeLock(lock("core/u64@1", "orange.value.v1")),
+            DocCommand::PutTypeLock(lock("core/i64@1", "orange.value.v1")),
+        ])
+        .unwrap();
+    let again = document
+        .apply([DocCommand::PutTypeLock(lock(
+            "core/i64@1",
+            "orange.value.v1",
+        ))])
+        .unwrap();
+    assert_eq!(document.type_lock().len(), 2, "a matching lock is reused");
+    assert_rejected(
+        &mut document,
+        vec![DocCommand::PutTypeLock(lock(
+            "core/i64@1",
+            "org.example.other-v1",
+        ))],
+        TxError::TypeLockConflict("core/i64@1".parse().unwrap()),
+    );
+    assert_rejected(
+        &mut document,
+        vec![DocCommand::RemoveTypeLock("core/bool@1".parse().unwrap())],
+        TxError::TypeLockNotFound("core/bool@1".parse().unwrap()),
+    );
+
+    // Changing a codec is an explicit removal and re-lock; undo restores the original slot.
+    let locked = content(&document);
+    let migrated = document
+        .apply([
+            DocCommand::RemoveTypeLock("core/u64@1".parse().unwrap()),
+            DocCommand::PutTypeLock(lock("core/u64@1", "org.example.other-v1")),
+        ])
+        .unwrap();
+    assert_eq!(
+        document.type_lock()[1],
+        lock("core/u64@1", "org.example.other-v1")
+    );
+    let _ = document.revert(migrated.inverse).unwrap();
+    assert_eq!(content(&document), locked);
+
+    let _ = document.revert(again.inverse).unwrap();
+    let _ = document.revert(first.inverse).unwrap();
+    assert_eq!(content(&document), before);
+}
+
 /// A loaded document whose revision is `revision`.
 fn at_revision(revision: u64) -> GraphDocument {
     let mut value: serde_json::Value = serde_json::from_str(&saved(&empty_document())).unwrap();
