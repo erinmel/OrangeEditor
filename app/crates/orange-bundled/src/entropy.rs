@@ -3,14 +3,13 @@ use orange_compiler::{
     BindingRequest, EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource,
     KernelFault, ResolveError,
 };
+use orange_model::Value;
 use orange_model::catalog::{
     Determinism, NodeDefinition, Ports, ProviderKey, RegistrySnapshot, TypeArgs, Volatility,
 };
 use orange_model::document::{
-    ConfigValue, DefinitionRef, NodeInstance, NodeKind, OutputSource, PortDescriptor,
-    SignatureSnapshot,
+    ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor, SignatureSnapshot,
 };
-use orange_model::{GraphDocument, Value};
 use std::sync::Arc;
 
 pub const RANDOM_U64_DEFINITION: &str = "org.orange.math/random-u64";
@@ -115,16 +114,6 @@ impl MathPackage {
     }
 }
 impl EntropyKernelResolver for MathPackage {
-    fn resolve_entropy(
-        &self,
-        document: &GraphDocument,
-        node: &NodeInstance,
-        signature: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
-    ) -> Result<EntropyBinding, ResolveError> {
-        self.resolve_entropy_binding(&BindingRequest::new(document, node, signature, snapshot)?)
-    }
-
     fn resolve_entropy_binding(
         &self,
         request: &BindingRequest<'_>,

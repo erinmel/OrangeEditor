@@ -62,7 +62,6 @@ pub enum ResolveError {
 /// builds it only for nodes admitted from fresh validation, whose provider bindings
 /// passed exact package-lock checks. It exposes no other document or node data.
 pub struct BindingRequest<'a> {
-    document: &'a GraphDocument,
     node: &'a NodeInstance,
     provider: Option<ProviderKey>,
     signature: &'a SignatureSnapshot,
@@ -84,7 +83,6 @@ impl<'a> BindingRequest<'a> {
             }
         };
         Ok(Self {
-            document,
             node,
             provider,
             signature,
@@ -130,11 +128,16 @@ impl Debug for BindingRequest<'_> {
 /// Resolve exact providers/types/config once. Implementations must not invoke guest
 /// code or effects here. This trait is open to downstream trusted host implementations.
 ///
-/// The compiler binds through [`resolve_binding`](Self::resolve_binding). Its default
-/// forwards to the original whole-document [`resolve`](Self::resolve), so existing
-/// implementors keep working. New implementors override `resolve_binding` and may
-/// implement `resolve` as `self.resolve_binding(&BindingRequest::new(..)?)`.
+/// A resolver sees only the [`BindingRequest`]: the facts of the one node it binds, never
+/// the rest of the document. Callers holding a whole document use [`ResolveInDocument`].
 pub trait PureKernelResolver {
+    fn resolve_binding(&self, request: &BindingRequest<'_>) -> Result<KernelBinding, ResolveError>;
+}
+
+/// Resolves one node of a whole document by building its [`BindingRequest`] first. It is
+/// implemented for every resolver and cannot be overridden, so the document never reaches
+/// a resolver.
+pub trait ResolveInDocument {
     fn resolve(
         &self,
         document: &GraphDocument,
@@ -142,14 +145,17 @@ pub trait PureKernelResolver {
         signature: &SignatureSnapshot,
         snapshot: Arc<RegistrySnapshot>,
     ) -> Result<KernelBinding, ResolveError>;
+}
 
-    fn resolve_binding(&self, request: &BindingRequest<'_>) -> Result<KernelBinding, ResolveError> {
-        self.resolve(
-            request.document,
-            request.node,
-            request.signature,
-            request.snapshot.clone(),
-        )
+impl<T: PureKernelResolver + ?Sized> ResolveInDocument for T {
+    fn resolve(
+        &self,
+        document: &GraphDocument,
+        node: &NodeInstance,
+        signature: &SignatureSnapshot,
+        snapshot: Arc<RegistrySnapshot>,
+    ) -> Result<KernelBinding, ResolveError> {
+        self.resolve_binding(&BindingRequest::new(document, node, signature, snapshot)?)
     }
 }
 
@@ -188,10 +194,17 @@ impl Debug for EntropyBinding {
 }
 
 /// Binding only, not execution approval. Lowering must check fresh semantic evidence
-/// and seeded-entropy metadata before accepting this separate executable ABI.
-/// The compiler binds through `resolve_entropy_binding`, whose default forwards to
-/// `resolve_entropy` exactly as [`PureKernelResolver::resolve_binding`] does.
+/// and seeded-entropy metadata before accepting this separate executable ABI. Like
+/// [`PureKernelResolver`], it sees only the [`BindingRequest`].
 pub trait EntropyKernelResolver: PureKernelResolver {
+    fn resolve_entropy_binding(
+        &self,
+        request: &BindingRequest<'_>,
+    ) -> Result<EntropyBinding, ResolveError>;
+}
+
+/// [`ResolveInDocument`] for entropy bindings.
+pub trait ResolveEntropyInDocument {
     fn resolve_entropy(
         &self,
         document: &GraphDocument,
@@ -199,17 +212,17 @@ pub trait EntropyKernelResolver: PureKernelResolver {
         signature: &SignatureSnapshot,
         snapshot: Arc<RegistrySnapshot>,
     ) -> Result<EntropyBinding, ResolveError>;
+}
 
-    fn resolve_entropy_binding(
+impl<T: EntropyKernelResolver + ?Sized> ResolveEntropyInDocument for T {
+    fn resolve_entropy(
         &self,
-        request: &BindingRequest<'_>,
+        document: &GraphDocument,
+        node: &NodeInstance,
+        signature: &SignatureSnapshot,
+        snapshot: Arc<RegistrySnapshot>,
     ) -> Result<EntropyBinding, ResolveError> {
-        self.resolve_entropy(
-            request.document,
-            request.node,
-            request.signature,
-            request.snapshot.clone(),
-        )
+        self.resolve_entropy_binding(&BindingRequest::new(document, node, signature, snapshot)?)
     }
 }
 

@@ -2142,3 +2142,12 @@ Branch `core/metadata-layering` on `dev` c7fffe7 (same toolchain; Cargo.lock unc
 - **Scope:** actor-internal `impl Run` blocks and compiler/runtime module imports were left as they are; the audit advises against splitting the scheduler or adding traits only to restrict them.
 
 **Checks:** `cargo test --workspace --locked --offline` passes with 949 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Narrow kernel resolvers — 2026-10-28
+
+Branch `core/narrow-resolvers` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A10.
+
+- **Change:** the resolver traits require only `resolve_binding` and `resolve_entropy_binding`. `BindingRequest` no longer stores the document; it extracts the locked provider when built. The whole-document `resolve` and `resolve_entropy` move to `ResolveInDocument` and `ResolveEntropyInDocument`, implemented for every resolver and not overridable. Exact provider-lock checks and retained snapshots are unchanged.
+- **Breaking:** a downstream resolver that implemented only the old whole-document methods must implement the request methods. Every in-repository resolver was converted; the test of the old forwarding default was removed, and the narrow-only resolver test now needs no stub.
+
+**Checks:** `cargo test --workspace --locked --offline` passes with 948 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

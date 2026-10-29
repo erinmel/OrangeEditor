@@ -5,7 +5,7 @@ use orange_compiler::{
 };
 use orange_compiler::{EvaluationError, EvaluationOptions};
 use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
-use orange_model::document::{NodeInstance, NodeKind, SignatureSnapshot};
+use orange_model::document::NodeKind;
 use orange_model::validation::{DiagnosticCode, HostOrigin, Severity};
 use orange_model::value::shape::ValueShape;
 use orange_model::{GraphDocument, Value, analyze, from_json, to_json};
@@ -701,19 +701,16 @@ struct GuardResolver {
     calls: AtomicUsize,
 }
 impl PureKernelResolver for GuardResolver {
-    fn resolve(
+    fn resolve_binding(
         &self,
-        doc: &GraphDocument,
-        node: &NodeInstance,
-        sig: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<KernelBinding, ResolveError> {
         self.calls.fetch_add(1, Ordering::Relaxed);
-        if node.id == self.trap && self.reject {
+        if request.node() == self.trap && self.reject {
             return Err(ResolveError::Unavailable);
         }
-        let mut binding = PureKernelResolver::resolve(&self.package, doc, node, sig, snapshot)?;
-        if node.id == self.trap {
+        let mut binding = self.package.resolve_binding(request)?;
+        if request.node() == self.trap {
             binding.kernel = Arc::new(DeliberateFault);
         }
         Ok(binding)
@@ -1058,16 +1055,13 @@ fn cancellation_after_selector_stops_before_arm_resolution() {
         calls: AtomicUsize,
     }
     impl PureKernelResolver for Resolver {
-        fn resolve(
+        fn resolve_binding(
             &self,
-            doc: &GraphDocument,
-            node: &NodeInstance,
-            sig: &SignatureSnapshot,
-            snapshot: Arc<RegistrySnapshot>,
+            request: &orange_compiler::BindingRequest<'_>,
         ) -> Result<KernelBinding, ResolveError> {
             self.calls.fetch_add(1, Ordering::Relaxed);
-            let mut binding = PureKernelResolver::resolve(&self.package, doc, node, sig, snapshot)?;
-            if node.id == id(1).parse().unwrap() {
+            let mut binding = self.package.resolve_binding(request)?;
+            if request.node() == id(1).parse().unwrap() {
                 binding.kernel = Arc::new(CancelAfter {
                     inner: binding.kernel,
                     signal: self.signal.clone(),
@@ -1423,15 +1417,12 @@ impl PureKernel for CountKernel {
     }
 }
 impl PureKernelResolver for Counting {
-    fn resolve(
+    fn resolve_binding(
         &self,
-        doc: &GraphDocument,
-        node: &NodeInstance,
-        sig: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<KernelBinding, ResolveError> {
         self.resolves.fetch_add(1, Ordering::Relaxed);
-        let mut binding = PureKernelResolver::resolve(&self.package, doc, node, sig, snapshot)?;
+        let mut binding = self.package.resolve_binding(request)?;
         binding.kernel = Arc::new(CountKernel {
             inner: binding.kernel,
             count: self.folds.clone(),
@@ -1621,17 +1612,14 @@ struct Broken {
     mode: u8,
 }
 impl PureKernelResolver for Broken {
-    fn resolve(
+    fn resolve_binding(
         &self,
-        doc: &GraphDocument,
-        node: &NodeInstance,
-        sig: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<KernelBinding, ResolveError> {
         if self.mode == 0 {
             return Err(ResolveError::Unavailable);
         }
-        let mut binding = PureKernelResolver::resolve(&self.package, doc, node, sig, snapshot)?;
+        let mut binding = self.package.resolve_binding(request)?;
         if self.mode == 1 {
             binding.inputs.reverse();
         } else {

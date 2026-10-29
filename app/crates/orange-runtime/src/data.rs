@@ -1116,7 +1116,7 @@ mod tests {
         CompileOptions, EntropyBinding, EntropyKernelResolver, KernelBinding, PureKernelResolver,
         ResolveError, compile_data,
     };
-    use orange_model::document::{NodeInstance, SignatureSnapshot};
+
     use orange_model::validation::HostOrigin;
     use std::cell::Cell;
 
@@ -1127,23 +1127,17 @@ mod tests {
     /// Core intrinsics only; no provider kernel is ever resolved.
     struct NoKernels;
     impl PureKernelResolver for NoKernels {
-        fn resolve(
+        fn resolve_binding(
             &self,
-            _: &GraphDocument,
-            _: &NodeInstance,
-            _: &SignatureSnapshot,
-            _: Arc<RegistrySnapshot>,
+            _request: &orange_compiler::BindingRequest<'_>,
         ) -> Result<KernelBinding, ResolveError> {
             Err(ResolveError::Unavailable)
         }
     }
     impl EntropyKernelResolver for NoKernels {
-        fn resolve_entropy(
+        fn resolve_entropy_binding(
             &self,
-            _: &GraphDocument,
-            _: &NodeInstance,
-            _: &SignatureSnapshot,
-            _: Arc<RegistrySnapshot>,
+            _request: &orange_compiler::BindingRequest<'_>,
         ) -> Result<EntropyBinding, ResolveError> {
             Err(ResolveError::Unavailable)
         }

@@ -9,7 +9,6 @@ use orange_compiler::{
     ResolveError, compile_data,
 };
 use orange_model::catalog::RegistrySnapshot;
-use orange_model::document::{NodeInstance, SignatureSnapshot};
 use orange_model::value::JsonText;
 use orange_model::{GraphDocument, Value, analyze, from_json, to_json};
 use orange_runtime::{
@@ -634,25 +633,19 @@ struct Mutated {
     mode: Mutation,
 }
 impl PureKernelResolver for Mutated {
-    fn resolve(
+    fn resolve_binding(
         &self,
-        doc: &GraphDocument,
-        node: &NodeInstance,
-        sig: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<KernelBinding, ResolveError> {
-        PureKernelResolver::resolve(&self.package, doc, node, sig, snapshot)
+        self.package.resolve_binding(request)
     }
 }
 impl EntropyKernelResolver for Mutated {
-    fn resolve_entropy(
+    fn resolve_entropy_binding(
         &self,
-        doc: &GraphDocument,
-        node: &NodeInstance,
-        sig: &SignatureSnapshot,
-        snapshot: Arc<RegistrySnapshot>,
+        request: &orange_compiler::BindingRequest<'_>,
     ) -> Result<EntropyBinding, ResolveError> {
-        let mut binding = self.package.resolve_entropy(doc, node, sig, snapshot)?;
+        let mut binding = self.package.resolve_entropy_binding(request)?;
         binding.kernel = Arc::new(MutatedKernel(self.mode.clone()));
         Ok(binding)
     }
