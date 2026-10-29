@@ -25,7 +25,8 @@ pub(crate) fn fresh_state_id() -> u64 {
 ///
 /// Serde deserialization is checked: it applies the same version, cross-body identity and
 /// lock checks as [`from_json`](crate::from_json), and accepts an optional `"format"` tag
-/// only when it names this format. Duplicate-key detection and import quotas need the
+/// only when it names this format. It also applies the shared nesting budget
+/// ([`MAX_NESTING`](crate::document::nesting::MAX_NESTING)). Duplicate-key detection and import quotas need the
 /// text, so they stay with the bounded JSON importer.
 #[derive(Debug, Clone)]
 pub struct GraphDocument {
@@ -98,7 +99,9 @@ impl Serialize for GraphDocument {
 impl<'de> Deserialize<'de> for GraphDocument {
     fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
         let document = DocumentWire::deserialize(deserializer)?;
-        super::codec::admit(document).map_err(de::Error::custom)
+        super::codec::check_nesting(super::nesting::nesting(&document))
+            .and_then(|()| super::codec::admit(document))
+            .map_err(de::Error::custom)
     }
 }
 

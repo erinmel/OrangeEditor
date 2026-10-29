@@ -16,6 +16,7 @@
 pub mod codec;
 pub mod keyed;
 pub mod literal;
+pub mod nesting;
 
 mod declaration;
 mod graph;

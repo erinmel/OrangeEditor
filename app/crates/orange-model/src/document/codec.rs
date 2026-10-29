@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::document::GraphDocument;
 use crate::document::graph::DocumentWire;
+use crate::document::nesting::MAX_NESTING;
 use crate::error::{CodecError, ImportResource};
 
 pub const FORMAT: &str = "orange.graph";
@@ -56,11 +57,13 @@ struct Header {
     counts: Counts,
 }
 
-/// Array elements under the root's and each function's `nodes` and `edges`.
+/// Array elements under the root's and each function's `nodes` and `edges`, and the
+/// deepest container nesting seen, the root object being 1.
 #[derive(Default)]
 struct Counts {
     nodes: usize,
     edges: usize,
+    nesting: usize,
 }
 
 /// Where a scanned value sits in the document, so only graph bodies are counted.
@@ -123,7 +126,10 @@ impl<'de> Visitor<'de> for HeaderVisitor {
         let (mut format, mut format_version) = (None, None);
         let mut seen = Seen::default();
         let mut duplicate = None;
-        let mut counts = Counts::default();
+        let mut counts = Counts {
+            nesting: 1,
+            ..Counts::default()
+        };
         while let Some(Key(key)) = map.next_key()? {
             let found = match key.as_ref() {
                 "format" => {
@@ -136,6 +142,7 @@ impl<'de> Visitor<'de> for HeaderVisitor {
                 }
                 other => map.next_value_seed(Scan {
                     place: Place::Root.field(other),
+                    depth: 2,
                     counts: &mut counts,
                 })?,
             };
@@ -154,9 +161,11 @@ impl<'de> Visitor<'de> for HeaderVisitor {
 
 /// Any JSON value at `place`, yielding only the first repeated object key found inside it
 /// and adding the body items it holds to `counts`. Shape is not checked here, so a newer
-/// document still reaches the version gate.
+/// document still reaches the version gate. `depth` is the nesting this value has if it is
+/// a container.
 struct Scan<'c> {
     place: Place,
+    depth: usize,
     counts: &'c mut Counts,
 }
 
@@ -193,10 +202,16 @@ impl<'de> Visitor<'de> for Scan<'_> {
         Ok(None)
     }
     fn visit_seq<A: SeqAccess<'de>>(self, mut seq: A) -> Result<Self::Value, A::Error> {
-        let Scan { place, counts } = self;
+        let Scan {
+            place,
+            depth,
+            counts,
+        } = self;
+        counts.nesting = counts.nesting.max(depth);
         let mut duplicate = None;
         while let Some(found) = seq.next_element_seed(Scan {
             place: place.element(),
+            depth: depth + 1,
             counts: &mut *counts,
         })? {
             counts.add_element(place);
@@ -205,7 +220,12 @@ impl<'de> Visitor<'de> for Scan<'_> {
         Ok(duplicate)
     }
     fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
-        let Scan { place, counts } = self;
+        let Scan {
+            place,
+            depth,
+            counts,
+        } = self;
+        counts.nesting = counts.nesting.max(depth);
         let mut seen = Seen::default();
         let mut duplicate = None;
         while let Some(Key(key)) = map.next_key()? {
@@ -213,6 +233,7 @@ impl<'de> Visitor<'de> for Scan<'_> {
             note_key(&mut seen, key, &mut duplicate);
             let found = map.next_value_seed(Scan {
                 place: child,
+                depth: depth + 1,
                 counts: &mut *counts,
             })?;
             duplicate = duplicate.or(found);
@@ -303,8 +324,9 @@ pub fn from_json(text: &str) -> Result<GraphDocument, CodecError> {
 ///
 /// The byte limit is enforced before parsing. One streaming pass then reads the envelope,
 /// finds repeated keys and counts the nodes and edges of the root and every function body.
-/// Errors come in this order: format, version, duplicate key, node quota, edge quota, then
-/// shape and identity errors from building the document. Quotas therefore bound what is
+/// Errors come in this order: format, version, duplicate key, node quota, edge quota,
+/// nesting, then shape and identity errors from building the document. Nesting deeper than
+/// the JSON parser's own recursion bound is reported as a JSON error. Quotas therefore bound what is
 /// built: an over-quota document fails before any node or edge is materialized.
 pub fn from_json_with_limits(
     text: &str,
@@ -328,6 +350,7 @@ pub fn from_json_with_limits(
     }
     enforce_limit(ImportResource::Nodes, header.counts.nodes, limits.max_nodes)?;
     enforce_limit(ImportResource::Edges, header.counts.edges, limits.max_edges)?;
+    check_nesting(header.counts.nesting)?;
     // Deserialize the body directly: wrapping the entire graph in another flattened
     // struct buffers it through Serde's intermediate representation a second time. The
     // unchecked wire form is read so `admit` reports typed codec errors.
@@ -359,6 +382,14 @@ pub(crate) fn admit(mut document: GraphDocument) -> Result<GraphDocument, CodecE
     check_unique_across_bodies(&document)?;
     check_unique_locks(&document)?;
     Ok(document)
+}
+
+/// The shared budget of [`MAX_NESTING`], so a loaded document stays editable and savable.
+pub(crate) fn check_nesting(nesting: usize) -> Result<(), CodecError> {
+    if nesting > MAX_NESTING {
+        return Err(CodecError::NestingLimit { max: MAX_NESTING });
+    }
+    Ok(())
 }
 
 fn enforce_limit(resource: ImportResource, actual: usize, max: usize) -> Result<(), CodecError> {

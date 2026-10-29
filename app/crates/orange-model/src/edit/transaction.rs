@@ -14,6 +14,7 @@ use serde_json::Value as Json;
 use super::change_set::{ChangeSet, Tracker};
 use super::patch::{Patch, Placed, editor_placement, placement};
 use crate::document::literal::Literal;
+use crate::document::nesting::MAX_NESTING;
 use crate::document::{
     ActivationPolicy, BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument,
     GraphExport, NodeInstance, PackageLockEntry, PortRef, ProviderBinding, SignatureSnapshot,
@@ -270,7 +271,12 @@ impl Journal {
         self.commands == 0
     }
 
+    /// Every edit passes the shared nesting budget first, so what commits can be saved and
+    /// loaded again (12 §6).
     fn patch(&mut self, document: &mut GraphDocument, patch: Patch) -> Result<(), TxError> {
+        if patch.nesting() > MAX_NESTING {
+            return Err(TxError::NestingLimit { max: MAX_NESTING });
+        }
         let inverse = patch.apply(document)?;
         self.tracker.record(&inverse);
         self.inverses.push(inverse);
