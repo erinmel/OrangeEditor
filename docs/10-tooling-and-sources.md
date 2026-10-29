@@ -2172,3 +2172,25 @@ Branch `core/analysis-worker` on `dev` c7fffe7 (same toolchain; Cargo.lock uncha
 - **Limitations:** cancellation is still observed only between passes, and semantic edits still rerun the combined analysis; per-body incremental analysis remains V12 work, and NFR-15 is not requalified. Submitting copies the document.
 
 **Checks:** `cargo test --workspace --locked --offline` passes with 952 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Value-sized Update budget — 2026-10-28
+
+Branch `core/size-weighted-budget` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Addresses audit finding A07 for Update and revises the deferral recorded with the pump budget measurements of 2026-10-27.
+
+- **Change:** `publish_update` returns the update's value work, one unit per nominal value beyond the first in the old and the new value, and the Update step spends it from the pump quantum. Atomic Update, frozen consumption snapshots, Return and cleanup barriers are unchanged.
+- **Harness:** `orange-measure` reports pump p99 and the slowest pump next to p50 and p95.
+- **Measured** with `orange-measure` (release, same machine, 15 runs per workload). The audit measured a 2,106 µs p95 pump for a 1,000-entry map CAS at budget 1,024.
+
+| Workload, budget 1,024 | Pumps/run | Pump p95 µs | Pump p99 µs | Pump max µs | Run p50 ms |
+|---|---:|---:|---:|---:|---:|
+| Map CAS, 1,000 entries | 1,001 | 11.0 | 11.4 | 37.8 | 9.95 |
+| Map CAS, 16 entries | 77 | 6.6 | 6.9 | 10.1 | 0.50 |
+| Scalar chain (16 adds) | 68 | 19.0 | 20.1 | 23.7 | 1.25 |
+| Fork race + cancel region | 7 | 154.4 | 163.9 | 166.5 | 1.04 |
+| Map zone, 10,000 items | 790 | 19.3 | 21.2 | 55.2 | 14.57 |
+
+At budget 64 the slowest pump of any workload was 73.7 µs (1,000-entry map CAS). Each large CAS now takes its own pump; run totals are within noise of earlier baselines.
+
+- **Limitations:** snapshotting a consumer's host inputs and traversing cancelled region trees are still single items, and Set publication of a large value is not weighted. Budgets remain operation bounds; NFR-02 slice latency is not qualified.
+
+**Checks:** `cargo test --workspace --locked --offline` passes with 949 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

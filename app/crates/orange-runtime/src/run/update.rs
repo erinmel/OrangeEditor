@@ -127,7 +127,7 @@ impl Run {
                 return Ok(Some(step));
             }
         };
-        self.cells().publish_update(
+        let work = self.cells().publish_update(
             plan,
             shared,
             UpdateCommit {
@@ -140,6 +140,7 @@ impl Run {
                 compare: matches!(operation, UpdateOperation::CompareAndSet),
             },
         )?;
+        *budget = budget.saturating_sub(work);
         Ok(Some((node.then(), ControlOutcome::Then, None)))
     }
 }
@@ -147,12 +148,13 @@ impl Run {
 impl Cells<'_> {
     /// Admit every charge (cell, projections, frame hold, version) first; the
     /// stores after that point cannot fail, so a rejected update changes nothing.
+    /// Returns the value-sized work units of the update (see [`value_work`]).
     fn publish_update(
         &mut self,
         plan: &ControlPlan,
         shared: &mut ActivationState,
         commit: UpdateCommit<'_>,
-    ) -> Result<(), RunError> {
+    ) -> Result<usize, RunError> {
         let UpdateCommit {
             frame,
             owner,
@@ -277,8 +279,20 @@ impl Cells<'_> {
             }
             self.segment.variable(variable, metadata.id());
         }
-        Ok(())
+        Ok(value_work(old_charge, new_charge))
     }
+}
+
+/// Pump units for whole-value work beyond the update's own unit: one per nominal value
+/// past the first in the old and the new value. Comparing, charging and publishing a
+/// collection walk it in one indivisible step, so a large value spends the budget it
+/// takes, and a pump yields after it instead of running more work in the same slice.
+/// Scalars cost nothing extra.
+fn value_work(old_charge: usize, new_charge: usize) -> usize {
+    let values = |charge: usize| charge.div_ceil(orange_model::value::shape::VALUE_CHARGE);
+    values(old_charge)
+        .saturating_sub(1)
+        .saturating_add(values(new_charge).saturating_sub(1))
 }
 
 /// Core equality of two values already checked against `ty`: compare-and-set is
