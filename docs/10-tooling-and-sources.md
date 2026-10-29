@@ -2100,4 +2100,13 @@ Branch `core/dispose-releases-storage` on `dev` c7fffe7 (same toolchain; Cargo.l
 - **Change:** `Run::dispose` replaces its containers instead of clearing them, so their capacity is freed, and empties the spare frame pool and the cancellation traversal buffers. The terminal summary stays readable.
 - **Measured** with `orange-measure` (release, same machine): after the function-call workload, stop and dispose, the run held 6,040 heap bytes that were released only on drop; it now holds 8. The function-call workload still makes 41 allocations per 1,000 calls, so the active frame pool is unchanged. `orange-measure` prints the disposed-run figure and a unit test under its counting allocator fails above 1 KiB.
 
+### Provider panic boundary — 2026-10-28
+
+Branch `core/run-panic-poison` on `dev` c7fffe7 (same toolchain; Cargo.lock unchanged). Closes audit finding A17.
+
+- **Change:** `Run::pump` marks itself open while it runs and closes on every return. A mark still open on the next call means a callback panicked through the pump, so the run faults with the new `RunError::Interrupted` (`core/run-interrupted`). `state()` and `last_error()` report the fault immediately; `pump` and `advance_to` refuse ordinary work; `stop` settles the fault and cancels the remaining work.
+- **Regressions:** a control run whose only math kernel panics reports `Faulted` and `Interrupted` after the caught unwind, refuses pump and clock advance, then stops, drains to `Stopped` with no strands and disposes.
+- **Measured** with `orange-measure` (release, same machine): the scalar-chain workload ran in 1.36 ms per run, against 1.44 ms recorded at the same budget before; the two flag writes per pump are not measurable.
+- **Limitations:** a standalone `DataActivation` has no such mark; a panic there leaves the activation for the host to drop.
+
 **Checks:** `cargo test --workspace --locked --offline` passes with 950 passed, 0 failed, 15 ignored. fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

@@ -172,6 +172,8 @@ pub enum RunError {
     IdentityExhausted,
     #[error("Virtual monotonic time cannot move backwards.")]
     ClockWentBackwards,
+    #[error("A provider callback panicked during a pump; stop the run.")]
+    Interrupted,
 }
 impl RunError {
     pub const fn message_key(self) -> &'static str {
@@ -181,6 +183,7 @@ impl RunError {
             Self::ResourceLimit => "core/run-resource-limit",
             Self::IdentityExhausted => "core/run-identity-exhausted",
             Self::ClockWentBackwards => "core/run-clock-went-backwards",
+            Self::Interrupted => "core/run-interrupted",
         }
     }
 }
@@ -559,6 +562,9 @@ pub struct Run {
     /// Reused cancellation traversal buffers; empty between calls.
     cancel_regions: Vec<u64>,
     cancel_timers: Vec<(u64, u64)>,
+    /// Set while `pump` runs. Still set on the next call only if a trusted callback
+    /// panicked through a pump, which can leave work taken out of the run's stores.
+    pump_open: bool,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -770,19 +776,29 @@ impl Run {
             segment: SegmentWrites::new(variable_count, state_count),
             cancel_regions: vec![],
             cancel_timers: vec![],
+            pump_open: false,
         })
     }
     pub fn id(&self) -> u64 {
         self.id
     }
+    /// `Faulted` after a pump that unwound, until the host stops the run.
     pub fn state(&self) -> RunState {
-        self.state
+        if self.pump_open {
+            RunState::Faulted
+        } else {
+            self.state
+        }
     }
     pub fn transitions(&self) -> &[RunState] {
         &self.transitions
     }
     pub fn last_error(&self) -> Option<RunError> {
-        self.last_error
+        if self.pump_open {
+            Some(RunError::Interrupted)
+        } else {
+            self.last_error
+        }
     }
     pub fn cleanup_truncated(&self) -> u64 {
         self.cleanup_truncated
@@ -821,6 +837,9 @@ impl Run {
     }
     /// Advancing time enqueues no inline graph execution; pump resumes due waits.
     pub fn advance_to(&mut self, now: u64) -> Result<(), RunError> {
+        if self.settle_interruption() {
+            return Err(RunError::Interrupted);
+        }
         if !matches!(
             self.state,
             RunState::Running | RunState::Draining | RunState::Cancelling
@@ -894,7 +913,32 @@ impl Run {
     }
     /// Drive at most `budget` control/data/timer work items. Idle Running is live.
     /// Native callbacks are trusted; this is not a wall-time preemption guarantee.
+    /// Runs up to `budget` work items. If a trusted provider callback panics, the panic
+    /// propagates and the run is left faulted: every later call reports
+    /// `RunError::Interrupted` until the host stops it, which cancels its remaining work.
     pub fn pump(&mut self, budget: usize) -> Result<RunProgress, RunError> {
+        if self.settle_interruption() {
+            return Err(RunError::Interrupted);
+        }
+        self.pump_open = true;
+        let progress = self.pump_open_run(budget);
+        self.pump_open = false;
+        progress
+    }
+
+    /// Records a pump that unwound: the run faults with `Interrupted` and refuses ordinary
+    /// work, so lost activations cannot pass for completed ones. True when one did.
+    fn settle_interruption(&mut self) -> bool {
+        if !self.pump_open {
+            return false;
+        }
+        self.pump_open = false;
+        self.last_error = Some(RunError::Interrupted);
+        self.transition(RunState::Faulted);
+        true
+    }
+
+    fn pump_open_run(&mut self, budget: usize) -> Result<RunProgress, RunError> {
         if !matches!(
             self.state,
             RunState::Running | RunState::Draining | RunState::Cancelling
@@ -1601,6 +1645,7 @@ impl Run {
     /// Graceful stop starts On Stop once and drains accepted work. Immediate stop
     /// cancels owned waits; a second stop aborts bounded cancellation cleanup.
     pub fn request_stop(&mut self, mode: StopMode) -> Result<(), RunError> {
+        self.settle_interruption();
         match (self.state, mode) {
             (
                 RunState::Stopped | RunState::Disposed | RunState::Created | RunState::Starting,
