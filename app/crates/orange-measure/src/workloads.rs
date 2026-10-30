@@ -573,6 +573,72 @@ pub fn analysis_worker_latency(config: Config) -> AnalysisWorkerTimes {
     }
 }
 
+/// Session update latency for one literal edit on `chains` independent add chains of
+/// `length` nodes, as (p50, p95) over `config.runs` edits after `config.warmup`.
+pub fn session_edit(
+    config: Config,
+    chains: u32,
+    length: u32,
+) -> (std::time::Duration, std::time::Duration) {
+    use orange_model::DocCommand;
+    use orange_model::document::PortRef;
+    use orange_model::validation::{AnalysisOptions, AnalysisSession};
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for chain in 0..chains {
+        let first = 10 + chain * length;
+        nodes.push(math(first, "add", 0, 1));
+        for link in 1..length {
+            nodes.push(math(first + link, "add", 0, 1));
+            edges.push(edge(
+                first + link,
+                first + link - 1,
+                "sum",
+                first + link,
+                "a",
+            ));
+        }
+    }
+    let (mut document, registry) = Source::new(nodes, edges).analyzed();
+    let mut session = AnalysisSession::new(
+        &document,
+        &registry,
+        BTreeMap::new(),
+        AnalysisOptions::default(),
+    );
+    let middle = 10 + (chains / 2) * length + length / 2;
+    let port = PortRef {
+        node: id(middle).parse().expect("node ID"),
+        port: "b".parse().expect("port ID"),
+    };
+    let mut samples = Vec::new();
+    for sample in 0..config.warmup + config.runs {
+        let literal = serde_json::from_value(literal(2 + sample as u64)).expect("literal");
+        let committed = document
+            .apply([DocCommand::SetLiteral {
+                port: port.clone(),
+                literal: Some(literal),
+            }])
+            .expect("edit");
+        let start = Instant::now();
+        session.update(
+            &document,
+            &registry,
+            &committed.change_set,
+            AnalysisOptions::default(),
+        );
+        if sample >= config.warmup {
+            samples.push(start.elapsed());
+        }
+    }
+    assert!(session.analysis().report().is_valid());
+    samples.sort();
+    let at = |q: usize| samples[(samples.len() * q / 100).min(samples.len() - 1)];
+    (at(50), at(95))
+}
+
 #[cfg(test)]
 mod tests {
     /// The counting allocator is process-wide, so measurements must not run side by side.

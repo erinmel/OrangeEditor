@@ -2385,3 +2385,21 @@ Branch `core/function-step-context` on `dev` adadaa3 (same toolchain; Cargo.lock
 - **Limitations:** `Region` fields remain visible to the ownership module for continuations, cursors and join state, and the activation table is still a plain vector on `Run`.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Session edit measurement and dense data cycles (V12b) — 2026-10-30
+
+Branch `core/session-edit-costs` on `dev` 4a3632a (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).
+
+- **Harness:** `orange-measure session-edit` times `AnalysisSession::update` after one literal edit on 10,000 bundled generic add nodes, as 1,000 independent 10-node chains and as one 10,000-node chain, p50 and p95 over 15 edits after 3 warmups.
+- **Profile:** with temporary timers on the 1,000-chain case, one update spent about 92 ms in node resolution (most of it in the single re-solved component's setup and in per-node preflight, projection and cache assembly), 85 ms in data cycles (61 ms of it in strongly connected components and witnesses over 30,000 vertices), 37 ms in inputs, 31 ms in connections and under 7 ms in each other pass. The timers were removed.
+- **Change:** the data-cycle pass collects its vertices, which borrow their port names, and edges into flat lists, sorts and deduplicates them once, and runs the component search and the witness search over dense indices. Vertex order, component order and the witness search order are those of the ordered-map version, so cycle paths are unchanged; a property test checks the dense component search against the ordered one.
+- **Measured** (release, same machine, 15 edits):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| 1,000 chains of 10 | 166.2 ms | 170.6 ms | 106.3 ms | 110.5 ms |
+| 1 chain of 10,000 | 256.8 ms | 264.2 ms | 189.5 ms | 192.2 ms |
+
+- **Limitations:** NFR-15 asks for 2 ms p95 on W4; one edit is still about 50 times over it, because every pass still visits every node and edge and the report is reassembled in full. Per-pass constant factors are now spread at roughly 0.4 to 0.8 µs per node across about ten passes, so further tuning alone cannot reach the target; it needs dirty-unit passes that update the retained report in place (16 §5). V12b is not complete.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

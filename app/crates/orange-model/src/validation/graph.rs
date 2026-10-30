@@ -67,6 +67,67 @@ pub(super) fn strongly_connected_components<T: Ord + Clone>(
     components
 }
 
+/// [`strongly_connected_components`] over dense vertices `0..adjacency.len()` whose neighbour
+/// lists ascend: the same components in the same order, each ascending, without cloning or
+/// ordered-set lookups per vertex.
+pub(super) fn dense_strongly_connected_components(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let count = adjacency.len();
+    let mut visited = vec![false; count];
+    let mut finish = Vec::with_capacity(count);
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    for start in 0..count {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        stack.push((start, 0));
+        while let Some((vertex, cursor)) = stack.last_mut() {
+            let Some(&next) = adjacency[*vertex].get(*cursor) else {
+                finish.push(*vertex);
+                stack.pop();
+                continue;
+            };
+            *cursor += 1;
+            if !visited[next] {
+                visited[next] = true;
+                stack.push((next, 0));
+            }
+        }
+    }
+
+    // Reverse lists ascend because sources are visited in ascending order.
+    let mut reverse = vec![Vec::new(); count];
+    for (from, neighbors) in adjacency.iter().enumerate() {
+        for &to in neighbors {
+            reverse[to].push(from);
+        }
+    }
+
+    visited.fill(false);
+    let mut components = Vec::new();
+    let mut pending = Vec::new();
+    for start in finish.into_iter().rev() {
+        if visited[start] {
+            continue;
+        }
+        visited[start] = true;
+        let mut component = Vec::new();
+        pending.push(start);
+        while let Some(vertex) = pending.pop() {
+            component.push(vertex);
+            for &neighbor in reverse[vertex].iter().rev() {
+                if !visited[neighbor] {
+                    visited[neighbor] = true;
+                    pending.push(neighbor);
+                }
+            }
+        }
+        component.sort_unstable();
+        components.push(component);
+    }
+    components
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -81,6 +142,15 @@ mod tests {
             let mut graph: BTreeMap<_, BTreeSet<_>> = (0..count).map(|v|(v,BTreeSet::new())).collect();
             for (from,to) in edges { graph.get_mut(&(from%count)).unwrap().insert(to%count); }
             let components = strongly_connected_components(&graph);
+            let adjacency: Vec<Vec<usize>> = graph
+                .values()
+                .map(|items| items.iter().map(|&v| usize::from(v)).collect())
+                .collect();
+            let dense: Vec<BTreeSet<u8>> = dense_strongly_connected_components(&adjacency)
+                .into_iter()
+                .map(|c| c.into_iter().map(|v| v as u8).collect())
+                .collect();
+            prop_assert_eq!(&dense, &components);
             let reaches = |from,to| {
                 let mut pending=vec![from]; let mut seen=BTreeSet::new();
                 while let Some(v)=pending.pop() {

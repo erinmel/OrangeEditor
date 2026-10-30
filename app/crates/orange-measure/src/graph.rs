@@ -15,7 +15,7 @@ use orange_model::{GraphDocument, analyze, from_json, to_json};
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
 
-pub use data_graph::{edge, export, id, math};
+pub use data_graph::{edge, export, id, literal, math};
 
 pub const U64: &str = "core/u64@1";
 
