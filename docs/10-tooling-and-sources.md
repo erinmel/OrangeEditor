@@ -2300,3 +2300,13 @@ Branch `core/loop-step-context` on `dev` 04879d4 (same toolchain; Cargo.lock unc
 - **Unchanged:** behavior and trace order. `orange-measure` against `dev` 04879d4 shows identical allocations per run and peak live bytes for every workload, with pump times within run-to-run noise.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Literal decode budget — 2026-10-30
+
+Branch `core/literal-decode-budget` on `dev` 78d9097 (same toolchain; Cargo.lock unchanged). Follows the limitation recorded with finding F06.
+
+- **Change:** literal decoding charges one byte budget across the whole literal: 16 bytes per decoded value and the length of every string, byte, secret-reference and JSON text payload, each before it is copied or decoded. `literal_codec::decode_with_budget` takes the budget; `decode` uses `MAX_LITERAL_BYTES`, 64 MiB, the default document import size, so every literal a default document can hold still decodes. Exceeding it fails with `LiteralError::TooLarge` for the type at the failing position. The compiler keeps its own constant preflight against `max_constant_bytes`.
+- **Regressions:** a list of 100 strings of 1,000 bytes decodes with exactly its charge and fails one byte below it.
+- **Limitations:** `MAX_LITERAL_BYTES` is a proposed default, not a qualified budget; model validation uses the default rather than a host-chosen limit.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
