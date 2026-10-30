@@ -304,6 +304,19 @@ fn edits_recheck_only_the_edges_of_touched_nodes() {
 
     // Editing a node rechecks the edges that end at it.
     let edited = doc
+        .apply([DocCommand::SetConfig {
+            node: common::nid(14),
+            config_version: 1,
+            config: serde_json::from_value(json!({"note": 1})).unwrap(),
+        }])
+        .unwrap();
+    session.update(&doc, &registry, &edited.change_set, options());
+    assert_eq!(session.stats().work, SessionWork::Recompute);
+    assert_eq!(work(&session), (1, 8));
+    assert_eq!(session.analysis(), &full(&doc, &registry));
+
+    // A literal edit that changes no signature is scoped and checks no edge.
+    let edited = doc
         .apply([DocCommand::SetLiteral {
             port: orange_model::document::PortRef {
                 node: common::nid(14),
@@ -315,7 +328,8 @@ fn edits_recheck_only_the_edges_of_touched_nodes() {
         }])
         .unwrap();
     session.update(&doc, &registry, &edited.change_set, options());
-    assert_eq!(work(&session), (1, 8));
+    assert_eq!(session.stats().work, SessionWork::Scoped);
+    assert_eq!(work(&session), (0, 0));
     assert_eq!(session.analysis(), &full(&doc, &registry));
 }
 

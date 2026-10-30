@@ -30,7 +30,7 @@ use super::regions::{RegionValidation, validate_regions_in};
 use super::scope::Scope;
 use super::{AnalysisOptions, Diagnostic, DiagnosticCode, Severity};
 
-type Accepted = BTreeMap<FunctionId, (NodeKind, Suspends)>;
+pub(crate) type Accepted = BTreeMap<FunctionId, (NodeKind, Suspends)>;
 
 /// Results of the body-local passes that decide whether a body is complete.
 pub(crate) struct BodyPasses {
@@ -130,6 +130,8 @@ impl BodyPasses {
 /// Whole-document pass results at the acceptance fixed point.
 pub(crate) struct Settled {
     pub(crate) passes: BodyPasses,
+    /// The callee acceptance `passes` resolved call nodes with.
+    pub(crate) calls: Accepted,
     pub(crate) functions: FunctionAnalysis,
     pub(crate) conformance: Conformance,
     /// Whole-document rounds run before acceptance stopped changing.
@@ -194,6 +196,7 @@ pub(crate) fn settle(
         if accepted == calls.accepted || rounds > document.functions().len() + 1 {
             return Ok(Settled {
                 passes,
+                calls: calls.accepted,
                 functions,
                 conformance,
                 rounds,

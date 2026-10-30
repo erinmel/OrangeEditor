@@ -2,9 +2,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use std::sync::Arc;
+
 use super::patch::Patch;
-use crate::document::GraphDocument;
-use crate::id::{EdgeId, NodeId};
+use crate::document::literal::Literal;
+use crate::document::{BodyRef, GraphDocument, NodeInstance};
+use crate::id::{EdgeId, NodeId, PortKey};
 
 pub use crate::id::DeclId;
 
@@ -70,9 +73,25 @@ pub struct ChangeSet {
     pub(crate) nodes: Delta<NodeId>,
     pub(crate) edges: Delta<EdgeId>,
     pub(crate) decls: Delta<DeclId>,
+    /// Present when the only semantic change is to the literals of existing nodes.
+    literals: Option<Arc<LiteralEdit>>,
 }
 
+/// Journal evidence that a transaction changed only node literals: each changed node
+/// kept its body and every other field. Holds each node's literals before the change.
+#[derive(Debug, PartialEq)]
+pub(crate) struct LiteralEdit {
+    pub before: BTreeMap<NodeId, BTreeMap<PortKey, Literal>>,
+}
+
+// Literal payloads are JSON text values, which never hold NaN, so equality is total.
+impl Eq for LiteralEdit {}
+
 impl ChangeSet {
+    /// The prior literals when this change edited only node literals.
+    pub(crate) fn literal_edit(&self) -> Option<&LiteralEdit> {
+        self.literals.as_deref()
+    }
     pub fn from_revision(&self) -> u64 {
         self.from_revision
     }
@@ -130,27 +149,62 @@ impl ChangeSet {
             nodes: self.nodes.reversed(),
             edges: self.edges.reversed(),
             decls: self.decls.reversed(),
+            literals: None,
         }
     }
 }
 
 /// Records, per touched ID, whether it existed before its first patch.
-#[derive(Default)]
 pub(crate) struct Tracker {
     nodes: BTreeMap<NodeId, bool>,
     edges: BTreeMap<EdgeId, bool>,
     decls: BTreeMap<DeclId, bool>,
     semantic: bool,
     global_dirty: bool,
+    /// Each touched node's first prior value, kept while the transaction may still be a
+    /// literal edit; `None` once it cannot be.
+    prior: Option<PriorNodes>,
+}
+
+/// Each touched node's body and value before its first patch; `None` for an added node.
+type PriorNodes = BTreeMap<NodeId, Option<(BodyRef, Box<NodeInstance>)>>;
+
+/// More touched nodes than this are not tracked as a literal edit, so a large paste
+/// or deletion never clones its nodes for it.
+const LITERAL_EDIT_NODES: usize = 64;
+
+impl Default for Tracker {
+    fn default() -> Self {
+        Self {
+            nodes: BTreeMap::new(),
+            edges: BTreeMap::new(),
+            decls: BTreeMap::new(),
+            semantic: false,
+            global_dirty: false,
+            prior: Some(BTreeMap::new()),
+        }
+    }
 }
 
 impl Tracker {
     /// `inverse` is what applying the patch returned; its entry is the slot's prior value.
     pub fn record(&mut self, inverse: &Patch) {
         self.semantic |= !inverse.is_layout();
+        if !matches!(inverse, Patch::Node { .. } | Patch::Editor { .. }) {
+            self.prior = None;
+        }
         match inverse {
-            Patch::Node { id, entry, .. } => {
+            Patch::Node { body, id, entry } => {
                 self.nodes.entry(*id).or_insert(entry.is_some());
+                if let Some(prior) = &mut self.prior
+                    && !prior.contains_key(id)
+                {
+                    if prior.len() < LITERAL_EDIT_NODES {
+                        prior.insert(*id, entry.as_ref().map(|e| (*body, e.value.clone())));
+                    } else {
+                        self.prior = None;
+                    }
+                }
             }
             Patch::Edge { id, entry, .. } => {
                 self.edges.entry(*id).or_insert(entry.is_some());
@@ -182,6 +236,32 @@ impl Tracker {
         !self.semantic
     }
 
+    /// The prior literals when every semantic change replaced only literals of nodes
+    /// that exist before and after in the same body, and some literal differs.
+    fn literal_edit(&self, document: &GraphDocument) -> Option<LiteralEdit> {
+        let prior = self.prior.as_ref()?;
+        if !self.semantic || self.global_dirty || prior.is_empty() {
+            return None;
+        }
+        let mut changed = false;
+        let mut before = BTreeMap::new();
+        for (id, entry) in prior {
+            let (body, old) = entry.as_ref()?;
+            if document.locate_node(*id) != Some(*body) {
+                return None;
+            }
+            let now = document.body(*body)?.nodes.get(id)?;
+            let mut same = (**old).clone();
+            same.inputs.clone_from(&now.inputs);
+            if same != *now {
+                return None;
+            }
+            changed |= old.inputs != now.inputs;
+            before.insert(*id, old.inputs.clone());
+        }
+        changed.then_some(LiteralEdit { before })
+    }
+
     pub fn finish(
         self,
         document: &GraphDocument,
@@ -190,7 +270,9 @@ impl Tracker {
         from_semantic_state: u64,
         committed: bool,
     ) -> ChangeSet {
+        let literals = self.literal_edit(document).map(Arc::new);
         ChangeSet {
+            literals,
             from_revision,
             to_revision: document.revision(),
             from_state,

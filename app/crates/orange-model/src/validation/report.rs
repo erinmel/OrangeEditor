@@ -173,6 +173,40 @@ impl ValidationAnalysis {
     }
 
     /// Immutable pass-local report.
+    /// Moves a retained analysis to a new semantic state that a scoped session update
+    /// proved differs only in some nodes' input diagnostics. Each `(old, new)` pair
+    /// replaces one node's inputs; an old one stays when `base`, the other passes'
+    /// sorted diagnostics, also reports it. Returns the subjects whose lists changed.
+    pub(super) fn patch(
+        &mut self,
+        document_state: u64,
+        base: &[Diagnostic],
+        inputs: &[(Vec<Diagnostic>, Vec<Diagnostic>)],
+    ) -> BTreeSet<Subject> {
+        use super::diagnostic::diagnostic_order;
+        self.document_state = document_state;
+        let all = &mut self.report.diagnostics;
+        let mut changed = BTreeSet::new();
+        for (old, new) in inputs {
+            for item in old.iter().filter(|item| !new.contains(item)) {
+                if base
+                    .binary_search_by(|probe| diagnostic_order(probe, item))
+                    .is_err()
+                    && let Ok(at) = all.binary_search_by(|probe| diagnostic_order(probe, item))
+                {
+                    all.remove(at);
+                    changed.insert(item.subject.clone());
+                }
+            }
+            for item in new.iter().filter(|item| !old.contains(item)) {
+                if let Err(at) = all.binary_search_by(|probe| diagnostic_order(probe, item)) {
+                    all.insert(at, item.clone());
+                    changed.insert(item.subject.clone());
+                }
+            }
+        }
+        changed
+    }
     pub fn report(&self) -> &ValidationReport {
         &self.report
     }
@@ -268,10 +302,12 @@ pub fn analyze_with_options(
     leaf_effects: BTreeMap<NodeId, LeafEffects>,
     options: AnalysisOptions<'_>,
 ) -> ValidationAnalysis {
-    if let Some(report) = prerequisite_report(document, registry, &leaf_effects, &options) {
-        return report;
-    }
-    run_supported_analysis(document, registry, &leaf_effects, &options, None)
+    let admitted = match prerequisite_report(document, registry, &leaf_effects, &options) {
+        Ok(admitted) => admitted,
+        Err(report) => return *report,
+    };
+    run_supported_analysis(document, registry, &leaf_effects, &options, None, admitted)
+        .map(|(analysis, _)| analysis)
         .unwrap_or_else(|code| rejected_analysis(document, registry, code))
 }
 
@@ -291,6 +327,15 @@ fn rejected_analysis(
     }
 }
 
+/// A session analysis: the result, its local work, whether the index was rebuilt, and what
+/// a later scoped update may build on.
+pub(super) type Indexed = (
+    ValidationAnalysis,
+    super::local::LocalWork,
+    bool,
+    Option<super::scoped::Retained>,
+);
+
 /// The same full pipeline, with a retained index and proven node-local results.
 /// Admission still scans semantic metadata; downstream passes still run in full.
 pub(super) fn analyze_indexed(
@@ -301,10 +346,11 @@ pub(super) fn analyze_indexed(
     index: &mut Option<DocIndex>,
     local: &mut super::local::LocalValidation,
     change: Option<&crate::edit::ChangeSet>,
-) -> (ValidationAnalysis, super::local::LocalWork, bool) {
-    if let Some(report) = prerequisite_report(document, registry, effects, &options) {
-        return (report, Default::default(), false);
-    }
+) -> Indexed {
+    let admitted = match prerequisite_report(document, registry, effects, &options) {
+        Ok(admitted) => admitted,
+        Err(report) => return (*report, Default::default(), false, None),
+    };
     let rebuilt = match index {
         Some(index) if index.is_current(document) => false,
         _ => {
@@ -320,16 +366,17 @@ pub(super) fn analyze_indexed(
         }
     };
     let mut work = local.refresh(document, registry, change);
-    let result = run_supported_analysis(
+    let (result, retained) = run_supported_analysis(
         document,
         registry,
         effects,
         &options,
         index.as_ref().map(|index| (index, &mut *local)),
+        admitted,
     )
-    .unwrap_or_else(|code| rejected_analysis(document, registry, code));
+    .unwrap_or_else(|code| (rejected_analysis(document, registry, code), None));
     local.record_pass_work(&mut work);
-    (result, work, rebuilt)
+    (result, work, rebuilt, retained)
 }
 
 /// Shared rejection boundary: neither route prepares retained state or copies effects
@@ -339,16 +386,23 @@ fn prerequisite_report(
     registry: &RegistrySnapshot,
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
     options: &AnalysisOptions<'_>,
-) -> Option<ValidationAnalysis> {
-    if let Err(code) = options.admit(document, registry, leaf_effects) {
-        return Some(rejected_analysis(document, registry, code));
-    }
+) -> Result<super::limits::Admitted, Box<ValidationAnalysis>> {
+    let admitted = options
+        .admit(document, registry, leaf_effects)
+        .map_err(|code| Box::new(rejected_analysis(document, registry, code)))?;
     let domains = validate_body_domains(document, registry.origin());
-    if let Err(code) = options.checkpoint() {
-        return Some(rejected_analysis(document, registry, code));
+    options
+        .checkpoint()
+        .map_err(|code| Box::new(rejected_analysis(document, registry, code)))?;
+    if domains.unsupported_bodies.is_empty() {
+        Ok(admitted)
+    } else {
+        Err(Box::new(domain_blocked_analysis(
+            document,
+            registry,
+            domains.diagnostics,
+        )))
     }
-    (!domains.unsupported_bodies.is_empty())
-        .then(|| domain_blocked_analysis(document, registry, domains.diagnostics))
 }
 
 fn run_supported_analysis(
@@ -357,7 +411,8 @@ fn run_supported_analysis(
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
     options: &AnalysisOptions<'_>,
     retained: Option<(&DocIndex, &mut super::local::LocalValidation)>,
-) -> Result<ValidationAnalysis, DiagnosticCode> {
+    admitted: super::limits::Admitted,
+) -> Result<(ValidationAnalysis, Option<super::scoped::Retained>), DiagnosticCode> {
     let built_index;
     let (index, mut local) = match retained {
         Some((index, local)) => (index, Some(local)),
@@ -387,6 +442,7 @@ fn run_supported_analysis(
                 control,
                 input_diagnostics,
             },
+        calls,
         functions,
         conformance,
         ..
@@ -411,6 +467,12 @@ fn run_supported_analysis(
         registry,
     );
     options.checkpoint()?;
+    let node_parts = local.is_some().then(|| {
+        (
+            super::scoped::by_node(&nodes.diagnostics),
+            nodes.incomplete_nodes.clone(),
+        )
+    });
     let mut diagnostics = nodes.diagnostics;
     diagnostics.extend(super::inputs::validate_type_locks(document, registry));
     match &local {
@@ -431,7 +493,6 @@ fn run_supported_analysis(
         None => diagnostics.extend(validate_config(document, registry)),
     }
     options.checkpoint()?;
-    diagnostics.extend(input_diagnostics);
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
     diagnostics.extend(conformance.diagnostics);
@@ -450,6 +511,7 @@ fn run_supported_analysis(
     options.checkpoint()?;
     let explained_nodes: BTreeSet<_> = diagnostics
         .iter()
+        .chain(&input_diagnostics)
         .filter(|item| item.severity == Severity::Error)
         .filter_map(|item| item.subject.node)
         .collect();
@@ -467,6 +529,25 @@ fn run_supported_analysis(
                         .is_none_or(|node| !explained_nodes.contains(&node))
             }),
     );
+    // The session keeps the input diagnostics apart from the rest, so a literal edit
+    // can replace one node's inputs and merge again (16 §5.6).
+    let retained = match (node_parts, super::scoped::by_node(&input_diagnostics)) {
+        (Some((Some(node_diagnostics), node_incomplete)), Some(inputs)) => {
+            let mut base = diagnostics.clone();
+            sort_diagnostics(&mut base);
+            base.dedup();
+            Some(super::scoped::Retained {
+                admitted,
+                calls: calls.clone(),
+                node_diagnostics,
+                node_incomplete,
+                inputs,
+                base,
+            })
+        }
+        _ => None,
+    };
+    diagnostics.extend(input_diagnostics);
     sort_diagnostics(&mut diagnostics);
     diagnostics.dedup();
 
@@ -477,7 +558,7 @@ fn run_supported_analysis(
     incomplete_nodes.extend(control.incomplete_nodes);
     options.checkpoint()?;
     drop(ports);
-    Ok(ValidationAnalysis {
+    let analysis = ValidationAnalysis {
         report: ValidationReport {
             diagnostics,
             resolved: nodes.resolved,
@@ -491,7 +572,8 @@ fn run_supported_analysis(
         document_state: document.semantic_state_id(),
         registry_generation: registry.generation(),
         covered: COVERED_CHECKS,
-    })
+    };
+    Ok((analysis, retained))
 }
 
 /// A foreign domain cannot supply evidence for the control-domain passes. Keep this

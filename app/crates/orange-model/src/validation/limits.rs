@@ -65,7 +65,7 @@ impl AnalysisOptions<'_> {
         document: &GraphDocument,
         registry: &RegistrySnapshot,
         effects: &BTreeMap<NodeId, LeafEffects>,
-    ) -> Result<(), DiagnosticCode> {
+    ) -> Result<Admitted, DiagnosticCode> {
         self.checkpoint()?;
         let mut budget = Budget {
             options: self,
@@ -184,7 +184,79 @@ impl AnalysisOptions<'_> {
                 budget.items(writes.len())?;
             }
         }
-        self.checkpoint()
+        self.checkpoint()?;
+        Ok(Admitted {
+            items: budget.items,
+            values: budget.values,
+            bytes: budget.bytes,
+        })
+    }
+
+    /// Whether totals fit every quota. Charges only grow, so admission of a document
+    /// succeeds exactly when its final totals fit.
+    pub(super) fn fits(&self, totals: Admitted) -> bool {
+        let limits = &self.limits;
+        totals.items <= limits.max_items
+            && totals.values <= limits.max_json_values
+            && totals.bytes <= limits.max_metadata_bytes
+            && u64::try_from(totals.items)
+                .ok()
+                .and_then(|items| items.checked_mul(items))
+                .is_some_and(|pairs| pairs <= limits.max_pair_estimate)
+    }
+}
+
+/// What admission charged a document: items, JSON values and metadata bytes.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(super) struct Admitted {
+    pub items: usize,
+    pub values: usize,
+    pub bytes: usize,
+}
+
+impl Admitted {
+    /// What admission charges for one node's literals.
+    pub(super) fn of_literals<'a>(literals: impl IntoIterator<Item = &'a Literal>) -> Self {
+        let unlimited = AnalysisOptions {
+            limits: AnalysisLimits {
+                max_items: usize::MAX,
+                max_json_values: usize::MAX,
+                max_metadata_bytes: usize::MAX,
+                max_pair_estimate: u64::MAX,
+            },
+            cancelled: None,
+        };
+        let mut budget = Budget {
+            options: &unlimited,
+            items: 0,
+            values: 0,
+            bytes: 0,
+        };
+        for literal in literals {
+            // Only an addition past `usize::MAX` could fail; saturate like the totals.
+            if budget.literal(literal).is_err() {
+                return Self {
+                    items: usize::MAX,
+                    values: usize::MAX,
+                    bytes: usize::MAX,
+                };
+            }
+        }
+        Self {
+            items: budget.items,
+            values: budget.values,
+            bytes: budget.bytes,
+        }
+    }
+
+    /// `self` with `removed` taken out and `added` put in, or `None` on overflow.
+    pub(super) fn replace(self, removed: Self, added: Self) -> Option<Self> {
+        let swap = |total: usize, old: usize, new: usize| total.checked_sub(old)?.checked_add(new);
+        Some(Self {
+            items: swap(self.items, removed.items, added.items)?,
+            values: swap(self.values, removed.values, added.values)?,
+            bytes: swap(self.bytes, removed.bytes, added.bytes)?,
+        })
     }
 }
 

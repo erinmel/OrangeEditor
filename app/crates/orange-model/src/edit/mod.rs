@@ -6,6 +6,7 @@ mod freshness;
 mod patch;
 mod transaction;
 
+pub(crate) use change_set::LiteralEdit;
 pub use change_set::{ChangeSet, DeclId, Delta};
 pub use freshness::PlanApplyError;
 pub(crate) use freshness::Preconditions;

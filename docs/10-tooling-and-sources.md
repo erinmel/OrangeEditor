@@ -2425,3 +2425,21 @@ Branch `core/indivisible-work-bounds` on `dev` 3a9851a (same toolchain; Cargo.lo
 - **Limitations:** NFR-02 also asks for event latency under W5, which is not measured; NFR-02 is not qualified. Trusted provider callbacks remain unbounded. Linux and macOS timings were not run.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Scoped literal edits (V12b) — 2026-10-30
+
+Branch `core/scoped-literal-edits` on `dev` 4d18818 (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).
+
+- **Change:** the journal marks transactions whose only semantic change replaces literals of existing nodes and records their prior literals. A full session analysis keeps its admission totals, final callee acceptance, node-resolution results and input diagnostics per node, and the other diagnostics. A marked edit in root bodies then updates admission from the edited literals, re-resolves only the edited nodes, their neighbours and their generic components, and, when every result for them is unchanged and no edited node gains or loses an input error, patches the edited nodes' input diagnostics into the published list in place (`SessionWork::Scoped`). Any other outcome runs the full analysis. Per-subject diagnostic lookup now binary-searches the sorted list, so publication no longer rebuilds a subject index.
+- **Regressions:** `orange-bundled` tests cover a scoped edit visiting only its chain, a shadowed-literal warning removed and restored, undo, an inference conflict, gaining and keeping an input error, literal edits mixed with a connection or a new node, and a literal that exceeds the metadata quota; each step equals the full analysis. A session test now uses a configuration change to show edge rechecks and checks that a literal edit checks no edge. The session-versus-full property tests, which include random literal edits with undo and redo, pass with 1,024 cases in release.
+- **Measured** with `orange-measure session-edit` (release, same machine, 15 edits after 3 warmups):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| 1,000 chains of 10 | 106.0 ms | 108.9 ms | 0.19 ms | 0.21 ms |
+| 1 chain of 10,000 | 193.1 ms | 195.2 ms | 137.0 ms | 146.3 ms |
+
+  The single chain is one generic component, so its edit re-solves all 10,000 nodes; this is the connected worst case NFR-15 reports separately.
+- **Limitations:** only literal edits are scoped. Connect, disconnect, type arguments, pins, configuration, node additions and removals, and edits inside function bodies still run every pass in full, so V12b is not complete and NFR-15 is not qualified. The retained parts add the other diagnostics again beside the report; retained memory is not measured.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
