@@ -632,6 +632,7 @@ pub fn session_edit(
     config: Config,
     chains: u32,
     length: u32,
+    wire: bool,
 ) -> (std::time::Duration, std::time::Duration) {
     use orange_model::DocCommand;
     use orange_model::document::PortRef;
@@ -666,15 +667,25 @@ pub fn session_edit(
         node: id(middle).parse().expect("node ID"),
         port: "b".parse().expect("port ID"),
     };
+    // With `wire`, edits alternately remove and restore the edge into the middle node.
+    let wired: orange_model::document::Edge =
+        serde_json::from_value(edge(middle, middle - 1, "sum", middle, "a")).expect("edge");
     let mut samples = Vec::new();
     for sample in 0..config.warmup + config.runs {
-        let literal = serde_json::from_value(literal(2 + sample as u64)).expect("literal");
-        let committed = document
-            .apply([DocCommand::SetLiteral {
+        let command = if !wire {
+            let literal = serde_json::from_value(literal(2 + sample as u64)).expect("literal");
+            DocCommand::SetLiteral {
                 port: port.clone(),
                 literal: Some(literal),
-            }])
-            .expect("edit");
+            }
+        } else if sample % 2 == 0 {
+            DocCommand::Disconnect { edge: wired.id }
+        } else {
+            DocCommand::Connect {
+                edge: wired.clone(),
+            }
+        };
+        let committed = document.apply([command]).expect("edit");
         let start = Instant::now();
         session.update(
             &document,

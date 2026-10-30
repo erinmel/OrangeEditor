@@ -2443,3 +2443,21 @@ Branch `core/scoped-literal-edits` on `dev` 4d18818 (same toolchain; Cargo.lock 
 - **Limitations:** only literal edits are scoped. Connect, disconnect, type arguments, pins, configuration, node additions and removals, and edits inside function bodies still run every pass in full, so V12b is not complete and NFR-15 is not qualified. The retained parts add the other diagnostics again beside the report; retained memory is not measured.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Scoped data-edge edits (V12b) — 2026-10-30
+
+Branch `core/scoped-edge-edits` on `dev` f69f62f (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).
+
+- **Change:** the journal marks transactions that only add or remove whole edges and records each removed edge. A full session analysis also records whether its report is clean: no error, incomplete node or function, zone or possibly suspending node. For a marked edit in such a report whose edges all join a data output to a data input in the root body, the session updates admission from the edges, re-resolves as for literals, and checks each edge alone: its connection checks, one wire per input, no stream fan-out, no path from an added edge's target back to its source, no export downstream, no availability requirement from its producer or the lazy cone behind it, and no diagnostic on a removed edge. It then patches the targets' input diagnostics (`SessionWork::Scoped`); any other outcome runs the full analysis.
+- **Regressions:** `orange-bundled` tests cover disconnecting and reconnecting a wired input (its shadowed-literal warning goes and returns), joining two chains, a second consumer of one output, undo, fan-in, an error report forcing full analysis until it is fixed, a cycle, an edge feeding an export and an edge from an event payload; each step equals the full analysis. Disabling the availability check makes the event-payload test fail. The literal tests moved into the same file, `analysis_session_scoped.rs`.
+- **Measured** with `orange-measure session-edit`, which now also alternately removes and restores the edge into the middle node (release, same machine, 15 edits after 3 warmups):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| disconnect/connect, 1,000 chains of 10 | 129.2 ms | 139.6 ms | 0.18 ms | 0.20 ms |
+| disconnect/connect, 1 chain of 10,000 | 211.6 ms | 221.2 ms | 146.4 ms | 151.3 ms |
+
+  The single chain is one generic component, re-solved in full on every edit.
+- **Limitations:** exec and event edges, edges inside function bodies, and every edge edit in a report with an error, zone or possibly suspending node still run every pass in full. Type arguments, pins, configuration and node additions and removals are not scoped. V12b is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

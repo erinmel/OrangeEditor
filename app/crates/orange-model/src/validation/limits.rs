@@ -249,6 +249,20 @@ impl Admitted {
         }
     }
 
+    /// `self` plus `other`, or `None` on overflow.
+    pub(super) fn add(self, other: Self) -> Option<Self> {
+        self.replace(Self::default(), other)
+    }
+
+    /// What admission charges for one edge.
+    pub(super) fn of_edge(edge: &crate::document::Edge) -> Self {
+        Self {
+            items: 1,
+            values: 0,
+            bytes: edge.from.port.port().as_str().len() + edge.to.port.port().as_str().len(),
+        }
+    }
+
     /// `self` with `removed` taken out and `added` put in, or `None` on overflow.
     pub(super) fn replace(self, removed: Self, added: Self) -> Option<Self> {
         let swap = |total: usize, old: usize, new: usize| total.checked_sub(old)?.checked_add(new);

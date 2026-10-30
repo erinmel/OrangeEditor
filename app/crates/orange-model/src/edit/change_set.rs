@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::patch::Patch;
 use crate::document::literal::Literal;
-use crate::document::{BodyRef, GraphDocument, NodeInstance};
+use crate::document::{BodyRef, Edge, GraphDocument, NodeInstance};
 use crate::id::{EdgeId, NodeId, PortKey};
 
 pub use crate::id::DeclId;
@@ -75,7 +75,20 @@ pub struct ChangeSet {
     pub(crate) decls: Delta<DeclId>,
     /// Present when the only semantic change is to the literals of existing nodes.
     literals: Option<Arc<LiteralEdit>>,
+    /// Present when the only semantic change adds or removes edges.
+    wiring: Option<Arc<EdgeEdit>>,
 }
+
+/// Journal evidence that a transaction only added or removed edges: no node, declaration
+/// or shared metadata changed, and no edge was replaced in place. Holds each removed
+/// edge with its body.
+#[derive(Debug, PartialEq)]
+pub(crate) struct EdgeEdit {
+    pub removed: BTreeMap<EdgeId, (BodyRef, Edge)>,
+}
+
+// Edge extensions are JSON values, which never hold NaN, so equality is total.
+impl Eq for EdgeEdit {}
 
 /// Journal evidence that a transaction changed only node literals: each changed node
 /// kept its body and every other field. Holds each node's literals before the change.
@@ -91,6 +104,11 @@ impl ChangeSet {
     /// The prior literals when this change edited only node literals.
     pub(crate) fn literal_edit(&self) -> Option<&LiteralEdit> {
         self.literals.as_deref()
+    }
+    /// The removed edges when this change only added or removed edges; the added ones are
+    /// `edges().added`.
+    pub(crate) fn edge_edit(&self) -> Option<&EdgeEdit> {
+        self.wiring.as_deref()
     }
     pub fn from_revision(&self) -> u64 {
         self.from_revision
@@ -150,6 +168,7 @@ impl ChangeSet {
             edges: self.edges.reversed(),
             decls: self.decls.reversed(),
             literals: None,
+            wiring: None,
         }
     }
 }
@@ -164,6 +183,9 @@ pub(crate) struct Tracker {
     /// Each touched node's first prior value, kept while the transaction may still be a
     /// literal edit; `None` once it cannot be.
     prior: Option<PriorNodes>,
+    /// Each touched edge's first prior value, kept while the transaction may still be an
+    /// edge edit; `None` once it cannot be.
+    prior_edges: Option<BTreeMap<EdgeId, Option<(BodyRef, Edge)>>>,
 }
 
 /// Each touched node's body and value before its first patch; `None` for an added node.
@@ -182,6 +204,7 @@ impl Default for Tracker {
             semantic: false,
             global_dirty: false,
             prior: Some(BTreeMap::new()),
+            prior_edges: Some(BTreeMap::new()),
         }
     }
 }
@@ -192,6 +215,9 @@ impl Tracker {
         self.semantic |= !inverse.is_layout();
         if !matches!(inverse, Patch::Node { .. } | Patch::Editor { .. }) {
             self.prior = None;
+        }
+        if !matches!(inverse, Patch::Edge { .. } | Patch::Editor { .. }) {
+            self.prior_edges = None;
         }
         match inverse {
             Patch::Node { body, id, entry } => {
@@ -206,8 +232,17 @@ impl Tracker {
                     }
                 }
             }
-            Patch::Edge { id, entry, .. } => {
+            Patch::Edge { body, id, entry } => {
                 self.edges.entry(*id).or_insert(entry.is_some());
+                if let Some(prior) = &mut self.prior_edges
+                    && !prior.contains_key(id)
+                {
+                    if prior.len() < LITERAL_EDIT_NODES {
+                        prior.insert(*id, entry.as_ref().map(|e| (*body, e.value.clone())));
+                    } else {
+                        self.prior_edges = None;
+                    }
+                }
             }
             Patch::Variable { id, entry } => {
                 self.decls
@@ -234,6 +269,26 @@ impl Tracker {
 
     pub fn layout_only(&self) -> bool {
         !self.semantic
+    }
+
+    /// The removed edges when every semantic change added or removed whole edges.
+    fn edge_edit(&self, document: &GraphDocument) -> Option<EdgeEdit> {
+        let prior = self.prior_edges.as_ref()?;
+        if !self.semantic || self.global_dirty || prior.is_empty() {
+            return None;
+        }
+        let mut removed = BTreeMap::new();
+        for (id, before) in prior {
+            match (before, document.locate_edge(*id)) {
+                (None, Some(_)) => {}
+                (Some(before), None) => {
+                    removed.insert(*id, before.clone());
+                }
+                // Replaced in place, or added and removed again.
+                _ => return None,
+            }
+        }
+        Some(EdgeEdit { removed })
     }
 
     /// The prior literals when every semantic change replaced only literals of nodes
@@ -271,8 +326,10 @@ impl Tracker {
         committed: bool,
     ) -> ChangeSet {
         let literals = self.literal_edit(document).map(Arc::new);
+        let wiring = self.edge_edit(document).map(Arc::new);
         ChangeSet {
             literals,
+            wiring,
             from_revision,
             to_revision: document.revision(),
             from_state,

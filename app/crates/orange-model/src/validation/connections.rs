@@ -188,6 +188,42 @@ pub(crate) fn validate_connections_in(
     report
 }
 
+/// Whether the whole-document pass would report nothing new for the stored edge `edge`
+/// when it is a data edge added to an otherwise clean body: the edge checks without
+/// diagnostics or incompleteness, its input has no other wire, and a shared output is not
+/// a stream.
+pub(crate) fn added_data_edge_is_clean(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    index: &DocIndex,
+    edge: &Edge,
+    origin: &HostOrigin,
+) -> bool {
+    let mut report = ConnectionValidation::default();
+    let mut diagnostics = Vec::new();
+    check_edge(
+        document,
+        resolved,
+        edge,
+        origin,
+        &mut report,
+        &mut diagnostics,
+    );
+    if !diagnostics.is_empty() || !report.incomplete_nodes.is_empty() {
+        return false;
+    }
+    if index.incoming(&edge.to).nth(1).is_some() {
+        return false;
+    }
+    if index.outgoing(&edge.from).nth(1).is_some() {
+        let Ok(port) = resolved.port(&edge.from) else {
+            return false;
+        };
+        return stream_status(&port, rigid_params(document, edge.from.node)) == Some(false);
+    }
+    true
+}
+
 /// One edge's endpoint, direction, kind and type checks, as the pass runs them for every
 /// edge not already reported as crossing a body boundary.
 fn check_edge(

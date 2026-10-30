@@ -110,15 +110,27 @@ impl LocalValidation {
         }
     }
 
-    /// Moves the binding past a literal edit the session already checked, forgetting the
-    /// edited nodes' input, edge and component results. Configuration and declaration
-    /// types do not read literals. A mismatch drops the cache.
-    pub(crate) fn advance_literals(
+    /// Moves the binding past a literal or edge edit the session already checked. A literal
+    /// edit forgets the edited nodes' input, edge and component results; configuration and
+    /// declaration types do not read literals. An edge edit invalidates through the journal
+    /// as a full refresh would, without revisiting configuration. A mismatch drops the cache.
+    pub(crate) fn advance_scoped(
         &mut self,
         document: &GraphDocument,
         registry: &RegistrySnapshot,
         change: &ChangeSet,
     ) {
+        let bound = change.is_committed()
+            && !change.global_dirty()
+            && self.state == Some(change.from_state())
+            && change.to_state() == document.state_id()
+            && change.to_semantic_state() == document.semantic_state_id()
+            && self.registry_generation == Some(registry.generation());
+        if bound && change.edge_edit().is_some() {
+            self.invalidate(document, change);
+            self.state = Some(document.state_id());
+            return;
+        }
         let Some(edit) = change.literal_edit().filter(|_| {
             change.is_committed()
                 && !change.global_dirty()

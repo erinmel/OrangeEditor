@@ -34,8 +34,8 @@ pub enum SessionWork {
     None,
     /// Valid semantic edit; admission and global passes still run in full.
     Recompute,
-    /// A literal edit re-checked only where it can reach. Admission was updated from the
-    /// edited literals and the retained report was patched without a full analysis.
+    /// A literal or data-edge edit re-checked only where it can reach. Admission was updated
+    /// from the edit and the retained report was patched without a full analysis.
     Scoped,
     Rebuild(RebuildReason),
 }
@@ -175,27 +175,41 @@ impl AnalysisSession {
         change: &ChangeSet,
         options: AnalysisOptions<'_>,
     ) -> bool {
-        let (Some(edit), Some(retained), Some(index)) =
-            (change.literal_edit(), &mut self.retained, &mut self.index)
-        else {
+        let (Some(retained), Some(index)) = (&mut self.retained, &mut self.index) else {
             return false;
         };
-        if index.state_id() != change.from_state() {
+        if (change.literal_edit().is_none() && change.edge_edit().is_none())
+            || index.state_id() != change.from_state()
+        {
             return false;
         }
         index.update(document, change);
-        let Some(scoped) = super::scoped::literal_update(
-            document,
-            registry,
-            &options,
-            index,
-            &self.analysis,
-            retained,
-            edit,
-        ) else {
+        let scoped = match (change.literal_edit(), change.edge_edit()) {
+            (Some(edit), _) => super::scoped::literal_update(
+                document,
+                registry,
+                &options,
+                index,
+                &self.analysis,
+                retained,
+                edit,
+            ),
+            (None, Some(edit)) => super::scoped::edge_update(
+                document,
+                registry,
+                &options,
+                index,
+                &self.analysis,
+                retained,
+                &change.edges().added,
+                edit,
+            ),
+            (None, None) => None,
+        };
+        let Some(scoped) = scoped else {
             return false;
         };
-        self.local.advance_literals(document, registry, change);
+        self.local.advance_scoped(document, registry, change);
         self.changed_subjects =
             self.analysis
                 .patch(document.semantic_state_id(), &retained.base, &scoped.inputs);
