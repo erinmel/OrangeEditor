@@ -25,6 +25,7 @@ const WORKLOADS: &[Workload] = &[
     ("function-call", workloads::function_call),
     ("nested-for-each", workloads::nested_for_each),
     ("fork-cancel", workloads::fork_cancel),
+    ("fork-fanout-256", workloads::fork_fanout_256),
     ("map-cas-16", workloads::map_cas_16),
     ("map-cas-1000", workloads::map_cas_1000),
     ("host-map-16", workloads::host_map_16),

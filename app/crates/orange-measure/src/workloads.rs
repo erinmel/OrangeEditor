@@ -190,6 +190,57 @@ pub fn fork_cancel(config: Config) -> Row {
     )
 }
 
+/// A Fork race over `branches` branches: one finishes at once and every other waits, so
+/// each iteration cancels `branches - 1` waiting strands in one ownership traversal.
+fn fork_fanout(config: Config, branches: u32) -> Row {
+    const FANOUT_ITERATIONS: u64 = 100;
+    let order: Vec<u32> = (0..branches).collect();
+    let mut fork = core(3, "fork");
+    fork["config"] = json!({"join":"race"});
+    fork["variadic"] = json!({"branch":{"next":branches,"order":order}});
+    let mut nodes = vec![
+        core(1, "on-start"),
+        count(2, FANOUT_ITERATIONS),
+        fork,
+        update(5, TOTAL, "add", U64, json!("1")),
+    ];
+    let mut edges = vec![
+        edge(1, 1, "then", 2, "in"),
+        edge(2, 2, "body", 3, "in"),
+        edge(3, 3, "branch#0", 5, "in"),
+    ];
+    for branch in 1..branches {
+        let mut wait = core(100 + branch, "wait");
+        wait["inputs"] = json!({"duration":{"type":"core/duration@1","value":"1000000000"}});
+        nodes.push(wait);
+        edges.push(edge(
+            100 + branch,
+            3,
+            &format!("branch#{branch}"),
+            100 + branch,
+            "in",
+        ));
+    }
+    let mut source = Source::new(nodes, edges);
+    source.variables = vec![run_variable(TOTAL, U64, Some(json!("0")))];
+    let (document, plan) = source.control();
+    measure(
+        format!("fork race fan-out {branches}"),
+        FANOUT_ITERATIONS,
+        "iterations",
+        config,
+        || RunSession::start(&plan, &document, total(), config.budget),
+        |(value, wakeups)| {
+            assert_eq!(value, Some(Value::U64(FANOUT_ITERATIONS)));
+            assert_eq!(wakeups, 0);
+        },
+    )
+}
+
+pub fn fork_fanout_256(config: Config) -> Row {
+    fork_fanout(config, 256)
+}
+
 const STRING_MAP: &str = "core/map@1<core/string@1,core/u64@1>";
 
 fn map_entries(entries: u64) -> Json {
@@ -524,9 +575,19 @@ pub fn analysis_worker_latency(config: Config) -> AnalysisWorkerTimes {
 
 #[cfg(test)]
 mod tests {
+    /// The counting allocator is process-wide, so measurements must not run side by side.
+    static MEASURING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+        MEASURING
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
     /// Reserving the 10,000-item result before refusing it took about 80 KB.
     #[test]
     fn an_impossible_map_result_is_refused_before_reserving_it() {
+        let _measuring = exclusive();
         let peak = super::oversized_map_zone_peak_bytes();
         assert!(
             peak < 16 * 1024,
@@ -537,6 +598,7 @@ mod tests {
     /// Decoding copied the whole 8 MiB literal before refusing it.
     #[test]
     fn an_oversized_json_literal_is_refused_without_copying_it() {
+        let _measuring = exclusive();
         let allocated = super::oversized_json_literal_allocated_bytes();
         assert!(
             allocated < 64 * 1024,
@@ -544,9 +606,25 @@ mod tests {
         );
     }
 
+    /// A 256-branch race once spawned and cancelled all its strands inside one pump of
+    /// budget 64; ownership work now spends the budget, so each pump stops after it.
+    #[test]
+    fn wide_fork_ownership_work_spends_the_pump_budget() {
+        let _measuring = exclusive();
+        let config = crate::harness::Config {
+            budget: 64,
+            warmup: 0,
+            runs: 1,
+        };
+        let row = super::fork_fanout_256(config);
+        // At least one pump for each spawn and each cancellation of the 100 iterations.
+        assert!(row.pumps >= 200, "{} pumps", row.pumps);
+    }
+
     /// Before disposal released its pools, a disposed function-call run held about 6 KiB.
     #[test]
     fn a_disposed_run_holds_almost_no_heap() {
+        let _measuring = exclusive();
         let retained = super::disposed_run_retained_bytes();
         assert!(
             retained < 1024,
