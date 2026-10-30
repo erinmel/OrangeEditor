@@ -2461,3 +2461,20 @@ Branch `core/scoped-edge-edits` on `dev` f69f62f (same toolchain; Cargo.lock unc
 - **Limitations:** exec and event edges, edges inside function bodies, and every edge edit in a report with an error, zone or possibly suspending node still run every pass in full. Type arguments, pins, configuration and node additions and removals are not scoped. V12b is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Scoped type argument and pin edits (V12b) — 2026-10-30
+
+Branch `core/scoped-type-edits` on `dev` 1cec9f8 (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).
+
+- **Change:** the journal's literal edit becomes a node edit: a transaction whose nodes changed only in literals, persisted type arguments or type pins, keeping their bodies and every other field, records those three fields before the change. Validation reads persisted type arguments only in admission and pins only in admission and inference, so the session applies such an edit like a literal edit: admission is updated from the changed fields, and the edited nodes, their neighbours and their components are re-resolved; any change in a resolved signature, incompleteness or node diagnostic runs the full analysis.
+- **Regressions:** an `orange-bundled` test sets persisted arguments that agree and that disagree with inference (both scoped, since nothing but admission reads them), a pin agreeing with the chain (scoped), a conflicting pin and its removal (full analysis), and a literal with a pin in one transaction (scoped); each step equals the full analysis.
+- **Measured** with `orange-measure session-edit`, which now also alternately pins the middle node's `T` to the chain's type and clears it (release, same machine, 15 edits after 3 warmups):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| pin, 1,000 chains of 10 | 114.6 ms | 116.5 ms | 0.19 ms | 0.22 ms |
+| pin, 1 chain of 10,000 | 204.4 ms | 226.3 ms | 132.4 ms | 139.1 ms |
+
+- **Limitations:** exec edges, configuration, node additions and removals, function bodies and edits in reports with errors still run every pass in full. V12b is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

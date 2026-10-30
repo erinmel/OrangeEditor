@@ -6,8 +6,8 @@ use std::sync::Arc;
 
 use super::patch::Patch;
 use crate::document::literal::Literal;
-use crate::document::{BodyRef, Edge, GraphDocument, NodeInstance};
-use crate::id::{EdgeId, NodeId, PortKey};
+use crate::document::{BodyRef, Edge, GraphDocument, NodeInstance, TypeParamName};
+use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 
 pub use crate::id::DeclId;
 
@@ -74,7 +74,7 @@ pub struct ChangeSet {
     pub(crate) edges: Delta<EdgeId>,
     pub(crate) decls: Delta<DeclId>,
     /// Present when the only semantic change is to the literals of existing nodes.
-    literals: Option<Arc<LiteralEdit>>,
+    literals: Option<Arc<NodeEdit>>,
     /// Present when the only semantic change adds or removes edges.
     wiring: Option<Arc<EdgeEdit>>,
 }
@@ -90,19 +90,38 @@ pub(crate) struct EdgeEdit {
 // Edge extensions are JSON values, which never hold NaN, so equality is total.
 impl Eq for EdgeEdit {}
 
-/// Journal evidence that a transaction changed only node literals: each changed node
-/// kept its body and every other field. Holds each node's literals before the change.
+/// Journal evidence that a transaction changed only node literals, type arguments or type
+/// pins: each changed node kept its body and every other field. Holds those fields of
+/// each node before the change.
 #[derive(Debug, PartialEq)]
-pub(crate) struct LiteralEdit {
-    pub before: BTreeMap<NodeId, BTreeMap<PortKey, Literal>>,
+pub(crate) struct NodeEdit {
+    pub before: BTreeMap<NodeId, NodeFields>,
 }
 
 // Literal payloads are JSON text values, which never hold NaN, so equality is total.
-impl Eq for LiteralEdit {}
+impl Eq for NodeEdit {}
+
+/// The node fields a [`NodeEdit`] may change.
+#[derive(Debug, PartialEq)]
+pub(crate) struct NodeFields {
+    pub inputs: BTreeMap<PortKey, Literal>,
+    pub type_args: BTreeMap<TypeParamName, TypeExpr>,
+    pub type_pins: BTreeMap<TypeParamName, TypeExpr>,
+}
+
+impl NodeFields {
+    fn of(node: &NodeInstance) -> Self {
+        Self {
+            inputs: node.inputs.clone(),
+            type_args: node.type_args.clone(),
+            type_pins: node.type_pins.clone(),
+        }
+    }
+}
 
 impl ChangeSet {
     /// The prior literals when this change edited only node literals.
-    pub(crate) fn literal_edit(&self) -> Option<&LiteralEdit> {
+    pub(crate) fn node_edit(&self) -> Option<&NodeEdit> {
         self.literals.as_deref()
     }
     /// The removed edges when this change only added or removed edges; the added ones are
@@ -293,7 +312,7 @@ impl Tracker {
 
     /// The prior literals when every semantic change replaced only literals of nodes
     /// that exist before and after in the same body, and some literal differs.
-    fn literal_edit(&self, document: &GraphDocument) -> Option<LiteralEdit> {
+    fn node_edit(&self, document: &GraphDocument) -> Option<NodeEdit> {
         let prior = self.prior.as_ref()?;
         if !self.semantic || self.global_dirty || prior.is_empty() {
             return None;
@@ -308,13 +327,16 @@ impl Tracker {
             let now = document.body(*body)?.nodes.get(id)?;
             let mut same = (**old).clone();
             same.inputs.clone_from(&now.inputs);
+            same.type_args.clone_from(&now.type_args);
+            same.type_pins.clone_from(&now.type_pins);
             if same != *now {
                 return None;
             }
-            changed |= old.inputs != now.inputs;
-            before.insert(*id, old.inputs.clone());
+            let fields = NodeFields::of(old);
+            changed |= fields != NodeFields::of(now);
+            before.insert(*id, fields);
         }
-        changed.then_some(LiteralEdit { before })
+        changed.then_some(NodeEdit { before })
     }
 
     pub fn finish(
@@ -325,7 +347,7 @@ impl Tracker {
         from_semantic_state: u64,
         committed: bool,
     ) -> ChangeSet {
-        let literals = self.literal_edit(document).map(Arc::new);
+        let literals = self.node_edit(document).map(Arc::new);
         let wiring = self.edge_edit(document).map(Arc::new);
         ChangeSet {
             literals,

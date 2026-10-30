@@ -215,8 +215,12 @@ pub(super) struct Admitted {
 }
 
 impl Admitted {
-    /// What admission charges for one node's literals.
-    pub(super) fn of_literals<'a>(literals: impl IntoIterator<Item = &'a Literal>) -> Self {
+    /// What admission charges for one node's literals, type arguments and type pins.
+    pub(super) fn of_node_fields(
+        inputs: &BTreeMap<crate::id::PortKey, Literal>,
+        type_args: &BTreeMap<String, crate::id::TypeExpr>,
+        type_pins: &BTreeMap<String, crate::id::TypeExpr>,
+    ) -> Self {
         let unlimited = AnalysisOptions {
             limits: AnalysisLimits {
                 max_items: usize::MAX,
@@ -232,15 +236,25 @@ impl Admitted {
             values: 0,
             bytes: 0,
         };
-        for literal in literals {
-            // Only an addition past `usize::MAX` could fail; saturate like the totals.
-            if budget.literal(literal).is_err() {
-                return Self {
-                    items: usize::MAX,
-                    values: usize::MAX,
-                    bytes: usize::MAX,
-                };
+        // Only an addition past `usize::MAX` could fail; saturate like the totals.
+        let charged = (|| {
+            budget.items(type_args.len())?;
+            budget.items(type_pins.len())?;
+            for (name, ty) in type_args.iter().chain(type_pins) {
+                budget.text(name)?;
+                budget.text(ty.as_str())?;
             }
+            for literal in inputs.values() {
+                budget.literal(literal)?;
+            }
+            Ok::<_, DiagnosticCode>(())
+        })();
+        if charged.is_err() {
+            return Self {
+                items: usize::MAX,
+                values: usize::MAX,
+                bytes: usize::MAX,
+            };
         }
         Self {
             items: budget.items,

@@ -628,11 +628,22 @@ pub fn analysis_worker_latency(config: Config) -> AnalysisWorkerTimes {
 
 /// Session update latency for one literal edit on `chains` independent add chains of
 /// `length` nodes, as (p50, p95) over `config.runs` edits after `config.warmup`.
+/// The edit `session_edit` repeats on the middle node.
+#[derive(Clone, Copy)]
+pub enum SessionEdit {
+    /// A new `b` literal each time.
+    Literal,
+    /// Alternately removes and restores the edge into `a`.
+    Wire,
+    /// Alternately pins `T` to the chain's type and clears the pin.
+    Pin,
+}
+
 pub fn session_edit(
     config: Config,
     chains: u32,
     length: u32,
-    wire: bool,
+    kind: SessionEdit,
 ) -> (std::time::Duration, std::time::Duration) {
     use orange_model::DocCommand;
     use orange_model::document::PortRef;
@@ -667,23 +678,30 @@ pub fn session_edit(
         node: id(middle).parse().expect("node ID"),
         port: "b".parse().expect("port ID"),
     };
-    // With `wire`, edits alternately remove and restore the edge into the middle node.
     let wired: orange_model::document::Edge =
         serde_json::from_value(edge(middle, middle - 1, "sum", middle, "a")).expect("edge");
     let mut samples = Vec::new();
     for sample in 0..config.warmup + config.runs {
-        let command = if !wire {
-            let literal = serde_json::from_value(literal(2 + sample as u64)).expect("literal");
-            DocCommand::SetLiteral {
-                port: port.clone(),
-                literal: Some(literal),
+        let command = match (kind, sample % 2 == 0) {
+            (SessionEdit::Literal, _) => {
+                let literal = serde_json::from_value(literal(2 + sample as u64)).expect("literal");
+                DocCommand::SetLiteral {
+                    port: port.clone(),
+                    literal: Some(literal),
+                }
             }
-        } else if sample % 2 == 0 {
-            DocCommand::Disconnect { edge: wired.id }
-        } else {
-            DocCommand::Connect {
+            (SessionEdit::Wire, true) => DocCommand::Disconnect { edge: wired.id },
+            (SessionEdit::Wire, false) => DocCommand::Connect {
                 edge: wired.clone(),
-            }
+            },
+            (SessionEdit::Pin, pin) => DocCommand::SetTypePins {
+                node: port.node,
+                pins: if pin {
+                    [("T".to_owned(), U64.parse().expect("type"))].into()
+                } else {
+                    Default::default()
+                },
+            },
         };
         let committed = document.apply([command]).expect("edit");
         let start = Instant::now();

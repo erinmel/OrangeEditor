@@ -1,10 +1,11 @@
-//! Scoped session updates (V12b). A change that edits only literals of root-body nodes, or
-//! only adds or removes root-body data edges, re-checks what it can reach and patches the
-//! retained report, provided every result it re-derives is unchanged apart from input
-//! diagnostics. Anything else runs the full pipeline (16 §5).
+//! Scoped session updates (V12b). A change that edits only literals, type arguments or type
+//! pins of root-body nodes, or only adds or removes root-body data edges, re-checks what it
+//! can reach and patches the retained report, provided every result it re-derives is
+//! unchanged apart from input diagnostics. Anything else runs the full pipeline (16 §5).
 //!
-//! Literals are read by admission, inference and the input check alone. Inference reads
-//! them through a node's generic component, and resolution also reads whether each data
+//! Literals are read by admission, inference and the input check alone, pins by admission
+//! and inference, and persisted type arguments by admission only. Inference reads literals
+//! and pins through a node's generic component, and resolution also reads whether each data
 //! neighbour of a component resolves. So re-resolving the edited nodes, their neighbours
 //! and those nodes' components, with every neighbour of that set available, reproduces the
 //! whole-document result for all of them; no other node can read the edit. A data edge is
@@ -19,7 +20,7 @@ use super::nodes::{CallEvidence, validate_node_ids};
 use super::{AnalysisOptions, Diagnostic, Severity, ValidationAnalysis, sort_diagnostics};
 use crate::catalog::RegistrySnapshot;
 use crate::document::{BodyRef, Edge, GraphDocument, PortDirection, PortKind};
-use crate::edit::{EdgeEdit, LiteralEdit};
+use crate::edit::{EdgeEdit, NodeEdit};
 use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 
@@ -66,16 +67,16 @@ pub(super) struct Scoped {
     pub components: usize,
 }
 
-/// Re-checks a literal edit against `retained`, which it updates only on success. `None`
+/// Re-checks a literal, type argument or pin edit against `retained`, which it updates only on success. `None`
 /// means the edit is not provably local and the caller must run the full analysis.
-pub(super) fn literal_update(
+pub(super) fn node_update(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     options: &AnalysisOptions<'_>,
     index: &DocIndex,
     analysis: &ValidationAnalysis,
     retained: &mut Retained,
-    edit: &LiteralEdit,
+    edit: &NodeEdit,
 ) -> Option<Scoped> {
     options.checkpoint().ok()?;
     let mut removed = Admitted::default();
@@ -85,8 +86,16 @@ pub(super) fn literal_update(
             return None;
         }
         let node = document.node(*id)?;
-        removed = removed.add(Admitted::of_literals(before.values()))?;
-        added = added.add(Admitted::of_literals(node.inputs.values()))?;
+        removed = removed.add(Admitted::of_node_fields(
+            &before.inputs,
+            &before.type_args,
+            &before.type_pins,
+        ))?;
+        added = added.add(Admitted::of_node_fields(
+            &node.inputs,
+            &node.type_args,
+            &node.type_pins,
+        ))?;
     }
     let admitted = retained.admitted.replace(removed, added)?;
     if !options.fits(admitted) {
