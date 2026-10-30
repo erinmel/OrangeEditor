@@ -499,3 +499,67 @@ fn type_arguments_and_pins_that_keep_inference_are_scoped() {
     let work = edit(&mut session, &mut doc, &registry, options, both);
     assert_eq!(work, SessionWork::Scoped);
 }
+
+fn configure(node: u32, config: Json) -> DocCommand {
+    DocCommand::SetConfig {
+        node: id(node).parse().unwrap(),
+        config_version: 1,
+        config: serde_json::from_value(config).unwrap(),
+    }
+}
+
+#[test]
+fn package_node_configuration_is_scoped() {
+    let (mut doc, registry) = chains();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let saturating = configure(11, json!({"int_overflow": "saturating"}));
+    let work = edit(&mut session, &mut doc, &registry, options, vec![saturating]);
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    // An invalid value adds a configuration error, which runs in full.
+    let invalid = configure(11, json!({"int_overflow": "sometimes"}));
+    let work = edit(&mut session, &mut doc, &registry, options, vec![invalid]);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    // Still invalid: the configuration error stays, so the edit is scoped.
+    let other = configure(11, json!({"int_overflow": "never"}));
+    let work = edit(&mut session, &mut doc, &registry, options, vec![other]);
+    assert_eq!(work, SessionWork::Scoped);
+    let valid = configure(11, json!({"int_overflow": "checked"}));
+    let work = edit(&mut session, &mut doc, &registry, options, vec![valid]);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().is_valid());
+    // Configuration and a literal together are one node edit.
+    let both = vec![
+        configure(14, json!({"int_overflow": "saturating"})),
+        set(14, "b", u64_text("6")),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, both);
+    assert_eq!(work, SessionWork::Scoped);
+}
+
+#[test]
+fn intrinsic_configuration_runs_the_full_analysis() {
+    let (package, registry) = catalog();
+    let on_start = json!({"id": id(50), "definition_id": "core/on-start",
+        "definition_version": 1, "config_version": 1, "config": {},
+        "activation": {"mode": "queue", "capacity": 4, "overflow": "drop-newest",
+            "on_fault": "continue", "order": 0}});
+    let mut doc = graph(
+        &package,
+        vec![on_start, math(60, "add", 0, 1)],
+        vec![],
+        vec![],
+    );
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![configure(50, json!({"x": 1}))],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+}
