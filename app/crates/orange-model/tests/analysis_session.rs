@@ -318,3 +318,46 @@ fn edits_recheck_only_the_edges_of_touched_nodes() {
     assert_eq!(work(&session), (1, 8));
     assert_eq!(session.analysis(), &full(&doc, &registry));
 }
+
+/// V12b: generic components are solved again only when something they read changed,
+/// including an edge that joins a component without touching its nodes.
+#[test]
+fn edits_resolve_only_the_generic_components_they_reach() {
+    let registry = registry(None);
+    let mut doc = document(
+        vec![
+            typed_source(1, "i64"),
+            add(2, json!({})),
+            typed_source(3, "i64"),
+            add(4, json!({})),
+        ],
+        vec![data_edge(1, (1, "value"), (2, "a"))],
+    );
+    let mut session = AnalysisSession::new(&doc, &registry, BTreeMap::new(), options());
+    let work = |session: &AnalysisSession| {
+        let local = session.stats().local;
+        (local.components_computed, local.component_hits)
+    };
+    assert_eq!(session.analysis(), &full(&doc, &registry));
+    let (computed, _) = work(&session);
+    assert_eq!(computed, 2);
+
+    // Wiring the free add node changes only its own component.
+    let wired = doc.apply([connect(2, (3, "value"), (4, "a"))]).unwrap();
+    session.update(&doc, &registry, &wired.change_set, options());
+    assert_eq!(session.analysis(), &full(&doc, &registry));
+    let (computed, hits) = work(&session);
+    assert_eq!(computed, 1);
+    assert!(hits >= 1);
+
+    // A layout-free unrelated edit reuses both.
+    let added = doc
+        .apply([DocCommand::AddNode {
+            body: orange_model::BodyRef::Root,
+            node: serde_json::from_value(typed_source(9, "i64")).unwrap(),
+        }])
+        .unwrap();
+    session.update(&doc, &registry, &added.change_set, options());
+    assert_eq!(session.analysis(), &full(&doc, &registry));
+    assert_eq!(work(&session).0, 0);
+}

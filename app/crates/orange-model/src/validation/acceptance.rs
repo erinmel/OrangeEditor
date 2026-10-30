@@ -54,7 +54,14 @@ impl BodyPasses {
         options: &AnalysisOptions<'_>,
     ) -> Result<Self, DiagnosticCode> {
         options.checkpoint()?;
-        let nodes = validate_nodes_with(document, registry, calls, scope, index);
+        let nodes = validate_nodes_with(
+            document,
+            registry,
+            calls,
+            scope,
+            index,
+            caches.as_deref_mut().map(|caches| &mut caches.components),
+        );
         options.checkpoint()?;
         let ports = super::ports::PortResolver::new(document, &nodes.resolved);
         let resolved = &ports;

@@ -79,6 +79,7 @@ pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> 
         &CallEvidence::default(),
         Scope::All,
         &index,
+        None,
     )
 }
 
@@ -88,6 +89,7 @@ pub(crate) fn validate_nodes_with(
     calls: &CallEvidence,
     scope: Scope,
     index: &DocIndex,
+    components: Option<&mut ComponentCache>,
 ) -> NodeValidation {
     let origin = registry.origin();
     let mut report = NodeValidation::default();
@@ -111,7 +113,7 @@ pub(crate) fn validate_nodes_with(
         ids: &ids,
         origin,
     };
-    let fresh_args = infer_fresh_args(&pass, &mut report, &mut diagnostics);
+    let fresh_args = infer_fresh_args(&pass, components, &mut report, &mut diagnostics);
     project_nodes(&pass, fresh_args, &mut report, &mut diagnostics);
 
     sort_diagnostics(&mut diagnostics);
@@ -377,15 +379,19 @@ fn suspension_contract_issue(
 
 fn infer_fresh_args(
     pass: &NodePass<'_>,
+    cache: Option<&mut ComponentCache>,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> BTreeMap<NodeId, TypeArgs> {
-    let components = infer_components(
-        pass.document,
-        pass.index,
-        pass.ids.iter().copied(),
-        pass.registry,
-    );
+    let components = match cache {
+        Some(cache) => cache.infer(pass.document, pass.index, pass.ids, pass.registry),
+        None => infer_components(
+            pass.document,
+            pass.index,
+            pass.ids.iter().copied(),
+            pass.registry,
+        ),
+    };
     let mut fresh_args = BTreeMap::new();
     for component in components {
         let incomplete = component.nodes.iter().any(|node| {
@@ -888,4 +894,150 @@ fn marker_contract(
         CallInterfaceError::InvalidInterface => DiagnosticCode::FunctionInterface,
         _ => DiagnosticCode::IntrinsicUnsupported,
     })
+}
+
+/// Each generic component's inference from an earlier analysis of the same session (16,
+/// V12b). A component is solved from its nodes, the data edges incident to them and the
+/// port types at their far ends, the registry and the document's declarations, so an
+/// entry is dropped when the journal touches one of its nodes, boundary nodes or incident
+/// edges, and the whole cache clears on any declaration or registry change. Nodes without
+/// a valid entry are solved by the same inference.
+#[derive(Default, Clone)]
+pub(crate) struct ComponentCache {
+    /// Keyed by the component's lowest node.
+    components: BTreeMap<NodeId, CachedComponent>,
+    of_node: BTreeMap<NodeId, NodeId>,
+    pub(crate) computed: usize,
+    pub(crate) hits: usize,
+}
+
+#[derive(Clone)]
+struct CachedComponent {
+    inference: crate::inference::ComponentInference,
+    edges: BTreeSet<crate::id::EdgeId>,
+    boundary: BTreeSet<NodeId>,
+}
+
+impl ComponentCache {
+    pub(crate) fn clear(&mut self) {
+        self.components.clear();
+        self.of_node.clear();
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.components.len()
+    }
+
+    /// Drops every component that reads one of `nodes` or `edges`.
+    pub(crate) fn forget(&mut self, nodes: &BTreeSet<NodeId>, edges: &BTreeSet<crate::id::EdgeId>) {
+        if nodes.is_empty() && edges.is_empty() {
+            return;
+        }
+        let stale: Vec<NodeId> = self
+            .components
+            .iter()
+            .filter(|(_, cached)| {
+                cached
+                    .inference
+                    .nodes
+                    .iter()
+                    .any(|node| nodes.contains(node))
+                    || cached.boundary.iter().any(|node| nodes.contains(node))
+                    || cached.edges.iter().any(|edge| edges.contains(edge))
+            })
+            .map(|(key, _)| *key)
+            .collect();
+        for key in stale {
+            self.remove(key);
+        }
+    }
+
+    fn remove(&mut self, key: NodeId) {
+        if let Some(cached) = self.components.remove(&key) {
+            for node in &cached.inference.nodes {
+                self.of_node.remove(node);
+            }
+        }
+    }
+
+    /// The components of `ids`: valid entries as they are, the rest solved now.
+    fn infer(
+        &mut self,
+        document: &GraphDocument,
+        index: &DocIndex,
+        ids: &[NodeId],
+        registry: &RegistrySnapshot,
+    ) -> Vec<crate::inference::ComponentInference> {
+        let mut components = Vec::new();
+        let mut known = BTreeSet::new();
+        for id in ids {
+            if known.contains(id) {
+                continue;
+            }
+            if let Some(cached) = self
+                .of_node
+                .get(id)
+                .and_then(|key| self.components.get(key))
+            {
+                self.hits += 1;
+                known.extend(cached.inference.nodes.iter().copied());
+                components.push(cached.inference.clone());
+            }
+        }
+        let solved = crate::inference::component::infer_components_except(
+            document,
+            index,
+            ids.iter().copied().filter(|id| !known.contains(id)),
+            registry,
+            &known,
+        );
+        for component in &solved {
+            self.computed += 1;
+            self.insert(document, index, component.clone());
+        }
+        components.extend(solved);
+        components
+    }
+
+    fn insert(
+        &mut self,
+        document: &GraphDocument,
+        index: &DocIndex,
+        inference: crate::inference::ComponentInference,
+    ) {
+        let Some(&key) = inference.nodes.first() else {
+            return;
+        };
+        let overlapping: BTreeSet<NodeId> = inference
+            .nodes
+            .iter()
+            .filter_map(|node| self.of_node.get(node).copied())
+            .collect();
+        for stale in overlapping {
+            self.remove(stale);
+        }
+        let mut edges = BTreeSet::new();
+        let mut boundary = BTreeSet::new();
+        for &node in &inference.nodes {
+            let body = index.body_of(node).and_then(|body| document.body(body));
+            for edge in index.incident(node) {
+                edges.insert(edge);
+                if let Some(edge) = body.and_then(|body| body.edges.get(&edge)) {
+                    boundary.insert(edge.from.node);
+                    boundary.insert(edge.to.node);
+                }
+            }
+        }
+        for node in &inference.nodes {
+            self.of_node.insert(*node, key);
+        }
+        self.components.insert(
+            key,
+            CachedComponent {
+                inference,
+                edges,
+                boundary,
+            },
+        );
+    }
 }

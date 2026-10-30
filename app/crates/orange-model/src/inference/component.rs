@@ -142,6 +142,18 @@ pub fn infer_components(
     touched: impl IntoIterator<Item = NodeId>,
     registry: &RegistrySnapshot,
 ) -> Vec<ComponentInference> {
+    infer_components_except(document, index, touched, registry, &BTreeSet::new())
+}
+
+/// [`infer_components`] without the components of `known` nodes, whose results the caller
+/// already holds; no component containing one of them is solved again.
+pub(crate) fn infer_components_except(
+    document: &GraphDocument,
+    index: &DocIndex,
+    touched: impl IntoIterator<Item = NodeId>,
+    registry: &RegistrySnapshot,
+    known: &BTreeSet<NodeId>,
+) -> Vec<ComponentInference> {
     let graph = Graph {
         document,
         index,
@@ -157,6 +169,7 @@ pub fn infer_components(
             seeds.extend(graph.generic_neighbours(node));
         }
     }
+    seeds.retain(|seed| !known.contains(seed));
     let mut visited = BTreeSet::new();
     let mut components = Vec::new();
     for seed in seeds {

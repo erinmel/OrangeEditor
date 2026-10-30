@@ -2362,3 +2362,15 @@ Branch `core/session-connection-reuse` on `dev` 298b5dc (same toolchain; Cargo.l
 - **Limitations:** every node and edge is still visited; node resolution, port projection and connection cardinality still run in full, so V12b is not complete and NFR-15 is not requalified. Entries clone both endpoint snapshots; retained memory is not measured.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Session inference reuse (V12b) — 2026-10-30
+
+Branch `core/session-resolution-reuse` on `dev` ef6e374 (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).
+
+- **Profile:** with temporary timers on the 2,000-node add chain from `orange-measure analysis-worker`, node resolution spent about 0.7 ms in preflight, 14.5 ms in inference and 1.4 ms in projection per run; inference grew linearly with chain length (3.2, 7.0, 13.0 and 27.5 ms for 500, 1,000, 2,000 and 4,000 nodes). The timers were removed.
+- **Change:** `AnalysisSession` keeps each generic component's inference with its incident data edges and boundary nodes. An analysis reuses it while the journal leaves all of them untouched and no added or rewired edge reaches the component; declaration changes, registry changes and unproven journals clear the cache. `infer_components_except` solves the remaining seeds and skips reused nodes. `LocalWork` gains `components_computed` and `component_hits`.
+- **Regressions:** in a graph with two generic components, wiring the free one re-solves only it, and an unrelated node addition re-solves neither; the session equals the full analysis after each edit. The wiring case failed when added-edge endpoints were left out of invalidation, which the property tests had not caught. The session-versus-full property tests pass, also with 1,024 cases in release.
+- **Measured** with a temporary release test on 100 independent source-to-add components (200 nodes), changing one add literal, 50 samples after 10 warmups: session update 956 µs p50 and 1,036 µs p95 on `dev` ef6e374, 701 µs p50 and 766 µs p95 with reuse. A single large component still re-solves in full on any edit inside it. The test was not kept.
+- **Limitations:** preflight, projection and every other pass still visit every node; V12b is not complete and NFR-15 is not requalified. Entries clone their component's inference; retained memory is not measured.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
