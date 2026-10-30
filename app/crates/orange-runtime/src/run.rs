@@ -25,7 +25,7 @@ use loops::Loops;
 mod retained;
 mod select;
 use cells::SegmentWrites;
-use function::{FrameStorage, FunctionFrame, FunctionReturn, PendingCall};
+use function::{Frames, FunctionFrame, FunctionReturn, FunctionStep, PendingCall, call_returned};
 mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod ids;
@@ -536,8 +536,7 @@ fn schedule(
 /// let run = orange_runtime::Run::default();
 /// ```
 pub struct Run {
-    frames: BTreeMap<FrameId, FunctionFrame>,
-    spare_frames: Vec<FrameStorage>,
+    frames: Frames,
     id: u64,
     plan: Option<Arc<ControlPlan>>,
     options: RunOptions,
@@ -743,8 +742,7 @@ impl Run {
         let variable_count = plan.variables().len();
         let state_count = plan.states().len();
         Ok(Self {
-            frames: BTreeMap::new(),
-            spare_frames: Vec::new(),
+            frames: Frames::default(),
             id: run_identity()?,
             plan: Some(plan),
             options,
@@ -1267,7 +1265,22 @@ impl Run {
         };
         let step = match operation {
             ControlOperation::Call { .. } | ControlOperation::Return { .. } => {
-                return self.execute_function(plan, activation, shared, ix, budget);
+                match self
+                    .cells()
+                    .execute_function(plan, activation, shared, ix, budget)?
+                {
+                    FunctionStep::Failed(step) => step,
+                    FunctionStep::Returned => {
+                        self.record(RunEvent {
+                            activation: activation.sequence,
+                            node: node.node(),
+                            outcome: ControlOutcome::Then,
+                            fault: None,
+                        });
+                        return Ok(());
+                    }
+                    FunctionStep::Pending | FunctionStep::Called => return Ok(()),
+                }
             }
             ControlOperation::Update { .. } => {
                 match self
@@ -1536,8 +1549,7 @@ impl Run {
         // would keep. Only the terminal summary stays: identity, options, state history,
         // last error, counters and the virtual clock.
         self.plan = None;
-        self.frames = BTreeMap::new();
-        self.spare_frames = Vec::new();
+        self.frames.release();
         self.ready = ReadyQueue::with_capacity(0);
         self.activations = Vec::new();
         self.regions.release();
