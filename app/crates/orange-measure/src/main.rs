@@ -102,14 +102,14 @@ fn main() {
     }
     if "session-edit".contains(filter.as_str()) {
         let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1e3;
-        for wire in [false, true] {
+        use workloads::SessionEdit;
+        for (edit, kind) in [
+            (SessionEdit::Literal, "literal"),
+            (SessionEdit::Wire, "disconnect/connect"),
+            (SessionEdit::Pin, "pin"),
+        ] {
             for (chains, length) in [(1000, 10), (1, 10_000)] {
-                let (p50, p95) = workloads::session_edit(config, chains, length, wire);
-                let kind = if wire {
-                    "disconnect/connect"
-                } else {
-                    "literal"
-                };
+                let (p50, p95) = workloads::session_edit(config, chains, length, edit);
                 println!(
                     "session {kind} edit ({chains} chains of {length} nodes) p50: {:.3} ms, p95: {:.3} ms",
                     ms(p50),
