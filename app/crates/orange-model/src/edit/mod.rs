@@ -6,8 +6,8 @@ mod freshness;
 mod patch;
 mod transaction;
 
-pub(crate) use change_set::LiteralEdit;
 pub use change_set::{ChangeSet, DeclId, Delta};
+pub(crate) use change_set::{EdgeEdit, LiteralEdit};
 pub use freshness::PlanApplyError;
 pub(crate) use freshness::Preconditions;
 pub use transaction::{Committed, DocCommand, Inverse, LayoutCommand};

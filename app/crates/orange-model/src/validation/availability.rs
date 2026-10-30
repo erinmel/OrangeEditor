@@ -537,6 +537,59 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
     }
 }
 
+/// Whether a data edge leaving `from` can give some consumer a requirement: the producer's
+/// own source carries one, or an edge in the lazy cone behind an expanding producer does,
+/// as [`cone`] and [`requirement`] see them. When neither does, adding or removing such an
+/// edge cannot change this pass. Unknown metadata counts as a requirement.
+pub(crate) fn data_edge_requires(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    regions: &RegionIndex,
+    index: &crate::index::DocIndex,
+    from: &crate::document::PortRef,
+) -> bool {
+    let relevant = |port: &crate::document::PortRef| match resolved.port(port) {
+        Ok(port) => !matches!(
+            port.source,
+            None | Some(OutputSource::Computed | OutputSource::State)
+        ),
+        Err(_) => true,
+    };
+    let expanding = |node: NodeId| {
+        matches!(
+            resolved.get(&node).map(|signature| signature.kind),
+            Some(NodeKind::Pure | NodeKind::Volatile)
+        ) && !regions.owners.contains_key(&node)
+    };
+    if relevant(from) {
+        return true;
+    }
+    let mut visited = BTreeSet::new();
+    let mut stack = vec![from.node];
+    while let Some(node) = stack.pop() {
+        if !expanding(node) || !visited.insert(node) {
+            continue;
+        }
+        for id in index.incident(node) {
+            let Some(edge) = document.edge(id).filter(|edge| edge.to.node == node) else {
+                continue;
+            };
+            let data = matches!(
+                (resolved.port(&edge.from), resolved.port(&edge.to)),
+                (Ok(from), Ok(to)) if from.kind == PortKind::Data && to.kind == PortKind::Data
+            );
+            if !data {
+                continue;
+            }
+            if relevant(&edge.from) {
+                return true;
+            }
+            stack.push(edge.from.node);
+        }
+    }
+    false
+}
+
 /// True for an unowned pure or volatile producer, whose inputs its consumers read lazily.
 fn expands(context: &Context, producer: NodeId) -> bool {
     matches!(

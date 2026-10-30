@@ -531,7 +531,7 @@ fn run_supported_analysis(
     );
     // The session keeps the input diagnostics apart from the rest, so a literal edit
     // can replace one node's inputs and merge again (16 §5.6).
-    let retained = match (node_parts, super::scoped::by_node(&input_diagnostics)) {
+    let mut retained = match (node_parts, super::scoped::by_node(&input_diagnostics)) {
         (Some((Some(node_diagnostics), node_incomplete)), Some(inputs)) => {
             let mut base = diagnostics.clone();
             sort_diagnostics(&mut base);
@@ -543,6 +543,7 @@ fn run_supported_analysis(
                 node_incomplete,
                 inputs,
                 base,
+                clean: false,
             })
         }
         _ => None,
@@ -557,6 +558,19 @@ fn run_supported_analysis(
     incomplete_nodes.extend(regions.incomplete_nodes);
     incomplete_nodes.extend(control.incomplete_nodes);
     options.checkpoint()?;
+    if let Some(retained) = &mut retained {
+        use crate::document::Suspends;
+        retained.clean = incomplete_nodes.is_empty()
+            && functions.incomplete_functions.is_empty()
+            && diagnostics
+                .iter()
+                .all(|item| item.severity != Severity::Error)
+            && regions.index.zones.iter().len() == 0
+            && nodes
+                .resolved
+                .values()
+                .all(|signature| signature.suspension() == Some(Suspends::Never));
+    }
     drop(ports);
     let analysis = ValidationAnalysis {
         report: ValidationReport {
