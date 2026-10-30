@@ -2351,3 +2351,14 @@ Branch `core/session-input-reuse` on `dev` 95d7944 (same toolchain; Cargo.lock u
 - **Limitations:** the session still visits every node and runs every other pass in full, so V12b is not complete and NFR-15 is not requalified. Each entry clones its node's signature snapshot; retained memory is not measured. No release timing was recorded: the existing fixtures have only scalar input literals, so a timing would mostly measure orchestration.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Session connection check reuse (V12b) — 2026-10-30
+
+Branch `core/session-connection-reuse` on `dev` 298b5dc (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).
+
+- **Change:** the per-edge part of the connection pass becomes `check_edge`. `AnalysisSession` keeps each edge's result with the resolutions of both endpoint nodes and reuses it while the journal leaves the edge and its endpoints untouched and both resolutions are equal. Function declaration and registry changes clear every entry. Input and edge caches travel together as the session's pass caches; `LocalWork` gains `edges_computed` and `edge_hits`.
+- **Regressions:** with 10 connected source/sink pairs, creation checks 10 edges; adding an unconnected node reuses all 10; removing an edge reuses the other 9; editing one sink rechecks its edge and reuses 8. The session-versus-full property tests pass, also with 512 cases in release.
+- **Measured** with a temporary release test on 120 source/sink pairs (240 nodes, 120 edges), changing one sink literal, 50 samples after 10 warmups: session update 877 µs p50 and 948 µs p95 on `dev` 298b5dc, 798 µs p50 and 891 µs p95 with edge reuse. The same graph showed node resolution at about 455 µs and the connection pass at about 300 µs per full run, index building included. The test was not kept.
+- **Limitations:** every node and edge is still visited; node resolution, port projection and connection cardinality still run in full, so V12b is not complete and NFR-15 is not requalified. Entries clone both endpoint snapshots; retained memory is not measured.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
