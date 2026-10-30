@@ -328,7 +328,7 @@ pub(super) fn analyze_indexed(
         index.as_ref().map(|index| (index, &mut *local)),
     )
     .unwrap_or_else(|code| rejected_analysis(document, registry, code));
-    local.record_input_work(&mut work);
+    local.record_pass_work(&mut work);
     (result, work, rebuilt)
 }
 
@@ -373,7 +373,7 @@ fn run_supported_analysis(
         index,
         local
             .as_deref_mut()
-            .map(super::local::LocalValidation::inputs),
+            .map(super::local::LocalValidation::passes),
         options,
     )?;
     let Settled {
@@ -398,7 +398,7 @@ fn run_supported_analysis(
         seed,
         local
             .as_deref_mut()
-            .map(super::local::LocalValidation::inputs),
+            .map(super::local::LocalValidation::passes),
         options,
     )?;
 
