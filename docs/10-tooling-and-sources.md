@@ -2374,3 +2374,14 @@ Branch `core/session-resolution-reuse` on `dev` ef6e374 (same toolchain; Cargo.l
 - **Limitations:** preflight, projection and every other pass still visit every node; V12b is not complete and NFR-15 is not requalified. Entries clone their component's inference; retained memory is not measured.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Call and Return step context — 2026-10-30
+
+Branch `core/function-step-context` on `dev` adadaa3 (same toolchain; Cargo.lock unchanged). Completes the step-context part of finding F07 of the final quality review.
+
+- **Change:** function frames and their spare buffers become `Frames`, whose map only the function module opens, writes and retires; retiring a frame releases its call projections and retained bytes in one operation. The Call and Return steps now run on `Cells` and report what they did (`Pending`, `Failed`, `Called`, `Returned`); a returned call's result becomes the caller's step through `call_returned`. Opening the callee region, leaving it and completing the caller stay on the actor, beside the other region operations.
+- **Step families now:** every node step runs on a narrow context: gates, latches, registers, Set, Update, Call and Return use `Cells`; Branch, Switch and Match Result use the layout; Fork, Entry, Yield and Wait use the clock; loops use `Loops`. Only region, strand and scheduling transfers run on `Run`.
+- **Unchanged:** behavior, trace order and allocation; `orange-measure function-call` against `dev` adadaa3 shows 41 allocations per 1,000 calls and 10,003 peak live bytes on both, with pump p50 3.30 µs on both.
+- **Limitations:** `Region` fields remain visible to the ownership module for continuations, cursors and join state, and the activation table is still a plain vector on `Run`.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
