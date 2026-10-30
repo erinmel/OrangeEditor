@@ -1,6 +1,6 @@
 //! Port-level data-dependency cycle validation (11 §8.2).
 
-use super::graph::strongly_connected_components;
+use super::graph::dense_strongly_connected_components;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
@@ -8,7 +8,7 @@ use crate::document::{
     GraphDocument, OutputSource, PortDescriptor, PortDirection, PortKind, PortRef,
     SignatureSnapshot,
 };
-use crate::id::{NodeId, PortKey};
+use crate::id::{NodeId, PortId, PortKey};
 
 use super::connections::ConnectionValidation;
 use super::diagnostic::{
@@ -38,31 +38,81 @@ impl DataCycleValidation {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Vertex {
+/// A dependency vertex borrowing its port name. Fields order as `PortRef` does, node then
+/// port then instance, so vertex order and witnesses match an owned port key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+enum Vertex<'a> {
     // Keep real ports first so deterministic witnesses begin at a visible port.
-    Port { node: NodeId, port: PortKey },
+    Port {
+        node: NodeId,
+        port: &'a PortId,
+        instance: Option<u16>,
+    },
     Computation(NodeId),
 }
 
-impl From<&PortRef> for Vertex {
-    fn from(value: &PortRef) -> Self {
+impl<'a> From<&'a PortRef> for Vertex<'a> {
+    fn from(value: &'a PortRef) -> Self {
         Self::Port {
             node: value.node,
-            port: value.port.clone(),
+            port: value.port.port(),
+            instance: value.port.instance(),
         }
     }
 }
 
-impl Vertex {
+impl Vertex<'_> {
     fn port_ref(&self) -> Option<PortRef> {
         match self {
-            Self::Port { node, port } => Some(PortRef {
+            Self::Port {
+                node,
+                port,
+                instance,
+            } => Some(PortRef {
                 node: *node,
-                port: port.clone(),
+                port: PortKey::new((*port).clone(), *instance),
             }),
             Self::Computation(_) => None,
         }
+    }
+}
+
+/// One body's dependency graph as collected vertices and edges; [`DependencyGraph::dense`]
+/// orders and deduplicates them as an ordered map of ordered neighbour sets would.
+#[derive(Default)]
+struct DependencyGraph<'a> {
+    vertices: Vec<Vertex<'a>>,
+    edges: Vec<(Vertex<'a>, Vertex<'a>)>,
+}
+
+impl<'a> DependencyGraph<'a> {
+    fn vertex(&mut self, vertex: Vertex<'a>) {
+        self.vertices.push(vertex);
+    }
+
+    fn edge(&mut self, from: Vertex<'a>, to: Vertex<'a>) {
+        self.vertices.push(from);
+        self.vertices.push(to);
+        self.edges.push((from, to));
+    }
+
+    /// Ascending vertices and each one's ascending, distinct neighbour indices.
+    fn dense(mut self) -> (Vec<Vertex<'a>>, Vec<Vec<usize>>) {
+        self.vertices.sort_unstable();
+        self.vertices.dedup();
+        let index = |vertex: &Vertex<'a>| self.vertices.binary_search(vertex).unwrap_or(0);
+        let mut edges: Vec<(usize, usize)> = self
+            .edges
+            .iter()
+            .map(|(from, to)| (index(from), index(to)))
+            .collect();
+        edges.sort_unstable();
+        edges.dedup();
+        let mut adjacency = vec![Vec::new(); self.vertices.len()];
+        for (from, to) in edges {
+            adjacency[from].push(to);
+        }
+        (self.vertices, adjacency)
     }
 }
 
@@ -117,7 +167,7 @@ pub(crate) fn validate_data_cycles_in(
 
     for (_, body) in scope.bodies(document) {
         let body_nodes: BTreeSet<_> = body.nodes.keys().copied().collect();
-        let mut graph = BTreeMap::<Vertex, BTreeSet<Vertex>>::new();
+        let mut graph = DependencyGraph::default();
 
         for node in body.nodes.values() {
             let Some(signature) = resolved.get(&node.id) else {
@@ -135,7 +185,7 @@ pub(crate) fn validate_data_cycles_in(
                     mark_incomplete(node.id, origin, &mut result, &mut diagnosed_nodes);
                 }
                 for vertex in concrete_vertices(node.id, node, descriptor) {
-                    graph.entry(vertex).or_default();
+                    graph.vertex(vertex);
                 }
             }
 
@@ -166,18 +216,18 @@ pub(crate) fn validate_data_cycles_in(
                 <= inputs.len().saturating_add(outputs.len())
             {
                 // Narrow computations are already linear; avoid adding a hub there.
-                for input in &inputs {
-                    for output in &outputs {
-                        add_edge(&mut graph, input.clone(), output.clone());
+                for &input in &inputs {
+                    for &output in &outputs {
+                        graph.edge(input, output);
                     }
                 }
             } else {
                 let hub = Vertex::Computation(node.id);
                 for input in inputs {
-                    add_edge(&mut graph, input, hub.clone());
+                    graph.edge(input, hub);
                 }
                 for output in outputs {
-                    add_edge(&mut graph, hub.clone(), output);
+                    graph.edge(hub, output);
                 }
             }
         }
@@ -209,7 +259,7 @@ pub(crate) fn validate_data_cycles_in(
                 for from in concrete_vertices(pair.begin, &body.nodes[&pair.begin], input) {
                     for output in &outputs {
                         for to in concrete_vertices(pair.end, &body.nodes[&pair.end], output) {
-                            add_edge(&mut graph, from.clone(), to);
+                            graph.edge(from, to);
                         }
                     }
                 }
@@ -241,7 +291,7 @@ pub(crate) fn validate_data_cycles_in(
                         && from.ty.is_some()
                         && to.ty.is_some() =>
                 {
-                    add_edge(&mut graph, Vertex::from(&edge.from), Vertex::from(&edge.to));
+                    graph.edge(Vertex::from(&edge.from), Vertex::from(&edge.to));
                 }
                 (Ok(from), Ok(to)) if from.kind != PortKind::Data || to.kind != PortKind::Data => {}
                 (Err(_), _) | (_, Err(_)) => {
@@ -252,8 +302,23 @@ pub(crate) fn validate_data_cycles_in(
             }
         }
 
-        for component in strongly_connected_components(&graph) {
-            let Some(path) = cycle_witness(&graph, &component) else {
+        let (vertices, adjacency) = graph.dense();
+        let mut member = vec![usize::MAX; vertices.len()];
+        for (index, component) in dense_strongly_connected_components(&adjacency)
+            .into_iter()
+            .enumerate()
+        {
+            // A single vertex is cyclic only through an edge to itself.
+            if let [vertex] = component[..]
+                && !adjacency[vertex].contains(&vertex)
+            {
+                continue;
+            }
+            for &vertex in &component {
+                member[vertex] = index;
+            }
+            let Some(path) = cycle_witness(&vertices, &adjacency, &component, &member, index)
+            else {
                 continue;
             };
             let subject = path.first().map_or_else(
@@ -287,11 +352,11 @@ fn mark_incomplete(
     }
 }
 
-fn concrete_vertices(
+fn concrete_vertices<'a>(
     node: NodeId,
     instance: &crate::document::NodeInstance,
-    descriptor: &PortDescriptor,
-) -> Vec<Vertex> {
+    descriptor: &'a PortDescriptor,
+) -> Vec<Vertex<'a>> {
     if descriptor.variadic.is_some() {
         instance
             .variadic
@@ -300,76 +365,69 @@ fn concrete_vertices(
             .flat_map(|state| state.order.iter().copied())
             .map(|key| Vertex::Port {
                 node,
-                port: PortKey::new(descriptor.port_id.clone(), Some(key)),
+                port: &descriptor.port_id,
+                instance: Some(key),
             })
             .collect()
     } else {
         vec![Vertex::Port {
             node,
-            port: PortKey::new(descriptor.port_id.clone(), None),
+            port: &descriptor.port_id,
+            instance: None,
         }]
     }
 }
 
-fn add_edge(graph: &mut BTreeMap<Vertex, BTreeSet<Vertex>>, from: Vertex, to: Vertex) {
-    graph.entry(from).or_default().insert(to.clone());
-    graph.entry(to).or_default();
-}
-
+/// The first cycle found by a depth-first search of `component` (ascending dense vertices
+/// whose `member` entry is `index`), from its lowest vertex and through ascending neighbours.
 fn cycle_witness(
-    graph: &BTreeMap<Vertex, BTreeSet<Vertex>>,
-    component: &BTreeSet<Vertex>,
+    vertices: &[Vertex<'_>],
+    adjacency: &[Vec<usize>],
+    component: &[usize],
+    member: &[usize],
+    index: usize,
 ) -> Option<Vec<PortRef>> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Color {
+        White,
         Gray,
         Black,
     }
 
-    let mut colors = BTreeMap::<Vertex, Color>::new();
-    for start in component {
-        if colors.contains_key(start) {
+    let mut colors = vec![Color::White; vertices.len()];
+    let mut stack: Vec<(usize, usize)> = Vec::new();
+    for &start in component {
+        if colors[start] != Color::White {
             continue;
         }
-        colors.insert(start.clone(), Color::Gray);
-        let neighbors: Vec<_> = graph
-            .get(start)?
-            .iter()
-            .filter(|vertex| component.contains(*vertex))
-            .cloned()
-            .collect();
-        let mut stack = vec![(start.clone(), neighbors, 0_usize)];
-        while let Some((vertex, neighbors, cursor)) = stack.last_mut() {
-            if *cursor >= neighbors.len() {
-                let vertex = vertex.clone();
-                colors.insert(vertex, Color::Black);
+        colors[start] = Color::Gray;
+        stack.push((start, 0));
+        while let Some((vertex, cursor)) = stack.last_mut() {
+            let vertex = *vertex;
+            let rest = &adjacency[vertex][*cursor..];
+            let Some(offset) = rest.iter().position(|&item| member[item] == index) else {
+                colors[vertex] = Color::Black;
                 stack.pop();
                 continue;
-            }
-            let next = neighbors[*cursor].clone();
-            *cursor += 1;
-            match colors.get(&next) {
-                Some(Color::Gray) => {
-                    let begin = stack.iter().position(|(item, _, _)| item == &next)?;
+            };
+            let next = rest[offset];
+            *cursor += offset + 1;
+            match colors[next] {
+                Color::Gray => {
+                    let begin = stack.iter().position(|&(item, _)| item == next)?;
                     let mut path: Vec<_> = stack[begin..]
                         .iter()
-                        .filter_map(|(item, _, _)| item.port_ref())
+                        .filter_map(|&(item, _)| vertices[item].port_ref())
                         .collect();
                     // A back edge can target the internal hub. Close the projected
                     // cycle at its first real port, never expose a synthetic vertex.
                     path.push(path.first()?.clone());
                     return Some(path);
                 }
-                Some(Color::Black) => {}
-                None => {
-                    colors.insert(next.clone(), Color::Gray);
-                    let next_neighbors: Vec<_> = graph
-                        .get(&next)?
-                        .iter()
-                        .filter(|vertex| component.contains(*vertex))
-                        .cloned()
-                        .collect();
-                    stack.push((next, next_neighbors, 0));
+                Color::Black => {}
+                Color::White => {
+                    colors[next] = Color::Gray;
+                    stack.push((next, 0));
                 }
             }
         }
