@@ -440,3 +440,62 @@ fn an_edge_from_an_event_payload_runs_the_full_analysis() {
     let work = edit(&mut session, &mut doc, &registry, options, vec![payload]);
     assert_eq!(work, SessionWork::Recompute);
 }
+
+fn types(pairs: &[(&str, &str)]) -> BTreeMap<String, orange_model::id::TypeExpr> {
+    pairs
+        .iter()
+        .map(|(name, ty)| ((*name).to_owned(), ty.parse().unwrap()))
+        .collect()
+}
+
+#[test]
+fn type_arguments_and_pins_that_keep_inference_are_scoped() {
+    let (mut doc, registry) = chains();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let node = || id(11).parse().unwrap();
+    // Persisted arguments are an inference cache; only admission reads them.
+    for ty in ["core/u64@1", "core/i64@1"] {
+        let args = DocCommand::SetTypeArgs {
+            node: node(),
+            args: types(&[("T", ty)]),
+        };
+        let work = edit(&mut session, &mut doc, &registry, options, vec![args]);
+        assert_eq!(work, SessionWork::Scoped);
+    }
+    // A pin agreeing with the chain's literals changes no signature.
+    let pin = |ty| DocCommand::SetTypePins {
+        node: node(),
+        pins: types(&[("T", ty)]),
+    };
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![pin("core/u64@1")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.stats().input_nodes, 3);
+    // A conflicting pin changes inference.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![pin("core/i64@1")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    let clear = DocCommand::SetTypePins {
+        node: node(),
+        pins: BTreeMap::new(),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![clear]);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().is_valid());
+    // A literal and a pin in one transaction are still one node edit.
+    let both = vec![set(11, "b", u64_text("4")), pin("core/u64@1")];
+    let work = edit(&mut session, &mut doc, &registry, options, both);
+    assert_eq!(work, SessionWork::Scoped);
+}
