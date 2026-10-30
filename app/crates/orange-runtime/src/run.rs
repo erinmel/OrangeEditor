@@ -949,6 +949,8 @@ impl Run {
                 .max_operations
                 .saturating_sub(self.operations)
         };
+        // Work done outside a pump, such as a host stop, is not charged to this one.
+        let _ = self.regions.take_work();
         let mut remaining = budget.min(available);
         let initial = remaining;
         let mut last = None;
@@ -1119,6 +1121,7 @@ impl Run {
                 }
                 Transfer::None => self.retire_strand(activation)?,
             }
+            remaining = remaining.saturating_sub(self.regions.take_work());
         }
         if self.state == RunState::Faulted {
             self.cancel_owned()?;

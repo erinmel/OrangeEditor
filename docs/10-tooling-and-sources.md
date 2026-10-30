@@ -2320,3 +2320,24 @@ Branch `core/update-step-context` on `dev` 22ad0fc (same toolchain; Cargo.lock u
 - **Unchanged:** behavior, trace order and allocation; `orange-measure` against `dev` 22ad0fc shows identical allocations per run and peak live bytes, with pump times within noise.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Ownership work in the pump budget — 2026-10-30
+
+Branch `core/ownership-work-budget` on `dev` ec72b64 (same toolchain; Cargo.lock unchanged). Continues audit finding A07 after the value-sized Update budget.
+
+- **Change:** `Regions` counts ownership work beyond one unit per step: each Fork branch beyond the first and each descendant region a cancellation retires. The pump spends that count from its budget after the step, so a wide Fork or race cancellation ends the pump instead of running further work behind it. Ownership work done outside a pump, such as a host stop, is not charged to the next one. Spawning and each cancellation traversal are still single steps.
+- **Harness:** `orange-measure fork-fanout-256` runs a 256-branch Fork race 100 times; one branch finishes at once and 255 wait, so every iteration cancels 255 strands. The measurement tests now take a lock, because the counting allocator is process-wide and a long workload in a parallel test skewed the others.
+- **Measured** with `orange-measure` (release, same machine, budget 64, 15 runs):
+
+| Workload | Pumps/run | Pump p50 µs | Pump p95 µs | Pump max µs |
+|---|---:|---:|---:|---:|
+| fork race fan-out 256, before | 8 | 732.3 | 1,144.2 | 2,331.5 |
+| fork race fan-out 256, after | 201 | 27.8 | 84.4 | 200.6 |
+| fork race + cancel region, before | 110 | 10.8 | 15.2 | 46.4 |
+| fork race + cancel region, after | 141 | 8.3 | 8.7 | 27.6 |
+
+  Other workloads keep their pump counts, allocations and peak bytes.
+- **Regressions:** the fan-out workload needs at least one pump per spawn and per cancellation at budget 64; before the change it needed 8 pumps for all 100 iterations.
+- **Limitations:** one cancellation of 255 strands still takes about 200 µs in a single indivisible step, and host-input snapshots remain one loop per pull. Making either resumable would change cancellation order or frozen-snapshot semantics and needs a design decision. NFR-02 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

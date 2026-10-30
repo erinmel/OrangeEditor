@@ -13,6 +13,8 @@ pub(super) struct Regions {
     map: BTreeMap<RegionId, Region>,
     ids: OwnerIds,
     live_strands: usize,
+    /// Ownership work beyond one unit per step, not yet spent from a pump budget.
+    work: usize,
 }
 
 impl Regions {
@@ -22,6 +24,7 @@ impl Regions {
             map: BTreeMap::new(),
             ids: OwnerIds::after_roots(activations),
             live_strands: 0,
+            work: 0,
         }
     }
     pub fn len(&self) -> usize {
@@ -48,6 +51,14 @@ impl Regions {
                 .checked_add(regions)
                 .and_then(|n| u64::try_from(n).ok())
                 .is_some_and(|n| self.ids.has_room(n))
+    }
+    /// Records `units` of ownership work for the pump to spend.
+    pub fn charge(&mut self, units: usize) {
+        self.work = self.work.saturating_add(units);
+    }
+    /// The ownership work recorded since the last call.
+    pub fn take_work(&mut self) -> usize {
+        std::mem::take(&mut self.work)
     }
     pub fn mint_strand(&mut self) -> Result<StrandId, RunError> {
         self.ids.strand()
@@ -155,6 +166,8 @@ impl Regions {
         cleanup: IdSet<StrandId>,
     ) -> Result<u64, RunError> {
         let (&root, descendants) = subtree.split_first().ok_or(RunError::InvalidState)?;
+        // One unit per retired descendant region, so a wide cancellation spends the budget.
+        self.charge(descendants.len());
         let mut retained_frames = IdSet::default();
         for &id in descendants {
             if let Some(region) = self.map.remove(&id) {
