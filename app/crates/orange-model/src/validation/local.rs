@@ -110,10 +110,11 @@ impl LocalValidation {
         }
     }
 
-    /// Moves the binding past a literal or edge edit the session already checked. A literal
-    /// edit forgets the edited nodes' input, edge and component results; configuration and
-    /// declaration types do not read literals. An edge edit invalidates through the journal
-    /// as a full refresh would, without revisiting configuration. A mismatch drops the cache.
+    /// Moves the binding past a node or edge edit the session already checked. A node edit
+    /// forgets the edited nodes' input, edge and component results; configuration and
+    /// declaration types do not read literals, type arguments or pins. An edge edit
+    /// invalidates through the journal as a full refresh would, without revisiting
+    /// configuration. A mismatch drops the cache.
     pub(crate) fn advance_scoped(
         &mut self,
         document: &GraphDocument,
@@ -131,7 +132,7 @@ impl LocalValidation {
             self.state = Some(document.state_id());
             return;
         }
-        let Some(edit) = change.literal_edit().filter(|_| {
+        let Some(edit) = change.node_edit().filter(|_| {
             change.is_committed()
                 && !change.global_dirty()
                 && self.state == Some(change.from_state())

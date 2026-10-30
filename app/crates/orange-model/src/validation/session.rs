@@ -34,8 +34,9 @@ pub enum SessionWork {
     None,
     /// Valid semantic edit; admission and global passes still run in full.
     Recompute,
-    /// A literal or data-edge edit re-checked only where it can reach. Admission was updated
-    /// from the edit and the retained report was patched without a full analysis.
+    /// A literal, type argument, pin or data-edge edit re-checked only where it can reach.
+    /// Admission was updated from the edit and the retained report was patched without a
+    /// full analysis.
     Scoped,
     Rebuild(RebuildReason),
 }
@@ -178,14 +179,14 @@ impl AnalysisSession {
         let (Some(retained), Some(index)) = (&mut self.retained, &mut self.index) else {
             return false;
         };
-        if (change.literal_edit().is_none() && change.edge_edit().is_none())
+        if (change.node_edit().is_none() && change.edge_edit().is_none())
             || index.state_id() != change.from_state()
         {
             return false;
         }
         index.update(document, change);
-        let scoped = match (change.literal_edit(), change.edge_edit()) {
-            (Some(edit), _) => super::scoped::literal_update(
+        let scoped = match (change.node_edit(), change.edge_edit()) {
+            (Some(edit), _) => super::scoped::node_update(
                 document,
                 registry,
                 &options,
