@@ -478,9 +478,6 @@ impl Run {
         // Completion is performed by the caller after its own bookkeeping.
         Ok(())
     }
-    pub(super) fn loop_region(&self, id: RegionId, owner: ControlIx) -> Result<RegionId, RunError> {
-        self.regions.loop_region(id, owner)
-    }
     pub(super) fn unwind_loop(
         &mut self,
         strand: Strand,
