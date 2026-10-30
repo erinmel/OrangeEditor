@@ -22,10 +22,12 @@ type Workload = (&'static str, fn(Config) -> Row);
 
 const WORKLOADS: &[Workload] = &[
     ("scalar-chain", workloads::scalar_chain),
+    ("host-inputs-384", workloads::host_inputs_384),
     ("function-call", workloads::function_call),
     ("nested-for-each", workloads::nested_for_each),
     ("fork-cancel", workloads::fork_cancel),
     ("fork-fanout-256", workloads::fork_fanout_256),
+    ("fork-fanout-4000", workloads::fork_fanout_4000),
     ("map-cas-16", workloads::map_cas_16),
     ("map-cas-1000", workloads::map_cas_1000),
     ("host-map-16", workloads::host_map_16),

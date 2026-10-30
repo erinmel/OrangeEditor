@@ -55,6 +55,54 @@ pub fn scalar_chain(config: Config) -> Row {
     )
 }
 
+/// Count(100) whose body sets a variable from a 384-add chain in which every add reads
+/// its own Get Variable, so each pull's first poll snapshots 385 host inputs at once. The
+/// default compile limits refuse a 500-add chain of this shape.
+pub fn host_inputs_384(config: Config) -> Row {
+    const INPUTS: u32 = 384;
+    const ROUNDS: u64 = 100;
+    const ONE: u32 = 101;
+    let mut nodes = vec![
+        core(1, "on-start"),
+        count(2, ROUNDS),
+        var_node(3, "get-variable", TOTAL),
+        var_node(4, "set-variable", TOTAL),
+    ];
+    let mut edges = vec![
+        edge(1, 1, "then", 2, "in"),
+        edge(2, 2, "body", 4, "in"),
+        edge(3, 3, "value", 10_000, "a"),
+        edge(4, 10_000 + INPUTS - 1, "sum", 4, "value"),
+    ];
+    for link in 0..INPUTS {
+        let add = 10_000 + link;
+        let get = 20_000 + link;
+        nodes.push(math(add, "add", 0, 0));
+        nodes.push(var_node(get, "get-variable", ONE));
+        edges.push(edge(get, get, "value", add, "b"));
+        if link > 0 {
+            edges.push(edge(add, add - 1, "sum", add, "a"));
+        }
+    }
+    let mut source = Source::new(nodes, edges);
+    source.variables = vec![
+        run_variable(TOTAL, U64, Some(json!("0"))),
+        run_variable(ONE, U64, Some(json!("1"))),
+    ];
+    let (document, plan) = source.control();
+    measure(
+        format!("host inputs ({INPUTS} gets per pull)"),
+        ROUNDS,
+        "iterations",
+        config,
+        || RunSession::start(&plan, &document, total(), config.budget),
+        |(value, wakeups)| {
+            assert_eq!(value, Some(Value::U64(ROUNDS * u64::from(INPUTS))));
+            assert_eq!(wakeups, 0);
+        },
+    )
+}
+
 /// Count(1000) whose body calls a graph-local action function and stores its result, so
 /// every iteration enters one call frame, writes a fresh local cell and returns. The
 /// function sets a local to its argument, then returns that local plus one.
@@ -239,6 +287,11 @@ fn fork_fanout(config: Config, branches: u32) -> Row {
 
 pub fn fork_fanout_256(config: Config) -> Row {
     fork_fanout(config, 256)
+}
+
+/// The widest race the default run limits admit: 4,000 branches of 4,096 strands.
+pub fn fork_fanout_4000(config: Config) -> Row {
+    fork_fanout(config, 4000)
 }
 
 const STRING_MAP: &str = "core/map@1<core/string@1,core/u64@1>";
