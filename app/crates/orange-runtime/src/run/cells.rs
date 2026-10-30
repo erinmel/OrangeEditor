@@ -1,5 +1,5 @@
 //! Variable and state cells a step may write, apart from the scheduler.
-use super::function::{Frames, find_frame};
+use super::function::{Frames, find_frame, frame_value};
 use super::*;
 
 /// Ids the current actor segment wrote, each once. These are write intents,
@@ -55,9 +55,10 @@ impl SegmentWrites {
     }
 }
 
-/// The run cells a step may write, borrowed apart from the scheduler, regions
-/// and trace. Every write admits its whole byte charge before it stores, so a
-/// rejected write leaves cells, bytes, versions and segment writes unchanged.
+/// The run cells a step may read and write, borrowed apart from the scheduler, regions
+/// and trace. Data demand is consumed through it too, since it reads only cells. Every
+/// write admits its whole byte charge before it stores, so a rejected write leaves cells,
+/// bytes, versions and segment writes unchanged.
 pub(super) struct Cells<'r> {
     pub layout: &'r StateLayout,
     pub limit: usize,
@@ -251,5 +252,166 @@ impl Cells<'_> {
         self.versions[variable] = version;
         self.segment.variable(variable, var.id());
         Ok(())
+    }
+}
+
+/// Data consumption reads only cells, frames and the layout, so it runs on `Cells`.
+impl Cells<'_> {
+    pub(super) fn consume(
+        &self,
+        plan: &ControlPlan,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
+        root: usize,
+        budget: &mut usize,
+    ) -> Result<Option<FoldedValue>, RunError> {
+        let inputs = plan.inputs_for(root).ok_or(RunError::InvalidState)?;
+        self.consume_inputs(plan, activation, shared, root, inputs, budget)
+    }
+    pub(super) fn consume_inputs(
+        &self,
+        plan: &ControlPlan,
+        activation: &mut Strand,
+        shared: &mut ActivationState,
+        root: usize,
+        inputs: &[usize],
+        budget: &mut usize,
+    ) -> Result<Option<FoldedValue>, RunError> {
+        // Snapshot: a pull's first poll opens one data epoch and copies every host
+        // input it may read; later polls resume that epoch, so cell writes by other
+        // strands meanwhile cannot change what this demand observes.
+        if activation.pull.active.is_none() {
+            shared.data.begin_epoch()?;
+            shared.pull_owner = Some(activation.id);
+            activation.pull.begin(root);
+            for &i in inputs {
+                let source = &plan.host_sources()[i];
+                let value = match source {
+                    HostSource::Iteration(owner, projection) => {
+                        let frame =
+                            IterationFrame::find(activation.iteration_context.as_deref(), *owner)
+                                .ok_or(DataError::MissingInput {
+                                node: plan.nodes()[owner.index()].node(),
+                            })?;
+                        Some(FoldedValue::Value(
+                            frame.value(*projection).ok_or(RunError::InvalidState)?,
+                        ))
+                    }
+                    HostSource::FrameLocal { scope, variable } => {
+                        let frame = find_frame(self.frames, activation.function, *scope)?;
+                        let value = frame_value(self.frames, plan, frame, *variable)?.cloned();
+                        Some(
+                            value
+                                .map(FoldedValue::Value)
+                                .unwrap_or_else(|| FunctionFrame::uninitialized(plan, i)),
+                        )
+                    }
+                    HostSource::Argument { scope, index } => {
+                        let frame = find_frame(self.frames, activation.function, *scope)?;
+                        Some(FoldedValue::Value(
+                            self.frames[&frame]
+                                .arguments
+                                .get(*index)
+                                .ok_or(RunError::InvalidState)?
+                                .clone(),
+                        ))
+                    }
+                    HostSource::State(index) => {
+                        Some(match self.layout.state(plan, self.states, shared, *index) {
+                            Some(value) => FoldedValue::Value(value.clone()),
+                            None => FoldedValue::Fault(ConstantFault {
+                                source: plan.states()[*index].id(),
+                                fault: KernelFault {
+                                    code: "core/UninitializedRegister",
+                                    message_key: "core/uninitialized-register",
+                                    message: "The register has not been initialized.",
+                                },
+                            }),
+                        })
+                    }
+                    HostSource::Variable(index) | HostSource::CallLocal(index) => {
+                        let var = &plan.variables()[*index];
+                        let cell = if matches!(source, HostSource::CallLocal(_)) {
+                            // Volatile bodies cannot mutate locals; immutable initial values
+                            // implement fresh call-local reads without mutable frame allocation.
+                            var.initial()
+                        } else if var.scope() == VarScope::Local {
+                            shared.locals[self.layout.variables[*index]].as_ref()
+                        } else {
+                            self.variables[self.layout.variables[*index]].as_ref()
+                        };
+                        Some(match cell {
+                            Some(value) => FoldedValue::Value(value.clone()),
+                            None => FoldedValue::Fault(ConstantFault {
+                                source: plan.data().nodes()[plan.data().host_inputs()[i].index()]
+                                    .node(),
+                                fault: KernelFault {
+                                    code: "core/UninitializedVariable",
+                                    message_key: "core/uninitialized-variable",
+                                    message: "The variable has not been initialized.",
+                                },
+                            }),
+                        })
+                    }
+                    HostSource::Error(_)
+                    | HostSource::Index(_)
+                    | HostSource::Value(_)
+                    | HostSource::Update(_, _)
+                    | HostSource::CallOutput(_, _) => {
+                        self.layout.outputs[i].and_then(|slot| shared.outputs[slot].clone())
+                    }
+                };
+                activation.pull.inputs.push(value);
+            }
+        }
+        if activation
+            .pull
+            .active
+            .as_ref()
+            .is_none_or(|pull| pull.root != root)
+        {
+            return Err(RunError::InvalidState);
+        }
+        loop {
+            if let Some(index) = activation.pull.active.as_ref().and_then(|pull| pull.input) {
+                if *budget == 0 {
+                    return Ok(None);
+                }
+                *budget -= 1;
+                let offset = inputs
+                    .binary_search(&index)
+                    .map_err(|_| RunError::InvalidState)?;
+                let value = activation.pull.inputs[offset].clone().ok_or_else(|| {
+                    RunError::Data(DataError::MissingInput {
+                        node: plan.data().nodes()[plan.data().host_inputs()[index].index()].node(),
+                    })
+                })?;
+                shared.data.set_input_outcome(index, value)?;
+                activation
+                    .pull
+                    .active
+                    .as_mut()
+                    .ok_or(RunError::InvalidState)?
+                    .input = None;
+            }
+            match shared.data.poll_host_export(root, budget)? {
+                HostPoll::Pending => return Ok(None),
+                HostPoll::Input(index) => {
+                    activation
+                        .pull
+                        .active
+                        .as_mut()
+                        .ok_or(RunError::InvalidState)?
+                        .input = Some(index)
+                }
+                HostPoll::Ready(Some(value)) => {
+                    return Ok(Some(match value.outcome {
+                        Ok(value) => FoldedValue::Value(value.clone()),
+                        Err(fault) => FoldedValue::Fault(fault.clone()),
+                    }));
+                }
+                HostPoll::Ready(None) => return Err(RunError::InvalidState),
+            }
+        }
     }
 }

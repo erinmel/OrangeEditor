@@ -2310,3 +2310,13 @@ Branch `core/literal-decode-budget` on `dev` 78d9097 (same toolchain; Cargo.lock
 - **Limitations:** `MAX_LITERAL_BYTES` is a proposed default, not a qualified budget; model validation uses the default rather than a host-chosen limit.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Update step context — 2026-10-30
+
+Branch `core/update-step-context` on `dev` 22ad0fc (same toolchain; Cargo.lock unchanged). Continues finding F07 of the final quality review.
+
+- **Change:** data demand consumption (`consume`, `consume_inputs`) and the whole Update step now run on `Cells`, since they read only the layout, cells and frames and write cells. The epoch, pull ownership and host-input snapshot live in the activation and strand passed in, as before.
+- **Step families now:** gates, latches, registers, Set and Update use `Cells`; Branch, Switch and Match Result use the layout; Fork, Entry, Yield and Wait use the clock; loops use `Loops`. Only Call and Return still run on `Run`, because a call opens a region and a frame and schedules its body, and a return completes regions and resumes the caller.
+- **Unchanged:** behavior, trace order and allocation; `orange-measure` against `dev` 22ad0fc shows identical allocations per run and peak live bytes, with pump times within noise.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
