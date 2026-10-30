@@ -2341,3 +2341,13 @@ Branch `core/ownership-work-budget` on `dev` ec72b64 (same toolchain; Cargo.lock
 - **Limitations:** one cancellation of 255 strands still takes about 200 µs in a single indivisible step, and host-input snapshots remain one loop per pull. Making either resumable would change cancellation order or frozen-snapshot semantics and needs a design decision. NFR-02 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Session input check reuse (V12b) — 2026-10-30
+
+Branch `core/session-input-reuse` on `dev` 95d7944 (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).
+
+- **Change:** `AnalysisSession` keeps each node's input diagnostics together with the resolved signature, the rigid type parameters and the ordered wire answers the check read. An analysis reuses them when the change journal left the node untouched and all of those are equal; the shared per-node checker computes every miss. Registry changes and unproven journals clear the cache. `LocalWork` gains `inputs_computed` and `input_hits`.
+- **Regressions:** one configuration edit among 16 nodes recomputes one input check and reuses 15; a cached check is recomputed when its wire moves between bodies; the session-versus-full-analysis property tests, which connect, disconnect, edit literals and variadics and add and remove functions, pass, also with 512 cases in release.
+- **Limitations:** the session still visits every node and runs every other pass in full, so V12b is not complete and NFR-15 is not requalified. Each entry clones its node's signature snapshot; retained memory is not measured. No release timing was recorded: the existing fixtures have only scalar input literals, so a timing would mostly measure orchestration.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

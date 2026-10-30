@@ -319,15 +319,16 @@ pub(super) fn analyze_indexed(
             }
         }
     };
-    let work = local.refresh(document, registry, change);
+    let mut work = local.refresh(document, registry, change);
     let result = run_supported_analysis(
         document,
         registry,
         effects,
         &options,
-        index.as_ref().map(|index| (index, &*local)),
+        index.as_ref().map(|index| (index, &mut *local)),
     )
     .unwrap_or_else(|code| rejected_analysis(document, registry, code));
+    local.record_input_work(&mut work);
     (result, work, rebuilt)
 }
 
@@ -355,17 +356,26 @@ fn run_supported_analysis(
     registry: &RegistrySnapshot,
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
     options: &AnalysisOptions<'_>,
-    retained: Option<(&DocIndex, &super::local::LocalValidation)>,
+    retained: Option<(&DocIndex, &mut super::local::LocalValidation)>,
 ) -> Result<ValidationAnalysis, DiagnosticCode> {
     let built_index;
-    let index = match retained {
-        Some((index, _)) => index,
+    let (index, mut local) = match retained {
+        Some((index, local)) => (index, Some(local)),
         None => {
             built_index = DocIndex::build(document);
-            &built_index
+            (&built_index, None)
         }
     };
-    let seed = accept_functions(document, registry, leaf_effects, index, options)?;
+    let seed = accept_functions(
+        document,
+        registry,
+        leaf_effects,
+        index,
+        local
+            .as_deref_mut()
+            .map(super::local::LocalValidation::inputs),
+        options,
+    )?;
     let Settled {
         passes:
             BodyPasses {
@@ -380,7 +390,17 @@ fn run_supported_analysis(
         functions,
         conformance,
         ..
-    } = settle(document, registry, leaf_effects, index, seed, options)?;
+    } = settle(
+        document,
+        registry,
+        leaf_effects,
+        index,
+        seed,
+        local
+            .as_deref_mut()
+            .map(super::local::LocalValidation::inputs),
+        options,
+    )?;
 
     let ports = super::ports::PortResolver::resume(document, &nodes.resolved, projections);
     let availability = super::availability::validate_availability_with_ports(
@@ -393,8 +413,8 @@ fn run_supported_analysis(
     options.checkpoint()?;
     let mut diagnostics = nodes.diagnostics;
     diagnostics.extend(super::inputs::validate_type_locks(document, registry));
-    match retained {
-        Some((_, local)) => diagnostics.extend(local.declaration_diagnostics().cloned()),
+    match &local {
+        Some(local) => diagnostics.extend(local.declaration_diagnostics().cloned()),
         None => diagnostics.extend(validate_declaration_types(document, registry)),
     }
     options.checkpoint()?;
@@ -406,8 +426,8 @@ fn run_supported_analysis(
         &regions.index.zones,
     ));
     options.checkpoint()?;
-    match retained {
-        Some((_, local)) => diagnostics.extend(local.config_diagnostics().cloned()),
+    match &local {
+        Some(local) => diagnostics.extend(local.config_diagnostics().cloned()),
         None => diagnostics.extend(validate_config(document, registry)),
     }
     options.checkpoint()?;
