@@ -21,6 +21,7 @@ mod cells;
 mod function;
 mod iteration;
 mod loops;
+use loops::Loops;
 mod retained;
 mod select;
 use cells::SegmentWrites;
@@ -31,12 +32,14 @@ mod ids;
 mod ready;
 mod regions;
 mod timers;
+mod trace;
 mod update;
 use ids::{FrameId, RegionId, StrandId};
 use ownership::{IdSet, Region, RegionKind};
 use ready::ReadyQueue;
 use regions::Regions;
 use timers::{TimerKey, Timers};
+use trace::Trace;
 
 static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 fn run_identity() -> Result<u64, RunError> {
@@ -542,8 +545,7 @@ pub struct Run {
     ready: ReadyQueue<Strand>,
     activations: Vec<Option<Box<ActivationState>>>,
     regions: Regions,
-    trace: VecDeque<RunEvent>,
-    trace_dropped: u64,
+    trace: Trace,
     operations: usize,
     variables: Vec<Option<Value>>,
     states: Vec<Option<Value>>,
@@ -750,8 +752,7 @@ impl Run {
             ready,
             activations,
             regions,
-            trace: VecDeque::new(),
-            trace_dropped: 0,
+            trace: Trace::default(),
             operations: 0,
             versions: vec![0; variable_count],
             layout,
@@ -848,10 +849,10 @@ impl Run {
         Ok(())
     }
     pub fn trace(&self) -> &VecDeque<RunEvent> {
-        &self.trace
+        self.trace.events()
     }
     pub fn trace_dropped(&self) -> u64 {
-        self.trace_dropped
+        self.trace.dropped()
     }
     /// Unambiguous run-owned source state; repeated call sites require `control_state`.
     pub fn node_state(&self, id: NodeId) -> Option<&Value> {
@@ -896,15 +897,7 @@ impl Run {
         self.variables[self.layout.variables[index]].as_ref()
     }
     fn record(&mut self, event: RunEvent) {
-        if self.options.limits.max_trace == 0 {
-            self.trace_dropped = self.trace_dropped.saturating_add(1);
-            return;
-        }
-        if self.trace.len() == self.options.limits.max_trace {
-            self.trace.pop_front();
-            self.trace_dropped = self.trace_dropped.saturating_add(1);
-        }
-        self.trace.push_back(event);
+        self.trace.record(event, self.options.limits.max_trace);
     }
     /// Drive at most `budget` control/data/timer work items. Idle Running is live.
     /// Native callbacks are trusted; this is not a wall-time preemption guarantee.
@@ -1232,7 +1225,7 @@ impl Run {
     ) -> Result<(), RunError> {
         let Some(target) = activation.pc else {
             *budget -= 1;
-            return self.resume_cursor(plan, activation, shared);
+            return self.loops().resume_cursor(plan, activation, shared);
         };
         let ix = target.node();
         let node = &plan.nodes()[ix.index()];
@@ -1298,7 +1291,9 @@ impl Run {
             | ControlOperation::Count { .. }
             | ControlOperation::Sequence { .. }
             | ControlOperation::Break
-            | ControlOperation::Continue => self.loop_step(plan, ix, activation, shared, value)?,
+            | ControlOperation::Continue => self
+                .loops()
+                .loop_step(plan, ix, activation, shared, value)?,
             ControlOperation::Fork { .. }
             | ControlOperation::Entry
             | ControlOperation::Yield
@@ -1704,7 +1699,7 @@ impl Run {
         self.segment = SegmentWrites::default();
         self.segment_owner = None;
         self.last_segment = None;
-        self.trace = VecDeque::new();
+        self.trace.release();
         self.cancel_regions = Vec::new();
         self.cancel_timers = Vec::new();
         self.transition(RunState::Disposed);

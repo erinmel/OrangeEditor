@@ -132,7 +132,7 @@ fn frame(
         hold,
     })
 }
-impl Run {
+impl Loops<'_> {
     pub(super) fn begin_iteration(
         &self,
         plan: &ControlPlan,
@@ -147,10 +147,10 @@ impl Run {
             .checked_value_charge(
                 plan.data().exports()[root].slot,
                 &collection,
-                self.options.limits.max_state_bytes,
+                self.limits.max_state_bytes,
             )
             .map_err(|_| RunError::ResourceLimit)?;
-        let hold = Hold::new(shared, bytes, 0, self.options.limits.max_state_bytes)?;
+        let hold = Hold::new(shared, bytes, 0, self.limits.max_state_bytes)?;
         let current = frame(
             plan,
             shared,
@@ -161,7 +161,7 @@ impl Run {
                 index: 0,
                 credit: 0,
             },
-            self.options.limits.max_state_bytes,
+            self.limits.max_state_bytes,
         )?;
         Ok(ForEachCursor {
             owner,
@@ -205,7 +205,7 @@ impl Run {
                     index: cursor.next,
                     credit,
                 },
-                self.options.limits.max_state_bytes,
+                self.limits.max_state_bytes,
             )?;
             match Arc::get_mut(&mut cursor.frame) {
                 Some(unique) => *unique = current,

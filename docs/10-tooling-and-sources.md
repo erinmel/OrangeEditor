@@ -2290,3 +2290,13 @@ Branch `core/run-regions` on `dev` 88d8727 (same toolchain; Cargo.lock unchanged
 - **Limitations:** run modules still receive `&mut Run` and reach the scheduler, frames, activations and trace directly; regions' own fields remain visible to them for continuations, cursors and join state. Narrower step contexts beyond `Cells` remain F07 work.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Loop step context — 2026-10-30
+
+Branch `core/loop-step-context` on `dev` 04879d4 (same toolchain; Cargo.lock unchanged). Continues finding F07 of the final quality review.
+
+- **Change:** the control trace becomes `Trace`, which only records events and reports what it kept and dropped. ForEach, While, Count, Sequence, Break and Continue steps, cursor resumption and iteration frames now run on `Loops`, which borrows only the state layout, the limits, the region tree (read-only) and the trace. Loop code can no longer reach the scheduler, timers, frames, cells or activations.
+- **Step families now:** gate, latch, register and Set steps use `Cells`; Branch, Switch and Match Result use the layout alone; Fork, Entry, Yield and Wait use the clock alone; loops use `Loops`. Calls, Return and Update still run on `Run`: they pull data through the run's demand and epoch machinery, and calls open regions and frames. Update's writes already go through `Cells`.
+- **Unchanged:** behavior and trace order. `orange-measure` against `dev` 04879d4 shows identical allocations per run and peak live bytes for every workload, with pump times within run-to-run noise.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

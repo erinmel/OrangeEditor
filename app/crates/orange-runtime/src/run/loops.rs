@@ -1,6 +1,7 @@
 //! Structured loops and sequences. A step pushes a cursor and requests body
 //! entry, or names the loop region a Break/Continue unwinds; the cursor then
-//! resumes when the body region completes. Run state is only read here.
+//! resumes when the body region completes. Steps borrow [`Loops`], so they read the
+//! layout, limits and region tree and append to the trace, and reach nothing else.
 use super::*;
 
 const LOOP_BUDGET_EXCEEDED: KernelFault = KernelFault {
@@ -9,7 +10,29 @@ const LOOP_BUDGET_EXCEEDED: KernelFault = KernelFault {
     message: "The loop iteration budget is exhausted.",
 };
 
+/// What loop and sequence steps may touch: the layout, limits and region tree to read and
+/// the trace to append to. Scheduling, cells, frames, timers and activations stay out of
+/// reach.
+pub(super) struct Loops<'r> {
+    pub layout: &'r StateLayout,
+    pub limits: &'r RunLimits,
+    pub regions: &'r Regions,
+    pub trace: &'r mut Trace,
+}
 impl Run {
+    pub(super) fn loops(&mut self) -> Loops<'_> {
+        Loops {
+            layout: &self.layout,
+            limits: &self.options.limits,
+            regions: &self.regions,
+            trace: &mut self.trace,
+        }
+    }
+}
+impl Loops<'_> {
+    pub(super) fn record(&mut self, event: RunEvent) {
+        self.trace.record(event, self.limits.max_trace);
+    }
     pub(super) fn loop_step(
         &self,
         plan: &ControlPlan,
@@ -85,7 +108,7 @@ impl Run {
                         next: 1,
                         count,
                     });
-                    Self::publish_index(plan, &self.layout, shared, ix, Some(0))?;
+                    Run::publish_index(plan, self.layout, shared, ix, Some(0))?;
                     (*body, ControlOutcome::Body, None)
                 }
                 _ => return Err(contract.into()),
@@ -111,7 +134,7 @@ impl Run {
     /// Break and Continue request an unwind of their nearest owning loop region.
     fn unwind_step(&self, node: &ControlNode, activation: &mut Strand) -> Result<Step, RunError> {
         let owner = node.loop_owner().ok_or(RunError::InvalidState)?;
-        let region = self.loop_region(activation.region, owner)?;
+        let region = self.regions.loop_region(activation.region, owner)?;
         let is_break = matches!(node.operation(), ControlOperation::Break);
         activation.transfer = Transfer::Unwind { region, is_break };
         let outcome = if is_break {
@@ -123,7 +146,7 @@ impl Run {
     }
     /// The region depth limit bounds a strand's cursor stack.
     fn admit_cursor(&self, activation: &Strand) -> Result<(), RunError> {
-        if activation.stack.len() == self.options.limits.max_region_depth {
+        if activation.stack.len() == self.limits.max_region_depth {
             return Err(RunError::ResourceLimit);
         }
         Ok(())
@@ -159,7 +182,7 @@ impl Run {
                         next: next + 1,
                         count,
                     });
-                    Self::publish_index(plan, &self.layout, shared, owner, Some(next))?;
+                    Run::publish_index(plan, self.layout, shared, owner, Some(next))?;
                     activation.pc = *body;
                     activation.yielded = true;
                     self.record(RunEvent {
@@ -169,7 +192,7 @@ impl Run {
                         fault: None,
                     });
                 } else {
-                    Self::publish_index(plan, &self.layout, shared, owner, None)?;
+                    Run::publish_index(plan, self.layout, shared, owner, None)?;
                     activation.pc = *completed;
                     self.record(RunEvent {
                         activation: activation.sequence,
