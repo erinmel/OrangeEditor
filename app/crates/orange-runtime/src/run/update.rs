@@ -23,7 +23,8 @@ struct UpdateCommit<'a> {
     write: bool,
     compare: bool,
 }
-impl Run {
+/// Update reads its cell, consumes its ordered demand and commits through `Cells` alone.
+impl Cells<'_> {
     fn consume_update(
         &self,
         plan: &ControlPlan,
@@ -87,14 +88,14 @@ impl Run {
         let (variable, operation) = (*variable, *operation);
         let metadata = &plan.variables()[variable];
         let cell = self.layout.variables[variable];
-        let limit = self.options.limits.max_state_bytes;
+        let limit = self.limit;
         let frame = if metadata.scope() == VarScope::Local && node.scope() != 0 {
-            Some(find_frame(&self.frames, activation.function, node.scope())?)
+            Some(find_frame(self.frames, activation.function, node.scope())?)
         } else {
             None
         };
         let current = if let Some(frame) = frame {
-            frame_value(&self.frames, plan, frame, variable)?
+            frame_value(self.frames, plan, frame, variable)?
         } else if metadata.scope() == VarScope::Local {
             shared.locals[cell].as_ref()
         } else {
@@ -123,11 +124,11 @@ impl Run {
             Ok(update) => update,
             Err(step) => {
                 // A failed update clears its value outputs before its Failed edge.
-                Self::publish_match_value(plan, &self.layout, shared, owner, None, limit)?;
+                Run::publish_match_value(plan, self.layout, shared, owner, None, limit)?;
                 return Ok(Some(step));
             }
         };
-        let work = self.cells().publish_update(
+        let work = self.publish_update(
             plan,
             shared,
             UpdateCommit {

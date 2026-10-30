@@ -285,7 +285,8 @@ impl Run {
             let index = strand.pull.call_values.len();
             let root = demand.roots()[index];
             let Some(result) =
-                self.consume_inputs(plan, strand, shared, root, demand.inputs(), budget)?
+                self.cells()
+                    .consume_inputs(plan, strand, shared, root, demand.inputs(), budget)?
             else {
                 return Ok(());
             };
