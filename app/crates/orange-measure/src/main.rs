@@ -98,6 +98,17 @@ fn main() {
             workloads::disposed_run_retained_bytes()
         );
     }
+    if "session-edit".contains(filter.as_str()) {
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1e3;
+        for (chains, length) in [(1000, 10), (1, 10_000)] {
+            let (p50, p95) = workloads::session_edit(config, chains, length);
+            println!(
+                "session literal edit ({chains} chains of {length} nodes) p50: {:.3} ms, p95: {:.3} ms",
+                ms(p50),
+                ms(p95)
+            );
+        }
+    }
     if "analysis-worker".contains(filter.as_str()) {
         let times = workloads::analysis_worker_latency(config);
         let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1e3;
