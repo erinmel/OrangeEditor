@@ -301,6 +301,8 @@ impl Run {
         {
             return self.fail(RunError::ResourceLimit);
         }
+        // Each branch beyond the first is extra ownership work for the pump budget.
+        self.regions.charge(n.saturating_sub(1));
         let group = self.regions.mint_region()?;
         let mut children = Vec::with_capacity(n);
         for target in branches {
