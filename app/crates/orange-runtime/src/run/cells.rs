@@ -309,8 +309,8 @@ impl Cells<'_> {
                     HostSource::Argument { scope, index } => {
                         let frame = find_frame(self.frames, activation.function, *scope)?;
                         Some(FoldedValue::Value(
-                            self.frames[&frame]
-                                .arguments
+                            self.frames
+                                .arguments(frame)?
                                 .get(*index)
                                 .ok_or(RunError::InvalidState)?
                                 .clone(),

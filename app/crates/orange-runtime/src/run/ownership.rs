@@ -186,16 +186,135 @@ impl Run {
         }
         self.complete_regions(strand.region)
     }
+    /// Retires `frames` of `activation`, releasing their call projections.
+    fn retire_frames(
+        &mut self,
+        frames: impl Iterator<Item = FrameId>,
+        activation: u64,
+    ) -> Result<(), RunError> {
+        let plan = self.plan.as_deref().ok_or(RunError::InvalidState)?;
+        for frame in frames {
+            let shared = self
+                .activations
+                .get_mut(activation as usize)
+                .and_then(Option::as_deref_mut)
+                .ok_or(RunError::InvalidState)?;
+            self.frames.retire(frame, plan, &self.layout, shared)?;
+        }
+        Ok(())
+    }
+    /// Opens the callee region and frame for `call`. The caller waits as the region's
+    /// continuation and its strand identity passes to the callee.
+    pub(super) fn enter_function(
+        &mut self,
+        mut caller: Strand,
+        call: PendingCall,
+    ) -> Result<(), RunError> {
+        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
+        let (owner, scope) = call.target();
+        let entry = plan.function(scope).ok_or(RunError::InvalidState)?.entry();
+        let depth = self.regions.get(caller.region)?.depth + 1;
+        if depth > self.options.limits.max_region_depth
+            || !self.regions.has_room(1, 1, &self.options.limits)
+        {
+            return self.fail(RunError::ResourceLimit);
+        }
+        let shared = self.activations[caller.sequence as usize]
+            .as_deref()
+            .ok_or(RunError::InvalidState)?;
+        let frame = Frames::prepare(
+            &plan,
+            call,
+            caller.function,
+            shared,
+            self.options.limits.max_state_bytes,
+        )?;
+        let region = self.regions.mint_region()?;
+        let mut child = self.child_strand(&caller, region)?;
+        child.id = caller.id;
+        child.pull = caller.pull.lend();
+        child.function = Some(FrameId::of_region(region));
+        child.pc = entry;
+        caller.pc = None;
+        self.frames.insert(FrameId::of_region(region), frame);
+        self.regions.open(
+            region,
+            Region {
+                frames: None,
+                retired_cursor: None,
+                parent: Some(caller.region),
+                activation: caller.sequence,
+                depth,
+                live: IdSet::one(child.id),
+                children: IdSet::default(),
+                continuation: Some(caller),
+                kind: RegionKind::Function {
+                    owner,
+                    result: None,
+                },
+            },
+        )?;
+        self.ready.push_front(child.id, child);
+        Ok(())
+    }
+    /// Ends the callee's region with `result`; the caller resumes once its cleanup ends.
+    pub(super) fn leave_function(
+        &mut self,
+        strand: Strand,
+        result: FunctionReturn,
+    ) -> Result<(), RunError> {
+        let region = RegionId::of_frame(strand.function.ok_or(RunError::InvalidState)?);
+        let frame = self.regions.get_mut(region)?;
+        let RegionKind::Function {
+            result: pending, ..
+        } = &mut frame.kind
+        else {
+            return Err(RunError::InvalidState);
+        };
+        if pending.is_some() {
+            return Err(RunError::InvalidState);
+        }
+        *pending = Some(result);
+        if let Some(caller) = frame.continuation.as_mut() {
+            caller.pull.recycle(strand.pull);
+        }
+        self.cancel_region(region)?;
+        self.complete_regions(region)
+    }
+    /// Completes the caller's Call node `owner` with the callee's `result`.
+    fn finish_function(
+        &mut self,
+        caller: &mut Strand,
+        owner: ControlIx,
+        result: FunctionReturn,
+    ) -> Result<(), RunError> {
+        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
+        let mut shared = self.activations[caller.sequence as usize]
+            .take()
+            .ok_or(RunError::InvalidState)?;
+        let result = call_returned(
+            &plan,
+            &self.layout,
+            caller,
+            &mut shared,
+            owner,
+            result,
+            self.options.limits.max_state_bytes,
+        )
+        .and_then(|step| self.complete(&plan, caller, &mut shared, owner, step));
+        self.activations[caller.sequence as usize] = Some(shared);
+        result
+    }
     pub(super) fn complete_regions(&mut self, mut id: RegionId) -> Result<(), RunError> {
         loop {
             let Some(mut r) = self.regions.take_if_done(id)? else {
                 return Ok(());
             };
-            for frame in r.frames.iter().flat_map(|frames| frames.iter()) {
-                self.retire_frame(frame, r.activation)?;
-            }
+            let function =
+                matches!(r.kind, RegionKind::Function { .. }).then(|| FrameId::of_region(id));
+            let retired = r.frames.iter().flat_map(|frames| frames.iter());
+            self.retire_frames(retired.chain(function), r.activation)?;
             if let RegionKind::Function { owner, result } = r.kind {
-                self.retire_frame(FrameId::of_region(id), r.activation)?;
                 let result = match result {
                     Some(result) => result,
                     None => {

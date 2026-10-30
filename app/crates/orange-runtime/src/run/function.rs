@@ -29,6 +29,12 @@ pub(super) struct PendingCall {
     scope: usize,
     storage: FrameStorage,
 }
+impl PendingCall {
+    /// The Call node and the function scope it enters.
+    pub fn target(&self) -> (ControlIx, usize) {
+        (self.owner, self.scope)
+    }
+}
 pub(super) enum FunctionReturn {
     Values {
         values: Vec<Value>,
@@ -68,7 +74,126 @@ pub(super) struct FrameWrite {
     hold: Hold,
     version: u64,
 }
-pub(super) type Frames = BTreeMap<FrameId, FunctionFrame>;
+/// The run's function frames and the spare buffers retired frames return. Only this module
+/// opens, writes and retires frames; a retired frame releases its call projections and
+/// retained bytes in the same step.
+#[derive(Default)]
+pub(super) struct Frames {
+    map: BTreeMap<FrameId, FunctionFrame>,
+    spare: Vec<FrameStorage>,
+}
+impl Frames {
+    fn get(&self, id: FrameId) -> Result<&FunctionFrame, RunError> {
+        self.map.get(&id).ok_or(RunError::InvalidState)
+    }
+    pub fn arguments(&self, id: FrameId) -> Result<&[Value], RunError> {
+        Ok(&self.get(id)?.arguments)
+    }
+    /// Drops every frame and keeps the spare buffers.
+    pub fn clear(&mut self) {
+        self.map.clear();
+    }
+    /// Drops every frame and releases all frame storage.
+    pub fn release(&mut self) {
+        *self = Self::default();
+    }
+    /// A callee frame for `call`, holding its arguments and initial locals, with their bytes
+    /// charged to `shared`. Nothing is stored until [`insert`](Self::insert).
+    pub fn prepare(
+        plan: &ControlPlan,
+        call: PendingCall,
+        parent: Option<FrameId>,
+        shared: &ActivationState,
+        limit: usize,
+    ) -> Result<FunctionFrame, RunError> {
+        let layout = plan.function(call.scope).ok_or(RunError::InvalidState)?;
+        let ControlOperation::Call { demand, .. } = plan.nodes()[call.owner.index()].operation()
+        else {
+            return Err(RunError::InvalidState);
+        };
+        let mut bytes = values_charge(plan, demand, &call.storage.arguments, limit)?;
+        for &variable in layout.locals() {
+            let metadata = &plan.variables()[variable];
+            bytes = bytes
+                .checked_add(
+                    metadata
+                        .initial()
+                        .and_then(|v| metadata.charge(v))
+                        .unwrap_or(16),
+                )
+                .ok_or(RunError::ResourceLimit)?;
+        }
+        let hold = Hold::new(shared, bytes, 0, limit)?;
+        let FrameStorage {
+            arguments,
+            mut locals,
+        } = call.storage;
+        locals.extend(layout.locals().iter().map(|&i| LocalCell {
+            value: plan.variables()[i].initial().cloned(),
+            version: 0,
+        }));
+        Ok(FunctionFrame {
+            scope: call.scope,
+            parent,
+            arguments,
+            locals,
+            hold,
+        })
+    }
+    pub fn insert(&mut self, id: FrameId, frame: FunctionFrame) {
+        self.map.insert(id, frame);
+    }
+    /// Removes frame `id`, clears its scope's call projections from `shared` with their
+    /// retained bytes, and keeps its buffers for a later call.
+    pub fn retire(
+        &mut self,
+        id: FrameId,
+        plan: &ControlPlan,
+        cells: &StateLayout,
+        shared: &mut ActivationState,
+    ) -> Result<(), RunError> {
+        let frame = self.map.remove(&id).ok_or(RunError::InvalidState)?;
+        let layout = plan.function(frame.scope).ok_or(RunError::InvalidState)?;
+        let mut removed = 0usize;
+        for &input in layout.projections() {
+            let cell = cells.outputs[input].ok_or(RunError::InvalidState)?;
+            if matches!(
+                plan.host_sources()[input],
+                HostSource::Value(_) | HostSource::Update(_, _) | HostSource::CallOutput(_, _)
+            ) && let Some(FoldedValue::Value(value)) = &shared.outputs[cell]
+            {
+                let slot =
+                    plan.data().nodes()[plan.data().host_inputs()[input].index()].outputs()[0];
+                removed = removed
+                    .checked_add(
+                        plan.data()
+                            .value_charge(slot, value)
+                            .ok_or(RunError::InvalidState)?,
+                    )
+                    .ok_or(RunError::ResourceLimit)?;
+            }
+        }
+        let retained = shared
+            .retained_bytes
+            .checked_sub(removed)
+            .ok_or(RunError::InvalidState)?;
+        for &input in layout.projections() {
+            shared.outputs[cells.outputs[input].ok_or(RunError::InvalidState)?] = None;
+        }
+        shared.retained_bytes = retained;
+        let FunctionFrame {
+            mut arguments,
+            mut locals,
+            ..
+        } = frame;
+        if self.spare.len() < SPARE_FRAMES {
+            arguments.clear();
+            locals.clear();
+            self.spare.push(FrameStorage { arguments, locals });
+        }
+        Ok(())
+    }
+}
 /// The nearest frame of `scope` on the strand's lexical frame chain.
 pub(super) fn find_frame(
     frames: &Frames,
@@ -76,7 +201,7 @@ pub(super) fn find_frame(
     scope: usize,
 ) -> Result<FrameId, RunError> {
     while let Some(current) = id {
-        let frame = frames.get(&current).ok_or(RunError::InvalidState)?;
+        let frame = frames.get(current)?;
         if frame.scope == scope {
             return Ok(current);
         }
@@ -91,7 +216,7 @@ fn frame_slot<'a>(
     frame: FrameId,
     variable: usize,
 ) -> Result<(&'a FunctionFrame, usize), RunError> {
-    let frame = frames.get(&frame).ok_or(RunError::InvalidState)?;
+    let frame = frames.get(frame)?;
     let slot = plan
         .function(frame.scope)
         .ok_or(RunError::InvalidState)?
@@ -175,6 +300,7 @@ impl Cells<'_> {
         )]
         let frame = self
             .frames
+            .map
             .get_mut(&frame)
             .expect("reserved actor-owned function frame");
         frame.hold = hold;
@@ -208,55 +334,17 @@ impl Cells<'_> {
         Ok(())
     }
 }
-impl Run {
-    pub(super) fn retire_frame(&mut self, id: FrameId, activation: u64) -> Result<(), RunError> {
-        let frame = self.frames.remove(&id).ok_or(RunError::InvalidState)?;
-        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?;
-        let layout = plan.function(frame.scope).ok_or(RunError::InvalidState)?;
-        let shared = self
-            .activations
-            .get_mut(activation as usize)
-            .and_then(Option::as_mut)
-            .ok_or(RunError::InvalidState)?;
-        let mut removed = 0usize;
-        for &input in layout.projections() {
-            let cell = self.layout.outputs[input].ok_or(RunError::InvalidState)?;
-            if matches!(
-                plan.host_sources()[input],
-                HostSource::Value(_) | HostSource::Update(_, _) | HostSource::CallOutput(_, _)
-            ) && let Some(FoldedValue::Value(value)) = &shared.outputs[cell]
-            {
-                let slot =
-                    plan.data().nodes()[plan.data().host_inputs()[input].index()].outputs()[0];
-                removed = removed
-                    .checked_add(
-                        plan.data()
-                            .value_charge(slot, value)
-                            .ok_or(RunError::InvalidState)?,
-                    )
-                    .ok_or(RunError::ResourceLimit)?;
-            }
-        }
-        let retained = shared
-            .retained_bytes
-            .checked_sub(removed)
-            .ok_or(RunError::InvalidState)?;
-        for &input in layout.projections() {
-            shared.outputs[self.layout.outputs[input].ok_or(RunError::InvalidState)?] = None;
-        }
-        shared.retained_bytes = retained;
-        let FunctionFrame {
-            mut arguments,
-            mut locals,
-            ..
-        } = frame;
-        if self.spare_frames.len() < SPARE_FRAMES {
-            arguments.clear();
-            locals.clear();
-            self.spare_frames.push(FrameStorage { arguments, locals });
-        }
-        Ok(())
-    }
+/// What a Call or Return step did. A Failed step completes like any other node.
+pub(super) enum FunctionStep {
+    /// Demand is still being consumed.
+    Pending,
+    Failed(Step),
+    /// The strand carries a call transfer for the actor.
+    Called,
+    /// The strand carries its return values for the actor.
+    Returned,
+}
+impl Cells<'_> {
     pub(super) fn execute_function(
         &mut self,
         plan: &ControlPlan,
@@ -264,7 +352,7 @@ impl Run {
         shared: &mut ActivationState,
         owner: ControlIx,
         budget: &mut usize,
-    ) -> Result<(), RunError> {
+    ) -> Result<FunctionStep, RunError> {
         let node = &plan.nodes()[owner.index()];
         let (demand, scope) = match node.operation() {
             ControlOperation::Call { scope, demand } => (demand, Some(*scope)),
@@ -272,35 +360,24 @@ impl Run {
             _ => return Err(RunError::InvalidState),
         };
         if scope.is_some() && strand.pull.active.is_none() {
-            Self::publish_call_results(
-                plan,
-                &self.layout,
-                shared,
-                owner,
-                None,
-                self.options.limits.max_state_bytes,
-            )?;
+            publish_call_results(plan, self.layout, shared, owner, None, self.limit)?;
         }
         while strand.pull.call_values.len() < demand.roots().len() {
             let index = strand.pull.call_values.len();
             let root = demand.roots()[index];
             let Some(result) =
-                self.cells()
-                    .consume_inputs(plan, strand, shared, root, demand.inputs(), budget)?
+                self.consume_inputs(plan, strand, shared, root, demand.inputs(), budget)?
             else {
-                return Ok(());
+                return Ok(FunctionStep::Pending);
             };
             match result {
                 FoldedValue::Value(value) => strand.pull.call_values.push(value),
                 FoldedValue::Fault(fault) => {
-                    self.complete(
-                        plan,
-                        strand,
-                        shared,
-                        owner,
-                        (node.failed(), ControlOutcome::Failed, Some(fault)),
-                    )?;
-                    return Ok(());
+                    return Ok(FunctionStep::Failed((
+                        node.failed(),
+                        ControlOutcome::Failed,
+                        Some(fault),
+                    )));
                 }
             }
             if strand.pull.call_values.len() < demand.roots().len() {
@@ -310,265 +387,141 @@ impl Run {
                 });
             }
         }
-        if let Some(scope) = scope {
+        let step = if let Some(scope) = scope {
             // Arguments move into spare frame storage; the pull scratch keeps
             // its capacity for this strand and the callee it lends to.
-            let mut storage = self.spare_frames.pop().unwrap_or_default();
+            let mut storage = self.frames.spare.pop().unwrap_or_default();
             storage.arguments.append(&mut strand.pull.call_values);
             strand.transfer = Transfer::Call(PendingCall {
                 owner,
                 scope,
                 storage,
             });
+            FunctionStep::Called
         } else {
             // The buffer travels with the result and returns to the caller's scratch.
             let values = std::mem::take(&mut strand.pull.call_values);
-            let bytes =
-                Self::values_charge(plan, demand, &values, self.options.limits.max_state_bytes)?;
-            let hold = Hold::new(shared, bytes, 0, self.options.limits.max_state_bytes)?;
+            let bytes = values_charge(plan, demand, &values, self.limit)?;
+            let hold = Hold::new(shared, bytes, 0, self.limit)?;
             strand.transfer = Transfer::Return(FunctionReturn::Values {
                 values,
                 hold: Some(hold),
             });
-            self.record(RunEvent {
-                activation: strand.sequence,
-                node: node.node(),
-                outcome: ControlOutcome::Then,
-                fault: None,
-            });
-        }
+            FunctionStep::Returned
+        };
         strand.pull.reset();
         shared.pull_owner = None;
-        Ok(())
+        Ok(step)
     }
-    fn values_charge(
-        plan: &ControlPlan,
-        demand: &UpdateDemand,
-        values: &[Value],
-        limit: usize,
-    ) -> Result<usize, RunError> {
-        let mut bytes = 0usize;
-        for (&root, value) in demand.roots().iter().zip(values) {
-            let charge = plan
-                .data()
-                .checked_value_charge(
-                    plan.data().exports()[root].slot,
-                    value,
-                    limit.saturating_sub(bytes),
-                )
-                .map_err(|_| RunError::ResourceLimit)?;
-            bytes = bytes.checked_add(charge).ok_or(RunError::ResourceLimit)?;
-        }
-        Ok(bytes)
-    }
-    pub(super) fn enter_function(
-        &mut self,
-        mut caller: Strand,
-        call: PendingCall,
-    ) -> Result<(), RunError> {
-        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
-        let layout = plan.function(call.scope).ok_or(RunError::InvalidState)?;
-        let depth = self.regions.get(caller.region)?.depth + 1;
-        if depth > self.options.limits.max_region_depth
-            || !self.regions.has_room(1, 1, &self.options.limits)
-        {
-            return self.fail(RunError::ResourceLimit);
-        }
-        let shared = self.activations[caller.sequence as usize]
-            .as_deref()
-            .ok_or(RunError::InvalidState)?;
-        let ControlOperation::Call { demand, .. } = plan.nodes()[call.owner.index()].operation()
-        else {
-            return Err(RunError::InvalidState);
-        };
-        let mut bytes = Self::values_charge(
-            &plan,
-            demand,
-            &call.storage.arguments,
-            self.options.limits.max_state_bytes,
-        )?;
-        for &variable in layout.locals() {
-            let metadata = &plan.variables()[variable];
-            bytes = bytes
-                .checked_add(
-                    metadata
-                        .initial()
-                        .and_then(|v| metadata.charge(v))
-                        .unwrap_or(16),
-                )
-                .ok_or(RunError::ResourceLimit)?;
-        }
-        let hold = Hold::new(shared, bytes, 0, self.options.limits.max_state_bytes)?;
-        let FrameStorage {
-            arguments,
-            mut locals,
-        } = call.storage;
-        locals.extend(layout.locals().iter().map(|&i| LocalCell {
-            value: plan.variables()[i].initial().cloned(),
-            version: 0,
-        }));
-        let region = self.regions.mint_region()?;
-        let mut child = self.child_strand(&caller, region)?;
-        child.id = caller.id;
-        child.pull = caller.pull.lend();
-        child.function = Some(FrameId::of_region(region));
-        child.pc = layout.entry();
-        caller.pc = None;
-        self.frames.insert(
-            FrameId::of_region(region),
-            FunctionFrame {
-                scope: call.scope,
-                parent: caller.function,
-                arguments,
-                locals,
-                hold,
-            },
-        );
-        self.regions.open(
-            region,
-            Region {
-                frames: None,
-                retired_cursor: None,
-                parent: Some(caller.region),
-                activation: caller.sequence,
-                depth,
-                live: IdSet::one(child.id),
-                children: IdSet::default(),
-                continuation: Some(caller),
-                kind: RegionKind::Function {
-                    owner: call.owner,
-                    result: None,
-                },
-            },
-        )?;
-        self.ready.push_front(child.id, child);
-        Ok(())
-    }
-    pub(super) fn leave_function(
-        &mut self,
-        strand: Strand,
-        result: FunctionReturn,
-    ) -> Result<(), RunError> {
-        let region = RegionId::of_frame(strand.function.ok_or(RunError::InvalidState)?);
-        let frame = self.regions.get_mut(region)?;
-        let RegionKind::Function {
-            result: pending, ..
-        } = &mut frame.kind
-        else {
-            return Err(RunError::InvalidState);
-        };
-        if pending.is_some() {
-            return Err(RunError::InvalidState);
-        }
-        *pending = Some(result);
-        if let Some(caller) = frame.continuation.as_mut() {
-            caller.pull.recycle(strand.pull);
-        }
-        self.cancel_region(region)?;
-        self.complete_regions(region)
-    }
-    pub(super) fn finish_function(
-        &mut self,
-        caller: &mut Strand,
-        owner: ControlIx,
-        result: FunctionReturn,
-    ) -> Result<(), RunError> {
-        let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
-        let ControlOperation::Call { scope, .. } = plan.nodes()[owner.index()].operation() else {
-            return Err(RunError::InvalidState);
-        };
-        if let FunctionReturn::Values { values, .. } = &result
-            && values.len()
+}
+/// The caller's step once its call returned `result`: values are published to the call's
+/// outputs and their buffer goes back to the caller's scratch.
+pub(super) fn call_returned(
+    plan: &ControlPlan,
+    layout: &StateLayout,
+    caller: &mut Strand,
+    shared: &mut ActivationState,
+    owner: ControlIx,
+    result: FunctionReturn,
+    limit: usize,
+) -> Result<Step, RunError> {
+    let node = &plan.nodes()[owner.index()];
+    let ControlOperation::Call { scope, .. } = node.operation() else {
+        return Err(RunError::InvalidState);
+    };
+    match result {
+        FunctionReturn::Values { values, hold } => {
+            if values.len()
                 != plan
                     .function(*scope)
                     .ok_or(RunError::InvalidState)?
                     .outputs()
-        {
-            return Err(RunError::InvalidState);
-        }
-        let mut shared = self.activations[caller.sequence as usize]
-            .take()
-            .ok_or(RunError::InvalidState)?;
-        let node = &plan.nodes()[owner.index()];
-        let result = match result {
-            FunctionReturn::Values { values, hold } => {
-                drop(hold);
-                let published = Self::publish_call_results(
-                    &plan,
-                    &self.layout,
-                    &mut shared,
-                    owner,
-                    Some(&values),
-                    self.options.limits.max_state_bytes,
-                );
-                caller.pull.keep_values(values);
-                published.map(|()| (node.then(), ControlOutcome::Then, None))
-            }
-            FunctionReturn::Fault(fault) => {
-                Ok((node.failed(), ControlOutcome::Failed, Some(fault)))
-            }
-        };
-        let result =
-            result.and_then(|outcome| self.complete(&plan, caller, &mut shared, owner, outcome));
-        self.activations[caller.sequence as usize] = Some(shared);
-        result
-    }
-    fn publish_call_results(
-        plan: &ControlPlan,
-        layout: &StateLayout,
-        shared: &mut ActivationState,
-        owner: ControlIx,
-        values: Option<&[Value]>,
-        limit: usize,
-    ) -> Result<(), RunError> {
-        let mut removed = 0usize;
-        let mut added = 0usize;
-        for &input in plan.value_targets(owner) {
-            let HostSource::CallOutput(_, index) = plan.host_sources()[input] else {
+            {
                 return Err(RunError::InvalidState);
-            };
-            let slot = plan.data().nodes()[plan.data().host_inputs()[input].index()].outputs()[0];
-            let cell = layout.outputs[input].ok_or(RunError::InvalidState)?;
-            if let Some(FoldedValue::Value(value)) = &shared.outputs[cell] {
-                removed = removed
-                    .checked_add(
-                        plan.data()
-                            .value_charge(slot, value)
-                            .ok_or(RunError::InvalidState)?,
-                    )
-                    .ok_or(RunError::ResourceLimit)?;
             }
-            if let Some(values) = values {
-                let value = values.get(index).ok_or(RunError::InvalidState)?;
-                added = added
-                    .checked_add(
-                        plan.data()
-                            .checked_value_charge(slot, value, limit.saturating_sub(added))
-                            .map_err(|_| RunError::ResourceLimit)?,
-                    )
-                    .ok_or(RunError::ResourceLimit)?;
-            }
+            drop(hold);
+            let published = publish_call_results(plan, layout, shared, owner, Some(&values), limit);
+            caller.pull.keep_values(values);
+            published.map(|()| (node.then(), ControlOutcome::Then, None))
         }
-        let retained = shared
-            .retained_bytes
-            .checked_sub(removed)
-            .and_then(|n| n.checked_add(added))
-            .ok_or(RunError::ResourceLimit)?;
-        if retained
-            .checked_add(shared.local_bytes)
-            .and_then(|n| n.checked_add(shared.owned_bytes.load(Ordering::Relaxed)))
-            .is_none_or(|n| n > limit)
-        {
-            return Err(RunError::ResourceLimit);
-        }
-        for &input in plan.value_targets(owner) {
-            let HostSource::CallOutput(_, index) = plan.host_sources()[input] else {
-                unreachable!("checked call projection")
-            };
-            shared.outputs[layout.outputs[input].ok_or(RunError::InvalidState)?] =
-                values.map(|values| FoldedValue::Value(values[index].clone()));
-        }
-        shared.retained_bytes = retained;
-        Ok(())
+        FunctionReturn::Fault(fault) => Ok((node.failed(), ControlOutcome::Failed, Some(fault))),
     }
+}
+fn values_charge(
+    plan: &ControlPlan,
+    demand: &UpdateDemand,
+    values: &[Value],
+    limit: usize,
+) -> Result<usize, RunError> {
+    let mut bytes = 0usize;
+    for (&root, value) in demand.roots().iter().zip(values) {
+        let charge = plan
+            .data()
+            .checked_value_charge(
+                plan.data().exports()[root].slot,
+                value,
+                limit.saturating_sub(bytes),
+            )
+            .map_err(|_| RunError::ResourceLimit)?;
+        bytes = bytes.checked_add(charge).ok_or(RunError::ResourceLimit)?;
+    }
+    Ok(bytes)
+}
+fn publish_call_results(
+    plan: &ControlPlan,
+    layout: &StateLayout,
+    shared: &mut ActivationState,
+    owner: ControlIx,
+    values: Option<&[Value]>,
+    limit: usize,
+) -> Result<(), RunError> {
+    let mut removed = 0usize;
+    let mut added = 0usize;
+    for &input in plan.value_targets(owner) {
+        let HostSource::CallOutput(_, index) = plan.host_sources()[input] else {
+            return Err(RunError::InvalidState);
+        };
+        let slot = plan.data().nodes()[plan.data().host_inputs()[input].index()].outputs()[0];
+        let cell = layout.outputs[input].ok_or(RunError::InvalidState)?;
+        if let Some(FoldedValue::Value(value)) = &shared.outputs[cell] {
+            removed = removed
+                .checked_add(
+                    plan.data()
+                        .value_charge(slot, value)
+                        .ok_or(RunError::InvalidState)?,
+                )
+                .ok_or(RunError::ResourceLimit)?;
+        }
+        if let Some(values) = values {
+            let value = values.get(index).ok_or(RunError::InvalidState)?;
+            added = added
+                .checked_add(
+                    plan.data()
+                        .checked_value_charge(slot, value, limit.saturating_sub(added))
+                        .map_err(|_| RunError::ResourceLimit)?,
+                )
+                .ok_or(RunError::ResourceLimit)?;
+        }
+    }
+    let retained = shared
+        .retained_bytes
+        .checked_sub(removed)
+        .and_then(|n| n.checked_add(added))
+        .ok_or(RunError::ResourceLimit)?;
+    if retained
+        .checked_add(shared.local_bytes)
+        .and_then(|n| n.checked_add(shared.owned_bytes.load(Ordering::Relaxed)))
+        .is_none_or(|n| n > limit)
+    {
+        return Err(RunError::ResourceLimit);
+    }
+    for &input in plan.value_targets(owner) {
+        let HostSource::CallOutput(_, index) = plan.host_sources()[input] else {
+            unreachable!("checked call projection")
+        };
+        shared.outputs[layout.outputs[input].ok_or(RunError::InvalidState)?] =
+            values.map(|values| FoldedValue::Value(values[index].clone()));
+    }
+    shared.retained_bytes = retained;
+    Ok(())
 }
