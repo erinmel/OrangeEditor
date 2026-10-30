@@ -15,6 +15,7 @@ use super::config::{ConfigSchemas, validate_node_config};
 use super::connections::EdgeCache;
 use super::declarations::validate_declaration_type;
 use super::inputs::InputCache;
+use super::nodes::ComponentCache;
 use super::{Diagnostic, Subject};
 
 /// Actual unit work during one refresh, including visits that reused a result.
@@ -43,6 +44,10 @@ pub struct LocalWork {
     /// Edge checks reused because the edge, its endpoints and their resolutions were
     /// unchanged.
     pub edge_hits: usize,
+    /// Generic components whose type inference ran.
+    pub components_computed: usize,
+    /// Generic components whose inference was reused because nothing they read changed.
+    pub component_hits: usize,
 }
 
 /// Per-unit results the analysis passes reuse and refill within a session.
@@ -50,6 +55,7 @@ pub struct LocalWork {
 pub(crate) struct PassCaches {
     pub(crate) inputs: InputCache,
     pub(crate) edges: EdgeCache,
+    pub(crate) components: ComponentCache,
 }
 
 #[derive(Clone)]
@@ -78,6 +84,7 @@ impl std::fmt::Debug for LocalValidation {
             .field("declaration_units", &self.declarations.len())
             .field("input_units", &self.passes.inputs.len())
             .field("edge_units", &self.passes.edges.len())
+            .field("component_units", &self.passes.components.len())
             .finish_non_exhaustive()
     }
 }
@@ -120,18 +127,20 @@ impl LocalValidation {
                 && self.registry_generation == Some(registry.generation())
         });
         match incremental {
-            Some(change) => self.invalidate(change),
+            Some(change) => self.invalidate(document, change),
             None => {
                 self.config.clear();
                 self.body_nodes.clear();
                 self.declarations.clear();
                 self.passes.inputs.clear();
                 self.passes.edges.clear();
+                self.passes.components.clear();
             }
         }
         let passes = &mut self.passes;
         (passes.inputs.computed, passes.inputs.hits) = (0, 0);
         (passes.edges.computed, passes.edges.hits) = (0, 0);
+        (passes.components.computed, passes.components.hits) = (0, 0);
 
         let mut work = LocalWork::default();
         for (body_ref, body) in document.bodies_with_refs() {
@@ -197,7 +206,7 @@ impl LocalValidation {
         }
     }
 
-    fn invalidate(&mut self, change: &ChangeSet) {
+    fn invalidate(&mut self, document: &GraphDocument, change: &ChangeSet) {
         let nodes = change.nodes();
         for id in nodes
             .added
@@ -224,15 +233,33 @@ impl LocalValidation {
             .collect();
         self.passes.edges.forget_nodes(&touched);
         let edges = change.edges();
-        for id in edges
+        let touched_edges: BTreeSet<_> = edges
             .added
             .iter()
             .chain(&edges.removed)
             .chain(&edges.changed)
-        {
+            .copied()
+            .collect();
+        for id in &touched_edges {
             self.passes.edges.forget(id);
         }
+        // A new or rewired edge joins its current endpoints' components.
+        let mut reached = touched.clone();
+        for id in edges.added.iter().chain(&edges.changed) {
+            if let Some(edge) = document.edge(*id) {
+                reached.insert(edge.from.node);
+                reached.insert(edge.to.node);
+            }
+        }
+        self.passes.components.forget(&reached, &touched_edges);
         let declarations = change.decls();
+        // Contracts and call interfaces read declarations, so inference cannot outlive them.
+        if !declarations.added.is_empty()
+            || !declarations.removed.is_empty()
+            || !declarations.changed.is_empty()
+        {
+            self.passes.components.clear();
+        }
         for id in declarations
             .added
             .iter()
@@ -258,12 +285,14 @@ impl LocalValidation {
         &mut self.passes
     }
 
-    /// Adds the input and edge checks of the analysis that just ran to `work`.
+    /// Adds the input, edge and inference work of the analysis that just ran to `work`.
     pub(crate) fn record_pass_work(&self, work: &mut LocalWork) {
         work.inputs_computed = self.passes.inputs.computed;
         work.input_hits = self.passes.inputs.hits;
         work.edges_computed = self.passes.edges.computed;
         work.edge_hits = self.passes.edges.hits;
+        work.components_computed = self.passes.components.computed;
+        work.component_hits = self.passes.components.hits;
     }
 
     pub(crate) fn config_diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
