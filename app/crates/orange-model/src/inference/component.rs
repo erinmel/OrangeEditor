@@ -183,6 +183,42 @@ pub(crate) fn infer_components_except(
     components
 }
 
+/// The generic components [`infer_components`] would solve for `touched`, as node sets,
+/// without solving them.
+pub(crate) fn component_nodes(
+    document: &GraphDocument,
+    index: &DocIndex,
+    touched: impl IntoIterator<Item = NodeId>,
+    registry: &RegistrySnapshot,
+) -> Vec<BTreeSet<NodeId>> {
+    let graph = Graph {
+        document,
+        index,
+        registry,
+        templates: RefCell::default(),
+        edges: RefCell::default(),
+    };
+    let mut seeds = BTreeSet::new();
+    for node in touched {
+        if graph.generic(node).is_some() {
+            seeds.insert(node);
+        } else {
+            seeds.extend(graph.generic_neighbours(node));
+        }
+    }
+    let mut visited = BTreeSet::new();
+    let mut components = Vec::new();
+    for seed in seeds {
+        if visited.contains(&seed) {
+            continue;
+        }
+        let nodes = graph.component(seed);
+        visited.extend(nodes.iter().copied());
+        components.push(nodes);
+    }
+    components
+}
+
 /// The document and registry are fixed for one inference call, so each node's template and
 /// each data edge are resolved once. The component search meets every edge from both ends
 /// and equation building reads it again.

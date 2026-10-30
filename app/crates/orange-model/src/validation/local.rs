@@ -110,6 +110,35 @@ impl LocalValidation {
         }
     }
 
+    /// Moves the binding past a literal edit the session already checked, forgetting the
+    /// edited nodes' input, edge and component results. Configuration and declaration
+    /// types do not read literals. A mismatch drops the cache.
+    pub(crate) fn advance_literals(
+        &mut self,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        change: &ChangeSet,
+    ) {
+        let Some(edit) = change.literal_edit().filter(|_| {
+            change.is_committed()
+                && !change.global_dirty()
+                && self.state == Some(change.from_state())
+                && change.to_state() == document.state_id()
+                && change.to_semantic_state() == document.semantic_state_id()
+                && self.registry_generation == Some(registry.generation())
+        }) else {
+            *self = Self::default();
+            return;
+        };
+        let nodes: BTreeSet<NodeId> = edit.before.keys().copied().collect();
+        for id in &nodes {
+            self.passes.inputs.forget(id);
+        }
+        self.passes.edges.forget_nodes(&nodes);
+        self.passes.components.forget(&nodes, &BTreeSet::new());
+        self.state = Some(document.state_id());
+    }
+
     /// Refreshes only after the caller's quota and domain prerequisites succeed.
     /// Missing/mismatched provenance or global metadata makes this a full reset.
     pub(crate) fn refresh(

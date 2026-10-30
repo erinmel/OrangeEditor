@@ -368,26 +368,29 @@ impl Diagnostic {
 
 /// Sorts diagnostics by stable semantic fields for deterministic output.
 pub fn sort_diagnostics(diagnostics: &mut [Diagnostic]) {
-    diagnostics.sort_by(|left, right| {
-        (
-            &left.subject,
-            left.code,
-            left.severity,
-            &left.message_key,
-            &left.message_args,
-            &left.message_origin,
-            &left.message,
-        )
-            .cmp(&(
-                &right.subject,
-                right.code,
-                right.severity,
-                &right.message_key,
-                &right.message_args,
-                &right.message_origin,
-                &right.message,
-            ))
-    });
+    diagnostics.sort_by(diagnostic_order);
+}
+
+/// The published order: subject first, then every other field, so it is total.
+pub(crate) fn diagnostic_order(left: &Diagnostic, right: &Diagnostic) -> std::cmp::Ordering {
+    (
+        &left.subject,
+        left.code,
+        left.severity,
+        &left.message_key,
+        &left.message_args,
+        &left.message_origin,
+        &left.message,
+    )
+        .cmp(&(
+            &right.subject,
+            right.code,
+            right.severity,
+            &right.message_key,
+            &right.message_args,
+            &right.message_origin,
+            &right.message,
+        ))
 }
 
 #[cfg(test)]

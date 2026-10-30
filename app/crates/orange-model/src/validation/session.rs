@@ -1,5 +1,6 @@
 //! Headless edit analysis with private freshness evidence and conservative fallbacks.
 use super::local::{LocalValidation, LocalWork};
+use super::scoped::Retained;
 use super::{
     AnalysisLimits, AnalysisOptions, Diagnostic, LeafEffects, Subject, ValidationAnalysis,
 };
@@ -33,6 +34,9 @@ pub enum SessionWork {
     None,
     /// Valid semantic edit; admission and global passes still run in full.
     Recompute,
+    /// A literal edit re-checked only where it can reach. Admission was updated from the
+    /// edited literals and the retained report was patched without a full analysis.
+    Scoped,
     Rebuild(RebuildReason),
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,7 +65,7 @@ pub struct AnalysisSession {
     stale: bool,
     index: Option<DocIndex>,
     local: LocalValidation,
-    subjects: BTreeMap<Subject, Vec<usize>>,
+    retained: Option<Retained>,
     changed_subjects: BTreeSet<Subject>,
     changed_nodes: BTreeSet<NodeId>,
     stats: EditStats,
@@ -86,13 +90,12 @@ impl AnalysisSession {
     ) -> Self {
         let mut index = None;
         let mut local = LocalValidation::default();
-        let (analysis, work, rebuilt) = super::report::analyze_indexed(
+        let (analysis, work, rebuilt, retained) = super::report::analyze_indexed(
             document, registry, &effects, options, &mut index, &mut local, None,
         );
-        let subjects = subject_index(&analysis);
         Self {
             stale: cancelled(&analysis),
-            changed_subjects: subjects.keys().cloned().collect(),
+            changed_subjects: changed_subjects(&[], &analysis.report().diagnostics),
             changed_nodes: analysis.report().resolved.keys().copied().collect(),
             analysis,
             effects,
@@ -101,7 +104,7 @@ impl AnalysisSession {
             content_state: document.state_id(),
             index,
             local,
-            subjects,
+            retained,
             stats: full(
                 document,
                 SessionWork::Rebuild(RebuildReason::Created),
@@ -152,7 +155,7 @@ impl AnalysisSession {
             self.revision = document.revision();
             self.content_state = document.state_id();
             self.no_work();
-        } else {
+        } else if !self.scoped(document, registry, change, options) {
             self.rerun(
                 document,
                 registry,
@@ -162,6 +165,56 @@ impl AnalysisSession {
             );
         }
         &self.stats
+    }
+    /// Applies a literal edit without a full analysis when it provably changes nothing
+    /// but the edited nodes' input diagnostics. False leaves the session for a full run.
+    fn scoped(
+        &mut self,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        change: &ChangeSet,
+        options: AnalysisOptions<'_>,
+    ) -> bool {
+        let (Some(edit), Some(retained), Some(index)) =
+            (change.literal_edit(), &mut self.retained, &mut self.index)
+        else {
+            return false;
+        };
+        if index.state_id() != change.from_state() {
+            return false;
+        }
+        index.update(document, change);
+        let Some(scoped) = super::scoped::literal_update(
+            document,
+            registry,
+            &options,
+            index,
+            &self.analysis,
+            retained,
+            edit,
+        ) else {
+            return false;
+        };
+        self.local.advance_literals(document, registry, change);
+        self.changed_subjects =
+            self.analysis
+                .patch(document.semantic_state_id(), &retained.base, &scoped.inputs);
+        self.changed_nodes.clear();
+        self.revision = document.revision();
+        self.content_state = document.state_id();
+        self.stats = EditStats {
+            work: SessionWork::Scoped,
+            input_nodes: scoped.resolved,
+            input_edges: 0,
+            full_analysis_runs: 0,
+            index_rebuilt: false,
+            local: LocalWork {
+                inputs_computed: scoped.inputs.len(),
+                components_computed: scoped.components,
+                ..LocalWork::default()
+            },
+        };
+        true
     }
     pub fn set_leaf_effects(
         &mut self,
@@ -218,7 +271,7 @@ impl AnalysisSession {
         work: SessionWork,
         change: Option<&ChangeSet>,
     ) {
-        let (analysis, local, rebuilt) = super::report::analyze_indexed(
+        let (analysis, local, rebuilt, retained) = super::report::analyze_indexed(
             document,
             registry,
             &self.effects,
@@ -227,18 +280,16 @@ impl AnalysisSession {
             &mut self.local,
             change,
         );
-        let subjects = subject_index(&analysis);
-        self.changed_subjects = changed_keys(&self.subjects, &subjects, |old, new| {
-            old.iter()
-                .map(|&i| &self.analysis.report().diagnostics[i])
-                .eq(new.iter().map(|&i| &analysis.report().diagnostics[i]))
-        });
+        self.retained = retained;
+        self.changed_subjects = changed_subjects(
+            &self.analysis.report().diagnostics,
+            &analysis.report().diagnostics,
+        );
         self.changed_nodes = changed_keys(
             &self.analysis.report().resolved,
             &analysis.report().resolved,
             PartialEq::eq,
         );
-        self.subjects = subjects;
         self.stale = cancelled(&analysis);
         self.analysis = analysis;
         self.limits = options.limits;
@@ -287,11 +338,12 @@ impl AnalysisSession {
         &'a self,
         subject: &Subject,
     ) -> impl Iterator<Item = &'a Diagnostic> {
-        self.subjects
-            .get(subject)
-            .into_iter()
-            .flatten()
-            .map(|&i| &self.analysis.report().diagnostics[i])
+        // Published diagnostics are sorted by subject first.
+        let all = &self.analysis.report().diagnostics;
+        let start = all.partition_point(|item| item.subject < *subject);
+        all[start..]
+            .iter()
+            .take_while(move |item| item.subject == *subject)
     }
     /// Subjects whose diagnostic lists changed, including removed diagnostics.
     pub fn changed_subjects(&self) -> &BTreeSet<Subject> {
@@ -311,15 +363,14 @@ impl AnalysisSession {
         !self.stale && self.analysis.is_current(document, registry)
     }
 }
-fn subject_index(analysis: &ValidationAnalysis) -> BTreeMap<Subject, Vec<usize>> {
-    let mut subjects = BTreeMap::<Subject, Vec<usize>>::new();
-    for (i, diagnostic) in analysis.report().diagnostics.iter().enumerate() {
-        subjects
-            .entry(diagnostic.subject.clone())
-            .or_default()
-            .push(i);
+/// Subjects whose diagnostics differ between two lists sorted by subject first.
+fn changed_subjects(old: &[Diagnostic], new: &[Diagnostic]) -> BTreeSet<Subject> {
+    fn group(list: &[Diagnostic]) -> BTreeMap<Subject, &[Diagnostic]> {
+        list.chunk_by(|a, b| a.subject == b.subject)
+            .map(|chunk| (chunk[0].subject.clone(), chunk))
+            .collect()
     }
-    subjects
+    changed_keys(&group(old), &group(new), |a, b| a == b)
 }
 fn full(
     document: &GraphDocument,

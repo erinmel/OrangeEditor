@@ -123,6 +123,27 @@ pub(crate) fn validate_inputs_in(
 /// One node's active input contract, shared by whole-body and retained analysis.
 /// Incoming keys describe wire precedence; an invalid wire still shadows its literal
 /// exactly as in the full pass. Type-lock checks remain a document prerequisite.
+/// One root-body node's input diagnostics, as the whole-document pass reports them.
+pub(crate) fn node_input_diagnostics(
+    document: &GraphDocument,
+    node: &NodeInstance,
+    snapshot: &SignatureSnapshot,
+    registry: &RegistrySnapshot,
+    index: &DocIndex,
+) -> Vec<Diagnostic> {
+    let mut diagnostics = Vec::new();
+    let is_connected = |port: &PortRef| index.incoming(port).next().is_some();
+    append_node_inputs(
+        document,
+        node,
+        snapshot,
+        is_connected,
+        registry,
+        &mut diagnostics,
+    );
+    diagnostics
+}
+
 fn append_node_inputs(
     document: &GraphDocument,
     node: &NodeInstance,

@@ -91,15 +91,34 @@ pub(crate) fn validate_nodes_with(
     index: &DocIndex,
     components: Option<&mut ComponentCache>,
 ) -> NodeValidation {
+    validate_node_ids(
+        document,
+        registry,
+        calls,
+        &node_ids(document, scope),
+        index,
+        components,
+    )
+}
+
+/// Node resolution of `ids` (ascending) alone. A node's result equals the whole-scope
+/// result when `ids` holds its generic component and every data neighbour of it.
+pub(crate) fn validate_node_ids(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    calls: &CallEvidence,
+    ids: &[NodeId],
+    index: &DocIndex,
+    components: Option<&mut ComponentCache>,
+) -> NodeValidation {
     let origin = registry.origin();
     let mut report = NodeValidation::default();
     let mut diagnostics = Vec::new();
-    let ids = node_ids(document, scope);
     let eligible = resolve_contracts(
         document,
         registry,
         calls,
-        &ids,
+        ids,
         origin,
         &mut report,
         &mut diagnostics,
@@ -110,7 +129,7 @@ pub(crate) fn validate_nodes_with(
         index,
         registry,
         eligible: &eligible,
-        ids: &ids,
+        ids,
         origin,
     };
     let fresh_args = infer_fresh_args(&pass, components, &mut report, &mut diagnostics);

@@ -40,6 +40,7 @@ pub(crate) mod ports;
 mod regions;
 mod report;
 mod scope;
+mod scoped;
 mod session;
 mod state;
 mod streams;
