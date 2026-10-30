@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use super::patch::Patch;
 use crate::document::literal::Literal;
-use crate::document::{BodyRef, Edge, GraphDocument, NodeInstance, TypeParamName};
+use crate::document::{BodyRef, ConfigValue, Edge, GraphDocument, NodeInstance, TypeParamName};
 use crate::id::{EdgeId, NodeId, PortKey, TypeExpr};
 
 pub use crate::id::DeclId;
@@ -90,9 +90,9 @@ pub(crate) struct EdgeEdit {
 // Edge extensions are JSON values, which never hold NaN, so equality is total.
 impl Eq for EdgeEdit {}
 
-/// Journal evidence that a transaction changed only node literals, type arguments or type
-/// pins: each changed node kept its body and every other field. Holds those fields of
-/// each node before the change.
+/// Journal evidence that a transaction changed only node literals, type arguments, type
+/// pins or configuration: each changed node kept its body and every other field. Holds
+/// those fields of each node before the change.
 #[derive(Debug, PartialEq)]
 pub(crate) struct NodeEdit {
     pub before: BTreeMap<NodeId, NodeFields>,
@@ -107,6 +107,8 @@ pub(crate) struct NodeFields {
     pub inputs: BTreeMap<PortKey, Literal>,
     pub type_args: BTreeMap<TypeParamName, TypeExpr>,
     pub type_pins: BTreeMap<TypeParamName, TypeExpr>,
+    pub config_version: u32,
+    pub config: ConfigValue,
 }
 
 impl NodeFields {
@@ -115,6 +117,8 @@ impl NodeFields {
             inputs: node.inputs.clone(),
             type_args: node.type_args.clone(),
             type_pins: node.type_pins.clone(),
+            config_version: node.config_version,
+            config: node.config.clone(),
         }
     }
 }
@@ -329,6 +333,8 @@ impl Tracker {
             same.inputs.clone_from(&now.inputs);
             same.type_args.clone_from(&now.type_args);
             same.type_pins.clone_from(&now.type_pins);
+            same.config_version = now.config_version;
+            same.config.clone_from(&now.config);
             if same != *now {
                 return None;
             }

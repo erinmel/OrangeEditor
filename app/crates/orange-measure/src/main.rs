@@ -107,6 +107,7 @@ fn main() {
             (SessionEdit::Literal, "literal"),
             (SessionEdit::Wire, "disconnect/connect"),
             (SessionEdit::Pin, "pin"),
+            (SessionEdit::Config, "config"),
         ] {
             for (chains, length) in [(1000, 10), (1, 10_000)] {
                 let (p50, p95) = workloads::session_edit(config, chains, length, edit);

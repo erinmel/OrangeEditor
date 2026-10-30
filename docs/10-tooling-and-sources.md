@@ -2478,3 +2478,20 @@ Branch `core/scoped-type-edits` on `dev` 1cec9f8 (same toolchain; Cargo.lock unc
 - **Limitations:** exec edges, configuration, node additions and removals, function bodies and edits in reports with errors still run every pass in full. V12b is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Scoped configuration edits (V12b) — 2026-10-30
+
+Branch `core/scoped-config-edits` on `dev` c8a8b02 (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).
+
+- **Change:** the journal's node edit also covers configuration and its version. Region, availability, zone, state, function and conformance passes read configuration only of core intrinsics, so the session scopes a configuration change only on a provider-bound node, where it reaches admission, the node's configuration check and its contract. A full analysis now keeps configuration diagnostics per node beside the input diagnostics; a scoped edit re-checks the node's configuration, requires its error status to hold, patches its diagnostics in place, and lets the next refresh recompute its cached configuration result. Intrinsic configuration changes run the full analysis.
+- **Regressions:** `orange-bundled` tests set a valid overflow mode (scoped), an invalid one (full analysis), another invalid one (scoped, the error holds), a valid one again (full analysis), configuration with a literal in one transaction (scoped) and an intrinsic's configuration (full analysis); each step equals the full analysis. Skipping the configuration re-check makes the package-node test fail.
+- **Measured** with `orange-measure session-edit`, which now also alternates the middle node between saturating and wrapping overflow (release, same machine, 15 edits after 3 warmups):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| config, 1,000 chains of 10 | 116.0 ms | 117.3 ms | 0.19 ms | 0.20 ms |
+| config, 1 chain of 10,000 | 208.5 ms | 212.6 ms | 126.6 ms | 134.5 ms |
+
+- **Limitations:** intrinsic configuration, exec edges, node additions and removals, function bodies and edge edits in reports with errors still run every pass in full. V12b is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

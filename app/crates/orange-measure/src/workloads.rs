@@ -637,6 +637,8 @@ pub enum SessionEdit {
     Wire,
     /// Alternately pins `T` to the chain's type and clears the pin.
     Pin,
+    /// Alternately sets saturating and wrapping integer overflow.
+    Config,
 }
 
 pub fn session_edit(
@@ -693,6 +695,14 @@ pub fn session_edit(
             (SessionEdit::Wire, true) => DocCommand::Disconnect { edge: wired.id },
             (SessionEdit::Wire, false) => DocCommand::Connect {
                 edge: wired.clone(),
+            },
+            (SessionEdit::Config, saturating) => DocCommand::SetConfig {
+                node: port.node,
+                config_version: 1,
+                config: serde_json::from_value(json!({
+                    "int_overflow": if saturating { "saturating" } else { "wrapping" }
+                }))
+                .expect("config"),
             },
             (SessionEdit::Pin, pin) => DocCommand::SetTypePins {
                 node: port.node,
