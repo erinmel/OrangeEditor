@@ -2402,4 +2402,26 @@ Branch `core/session-edit-costs` on `dev` 4a3632a (same toolchain; Cargo.lock un
 
 - **Limitations:** NFR-15 asks for 2 ms p95 on W4; one edit is still about 50 times over it, because every pass still visits every node and edge and the report is reassembled in full. Per-pass constant factors are now spread at roughly 0.4 to 0.8 µs per node across about ten passes, so further tuning alone cannot reach the target; it needs dirty-unit passes that update the retained report in place (16 §5). V12b is not complete.
 
+### Indivisible runtime work at the default limits (A07) — 2026-10-30
+
+Branch `core/indivisible-work-bounds` on `dev` 3a9851a (same toolchain; Cargo.lock unchanged). Closes audit finding A07 after the value-sized Update budget and the ownership work budget.
+
+- **Question:** two kinds of work remain one pump item each: a Fork spawn or cancellation traversal, and a pull's first poll, which snapshots every host input its demand may read. Making either resumable would change cancellation order or what a frozen snapshot observes, so this slice measures how large they get under the default `RunLimits` and compile limits instead.
+- **Harness:** `orange-measure fork-fanout-4000` runs a 4,000-branch Fork race 100 times, the widest the default 4,096 strands admit; every iteration spawns 4,000 strands and cancels 3,999. `orange-measure host-inputs-384` runs 100 rounds of a 384-add chain where every add reads its own Get Variable, so each pull snapshots 385 host inputs; the default compile limits refuse a 500-add chain of this shape.
+- **Measured** with `orange-measure` (release, same machine, 15 runs):
+
+| Workload | Budget | Pumps/run | Pump p95 µs | Pump p99 µs | Pump max µs |
+|---|---:|---:|---:|---:|---:|
+| fork race fan-out 4000 | 1 | 503 | 741.2 | 1,232.8 | 1,816.0 |
+| fork race fan-out 4000 | 64 | 201 | 708.5 | 938.0 | 1,628.1 |
+| fork race fan-out 4000 | 1,024 | 201 | 770.2 | 1,143.7 | 1,586.1 |
+| host inputs (384 per pull) | 1 | 269,303 | 0.1 | 0.2 | 38.5 |
+| host inputs (384 per pull) | 64 | 4,208 | 1.2 | 4.3 | 18.9 |
+| host inputs (384 per pull) | 1,024 | 263 | 19.4 | 20.3 | 38.1 |
+| map CAS (1,000 entries) | 1,024 | 1,001 | 11.1 | 11.2 | 48.7 |
+
+- **Result:** the largest indivisible slice under the default limits is about 1.8 ms, a 4,000-strand spawn or cancellation, below NFR-02's 5 ms slice bound on this machine. It grows with `max_strands`, about 0.4 µs per strand, so hosts that raise that limit accept longer steps. Snapshots copy shared values, so their size does not depend on payloads; the 1,000-entry map CAS that took 2.1 ms per slice in the audit now takes at most 49 µs. Behavior across budgets is unchanged: every workload asserts the same result and no wakeups at budget 1, 64 and 1,024.
+- **Contract:** 03 states that these steps are bounded by limits, not resumed.
+- **Limitations:** NFR-02 also asks for event latency under W5, which is not measured; NFR-02 is not qualified. Trusted provider callbacks remain unbounded. Linux and macOS timings were not run.
+
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
