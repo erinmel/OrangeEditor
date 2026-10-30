@@ -9,6 +9,7 @@
 //! Unknown record fields and enum variants survive storage because the document keeps the
 //! raw literal; only decoding them to a `Value` fails (03).
 
+use std::cell::Cell;
 use std::collections::HashMap;
 use std::str::FromStr;
 use std::sync::Arc;
@@ -16,7 +17,7 @@ use std::sync::Arc;
 use serde_json::{Map, Value as Json, json};
 
 use super::base64;
-use super::shape::ValueShape;
+use super::shape::{VALUE_CHARGE, ValueShape};
 use super::{JsonText, ListBuilder, ListPushError, MapRepr, RecordRepr, Value};
 use crate::document::literal::{Literal, LiteralPayload};
 use crate::error::{JsonTextError, LiteralError};
@@ -98,8 +99,23 @@ impl Schemas for SchemaSet {
     }
 }
 
-/// Decodes a literal into the value it denotes.
+/// Default byte budget for decoding one literal: the default document import size, so
+/// a literal that a document can hold always fits. Proposed value, recorded in 10.
+pub const MAX_LITERAL_BYTES: usize = 64 * 1024 * 1024;
+
+/// Decodes a literal into the value it denotes, within [`MAX_LITERAL_BYTES`].
 pub fn decode(literal: &Literal, schemas: &impl Schemas) -> Result<Value, LiteralError> {
+    decode_with_budget(literal, schemas, MAX_LITERAL_BYTES)
+}
+
+/// Decodes a literal, charging every decoded value and every copied string, byte or JSON
+/// payload against `max_bytes` before allocating it. Exceeding the budget fails with
+/// [`LiteralError::TooLarge`] for the type at the failing position.
+pub fn decode_with_budget(
+    literal: &Literal,
+    schemas: &impl Schemas,
+    max_bytes: usize,
+) -> Result<Value, LiteralError> {
     let term = TypeTerm::parse(&literal.ty)?;
     match &literal.payload {
         LiteralPayload::Bits(bits) => match float_width(&term) {
@@ -107,7 +123,7 @@ pub fn decode(literal: &Literal, schemas: &impl Schemas) -> Result<Value, Litera
             None => Err(mismatch(&term)),
         },
         LiteralPayload::Value(_) if float_width(&term).is_some() => Err(mismatch(&term)),
-        LiteralPayload::Value(json) => Codec { schemas }.decode(json, &term, 0),
+        LiteralPayload::Value(json) => Codec::new(schemas, max_bytes).decode(json, &term, 0),
     }
 }
 
@@ -122,7 +138,9 @@ pub fn encode(
         (Some(32), Value::F32(x)) => LiteralPayload::Bits(format!("{:08x}", x.to_bits())),
         (Some(64), Value::F64(x)) => LiteralPayload::Bits(format!("{:016x}", x.to_bits())),
         (Some(_), _) => return Err(value_mismatch(&term)),
-        (None, _) => LiteralPayload::Value(Codec { schemas }.encode(value, &term, 0)?),
+        (None, _) => {
+            LiteralPayload::Value(Codec::new(schemas, usize::MAX).encode(value, &term, 0)?)
+        }
     };
     Ok(Literal {
         ty: ty.clone(),
@@ -221,13 +239,36 @@ fn integer<T: TryFrom<i64>>(json: &Json, term: &TypeTerm) -> Result<T, LiteralEr
 
 struct Codec<'a, S> {
     schemas: &'a S,
+    /// Bytes the rest of the decode may still allocate.
+    budget: Cell<usize>,
 }
 
-impl<S: Schemas> Codec<'_, S> {
+impl<'a, S: Schemas> Codec<'a, S> {
+    fn new(schemas: &'a S, budget: usize) -> Self {
+        Self {
+            schemas,
+            budget: Cell::new(budget),
+        }
+    }
+
+    /// Charges `bytes` for the value of `term` being decoded, before it is allocated.
+    fn charge(&self, bytes: usize, term: &TypeTerm) -> Result<(), LiteralError> {
+        let left = self
+            .budget
+            .get()
+            .checked_sub(bytes)
+            .ok_or_else(|| LiteralError::TooLarge {
+                ty: term.to_string(),
+            })?;
+        self.budget.set(left);
+        Ok(())
+    }
+
     fn decode(&self, json: &Json, term: &TypeTerm, depth: usize) -> Result<Value, LiteralError> {
         if depth > MAX_NESTING {
             return Err(LiteralError::TooDeep);
         }
+        self.charge(VALUE_CHARGE, term)?;
         let named = match term {
             TypeTerm::Param(_) => {
                 return Err(LiteralError::UnresolvedParameter {
@@ -239,7 +280,12 @@ impl<S: Schemas> Codec<'_, S> {
         if named.namespace != "core" || named.major != 1 {
             return self.decode_schema(json, term, named, depth);
         }
-        let string = || json.as_str().ok_or_else(|| mismatch(term));
+        // Text is charged before it is copied or decoded; base64 never decodes longer.
+        let string = || {
+            let text = json.as_str().ok_or_else(|| mismatch(term))?;
+            self.charge(text.len(), term)?;
+            Ok::<_, LiteralError>(text)
+        };
         Ok(match (named.name.as_str(), named.args.as_slice()) {
             ("bool", []) => Value::Bool(json.as_bool().ok_or_else(|| mismatch(term))?),
             ("i32", []) => Value::I32(integer(json, term)?),

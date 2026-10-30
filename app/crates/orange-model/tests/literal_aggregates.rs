@@ -406,3 +406,26 @@ fn unknown_record_fields_and_enum_variants_are_redacted() {
         other => panic!("{other:?}"),
     }
 }
+
+/// The whole literal shares one byte budget, so many small strings cannot add up past it.
+#[test]
+fn a_literal_is_decoded_within_one_byte_budget() {
+    use orange_model::value::literal_codec::{MAX_LITERAL_BYTES, decode_with_budget};
+    let item = "x".repeat(1000);
+    let literal = Literal::value(
+        "core/list@1<core/string@1>".parse().unwrap(),
+        json!(vec![item; 100]),
+    );
+    let schemas = SchemaSet::default();
+    // 100 strings of 1000 bytes plus 101 value charges.
+    let needed = 100 * 1000 + 101 * 16;
+    assert!(decode_with_budget(&literal, &schemas, needed).is_ok());
+    assert_eq!(
+        decode_with_budget(&literal, &schemas, needed - 1),
+        Err(LiteralError::TooLarge {
+            ty: "core/string@1".into()
+        })
+    );
+    assert!(needed < MAX_LITERAL_BYTES);
+    assert!(decode(&literal, &schemas).is_ok());
+}
