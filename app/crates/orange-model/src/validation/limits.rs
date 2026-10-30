@@ -215,8 +215,10 @@ pub(super) struct Admitted {
 }
 
 impl Admitted {
-    /// What admission charges for one node's literals, type arguments and type pins.
+    /// What admission charges for one node's configuration, literals, type arguments and
+    /// type pins.
     pub(super) fn of_node_fields(
+        config: &ConfigValue,
         inputs: &BTreeMap<crate::id::PortKey, Literal>,
         type_args: &BTreeMap<String, crate::id::TypeExpr>,
         type_pins: &BTreeMap<String, crate::id::TypeExpr>,
@@ -238,6 +240,7 @@ impl Admitted {
         };
         // Only an addition past `usize::MAX` could fail; saturate like the totals.
         let charged = (|| {
+            budget.object(config)?;
             budget.items(type_args.len())?;
             budget.items(type_pins.len())?;
             for (name, ty) in type_args.iter().chain(type_pins) {

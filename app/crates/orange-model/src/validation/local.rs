@@ -111,10 +111,10 @@ impl LocalValidation {
     }
 
     /// Moves the binding past a node or edge edit the session already checked. A node edit
-    /// forgets the edited nodes' input, edge and component results; configuration and
-    /// declaration types do not read literals, type arguments or pins. An edge edit
-    /// invalidates through the journal as a full refresh would, without revisiting
-    /// configuration. A mismatch drops the cache.
+    /// forgets the edited nodes' input, edge and component results, and the configuration
+    /// result of a node whose configuration changed; declaration types read none of them.
+    /// An edge edit invalidates through the journal as a full refresh would, without
+    /// revisiting configuration. A mismatch drops the cache.
     pub(crate) fn advance_scoped(
         &mut self,
         document: &GraphDocument,
@@ -146,6 +146,18 @@ impl LocalValidation {
         let nodes: BTreeSet<NodeId> = edit.before.keys().copied().collect();
         for id in &nodes {
             self.passes.inputs.forget(id);
+        }
+        // A node whose configuration changed is checked again by the next refresh.
+        for (id, before) in &edit.before {
+            let changed = document.node(*id).is_none_or(|node| {
+                node.config != before.config || node.config_version != before.config_version
+            });
+            if changed
+                && let Some(previous) = self.config.remove(id)
+                && let Some(body_nodes) = self.body_nodes.get_mut(&previous.body)
+            {
+                body_nodes.remove(id);
+            }
         }
         self.passes.edges.forget_nodes(&nodes);
         self.passes.components.forget(&nodes, &BTreeSet::new());

@@ -488,10 +488,11 @@ fn run_supported_analysis(
         &regions.index.zones,
     ));
     options.checkpoint()?;
-    match &local {
-        Some(local) => diagnostics.extend(local.config_diagnostics().cloned()),
-        None => diagnostics.extend(validate_config(document, registry)),
-    }
+    // Kept apart, like the input diagnostics, so a scoped update can replace one node's.
+    let config_diagnostics: Vec<Diagnostic> = match &local {
+        Some(local) => local.config_diagnostics().cloned().collect(),
+        None => validate_config(document, registry),
+    };
     options.checkpoint()?;
     diagnostics.extend(connections.diagnostics);
     diagnostics.extend(functions.diagnostics);
@@ -512,6 +513,7 @@ fn run_supported_analysis(
     let explained_nodes: BTreeSet<_> = diagnostics
         .iter()
         .chain(&input_diagnostics)
+        .chain(&config_diagnostics)
         .filter(|item| item.severity == Severity::Error)
         .filter_map(|item| item.subject.node)
         .collect();
@@ -531,8 +533,12 @@ fn run_supported_analysis(
     );
     // The session keeps the input diagnostics apart from the rest, so a literal edit
     // can replace one node's inputs and merge again (16 §5.6).
-    let mut retained = match (node_parts, super::scoped::by_node(&input_diagnostics)) {
-        (Some((Some(node_diagnostics), node_incomplete)), Some(inputs)) => {
+    let mut retained = match (
+        node_parts,
+        super::scoped::by_node(&input_diagnostics),
+        super::scoped::by_node(&config_diagnostics),
+    ) {
+        (Some((Some(node_diagnostics), node_incomplete)), Some(inputs), Some(config)) => {
             let mut base = diagnostics.clone();
             sort_diagnostics(&mut base);
             base.dedup();
@@ -543,12 +549,14 @@ fn run_supported_analysis(
                 node_incomplete,
                 inputs,
                 base,
+                config,
                 clean: false,
             })
         }
         _ => None,
     };
     diagnostics.extend(input_diagnostics);
+    diagnostics.extend(config_diagnostics);
     sort_diagnostics(&mut diagnostics);
     diagnostics.dedup();
 

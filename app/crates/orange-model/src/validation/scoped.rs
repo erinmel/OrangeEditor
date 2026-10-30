@@ -36,6 +36,8 @@ pub(super) struct Retained {
     pub node_incomplete: BTreeSet<NodeId>,
     /// Input diagnostics per node, sorted; nodes without any are absent.
     pub inputs: BTreeMap<NodeId, Vec<Diagnostic>>,
+    /// Configuration diagnostics per node, likewise.
+    pub config: BTreeMap<NodeId, Vec<Diagnostic>>,
     /// Every other published diagnostic, sorted and deduplicated.
     pub base: Vec<Diagnostic>,
     /// The report had no error, incomplete node, zone or possibly suspending node: the
@@ -58,8 +60,8 @@ pub(super) fn by_node(diagnostics: &[Diagnostic]) -> Option<BTreeMap<NodeId, Vec
     Some(nodes)
 }
 
-/// A proven scoped update: each edited node's old and new input diagnostics, and the
-/// work it did.
+/// A proven scoped update: each edited node's old and new input diagnostics, then its old
+/// and new configuration diagnostics when its configuration changed, and the work it did.
 pub(super) struct Scoped {
     pub inputs: Vec<(Vec<Diagnostic>, Vec<Diagnostic>)>,
     /// Nodes re-resolved, including neighbours read only for availability.
@@ -86,12 +88,22 @@ pub(super) fn node_update(
             return None;
         }
         let node = document.node(*id)?;
+        // Structural passes read configuration of core intrinsics only (Fork, Switch,
+        // While, zones, variables, registers); a package node's reaches admission, its
+        // configuration check and its contract.
+        if (before.config != node.config || before.config_version != node.config_version)
+            && node.provider.is_none()
+        {
+            return None;
+        }
         removed = removed.add(Admitted::of_node_fields(
+            &before.config,
             &before.inputs,
             &before.type_args,
             &before.type_pins,
         ))?;
         added = added.add(Admitted::of_node_fields(
+            &node.config,
             &node.inputs,
             &node.type_args,
             &node.type_pins,
@@ -105,8 +117,37 @@ pub(super) fn node_update(
     let (resolved, components) =
         resolution_unchanged(document, registry, index, analysis, retained, &touched)?;
     let inputs = recheck_inputs(document, registry, index, analysis, retained, &touched)?;
+    let mut config = Vec::new();
+    let mut schemas = super::config::ConfigSchemas::default();
+    for (id, before) in &edit.before {
+        let node = document.node(*id)?;
+        if before.config == node.config && before.config_version == node.config_version {
+            continue;
+        }
+        let list: Vec<Diagnostic> =
+            super::config::validate_node_config(BodyRef::Root, node, registry, &mut schemas)
+                .into_iter()
+                .collect();
+        if has_error(&list) != has_error(retained.config.get(id).map_or(&[], Vec::as_slice)) {
+            return None;
+        }
+        config.push((*id, list));
+    }
     options.checkpoint().ok()?;
-    Some(commit(retained, admitted, inputs, resolved, components))
+    let mut scoped = commit(retained, admitted, inputs, resolved, components);
+    for (id, list) in config {
+        let old = if list.is_empty() {
+            retained.config.remove(&id)
+        } else {
+            retained.config.insert(id, list.clone())
+        };
+        scoped.inputs.push((old.unwrap_or_default(), list));
+    }
+    Some(scoped)
+}
+
+fn has_error(list: &[Diagnostic]) -> bool {
+    list.iter().any(|d| d.severity == Severity::Error)
 }
 
 /// Re-checks an edit that only added or removed edges. Every edge must join two data ports
@@ -276,7 +317,6 @@ fn recheck_inputs(
     retained: &Retained,
     nodes: &BTreeSet<NodeId>,
 ) -> Option<Vec<(NodeId, Vec<Diagnostic>)>> {
-    let has_error = |list: &[Diagnostic]| list.iter().any(|d| d.severity == Severity::Error);
     let report = analysis.report();
     let empty = Vec::new();
     let mut inputs = Vec::with_capacity(nodes.len());
