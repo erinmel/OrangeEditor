@@ -12,6 +12,7 @@ use crate::edit::{ChangeSet, DeclId};
 use crate::id::NodeId;
 
 use super::config::{ConfigSchemas, validate_node_config};
+use super::connections::EdgeCache;
 use super::declarations::validate_declaration_type;
 use super::inputs::InputCache;
 use super::{Diagnostic, Subject};
@@ -37,6 +38,18 @@ pub struct LocalWork {
     /// Node input checks reused because the node and everything the check reads were
     /// unchanged.
     pub input_hits: usize,
+    /// Edge checks that ran, during acceptance and the final round together.
+    pub edges_computed: usize,
+    /// Edge checks reused because the edge, its endpoints and their resolutions were
+    /// unchanged.
+    pub edge_hits: usize,
+}
+
+/// Per-unit results the analysis passes reuse and refill within a session.
+#[derive(Default, Clone)]
+pub(crate) struct PassCaches {
+    pub(crate) inputs: InputCache,
+    pub(crate) edges: EdgeCache,
 }
 
 #[derive(Clone)]
@@ -55,7 +68,7 @@ pub(crate) struct LocalValidation {
     body_nodes: BTreeMap<BodyRef, BTreeSet<NodeId>>,
     declarations: BTreeMap<DeclId, Option<Diagnostic>>,
     schemas: ConfigSchemas,
-    inputs: InputCache,
+    passes: PassCaches,
 }
 
 impl std::fmt::Debug for LocalValidation {
@@ -63,7 +76,8 @@ impl std::fmt::Debug for LocalValidation {
         f.debug_struct("LocalValidation")
             .field("config_units", &self.config.len())
             .field("declaration_units", &self.declarations.len())
-            .field("input_units", &self.inputs.len())
+            .field("input_units", &self.passes.inputs.len())
+            .field("edge_units", &self.passes.edges.len())
             .finish_non_exhaustive()
     }
 }
@@ -111,11 +125,13 @@ impl LocalValidation {
                 self.config.clear();
                 self.body_nodes.clear();
                 self.declarations.clear();
-                self.inputs.clear();
+                self.passes.inputs.clear();
+                self.passes.edges.clear();
             }
         }
-        self.inputs.computed = 0;
-        self.inputs.hits = 0;
+        let passes = &mut self.passes;
+        (passes.inputs.computed, passes.inputs.hits) = (0, 0);
+        (passes.edges.computed, passes.edges.hits) = (0, 0);
 
         let mut work = LocalWork::default();
         for (body_ref, body) in document.bodies_with_refs() {
@@ -189,7 +205,7 @@ impl LocalValidation {
             .chain(&nodes.removed)
             .chain(&nodes.changed)
         {
-            self.inputs.forget(id);
+            self.passes.inputs.forget(id);
             if let Some(previous) = self.config.remove(id)
                 && let Some(body_nodes) = self.body_nodes.get_mut(&previous.body)
             {
@@ -199,6 +215,23 @@ impl LocalValidation {
                 }
             }
         }
+        let touched: BTreeSet<NodeId> = nodes
+            .added
+            .iter()
+            .chain(&nodes.removed)
+            .chain(&nodes.changed)
+            .copied()
+            .collect();
+        self.passes.edges.forget_nodes(&touched);
+        let edges = change.edges();
+        for id in edges
+            .added
+            .iter()
+            .chain(&edges.removed)
+            .chain(&edges.changed)
+        {
+            self.passes.edges.forget(id);
+        }
         let declarations = change.decls();
         for id in declarations
             .added
@@ -207,6 +240,8 @@ impl LocalValidation {
             .chain(&declarations.changed)
         {
             if let DeclId::Function(function) = id {
+                // Edge checks read a body's rigid type parameters from its function.
+                self.passes.edges.clear();
                 if let Some(nodes) = self.body_nodes.remove(&BodyRef::Function(*function)) {
                     for node in nodes {
                         self.config.remove(&node);
@@ -218,15 +253,17 @@ impl LocalValidation {
         }
     }
 
-    /// The retained node input checks the analysis passes reuse and fill.
-    pub(crate) fn inputs(&mut self) -> &mut InputCache {
-        &mut self.inputs
+    /// The retained unit results the analysis passes reuse and fill.
+    pub(crate) fn passes(&mut self) -> &mut PassCaches {
+        &mut self.passes
     }
 
-    /// Adds the input checks of the analysis that just ran to `work`.
-    pub(crate) fn record_input_work(&self, work: &mut LocalWork) {
-        work.inputs_computed = self.inputs.computed;
-        work.input_hits = self.inputs.hits;
+    /// Adds the input and edge checks of the analysis that just ran to `work`.
+    pub(crate) fn record_pass_work(&self, work: &mut LocalWork) {
+        work.inputs_computed = self.passes.inputs.computed;
+        work.input_hits = self.passes.inputs.hits;
+        work.edges_computed = self.passes.edges.computed;
+        work.edge_hits = self.passes.edges.hits;
     }
 
     pub(crate) fn config_diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {

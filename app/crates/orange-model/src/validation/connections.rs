@@ -46,7 +46,7 @@ pub fn validate_connections(
     let index = DocIndex::build(document);
     let ports = PortResolver::new(document, resolved);
 
-    validate_connections_in(document, &ports, registry, Scope::All, &index)
+    validate_connections_in(document, &ports, registry, Scope::All, &index, None)
 }
 
 /// [`validate_connections`] over the bodies in `scope`, with a current `index` of `document`.
@@ -56,6 +56,7 @@ pub(crate) fn validate_connections_in(
     registry: &RegistrySnapshot,
     scope: Scope,
     index: &DocIndex,
+    mut cache: Option<&mut EdgeCache>,
 ) -> ConnectionValidation {
     let origin = registry.origin();
     let mut report = ConnectionValidation::default();
@@ -98,65 +99,24 @@ pub(crate) fn validate_connections_in(
             continue;
         }
 
-        let from = resolve_endpoint(
-            document,
-            resolved,
-            &edge.from,
-            edge.id,
-            origin,
-            &mut report,
-            &mut diagnostics,
-        );
-        let to = resolve_endpoint(
-            document,
-            resolved,
-            &edge.to,
-            edge.id,
-            origin,
-            &mut report,
-            &mut diagnostics,
-        );
-        let (Some(from), Some(to)) = (from, to) else {
-            continue;
-        };
-
-        if from.direction != crate::document::PortDirection::Output
-            || to.direction != crate::document::PortDirection::Input
-        {
-            diagnostics.push(Diagnostic::new(
-                DiagnosticCode::PortDirection,
-                subject(&edge.from, Some(edge.id)),
+        if let Some(cache) = cache.as_deref_mut() {
+            cache.edge(
+                document,
+                resolved,
+                edge,
                 origin,
-            ));
-            continue;
-        }
-
-        let matrix_ok = matches!(
-            (from.kind, to.kind),
-            (PortKind::Data, PortKind::Data)
-                | (PortKind::Exec, PortKind::Exec)
-                | (PortKind::Event, PortKind::Exec)
-        );
-        if !matrix_ok {
-            diagnostics.push(Diagnostic::new(
-                DiagnosticCode::KindMismatch,
-                subject(&edge.from, Some(edge.id)),
+                &mut report,
+                &mut diagnostics,
+            );
+        } else {
+            check_edge(
+                document,
+                resolved,
+                edge,
                 origin,
-            ));
-            continue;
-        }
-
-        if from.kind == PortKind::Data {
-            let rigid = rigid_params(document, edge.to.node);
-            if !(is_concrete(&from, rigid) && is_concrete(&to, rigid)) {
-                unchecked_edge(edge, resolved, origin, &mut report, &mut diagnostics);
-            } else if from.ty != to.ty {
-                diagnostics.push(Diagnostic::new(
-                    DiagnosticCode::TypeMismatch,
-                    subject(&edge.to, Some(edge.id)),
-                    origin,
-                ));
-            }
+                &mut report,
+                &mut diagnostics,
+            );
         }
     }
 
@@ -226,6 +186,78 @@ pub(crate) fn validate_connections_in(
     sort_diagnostics(&mut diagnostics);
     report.diagnostics = diagnostics;
     report
+}
+
+/// One edge's endpoint, direction, kind and type checks, as the pass runs them for every
+/// edge not already reported as crossing a body boundary.
+fn check_edge(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    edge: &Edge,
+    origin: &HostOrigin,
+    report: &mut ConnectionValidation,
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    let from = resolve_endpoint(
+        document,
+        resolved,
+        &edge.from,
+        edge.id,
+        origin,
+        report,
+        diagnostics,
+    );
+    let to = resolve_endpoint(
+        document,
+        resolved,
+        &edge.to,
+        edge.id,
+        origin,
+        report,
+        diagnostics,
+    );
+    let (Some(from), Some(to)) = (from, to) else {
+        return;
+    };
+
+    if from.direction != crate::document::PortDirection::Output
+        || to.direction != crate::document::PortDirection::Input
+    {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::PortDirection,
+            subject(&edge.from, Some(edge.id)),
+            origin,
+        ));
+        return;
+    }
+
+    let matrix_ok = matches!(
+        (from.kind, to.kind),
+        (PortKind::Data, PortKind::Data)
+            | (PortKind::Exec, PortKind::Exec)
+            | (PortKind::Event, PortKind::Exec)
+    );
+    if !matrix_ok {
+        diagnostics.push(Diagnostic::new(
+            DiagnosticCode::KindMismatch,
+            subject(&edge.from, Some(edge.id)),
+            origin,
+        ));
+        return;
+    }
+
+    if from.kind == PortKind::Data {
+        let rigid = rigid_params(document, edge.to.node);
+        if !(is_concrete(&from, rigid) && is_concrete(&to, rigid)) {
+            unchecked_edge(edge, resolved, origin, report, diagnostics);
+        } else if from.ty != to.ty {
+            diagnostics.push(Diagnostic::new(
+                DiagnosticCode::TypeMismatch,
+                subject(&edge.to, Some(edge.id)),
+                origin,
+            ));
+        }
+    }
 }
 
 fn resolve_endpoint(
@@ -307,4 +339,97 @@ fn stream_status(port: &PortDescriptor, rigid: &[TypeParam]) -> Option<bool> {
 
 fn subject(endpoint: &PortRef, edge: Option<EdgeId>) -> Subject {
     Subject::new(Some(endpoint.node), Some(endpoint.port.clone()), edge)
+}
+
+/// Each edge's check result from an earlier analysis of the same session (16, V12b). An
+/// entry is reused while the edge and both endpoint nodes are untouched by the change
+/// journal and each endpoint's fresh resolution equals the one the check saw; function
+/// declaration and registry changes clear the cache, since the check reads a body's
+/// rigid type parameters. Misses run the same [`check_edge`].
+#[derive(Default, Clone)]
+pub(crate) struct EdgeCache {
+    entries: BTreeMap<EdgeId, EdgeEntry>,
+    pub(crate) computed: usize,
+    pub(crate) hits: usize,
+}
+
+#[derive(Clone)]
+struct EdgeEntry {
+    ends: (NodeId, NodeId),
+    from: Option<SignatureSnapshot>,
+    to: Option<SignatureSnapshot>,
+    diagnostics: Vec<Diagnostic>,
+    incomplete: Vec<NodeId>,
+}
+
+impl EdgeCache {
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub(crate) fn forget(&mut self, edge: &EdgeId) {
+        self.entries.remove(edge);
+    }
+
+    /// Drops every entry whose edge ends at one of `nodes`.
+    pub(crate) fn forget_nodes(&mut self, nodes: &BTreeSet<NodeId>) {
+        if !nodes.is_empty() {
+            self.entries.retain(|_, entry| {
+                !nodes.contains(&entry.ends.0) && !nodes.contains(&entry.ends.1)
+            });
+        }
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn edge(
+        &mut self,
+        document: &GraphDocument,
+        resolved: &PortResolver<'_>,
+        edge: &Edge,
+        origin: &HostOrigin,
+        report: &mut ConnectionValidation,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let from = resolved.get(&edge.from.node);
+        let to = resolved.get(&edge.to.node);
+        if let Some(entry) = self.entries.get(&edge.id)
+            && entry.from.as_ref() == from
+            && entry.to.as_ref() == to
+        {
+            self.hits += 1;
+            diagnostics.extend(entry.diagnostics.iter().cloned());
+            report
+                .incomplete_nodes
+                .extend(entry.incomplete.iter().copied());
+            return;
+        }
+        self.computed += 1;
+        let mut own = ConnectionValidation::default();
+        let mut own_diagnostics = Vec::new();
+        check_edge(
+            document,
+            resolved,
+            edge,
+            origin,
+            &mut own,
+            &mut own_diagnostics,
+        );
+        diagnostics.extend(own_diagnostics.iter().cloned());
+        report
+            .incomplete_nodes
+            .extend(own.incomplete_nodes.iter().copied());
+        self.entries.insert(
+            edge.id,
+            EdgeEntry {
+                ends: (edge.from.node, edge.to.node),
+                from: from.cloned(),
+                to: to.cloned(),
+                diagnostics: own_diagnostics,
+                incomplete: own.incomplete_nodes.into_iter().collect(),
+            },
+        );
+    }
 }
