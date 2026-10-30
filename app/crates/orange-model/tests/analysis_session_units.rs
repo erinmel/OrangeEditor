@@ -111,6 +111,13 @@ fn one_config_edit_reuses_other_units_and_publishes_only_changed_subjects() {
     assert!(session.diagnostics().is_empty());
     assert_eq!(session.stats().local.config_computed, 16);
     assert_eq!(session.stats().local.config_hits, 0);
+    assert_eq!(
+        (
+            session.stats().local.inputs_computed,
+            session.stats().local.input_hits
+        ),
+        (16, 0)
+    );
 
     let changed = document
         .apply([config(7, json!("invalid boolean"))])
@@ -127,6 +134,11 @@ fn one_config_edit_reuses_other_units_and_publishes_only_changed_subjects() {
         (1, 15)
     );
     assert_eq!(stats.local.nodes_visited, 16);
+    // Only the edited node's input check runs again.
+    assert_eq!(
+        (stats.local.inputs_computed, stats.local.input_hits),
+        (1, 15)
+    );
     assert_eq!(stats.full_analysis_runs, 1);
     assert_eq!(session.analysis(), &full(&document, &registry));
 

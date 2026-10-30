@@ -24,7 +24,7 @@ pub fn validate_inputs(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = validate_inputs_in(document, resolved, registry, Scope::All, None);
+    let mut diagnostics = validate_inputs_in(document, resolved, registry, Scope::All, None, None);
     diagnostics.extend(validate_type_locks(document, registry));
     sort_diagnostics(&mut diagnostics);
     diagnostics
@@ -61,6 +61,7 @@ pub(crate) fn validate_inputs_in(
     registry: &RegistrySnapshot,
     scope: Scope,
     index: Option<&DocIndex>,
+    mut cache: Option<&mut InputCache>,
 ) -> Vec<Diagnostic> {
     let mut connected = BTreeMap::<NodeId, BTreeSet<PortKey>>::new();
     let mut nodes = BTreeMap::new();
@@ -87,22 +88,33 @@ pub(crate) fn validate_inputs_in(
         let Some(snapshot) = resolved.get(&node_id) else {
             continue;
         };
-        append_node_inputs(
-            document,
-            node,
-            snapshot,
-            |port| match index {
-                Some(index) => index
-                    .incoming(port)
-                    .any(|edge| scoped_body.is_none_or(|body| body.edges.contains_key(&edge))),
-                None => connected
-                    .get(&node_id)
-                    .unwrap_or(&empty)
-                    .contains(&port.port),
-            },
-            registry,
-            &mut diagnostics,
-        );
+        let is_connected = |port: &PortRef| match index {
+            Some(index) => index
+                .incoming(port)
+                .any(|edge| scoped_body.is_none_or(|body| body.edges.contains_key(&edge))),
+            None => connected
+                .get(&node_id)
+                .unwrap_or(&empty)
+                .contains(&port.port),
+        };
+        match cache.as_deref_mut() {
+            Some(cache) => cache.node_inputs(
+                document,
+                node,
+                snapshot,
+                is_connected,
+                registry,
+                &mut diagnostics,
+            ),
+            None => append_node_inputs(
+                document,
+                node,
+                snapshot,
+                is_connected,
+                registry,
+                &mut diagnostics,
+            ),
+        }
     }
     sort_diagnostics(&mut diagnostics);
     diagnostics
@@ -115,7 +127,7 @@ fn append_node_inputs(
     document: &GraphDocument,
     node: &NodeInstance,
     snapshot: &SignatureSnapshot,
-    is_connected: impl Fn(&PortRef) -> bool,
+    mut is_connected: impl FnMut(&PortRef) -> bool,
     registry: &RegistrySnapshot,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -275,6 +287,94 @@ fn append_node_inputs(
     }
 }
 
+/// Each node's input diagnostics from an earlier analysis of the same session (16, V12b).
+/// An entry is reused only while the change journal leaves its node untouched and every
+/// other input of the check is equal: the resolved signature, the enclosing function's
+/// rigid type parameters and the wire answers the check asked for. Registry changes
+/// clear the cache. Results are the full pass's, computed by the same function.
+#[derive(Default, Clone)]
+pub(crate) struct InputCache {
+    entries: BTreeMap<NodeId, InputEntry>,
+    pub(crate) computed: usize,
+    pub(crate) hits: usize,
+}
+
+#[derive(Clone)]
+struct InputEntry {
+    snapshot: SignatureSnapshot,
+    rigid: Vec<String>,
+    /// Each port the check asked about and whether it had an incoming wire, in order.
+    wires: Vec<(PortKey, bool)>,
+    diagnostics: Vec<Diagnostic>,
+}
+
+impl InputCache {
+    pub(crate) fn clear(&mut self) {
+        self.entries.clear();
+    }
+
+    pub(crate) fn forget(&mut self, node: &NodeId) {
+        self.entries.remove(node);
+    }
+
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn node_inputs(
+        &mut self,
+        document: &GraphDocument,
+        node: &NodeInstance,
+        snapshot: &SignatureSnapshot,
+        mut is_connected: impl FnMut(&PortRef) -> bool,
+        registry: &RegistrySnapshot,
+        diagnostics: &mut Vec<Diagnostic>,
+    ) {
+        let rigid: Vec<String> = rigid_params(document, node.id)
+            .iter()
+            .map(|param| param.name.clone())
+            .collect();
+        if let Some(entry) = self.entries.get(&node.id)
+            && entry.snapshot == *snapshot
+            && entry.rigid == rigid
+            && entry.wires.iter().all(|(port, wired)| {
+                is_connected(&PortRef {
+                    node: node.id,
+                    port: port.clone(),
+                }) == *wired
+            })
+        {
+            self.hits += 1;
+            diagnostics.extend(entry.diagnostics.iter().cloned());
+            return;
+        }
+        self.computed += 1;
+        let mut wires = Vec::new();
+        let mut own = Vec::new();
+        append_node_inputs(
+            document,
+            node,
+            snapshot,
+            |port| {
+                let wired = is_connected(port);
+                wires.push((port.port.clone(), wired));
+                wired
+            },
+            registry,
+            &mut own,
+        );
+        diagnostics.extend(own.iter().cloned());
+        self.entries.insert(
+            node.id,
+            InputEntry {
+                snapshot: snapshot.clone(),
+                rigid,
+                wires,
+                diagnostics: own,
+            },
+        );
+    }
+}
 fn is_variadic(port: &PortDescriptor) -> bool {
     port.variadic.is_some()
 }
@@ -348,7 +448,9 @@ mod tests {
         // A malformed wire stored in another body must not shadow this function's input.
         document.root.edges.insert(edge.id, edge.clone());
         let scope = Scope::Function(function_id);
-        let standalone = validate_inputs_in(&document, &resolved, &registry, scope, None);
+        // One cache across both states: moving the wire must not reuse the first result.
+        let mut cache = InputCache::default();
+        let standalone = validate_inputs_in(&document, &resolved, &registry, scope, None, None);
         assert!(standalone.is_empty());
         assert_eq!(
             standalone,
@@ -357,7 +459,8 @@ mod tests {
                 &resolved,
                 &registry,
                 scope,
-                Some(&DocIndex::build(&document))
+                Some(&DocIndex::build(&document)),
+                Some(&mut cache)
             )
         );
         // An invalid source on a wire in this body still shadows the literal.
@@ -369,7 +472,7 @@ mod tests {
             .body
             .edges
             .insert(edge.id, edge);
-        let standalone = validate_inputs_in(&document, &resolved, &registry, scope, None);
+        let standalone = validate_inputs_in(&document, &resolved, &registry, scope, None, None);
         assert_eq!(standalone.len(), 1);
         assert_eq!(standalone[0].code, DiagnosticCode::LiteralShadowed);
         assert_eq!(
@@ -379,8 +482,10 @@ mod tests {
                 &resolved,
                 &registry,
                 scope,
-                Some(&DocIndex::build(&document))
+                Some(&DocIndex::build(&document)),
+                Some(&mut cache)
             )
         );
+        assert_eq!((cache.computed, cache.hits), (2, 0));
     }
 }

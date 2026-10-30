@@ -23,7 +23,7 @@ use super::functions::{
     FunctionAnalysis, FunctionEvidence, LeafEffects, SummaryContext, analyze_functions, call_graph,
     callee_first_order, find_cycles, summarize_function,
 };
-use super::inputs::validate_inputs_in;
+use super::inputs::{InputCache, validate_inputs_in};
 use super::nodes::{CallEvidence, NodeValidation, validate_nodes_with};
 use super::regions::{RegionValidation, validate_regions_in};
 use super::scope::Scope;
@@ -49,6 +49,7 @@ impl BodyPasses {
         calls: &CallEvidence,
         scope: Scope,
         index: &DocIndex,
+        inputs: Option<&mut InputCache>,
         options: &AnalysisOptions<'_>,
     ) -> Result<Self, DiagnosticCode> {
         options.checkpoint()?;
@@ -66,7 +67,7 @@ impl BodyPasses {
         let control = validate_control_cycles_in(document, resolved, &connections, registry, scope);
         options.checkpoint()?;
         let input_diagnostics =
-            validate_inputs_in(document, resolved, registry, scope, Some(index));
+            validate_inputs_in(document, resolved, registry, scope, Some(index), inputs);
         options.checkpoint()?;
         let projections = ports.retain();
         drop(ports);
@@ -127,6 +128,7 @@ pub(crate) fn settle(
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
     index: &DocIndex,
     seed: Accepted,
+    mut inputs: Option<&mut InputCache>,
     options: &AnalysisOptions<'_>,
 ) -> Result<Settled, DiagnosticCode> {
     let mut calls = CallEvidence {
@@ -135,7 +137,15 @@ pub(crate) fn settle(
     };
     let mut rounds = 0;
     loop {
-        let passes = BodyPasses::run(document, registry, &calls, Scope::All, index, options)?;
+        let passes = BodyPasses::run(
+            document,
+            registry,
+            &calls,
+            Scope::All,
+            index,
+            inputs.as_deref_mut(),
+            options,
+        )?;
         let evidence = FunctionEvidence::from_nodes(document, &passes.nodes, leaf_effects.clone());
         let functions = analyze_functions(document, &evidence, registry);
         options.checkpoint()?;
@@ -179,6 +189,7 @@ pub(crate) fn accept_functions(
     registry: &RegistrySnapshot,
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
     index: &DocIndex,
+    mut inputs: Option<&mut InputCache>,
     options: &AnalysisOptions<'_>,
 ) -> Result<Accepted, DiagnosticCode> {
     options.checkpoint()?;
@@ -197,6 +208,7 @@ pub(crate) fn accept_functions(
             &calls,
             Scope::Function(id),
             index,
+            inputs.as_deref_mut(),
             options,
         )?;
         let context = SummaryContext {
@@ -310,13 +322,14 @@ mod tests {
         let effects = BTreeMap::new();
         let index = DocIndex::build(document);
         let options = AnalysisOptions::default();
-        let seed = accept_functions(document, &registry, &effects, &index, &options).unwrap();
+        let seed = accept_functions(document, &registry, &effects, &index, None, &options).unwrap();
         let seeded = settle(
             document,
             &registry,
             &effects,
             &index,
             seed.clone(),
+            None,
             &options,
         )
         .unwrap();
@@ -326,6 +339,7 @@ mod tests {
             &effects,
             &index,
             BTreeMap::new(),
+            None,
             &options,
         )
         .unwrap();

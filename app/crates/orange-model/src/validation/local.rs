@@ -13,6 +13,7 @@ use crate::id::NodeId;
 
 use super::config::{ConfigSchemas, validate_node_config};
 use super::declarations::validate_declaration_type;
+use super::inputs::InputCache;
 use super::{Diagnostic, Subject};
 
 /// Actual unit work during one refresh, including visits that reused a result.
@@ -31,6 +32,11 @@ pub struct LocalWork {
     pub declarations_computed: usize,
     /// Declaration type units reused after their unchanged inputs were established.
     pub declaration_hits: usize,
+    /// Node input checks that ran, during acceptance and the final round together.
+    pub inputs_computed: usize,
+    /// Node input checks reused because the node and everything the check reads were
+    /// unchanged.
+    pub input_hits: usize,
 }
 
 #[derive(Clone)]
@@ -49,6 +55,7 @@ pub(crate) struct LocalValidation {
     body_nodes: BTreeMap<BodyRef, BTreeSet<NodeId>>,
     declarations: BTreeMap<DeclId, Option<Diagnostic>>,
     schemas: ConfigSchemas,
+    inputs: InputCache,
 }
 
 impl std::fmt::Debug for LocalValidation {
@@ -56,6 +63,7 @@ impl std::fmt::Debug for LocalValidation {
         f.debug_struct("LocalValidation")
             .field("config_units", &self.config.len())
             .field("declaration_units", &self.declarations.len())
+            .field("input_units", &self.inputs.len())
             .finish_non_exhaustive()
     }
 }
@@ -103,8 +111,11 @@ impl LocalValidation {
                 self.config.clear();
                 self.body_nodes.clear();
                 self.declarations.clear();
+                self.inputs.clear();
             }
         }
+        self.inputs.computed = 0;
+        self.inputs.hits = 0;
 
         let mut work = LocalWork::default();
         for (body_ref, body) in document.bodies_with_refs() {
@@ -178,6 +189,7 @@ impl LocalValidation {
             .chain(&nodes.removed)
             .chain(&nodes.changed)
         {
+            self.inputs.forget(id);
             if let Some(previous) = self.config.remove(id)
                 && let Some(body_nodes) = self.body_nodes.get_mut(&previous.body)
             {
@@ -204,6 +216,17 @@ impl LocalValidation {
                 self.declarations.remove(id);
             }
         }
+    }
+
+    /// The retained node input checks the analysis passes reuse and fill.
+    pub(crate) fn inputs(&mut self) -> &mut InputCache {
+        &mut self.inputs
+    }
+
+    /// Adds the input checks of the analysis that just ran to `work`.
+    pub(crate) fn record_input_work(&self, work: &mut LocalWork) {
+        work.inputs_computed = self.inputs.computed;
+        work.input_hits = self.inputs.hits;
     }
 
     pub(crate) fn config_diagnostics(&self) -> impl Iterator<Item = &Diagnostic> {
