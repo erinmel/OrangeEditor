@@ -17,7 +17,10 @@ use super::acceptance::Accepted;
 use super::inputs::node_input_diagnostics;
 use super::limits::Admitted;
 use super::nodes::{CallEvidence, validate_node_ids};
-use super::{AnalysisOptions, Diagnostic, Severity, ValidationAnalysis, sort_diagnostics};
+use super::scope::Scope;
+use super::{
+    AnalysisOptions, Diagnostic, LeafEffects, Severity, ValidationAnalysis, sort_diagnostics,
+};
 use crate::catalog::RegistrySnapshot;
 use crate::document::{
     BodyRef, Edge, GraphDocument, NodeKind, PortDirection, PortKind, SignatureSnapshot,
@@ -42,9 +45,15 @@ pub(super) struct Retained {
     pub config: BTreeMap<NodeId, Vec<Diagnostic>>,
     /// Every other published diagnostic, sorted and deduplicated.
     pub base: Vec<Diagnostic>,
-    /// The report had no error, incomplete node, zone or possibly suspending node: the
-    /// conditions under which an edge edit can be checked locally. Scoped updates keep it.
+    /// Availability, state, region and control-cycle diagnostics, sorted and deduplicated:
+    /// what a scoped exec edit recomputes and replaces together.
+    pub flow: Vec<Diagnostic>,
+    /// The report had no error, incomplete node or function, or zone: the condition under
+    /// which a structure edit can be checked locally. Scoped updates keep it.
     pub clean: bool,
+    /// No node may suspend, so stale-capture checks cannot read data edges. Data edges and
+    /// nodes are checked locally only then; exec edges recompute the state pass anyway.
+    pub quiet: bool,
 }
 
 /// `diagnostics` grouped by subject node and sorted, or `None` if one has no node.
@@ -169,6 +178,10 @@ fn has_error(list: &[Diagnostic]) -> bool {
 /// its ports, its target's inputs, data cycles, availability and export cones, and each of
 /// those is checked for the edge alone. A removed edge or node in a clean report can only
 /// take requirements and cycles away.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "an exec edit reruns the state pass, which reads the host's leaf effects"
+)]
 pub(super) fn structure_update(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -177,6 +190,7 @@ pub(super) fn structure_update(
     analysis: &mut ValidationAnalysis,
     retained: &mut Retained,
     change: &ChangeSet,
+    effects: &BTreeMap<NodeId, LeafEffects>,
 ) -> Option<Scoped> {
     options.checkpoint().ok()?;
     let edit = change.structure_edit()?;
@@ -264,10 +278,24 @@ pub(super) fn structure_update(
     for (id, (signature, _)) in &fresh {
         analysis.resolved_mut().insert(*id, signature.clone());
     }
-    let checked = edges_are_local(document, registry, index, analysis, &edges)
-        .then(|| recheck_inputs(document, registry, index, analysis, retained, &targets))
-        .flatten()
-        .and_then(|inputs| {
+    let kinds = classify_edges(document, registry, index, analysis, &edges);
+    // Data edges and nodes need the quiet condition; a mix with exec edges would let a
+    // data check read regions the exec edges are about to change.
+    let local = kinds.filter(|kinds| {
+        let structural = kinds.data || !added_nodes.is_empty() || !edit.removed_nodes.is_empty();
+        (!structural || retained.quiet) && !(structural && kinds.flow)
+    });
+    let checked = local
+        .and_then(|kinds| {
+            let inputs = recheck_inputs(document, registry, index, analysis, retained, &targets)?;
+            let flow = if kinds.flow {
+                Some(recompute_flow(document, registry, analysis, effects)?)
+            } else {
+                None
+            };
+            Some((inputs, flow))
+        })
+        .and_then(|(inputs, flow)| {
             let mut schemas = super::config::ConfigSchemas::default();
             let mut config = Vec::new();
             for id in added_nodes {
@@ -285,9 +313,9 @@ pub(super) fn structure_update(
                 config.push((*id, list));
             }
             options.checkpoint().ok()?;
-            Some((inputs, config))
+            Some((inputs, flow, config))
         });
-    let Some((inputs, config)) = checked else {
+    let Some((inputs, flow, config)) = checked else {
         for id in fresh.keys() {
             analysis.resolved_mut().remove(id);
         }
@@ -296,6 +324,11 @@ pub(super) fn structure_update(
     };
 
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
+    if let Some((list, regions)) = flow {
+        analysis.set_regions(regions);
+        let old = std::mem::replace(&mut retained.flow, list.clone());
+        scoped.inputs.push((old, list));
+    }
     for (id, list) in config {
         if !list.is_empty() {
             retained.config.insert(id, list.clone());
@@ -339,19 +372,30 @@ fn pure_data(signature: &SignatureSnapshot) -> bool {
         })
 }
 
-/// Whether each edge, with the staged signatures, can only change its target's inputs.
-fn edges_are_local(
+/// What the edges of a structure edit can reach.
+#[derive(Default, Clone, Copy)]
+struct EdgeKinds {
+    /// A data edge: only its target's inputs, once its own checks pass.
+    data: bool,
+    /// An exec or event edge: the control-flow passes too.
+    flow: bool,
+}
+
+/// Classifies each edge with the staged signatures, or `None` when one may change more than
+/// its target's inputs and, for exec edges, the control-flow passes.
+fn classify_edges(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     index: &DocIndex,
     analysis: &ValidationAnalysis,
     edges: &[(&Edge, bool)],
-) -> bool {
+) -> Option<EdgeKinds> {
     let report = analysis.report();
     let ports = super::ports::PortResolver::new(document, &report.resolved);
     let origin = registry.origin();
     let root = document.root();
-    edges.iter().all(|(edge, is_added)| {
+    let mut kinds = EdgeKinds::default();
+    let local = edges.iter().all(|(edge, is_added)| {
         let published = report
             .diagnostics
             .iter()
@@ -361,8 +405,25 @@ fn edges_are_local(
                 || !root.nodes.contains_key(&edge.to.node))
         {
             // The edge went with a removed node, which was pure and clean.
+            kinds.data = true;
             return !published;
         }
+        let exec = matches!(
+            (ports.port(&edge.from), ports.port(&edge.to)),
+            (Ok(from), Ok(to)) if matches!(from.kind, PortKind::Exec | PortKind::Event)
+                && to.kind == PortKind::Exec
+                && from.direction == PortDirection::Output
+                && to.direction == PortDirection::Input
+        );
+        if exec {
+            kinds.flow = true;
+            return if *is_added {
+                super::connections::added_edge_is_clean(document, &ports, index, edge, origin)
+            } else {
+                !published
+            };
+        }
+        kinds.data = true;
         let data = matches!(
             (ports.port(&edge.from), ports.port(&edge.to)),
             (Ok(from), Ok(to)) if from.kind == PortKind::Data
@@ -392,13 +453,65 @@ fn edges_are_local(
         if *is_added {
             // Acyclic before, so a new cycle must lead from the target back to the source.
             !downstream.contains(&edge.from.node)
-                && super::connections::added_data_edge_is_clean(
-                    document, &ports, index, edge, origin,
-                )
+                && super::connections::added_edge_is_clean(document, &ports, index, edge, origin)
         } else {
             !published
         }
-    })
+    });
+    local.then_some(kinds)
+}
+
+/// The availability, state, region and control-cycle passes over the current document,
+/// with the clean connection result an edge edit that passed [`classify_edges`] has. `None`
+/// when they find an error, an incomplete node or a control cycle.
+fn recompute_flow(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    analysis: &ValidationAnalysis,
+    effects: &BTreeMap<NodeId, LeafEffects>,
+) -> Option<(Vec<Diagnostic>, super::regions::RegionIndex)> {
+    let report = analysis.report();
+    let ports = super::ports::PortResolver::new(document, &report.resolved);
+    let connections = super::connections::ConnectionValidation::default();
+    let regions =
+        super::regions::validate_regions_in(document, &ports, &connections, registry, Scope::All);
+    let control = super::control_cycles::validate_control_cycles_in(
+        document,
+        &ports,
+        &connections,
+        registry,
+        Scope::All,
+    );
+    if !regions.incomplete_nodes.is_empty()
+        || !control.incomplete_nodes.is_empty()
+        || !control.cycle_paths.is_empty()
+    {
+        return None;
+    }
+    let mut flow = super::availability::validate_availability_with_ports(
+        document,
+        &ports,
+        &connections,
+        &regions.index,
+        registry,
+    )
+    .diagnostics;
+    flow.extend(super::state::validate_state(
+        document,
+        registry,
+        &report.resolved,
+        &regions.index,
+        &report.functions,
+        effects,
+    ));
+    flow.extend(regions.diagnostics);
+    flow.extend(control.diagnostics);
+    if has_error(&flow) {
+        return None;
+    }
+    sort_diagnostics(&mut flow);
+    flow.dedup();
+    Some((flow, regions.index))
 }
 
 /// Re-resolves `touched`, their neighbours and those nodes' generic components, with every

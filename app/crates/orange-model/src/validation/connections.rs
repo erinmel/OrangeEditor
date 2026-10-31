@@ -189,10 +189,10 @@ pub(crate) fn validate_connections_in(
 }
 
 /// Whether the whole-document pass would report nothing new for the stored edge `edge`
-/// when it is a data edge added to an otherwise clean body: the edge checks without
-/// diagnostics or incompleteness, its input has no other wire, and a shared output is not
-/// a stream.
-pub(crate) fn added_data_edge_is_clean(
+/// added to an otherwise clean body: the edge checks without diagnostics or
+/// incompleteness, an exec or event output has no other connection, and a data input has
+/// no other wire and a shared data output is not a stream.
+pub(crate) fn added_edge_is_clean(
     document: &GraphDocument,
     resolved: &PortResolver<'_>,
     index: &DocIndex,
@@ -212,14 +212,18 @@ pub(crate) fn added_data_edge_is_clean(
     if !diagnostics.is_empty() || !report.incomplete_nodes.is_empty() {
         return false;
     }
+    let Ok(from) = resolved.port(&edge.from) else {
+        return false;
+    };
+    if from.kind != PortKind::Data {
+        // An exec or event output takes one connection; exec inputs take any number.
+        return index.outgoing(&edge.from).nth(1).is_none();
+    }
     if index.incoming(&edge.to).nth(1).is_some() {
         return false;
     }
     if index.outgoing(&edge.from).nth(1).is_some() {
-        let Ok(port) = resolved.port(&edge.from) else {
-            return false;
-        };
-        return stream_status(&port, rigid_params(document, edge.from.node)) == Some(false);
+        return stream_status(&from, rigid_params(document, edge.from.node)) == Some(false);
     }
     true
 }

@@ -680,3 +680,120 @@ fn other_node_additions_and_removals_run_the_full_analysis() {
     assert_eq!(work, SessionWork::Recompute);
     assert!(!session.analysis().report().is_valid());
 }
+
+/// On Start runs two Set Variable nodes in turn, each storing an add's sum.
+fn exec_chain() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (package, registry) = catalog();
+    let variable = id(100);
+    let core = |n: u32, name: &str| {
+        let mut node = json!({"id": id(n), "definition_id": format!("core/{name}"),
+            "definition_version": 1, "config_version": 1, "config": {}});
+        if name == "on-start" {
+            node["activation"] = json!({"mode": "queue", "capacity": 4,
+                "overflow": "drop-newest", "on_fault": "continue", "order": 0});
+        } else {
+            node["config"] = json!({"variable": variable});
+        }
+        node
+    };
+    let nodes = vec![
+        core(1, "on-start"),
+        core(2, "set-variable"),
+        core(3, "set-variable"),
+        math(10, "add", 1, 2),
+        math(11, "add", 3, 4),
+    ];
+    let edges = vec![
+        edge(1, 1, "then", 2, "in"),
+        edge(2, 2, "then", 3, "in"),
+        edge(3, 10, "sum", 2, "value"),
+        edge(4, 11, "sum", 3, "value"),
+    ];
+    let base = graph(&package, nodes, edges, vec![]);
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&base).unwrap()).unwrap();
+    raw["variables"] = json!([{"id": variable, "name": "total", "type": "core/u64@1",
+        "scope": "run", "init": {"type": "core/u64@1", "value": "0"}}]);
+    (orange_model::from_json(&raw.to_string()).unwrap(), registry)
+}
+
+fn wire(n: u32, from: u32, output: &str, to: u32, input: &str) -> DocCommand {
+    DocCommand::Connect {
+        edge: serde_json::from_value::<Edge>(edge(n, from, output, to, input)).unwrap(),
+    }
+}
+
+#[test]
+fn exec_edges_rerun_only_the_control_flow_passes() {
+    let (mut doc, registry) = exec_chain();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let before = session.diagnostics().len();
+    // The second Set becomes unreachable, a warning the region pass adds.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(2)],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    assert_eq!(session.diagnostics().len(), before + 1);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![wire(2, 2, "then", 3, "in")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.diagnostics().len(), before);
+}
+
+#[test]
+fn exec_edges_that_may_change_more_run_the_full_analysis() {
+    let (mut doc, registry) = exec_chain();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // A second connection on one exec output.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![wire(5, 1, "then", 3, "in")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(5)],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().is_valid());
+    // A control cycle.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![wire(6, 3, "then", 2, "in")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(6)],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    // Exec and data edges together.
+    let mixed = vec![disconnect(2), disconnect(4)];
+    let work = edit(&mut session, &mut doc, &registry, options, mixed);
+    assert_eq!(work, SessionWork::Recompute);
+}

@@ -203,6 +203,7 @@ impl AnalysisSession {
                 &mut self.analysis,
                 retained,
                 change,
+                &self.effects,
             ),
             (None, None) => None,
         };
