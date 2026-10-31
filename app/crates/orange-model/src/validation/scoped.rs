@@ -62,6 +62,10 @@ pub(super) struct Retained {
     /// input and configuration lists: the condition under which a structure edit can be
     /// checked locally. Scoped updates keep it.
     pub clean: bool,
+    /// The report would be clean but for incomplete nodes and their dependency-unavailable
+    /// errors, with every function complete. A structure edit can still be checked locally
+    /// when nothing it reads or reruns touches an incomplete node or its neighbours.
+    pub isolable: bool,
     /// No node may suspend, so stale-capture checks cannot read data edges. Data edges and
     /// nodes are checked locally only then; exec edges recompute the state pass anyway.
     pub quiet: bool,
@@ -143,7 +147,7 @@ pub(super) fn node_update(
         return None;
     }
     let touched: BTreeSet<NodeId> = edit.before.keys().copied().collect();
-    let (resolved, components, _) = resolution_unchanged(
+    let (resolved, components, _, _) = resolution_unchanged(
         document,
         registry,
         index,
@@ -151,6 +155,7 @@ pub(super) fn node_update(
         retained,
         &touched,
         &BTreeSet::new(),
+        None,
     )?;
     let inputs = recheck_inputs(document, registry, index, analysis, retained, &touched)?;
     let mut config = Vec::new();
@@ -198,7 +203,7 @@ fn strict(document: &GraphDocument, retained: &Retained, node: NodeId) -> bool {
 /// a function's own function-pass and conformance errors in a complete report: a called
 /// function with such an error would leave its call sites incomplete, so the function is
 /// uncalled and nothing but its own diagnostics reads its acceptance.
-pub(super) fn blocking_error(retained: &Retained) -> bool {
+pub(super) fn blocking_error(retained: &Retained, incomplete: &BTreeSet<NodeId>) -> bool {
     let own = |item: &&Diagnostic| {
         item.subject.function.is_some_and(|function| {
             retained
@@ -213,7 +218,33 @@ pub(super) fn blocking_error(retained: &Retained) -> bool {
         .filter(|item| !own(item))
         .chain(&retained.flow)
         .chain(&retained.state)
+        .filter(|item| {
+            // An incomplete node's own dependency diagnostic, which an isolated edit cannot
+            // reach.
+            item.code != super::DiagnosticCode::DependencyUnavailable
+                || item
+                    .subject
+                    .node
+                    .is_none_or(|node| !incomplete.contains(&node))
+        })
         .any(|item| item.severity == Severity::Error)
+}
+
+/// Whether no node in `nodes` is incomplete or joined by an edge to an incomplete node.
+fn isolated<'a>(
+    document: &GraphDocument,
+    index: &DocIndex,
+    incomplete: &BTreeSet<NodeId>,
+    mut nodes: impl Iterator<Item = &'a NodeId>,
+) -> bool {
+    nodes.all(|node| {
+        !incomplete.contains(node)
+            && index.incident(*node).all(|edge| {
+                document.edge(edge).is_none_or(|edge| {
+                    !incomplete.contains(&edge.from.node) && !incomplete.contains(&edge.to.node)
+                })
+            })
+    })
 }
 
 /// Every function that calls `function`, directly or through other functions, callee first.
@@ -284,7 +315,7 @@ pub(super) fn structure_update(
 ) -> Option<Scoped> {
     options.checkpoint().ok()?;
     let edit = change.structure_edit()?;
-    if !retained.clean {
+    if !retained.clean && !retained.isolable {
         return None;
     }
     // The edit stays in one body: the root, or one function's body (V12e).
@@ -366,7 +397,7 @@ pub(super) fn structure_update(
     if !options.fits(admitted) {
         return None;
     }
-    let (resolved, components, fresh) = resolution_unchanged(
+    let (resolved, components, fresh, reach) = resolution_unchanged(
         document,
         registry,
         index,
@@ -374,6 +405,7 @@ pub(super) fn structure_update(
         retained,
         &touched,
         added_nodes,
+        (!retained.complete).then_some(&analysis.report().incomplete_nodes),
     )?;
     if fresh.values().any(|(signature, _)| !typed_data(signature)) {
         return None;
@@ -528,6 +560,27 @@ pub(super) fn structure_update(
             options.checkpoint().ok()?;
             Some((inputs, flow, config))
         });
+    // In an incomplete report, every node the edit reached must keep clear of the
+    // incomplete nodes, whose own diagnostics this update does not recompute.
+    let checked = checked.filter(|(_, flow, _)| {
+        retained.complete || {
+            let incomplete = &analysis.report().incomplete_nodes;
+            !edit
+                .removed_nodes
+                .keys()
+                .any(|node| incomplete.contains(node))
+                && isolated(
+                    document,
+                    index,
+                    incomplete,
+                    reach
+                        .iter()
+                        .chain(&touched)
+                        .chain(&targets)
+                        .chain(flow.iter().flat_map(|update| &update.component)),
+                )
+        }
+    });
     let Some((inputs, flow, config)) = checked else {
         for id in fresh.keys() {
             analysis.resolved_mut().remove(id);
@@ -568,8 +621,10 @@ pub(super) fn structure_update(
                 .insert(function, check.diagnostics.clone());
         }
         scoped.inputs.push((old, check.diagnostics));
-        // The edit started clean, so only errors outside the function lists could change it.
-        retained.clean = retained.complete && !blocking_error(retained);
+        // Only errors outside the function lists could change these flags.
+        retained.clean = retained.complete && !blocking_error(retained, &BTreeSet::new());
+        retained.isolable =
+            !blocking_error(retained, &analysis.report().incomplete_nodes) && retained.isolable;
     }
     let mut state = state_override;
     if let Some(update) = flow {
@@ -731,6 +786,9 @@ struct FlowUpdate {
     flow: Vec<Diagnostic>,
     state: Vec<Diagnostic>,
     regions: super::regions::RegionIndex,
+    /// The exec-connected nodes the passes reran for; empty after a whole-document rerun,
+    /// which only a complete report can pass.
+    component: BTreeSet<NodeId>,
 }
 
 /// Reruns the region, control-cycle and availability passes for the exec-connected nodes
@@ -888,6 +946,7 @@ fn recompute_flow(
         flow,
         state,
         regions: merged,
+        component,
     })
 }
 
@@ -946,6 +1005,7 @@ fn whole_flow(
         flow,
         state,
         regions: regions.index,
+        component: BTreeSet::new(),
     })
 }
 
@@ -986,8 +1046,13 @@ fn exec_component(
 /// Re-resolves `touched`, their neighbours and those nodes' generic components, with every
 /// neighbour of that set available, and confirms each result equals the retained one.
 /// Nodes in `added` are new: each must resolve without errors, and its results are returned.
+/// With `incomplete`, every node the resolution reads must keep clear of those nodes.
 /// Returns how many nodes were resolved, how many components they span and the new nodes'
 /// results.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "structure edits in incomplete reports also pass the nodes to keep clear of"
+)]
 fn resolution_unchanged(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -996,7 +1061,8 @@ fn resolution_unchanged(
     retained: &Retained,
     touched: &BTreeSet<NodeId>,
     added: &BTreeSet<NodeId>,
-) -> Option<(usize, usize, Fresh)> {
+    incomplete: Option<&BTreeSet<NodeId>>,
+) -> Option<(usize, usize, Fresh, Vec<NodeId>)> {
     let near = with_neighbours(document, index, touched);
     let components = crate::inference::component::component_nodes(
         document,
@@ -1011,6 +1077,10 @@ fn resolution_unchanged(
     let ids: Vec<NodeId> = with_neighbours(document, index, &affected)
         .into_iter()
         .collect();
+    // In an incomplete report, give up before solving if the set reaches an incomplete node.
+    if incomplete.is_some_and(|incomplete| !isolated(document, index, incomplete, ids.iter())) {
+        return None;
+    }
     let calls = CallEvidence {
         accepted: retained.calls.clone(),
         pipeline: true,
@@ -1041,7 +1111,7 @@ fn resolution_unchanged(
     if added.iter().any(|id| !fresh_added.contains_key(id)) {
         return None;
     }
-    Some((ids.len(), components.len(), fresh_added))
+    Some((ids.len(), components.len(), fresh_added, ids))
 }
 
 /// Each added node's new signature and node diagnostics.

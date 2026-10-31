@@ -656,6 +656,7 @@ fn run_supported_analysis(
                 state: sorted(state.clone()),
                 complete: false,
                 clean: false,
+                isolable: false,
                 quiet: false,
             })
         }
@@ -679,9 +680,13 @@ fn run_supported_analysis(
         use crate::document::Suspends;
         retained.complete =
             incomplete_nodes.is_empty() && functions.incomplete_functions.is_empty();
+        let zoned = regions.index.zones.iter().len() != 0;
         retained.clean = retained.complete
-            && !super::scoped::blocking_error(retained)
-            && regions.index.zones.iter().len() == 0;
+            && !super::scoped::blocking_error(retained, &BTreeSet::new())
+            && !zoned;
+        retained.isolable = functions.incomplete_functions.is_empty()
+            && !super::scoped::blocking_error(retained, &incomplete_nodes)
+            && !zoned;
         retained.quiet = nodes
             .resolved
             .values()

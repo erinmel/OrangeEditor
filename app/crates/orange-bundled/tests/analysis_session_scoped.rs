@@ -1336,3 +1336,124 @@ fn a_summary_change_that_conflicts_with_a_caller_runs_the_full_analysis() {
     assert_eq!(work, SessionWork::Recompute);
     assert!(!session.analysis().report().is_valid());
 }
+
+fn unknown_node(n: u32) -> DocCommand {
+    let mut node = math(n, "add", 0, 1);
+    node["definition_id"] = json!("org.orange.math/unknown");
+    DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(node).unwrap(),
+    }
+}
+
+#[test]
+fn structure_edits_away_from_incomplete_nodes_are_scoped() {
+    let (mut doc, registry) = chains();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // An unresolvable node feeding the second chain's first add leaves both incomplete.
+    let broken = vec![unknown_node(60), connect(60, 60, 13, "a")];
+    edit(&mut session, &mut doc, &registry, options, broken);
+    assert!(!session.analysis().report().incomplete_nodes.is_empty());
+    // Far from them, wiring edits and node edits stay local.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(29)],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![connect(29, 28, 29, "a")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![add_node(61)],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    // Next to an incomplete node, the edit runs in full.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(14)],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    // Repairing the graph runs in full too.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[60])],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().incomplete_nodes.is_empty());
+}
+
+#[test]
+fn exec_edits_away_from_incomplete_nodes_are_scoped() {
+    let (mut doc, registry) = two_activations();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![unknown_node(70)],
+    );
+    assert!(!session.analysis().report().incomplete_nodes.is_empty());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(5)],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![wire(5, 5, "then", 6, "in")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+}
+
+#[test]
+fn control_flow_beside_an_unresolved_feed_runs_the_full_analysis() {
+    let (mut doc, registry) = two_activations();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // A Set fed by an unresolvable node leads into the second activation. Nothing reaches
+    // it, but the unresolved feed exempts it from the unreachable warning.
+    let feed = vec![
+        unknown_node(70),
+        set_node(7),
+        wire(40, 70, "sum", 7, "value"),
+        wire(41, 7, "then", 6, "in"),
+    ];
+    edit(&mut session, &mut doc, &registry, options, feed);
+    assert!(!session.analysis().report().incomplete_nodes.is_empty());
+    // An exec edit in that activation reruns its control flow, which includes the Set.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(5)],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+}
