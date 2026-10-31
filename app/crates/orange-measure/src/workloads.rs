@@ -1058,11 +1058,24 @@ pub struct W9Bucket {
     pub max_resolved: usize,
 }
 
+/// Heap bytes counted by the global allocator during one W9 run.
+pub struct W9Memory {
+    /// Released by dropping the document after every edit (the registry stays shared).
+    pub document: usize,
+    /// Retained by the session after its first, full analysis.
+    pub session: usize,
+    /// The highest live heap above the start while that first analysis ran.
+    pub session_peak: usize,
+    /// Released by dropping the session after every edit.
+    pub session_after_edits: usize,
+}
+
 /// One W9 run.
 pub struct W9 {
     /// Root nodes and edges before the edits.
     pub nodes: usize,
     pub edges: usize,
+    pub memory: W9Memory,
     /// The 1,000 seeded connect, disconnect, literal and type-argument edits, the same
     /// sequence as before the other kinds were added.
     pub core: W9Bucket,
@@ -1178,7 +1191,11 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
     let (mut document, registry) = source.analyzed();
     let (node_count, edge_count) = (document.root().nodes.len(), document.root().edges.len());
     let options = AnalysisOptions::default();
+    let window = crate::counter::Snapshot::start();
+    let starting = crate::counter::live_bytes();
     let mut session = AnalysisSession::new(&document, &registry, BTreeMap::new(), options);
+    let session_bytes = crate::counter::live_bytes().saturating_sub(starting);
+    let session_peak = window.finish().peak_live_bytes;
     let parse = |edge: Json| -> Edge { serde_json::from_value(edge).expect("edge") };
     let edges: Vec<(u32, &str, Edge)> = inputs
         .into_iter()
@@ -1315,6 +1332,18 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
             assert!(timed(open, W9Edit::CycleOpen, false));
         }
     }
+    let released = |held: usize| held.saturating_sub(crate::counter::live_bytes());
+    let held = crate::counter::live_bytes();
+    drop(session);
+    let session_after_edits = released(held);
+    let held = crate::counter::live_bytes();
+    drop(document);
+    let memory = W9Memory {
+        document: released(held),
+        session: session_bytes,
+        session_peak,
+        session_after_edits,
+    };
     let bucket = |keep: &dyn Fn(&Record) -> bool| {
         let mut kept: Vec<_> = records.iter().filter(|record| keep(record)).collect();
         kept.sort_by_key(|record| record.1);
@@ -1340,6 +1369,7 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
     W9 {
         nodes: node_count,
         edges: edge_count,
+        memory,
         core: bucket(&|record| record.4),
         kinds: W9Edit::ALL
             .into_iter()

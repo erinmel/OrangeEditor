@@ -114,7 +114,16 @@ fn main() {
                 adds,
                 shared_get,
             });
-            println!("w9 {kind} ({} nodes, {} edges)", run.nodes, run.edges);
+            let mib = |bytes: usize| bytes as f64 / (1024.0 * 1024.0);
+            println!(
+                "w9 {kind} ({} nodes, {} edges): session {:.1} MiB after its first analysis (peak {:.1} MiB), {:.1} MiB after the edits; document {:.1} MiB after the edits",
+                run.nodes,
+                run.edges,
+                mib(run.memory.session),
+                mib(run.memory.session_peak),
+                mib(run.memory.session_after_edits),
+                mib(run.memory.document)
+            );
             let core = std::iter::once(("seeded connect/disconnect/literal/type", &run.core));
             let kinds = run.kinds.iter().map(|(edit, bucket)| (edit.name(), bucket));
             for (name, bucket) in core.chain(kinds) {
