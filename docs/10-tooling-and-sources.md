@@ -2495,3 +2495,20 @@ Branch `core/scoped-config-edits` on `dev` c8a8b02 (same toolchain; Cargo.lock u
 - **Limitations:** intrinsic configuration, exec edges, node additions and removals, function bodies and edge edits in reports with errors still run every pass in full. V12b is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Scoped node additions and removals (V12b) — 2026-10-30
+
+Branch `core/scoped-node-edits` on `dev` c07a884 (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).
+
+- **Change:** the journal's edge edit becomes a structure edit: a transaction that only adds or removes whole nodes and edges, recording each removed node and edge. Admission's per-node charge is factored out so a node can be charged or credited alone. A full session analysis keeps node diagnostics per node, like the input and configuration diagnostics. In a clean report, a structure edit whose added and removed nodes are all provider-bound pure root-body nodes with only typed data ports, sourced outputs and no export is checked locally: added nodes must resolve without errors; their signatures are staged for the existing edge checks and withdrawn again if any check fails; the new nodes' input and configuration checks must find no error; and the node, input and configuration diagnostics of added and removed nodes are patched in place, with `changed_nodes` naming them. Everything else runs the full analysis.
+- **Regressions:** `orange-bundled` tests add an isolated node, paste a node with its wire, remove both, remove a chain's middle node with its two wires and undo it (scoped), and remove an exported node, add an intrinsic and add an unresolvable package node (full analysis); each step equals the full analysis. Without the export check the exported-node case diverges from the full analysis. The session property tests pass with 1,024 cases in release; their first run of this change caught an empty-edge node addition being accepted before node handling existed.
+- **Measured** with `orange-measure session-edit`, which now also alternately pastes an add node fed by the middle node and removes it (release, same machine, 15 edits after 3 warmups):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| add/remove node, 1,000 chains of 10 | 114.7 ms | 117.1 ms | 0.26 ms | 0.28 ms |
+| add/remove node, 1 chain of 10,000 | 208.1 ms | 209.7 ms | 129.2 ms | 137.6 ms |
+
+- **Limitations:** exec, event, intrinsic, non-pure and exported nodes, exec edges, intrinsic configuration, function bodies and structure edits in reports with errors still run every pass in full. V12b is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

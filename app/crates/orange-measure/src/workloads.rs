@@ -639,6 +639,8 @@ pub enum SessionEdit {
     Pin,
     /// Alternately sets saturating and wrapping integer overflow.
     Config,
+    /// Alternately adds an add node fed by the middle node and removes it again.
+    Node,
 }
 
 pub fn session_edit(
@@ -703,6 +705,35 @@ pub fn session_edit(
                     "int_overflow": if saturating { "saturating" } else { "wrapping" }
                 }))
                 .expect("config"),
+            },
+            (SessionEdit::Node, true) => {
+                let added = 9;
+                let node = serde_json::from_value(math(added, "add", 0, 1)).expect("node");
+                let wire =
+                    serde_json::from_value(edge(added, middle, "sum", added, "a")).expect("edge");
+                let committed = document
+                    .apply([
+                        DocCommand::AddNode {
+                            body: orange_model::BodyRef::Root,
+                            node,
+                        },
+                        DocCommand::Connect { edge: wire },
+                    ])
+                    .expect("edit");
+                let start = Instant::now();
+                session.update(
+                    &document,
+                    &registry,
+                    &committed.change_set,
+                    AnalysisOptions::default(),
+                );
+                if sample >= config.warmup {
+                    samples.push(start.elapsed());
+                }
+                continue;
+            }
+            (SessionEdit::Node, false) => DocCommand::RemoveNodes {
+                ids: vec![id(9).parse().expect("node ID")],
             },
             (SessionEdit::Pin, pin) => DocCommand::SetTypePins {
                 node: port.node,

@@ -92,73 +92,7 @@ impl AnalysisOptions<'_> {
                 budget.text(edge.to.port.port().as_str())?;
             }
             for node in body.nodes.values() {
-                budget.text(node.definition.id.as_str())?;
-                if let Some(provider) = &node.provider {
-                    budget.text(&provider.package)?;
-                    budget.text(&provider.version)?;
-                    budget.text(&provider.id)?;
-                }
-                budget.object(&node.config)?;
-                budget.object(&node.extensions)?;
-                budget.items(node.type_args.len())?;
-                budget.items(node.type_pins.len())?;
-                budget.items(node.variadic.len())?;
-                for (name, ty) in node.type_args.iter().chain(&node.type_pins) {
-                    budget.text(name)?;
-                    budget.text(ty.as_str())?;
-                }
-                for literal in node.inputs.values() {
-                    budget.literal(literal)?;
-                }
-                for state in node.variadic.values() {
-                    budget.items(state.order.len())?;
-                }
-                if let Some(key) = &node.signature {
-                    budget.text(key.as_str())?;
-                }
-                if let Some(signature) = node
-                    .signature
-                    .as_ref()
-                    .and_then(|key| document.signatures().get(key))
-                {
-                    budget.ports(&signature.ports)?;
-                    budget.object(&signature.extensions)?;
-                }
-                // Borrow definitions: projecting contextual contracts here would clone
-                // the very metadata that admission is meant to inspect first.
-                if let Some(definition) = registry.definition(&node.definition) {
-                    budget.parameters(&definition.type_params)?;
-                    budget.items(definition.references.len())?;
-                    for reference in &definition.references {
-                        budget.text(&reference.pointer)?;
-                    }
-                    if let Some(specializations) = &definition.specializations {
-                        budget.items(specializations.len())?;
-                        for specialization in specializations {
-                            budget.items(specialization.len())?;
-                            for ty in specialization.values() {
-                                budget.text(ty.as_str())?;
-                            }
-                        }
-                    }
-                    if let Ports::Declared(ports) = &definition.ports {
-                        budget.ports(ports)?;
-                    }
-                    if let Some(schema) = &definition.config_schema {
-                        budget.json(schema)?;
-                    }
-                }
-                if node.definition.id.as_str() == ids::CALL
-                    && let Some(function) = node
-                        .config
-                        .get("function")
-                        .and_then(Value::as_str)
-                        .and_then(|id| id.parse::<crate::id::FunctionId>().ok())
-                        .and_then(|id| document.functions().get(&id))
-                {
-                    budget.ports(&function.inputs)?;
-                    budget.ports(&function.outputs)?;
-                }
+                budget.node(document, registry, node)?;
             }
         }
         budget.items(document.variables().len())?;
@@ -223,6 +157,35 @@ impl Admitted {
         type_args: &BTreeMap<String, crate::id::TypeExpr>,
         type_pins: &BTreeMap<String, crate::id::TypeExpr>,
     ) -> Self {
+        Self::charged(|budget| {
+            budget.object(config)?;
+            budget.items(type_args.len())?;
+            budget.items(type_pins.len())?;
+            for (name, ty) in type_args.iter().chain(type_pins) {
+                budget.text(name)?;
+                budget.text(ty.as_str())?;
+            }
+            for literal in inputs.values() {
+                budget.literal(literal)?;
+            }
+            Ok(())
+        })
+    }
+
+    /// What admission charges for one node, including the item it counts in its body.
+    pub(super) fn of_node(
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        node: &crate::document::NodeInstance,
+    ) -> Self {
+        Self::charged(|budget| {
+            budget.items(1)?;
+            budget.node(document, registry, node)
+        })
+    }
+
+    /// What `charge` adds to an empty budget without limits.
+    fn charged(charge: impl FnOnce(&mut Budget<'_, '_>) -> Result<(), DiagnosticCode>) -> Self {
         let unlimited = AnalysisOptions {
             limits: AnalysisLimits {
                 max_items: usize::MAX,
@@ -239,20 +202,7 @@ impl Admitted {
             bytes: 0,
         };
         // Only an addition past `usize::MAX` could fail; saturate like the totals.
-        let charged = (|| {
-            budget.object(config)?;
-            budget.items(type_args.len())?;
-            budget.items(type_pins.len())?;
-            for (name, ty) in type_args.iter().chain(type_pins) {
-                budget.text(name)?;
-                budget.text(ty.as_str())?;
-            }
-            for literal in inputs.values() {
-                budget.literal(literal)?;
-            }
-            Ok::<_, DiagnosticCode>(())
-        })();
-        if charged.is_err() {
+        if charge(&mut budget).is_err() {
             return Self {
                 items: usize::MAX,
                 values: usize::MAX,
@@ -307,6 +257,83 @@ fn charge(total: &mut usize, count: usize, limit: usize) -> Result<(), Diagnosti
 }
 
 impl Budget<'_, '_> {
+    /// What admission charges for one node, beyond the item it counts in its body.
+    fn node(
+        &mut self,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        node: &crate::document::NodeInstance,
+    ) -> Result<(), DiagnosticCode> {
+        self.text(node.definition.id.as_str())?;
+        if let Some(provider) = &node.provider {
+            self.text(&provider.package)?;
+            self.text(&provider.version)?;
+            self.text(&provider.id)?;
+        }
+        self.object(&node.config)?;
+        self.object(&node.extensions)?;
+        self.items(node.type_args.len())?;
+        self.items(node.type_pins.len())?;
+        self.items(node.variadic.len())?;
+        for (name, ty) in node.type_args.iter().chain(&node.type_pins) {
+            self.text(name)?;
+            self.text(ty.as_str())?;
+        }
+        for literal in node.inputs.values() {
+            self.literal(literal)?;
+        }
+        for state in node.variadic.values() {
+            self.items(state.order.len())?;
+        }
+        if let Some(key) = &node.signature {
+            self.text(key.as_str())?;
+        }
+        if let Some(signature) = node
+            .signature
+            .as_ref()
+            .and_then(|key| document.signatures().get(key))
+        {
+            self.ports(&signature.ports)?;
+            self.object(&signature.extensions)?;
+        }
+        // Borrow definitions: projecting contextual contracts here would clone
+        // the very metadata that admission is meant to inspect first.
+        if let Some(definition) = registry.definition(&node.definition) {
+            self.parameters(&definition.type_params)?;
+            self.items(definition.references.len())?;
+            for reference in &definition.references {
+                self.text(&reference.pointer)?;
+            }
+            if let Some(specializations) = &definition.specializations {
+                self.items(specializations.len())?;
+                for specialization in specializations {
+                    self.items(specialization.len())?;
+                    for ty in specialization.values() {
+                        self.text(ty.as_str())?;
+                    }
+                }
+            }
+            if let Ports::Declared(ports) = &definition.ports {
+                self.ports(ports)?;
+            }
+            if let Some(schema) = &definition.config_schema {
+                self.json(schema)?;
+            }
+        }
+        if node.definition.id.as_str() == ids::CALL
+            && let Some(function) = node
+                .config
+                .get("function")
+                .and_then(Value::as_str)
+                .and_then(|id| id.parse::<crate::id::FunctionId>().ok())
+                .and_then(|id| document.functions().get(&id))
+        {
+            self.ports(&function.inputs)?;
+            self.ports(&function.outputs)?;
+        }
+        Ok(())
+    }
+
     fn parameters(&mut self, params: &[crate::document::TypeParam]) -> Result<(), DiagnosticCode> {
         self.items(params.len())?;
         for param in params {
