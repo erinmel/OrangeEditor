@@ -44,6 +44,9 @@ pub(super) struct Retained {
     pub inputs: BTreeMap<NodeId, Vec<Diagnostic>>,
     /// Configuration diagnostics per node, likewise.
     pub config: BTreeMap<NodeId, Vec<Diagnostic>>,
+    /// Function-pass and conformance diagnostics per function, sorted. They stay in `base`;
+    /// a scoped edit inside a function body must leave its function's unchanged.
+    pub functions: BTreeMap<crate::id::FunctionId, Vec<Diagnostic>>,
     /// Every other published diagnostic, sorted and deduplicated.
     pub base: Vec<Diagnostic>,
     /// Availability, region and control-cycle diagnostics, sorted and deduplicated: what a
@@ -194,8 +197,9 @@ fn has_error(list: &[Diagnostic]) -> bool {
     list.iter().any(|d| d.severity == Severity::Error)
 }
 
-/// Re-checks an edit that only added or removed whole nodes and edges, in the root body of
-/// a clean report. Every added or removed node must be a pure package node whose ports are
+/// Re-checks an edit that only added or removed whole nodes and edges, in one body of a
+/// clean report; in a function body, the function's acceptance, summary and diagnostics must
+/// hold as well. Every added or removed node must be a pure package node whose ports are
 /// all typed data ports and that no export names; such a node is read only by its own
 /// resolution, inputs and configuration, its edges and admission. Every edge must join two
 /// data ports; it reaches only node resolution, the connection checks of an added edge and
@@ -221,7 +225,21 @@ pub(super) fn structure_update(
     if !retained.clean {
         return None;
     }
-    let root = document.root();
+    // The edit stays in one body: the root, or one function's body (V12e).
+    let mut homes = Vec::new();
+    for id in &change.nodes().added {
+        homes.push(document.locate_node(*id)?);
+    }
+    for id in &change.edges().added {
+        homes.push(document.locate_edge(*id)?);
+    }
+    homes.extend(edit.removed_nodes.values().map(|(body, _)| *body));
+    homes.extend(edit.removed_edges.values().map(|(body, _)| *body));
+    homes.dedup();
+    let [home] = homes[..] else {
+        return None;
+    };
+    let root = document.body(home)?;
     let added_nodes = &change.nodes().added;
     let exported = |id: &NodeId| document.exports().iter().any(|export| export.node == *id);
     let mut removed_charge = Admitted::default();
@@ -242,7 +260,7 @@ pub(super) fn structure_update(
         added_charge = added_charge.add(Admitted::of_node(document, registry, node))?;
     }
     for (id, (body, node)) in &edit.removed_nodes {
-        if *body != BodyRef::Root || exported(id) || zoned(node) {
+        if *body != home || exported(id) || zoned(node) {
             return None;
         }
         flow_nodes |= node.provider.is_none()
@@ -259,10 +277,7 @@ pub(super) fn structure_update(
     for id in added_edges {
         edges.push((root.edges.get(id)?, true));
     }
-    for (body, edge) in edit.removed_edges.values() {
-        if *body != BodyRef::Root {
-            return None;
-        }
+    for (_, edge) in edit.removed_edges.values() {
         edges.push((edge, false));
     }
     let mut touched: BTreeSet<NodeId> = added_nodes.clone();
@@ -352,7 +367,7 @@ pub(super) fn structure_update(
             let mut config = Vec::new();
             for id in added_nodes {
                 let list: Vec<Diagnostic> = super::config::validate_node_config(
-                    BodyRef::Root,
+                    home,
                     document.node(*id)?,
                     registry,
                     &mut schemas,
@@ -360,6 +375,30 @@ pub(super) fn structure_update(
                 .into_iter()
                 .collect();
                 config.push((*id, list));
+            }
+            // Inside a function body, the edit is local only while the function's
+            // acceptance, summary and own diagnostics, which its callers read, hold.
+            if let BodyRef::Function(function) = home {
+                let report = analysis.report();
+                let check = super::acceptance::check_function(
+                    document,
+                    registry,
+                    effects,
+                    index,
+                    &retained.calls,
+                    &report.functions,
+                    function,
+                    options,
+                )
+                .ok()?;
+                let empty = Vec::new();
+                if check.incomplete
+                    || check.accepted != retained.calls.get(&function).copied()
+                    || check.summary.as_ref() != report.functions.get(&function)
+                    || &check.diagnostics != retained.functions.get(&function).unwrap_or(&empty)
+                {
+                    return None;
+                }
             }
             options.checkpoint().ok()?;
             Some((inputs, flow, config))
@@ -460,7 +499,6 @@ fn classify_edges(
     let report = analysis.report();
     let ports = super::ports::PortResolver::new(document, &report.resolved);
     let origin = registry.origin();
-    let root = document.root();
     let mut kinds = EdgeKinds::default();
     let local = edges.iter().all(|(edge, is_added)| {
         let published = report
@@ -468,8 +506,7 @@ fn classify_edges(
             .iter()
             .any(|diagnostic| diagnostic.subject.edge == Some(edge.id));
         if !is_added
-            && (!root.nodes.contains_key(&edge.from.node)
-                || !root.nodes.contains_key(&edge.to.node))
+            && (document.node(edge.from.node).is_none() || document.node(edge.to.node).is_none())
         {
             // The edge went with a removed node, which was pure and clean.
             kinds.data = true;

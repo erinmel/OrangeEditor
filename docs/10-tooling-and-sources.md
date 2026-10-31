@@ -2608,3 +2608,14 @@ Branch `core/function-body-node-edits` on `dev` e37ca68 (same toolchain; Cargo.l
 - **Limitations:** structure edits inside function bodies, and edits that change a function's acceptance or summary, still run the full analysis; propagation through the reverse call graph is not implemented. V12e is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Function-body structure edits (V12e) — 2026-10-30
+
+Branch `core/function-body-structure-edits` on `dev` cf3e8f7 (same toolchain; Cargo.lock unchanged). Continues V12e (16).
+
+- **Change:** a structure edit (whole nodes and edges added or removed) may stay inside one function body instead of the root; edits spanning bodies still run in full. Its nodes and edges get the same local checks, and the same control-flow rerun for exec changes, as in the root; removed edges whose endpoints went with removed nodes are recognized in any body, and added nodes' configuration is checked against their own body. Inside a function body, `check_function` then reruns that function's body passes, summary, conformance and acceptance as `accept_functions` computes them, with its callees' final acceptance and summaries, and the session requires its acceptance, summary, completeness and own function-pass and conformance diagnostics, now kept per function from the last full analysis, to be unchanged before publishing.
+- **Regressions:** an `orange-bundled` test inside a called function's body disconnects and reconnects a data edge (its shadowed-literal warning goes and returns) and adds and removes a pure node (all scoped), then cuts the exec path to Return (full analysis, report invalid); each step equals the full analysis. Skipping the function recheck makes the test fail. The session property tests pass with 1,024 cases in release.
+- **Measured:** not separately. The recheck reruns the edited function's body passes once, in proportion to that body.
+- **Limitations:** edits that change a function's acceptance, summary or diagnostics run the full analysis; propagation through the reverse call graph is not implemented. V12e is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
