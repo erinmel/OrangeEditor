@@ -193,6 +193,44 @@ fn strict(document: &GraphDocument, retained: &Retained, node: NodeId) -> bool {
     !retained.complete || document.locate_node(node) != Some(BodyRef::Root)
 }
 
+/// Whether `retained` holds an error that keeps structure edits from being checked locally.
+/// Errors in the per-node lists are allowed: the session replaces those lists itself. So are
+/// a function's own function-pass and conformance errors in a complete report: a called
+/// function with such an error would leave its call sites incomplete, so the function is
+/// uncalled and nothing but its own diagnostics reads its acceptance.
+pub(super) fn blocking_error(retained: &Retained) -> bool {
+    let own = |item: &&Diagnostic| {
+        item.subject.function.is_some_and(|function| {
+            retained
+                .functions
+                .get(&function)
+                .is_some_and(|list| list.contains(item))
+        })
+    };
+    retained
+        .base
+        .iter()
+        .filter(|item| !own(item))
+        .chain(&retained.flow)
+        .chain(&retained.state)
+        .any(|item| item.severity == Severity::Error)
+}
+
+/// Whether any Call node in the document targets `function`.
+fn is_called(document: &GraphDocument, function: crate::id::FunctionId) -> bool {
+    let target = function.to_string();
+    document.bodies().any(|body| {
+        body.nodes.values().any(|node| {
+            node.definition.id.as_str() == crate::catalog::intrinsic_id::CALL
+                && node
+                    .config
+                    .get("function")
+                    .and_then(serde_json::Value::as_str)
+                    == Some(target.as_str())
+        })
+    })
+}
+
 fn has_error(list: &[Diagnostic]) -> bool {
     list.iter().any(|d| d.severity == Severity::Error)
 }
@@ -337,6 +375,7 @@ pub(super) fn structure_update(
         let structural = kinds.data || !added_nodes.is_empty() || !edit.removed_nodes.is_empty();
         kinds.flow || flow_nodes || ((!structural || retained.quiet) && !kinds.requires)
     });
+    let mut function_update = None;
     let checked = local
         .and_then(|kinds| {
             let inputs = recheck_inputs(document, registry, index, analysis, retained, &targets)?;
@@ -391,13 +430,18 @@ pub(super) fn structure_update(
                     options,
                 )
                 .ok()?;
+                // Callers read a function's acceptance and summary; with no call site,
+                // nothing does, and only its own diagnostics are published.
                 let empty = Vec::new();
-                if check.incomplete
-                    || check.accepted != retained.calls.get(&function).copied()
-                    || check.summary.as_ref() != report.functions.get(&function)
+                let contract = check.accepted != retained.calls.get(&function).copied()
+                    || check.summary.as_ref() != report.functions.get(&function);
+                if check.incomplete || (contract && is_called(document, function)) {
+                    return None;
+                }
+                if contract
                     || &check.diagnostics != retained.functions.get(&function).unwrap_or(&empty)
                 {
-                    return None;
+                    function_update = Some((function, check));
                 }
             }
             options.checkpoint().ok()?;
@@ -413,6 +457,39 @@ pub(super) fn structure_update(
 
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
     scoped.checked_config = config.len();
+    if let Some((function, check)) = function_update {
+        match check.accepted {
+            Some(accepted) => retained.calls.insert(function, accepted),
+            None => retained.calls.remove(&function),
+        };
+        analysis.set_summary(function, check.summary);
+        // The function's diagnostics live in `base`; swap them there, then publish.
+        let old = retained.functions.remove(&function).unwrap_or_default();
+        for item in &old {
+            if let Ok(at) = retained
+                .base
+                .binary_search_by(|probe| super::diagnostic::diagnostic_order(probe, item))
+            {
+                retained.base.remove(at);
+            }
+        }
+        for item in &check.diagnostics {
+            if let Err(at) = retained
+                .base
+                .binary_search_by(|probe| super::diagnostic::diagnostic_order(probe, item))
+            {
+                retained.base.insert(at, item.clone());
+            }
+        }
+        if !check.diagnostics.is_empty() {
+            retained
+                .functions
+                .insert(function, check.diagnostics.clone());
+        }
+        scoped.inputs.push((old, check.diagnostics));
+        // The edit started clean, so only errors outside the function lists could change it.
+        retained.clean = retained.complete && !blocking_error(retained);
+    }
     if let Some(update) = flow {
         analysis.set_regions(update.regions);
         let old = std::mem::replace(&mut retained.flow, update.flow.clone());
