@@ -464,6 +464,25 @@ fn edges_that_close_a_cycle_after_reordering_run_the_full_analysis() {
 }
 
 #[test]
+fn a_cycle_in_a_body_listed_out_of_id_order_runs_the_full_analysis() {
+    // A body keeps its nodes in insertion order, which the data order must not rely on.
+    let (package, registry) = catalog();
+    let nodes = (10..13).chain(1..6).map(|n| math(n, "add", 0, 1)).collect();
+    let edges = vec![edge(11, 10, "sum", 11, "a"), edge(12, 11, "sum", 12, "a")];
+    let mut doc = graph(&package, nodes, edges, vec![]);
+    let mut session = session(&doc, &registry);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        AnalysisOptions::default(),
+        vec![connect(13, 12, 10, "a")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+#[test]
 fn random_rewiring_equals_the_full_analysis() {
     let (mut doc, registry) = chains();
     let mut session = session(&doc, &registry);

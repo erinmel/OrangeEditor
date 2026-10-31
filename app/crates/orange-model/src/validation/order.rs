@@ -53,8 +53,10 @@ impl TopoOrder {
         body: BodyRef,
     ) -> Option<Self> {
         let body = document.body(body)?;
-        // Dense indices over the sorted node IDs, and each data edge resolved once.
-        let ids: Vec<NodeId> = body.nodes.keys().copied().collect();
+        // Dense indices over the sorted node IDs, and each data edge resolved once. A body
+        // keeps its nodes in insertion order, so the IDs are sorted here.
+        let mut ids: Vec<NodeId> = body.nodes.keys().copied().collect();
+        ids.sort_unstable();
         let dense = |node: NodeId| ids.binary_search(&node).ok();
         let mut next: Vec<Vec<usize>> = vec![Vec::new(); ids.len()];
         let mut indegree = vec![0_usize; ids.len()];
