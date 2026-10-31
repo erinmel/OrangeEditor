@@ -109,9 +109,10 @@ pub(super) fn node_update(
     let mut removed = Admitted::default();
     let mut added = Admitted::default();
     for (id, before) in &edit.before {
-        if document.locate_node(*id) != Some(BodyRef::Root) {
-            return None;
-        }
+        // A function-body node is scoped too (V12e): with its signature and error status
+        // unchanged, its function's blocked set, summary and acceptance are unchanged, so
+        // no caller can observe the edit.
+        document.locate_node(*id)?;
         let node = document.node(*id)?;
         // Structural passes read configuration of core intrinsics only (Fork, Switch,
         // While, zones, variables, registers); a package node's reaches admission, its
@@ -156,11 +157,12 @@ pub(super) fn node_update(
         if before.config == node.config && before.config_version == node.config_version {
             continue;
         }
+        let body = document.locate_node(*id)?;
         let list: Vec<Diagnostic> =
-            super::config::validate_node_config(BodyRef::Root, node, registry, &mut schemas)
+            super::config::validate_node_config(body, node, registry, &mut schemas)
                 .into_iter()
                 .collect();
-        if !retained.complete
+        if strict(document, retained, *id)
             && has_error(&list) != has_error(retained.config.get(id).map_or(&[], Vec::as_slice))
         {
             return None;
@@ -179,6 +181,13 @@ pub(super) fn node_update(
         scoped.inputs.push((old.unwrap_or_default(), list));
     }
     Some(scoped)
+}
+
+/// Whether `node` must keep its error status: in an incomplete report an error can suppress
+/// dependency diagnostics, and in a function body an error blocks the function's acceptance,
+/// which its callers read.
+fn strict(document: &GraphDocument, retained: &Retained, node: NodeId) -> bool {
+    !retained.complete || document.locate_node(node) != Some(BodyRef::Root)
 }
 
 fn has_error(list: &[Diagnostic]) -> bool {
@@ -839,9 +848,8 @@ fn resolution_unchanged(
 /// Each added node's new signature and node diagnostics.
 type Fresh = BTreeMap<NodeId, (SignatureSnapshot, Vec<Diagnostic>)>;
 
-/// The current input diagnostics of `nodes`, whose signatures are unchanged. In an
-/// incomplete report, a node gaining or losing an input error would change which
-/// dependency diagnostics the report suppresses; that case runs in full.
+/// The current input diagnostics of `nodes`, whose signatures are unchanged. A node that
+/// [`strict`] binds runs in full when it gains or loses an input error.
 fn recheck_inputs(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -860,7 +868,7 @@ fn recheck_inputs(
             None => Vec::new(),
         };
         sort_diagnostics(&mut list);
-        if !retained.complete
+        if strict(document, retained, *id)
             && has_error(&list) != has_error(retained.inputs.get(id).unwrap_or(&empty))
         {
             return None;

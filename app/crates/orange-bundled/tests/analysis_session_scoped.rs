@@ -1023,3 +1023,101 @@ fn a_flow_edit_reruns_the_consumers_its_data_edges_reach() {
     assert_eq!(work, SessionWork::Recompute);
     assert!(!session.analysis().report().is_valid());
 }
+
+/// On Start calls a graph-local action that stores its argument in a local, reads it back
+/// and returns it plus one through an add.
+fn called_function() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (package, registry) = catalog();
+    let (total, local) = (id(100), id(101));
+    let core = |n: u32, name: &str, config: Json| {
+        json!({"id": id(n), "definition_id": format!("core/{name}"), "definition_version": 1,
+            "config_version": 1, "config": config})
+    };
+    let port = |name: &str, direction: &str| json!({"port_id": name, "direction": direction, "kind": "data", "type": "core/u64@1"});
+    let mut start = core(1, "on-start", json!({}));
+    start["activation"] = json!({"mode": "queue", "capacity": 4, "overflow": "drop-newest",
+        "on_fault": "continue", "order": 0});
+    let nodes = vec![
+        start,
+        core(2, "get-variable", json!({"variable": total})),
+        core(3, "call", json!({"function": id(200)})),
+        core(4, "set-variable", json!({"variable": total})),
+    ];
+    let edges = vec![
+        edge(1, 1, "then", 3, "in"),
+        edge(2, 2, "value", 3, "value"),
+        edge(3, 3, "then", 4, "in"),
+        edge(4, 3, "result", 4, "value"),
+    ];
+    let base = graph(&package, nodes, edges, vec![]);
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&base).unwrap()).unwrap();
+    let mut add = math(204, "add", 0, 1);
+    add["provider"] = json!({"package": "org.orange.math", "version": "0.0.0", "id": "native-v1"});
+    raw["functions"] = json!([{"id": id(200), "name": "increment", "kind": "action",
+        "inputs": [port("value", "input")], "outputs": [port("result", "output")],
+        "nodes": [core(201, "function-entry", json!({})),
+            core(202, "set-variable", json!({"variable": local})),
+            core(203, "get-variable", json!({"variable": local})),
+            add, core(205, "return", json!({}))],
+        "edges": [edge(201, 201, "then", 202, "in"), edge(202, 201, "value", 202, "value"),
+            edge(203, 202, "then", 205, "in"), edge(204, 203, "value", 204, "a"),
+            edge(205, 204, "sum", 205, "result")]}]);
+    raw["variables"] = json!([
+        {"id": total, "name": "total", "type": "core/u64@1", "scope": "run",
+            "init": {"type": "core/u64@1", "value": "0"}},
+        {"id": local, "name": "local", "type": "core/u64@1", "scope": "local",
+            "init": {"type": "core/u64@1", "value": "0"}},
+    ]);
+    (orange_model::from_json(&raw.to_string()).unwrap(), registry)
+}
+
+#[test]
+fn function_body_node_edits_are_scoped_while_acceptance_holds() {
+    let (mut doc, registry) = called_function();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![set(204, "b", u64_text("5"))],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    let pin = DocCommand::SetTypePins {
+        node: id(204).parse().unwrap(),
+        pins: types(&[("T", "core/u64@1")]),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![pin]);
+    assert_eq!(work, SessionWork::Scoped);
+    // An input error inside the body blocks the function, which its caller reads.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![set(204, "b", u64_text("x"))],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![set(204, "b", u64_text("1"))],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().is_valid());
+    // A literal that changes the body's inference changes a signature.
+    let other = Some(json!({"type": "core/i64@1", "value": "1"}));
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![set(204, "b", other)],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+}
