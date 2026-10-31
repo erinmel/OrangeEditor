@@ -2761,3 +2761,44 @@ Branch `v12c-zones` on `dev` b234b0f (same toolchain; Cargo.lock unchanged). Con
 - **Limitations:** edits touching a zone body, including adding or removing a capture's edge, and zone marker edits still run the full analysis. Function-body zones take the same rule but no test edits beside one. V12c is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### W9 edit mix, 20,000 edges and session memory (V12f) — 2026-10-31
+
+Branch `v12f-w9-wider` on `dev` 54d705c (Windows MSVC, Rust 1.99.1, Cargo 1.99.1, release profile; Cargo.lock unchanged). Continues V12f (16). Measurement only: no validation code changed.
+
+- **Workload:** `cargo run --release -p orange-measure --locked -- w9` now runs five graphs. *Clustered* and *connected* keep the eight-add clusters of the first W9 record. *Clustered 20k* and *connected 20k* use nine adds per cluster with the cluster's own Get, which gives W4's 20,000 edges with 11,014 nodes; no cluster shape of binary adds reaches 2 edges per node with its own source. *Shared-Get 20k* reaches 20,004 edges with 10,024 nodes by giving each exec chain one Get read by its 100 clusters. Every graph also declares four pure functions of eight chained adds, each called once from the root. The 1,000 seeded edits draw the same sequence as before. A second seed adds, one each per four seeded edits, a literal on a function-body add, the reconnection of a removed add input and the removal or restoration of a Set's exec edge, and after every 50th seeded edit closes a data cycle in a cluster (its first add's `b` rewired to its last add) and opens it again. Each kind is reported on its own; the cycle edits are kept out of every other distribution. The counting allocator measures the session's live heap after its first full analysis, its peak during that analysis, and what dropping the session and the document after the edits releases.
+- **Finding, earlier record:** the seeded wire edits toggle one of 16,000 add-input edges and almost never pick a removed one again, so the first record's quarter "disconnect or reconnect" was 505 disconnects and 8 reconnects on the clustered graph. The added reconnections give the connect bucket 250 or more edits.
+- **Measured** (release, development machine, one run each; the R machine was not used). The 1,000 seeded edits:
+
+| W9 graph (nodes / edges) | p50 | p95 | p99 | max | scoped / full | most re-resolved |
+|---|---:|---:|---:|---:|---:|---:|
+| clustered (10,014 / 18,004) | 0.39 ms | 0.82 ms | 1.23 ms | 2.47 ms | 1,000 / 0 | 12 |
+| connected (10,014 / 18,004) | 205.2 ms | 234.1 ms | 245.8 ms | 268.2 ms | 1,000 / 0 | 10,000 |
+| clustered 20k (11,014 / 20,004) | 0.38 ms | 0.72 ms | 1.26 ms | 1.78 ms | 1,000 / 0 | 13 |
+| connected 20k (11,014 / 20,004) | 224.4 ms | 274.3 ms | 341.2 ms | 604.1 ms | 1,000 / 0 | 11,000 |
+| shared-Get 20k (10,024 / 20,004) | 10.30 ms | 17.62 ms | 18.94 ms | 20.96 ms | 1,000 / 0 | 1,002 |
+
+  By kind on clustered 20k, p95/p99: disconnect (509) 0.64/1.00 ms, connect (250) 0.67/1.39 ms, literal (237) 0.92/1.39 ms, type argument (254) 0.72/1.17 ms. The other kinds, p50/p95/p99/max (most re-resolved); every exec and function-body edit was scoped, every cycle edit ran the full analysis:
+
+| W9 graph | exec edge (250) | function-body literal (250) | cycle close (20), p50/max | cycle open (20), p50/max |
+|---|---|---|---|---|
+| clustered | 2.11/5.32/6.53/7.10 ms (42) | 0.36/0.73/1.03/1.14 ms (10) | 250.7/307.6 ms | 247.1/303.3 ms |
+| connected | 216.8/286.5/380.1/407.4 ms (10,000) | 0.68/1.00/1.24/1.44 ms (10) | 690.4/1,641.1 ms | 492.0/1,405.0 ms |
+| clustered 20k | 2.06/5.41/6.88/8.06 ms (46) | 0.34/0.63/0.92/1.14 ms (10) | 266.4/279.0 ms | 261.8/275.8 ms |
+| connected 20k | 235.6/365.0/669.5/939.3 ms (11,001) | 0.73/1.20/1.48/1.54 ms (10) | 787.0/1,815.9 ms | 541.2/1,670.9 ms |
+| shared-Get 20k | 11.26/14.65/15.98/16.44 ms (43) | 0.76/1.12/1.24/1.82 ms (10) | 293.5/323.4 ms | 265.0/292.4 ms |
+
+  Heap counted by the allocator (MiB; not RSS):
+
+| W9 graph | session after first analysis | peak during it | session after the edits | document after the edits |
+|---|---:|---:|---:|---:|
+| clustered | 116.3 | 126.6 | 112.0 | 32.1 |
+| connected | 117.5 | 127.8 | 113.2 | 32.1 |
+| clustered 20k | 128.9 | 145.6 | 124.0 | 34.1 |
+| connected 20k | 130.1 | 146.7 | 125.3 | 34.1 |
+| shared-Get 20k | 127.1 | 143.4 | 122.3 | 33.7 |
+
+- **Observations:** cycle closes run the full analysis as designed (the data order rejects the edge, 16). Opening the cycle again runs it too, because a report with a cycle error runs structure edits in full. Exec edits are scoped but cost about 2 ms p50 and 5.4 ms p95 on clustered graphs, re-resolving up to 46 nodes; each reruns the control-flow passes for a whole entry's exec chain of 100 Sets and the state pass in full, which is consistent with that cost but was not profiled. On the connected graphs an exec edit re-resolves the whole generic component, like the data edits there. A Get read by 100 clusters joins their re-resolution: every seeded edit on shared-Get 20k re-resolves up to 1,002 nodes, p95 17.6 ms; the cause inside the session was not investigated. The connected graph's seeded edits take about twice the first record's p50 (205 ms against 99 ms), probably because reconnections now keep its component whole while the first run's 500 disconnections split it, but this was not verified. An earlier run in the same session differed by up to 40% (clustered seeded p95 0.70 ms, connected p50 245 ms), so single-run numbers are approximate.
+- **Judgement:** on both clustered W4-sized graphs, including the 20,000-edge one, the four NFR-15 kinds meet 2 ms p95 and 10 ms p99 on this machine, and so do function-body literals. Exec edits exceed 2 ms p95, a Get shared by many clusters exceeds both limits, and the connected worst cases are reported separately. NFR-15 is not passed: the R machine, visit counters beyond re-resolved nodes, zone edits and the cases above remain. For NFR-05, the session and document hold about 158 MiB of heap on the 20,000-edge graph, about a fifth of the 750 MiB W4 total before any editor, rendering or runtime memory; this is an allocator count on the development machine, not an RSS measurement, and NFR-05 is not judged.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt and clippy `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

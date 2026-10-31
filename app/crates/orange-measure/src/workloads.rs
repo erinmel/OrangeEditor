@@ -998,28 +998,112 @@ pub fn session_edit(
     (at(50), at(95))
 }
 
-/// One W9 run: per-edit latency and how each edit was handled.
-pub struct W9 {
-    pub nodes: usize,
-    pub edges: usize,
+/// The kinds of W9 edit, each reported on its own.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum W9Edit {
+    /// Removes an add input's edge.
+    Disconnect,
+    /// Restores a removed add input's edge.
+    Connect,
+    /// A new literal on an add's `b`.
+    Literal,
+    /// Sets an add's `T` to `core/u64@1` or clears it.
+    TypeArgs,
+    /// Removes or restores the exec edge into a Set.
+    Exec,
+    /// A new literal on an add's `b` in a called function's body.
+    FunctionLiteral,
+    /// Rewires a cluster's first add to read its last add, closing a data cycle.
+    CycleClose,
+    /// Undoes the cycle-closing edit just before it.
+    CycleOpen,
+}
+
+impl W9Edit {
+    pub const ALL: [Self; 8] = [
+        Self::Disconnect,
+        Self::Connect,
+        Self::Literal,
+        Self::TypeArgs,
+        Self::Exec,
+        Self::FunctionLiteral,
+        Self::CycleClose,
+        Self::CycleOpen,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Disconnect => "disconnect",
+            Self::Connect => "connect",
+            Self::Literal => "literal",
+            Self::TypeArgs => "type argument",
+            Self::Exec => "exec edge",
+            Self::FunctionLiteral => "function-body literal",
+            Self::CycleClose => "cycle close",
+            Self::CycleOpen => "cycle open",
+        }
+    }
+}
+
+/// Latency and handling of one group of W9 edits.
+pub struct W9Bucket {
+    pub edits: usize,
     pub p50: std::time::Duration,
     pub p95: std::time::Duration,
     pub p99: std::time::Duration,
     pub max: std::time::Duration,
-    /// Edits applied in place, and the most nodes one of them re-resolved.
+    /// Edits applied in place; the rest ran the full analysis.
     pub scoped: usize,
+    /// The most nodes one scoped edit re-resolved (`EditStats::input_nodes`).
     pub max_resolved: usize,
-    /// Edits that ran the full analysis, and their median latency.
-    pub full: usize,
-    pub full_p50: std::time::Duration,
 }
 
-/// W9 on a W4-sized graph (06): 1,000 clusters of a Get, eight adds and a Set, each add
-/// reading the two values before it, and every Set in one of ten exec chains; then 1,000
-/// seeded random edits, a quarter each disconnect or connect of an add input, literal and
-/// type argument. When `connected`, each cluster's first add reads the previous cluster's
-/// last add instead of its Get, so all adds form one generic component.
-pub fn w9_session_edits(connected: bool) -> W9 {
+/// Heap bytes counted by the global allocator during one W9 run.
+pub struct W9Memory {
+    /// Released by dropping the document after every edit (the registry stays shared).
+    pub document: usize,
+    /// Retained by the session after its first, full analysis.
+    pub session: usize,
+    /// The highest live heap above the start while that first analysis ran.
+    pub session_peak: usize,
+    /// Released by dropping the session after every edit.
+    pub session_after_edits: usize,
+}
+
+/// One W9 run.
+pub struct W9 {
+    /// Root nodes and edges before the edits.
+    pub nodes: usize,
+    pub edges: usize,
+    pub memory: W9Memory,
+    /// The 1,000 seeded connect, disconnect, literal and type-argument edits, the same
+    /// sequence as before the other kinds were added.
+    pub core: W9Bucket,
+    /// Every edit by kind, including the added reconnections in `Connect`.
+    pub kinds: Vec<(W9Edit, W9Bucket)>,
+}
+
+/// The W9 graph's cluster shape.
+#[derive(Clone, Copy)]
+pub struct W9Shape {
+    /// Each cluster's first add reads the previous cluster's last add instead of the Get,
+    /// so all adds form one generic component.
+    pub connected: bool,
+    /// Adds per cluster: eight give 18,000 edges, nine W4's 20,000.
+    pub adds: u32,
+    /// One Get per exec chain, read by its 100 clusters, instead of one per cluster.
+    pub shared_get: bool,
+}
+
+/// W9 on a W4-sized graph (06): ten On Start entries, each with an exec chain through the
+/// Sets of 100 clusters of adds, each add reading the two values before it, and a Set
+/// storing the last; four Gets also feed a Call of a small pure function. Then 1,000
+/// seeded random edits, a quarter each literal, type argument, and disconnect or connect
+/// of an add input (nearly always a disconnect). After them in turn, from a second seed: a
+/// function-body literal, a reconnection of a removed add input and an exec edge toggle,
+/// one each per four seeded edits; and after every 50th, closing a data cycle in a
+/// cluster and opening it again.
+pub fn w9_session_edits(shape: W9Shape) -> W9 {
     use orange_model::DocCommand;
     use orange_model::document::{Edge, PortRef};
     use orange_model::validation::{AnalysisOptions, AnalysisSession, SessionWork};
@@ -1027,31 +1111,49 @@ pub fn w9_session_edits(connected: bool) -> W9 {
     use std::time::{Duration, Instant};
     const CLUSTERS: u32 = 1000;
     const ENTRIES: u32 = 10;
-    const ADDS: u32 = 8;
+    const FUNCTIONS: u32 = 4;
+    let adds = shape.adds;
+    // Cluster `c` holds the IDs from `10 + c * stride`: its own Get if it has one, its
+    // adds and last its Set.
+    let own_get = u32::from(!shape.shared_get);
+    let stride = if own_get + adds < 10 { 10 } else { 20 };
+    let base = |cluster: u32| 10 + cluster * stride;
+    let add_of = |cluster: u32, k: u32| base(cluster) + own_get + k;
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     for entry in 0..ENTRIES {
         let mut start = core(30_000 + entry, "on-start");
         start["activation"]["order"] = json!(entry);
         nodes.push(start);
+        if shape.shared_get {
+            nodes.push(var_node(40_000 + entry, "get-variable", TOTAL));
+        }
     }
-    // Every add input's edge, keyed by (add, input), so edits can remove and restore it.
+    // Every add input's edge, keyed by (add, input), and every Set's exec edge, so edits
+    // can remove and restore them.
     let mut inputs: BTreeMap<(u32, &str), Json> = BTreeMap::new();
+    let mut exec = Vec::new();
     let per_entry = CLUSTERS / ENTRIES;
     for cluster in 0..CLUSTERS {
-        let get = 10 + cluster * 10;
-        let add = |k: u32| get + 1 + k;
-        let set = get + 9;
+        let get = if shape.shared_get {
+            40_000 + cluster / per_entry
+        } else {
+            base(cluster)
+        };
+        let add = |k: u32| add_of(cluster, k);
+        let set = add(adds);
         let n = 100_000 + cluster * 20;
-        nodes.push(var_node(get, "get-variable", TOTAL));
-        for k in 0..ADDS {
+        if !shape.shared_get {
+            nodes.push(var_node(get, "get-variable", TOTAL));
+        }
+        for k in 0..adds {
             nodes.push(math(add(k), "add", 0, 1));
         }
         nodes.push(var_node(set, "set-variable", TOTAL));
-        for k in 0..ADDS {
+        for k in 0..adds {
             let (a, b) = match k {
-                0 if connected && cluster > 0 => {
-                    let last = get - 10 + 1 + ADDS - 1;
+                0 if shape.connected && cluster > 0 => {
+                    let last = add_of(cluster - 1, adds - 1);
                     ((last, "sum"), (last, "sum"))
                 }
                 0 => ((get, "value"), (get, "value")),
@@ -1061,62 +1163,95 @@ pub fn w9_session_edits(connected: bool) -> W9 {
             inputs.insert((add(k), "a"), edge(n + 2 * k, a.0, a.1, add(k), "a"));
             inputs.insert((add(k), "b"), edge(n + 2 * k + 1, b.0, b.1, add(k), "b"));
         }
-        edges.push(edge(n + 16, add(ADDS - 1), "sum", set, "value"));
+        edges.push(edge(n + 2 * adds, add(adds - 1), "sum", set, "value"));
         let previous = if cluster % per_entry == 0 {
             (30_000 + cluster / per_entry, "then")
         } else {
-            (set - 10, "then")
+            (set - stride, "then")
         };
-        edges.push(edge(n + 17, previous.0, previous.1, set, "in"));
+        exec.push(edge(n + 2 * adds + 1, previous.0, previous.1, set, "in"));
+        edges.push(exec[exec.len() - 1].clone());
     }
     edges.extend(inputs.values().cloned());
+    // Each pure function is called once, reading the Get of the first cluster of one entry.
+    for f in 0..FUNCTIONS {
+        let get = if shape.shared_get {
+            40_000 + f
+        } else {
+            base(f * per_entry)
+        };
+        let mut call = core(70_000 + f, "call");
+        call["config"] = json!({"function": id(60_000 + f * 20)});
+        nodes.push(call);
+        edges.push(edge(310_000 + f, get, "value", 70_000 + f, "value"));
+    }
     let mut source = Source::new(nodes, edges);
     source.variables = vec![run_variable(TOTAL, U64, Some(json!("0")))];
+    source.functions = (0..FUNCTIONS).map(w9_function).collect();
     let (mut document, registry) = source.analyzed();
+    let (node_count, edge_count) = (document.root().nodes.len(), document.root().edges.len());
     let options = AnalysisOptions::default();
+    let window = crate::counter::Snapshot::start();
+    let starting = crate::counter::live_bytes();
     let mut session = AnalysisSession::new(&document, &registry, BTreeMap::new(), options);
+    let session_bytes = crate::counter::live_bytes().saturating_sub(starting);
+    let session_peak = window.finish().peak_live_bytes;
+    let parse = |edge: Json| -> Edge { serde_json::from_value(edge).expect("edge") };
     let edges: Vec<(u32, &str, Edge)> = inputs
         .into_iter()
-        .map(|((node, input), edge)| (node, input, serde_json::from_value(edge).expect("edge")))
+        .map(|((node, input), edge)| (node, input, parse(edge)))
         .collect();
     let mut wired = vec![true; edges.len()];
-    let mut seed: u64 = 0x5eed_0009;
-    let mut next = |bound: usize| {
-        seed = seed
+    let exec: Vec<Edge> = exec.into_iter().map(parse).collect();
+    let mut exec_wired = vec![true; exec.len()];
+    let random = |seed: &mut u64, bound: usize| {
+        *seed = seed
             .wrapping_mul(6364136223846793005)
             .wrapping_add(1442695040888963407);
-        (seed >> 33) as usize % bound
+        (*seed >> 33) as usize % bound
     };
+    // The four NFR-15 kinds draw from the original seed, so their sequence is unchanged;
+    // the other kinds draw from their own.
+    let (mut seed, mut extra_seed): (u64, u64) = (0x5eed_0009, 0x5eed_0f09);
+    let mut next = |bound: usize| random(&mut seed, bound);
+    let mut extra = |bound: usize| random(&mut extra_seed, bound);
     let node_id = |node: u32| id(node).parse().expect("node ID");
-    let mut samples = Vec::new();
-    let mut full_samples = Vec::new();
-    let (mut scoped, mut max_resolved) = (0, 0);
-    for _ in 0..1000 {
-        let add = 11 + (next(CLUSTERS as usize) as u32) * 10 + next(ADDS as usize) as u32;
-        let command = match next(4) {
+    let b_literal = |node: u32, value: usize| DocCommand::SetLiteral {
+        port: PortRef {
+            node: node_id(node),
+            port: "b".parse().expect("port ID"),
+        },
+        literal: Some(serde_json::from_value(literal(value as u64)).expect("literal")),
+    };
+    // Kind, latency, scoped, nodes re-resolved, and whether the edit is a seeded one.
+    type Record = (W9Edit, Duration, bool, usize, bool);
+    let mut records: Vec<Record> = Vec::new();
+    let mut timed = |commands: Vec<DocCommand>, kind: W9Edit, seeded: bool| {
+        let committed = document.apply(commands).expect("edit");
+        let start = Instant::now();
+        let stats = session.update(&document, &registry, &committed.change_set, options);
+        let elapsed = start.elapsed();
+        let scoped = stats.work == SessionWork::Scoped;
+        records.push((kind, elapsed, scoped, stats.input_nodes, seeded));
+        session.analysis().report().is_valid()
+    };
+    for edit in 0..1000 {
+        let add = add_of(next(CLUSTERS as usize) as u32, next(adds as usize) as u32);
+        let (command, kind) = match next(4) {
             0 | 1 => {
                 let at = next(edges.len());
                 wired[at] = !wired[at];
                 if wired[at] {
-                    DocCommand::Connect {
-                        edge: edges[at].2.clone(),
-                    }
+                    let edge = edges[at].2.clone();
+                    (DocCommand::Connect { edge }, W9Edit::Connect)
                 } else {
-                    DocCommand::Disconnect {
-                        edge: edges[at].2.id,
-                    }
+                    let edge = edges[at].2.id;
+                    (DocCommand::Disconnect { edge }, W9Edit::Disconnect)
                 }
             }
-            2 => DocCommand::SetLiteral {
-                port: PortRef {
-                    node: node_id(add),
-                    port: "b".parse().expect("port ID"),
-                },
-                literal: Some(serde_json::from_value(literal(next(1000) as u64)).expect("literal")),
-            },
-            _ => DocCommand::SetTypeArgs {
-                node: node_id(add),
-                args: if next(2) == 0 {
+            2 => (b_literal(add, next(1000)), W9Edit::Literal),
+            _ => {
+                let args = if next(2) == 0 {
                     [(
                         "T".parse().expect("type parameter"),
                         U64.parse().expect("type"),
@@ -1124,42 +1259,147 @@ pub fn w9_session_edits(connected: bool) -> W9 {
                     .into()
                 } else {
                     BTreeMap::new()
-                },
-            },
+                };
+                let node = node_id(add);
+                (DocCommand::SetTypeArgs { node, args }, W9Edit::TypeArgs)
+            }
         };
-        let committed = document.apply([command]).expect("edit");
-        let start = Instant::now();
-        let stats = session.update(&document, &registry, &committed.change_set, options);
-        let elapsed = start.elapsed();
-        samples.push(elapsed);
-        if stats.work == SessionWork::Scoped {
-            scoped += 1;
-            max_resolved = max_resolved.max(stats.input_nodes);
-        } else {
-            full_samples.push(elapsed);
+        assert!(timed(vec![command], kind, true));
+        if edit % 4 == 1 {
+            let node = 60_000 + extra(FUNCTIONS as usize) as u32 * 20 + 2 + extra(8) as u32;
+            assert!(timed(
+                vec![b_literal(node, extra(1000))],
+                W9Edit::FunctionLiteral,
+                false
+            ));
+        }
+        if edit % 4 == 2 {
+            // The seeded toggles almost never pick a removed edge again, so restore one.
+            let removed: Vec<usize> = (0..wired.len()).filter(|&at| !wired[at]).collect();
+            if !removed.is_empty() {
+                let at = removed[extra(removed.len())];
+                wired[at] = true;
+                let edge = edges[at].2.clone();
+                assert!(timed(
+                    vec![DocCommand::Connect { edge }],
+                    W9Edit::Connect,
+                    false
+                ));
+            }
+        }
+        if edit % 4 == 3 {
+            let at = extra(exec.len());
+            exec_wired[at] = !exec_wired[at];
+            let command = if exec_wired[at] {
+                DocCommand::Connect {
+                    edge: exec[at].clone(),
+                }
+            } else {
+                DocCommand::Disconnect { edge: exec[at].id }
+            };
+            assert!(timed(vec![command], W9Edit::Exec, false));
+        }
+        if edit % 50 == 49 {
+            // Rewire a cluster's first add to read its last one, then undo it.
+            let cluster = extra(CLUSTERS as usize) as u32;
+            let first = add_of(cluster, 0);
+            let at = edges
+                .binary_search_by_key(&(first, "b"), |(node, input, _)| (*node, *input))
+                .expect("first add's b");
+            let cycle = parse(edge(
+                200_000 + cluster,
+                add_of(cluster, adds - 1),
+                "sum",
+                first,
+                "b",
+            ));
+            let mut close = vec![DocCommand::Connect {
+                edge: cycle.clone(),
+            }];
+            let mut open = vec![DocCommand::Disconnect { edge: cycle.id }];
+            if wired[at] {
+                close.insert(
+                    0,
+                    DocCommand::Disconnect {
+                        edge: edges[at].2.id,
+                    },
+                );
+                open.push(DocCommand::Connect {
+                    edge: edges[at].2.clone(),
+                });
+            }
+            assert!(!timed(close, W9Edit::CycleClose, false));
+            assert!(timed(open, W9Edit::CycleOpen, false));
         }
     }
-    assert!(session.analysis().report().is_valid());
-    samples.sort();
-    full_samples.sort();
-    let at = |samples: &[Duration], q: usize| {
-        samples
-            .get((samples.len() * q / 100).min(samples.len().saturating_sub(1)))
-            .copied()
-            .unwrap_or_default()
+    let released = |held: usize| held.saturating_sub(crate::counter::live_bytes());
+    let held = crate::counter::live_bytes();
+    drop(session);
+    let session_after_edits = released(held);
+    let held = crate::counter::live_bytes();
+    drop(document);
+    let memory = W9Memory {
+        document: released(held),
+        session: session_bytes,
+        session_peak,
+        session_after_edits,
+    };
+    let bucket = |keep: &dyn Fn(&Record) -> bool| {
+        let mut kept: Vec<_> = records.iter().filter(|record| keep(record)).collect();
+        kept.sort_by_key(|record| record.1);
+        let at = |q: usize| {
+            kept.get((kept.len() * q / 100).min(kept.len().saturating_sub(1)))
+                .map_or(Duration::ZERO, |record| record.1)
+        };
+        W9Bucket {
+            edits: kept.len(),
+            p50: at(50),
+            p95: at(95),
+            p99: at(99),
+            max: kept.last().map_or(Duration::ZERO, |record| record.1),
+            scoped: kept.iter().filter(|record| record.2).count(),
+            max_resolved: kept
+                .iter()
+                .filter(|record| record.2)
+                .map(|record| record.3)
+                .max()
+                .unwrap_or(0),
+        }
     };
     W9 {
-        nodes: document.root().nodes.len(),
-        edges: document.root().edges.len(),
-        p50: at(&samples, 50),
-        p95: at(&samples, 95),
-        p99: at(&samples, 99),
-        max: *samples.last().expect("samples"),
-        scoped,
-        max_resolved,
-        full: full_samples.len(),
-        full_p50: at(&full_samples, 50),
+        nodes: node_count,
+        edges: edge_count,
+        memory,
+        core: bucket(&|record| record.4),
+        kinds: W9Edit::ALL
+            .into_iter()
+            .map(|kind| (kind, bucket(&|record| record.0 == kind)))
+            .collect(),
     }
+}
+
+/// A W9 pure function: its argument through eight adds, each reading the one before it,
+/// to its result.
+fn w9_function(f: u32) -> Json {
+    let at = 60_000 + f * 20;
+    let (entry, first, result) = (at + 1, at + 2, at + 10);
+    let mut nodes = vec![
+        core(entry, "function-entry"),
+        core(result, "function-outputs"),
+    ];
+    let mut edges = vec![
+        edge(at + 2, entry, "value", first, "a"),
+        edge(at + 10, first + 7, "sum", result, "result"),
+    ];
+    for k in 0..8 {
+        nodes.push(math(first + k, "add", 0, 1));
+        if k > 0 {
+            edges.push(edge(first + k, first + k - 1, "sum", first + k, "a"));
+        }
+    }
+    json!({"id": id(at), "name": format!("f{f}"), "kind": "pure",
+        "inputs": [port("value", "input", U64)], "outputs": [port("result", "output", U64)],
+        "nodes": nodes, "edges": edges})
 }
 
 #[cfg(test)]
