@@ -2709,3 +2709,24 @@ Branch `core/data-order-with-report` on `dev` 2c6bda0 (same toolchain; Cargo.loc
 - **Limitations:** the build is linear in the root body and runs with every clean full analysis. Flow edits still walk every consumer a data edge reaches. V12d is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### W9 measurement and no-op node edits (V12f) — 2026-10-30
+
+Branch `core/w9-measurement` on `dev` 7ecc4f0 (same toolchain; Cargo.lock unchanged). Starts V12f (16).
+
+- **Workload:** `orange-measure w9` builds a W4-sized root graph and applies W9's 1,000 random edits with a fixed seed, timing each `AnalysisSession::update`. The graph has ten On Start entries and 1,000 clusters of a Get Variable, eight generic adds (each reading the two values before it) and a Set Variable chained into one entry's exec chain: 10,010 nodes and 18,000 edges, the most this cluster shape allows; W4 asks for 20,000. Edits are a quarter each disconnect and reconnect of an add input (toggling one of the 16,000 add-input edges), literal on an add's `b` and type argument on an add (`T` set to `core/u64@1` or cleared). The connected variant feeds each cluster's first add from the previous cluster's last add, which puts all 8,000 adds in one generic component. The workload reports p50/p95/p99/max, scoped and full-analysis counts and the most nodes one scoped edit re-resolved (`EditStats::input_nodes`).
+- **Finding:** the first run sent 141 of 1,000 clustered edits (p95 215 ms) to the full analysis. Nearly all were type-argument or literal edits that set the value the node already had. The journal recorded a node edit only when some field differed, so these committed a semantic change with no node edit, and the session ran the full analysis.
+- **Change:** the journal records a node edit whenever only node literals, type arguments, pins or configuration were replaced, even by equal values, and the session re-checks it in place like any other node edit.
+- **Regressions:** the scoped type test now also sets the same arguments and literal again and expects a scoped update equal to the full analysis; the review-fix test now expects a configuration edit to its current value to be re-checked in place unless a domain rejection left nothing to patch. The workspace tests pass.
+- **Measured** (release, development machine, one run of 1,000 edits each, before and after in the same session; the R machine was not used):
+
+| W9 run | p50 | p95 | p99 | max | scoped / full | most re-resolved |
+|---|---:|---:|---:|---:|---:|---:|
+| clustered, before | 0.44 ms | 215.2 ms | 229.8 ms | 278.8 ms | 859 / 141 | 12 |
+| clustered, after | 0.27 ms | 0.42 ms | 0.45 ms | 2.30 ms | 1,000 / 0 | 12 |
+| connected, before | 161.9 ms | 1,563.7 ms | 1,592.0 ms | 1,665.2 ms | 859 / 141 | 10,000 |
+| connected, after | 99.4 ms | 182.3 ms | 187.8 ms | 192.9 ms | 1,000 / 0 | 10,000 |
+
+- **Judgement:** on the clustered W4-sized graph, NFR-15's 2 ms p95 and 10 ms p99 are met on this machine. The connected worst case misses them by about two orders of magnitude; NFR-15 allows connected worst cases if reported separately, and it is reported here. NFR-15 is not passed: the R machine, the 20,000-edge W4 shape, edits outside this workload (exec, function, zone and cycle-closing edits) and visit counters beyond re-resolved nodes remain.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
