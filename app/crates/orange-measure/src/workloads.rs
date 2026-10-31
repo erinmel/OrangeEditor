@@ -632,9 +632,12 @@ pub fn analysis_worker_latency(config: Config) -> AnalysisWorkerTimes {
 /// split evenly across `entries` On Start activations that each run theirs in turn, every
 /// Set fed by a 9-add chain (about 10,000 nodes), is alternately removed and restored.
 /// (p50, p95) over `config.runs` edits after `config.warmup`.
+/// With `paste`, edits instead alternately add a Set Variable after the last Set of the
+/// middle activation, wired to it and to that Set's add chain, and remove it again.
 pub fn session_exec_edit(
     config: Config,
     entries: u32,
+    paste: bool,
 ) -> (std::time::Duration, std::time::Duration) {
     use orange_model::DocCommand;
     use orange_model::validation::{AnalysisOptions, AnalysisSession};
@@ -687,16 +690,41 @@ pub fn session_exec_edit(
     let middle = 10 + (entries / 2) * per_entry + per_entry / 2;
     let wired: orange_model::document::Edge =
         serde_json::from_value(edge(middle, middle - 1, "then", middle, "in")).expect("edge");
+    let last = 10 + (entries / 2) * per_entry + per_entry - 1;
+    let pasted = 9;
     let mut samples = Vec::new();
     for sample in 0..config.warmup + config.runs {
-        let command = if sample % 2 == 0 {
-            DocCommand::Disconnect { edge: wired.id }
-        } else {
-            DocCommand::Connect {
+        let commands = match (paste, sample % 2 == 0) {
+            (false, true) => vec![DocCommand::Disconnect { edge: wired.id }],
+            (false, false) => vec![DocCommand::Connect {
                 edge: wired.clone(),
-            }
+            }],
+            (true, true) => vec![
+                DocCommand::AddNode {
+                    body: orange_model::BodyRef::Root,
+                    node: serde_json::from_value(var_node(pasted, "set-variable", TOTAL))
+                        .expect("node"),
+                },
+                DocCommand::Connect {
+                    edge: serde_json::from_value(edge(pasted, last, "then", pasted, "in"))
+                        .expect("edge"),
+                },
+                DocCommand::Connect {
+                    edge: serde_json::from_value(edge(
+                        30_000,
+                        10_000 + (last - 10) * ADDS,
+                        "sum",
+                        pasted,
+                        "value",
+                    ))
+                    .expect("edge"),
+                },
+            ],
+            (true, false) => vec![DocCommand::RemoveNodes {
+                ids: vec![id(pasted).parse().expect("node ID")],
+            }],
         };
-        let committed = document.apply([command]).expect("edit");
+        let committed = document.apply(commands).expect("edit");
         let start = Instant::now();
         session.update(
             &document,

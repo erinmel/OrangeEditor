@@ -645,19 +645,18 @@ fn other_node_additions_and_removals_run_the_full_analysis() {
     let mut doc = graph(&package, nodes, vec![], vec![export(12, "sum")]);
     let mut session = session(&doc, &registry);
     let options = AnalysisOptions::default();
-    // A core intrinsic.
-    let on_start: NodeInstance = serde_json::from_value(json!({"id": id(50),
-        "definition_id": "core/on-start", "definition_version": 1, "config_version": 1,
-        "config": {}, "activation": {"mode": "queue", "capacity": 4,
-            "overflow": "drop-newest", "on_fault": "continue", "order": 0}}))
+    // A zone marker, which only the whole region pass pairs.
+    let marker: NodeInstance = serde_json::from_value(json!({"id": id(50),
+        "definition_id": "core/repeat-begin", "definition_version": 1, "config_version": 1,
+        "config": {"zone": "z"}}))
     .unwrap();
-    let intrinsic = DocCommand::AddNode {
+    let marker = DocCommand::AddNode {
         body: BodyRef::Root,
-        node: on_start,
+        node: marker,
     };
-    let work = edit(&mut session, &mut doc, &registry, options, vec![intrinsic]);
+    let work = edit(&mut session, &mut doc, &registry, options, vec![marker]);
     assert_eq!(work, SessionWork::Recompute);
-    // Undo the intrinsic so the report is clean again, then remove an exported node.
+    // Undo it so the report is clean again, then remove an exported node.
     let committed = doc.apply([remove_nodes(&[50])]).unwrap();
     session.update(&doc, &registry, &committed.change_set, options);
     assert!(session.analysis().report().is_valid());
@@ -822,7 +821,11 @@ fn two_activations() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
         math(11, "add", 3, 4),
         math(12, "add", 5, 6),
         math(13, "add", 7, 8),
-    ];
+    ]
+    .into_iter()
+    // Unrelated nodes keep each activation a small part of the body.
+    .chain((40..60).map(|n| math(n, "add", 0, 1)))
+    .collect();
     let edges = vec![
         edge(1, 1, "then", 2, "in"),
         edge(2, 2, "then", 3, "in"),
@@ -872,8 +875,9 @@ fn exec_edits_rerun_only_the_activations_they_join() {
     assert_eq!(work, SessionWork::Scoped);
 }
 
-#[test]
-fn moving_a_reader_of_another_activation_runs_the_full_analysis() {
+/// An On Event activation whose Set reads the payload through two adds, and an On Start
+/// activation with one Set, among unrelated adds.
+fn payload_reader() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
     let (package, registry) = catalog();
     let (event, variable) = ("40000000-0000-4000-8000-000000000001", id(100));
     let nodes = vec![
@@ -911,12 +915,93 @@ fn moving_a_reader_of_another_activation_runs_the_full_analysis() {
     raw["variables"] = json!([{"id": variable, "name": "total", "type": "core/u64@1",
         "scope": "run", "init": {"type": "core/u64@1", "value": "0"}}]);
     raw["events"] = json!([{"id": event, "name": "tick", "payload": "core/u64@1", "scope": "run"}]);
-    let mut doc = orange_model::from_json(&raw.to_string()).unwrap();
+    (orange_model::from_json(&raw.to_string()).unwrap(), registry)
+}
+
+#[test]
+fn moving_a_reader_of_another_activation_runs_the_full_analysis() {
+    let (mut doc, registry) = payload_reader();
     let mut session = session(&doc, &registry);
     let options = AnalysisOptions::default();
     // The Set reading the payload through an add moves to the On Start activation.
     let moved = vec![disconnect(1), wire(6, 4, "then", 2, "in")];
     let work = edit(&mut session, &mut doc, &registry, options, moved);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+fn set_node(n: u32) -> DocCommand {
+    DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(json!({"id": id(n), "definition_id": "core/set-variable",
+            "definition_version": 1, "config_version": 1, "config": {"variable": id(100)}}))
+        .unwrap(),
+    }
+}
+
+#[test]
+fn exec_nodes_are_added_and_removed_in_place() {
+    let (mut doc, registry) = two_activations();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // A Set pasted onto the end of the second activation, with its exec and data wires.
+    let pasted = vec![
+        set_node(7),
+        wire(30, 6, "then", 7, "in"),
+        wire(31, 13, "sum", 7, "value"),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, pasted);
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    // Removing the second activation's first Set leaves the rest unreachable; undo restores it.
+    let committed = doc.apply([remove_nodes(&[5])]).unwrap();
+    session.update(&doc, &registry, &committed.change_set, options);
+    assert_eq!(session.stats().work, SessionWork::Scoped);
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+    let undone = doc.revert(committed.inverse).unwrap();
+    session.update(&doc, &registry, &undone.change_set, options);
+    assert_eq!(session.stats().work, SessionWork::Scoped);
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+    // A new, unwired On Start is an intrinsic entry.
+    let start: NodeInstance = serde_json::from_value(json!({"id": id(60),
+        "definition_id": "core/on-start", "definition_version": 1, "config_version": 1,
+        "config": {}, "activation": {"mode": "queue", "capacity": 4,
+            "overflow": "drop-newest", "on_fault": "continue", "order": 2}}))
+    .unwrap();
+    let start = DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: start,
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![start]);
+    assert_eq!(work, SessionWork::Scoped);
+}
+
+#[test]
+fn a_flow_edit_reruns_the_consumers_its_data_edges_reach() {
+    let (mut doc, registry) = payload_reader();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // A new On Start makes this a control-flow edit; the payload wired into the add that
+    // feeds the On Start activation's Set gives that Set a cross-activation read.
+    let start: NodeInstance = serde_json::from_value(json!({"id": id(60),
+        "definition_id": "core/on-start", "definition_version": 1, "config_version": 1,
+        "config": {}, "activation": {"mode": "queue", "capacity": 4,
+            "overflow": "drop-newest", "on_fault": "continue", "order": 2}}))
+    .unwrap();
+    let both = vec![
+        DocCommand::AddNode {
+            body: BodyRef::Root,
+            node: start,
+        },
+        wire(8, 1, "payload", 11, "b"),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, both);
     assert_eq!(work, SessionWork::Recompute);
     assert!(!session.analysis().report().is_valid());
 }

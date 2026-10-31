@@ -205,21 +205,31 @@ pub(super) fn structure_update(
     let exported = |id: &NodeId| document.exports().iter().any(|export| export.node == *id);
     let mut removed_charge = Admitted::default();
     let mut added_charge = Admitted::default();
+    // Zone markers pair through configuration and data reach, which only the whole region
+    // pass checks; every other node is checked here or by a control-flow rerun.
+    let zoned = |node: &crate::document::NodeInstance| {
+        super::zones::ZoneKind::marker(node.definition.id.as_str()).is_some()
+    };
+    // Intrinsics and nodes with exec or untyped ports reach the control-flow passes.
+    let mut flow_nodes = false;
     for id in added_nodes {
         let node = root.nodes.get(id)?;
-        if node.provider.is_none() || exported(id) {
+        if exported(id) || zoned(node) {
             return None;
         }
+        flow_nodes |= node.provider.is_none();
         added_charge = added_charge.add(Admitted::of_node(document, registry, node))?;
     }
     for (id, (body, node)) in &edit.removed_nodes {
-        if *body != BodyRef::Root
-            || node.provider.is_none()
-            || exported(id)
-            || !pure_data(analysis.report().resolved.get(id)?)
-        {
+        if *body != BodyRef::Root || exported(id) || zoned(node) {
             return None;
         }
+        flow_nodes |= node.provider.is_none()
+            || analysis
+                .report()
+                .resolved
+                .get(id)
+                .is_none_or(|signature| !pure_data(signature));
         removed_charge = removed_charge.add(Admitted::of_node(document, registry, node))?;
     }
     let added_edges = &change.edges().added;
@@ -267,9 +277,10 @@ pub(super) fn structure_update(
         &touched,
         added_nodes,
     )?;
-    if fresh.values().any(|(signature, _)| !pure_data(signature)) {
+    if fresh.values().any(|(signature, _)| !typed_data(signature)) {
         return None;
     }
+    flow_nodes |= fresh.values().any(|(signature, _)| !pure_data(signature));
 
     // Stage the new node set's signatures so the edge and input checks see it; a failed
     // check restores the published ones before the caller runs the full analysis.
@@ -282,20 +293,31 @@ pub(super) fn structure_update(
         analysis.resolved_mut().insert(*id, signature.clone());
     }
     let kinds = classify_edges(document, registry, index, analysis, &edges);
-    // Data edges and nodes need the quiet condition; a mix with exec edges would let a
-    // data check read regions the exec edges are about to change.
+    // Without a control-flow rerun, data edges and pure nodes need the quiet condition, for
+    // the stale-capture check, and no availability requirement. With one, which exec edges
+    // and flow nodes force, the rerun covers both: state reruns in full and availability
+    // reruns for every consumer the edit's data edges can reach.
     let local = kinds.filter(|kinds| {
         let structural = kinds.data || !added_nodes.is_empty() || !edit.removed_nodes.is_empty();
-        (!structural || retained.quiet) && !(structural && kinds.flow)
+        kinds.flow || flow_nodes || ((!structural || retained.quiet) && !kinds.requires)
     });
     let checked = local
         .and_then(|kinds| {
             let inputs = recheck_inputs(document, registry, index, analysis, retained, &targets)?;
-            let flow = if kinds.flow {
-                let seeds: BTreeSet<NodeId> = edges
-                    .iter()
-                    .flat_map(|(edge, _)| [edge.from.node, edge.to.node])
-                    .collect();
+            let flow = if kinds.flow || flow_nodes {
+                let ports = super::ports::PortResolver::new(document, &analysis.report().resolved);
+                let mut seeds: BTreeSet<NodeId> = added_nodes.clone();
+                seeds.extend(edit.removed_nodes.keys().copied());
+                for (edge, _) in &edges {
+                    seeds.insert(edge.from.node);
+                    if root.nodes.contains_key(&edge.to.node) {
+                        // Consumers the edge feeds, directly or through pure nodes.
+                        seeds.extend(data_downstream(document, &ports, index, edge.to.node));
+                    } else {
+                        seeds.insert(edge.to.node);
+                    }
+                }
+                drop(ports);
                 Some(recompute_flow(
                     document, registry, index, analysis, retained, effects, &seeds,
                 )?)
@@ -376,10 +398,22 @@ pub(super) fn structure_update(
 /// cycle pass needs nothing else of it, and no control or region pass sees it.
 fn pure_data(signature: &SignatureSnapshot) -> bool {
     signature.kind == NodeKind::Pure
-        && signature.ports.iter().all(|port| {
-            port.kind == PortKind::Data
-                && port.ty.is_some()
-                && (port.direction == PortDirection::Input || port.source.is_some())
+        && signature
+            .ports
+            .iter()
+            .all(|port| port.kind == PortKind::Data)
+        && typed_data(signature)
+}
+
+/// Every data port is typed and every data output has a source, as the data cycle pass
+/// requires of a node it does not mark incomplete.
+fn typed_data(signature: &SignatureSnapshot) -> bool {
+    signature
+        .ports
+        .iter()
+        .filter(|port| port.kind == PortKind::Data)
+        .all(|port| {
+            port.ty.is_some() && (port.direction == PortDirection::Input || port.source.is_some())
         })
 }
 
@@ -390,6 +424,9 @@ struct EdgeKinds {
     data: bool,
     /// An exec or event edge: the control-flow passes too.
     flow: bool,
+    /// A data edge whose producer or cone carries an availability requirement, so only a
+    /// control-flow rerun can account for it.
+    requires: bool,
 }
 
 /// Classifies each edge with the staged signatures, or `None` when one may change more than
@@ -442,17 +479,16 @@ fn classify_edges(
                 && from.direction == PortDirection::Output
                 && to.direction == PortDirection::Input
         );
-        if !data
-            || super::availability::data_edge_requires(
-                document,
-                &ports,
-                &report.regions,
-                index,
-                &edge.from,
-            )
-        {
+        if !data {
             return false;
         }
+        kinds.requires |= super::availability::data_edge_requires(
+            document,
+            &ports,
+            &report.regions,
+            index,
+            &edge.from,
+        );
         let downstream = data_downstream(document, &ports, index, edge.to.node);
         if document
             .exports()
