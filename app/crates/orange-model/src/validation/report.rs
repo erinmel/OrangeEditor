@@ -268,6 +268,17 @@ impl ValidationAnalysis {
     pub(super) fn set_regions(&mut self, regions: super::regions::RegionIndex) {
         self.report.regions = regions;
     }
+    /// Replaces one function's summary after a scoped edit rechecked it.
+    pub(super) fn set_summary(
+        &mut self,
+        function: crate::id::FunctionId,
+        summary: Option<super::functions::FunctionSummary>,
+    ) {
+        match summary {
+            Some(summary) => self.report.functions.insert(function, summary),
+            None => self.report.functions.remove(&function),
+        };
+    }
     /// The resolved signatures, for a scoped session update that adds or removes nodes.
     pub(super) fn resolved_mut(
         &mut self,
@@ -668,14 +679,8 @@ fn run_supported_analysis(
         use crate::document::Suspends;
         retained.complete =
             incomplete_nodes.is_empty() && functions.incomplete_functions.is_empty();
-        // Errors in the per-node lists are allowed: the session replaces those lists itself.
         retained.clean = retained.complete
-            && retained
-                .base
-                .iter()
-                .chain(&retained.flow)
-                .chain(&retained.state)
-                .all(|item| item.severity != Severity::Error)
+            && !super::scoped::blocking_error(retained)
             && regions.index.zones.iter().len() == 0;
         retained.quiet = nodes
             .resolved

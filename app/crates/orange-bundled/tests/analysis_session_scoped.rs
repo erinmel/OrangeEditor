@@ -1172,3 +1172,37 @@ fn function_body_structure_edits_are_scoped_while_acceptance_holds() {
     assert_eq!(work, SessionWork::Recompute);
     assert!(!session.analysis().report().is_valid());
 }
+
+#[test]
+fn an_uncalled_function_publishes_its_own_changes_in_place() {
+    let (mut doc, registry) = called_function();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // Without its only call site, nothing reads the function's acceptance or summary.
+    edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[3, 4])],
+    );
+    assert!(session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(203)],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert!(!session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![wire(203, 202, "then", 205, "in")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert!(session.analysis().report().is_valid());
+}
