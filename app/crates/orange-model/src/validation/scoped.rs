@@ -45,9 +45,11 @@ pub(super) struct Retained {
     pub config: BTreeMap<NodeId, Vec<Diagnostic>>,
     /// Every other published diagnostic, sorted and deduplicated.
     pub base: Vec<Diagnostic>,
-    /// Availability, state, region and control-cycle diagnostics, sorted and deduplicated:
-    /// what a scoped exec edit recomputes and replaces together.
+    /// Availability, region and control-cycle diagnostics, sorted and deduplicated: what a
+    /// scoped exec edit recomputes for the exec-connected nodes it reaches.
     pub flow: Vec<Diagnostic>,
+    /// State diagnostics, sorted and deduplicated; a scoped exec edit reruns the pass.
+    pub state: Vec<Diagnostic>,
     /// The report had no error, incomplete node or function, or zone: the condition under
     /// which a structure edit can be checked locally. Scoped updates keep it.
     pub clean: bool,
@@ -289,7 +291,13 @@ pub(super) fn structure_update(
         .and_then(|kinds| {
             let inputs = recheck_inputs(document, registry, index, analysis, retained, &targets)?;
             let flow = if kinds.flow {
-                Some(recompute_flow(document, registry, analysis, effects)?)
+                let seeds: BTreeSet<NodeId> = edges
+                    .iter()
+                    .flat_map(|(edge, _)| [edge.from.node, edge.to.node])
+                    .collect();
+                Some(recompute_flow(
+                    document, registry, index, analysis, retained, effects, &seeds,
+                )?)
             } else {
                 None
             };
@@ -324,10 +332,12 @@ pub(super) fn structure_update(
     };
 
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
-    if let Some((list, regions)) = flow {
-        analysis.set_regions(regions);
-        let old = std::mem::replace(&mut retained.flow, list.clone());
-        scoped.inputs.push((old, list));
+    if let Some(update) = flow {
+        analysis.set_regions(update.regions);
+        let old = std::mem::replace(&mut retained.flow, update.flow.clone());
+        scoped.inputs.push((old, update.flow));
+        let old = std::mem::replace(&mut retained.state, update.state.clone());
+        scoped.inputs.push((old, update.state));
     }
     for (id, list) in config {
         if !list.is_empty() {
@@ -461,15 +471,142 @@ fn classify_edges(
     local.then_some(kinds)
 }
 
-/// The availability, state, region and control-cycle passes over the current document,
-/// with the clean connection result an edge edit that passed [`classify_edges`] has. `None`
-/// when they find an error, an incomplete node or a control cycle.
+/// New control-flow results after an exec edit.
+struct FlowUpdate {
+    flow: Vec<Diagnostic>,
+    state: Vec<Diagnostic>,
+    regions: super::regions::RegionIndex,
+}
+
+/// Reruns the region, control-cycle and availability passes for the exec-connected nodes
+/// around `seeds` (V12c), and the state pass in full, with the clean connection result an
+/// edge edit that passed [`classify_edges`] has. Region ownership outside that set cannot
+/// change, so its region index entries and diagnostics are replaced alone. When a node
+/// whose ownership changed feeds an owned consumer elsewhere through data, that
+/// consumer's availability could change too, and the whole document is rerun instead.
+/// `None` when the passes find an error, an incomplete node or a control cycle.
 fn recompute_flow(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    index: &DocIndex,
+    analysis: &ValidationAnalysis,
+    retained: &Retained,
+    effects: &BTreeMap<NodeId, LeafEffects>,
+    seeds: &BTreeSet<NodeId>,
+) -> Option<FlowUpdate> {
+    let report = analysis.report();
+    let ports = super::ports::PortResolver::new(document, &report.resolved);
+    let connections = super::connections::ConnectionValidation::default();
+    let component = exec_component(document, &ports, index, seeds);
+    let regions = super::regions::validate_regions_among(
+        document,
+        &ports,
+        &connections,
+        registry,
+        &component,
+    );
+    let control = super::control_cycles::validate_control_cycles_among(
+        document,
+        &ports,
+        &connections,
+        registry,
+        &component,
+    );
+    if !regions.incomplete_nodes.is_empty()
+        || !control.incomplete_nodes.is_empty()
+        || !control.cycle_paths.is_empty()
+    {
+        return None;
+    }
+    let old = &report.regions;
+    let mut merged = old.clone();
+    merged
+        .regions
+        .retain(|root, _| !component.contains(&root.node));
+    merged.owners.retain(|node, _| !component.contains(node));
+    merged.unreachable.retain(|node| !component.contains(node));
+    merged.regions.extend(regions.index.regions);
+    merged.owners.extend(regions.index.owners);
+    merged.unreachable.extend(regions.index.unreachable);
+
+    let region_of = |index: &super::regions::RegionIndex, node: &NodeId| {
+        index
+            .owners
+            .get(node)
+            .map(|root| (root.clone(), index.regions.get(root).cloned()))
+    };
+    let moved: Vec<NodeId> = component
+        .iter()
+        .filter(|node| region_of(old, node) != region_of(&merged, node))
+        .copied()
+        .collect();
+    let crosses = moved.iter().any(|node| {
+        data_downstream(document, &ports, index, *node)
+            .iter()
+            .any(|consumer| !component.contains(consumer) && merged.owners.contains_key(consumer))
+    });
+    if crosses {
+        return whole_flow(document, registry, analysis, effects);
+    }
+
+    let availability = super::availability::validate_availability_among(
+        document,
+        &ports,
+        &connections,
+        &merged,
+        registry,
+        &component,
+    );
+    let state = super::state::validate_state(
+        document,
+        registry,
+        &report.resolved,
+        &merged,
+        &report.functions,
+        effects,
+    );
+    let mut fresh = regions.diagnostics;
+    fresh.extend(control.diagnostics);
+    fresh.extend(availability.diagnostics);
+    let local = |item: &Diagnostic| {
+        item.subject
+            .node
+            .is_some_and(|node| component.contains(&node))
+    };
+    if !fresh.iter().all(local)
+        || retained.flow.iter().any(|item| item.subject.node.is_none())
+        || has_error(&fresh)
+        || has_error(&state)
+    {
+        return whole_flow(document, registry, analysis, effects);
+    }
+    let mut flow: Vec<Diagnostic> = retained
+        .flow
+        .iter()
+        .filter(|item| !local(item))
+        .cloned()
+        .collect();
+    flow.extend(fresh);
+    sort_diagnostics(&mut flow);
+    flow.dedup();
+    let mut state = state;
+    sort_diagnostics(&mut state);
+    state.dedup();
+    Some(FlowUpdate {
+        flow,
+        state,
+        regions: merged,
+    })
+}
+
+/// The control-flow passes over the whole document, for an exec edit whose effect may
+/// leave its exec-connected nodes.
+fn whole_flow(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     analysis: &ValidationAnalysis,
     effects: &BTreeMap<NodeId, LeafEffects>,
-) -> Option<(Vec<Diagnostic>, super::regions::RegionIndex)> {
+) -> Option<FlowUpdate> {
     let report = analysis.report();
     let ports = super::ports::PortResolver::new(document, &report.resolved);
     let connections = super::connections::ConnectionValidation::default();
@@ -496,22 +633,62 @@ fn recompute_flow(
         registry,
     )
     .diagnostics;
-    flow.extend(super::state::validate_state(
+    let mut state = super::state::validate_state(
         document,
         registry,
         &report.resolved,
         &regions.index,
         &report.functions,
         effects,
-    ));
+    );
     flow.extend(regions.diagnostics);
     flow.extend(control.diagnostics);
-    if has_error(&flow) {
+    if has_error(&flow) || has_error(&state) {
         return None;
     }
     sort_diagnostics(&mut flow);
     flow.dedup();
-    Some((flow, regions.index))
+    sort_diagnostics(&mut state);
+    state.dedup();
+    Some(FlowUpdate {
+        flow,
+        state,
+        regions: regions.index,
+    })
+}
+
+/// The root-body nodes joined to `seeds` by exec or event edges, in either direction.
+fn exec_component(
+    document: &GraphDocument,
+    ports: &super::ports::PortResolver<'_>,
+    index: &DocIndex,
+    seeds: &BTreeSet<NodeId>,
+) -> BTreeSet<NodeId> {
+    let mut seen = BTreeSet::new();
+    let mut stack: Vec<NodeId> = seeds.iter().copied().collect();
+    while let Some(node) = stack.pop() {
+        if !seen.insert(node) {
+            continue;
+        }
+        for id in index.incident(node) {
+            let Some(edge) = document.edge(id) else {
+                continue;
+            };
+            let exec = matches!(
+                (ports.port(&edge.from), ports.port(&edge.to)),
+                (Ok(from), Ok(to)) if matches!(from.kind, PortKind::Exec | PortKind::Event)
+                    && to.kind == PortKind::Exec
+            );
+            if exec {
+                stack.push(if edge.from.node == node {
+                    edge.to.node
+                } else {
+                    edge.from.node
+                });
+            }
+        }
+    }
+    seen
 }
 
 /// Re-resolves `touched`, their neighbours and those nodes' generic components, with every

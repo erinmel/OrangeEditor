@@ -146,6 +146,10 @@ pub struct ValidationAnalysis {
     covered: &'static [ValidationCheck],
 }
 
+/// Above this many changed items, [`ValidationAnalysis::patch`] rebuilds the published list
+/// in one merge rather than inserting and removing items one by one.
+const SPLICE_LIMIT: usize = 32;
+
 impl ValidationAnalysis {
     /// Read-only semantic content identity, restored by undo/redo. Layout edits do not
     /// invalidate this analysis; compare with [`GraphDocument::semantic_state_id`].
@@ -174,8 +178,8 @@ impl ValidationAnalysis {
 
     /// Immutable pass-local report.
     /// Moves a retained analysis to a new semantic state that a scoped session update
-    /// proved differs only in some nodes' input diagnostics. Each `(old, new)` pair
-    /// replaces one node's inputs; an old one stays when `base`, the other passes'
+    /// proved differs only in some kept diagnostic lists. Each sorted `(old, new)` pair
+    /// replaces one list; an old one stays when `base`, the other passes'
     /// sorted diagnostics, also reports it. Returns the subjects whose lists changed.
     pub(super) fn patch(
         &mut self,
@@ -188,21 +192,74 @@ impl ValidationAnalysis {
         let all = &mut self.report.diagnostics;
         let mut changed = BTreeSet::new();
         for (old, new) in inputs {
-            for item in old.iter().filter(|item| !new.contains(item)) {
-                if base
-                    .binary_search_by(|probe| diagnostic_order(probe, item))
-                    .is_err()
-                    && let Ok(at) = all.binary_search_by(|probe| diagnostic_order(probe, item))
-                {
-                    all.remove(at);
-                    changed.insert(item.subject.clone());
+            // Both lists are sorted, so one merge finds what each lacks.
+            let (mut gone, mut came) = (Vec::new(), Vec::new());
+            let (mut i, mut j) = (0, 0);
+            while i < old.len() || j < new.len() {
+                let order = match (old.get(i), new.get(j)) {
+                    (Some(a), Some(b)) => diagnostic_order(a, b),
+                    (Some(_), None) => std::cmp::Ordering::Less,
+                    _ => std::cmp::Ordering::Greater,
+                };
+                match order {
+                    std::cmp::Ordering::Less => {
+                        gone.push(&old[i]);
+                        i += 1;
+                    }
+                    std::cmp::Ordering::Greater => {
+                        came.push(&new[j]);
+                        j += 1;
+                    }
+                    std::cmp::Ordering::Equal => {
+                        let item = &old[i];
+                        while old.get(i) == Some(item) {
+                            i += 1;
+                        }
+                        while new.get(j) == Some(item) {
+                            j += 1;
+                        }
+                    }
                 }
             }
-            for item in new.iter().filter(|item| !old.contains(item)) {
-                if let Err(at) = all.binary_search_by(|probe| diagnostic_order(probe, item)) {
-                    all.insert(at, item.clone());
-                    changed.insert(item.subject.clone());
+            // An item another kept list also reports stays published.
+            gone.retain(|item| {
+                base.binary_search_by(|probe| diagnostic_order(probe, item))
+                    .is_err()
+            });
+            changed.extend(gone.iter().chain(&came).map(|item| item.subject.clone()));
+            if gone.len() + came.len() <= SPLICE_LIMIT {
+                for item in gone {
+                    if let Ok(at) = all.binary_search_by(|probe| diagnostic_order(probe, item)) {
+                        all.remove(at);
+                    }
                 }
+                for item in came {
+                    if let Err(at) = all.binary_search_by(|probe| diagnostic_order(probe, item)) {
+                        all.insert(at, item.clone());
+                    }
+                }
+            } else {
+                // Many changes: one merge instead of shifting the list per item.
+                let previous = std::mem::take(all);
+                all.reserve(previous.len() + came.len());
+                let mut came = came.into_iter().peekable();
+                let mut gone = gone.into_iter().peekable();
+                for item in previous {
+                    while let Some(next) =
+                        came.next_if(|next| diagnostic_order(next, &item).is_lt())
+                    {
+                        all.push(next.clone());
+                    }
+                    came.next_if(|next| **next == item);
+                    while gone
+                        .next_if(|next| diagnostic_order(next, &item).is_lt())
+                        .is_some()
+                    {}
+                    if gone.next_if(|next| **next == item).is_none() {
+                        all.push(item);
+                    }
+                }
+                all.extend(came.cloned());
             }
         }
         changed
@@ -515,18 +572,19 @@ fn run_supported_analysis(
         document, &ports, registry,
     ));
     options.checkpoint()?;
-    flow.extend(validate_state(
+    let state = validate_state(
         document,
         registry,
         &nodes.resolved,
         &regions.index,
         &functions.summaries,
         leaf_effects,
-    ));
+    );
     options.checkpoint()?;
     let explained_nodes: BTreeSet<_> = diagnostics
         .iter()
         .chain(&flow)
+        .chain(&state)
         .chain(&node_diagnostics)
         .chain(&input_diagnostics)
         .chain(&config_diagnostics)
@@ -567,12 +625,8 @@ fn run_supported_analysis(
                 inputs,
                 base,
                 config,
-                flow: {
-                    let mut flow = flow.clone();
-                    sort_diagnostics(&mut flow);
-                    flow.dedup();
-                    flow
-                },
+                flow: sorted(flow.clone()),
+                state: sorted(state.clone()),
                 clean: false,
                 quiet: false,
             })
@@ -580,6 +634,7 @@ fn run_supported_analysis(
         _ => None,
     };
     diagnostics.extend(flow);
+    diagnostics.extend(state);
     diagnostics.extend(node_diagnostics);
     diagnostics.extend(input_diagnostics);
     diagnostics.extend(config_diagnostics);
@@ -622,6 +677,12 @@ fn run_supported_analysis(
         covered: COVERED_CHECKS,
     };
     Ok((analysis, retained))
+}
+
+fn sorted(mut diagnostics: Vec<Diagnostic>) -> Vec<Diagnostic> {
+    sort_diagnostics(&mut diagnostics);
+    diagnostics.dedup();
+    diagnostics
 }
 
 /// A foreign domain cannot supply evidence for the control-domain passes. Keep this

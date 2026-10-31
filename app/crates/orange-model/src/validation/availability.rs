@@ -310,6 +310,37 @@ pub(crate) fn validate_availability_with_ports(
     regions: &RegionIndex,
     registry: &RegistrySnapshot,
 ) -> AvailabilityValidation {
+    availability_among(document, resolved, connections, regions, registry, None)
+}
+
+/// The same pass for the consumers in `only` alone: an exec-connected set of root-body
+/// nodes, whose control flow no other node reaches. Data cones still read every edge.
+pub(crate) fn validate_availability_among(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    connections: &ConnectionValidation,
+    regions: &RegionIndex,
+    registry: &RegistrySnapshot,
+    only: &BTreeSet<NodeId>,
+) -> AvailabilityValidation {
+    availability_among(
+        document,
+        resolved,
+        connections,
+        regions,
+        registry,
+        Some(only),
+    )
+}
+
+fn availability_among(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    connections: &ConnectionValidation,
+    regions: &RegionIndex,
+    registry: &RegistrySnapshot,
+    only: Option<&BTreeSet<NodeId>>,
+) -> AvailabilityValidation {
     let error_edges: BTreeSet<_> = connections
         .diagnostics
         .iter()
@@ -330,7 +361,7 @@ pub(crate) fn validate_availability_with_ports(
             origin: registry.origin(),
             function,
         };
-        check_body(&context, body, &mut result);
+        check_body(&context, body, &mut result, only);
     }
     sort_diagnostics(&mut result.diagnostics);
     result.diagnostics.dedup();
@@ -407,7 +438,13 @@ type AvailabilityKey = (RegionRoot, NodeId, BTreeSet<PortId>);
 type AvailabilityUses = BTreeMap<AvailabilityKey, BTreeSet<(NodeId, Subject)>>;
 
 #[allow(clippy::too_many_lines)]
-fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityValidation) {
+fn check_body(
+    context: &Context,
+    body: &GraphBody,
+    result: &mut AvailabilityValidation,
+    only: Option<&BTreeSet<NodeId>>,
+) {
+    let inside = |node: &NodeId| only.is_none_or(|only| only.contains(node));
     let Context {
         resolved, regions, ..
     } = *context;
@@ -415,7 +452,31 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
     let mut incoming: BTreeMap<NodeId, Vec<DataEdge>> = BTreeMap::new();
     let mut edges: Vec<_> = body.edges.values().collect();
     edges.sort_by_key(|edge| edge.id);
+    // A node subset reads its own exec edges and the edges into its consumers and into
+    // every expanding producer upstream of them; no other edge needs a port lookup.
+    let needed = only.map(|only| {
+        let mut into: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+        for edge in &edges {
+            into.entry(edge.to.node).or_default().push(edge.from.node);
+        }
+        let mut needed = only.clone();
+        let mut stack: Vec<NodeId> = only.iter().copied().collect();
+        while let Some(node) = stack.pop() {
+            for &from in into.get(&node).into_iter().flatten() {
+                if expands(context, from) && needed.insert(from) {
+                    stack.push(from);
+                }
+            }
+        }
+        needed
+    });
     for edge in edges {
+        if needed
+            .as_ref()
+            .is_some_and(|needed| !inside(&edge.from.node) && !needed.contains(&edge.to.node))
+        {
+            continue;
+        }
         if context.error_edges.contains(&edge.id)
             || !body.nodes.contains_key(&edge.from.node)
             || !body.nodes.contains_key(&edge.to.node)
@@ -446,7 +507,9 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
         .regions
         .iter()
         .filter(|(root, region)| {
-            region.kind == RegionKind::Entry && body.nodes.contains_key(&root.node)
+            region.kind == RegionKind::Entry
+                && body.nodes.contains_key(&root.node)
+                && inside(&root.node)
         })
         .map(|(root, _)| root)
         .collect();
@@ -458,7 +521,9 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
         cfg.goto(&entry, &targets, root.node, &root.port, Some(exit));
     }
     for node in body.nodes.values() {
-        build_node(context, &mut cfg, &targets, node.id);
+        if inside(&node.id) {
+            build_node(context, &mut cfg, &targets, node.id);
+        }
     }
 
     // Consumers: owned exec nodes, reading their data inputs and the cones behind them. A
@@ -466,7 +531,7 @@ fn check_body(context: &Context, body: &GraphBody, result: &mut AvailabilityVali
     // the consumer-dependent requirement is evaluated per consumer.
     let mut cones: BTreeMap<NodeId, Vec<&DataEdge>> = BTreeMap::new();
     let mut uses = AvailabilityUses::new();
-    for consumer in body.nodes.keys() {
+    for consumer in body.nodes.keys().filter(|node| inside(node)) {
         let Some(region) = regions.owners.get(consumer) else {
             continue;
         };

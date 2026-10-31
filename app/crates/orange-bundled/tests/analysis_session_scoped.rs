@@ -797,3 +797,77 @@ fn exec_edges_that_may_change_more_run_the_full_analysis() {
     let work = edit(&mut session, &mut doc, &registry, options, mixed);
     assert_eq!(work, SessionWork::Recompute);
 }
+
+/// Two On Start activations, each running two Set Variable nodes fed by adds.
+fn two_activations() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (package, registry) = catalog();
+    let variable = id(100);
+    let start = |n: u32, order: u32| {
+        json!({"id": id(n), "definition_id": "core/on-start", "definition_version": 1,
+            "config_version": 1, "config": {}, "activation": {"mode": "queue", "capacity": 4,
+            "overflow": "drop-newest", "on_fault": "continue", "order": order}})
+    };
+    let set = |n: u32| {
+        json!({"id": id(n), "definition_id": "core/set-variable", "definition_version": 1,
+            "config_version": 1, "config": {"variable": variable}})
+    };
+    let nodes = vec![
+        start(1, 0),
+        set(2),
+        set(3),
+        start(4, 1),
+        set(5),
+        set(6),
+        math(10, "add", 1, 2),
+        math(11, "add", 3, 4),
+        math(12, "add", 5, 6),
+        math(13, "add", 7, 8),
+    ];
+    let edges = vec![
+        edge(1, 1, "then", 2, "in"),
+        edge(2, 2, "then", 3, "in"),
+        edge(4, 4, "then", 5, "in"),
+        edge(5, 5, "then", 6, "in"),
+        edge(20, 10, "sum", 2, "value"),
+        edge(21, 11, "sum", 3, "value"),
+        edge(22, 12, "sum", 5, "value"),
+        edge(23, 13, "sum", 6, "value"),
+    ];
+    let base = graph(&package, nodes, edges, vec![]);
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&base).unwrap()).unwrap();
+    raw["variables"] = json!([{"id": variable, "name": "total", "type": "core/u64@1",
+        "scope": "run", "init": {"type": "core/u64@1", "value": "0"}}]);
+    (orange_model::from_json(&raw.to_string()).unwrap(), registry)
+}
+
+#[test]
+fn exec_edits_rerun_only_the_activations_they_join() {
+    let (mut doc, registry) = two_activations();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // Within one activation.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(5)],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![wire(5, 5, "then", 6, "in")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    // A Set moved from the first activation to the end of the second.
+    let moved = vec![disconnect(2), wire(30, 6, "then", 3, "in")];
+    let work = edit(&mut session, &mut doc, &registry, options, moved);
+    assert_eq!(work, SessionWork::Scoped);
+    // Joining the activations' chains, then splitting them again.
+    let undone = vec![disconnect(30), wire(2, 2, "then", 3, "in")];
+    let work = edit(&mut session, &mut doc, &registry, options, undone);
+    assert_eq!(work, SessionWork::Scoped);
+}
