@@ -50,36 +50,42 @@ impl TopoOrder {
     pub(super) fn build(
         document: &GraphDocument,
         ports: &PortResolver<'_>,
-        index: &DocIndex,
         body: BodyRef,
     ) -> Option<Self> {
-        let nodes = &document.body(body)?.nodes;
-        let mut indegree: BTreeMap<NodeId, usize> = nodes.keys().map(|id| (*id, 0)).collect();
-        for id in nodes.keys() {
-            for next in data_edges(document, ports, index, *id, true) {
-                if let Some(count) = indegree.get_mut(&next) {
-                    *count += 1;
-                }
+        let body = document.body(body)?;
+        // Dense indices over the sorted node IDs, and each data edge resolved once.
+        let ids: Vec<NodeId> = body.nodes.keys().copied().collect();
+        let dense = |node: NodeId| ids.binary_search(&node).ok();
+        let mut next: Vec<Vec<usize>> = vec![Vec::new(); ids.len()];
+        let mut indegree = vec![0_usize; ids.len()];
+        for edge in body.edges.values() {
+            let (Some(from), Some(to)) = (dense(edge.from.node), dense(edge.to.node)) else {
+                continue;
+            };
+            if matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data) {
+                next[from].push(to);
+                indegree[to] += 1;
             }
         }
-        let mut ready: Vec<NodeId> = indegree
-            .iter()
-            .filter(|(_, count)| **count == 0)
-            .map(|(id, _)| *id)
-            .collect();
-        let mut order = Self::default();
+        let mut ready: Vec<usize> = (0..ids.len()).filter(|at| indegree[*at] == 0).collect();
+        let mut placed = Vec::with_capacity(ids.len());
         while let Some(node) = ready.pop() {
-            order.push(node);
-            for next in data_edges(document, ports, index, node, true) {
-                if let Some(count) = indegree.get_mut(&next) {
-                    *count -= 1;
-                    if *count == 0 {
-                        ready.push(next);
-                    }
+            placed.push((ids[node], placed.len()));
+            for &to in &next[node] {
+                indegree[to] -= 1;
+                if indegree[to] == 0 {
+                    ready.push(to);
                 }
             }
         }
-        (order.position.len() == nodes.len()).then_some(order)
+        if placed.len() != ids.len() {
+            return None;
+        }
+        placed.sort_unstable();
+        Some(Self {
+            position: placed.into_iter().collect(),
+            next: ids.len(),
+        })
     }
 
     pub(super) fn position(&self, node: NodeId) -> Option<usize> {

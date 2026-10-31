@@ -69,8 +69,9 @@ pub(super) struct Retained {
     /// No node may suspend, so stale-capture checks cannot read data edges. Data edges and
     /// nodes are checked locally only then; exec edges recompute the state pass anyway.
     pub quiet: bool,
-    /// Each body's data dependency order, built by the first structure edit there that needs
-    /// it and kept by later ones; `None` when its nodes form a data cycle (V12d).
+    /// Each body's data dependency order, kept by scoped structure edits; `None` when its
+    /// nodes form a data cycle (V12d). The root's is built with the report, a function
+    /// body's by the first structure edit there.
     pub orders: BTreeMap<BodyRef, Option<super::order::TopoOrder>>,
 }
 
@@ -425,12 +426,13 @@ pub(super) fn structure_update(
     for (id, (signature, _)) in &fresh {
         analysis.resolved_mut().insert(*id, signature.clone());
     }
-    // A body's first structure edit builds its order from the edited document, which then
-    // already accounts for the edit; later ones bring it up to date.
+    // The full analysis builds the root body's order. A function body's first structure
+    // edit builds its own from the edited document, which then already accounts for the
+    // edit; later edits bring an order up to date.
     let built = !retained.orders.contains_key(&home);
     if built {
         let ports = super::ports::PortResolver::new(document, &analysis.report().resolved);
-        let order = super::order::TopoOrder::build(document, &ports, index, home);
+        let order = super::order::TopoOrder::build(document, &ports, home);
         retained.orders.insert(home, order);
     }
     let mut order = retained.orders.get_mut(&home).and_then(Option::as_mut);

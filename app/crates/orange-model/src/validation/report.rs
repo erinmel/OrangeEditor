@@ -692,6 +692,12 @@ fn run_supported_analysis(
             .resolved
             .values()
             .all(|signature| signature.suspension() == Some(Suspends::Never));
+        // The root body's data order, which scoped structure edits there keep, built here
+        // rather than by the first of them; function bodies build theirs when first edited.
+        if retained.clean || retained.isolable {
+            let order = super::order::TopoOrder::build(document, &ports, crate::BodyRef::Root);
+            retained.orders.insert(crate::BodyRef::Root, order);
+        }
     }
     drop(ports);
     let analysis = ValidationAnalysis {
