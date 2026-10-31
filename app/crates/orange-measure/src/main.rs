@@ -100,6 +100,25 @@ fn main() {
             workloads::disposed_run_retained_bytes()
         );
     }
+    if "w9".contains(filter.as_str()) {
+        let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1e3;
+        for (connected, kind) in [(false, "clustered"), (true, "connected")] {
+            let run = workloads::w9_session_edits(connected);
+            println!(
+                "w9 {kind} ({} nodes, {} edges, 1000 edits) p50: {:.3} ms, p95: {:.3} ms, p99: {:.3} ms, max: {:.3} ms; scoped {} (at most {} nodes re-resolved), full {} (p50 {:.3} ms)",
+                run.nodes,
+                run.edges,
+                ms(run.p50),
+                ms(run.p95),
+                ms(run.p99),
+                ms(run.max),
+                run.scoped,
+                run.max_resolved,
+                run.full,
+                ms(run.full_p50)
+            );
+        }
+    }
     if "session-edit".contains(filter.as_str()) {
         let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1e3;
         use workloads::SessionEdit;

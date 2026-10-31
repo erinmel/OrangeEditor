@@ -970,6 +970,170 @@ pub fn session_edit(
     (at(50), at(95))
 }
 
+/// One W9 run: per-edit latency and how each edit was handled.
+pub struct W9 {
+    pub nodes: usize,
+    pub edges: usize,
+    pub p50: std::time::Duration,
+    pub p95: std::time::Duration,
+    pub p99: std::time::Duration,
+    pub max: std::time::Duration,
+    /// Edits applied in place, and the most nodes one of them re-resolved.
+    pub scoped: usize,
+    pub max_resolved: usize,
+    /// Edits that ran the full analysis, and their median latency.
+    pub full: usize,
+    pub full_p50: std::time::Duration,
+}
+
+/// W9 on a W4-sized graph (06): 1,000 clusters of a Get, eight adds and a Set, each add
+/// reading the two values before it, and every Set in one of ten exec chains; then 1,000
+/// seeded random edits, a quarter each disconnect or connect of an add input, literal and
+/// type argument. When `connected`, each cluster's first add reads the previous cluster's
+/// last add instead of its Get, so all adds form one generic component.
+pub fn w9_session_edits(connected: bool) -> W9 {
+    use orange_model::DocCommand;
+    use orange_model::document::{Edge, PortRef};
+    use orange_model::validation::{AnalysisOptions, AnalysisSession, SessionWork};
+    use std::collections::BTreeMap;
+    use std::time::{Duration, Instant};
+    const CLUSTERS: u32 = 1000;
+    const ENTRIES: u32 = 10;
+    const ADDS: u32 = 8;
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for entry in 0..ENTRIES {
+        let mut start = core(30_000 + entry, "on-start");
+        start["activation"]["order"] = json!(entry);
+        nodes.push(start);
+    }
+    // Every add input's edge, keyed by (add, input), so edits can remove and restore it.
+    let mut inputs: BTreeMap<(u32, &str), Json> = BTreeMap::new();
+    let per_entry = CLUSTERS / ENTRIES;
+    for cluster in 0..CLUSTERS {
+        let get = 10 + cluster * 10;
+        let add = |k: u32| get + 1 + k;
+        let set = get + 9;
+        let n = 100_000 + cluster * 20;
+        nodes.push(var_node(get, "get-variable", TOTAL));
+        for k in 0..ADDS {
+            nodes.push(math(add(k), "add", 0, 1));
+        }
+        nodes.push(var_node(set, "set-variable", TOTAL));
+        for k in 0..ADDS {
+            let (a, b) = match k {
+                0 if connected && cluster > 0 => {
+                    let last = get - 10 + 1 + ADDS - 1;
+                    ((last, "sum"), (last, "sum"))
+                }
+                0 => ((get, "value"), (get, "value")),
+                1 => ((add(0), "sum"), (get, "value")),
+                _ => ((add(k - 1), "sum"), (add(k - 2), "sum")),
+            };
+            inputs.insert((add(k), "a"), edge(n + 2 * k, a.0, a.1, add(k), "a"));
+            inputs.insert((add(k), "b"), edge(n + 2 * k + 1, b.0, b.1, add(k), "b"));
+        }
+        edges.push(edge(n + 16, add(ADDS - 1), "sum", set, "value"));
+        let previous = if cluster % per_entry == 0 {
+            (30_000 + cluster / per_entry, "then")
+        } else {
+            (set - 10, "then")
+        };
+        edges.push(edge(n + 17, previous.0, previous.1, set, "in"));
+    }
+    edges.extend(inputs.values().cloned());
+    let mut source = Source::new(nodes, edges);
+    source.variables = vec![run_variable(TOTAL, U64, Some(json!("0")))];
+    let (mut document, registry) = source.analyzed();
+    let options = AnalysisOptions::default();
+    let mut session = AnalysisSession::new(&document, &registry, BTreeMap::new(), options);
+    let edges: Vec<(u32, &str, Edge)> = inputs
+        .into_iter()
+        .map(|((node, input), edge)| (node, input, serde_json::from_value(edge).expect("edge")))
+        .collect();
+    let mut wired = vec![true; edges.len()];
+    let mut seed: u64 = 0x5eed_0009;
+    let mut next = |bound: usize| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) as usize % bound
+    };
+    let node_id = |node: u32| id(node).parse().expect("node ID");
+    let mut samples = Vec::new();
+    let mut full_samples = Vec::new();
+    let (mut scoped, mut max_resolved) = (0, 0);
+    for _ in 0..1000 {
+        let add = 11 + (next(CLUSTERS as usize) as u32) * 10 + next(ADDS as usize) as u32;
+        let command = match next(4) {
+            0 | 1 => {
+                let at = next(edges.len());
+                wired[at] = !wired[at];
+                if wired[at] {
+                    DocCommand::Connect {
+                        edge: edges[at].2.clone(),
+                    }
+                } else {
+                    DocCommand::Disconnect {
+                        edge: edges[at].2.id,
+                    }
+                }
+            }
+            2 => DocCommand::SetLiteral {
+                port: PortRef {
+                    node: node_id(add),
+                    port: "b".parse().expect("port ID"),
+                },
+                literal: Some(serde_json::from_value(literal(next(1000) as u64)).expect("literal")),
+            },
+            _ => DocCommand::SetTypeArgs {
+                node: node_id(add),
+                args: if next(2) == 0 {
+                    [(
+                        "T".parse().expect("type parameter"),
+                        U64.parse().expect("type"),
+                    )]
+                    .into()
+                } else {
+                    BTreeMap::new()
+                },
+            },
+        };
+        let committed = document.apply([command]).expect("edit");
+        let start = Instant::now();
+        let stats = session.update(&document, &registry, &committed.change_set, options);
+        let elapsed = start.elapsed();
+        samples.push(elapsed);
+        if stats.work == SessionWork::Scoped {
+            scoped += 1;
+            max_resolved = max_resolved.max(stats.input_nodes);
+        } else {
+            full_samples.push(elapsed);
+        }
+    }
+    assert!(session.analysis().report().is_valid());
+    samples.sort();
+    full_samples.sort();
+    let at = |samples: &[Duration], q: usize| {
+        samples
+            .get((samples.len() * q / 100).min(samples.len().saturating_sub(1)))
+            .copied()
+            .unwrap_or_default()
+    };
+    W9 {
+        nodes: document.root().nodes.len(),
+        edges: document.root().edges.len(),
+        p50: at(&samples, 50),
+        p95: at(&samples, 95),
+        p99: at(&samples, 99),
+        max: *samples.last().expect("samples"),
+        scoped,
+        max_resolved,
+        full: full_samples.len(),
+        full_p50: at(&full_samples, 50),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     /// The counting allocator is process-wide, so measurements must not run side by side.
