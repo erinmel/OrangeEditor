@@ -2561,3 +2561,21 @@ Branch `core/indexed-flow-subsets` on `dev` 74b6c57 (same toolchain; Cargo.lock 
 - **Limitations:** exec node additions and removals, function bodies and edits in reports with errors still rerun every pass; the connected worst case remains far above NFR-15. V12c is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Exec node edits (V12c) — 2026-10-30
+
+Branch `core/scoped-exec-nodes` on `dev` 230daed (same toolchain; Cargo.lock unchanged). Continues V12c (16).
+
+- **Change:** a structure edit may add or remove intrinsics and nodes with exec or event ports. Such nodes, like exec edges, make it a control-flow edit, which reruns regions, control cycles and availability for the exec-connected set around every added or removed node, every edge source and every node downstream of an edited data edge's target, and reruns state in full. A control-flow edit therefore needs neither the quiet condition nor the per-edge availability check that data-only edits still use; the connection, cycle, export and published-edge checks remain. Added nodes must resolve without errors, with typed data ports and sourced data outputs. Zone markers and exported nodes run the full analysis.
+- **Regressions:** `orange-bundled` tests paste a Set Variable with its exec and data wires onto an activation, remove an activation's first Set and undo it, and add an unwired On Start (all scoped); a zone marker runs the full analysis; and a new On Start added together with a payload wire into an add feeding another activation's Set runs the full analysis on the resulting cross-activation error. Seeding only the edited data edge's target instead of its downstream consumers fails that last test. The two-activation fixture gains unrelated adds so its edits take the subset path. The session property tests pass with 1,024 cases in release.
+- **Measured** with `orange-measure session-edit`, which now also alternately pastes a Set Variable after the last Set of the middle activation, wired to it and to that Set's add chain, and removes it (release, same machine, 15 edits after 3 warmups, before and after measured in the same session):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| exec node, 100 activations | 189.0 ms | 207.8 ms | 0.79 ms | 1.10 ms |
+| exec node, 1 activation | 188.6 ms | 193.7 ms | 45.7 ms | 47.8 ms |
+
+  Exec edge edits are unchanged; in this session the machine ran them at about 44 ms (one activation) and 1.1 to 1.4 ms (100 activations) on both `dev` 230daed and this branch, above the earlier record's 31 ms and 1.03 ms.
+- **Limitations:** function bodies, zone markers and edits in reports with errors still rerun every pass, and the single-activation case remains far above NFR-15. V12c is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
