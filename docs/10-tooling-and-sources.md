@@ -2542,3 +2542,22 @@ Branch `core/exec-component-scoping` on `dev` 5dc66de (same toolchain; Cargo.loc
 - **Limitations:** the subset passes still iterate and sort every body edge before filtering, and the region index is cloned per edit, which keep the 100-activation edit above 2 ms. Exec node additions and removals, function bodies and edits in reports with errors still rerun every pass. V12c is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Indexed control-flow subsets (V12c) — 2026-10-30
+
+Branch `core/indexed-flow-subsets` on `dev` 74b6c57 (same toolchain; Cargo.lock unchanged). Continues V12c (16).
+
+- **Profile:** with temporary timers, the 100-activation exec edit of 2026-10-30 spent about 1.9 ms in availability and 1 ms in regions and control cycles, each collecting, sorting and filtering every body edge before reading the subset's.
+- **Change:** a `NodeSubset` carries the nodes and the edges a pass may read, sorted by ID. The session gathers the set's outgoing edges for regions and control cycles, and for availability the set's exec edges and the edges into its consumers and the expanding producers upstream of them, through the document index; pure and volatile nodes are never owned, so this set does not depend on the region changes. The passes iterate only the subset's nodes and edges. Ownership changes are compared by region lineage instead of cloning each region with its members, which had cost about 8 ms for 1,000 owned nodes. A set holding more than half the root body's nodes runs the whole-document passes.
+- **Regressions:** an `orange-bundled` test moves a Set Variable node that reads an event payload through two adds into another activation; the cross-activation error appears and the session runs the full analysis. Without the upstream cone expansion the session publishes no error and the test fails. The session property tests pass with 1,024 cases in release.
+- **Measured** with `orange-measure session-edit` (release, same machine, 15 edits after 3 warmups):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| exec edge, 100 activations | 3.2 ms | 3.3 ms | 1.03 ms | 1.28 ms |
+| exec edge, 1 activation | 28.4 ms | 29.2 ms | 31.2 ms | 32.6 ms |
+
+  The single activation, the connected worst case, is slightly slower: finding its 1,001-node exec set and its cones through the index costs about 5 ms, more than the body walks it replaces there.
+- **Limitations:** exec node additions and removals, function bodies and edits in reports with errors still rerun every pass; the connected worst case remains far above NFR-15. V12c is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
