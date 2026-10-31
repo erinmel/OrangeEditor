@@ -114,19 +114,22 @@ fn main() {
                 adds,
                 shared_get,
             });
-            println!(
-                "w9 {kind} ({} nodes, {} edges, 1000 edits) p50: {:.3} ms, p95: {:.3} ms, p99: {:.3} ms, max: {:.3} ms; scoped {} (at most {} nodes re-resolved), full {} (p50 {:.3} ms)",
-                run.nodes,
-                run.edges,
-                ms(run.p50),
-                ms(run.p95),
-                ms(run.p99),
-                ms(run.max),
-                run.scoped,
-                run.max_resolved,
-                run.full,
-                ms(run.full_p50)
-            );
+            println!("w9 {kind} ({} nodes, {} edges)", run.nodes, run.edges);
+            let core = std::iter::once(("seeded connect/disconnect/literal/type", &run.core));
+            let kinds = run.kinds.iter().map(|(edit, bucket)| (edit.name(), bucket));
+            for (name, bucket) in core.chain(kinds) {
+                println!(
+                    "  {name}: {} edits, p50 {:.3} ms, p95 {:.3} ms, p99 {:.3} ms, max {:.3} ms; scoped {}, full {}; at most {} nodes re-resolved",
+                    bucket.edits,
+                    ms(bucket.p50),
+                    ms(bucket.p95),
+                    ms(bucket.p99),
+                    ms(bucket.max),
+                    bucket.scoped,
+                    bucket.edits - bucket.scoped,
+                    bucket.max_resolved
+                );
+            }
         }
     }
     if "session-edit".contains(filter.as_str()) {
