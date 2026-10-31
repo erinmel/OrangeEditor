@@ -17,7 +17,8 @@ use super::acceptance::Accepted;
 use super::inputs::node_input_diagnostics;
 use super::limits::Admitted;
 use super::nodes::{CallEvidence, validate_node_ids};
-use super::scope::Scope;
+use super::regions::{RegionKind, RegionRoot};
+use super::scope::{NodeSubset, Scope};
 use super::{
     AnalysisOptions, Diagnostic, LeafEffects, Severity, ValidationAnalysis, sort_diagnostics,
 };
@@ -498,19 +499,39 @@ fn recompute_flow(
     let ports = super::ports::PortResolver::new(document, &report.resolved);
     let connections = super::connections::ConnectionValidation::default();
     let component = exec_component(document, &ports, index, seeds);
-    let regions = super::regions::validate_regions_among(
-        document,
-        &ports,
-        &connections,
-        registry,
-        &component,
-    );
+    // Once the set is most of the body, gathering it through the index costs more than the
+    // whole-document passes, which give the same result.
+    if component.len() > document.root().nodes.len() / 2 {
+        return whole_flow(document, registry, analysis, effects, &ports);
+    }
+    // Availability reads the data cones of the set's consumers. Pure and volatile nodes are
+    // never owned, so the cones do not depend on the regions about to change.
+    let cones =
+        super::availability::subset_edges(document, &ports, &report.regions, index, &component);
+    // Exec edges never leave the component, so its own outgoing edges are all the region
+    // and control-cycle passes read.
+    let outgoing = NodeSubset {
+        nodes: &component,
+        edges: {
+            let mut ids = BTreeSet::new();
+            for &node in &component {
+                ids.extend(index.incident(node).filter(|id| {
+                    document
+                        .edge(*id)
+                        .is_some_and(|edge| edge.from.node == node)
+                }));
+            }
+            ids.into_iter().filter_map(|id| document.edge(id)).collect()
+        },
+    };
+    let regions =
+        super::regions::validate_regions_among(document, &ports, &connections, registry, &outgoing);
     let control = super::control_cycles::validate_control_cycles_among(
         document,
         &ports,
         &connections,
         registry,
-        &component,
+        &outgoing,
     );
     if !regions.incomplete_nodes.is_empty()
         || !control.incomplete_nodes.is_empty()
@@ -529,12 +550,26 @@ fn recompute_flow(
     merged.owners.extend(regions.index.owners);
     merged.unreachable.extend(regions.index.unreachable);
 
-    let region_of = |index: &super::regions::RegionIndex, node: &NodeId| {
-        index
-            .owners
-            .get(node)
-            .map(|root| (root.clone(), index.regions.get(root).cloned()))
-    };
+    // What availability reads of a producer's ownership: its region and that region's
+    // lineage, with each one's kind and loop nesting, but not its other members.
+    /// One region of a lineage: its root, kind, enclosing loop and loop depth.
+    type Lineage<'i> = (
+        &'i RegionRoot,
+        Option<(RegionKind, &'i Option<RegionRoot>, usize)>,
+    );
+    fn region_of<'i>(index: &'i super::regions::RegionIndex, node: &NodeId) -> Vec<Lineage<'i>> {
+        let mut lineage = Vec::new();
+        let mut current = index.owners.get(node);
+        while let Some(root) = current {
+            let region = index.regions.get(root);
+            lineage.push((
+                root,
+                region.map(|region| (region.kind, &region.enclosing_loop, region.loop_depth)),
+            ));
+            current = region.and_then(|region| region.parent.as_ref());
+        }
+        lineage
+    }
     let moved: Vec<NodeId> = component
         .iter()
         .filter(|node| region_of(old, node) != region_of(&merged, node))
@@ -546,7 +581,7 @@ fn recompute_flow(
             .any(|consumer| !component.contains(consumer) && merged.owners.contains_key(consumer))
     });
     if crosses {
-        return whole_flow(document, registry, analysis, effects);
+        return whole_flow(document, registry, analysis, effects, &ports);
     }
 
     let availability = super::availability::validate_availability_among(
@@ -555,7 +590,10 @@ fn recompute_flow(
         &connections,
         &merged,
         registry,
-        &component,
+        &NodeSubset {
+            nodes: &component,
+            edges: cones,
+        },
     );
     let state = super::state::validate_state(
         document,
@@ -578,7 +616,7 @@ fn recompute_flow(
         || has_error(&fresh)
         || has_error(&state)
     {
-        return whole_flow(document, registry, analysis, effects);
+        return whole_flow(document, registry, analysis, effects, &ports);
     }
     let mut flow: Vec<Diagnostic> = retained
         .flow
@@ -606,15 +644,15 @@ fn whole_flow(
     registry: &RegistrySnapshot,
     analysis: &ValidationAnalysis,
     effects: &BTreeMap<NodeId, LeafEffects>,
+    ports: &super::ports::PortResolver<'_>,
 ) -> Option<FlowUpdate> {
     let report = analysis.report();
-    let ports = super::ports::PortResolver::new(document, &report.resolved);
     let connections = super::connections::ConnectionValidation::default();
     let regions =
-        super::regions::validate_regions_in(document, &ports, &connections, registry, Scope::All);
+        super::regions::validate_regions_in(document, ports, &connections, registry, Scope::All);
     let control = super::control_cycles::validate_control_cycles_in(
         document,
-        &ports,
+        ports,
         &connections,
         registry,
         Scope::All,
@@ -627,7 +665,7 @@ fn whole_flow(
     }
     let mut flow = super::availability::validate_availability_with_ports(
         document,
-        &ports,
+        ports,
         &connections,
         &regions.index,
         registry,

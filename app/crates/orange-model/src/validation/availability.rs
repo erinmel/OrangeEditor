@@ -23,6 +23,7 @@ use super::diagnostic::{
 use super::dominators::DomTree;
 use super::ports::PortResolver;
 use super::regions::{RegionIndex, RegionKind, RegionRoot};
+use super::scope::{NodeSubset, edges_of, nodes_of};
 
 /// Result of the availability pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -321,7 +322,7 @@ pub(crate) fn validate_availability_among(
     connections: &ConnectionValidation,
     regions: &RegionIndex,
     registry: &RegistrySnapshot,
-    only: &BTreeSet<NodeId>,
+    only: &NodeSubset<'_>,
 ) -> AvailabilityValidation {
     availability_among(
         document,
@@ -339,7 +340,7 @@ fn availability_among(
     connections: &ConnectionValidation,
     regions: &RegionIndex,
     registry: &RegistrySnapshot,
-    only: Option<&BTreeSet<NodeId>>,
+    only: Option<&NodeSubset<'_>>,
 ) -> AvailabilityValidation {
     let error_edges: BTreeSet<_> = connections
         .diagnostics
@@ -442,41 +443,14 @@ fn check_body(
     context: &Context,
     body: &GraphBody,
     result: &mut AvailabilityValidation,
-    only: Option<&BTreeSet<NodeId>>,
+    only: Option<&NodeSubset<'_>>,
 ) {
-    let inside = |node: &NodeId| only.is_none_or(|only| only.contains(node));
     let Context {
         resolved, regions, ..
     } = *context;
     let mut targets: BTreeMap<(NodeId, PortKey), Vec<NodeId>> = BTreeMap::new();
     let mut incoming: BTreeMap<NodeId, Vec<DataEdge>> = BTreeMap::new();
-    let mut edges: Vec<_> = body.edges.values().collect();
-    edges.sort_by_key(|edge| edge.id);
-    // A node subset reads its own exec edges and the edges into its consumers and into
-    // every expanding producer upstream of them; no other edge needs a port lookup.
-    let needed = only.map(|only| {
-        let mut into: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
-        for edge in &edges {
-            into.entry(edge.to.node).or_default().push(edge.from.node);
-        }
-        let mut needed = only.clone();
-        let mut stack: Vec<NodeId> = only.iter().copied().collect();
-        while let Some(node) = stack.pop() {
-            for &from in into.get(&node).into_iter().flatten() {
-                if expands(context, from) && needed.insert(from) {
-                    stack.push(from);
-                }
-            }
-        }
-        needed
-    });
-    for edge in edges {
-        if needed
-            .as_ref()
-            .is_some_and(|needed| !inside(&edge.from.node) && !needed.contains(&edge.to.node))
-        {
-            continue;
-        }
+    for edge in edges_of(body, only) {
         if context.error_edges.contains(&edge.id)
             || !body.nodes.contains_key(&edge.from.node)
             || !body.nodes.contains_key(&edge.to.node)
@@ -509,7 +483,7 @@ fn check_body(
         .filter(|(root, region)| {
             region.kind == RegionKind::Entry
                 && body.nodes.contains_key(&root.node)
-                && inside(&root.node)
+                && only.is_none_or(|only| only.nodes.contains(&root.node))
         })
         .map(|(root, _)| root)
         .collect();
@@ -520,10 +494,8 @@ fn check_body(
         let exit = Vertex::Exit(root.node, root.port.clone());
         cfg.goto(&entry, &targets, root.node, &root.port, Some(exit));
     }
-    for node in body.nodes.values() {
-        if inside(&node.id) {
-            build_node(context, &mut cfg, &targets, node.id);
-        }
+    for node in nodes_of(body, only) {
+        build_node(context, &mut cfg, &targets, node.id);
     }
 
     // Consumers: owned exec nodes, reading their data inputs and the cones behind them. A
@@ -531,7 +503,7 @@ fn check_body(
     // the consumer-dependent requirement is evaluated per consumer.
     let mut cones: BTreeMap<NodeId, Vec<&DataEdge>> = BTreeMap::new();
     let mut uses = AvailabilityUses::new();
-    for consumer in body.nodes.keys().filter(|node| inside(node)) {
+    for consumer in nodes_of(body, only).into_iter().map(|node| &node.id) {
         let Some(region) = regions.owners.get(consumer) else {
             continue;
         };
@@ -653,6 +625,44 @@ pub(crate) fn data_edge_requires(
         }
     }
     false
+}
+
+/// The edges [`validate_availability_among`] reads for `nodes`: their exec edges, and the
+/// edges into them and into every expanding producer upstream of them, as their data cones
+/// do. Gathered through `index`, sorted by ID.
+pub(crate) fn subset_edges<'a>(
+    document: &'a GraphDocument,
+    resolved: &PortResolver<'_>,
+    regions: &RegionIndex,
+    index: &crate::index::DocIndex,
+    nodes: &BTreeSet<NodeId>,
+) -> Vec<&'a Edge> {
+    let expanding = |node: NodeId| {
+        matches!(
+            resolved.get(&node).map(|signature| signature.kind),
+            Some(NodeKind::Pure | NodeKind::Volatile)
+        ) && !regions.owners.contains_key(&node)
+    };
+    let mut ids = BTreeSet::new();
+    let mut needed = nodes.clone();
+    let mut stack: Vec<NodeId> = nodes.iter().copied().collect();
+    while let Some(node) = stack.pop() {
+        for id in index.incident(node) {
+            let Some(edge) = document.edge(id) else {
+                continue;
+            };
+            if edge.from.node == node && nodes.contains(&node) {
+                ids.insert(id);
+            }
+            if edge.to.node == node {
+                ids.insert(id);
+                if expanding(edge.from.node) && needed.insert(edge.from.node) {
+                    stack.push(edge.from.node);
+                }
+            }
+        }
+    }
+    ids.into_iter().filter_map(|id| document.edge(id)).collect()
 }
 
 /// True for an unowned pure or volatile producer, whose inputs its consumers read lazily.
