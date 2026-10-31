@@ -188,10 +188,7 @@ pub(super) fn node_update(
         &touched,
         &BTreeSet::new(),
         None,
-        seeds.as_ref().map(|seeds| Kept {
-            seeds,
-            edited: &touched,
-        }),
+        seeds.as_ref(),
     )?;
     let inputs = recheck_inputs(document, registry, index, analysis, retained, &touched)?;
     let mut config = Vec::new();
@@ -515,10 +512,7 @@ pub(super) fn structure_update(
         &touched,
         added_nodes,
         (!retained.complete).then_some(&analysis.report().incomplete_nodes),
-        (added_nodes.is_empty() && edit.removed_nodes.is_empty()).then_some(Kept {
-            seeds: &touched,
-            edited: &BTreeSet::new(),
-        }),
+        (added_nodes.is_empty() && edit.removed_nodes.is_empty()).then_some(&touched),
     )?;
     if fresh.values().any(|(signature, _)| !typed_data(signature)) {
         return None;
@@ -1253,21 +1247,12 @@ impl ArgUpdate {
     }
 }
 
-/// An edit [`kept_resolution`] may check: every variable of an equation it changed belongs
-/// to a generic node of `seeds`, and `edited` holds the nodes whose own fields it changed.
-/// The other touched nodes are endpoints of changed edges.
-#[derive(Clone, Copy)]
-struct Kept<'a> {
-    seeds: &'a BTreeSet<NodeId>,
-    edited: &'a BTreeSet<NodeId>,
-}
-
 /// Re-resolves `touched`, their neighbours and those nodes' generic components, with every
 /// neighbour of that set available, and confirms each result equals the retained one.
 /// Nodes in `added` are new: each must resolve without errors, and its results are returned.
 /// With `incomplete`, every node the resolution reads must keep clear of those nodes.
-/// With `kept`, the edit kept every node's contract, added or removed none and changed
-/// only equations over the variables of its seeds: then a kept solution
+/// With `seeds`, the edit kept every node's contract, added or removed none and changed
+/// only equations over the variables of generic nodes among `seeds`: then a kept solution
 /// ([`kept_resolution`]) is tried before the components are solved.
 #[expect(
     clippy::too_many_arguments,
@@ -1282,13 +1267,14 @@ fn resolution_unchanged(
     touched: &BTreeSet<NodeId>,
     added: &BTreeSet<NodeId>,
     incomplete: Option<&BTreeSet<NodeId>>,
-    kept: Option<Kept<'_>>,
+    seeds: Option<&BTreeSet<NodeId>>,
 ) -> Option<Resolution> {
-    if let Some(kept) = kept
+    if let Some(seeds) = seeds
         && retained.complete
         && retained.bounded
-        && let Some(kept) =
-            kept_resolution(document, registry, index, analysis, retained, touched, kept)
+        && let Some(kept) = kept_resolution(
+            document, registry, index, analysis, retained, touched, seeds,
+        )
     {
         return Some(kept);
     }
@@ -1341,18 +1327,18 @@ fn resolution_unchanged(
 /// Resolution of an edit that changed only equations over the variables of `touched`
 /// nodes, in a complete report, without solving their components (V12f). When
 /// [`solution_kept`](crate::inference::component::solution_kept) proves every component's
-/// solution unchanged, only the touched nodes and the generic neighbours of edited ones can
-/// resolve differently. A node's resolution reads its own fields, its contract, its
-/// arguments and, for a generic node, whether every member of its component is eligible
-/// with its data neighbours eligible; it reads no edge otherwise. Eligibility reads a
-/// node's own fields, so it changes only for edited nodes, and which data neighbours a
-/// node has changes only for the endpoints of changed edges, which are touched. So an
-/// untouched node that is not generic resolves as before, and resolving the touched nodes
-/// and the generic neighbours of edited ones with their kept arguments, with the
-/// neighbours of the generic ones available, decides every changed result: if a generic
-/// one is now blocked, its component would be, and the comparison fails. A non-generic
-/// endpoint, such as a Get Variable read by many clusters, is therefore resolved but not
-/// expanded. `None` leaves the components to be solved.
+/// solution unchanged, every node keeps its arguments. A node's resolution reads its own
+/// fields, its contract, its arguments and, for a generic node, whether every member of
+/// its component is eligible with its data neighbours eligible; it reads no edge
+/// otherwise. Eligibility reads a node's own fields, so it changes only for edited nodes,
+/// which are touched, and which data neighbours a node has changes only for the endpoints
+/// of changed edges, which are touched too. A touched node that loses its eligibility
+/// resolves differently itself, so the comparison of the touched nodes fails; while every
+/// one keeps it, only a touched generic node's own data neighbours can block its
+/// component. So resolving the touched nodes, the generic ones with their kept arguments
+/// and their neighbours available, decides every changed result. A non-generic endpoint,
+/// such as a Get Variable read by many clusters, is therefore resolved but not expanded.
+/// `None` leaves the components to be solved.
 fn kept_resolution(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -1360,14 +1346,14 @@ fn kept_resolution(
     analysis: &ValidationAnalysis,
     retained: &Retained,
     touched: &BTreeSet<NodeId>,
-    kept: Kept<'_>,
+    seeds: &BTreeSet<NodeId>,
 ) -> Option<Resolution> {
     use crate::inference::component::{KEPT_SOLUTION_BUDGET, solution_kept};
     if !solution_kept(
         document,
         index,
         registry,
-        kept.seeds,
+        seeds,
         |id| retained.args.get(&id),
         KEPT_SOLUTION_BUDGET,
     ) {
@@ -1375,11 +1361,7 @@ fn kept_resolution(
     }
     // In a complete report every generic node has arguments, and no other node does.
     let generic = |id: &NodeId| retained.args.contains_key(id);
-    let mut near: BTreeSet<NodeId> = with_neighbours(document, index, kept.edited)
-        .into_iter()
-        .chain(touched.iter().copied())
-        .filter(generic)
-        .collect();
+    let near: BTreeSet<NodeId> = touched.iter().copied().filter(generic).collect();
     let ids: Vec<NodeId> = with_neighbours(document, index, &near)
         .into_iter()
         .chain(touched.iter().copied())
@@ -1390,7 +1372,6 @@ fn kept_resolution(
         .iter()
         .map(|id| (*id, retained.args[id].clone()))
         .collect();
-    near.extend(touched.iter().copied());
     let known = crate::inference::ComponentInference {
         nodes: type_args.keys().copied().collect(),
         type_args,
@@ -1410,7 +1391,14 @@ fn kept_resolution(
         None,
     );
     let fresh = by_node(&nodes.diagnostics)?;
-    compare(analysis, retained, &nodes, &fresh, &near, &BTreeSet::new())?;
+    compare(
+        analysis,
+        retained,
+        &nodes,
+        &fresh,
+        touched,
+        &BTreeSet::new(),
+    )?;
     Some(Resolution {
         resolved: ids.len(),
         components: 0,
