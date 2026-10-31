@@ -1206,3 +1206,133 @@ fn an_uncalled_function_publishes_its_own_changes_in_place() {
     assert_eq!(work, SessionWork::Scoped);
     assert!(session.analysis().report().is_valid());
 }
+
+#[test]
+fn a_called_function_summary_change_reaches_its_callers_in_place() {
+    let (mut doc, registry) = called_function();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // The function now also stores its argument in the run variable its caller sets: its
+    // summary gains a run write, while its kind and suspension, which the call reads, hold.
+    let store = DocCommand::AddNode {
+        body: BodyRef::Function(id(200).parse().unwrap()),
+        node: serde_json::from_value(json!({"id": id(207), "definition_id": "core/set-variable",
+            "definition_version": 1, "config_version": 1, "config": {"variable": id(100)}}))
+        .unwrap(),
+    };
+    let rewired = vec![
+        store,
+        disconnect(203),
+        wire(206, 202, "then", 207, "in"),
+        wire(207, 207, "then", 205, "in"),
+        wire(208, 201, "value", 207, "value"),
+    ];
+    let before = session.analysis().report().functions.clone();
+    let work = edit(&mut session, &mut doc, &registry, options, rewired);
+    assert_eq!(work, SessionWork::Scoped);
+    assert_ne!(session.analysis().report().functions, before);
+}
+
+/// [`called_function`] with an outer function between On Start and the incrementing one.
+fn nested_calls() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (doc, registry) = called_function();
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&doc).unwrap()).unwrap();
+    let port = |name: &str, direction: &str| json!({"port_id": name, "direction": direction, "kind": "data", "type": "core/u64@1"});
+    let core = |n: u32, name: &str, config: Json| {
+        json!({"id": id(n), "definition_id": format!("core/{name}"), "definition_version": 1,
+            "config_version": 1, "config": config})
+    };
+    raw["functions"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({"id": id(300), "name": "outer",
+        "kind": "action", "inputs": [port("value", "input")], "outputs": [port("result", "output")],
+        "nodes": [core(301, "function-entry", json!({})),
+            core(302, "call", json!({"function": id(200)})),
+            core(303, "return", json!({}))],
+        "edges": [edge(301, 301, "then", 302, "in"), edge(302, 301, "value", 302, "value"),
+            edge(303, 302, "then", 303, "in"), edge(304, 302, "result", 303, "result")]}));
+    for node in raw["nodes"].as_array_mut().unwrap() {
+        if node["definition_id"] == "core/call" {
+            node["config"]["function"] = json!(id(300));
+        }
+    }
+    (orange_model::from_json(&raw.to_string()).unwrap(), registry)
+}
+
+#[test]
+fn a_summary_change_propagates_through_an_outer_caller() {
+    let (mut doc, registry) = nested_calls();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let store = DocCommand::AddNode {
+        body: BodyRef::Function(id(200).parse().unwrap()),
+        node: serde_json::from_value(json!({"id": id(207), "definition_id": "core/set-variable",
+            "definition_version": 1, "config_version": 1, "config": {"variable": id(100)}}))
+        .unwrap(),
+    };
+    let rewired = vec![
+        store,
+        disconnect(203),
+        wire(206, 202, "then", 207, "in"),
+        wire(207, 207, "then", 205, "in"),
+        wire(208, 201, "value", 207, "value"),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, rewired);
+    assert_eq!(work, SessionWork::Scoped);
+    let outer: orange_model::id::FunctionId = id(300).parse().unwrap();
+    assert!(
+        !session.analysis().report().functions[&outer]
+            .run_writes
+            .is_empty()
+    );
+}
+
+/// [`called_function`] whose call runs in one Fork branch while the other sets the run
+/// variable the function may come to write.
+fn forked_call() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (doc, registry) = called_function();
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&doc).unwrap()).unwrap();
+    let nodes = raw["nodes"].as_array_mut().unwrap();
+    nodes.retain(|node| node["id"] != json!(id(4)));
+    nodes.push(
+        json!({"id": id(5), "definition_id": "core/fork", "definition_version": 1,
+        "config_version": 1, "config": {"join": "all"},
+        "variadic": {"branch": {"next": 2, "order": [0, 1]}}}),
+    );
+    nodes.push(
+        json!({"id": id(6), "definition_id": "core/set-variable", "definition_version": 1,
+        "config_version": 1, "config": {"variable": id(100)},
+        "inputs": {"value": {"type": "core/u64@1", "value": "7"}}}),
+    );
+    raw["edges"] = json!([
+        edge(1, 1, "then", 5, "in"),
+        edge(2, 2, "value", 3, "value"),
+        edge(5, 5, "branch#0", 3, "in"),
+        edge(6, 5, "branch#1", 6, "in"),
+    ]);
+    (orange_model::from_json(&raw.to_string()).unwrap(), registry)
+}
+
+#[test]
+fn a_summary_change_that_conflicts_with_a_caller_runs_the_full_analysis() {
+    let (mut doc, registry) = forked_call();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let store = DocCommand::AddNode {
+        body: BodyRef::Function(id(200).parse().unwrap()),
+        node: serde_json::from_value(json!({"id": id(207), "definition_id": "core/set-variable",
+            "definition_version": 1, "config_version": 1, "config": {"variable": id(100)}}))
+        .unwrap(),
+    };
+    let rewired = vec![
+        store,
+        disconnect(203),
+        wire(206, 202, "then", 207, "in"),
+        wire(207, 207, "then", 205, "in"),
+        wire(208, 201, "value", 207, "value"),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, rewired);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
