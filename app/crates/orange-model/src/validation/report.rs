@@ -566,6 +566,21 @@ fn run_supported_analysis(
     };
     options.checkpoint()?;
     diagnostics.extend(connections.diagnostics);
+    // Each function's own function-pass and conformance diagnostics, which a scoped edit
+    // inside its body must leave unchanged.
+    let function_diagnostics = local.is_some().then(|| {
+        let mut groups = BTreeMap::<crate::id::FunctionId, Vec<Diagnostic>>::new();
+        for item in functions.diagnostics.iter().chain(&conformance.diagnostics) {
+            if let Some(function) = item.subject.function {
+                groups.entry(function).or_default().push(item.clone());
+            }
+        }
+        for list in groups.values_mut() {
+            sort_diagnostics(list);
+            list.dedup();
+        }
+        groups
+    });
     diagnostics.extend(functions.diagnostics);
     diagnostics.extend(conformance.diagnostics);
     diagnostics.extend(super::streams::validate_streams_with_ports(
@@ -625,6 +640,7 @@ fn run_supported_analysis(
                 inputs,
                 base,
                 config,
+                functions: function_diagnostics.clone().unwrap_or_default(),
                 flow: sorted(flow.clone()),
                 state: sorted(state.clone()),
                 complete: false,

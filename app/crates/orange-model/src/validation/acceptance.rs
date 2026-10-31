@@ -44,7 +44,7 @@ pub(crate) struct BodyPasses {
 }
 
 impl BodyPasses {
-    fn run(
+    pub(crate) fn run(
         document: &GraphDocument,
         registry: &RegistrySnapshot,
         calls: &CallEvidence,
@@ -269,6 +269,108 @@ pub(crate) fn accept_functions(
     }
     options.checkpoint()?;
     Ok(calls.accepted)
+}
+
+/// One function's acceptance, summary and function-level diagnostics.
+pub(crate) struct FunctionCheck {
+    pub accepted: Option<(NodeKind, Suspends)>,
+    pub summary: Option<super::functions::FunctionSummary>,
+    pub incomplete: bool,
+    /// Function-pass and conformance diagnostics whose subject is the function, sorted.
+    pub diagnostics: Vec<Diagnostic>,
+}
+
+/// `id`'s acceptance, summary and function-level diagnostics, computed as
+/// [`accept_functions`] and the final round compute them once every callee's acceptance
+/// (`calls`) and summary (`summaries`) is final.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a function check reads its callees' final acceptance and summaries beside the pass inputs"
+)]
+pub(crate) fn check_function(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    leaf_effects: &BTreeMap<NodeId, LeafEffects>,
+    index: &DocIndex,
+    calls: &Accepted,
+    summaries: &BTreeMap<FunctionId, super::functions::FunctionSummary>,
+    id: FunctionId,
+    options: &AnalysisOptions<'_>,
+) -> Result<FunctionCheck, DiagnosticCode> {
+    let evidence = CallEvidence {
+        accepted: calls.clone(),
+        pipeline: true,
+    };
+    let passes = BodyPasses::run(
+        document,
+        registry,
+        &evidence,
+        Scope::Function(id),
+        index,
+        None,
+        options,
+    )?;
+    let mut functions = FunctionAnalysis::default();
+    let graph = call_graph(document, registry, &mut functions);
+    let (cycles, cyclic) = find_cycles(&graph);
+    for path in &cycles {
+        let mut diagnostic = Diagnostic::new(
+            DiagnosticCode::Recursion,
+            super::Subject::new(None, None, None).with_function(path[0]),
+            registry.origin(),
+        );
+        diagnostic.severity = Severity::Error;
+        functions.diagnostics.push(diagnostic);
+    }
+    functions
+        .incomplete_functions
+        .extend(cyclic.iter().copied());
+    functions.summaries = summaries.clone();
+    functions.summaries.remove(&id);
+    let context = SummaryContext {
+        document,
+        resolved: &passes.nodes.resolved,
+        leaf_effects,
+        registry,
+        calls: &graph,
+        cyclic: &cyclic,
+    };
+    summarize_function(&context, id, &mut functions);
+    let errors = function_errors(&functions.diagnostics);
+    let summary = functions.summaries.get(&id).cloned();
+    let blocked = passes.blocked();
+    let status = BodyStatus {
+        resolved: &passes.nodes.resolved,
+        regions: &passes.regions.index,
+        blocked: &blocked,
+    };
+    let conformance = match &summary {
+        Some(summary) => check_conformance(
+            document,
+            &BTreeMap::from([(id, summary.clone())]),
+            &status,
+            registry,
+        ),
+        None => Conformance::default(),
+    };
+    let accepted = summary
+        .as_ref()
+        .filter(|_| !errors.contains(&id) && conformance.conformant.contains(&id))
+        .map(|summary| (summary.kind, summary.suspends));
+    let mut diagnostics: Vec<Diagnostic> = functions
+        .diagnostics
+        .into_iter()
+        .chain(conformance.diagnostics)
+        .filter(|diagnostic| diagnostic.subject.function == Some(id))
+        .collect();
+    super::sort_diagnostics(&mut diagnostics);
+    diagnostics.dedup();
+    Ok(FunctionCheck {
+        accepted,
+        summary,
+        incomplete: functions.incomplete_functions.contains(&id),
+        diagnostics,
+    })
 }
 
 fn function_errors(diagnostics: &[Diagnostic]) -> BTreeSet<FunctionId> {

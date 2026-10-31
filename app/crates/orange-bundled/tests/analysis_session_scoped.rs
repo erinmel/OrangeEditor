@@ -1121,3 +1121,54 @@ fn function_body_node_edits_are_scoped_while_acceptance_holds() {
     );
     assert_eq!(work, SessionWork::Recompute);
 }
+
+#[test]
+fn function_body_structure_edits_are_scoped_while_acceptance_holds() {
+    let (mut doc, registry) = called_function();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // The add's `a` loses its wire, so its literal is no longer shadowed; the function's
+    // acceptance and summary do not change.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(204)],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![wire(204, 203, "value", 204, "a")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    // A pure node added to the body, then removed.
+    let inside = DocCommand::AddNode {
+        body: BodyRef::Function(id(200).parse().unwrap()),
+        node: serde_json::from_value(math(206, "add", 1, 2)).unwrap(),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![inside]);
+    assert_eq!(work, SessionWork::Scoped);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[206])],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    // Cutting the path to Return changes what the function's callers can rely on.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(203)],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
