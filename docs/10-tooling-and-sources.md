@@ -2649,3 +2649,22 @@ Branch `docs/v12e-acceptance-changes` on `dev` 9d20ac9 (same toolchain; Cargo.lo
 - **Finding:** a prototype scoped a called function moving between pure and volatile acceptance by updating its call sites' recorded kind. Its test fixture showed that case cannot occur in a valid report: `summarize_function` reports `E-FUNCTION-KIND` whenever the declared kind differs from the kind the body implies, so an accepted function's kind is always its declared kind and a body edit cannot change it. A call site records its callee's kind and, only for async and iterator kinds, its suspension. A called function's acceptance therefore changes only by being lost, which leaves its call sites incomplete and needs the full analysis, or by an async or iterator function's suspension moving between `maybe` and `always`, which only control-cycle certification reads. The prototype was discarded; both cases still run the full analysis, and the remaining V12e work is limited to them.
 
 **Checks:** documentation only.
+
+### Edits beside incomplete nodes (V12c) — 2026-10-30
+
+Branch `core/edits-beside-incomplete-nodes` on `dev` 14deecb (same toolchain; Cargo.lock unchanged). Continues V12c (16).
+
+- **Finding:** incompleteness reaches only the incomplete nodes and their neighbours: dependency-unavailable diagnostics and their suppression, connection checks at unresolved endpoints, and the region pass's exemption from `W-UNREACHABLE` for exec nodes that an unresolved node feeds.
+- **Change:** a full session analysis also records whether the report is isolable: every function complete, no zone, and no error outside the per-node lists except dependency-unavailable errors on incomplete nodes. In an isolable report a structure edit takes the scoped path if no node it re-resolves, rechecks inputs for or reruns control flow for, and no node it removes, is incomplete or joined by an edge to an incomplete node. Re-resolution checks this before solving any component; the other sets are checked before publishing. Edits that fail it run the full analysis, and node edits keep their existing rules.
+- **Regressions:** `orange-bundled` tests add an unresolvable node feeding one chain, then rewire another chain and add a node (scoped), disconnect next to the incomplete nodes and remove the unresolvable node (full analysis), make an exec edit in one activation beside an unresolvable node elsewhere (scoped), and make an exec edit in an activation where an unresolvable node feeds an unreachable Set (full analysis). Each step equals the full analysis. Without the isolation condition the last test publishes a spurious unreachable warning and fails. The session property tests pass with 1,024 cases in release.
+- **Measured** with `orange-measure session-edit`, which now also repeats the wire edit after connecting an unresolvable node to the first node (release, same machine, 15 edits after 3 warmups, before and after in the same session):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| wire beside an incomplete node, 1,000 chains of 10 | 139.4 ms | 151.6 ms | 0.21 ms | 0.29 ms |
+| wire beside an incomplete node, 1 chain of 10,000 | 212.9 ms | 231.3 ms | 238.4 ms | 262.9 ms |
+
+  The single chain is one generic component that reaches the incomplete node, so the edit cannot be isolated; walking the component before giving up costs about 25 ms. An earlier version that solved the component first cost about 160 ms there.
+- **Limitations:** edits next to incomplete nodes, incomplete functions, zones and other structural errors still run the full analysis. V12c is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

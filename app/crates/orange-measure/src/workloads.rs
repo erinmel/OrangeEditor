@@ -756,6 +756,9 @@ pub enum SessionEdit {
     Node,
     /// [`SessionEdit::Wire`] while the first node holds an invalid literal, an input error.
     WireBesideError,
+    /// [`SessionEdit::Wire`] while an unresolvable node feeds the first node, leaving both
+    /// incomplete.
+    WireBesideIncomplete,
 }
 
 pub fn session_edit(
@@ -799,6 +802,28 @@ pub fn session_edit(
     };
     let wired: orange_model::document::Edge =
         serde_json::from_value(edge(middle, middle - 1, "sum", middle, "a")).expect("edge");
+    if matches!(kind, SessionEdit::WireBesideIncomplete) {
+        let mut unknown = math(9, "add", 0, 1);
+        unknown["definition_id"] = json!("org.orange.math/unknown");
+        let committed = document
+            .apply([
+                DocCommand::AddNode {
+                    body: orange_model::BodyRef::Root,
+                    node: serde_json::from_value(unknown).expect("node"),
+                },
+                DocCommand::Connect {
+                    edge: serde_json::from_value(edge(9, 9, "sum", 10, "a")).expect("edge"),
+                },
+            ])
+            .expect("edit");
+        session.update(
+            &document,
+            &registry,
+            &committed.change_set,
+            AnalysisOptions::default(),
+        );
+        assert!(!session.analysis().report().incomplete_nodes.is_empty());
+    }
     if matches!(kind, SessionEdit::WireBesideError) {
         let invalid = serde_json::from_value(json!({"type": U64, "value": "x"})).expect("literal");
         let committed = document
@@ -828,10 +853,18 @@ pub fn session_edit(
                     literal: Some(literal),
                 }
             }
-            (SessionEdit::Wire | SessionEdit::WireBesideError, true) => {
-                DocCommand::Disconnect { edge: wired.id }
-            }
-            (SessionEdit::Wire | SessionEdit::WireBesideError, false) => DocCommand::Connect {
+            (
+                SessionEdit::Wire
+                | SessionEdit::WireBesideError
+                | SessionEdit::WireBesideIncomplete,
+                true,
+            ) => DocCommand::Disconnect { edge: wired.id },
+            (
+                SessionEdit::Wire
+                | SessionEdit::WireBesideError
+                | SessionEdit::WireBesideIncomplete,
+                false,
+            ) => DocCommand::Connect {
                 edge: wired.clone(),
             },
             (SessionEdit::Config, saturating) => DocCommand::SetConfig {
@@ -894,7 +927,10 @@ pub fn session_edit(
     }
     assert_eq!(
         session.analysis().report().is_valid(),
-        !matches!(kind, SessionEdit::WireBesideError)
+        !matches!(
+            kind,
+            SessionEdit::WireBesideError | SessionEdit::WireBesideIncomplete
+        )
     );
     samples.sort();
     let at = |q: usize| samples[(samples.len() * q / 100).min(samples.len() - 1)];
