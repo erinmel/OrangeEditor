@@ -36,6 +36,8 @@ pub(crate) type Accepted = BTreeMap<FunctionId, (NodeKind, Suspends)>;
 pub(crate) struct BodyPasses {
     pub(crate) projections: std::rc::Rc<super::ports::CachedPorts>,
     pub(crate) nodes: NodeValidation,
+    /// Each generic node's solved type arguments, kept only for a session.
+    pub(crate) args: BTreeMap<NodeId, crate::catalog::TypeArgs>,
     pub(crate) connections: ConnectionValidation,
     pub(crate) data_cycles: DataCycleValidation,
     pub(crate) regions: RegionValidation,
@@ -54,6 +56,8 @@ impl BodyPasses {
         options: &AnalysisOptions<'_>,
     ) -> Result<Self, DiagnosticCode> {
         options.checkpoint()?;
+        let mut args = BTreeMap::new();
+        let keep = caches.is_some();
         let nodes = validate_nodes_with(
             document,
             registry,
@@ -61,6 +65,7 @@ impl BodyPasses {
             scope,
             index,
             caches.as_deref_mut().map(|caches| &mut caches.components),
+            keep.then_some(&mut args),
         );
         options.checkpoint()?;
         let ports = super::ports::PortResolver::new(document, &nodes.resolved);
@@ -95,6 +100,7 @@ impl BodyPasses {
         Ok(Self {
             projections,
             nodes,
+            args,
             connections,
             data_cycles,
             regions,

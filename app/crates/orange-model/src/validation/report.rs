@@ -514,6 +514,7 @@ fn run_supported_analysis(
             BodyPasses {
                 projections,
                 nodes,
+                args,
                 connections,
                 data_cycles,
                 regions,
@@ -545,6 +546,9 @@ fn run_supported_analysis(
         registry,
     );
     options.checkpoint()?;
+    // Scoped updates may take the inference solution as kept only while no published type
+    // can exceed the unifier's expansion budget (16, V12f "Kept solutions").
+    let bounded = local.is_some() && super::scoped::types_bounded(nodes.resolved.values());
     let node_parts = local.is_some().then(|| {
         (
             super::scoped::by_node(&nodes.diagnostics),
@@ -660,6 +664,8 @@ fn run_supported_analysis(
                 zones_checked: false,
                 quiet: false,
                 orders: BTreeMap::new(),
+                args,
+                bounded,
             })
         }
         _ => None,

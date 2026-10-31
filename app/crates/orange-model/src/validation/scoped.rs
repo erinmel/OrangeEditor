@@ -16,13 +16,13 @@ use std::collections::{BTreeMap, BTreeSet};
 use super::acceptance::Accepted;
 use super::inputs::node_input_diagnostics;
 use super::limits::Admitted;
-use super::nodes::{CallEvidence, validate_node_ids};
+use super::nodes::{CallEvidence, Inference, validate_node_ids};
 use super::regions::{RegionKind, RegionRoot};
 use super::scope::{NodeSubset, Scope};
 use super::{
     AnalysisOptions, Diagnostic, LeafEffects, Severity, ValidationAnalysis, sort_diagnostics,
 };
-use crate::catalog::RegistrySnapshot;
+use crate::catalog::{RegistrySnapshot, TypeArgs};
 use crate::document::{
     BodyRef, Edge, GraphDocument, NodeKind, PortDirection, PortKind, SignatureSnapshot,
 };
@@ -77,6 +77,29 @@ pub(super) struct Retained {
     /// nodes form a data cycle (V12d). The root's is built with the report, a function
     /// body's by the first structure edit there.
     pub orders: BTreeMap<BodyRef, Option<super::order::TopoOrder>>,
+    /// Each generic node's solved type arguments, as the full analysis would solve them for
+    /// the current document: scoped updates replace the entries of the nodes they re-solve
+    /// and drop removed nodes'. Complete only while the report is.
+    pub args: BTreeMap<NodeId, TypeArgs>,
+    /// Every published port type is short enough that no term the unifier builds from it
+    /// can exceed its expansion budget ([`types_bounded`]). Added nodes keep it current.
+    pub bounded: bool,
+}
+
+/// Whether no port of `signatures` has a type longer than the unifier's per-term budget of
+/// expanded type nodes. A ground type has at most as many nodes as bytes, and solving any
+/// equation order applies a term no larger than its ground solution, so while a component's
+/// solution is published this bounds every term a solver of its equations builds.
+pub(super) fn types_bounded<'s>(
+    signatures: impl IntoIterator<Item = &'s SignatureSnapshot>,
+) -> bool {
+    signatures.into_iter().all(|signature| {
+        signature.ports.iter().all(|port| {
+            port.ty.as_ref().is_none_or(|ty| {
+                ty.as_str().len() <= crate::inference::unify::MAX_EXPANDED_TYPE_NODES
+            })
+        })
+    })
 }
 
 /// `diagnostics` grouped by subject node and sorted, or `None` if one has no node.
@@ -155,7 +178,23 @@ pub(super) fn node_update(
         return None;
     }
     let touched: BTreeSet<NodeId> = edit.before.keys().copied().collect();
-    let (resolved, components, _, _) = resolution_unchanged(
+    // A configuration change may change a package node's contract, which is all inference
+    // reads of it besides pins and literals (V12f).
+    let same_templates = edit.before.iter().all(|(id, before)| {
+        document.node(*id).is_some_and(|node| {
+            if before.config == node.config && before.config_version == node.config_version {
+                return true;
+            }
+            let mut old = node.clone();
+            old.config = before.config.clone();
+            old.config_version = before.config_version;
+            matches!(
+                (registry.contract(document, &old), registry.contract(document, node)),
+                (Ok(old), Ok(new)) if old == new
+            )
+        })
+    });
+    let resolution = resolution_unchanged(
         document,
         registry,
         index,
@@ -164,6 +203,7 @@ pub(super) fn node_update(
         &touched,
         &BTreeSet::new(),
         None,
+        same_templates,
     )?;
     let inputs = recheck_inputs(document, registry, index, analysis, retained, &touched)?;
     let mut config = Vec::new();
@@ -186,7 +226,14 @@ pub(super) fn node_update(
         config.push((*id, list));
     }
     options.checkpoint().ok()?;
-    let mut scoped = commit(retained, admitted, inputs, resolved, components);
+    resolution.args.apply(retained);
+    let mut scoped = commit(
+        retained,
+        admitted,
+        inputs,
+        resolution.resolved,
+        resolution.components,
+    );
     scoped.checked_config = config.len();
     for (id, list) in config {
         let old = if list.is_empty() {
@@ -412,7 +459,13 @@ pub(super) fn structure_update(
     if !options.fits(admitted) {
         return None;
     }
-    let (resolved, components, fresh, reach) = resolution_unchanged(
+    let Resolution {
+        resolved,
+        components,
+        fresh,
+        reach,
+        args,
+    } = resolution_unchanged(
         document,
         registry,
         index,
@@ -421,6 +474,7 @@ pub(super) fn structure_update(
         &touched,
         added_nodes,
         (!retained.complete).then_some(&analysis.report().incomplete_nodes),
+        added_nodes.is_empty() && edit.removed_nodes.is_empty(),
     )?;
     if fresh.values().any(|(signature, _)| !typed_data(signature)) {
         return None;
@@ -623,6 +677,8 @@ pub(super) fn structure_update(
         return None;
     };
 
+    args.apply(retained);
+    retained.bounded &= types_bounded(fresh.values().map(|(signature, _)| signature));
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
     scoped.checked_config = config.len();
     for (function, check) in function_updates {
@@ -687,6 +743,7 @@ pub(super) fn structure_update(
     }
     for id in edit.removed_nodes.keys() {
         retained.node_incomplete.remove(id);
+        retained.args.remove(id);
         for map in [
             &mut retained.node_diagnostics,
             &mut retained.inputs,
@@ -1123,12 +1180,42 @@ fn exec_component(
     seen
 }
 
+/// What [`resolution_unchanged`] proved: how many nodes it resolved, how many components it
+/// solved, the added nodes' results, every node it resolved and the arguments to keep.
+struct Resolution {
+    resolved: usize,
+    components: usize,
+    fresh: Fresh,
+    reach: Vec<NodeId>,
+    args: ArgUpdate,
+}
+
+/// The re-solved nodes' new arguments, stored in [`Retained::args`] once an update commits.
+#[derive(Default)]
+struct ArgUpdate {
+    nodes: BTreeSet<NodeId>,
+    args: BTreeMap<NodeId, TypeArgs>,
+}
+
+impl ArgUpdate {
+    fn apply(self, retained: &mut Retained) {
+        let Self { nodes, mut args } = self;
+        for id in nodes {
+            match args.remove(&id) {
+                Some(args) => retained.args.insert(id, args),
+                None => retained.args.remove(&id),
+            };
+        }
+    }
+}
+
 /// Re-resolves `touched`, their neighbours and those nodes' generic components, with every
 /// neighbour of that set available, and confirms each result equals the retained one.
 /// Nodes in `added` are new: each must resolve without errors, and its results are returned.
 /// With `incomplete`, every node the resolution reads must keep clear of those nodes.
-/// Returns how many nodes were resolved, how many components they span and the new nodes'
-/// results.
+/// `same_templates` says the edit kept every node's contract and added or removed none, so
+/// it changed only equations over the variables of `touched` nodes: then a kept solution
+/// ([`kept_resolution`]) is tried before the components are solved.
 #[expect(
     clippy::too_many_arguments,
     reason = "structure edits in incomplete reports also pass the nodes to keep clear of"
@@ -1142,7 +1229,15 @@ fn resolution_unchanged(
     touched: &BTreeSet<NodeId>,
     added: &BTreeSet<NodeId>,
     incomplete: Option<&BTreeSet<NodeId>>,
-) -> Option<(usize, usize, Fresh, Vec<NodeId>)> {
+    same_templates: bool,
+) -> Option<Resolution> {
+    if same_templates
+        && retained.complete
+        && retained.bounded
+        && let Some(kept) = kept_resolution(document, registry, index, analysis, retained, touched)
+    {
+        return Some(kept);
+    }
     let near = with_neighbours(document, index, touched);
     let components = crate::inference::component::component_nodes(
         document,
@@ -1165,23 +1260,135 @@ fn resolution_unchanged(
         accepted: retained.calls.clone(),
         pipeline: true,
     };
-    let nodes = validate_node_ids(document, registry, &calls, &ids, index, None);
+    let mut args = BTreeMap::new();
+    let nodes = validate_node_ids(
+        document,
+        registry,
+        &calls,
+        &ids,
+        index,
+        Inference::Solve(None),
+        Some(&mut args),
+    );
     let fresh = by_node(&nodes.diagnostics)?;
+    let fresh_added = compare(analysis, retained, &nodes, &fresh, &affected, added)?;
+    Some(Resolution {
+        resolved: ids.len(),
+        components: components.len(),
+        fresh: fresh_added,
+        reach: ids,
+        args: ArgUpdate {
+            nodes: affected,
+            args,
+        },
+    })
+}
+
+/// Resolution of an edit that changed only equations over the variables of `touched`
+/// nodes, in a complete report, without solving their components (V12f). When
+/// [`solution_kept`](crate::inference::component::solution_kept) proves every component's
+/// solution unchanged, only the touched nodes and their generic neighbours can resolve
+/// differently. A node's resolution reads its own fields, its contract, its arguments
+/// and, for a generic node, whether every member of its component is eligible with its
+/// data neighbours eligible; it reads no edge otherwise. Eligibility reads a node's own
+/// fields, so it changes only for touched nodes, and which data neighbours a node has
+/// changes only for the endpoints of changed edges, which are touched too. So an
+/// untouched node that is not generic resolves as before, and resolving the touched nodes
+/// and their generic neighbours with their kept arguments, with the neighbours of the
+/// generic ones available, decides every changed result: if a generic one is now blocked,
+/// its component would be, and the comparison fails. A non-generic neighbour, such as a
+/// Get Variable read by many clusters, is therefore neither resolved nor expanded. `None`
+/// leaves the components to be solved.
+fn kept_resolution(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    index: &DocIndex,
+    analysis: &ValidationAnalysis,
+    retained: &Retained,
+    touched: &BTreeSet<NodeId>,
+) -> Option<Resolution> {
+    use crate::inference::component::{KEPT_SOLUTION_BUDGET, solution_kept};
+    if !solution_kept(
+        document,
+        index,
+        registry,
+        touched,
+        |id| retained.args.get(&id),
+        KEPT_SOLUTION_BUDGET,
+    ) {
+        return None;
+    }
+    // In a complete report every generic node has arguments, and no other node does.
+    let generic = |id: &NodeId| retained.args.contains_key(id);
+    let mut near: BTreeSet<NodeId> = with_neighbours(document, index, touched)
+        .into_iter()
+        .filter(generic)
+        .collect();
+    let ids: Vec<NodeId> = with_neighbours(document, index, &near)
+        .into_iter()
+        .chain(touched.iter().copied())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    let type_args: BTreeMap<NodeId, TypeArgs> = near
+        .iter()
+        .map(|id| (*id, retained.args[id].clone()))
+        .collect();
+    near.extend(touched.iter().copied());
+    let known = crate::inference::ComponentInference {
+        nodes: type_args.keys().copied().collect(),
+        type_args,
+        issues: Vec::new(),
+    };
+    let calls = CallEvidence {
+        accepted: retained.calls.clone(),
+        pipeline: true,
+    };
+    let nodes = validate_node_ids(
+        document,
+        registry,
+        &calls,
+        &ids,
+        index,
+        Inference::Known(known),
+        None,
+    );
+    let fresh = by_node(&nodes.diagnostics)?;
+    compare(analysis, retained, &nodes, &fresh, &near, &BTreeSet::new())?;
+    Some(Resolution {
+        resolved: ids.len(),
+        components: 0,
+        fresh: Fresh::new(),
+        reach: ids,
+        args: ArgUpdate::default(),
+    })
+}
+
+/// Checks that every node of `nodes` but `added` resolved as retained, and that each added
+/// node resolved without errors; returns the added nodes' results.
+fn compare(
+    analysis: &ValidationAnalysis,
+    retained: &Retained,
+    resolution: &super::NodeValidation,
+    fresh: &BTreeMap<NodeId, Vec<Diagnostic>>,
+    nodes: &BTreeSet<NodeId>,
+    added: &BTreeSet<NodeId>,
+) -> Option<Fresh> {
     let report = analysis.report();
     let empty = Vec::new();
     let mut fresh_added = Fresh::new();
-    for id in &affected {
+    for id in nodes {
         if added.contains(id) {
             // A new node has nothing to compare with: it must resolve without errors.
             let list = fresh.get(id).cloned().unwrap_or_default();
-            if nodes.incomplete_nodes.contains(id) || has_error(&list) {
+            if resolution.incomplete_nodes.contains(id) || has_error(&list) {
                 return None;
             }
-            fresh_added.insert(*id, (nodes.resolved.get(id)?.clone(), list));
+            fresh_added.insert(*id, (resolution.resolved.get(id)?.clone(), list));
             continue;
         }
-        if nodes.resolved.get(id) != report.resolved.get(id)
-            || nodes.incomplete_nodes.contains(id) != retained.node_incomplete.contains(id)
+        if resolution.resolved.get(id) != report.resolved.get(id)
+            || resolution.incomplete_nodes.contains(id) != retained.node_incomplete.contains(id)
             || fresh.get(id).unwrap_or(&empty)
                 != retained.node_diagnostics.get(id).unwrap_or(&empty)
         {
@@ -1191,7 +1398,7 @@ fn resolution_unchanged(
     if added.iter().any(|id| !fresh_added.contains_key(id)) {
         return None;
     }
-    Some((ids.len(), components.len(), fresh_added, ids))
+    Some(fresh_added)
 }
 
 /// Each added node's new signature and node diagnostics.
