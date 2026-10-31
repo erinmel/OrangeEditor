@@ -178,22 +178,7 @@ pub(super) fn node_update(
         return None;
     }
     let touched: BTreeSet<NodeId> = edit.before.keys().copied().collect();
-    // A configuration change may change a package node's contract, which is all inference
-    // reads of it besides pins and literals (V12f).
-    let same_templates = edit.before.iter().all(|(id, before)| {
-        document.node(*id).is_some_and(|node| {
-            if before.config == node.config && before.config_version == node.config_version {
-                return true;
-            }
-            let mut old = node.clone();
-            old.config = before.config.clone();
-            old.config_version = before.config_version;
-            matches!(
-                (registry.contract(document, &old), registry.contract(document, node)),
-                (Ok(old), Ok(new)) if old == new
-            )
-        })
-    });
+    let seeds = equation_changes(document, registry, index, edit);
     let resolution = resolution_unchanged(
         document,
         registry,
@@ -203,7 +188,10 @@ pub(super) fn node_update(
         &touched,
         &BTreeSet::new(),
         None,
-        same_templates,
+        seeds.as_ref().map(|seeds| Kept {
+            seeds,
+            edited: &touched,
+        }),
     )?;
     let inputs = recheck_inputs(document, registry, index, analysis, retained, &touched)?;
     let mut config = Vec::new();
@@ -244,6 +232,59 @@ pub(super) fn node_update(
         scoped.inputs.push((old.unwrap_or_default(), list));
     }
     Some(scoped)
+}
+
+/// The edited nodes whose inference equations may have changed, or `None` when one's
+/// contract may have (V12f). A node's equations read its contract, its pins and the types
+/// of its literals on ports without an incoming edge; a node edit changes no edge, and a
+/// literal's value is never read. A configuration change counts only when the contract
+/// built from the old configuration differs from the current one.
+fn equation_changes(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    index: &DocIndex,
+    edit: &NodeEdit,
+) -> Option<BTreeSet<NodeId>> {
+    let mut changed = BTreeSet::new();
+    for (id, before) in &edit.before {
+        let node = document.node(*id)?;
+        if before.config != node.config || before.config_version != node.config_version {
+            let mut old = node.clone();
+            old.config = before.config.clone();
+            old.config_version = before.config_version;
+            if !matches!(
+                (registry.contract(document, &old), registry.contract(document, node)),
+                (Ok(old), Ok(new)) if old == new
+            ) {
+                return None;
+            }
+        }
+        let literals = before.inputs.keys().chain(node.inputs.keys()).any(|key| {
+            active_type(index, *id, &before.inputs, key)
+                != active_type(index, *id, &node.inputs, key)
+        });
+        if literals || before.type_pins != node.type_pins {
+            changed.insert(*id);
+        }
+    }
+    Some(changed)
+}
+
+/// The type of `node`'s literal on input `key` among `inputs`, if no edge shadows it.
+fn active_type<'a>(
+    index: &DocIndex,
+    node: NodeId,
+    inputs: &'a BTreeMap<crate::id::PortKey, crate::document::literal::Literal>,
+    key: &crate::id::PortKey,
+) -> Option<&'a crate::id::TypeExpr> {
+    let port = crate::document::PortRef {
+        node,
+        port: key.clone(),
+    };
+    if index.incoming(&port).next().is_some() {
+        return None;
+    }
+    inputs.get(key).map(|literal| &literal.ty)
 }
 
 /// Whether `node` must keep its error status: in an incomplete report an error can suppress
@@ -474,7 +515,10 @@ pub(super) fn structure_update(
         &touched,
         added_nodes,
         (!retained.complete).then_some(&analysis.report().incomplete_nodes),
-        added_nodes.is_empty() && edit.removed_nodes.is_empty(),
+        (added_nodes.is_empty() && edit.removed_nodes.is_empty()).then_some(Kept {
+            seeds: &touched,
+            edited: &BTreeSet::new(),
+        }),
     )?;
     if fresh.values().any(|(signature, _)| !typed_data(signature)) {
         return None;
@@ -1209,12 +1253,21 @@ impl ArgUpdate {
     }
 }
 
+/// An edit [`kept_resolution`] may check: every variable of an equation it changed belongs
+/// to a generic node of `seeds`, and `edited` holds the nodes whose own fields it changed.
+/// The other touched nodes are endpoints of changed edges.
+#[derive(Clone, Copy)]
+struct Kept<'a> {
+    seeds: &'a BTreeSet<NodeId>,
+    edited: &'a BTreeSet<NodeId>,
+}
+
 /// Re-resolves `touched`, their neighbours and those nodes' generic components, with every
 /// neighbour of that set available, and confirms each result equals the retained one.
 /// Nodes in `added` are new: each must resolve without errors, and its results are returned.
 /// With `incomplete`, every node the resolution reads must keep clear of those nodes.
-/// `same_templates` says the edit kept every node's contract and added or removed none, so
-/// it changed only equations over the variables of `touched` nodes: then a kept solution
+/// With `kept`, the edit kept every node's contract, added or removed none and changed
+/// only equations over the variables of its seeds: then a kept solution
 /// ([`kept_resolution`]) is tried before the components are solved.
 #[expect(
     clippy::too_many_arguments,
@@ -1229,12 +1282,13 @@ fn resolution_unchanged(
     touched: &BTreeSet<NodeId>,
     added: &BTreeSet<NodeId>,
     incomplete: Option<&BTreeSet<NodeId>>,
-    same_templates: bool,
+    kept: Option<Kept<'_>>,
 ) -> Option<Resolution> {
-    if same_templates
+    if let Some(kept) = kept
         && retained.complete
         && retained.bounded
-        && let Some(kept) = kept_resolution(document, registry, index, analysis, retained, touched)
+        && let Some(kept) =
+            kept_resolution(document, registry, index, analysis, retained, touched, kept)
     {
         return Some(kept);
     }
@@ -1287,18 +1341,18 @@ fn resolution_unchanged(
 /// Resolution of an edit that changed only equations over the variables of `touched`
 /// nodes, in a complete report, without solving their components (V12f). When
 /// [`solution_kept`](crate::inference::component::solution_kept) proves every component's
-/// solution unchanged, only the touched nodes and their generic neighbours can resolve
-/// differently. A node's resolution reads its own fields, its contract, its arguments
-/// and, for a generic node, whether every member of its component is eligible with its
-/// data neighbours eligible; it reads no edge otherwise. Eligibility reads a node's own
-/// fields, so it changes only for touched nodes, and which data neighbours a node has
-/// changes only for the endpoints of changed edges, which are touched too. So an
+/// solution unchanged, only the touched nodes and the generic neighbours of edited ones can
+/// resolve differently. A node's resolution reads its own fields, its contract, its
+/// arguments and, for a generic node, whether every member of its component is eligible
+/// with its data neighbours eligible; it reads no edge otherwise. Eligibility reads a
+/// node's own fields, so it changes only for edited nodes, and which data neighbours a
+/// node has changes only for the endpoints of changed edges, which are touched. So an
 /// untouched node that is not generic resolves as before, and resolving the touched nodes
-/// and their generic neighbours with their kept arguments, with the neighbours of the
-/// generic ones available, decides every changed result: if a generic one is now blocked,
-/// its component would be, and the comparison fails. A non-generic neighbour, such as a
-/// Get Variable read by many clusters, is therefore neither resolved nor expanded. `None`
-/// leaves the components to be solved.
+/// and the generic neighbours of edited ones with their kept arguments, with the
+/// neighbours of the generic ones available, decides every changed result: if a generic
+/// one is now blocked, its component would be, and the comparison fails. A non-generic
+/// endpoint, such as a Get Variable read by many clusters, is therefore resolved but not
+/// expanded. `None` leaves the components to be solved.
 fn kept_resolution(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -1306,13 +1360,14 @@ fn kept_resolution(
     analysis: &ValidationAnalysis,
     retained: &Retained,
     touched: &BTreeSet<NodeId>,
+    kept: Kept<'_>,
 ) -> Option<Resolution> {
     use crate::inference::component::{KEPT_SOLUTION_BUDGET, solution_kept};
     if !solution_kept(
         document,
         index,
         registry,
-        touched,
+        kept.seeds,
         |id| retained.args.get(&id),
         KEPT_SOLUTION_BUDGET,
     ) {
@@ -1320,8 +1375,9 @@ fn kept_resolution(
     }
     // In a complete report every generic node has arguments, and no other node does.
     let generic = |id: &NodeId| retained.args.contains_key(id);
-    let mut near: BTreeSet<NodeId> = with_neighbours(document, index, touched)
+    let mut near: BTreeSet<NodeId> = with_neighbours(document, index, kept.edited)
         .into_iter()
+        .chain(touched.iter().copied())
         .filter(generic)
         .collect();
     let ids: Vec<NodeId> = with_neighbours(document, index, &near)
