@@ -2802,3 +2802,48 @@ Branch `v12f-w9-wider` on `dev` 54d705c (Windows MSVC, Rust 1.99.1, Cargo 1.99.1
 - **Judgement:** on both clustered W4-sized graphs, including the 20,000-edge one, the four NFR-15 kinds meet 2 ms p95 and 10 ms p99 on this machine, and so do function-body literals. Exec edits exceed 2 ms p95, a Get shared by many clusters exceeds both limits, and the connected worst cases are reported separately. NFR-15 is not passed: the R machine, visit counters beyond re-resolved nodes, zone edits and the cases above remain. For NFR-05, the session and document hold about 158 MiB of heap on the 20,000-edge graph, about a fifth of the 750 MiB W4 total before any editor, rendering or runtime memory; this is an allocator count on the development machine, not an RSS measurement, and NFR-05 is not judged.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt and clippy `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Kept inference solutions (V12f) — 2026-10-31
+
+Branch `v12f-connected` on `dev` dd89e38, rebased onto 192713f (same toolchain; Cargo.lock unchanged). Continues V12f (16).
+
+- **Finding:** every scoped node or structure edit re-resolved its touched nodes' whole generic components with their neighbours. On W9's connected variant, where all 8,000 adds form one component, that was up to 10,000 nodes per edit, about 120 ms p50; on one 10,000-node chain about 160 ms. A literal value, a shadowed literal or a type argument changes no inference equation at all. Separately, the resolution set took the neighbours of every touched node's neighbours, so with one Get Variable read by 100 clusters (the shared-Get W9 graph of the concurrent W9 widening, PR #99) every edit beside it re-resolved about 1,000 nodes.
+- **Change:** the session keeps each generic node's solved type arguments with the report and updates them with every scoped update that re-solves nodes. In a complete report, an edit that adds or removes no node and keeps every contract changes only equations over its seeds: edited nodes whose pins or active literal types changed, and endpoints of changed edges. `inference::component::solution_kept` solves the current equations among generic nodes grown breadth-first from the seeds (radius 0, 1, 2, 4, …, at most 512 nodes) and accepts when they ground every seed parameter to its kept type; then the old solution is the most general unifier of the new equations (proof in its doc comment and in 16). The session then re-resolves only the touched nodes, the generic ones with their kept arguments, and compares them with the published results; otherwise it solves the components as before. A non-generic endpoint is resolved but its neighbours are not. A guard requires every published port type to fit the unifier's expansion budget in bytes, so the solver of the new equations cannot hit a budget the kept solution did not.
+- **Regressions:** new scoped-session tests compare every edit with a fresh full analysis: on a 1,200-add chain, literal, shadowed literal, pin, type argument, configuration and disconnect edits are kept without a component solve, the first four re-resolving at most 3 nodes, while a reconnect whose nearest evidence lies 700 adds away solves the component; a conflicting pin, a pin cleared again and literals moving the whole chain to another type and back run the full analysis; removing a chain's only evidence, whose downstream published types would still agree, is not kept; on a random source read by 100 adds, edits beside it re-resolve at most 2 nodes, an added add's arguments are kept, and an unsupported configuration version on the source runs the full analysis; a seeded run of 400 literal, pin, disconnect and connect edits on a 60-add component, with some types changing, matches the full analysis at every step and keeps at least 60 of them. Mutations: accepting a ground type that differs, an open parameter, a conflict or no equations, ignoring literal types or pins, dropping the kept arguments, the neighbours' availability or the comparison of non-generic touched nodes, and not storing an added node's arguments each fail at least one test. Not caught: removing the completeness or type-size guard (no test reaches an incomplete report or a type near 16 KiB on this path), ignoring a configuration change to a contract (no bundled package's contract reads its configuration), not updating re-solved or removed nodes' arguments (bundled generic nodes expose every parameter in a port, so their arguments change only with their signatures, which a scoped update requires unchanged), and ignoring literal shadowing, which only adds seeds.
+- **Measured** (release, development machine, one run each, before and after in the same session; the R machine was not used). W9 as on `dev` dd89e38, before its widening, 1,000 seeded edits:
+
+| W9 run | p50 | p95 | p99 | max | most re-resolved |
+|---|---:|---:|---:|---:|---:|
+| clustered, before | 0.32 ms | 0.55 ms | 0.75 ms | 2.35 ms | 12 |
+| clustered, after | 0.15 ms | 0.22 ms | 0.25 ms | 2.00 ms | 7 |
+| connected, before | 117.8 ms | 219.1 ms | 240.1 ms | 300.1 ms | 10,000 |
+| connected, after | 0.25 ms | 10.7 ms | 13.6 ms | 16.1 ms | 7 |
+
+  `orange-measure session-edit`, 1 chain of 10,000 (15 edits after 3 warmups; on 1,000 chains of 10 every edit kind took 0.11 to 0.65 ms p50, against 0.19 to 0.75 ms before):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| literal | 155.7 ms | 165.9 ms | 0.07 ms | 0.08 ms |
+| disconnect/connect | 169.1 ms | 180.4 ms | 4.62 ms | 7.95 ms |
+| pin | 161.4 ms | 180.0 ms | 0.08 ms | 0.08 ms |
+| config | 169.0 ms | 186.8 ms | 0.07 ms | 0.07 ms |
+| add/remove node | 163.1 ms | 179.4 ms | 116.0 ms | 123.1 ms |
+| wire beside an incomplete node | 238.4 ms | 296.4 ms | 194.6 ms | 269.7 ms |
+| wire into an export | 124.6 ms | 134.9 ms | 5.73 ms | 6.24 ms |
+| wire after a full analysis | 183.5 ms | 228.5 ms | 10.4 ms | 33.0 ms |
+| wire beside a zone | 172.8 ms | 192.7 ms | 5.34 ms | 13.2 ms |
+
+  With the wider W9 of the record above (PR #99), measured on a local merge of this branch with PR #99's head before it reached `dev` (seeded mix of 1,000 edits; before is PR #99's head):
+
+| W9 run | p95 before | p99 before | p95 after | p99 after | most re-resolved, before / after |
+|---|---:|---:|---:|---:|---:|
+| shared Get, 20,004 edges | 16.1 ms | 17.0 ms | 0.42 ms | 0.90 ms | 1,002 / 7 |
+| connected | 220.3 ms | 238.2 ms | 27.4 ms | 30.0 ms | 10,000 / 7 |
+| connected, 20,004 edges | 235.4 ms | 245.3 ms | 23.6 ms | 28.4 ms | 11,000 / 7 |
+| connected exec edge | 277.4 ms | 388.3 ms | 80.1 ms | 176.5 ms | 10,000 / 2 |
+
+  The retained session grew by about 5 MiB (116.3 to 121.2 MiB after the first analysis of the clustered graph), the kept arguments.
+- **Judgement:** on connected graphs, literal, pin, type-argument and configuration edits now meet NFR-15's latency target on this machine. Connected wire edits still miss it: timing the session showed the remaining cost in the per-edge availability check, which walks the pure cone upstream of an added or removed data edge, thousands of adds here. Connected exec edits spend theirs in the control-flow rerun. Both are reported as connected worst cases; NFR-15 is not passed.
+- **Limitations:** node additions and removals, contract-changing configuration, incomplete reports and edits whose evidence lies beyond 512 nodes still solve whole components. The type-size guard relies on a byte bound, not on the solver's actual term sizes.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
