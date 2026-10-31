@@ -14,7 +14,7 @@ use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
 use super::ports::PortResolver;
-use super::scope::Scope;
+use super::scope::{NodeSubset, Scope, edges_of, nodes_of};
 
 /// The exec output port whose targets start a region.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -141,7 +141,7 @@ pub(crate) fn validate_regions_among(
     resolved: &PortResolver<'_>,
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
-    only: &BTreeSet<NodeId>,
+    only: &NodeSubset<'_>,
 ) -> RegionValidation {
     regions_among(
         document,
@@ -159,7 +159,7 @@ fn regions_among(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     scope: Scope,
-    only: Option<&BTreeSet<NodeId>>,
+    only: Option<&NodeSubset<'_>>,
 ) -> RegionValidation {
     let origin = registry.origin();
     let mut result = RegionValidation {
@@ -236,11 +236,10 @@ fn check_body(
     error_edges: &BTreeSet<EdgeId>,
     origin: &HostOrigin,
     result: &mut RegionValidation,
-    only: Option<&BTreeSet<NodeId>>,
+    only: Option<&NodeSubset<'_>>,
 ) {
-    let inside = |node: NodeId| only.is_none_or(|only| only.contains(&node));
     let mut local_incomplete = BTreeSet::new();
-    for node in body.nodes.values().filter(|node| inside(node.id)) {
+    for node in nodes_of(body, only) {
         if !resolved.contains_key(&node.id) {
             local_incomplete.insert(node.id);
         }
@@ -249,11 +248,9 @@ fn check_body(
     // Exec adjacency from valid same-body edges.
     let mut out: BTreeMap<NodeId, Vec<ExecEdge>> = BTreeMap::new();
     let mut raw: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
-    let mut edges: Vec<_> = body.edges.values().collect();
-    edges.sort_by_key(|edge| edge.id);
-    for edge in edges {
+    for edge in edges_of(body, only) {
         if error_edges.contains(&edge.id)
-            || !inside(edge.from.node)
+            || only.is_some_and(|only| !only.nodes.contains(&edge.from.node))
             || !body.nodes.contains_key(&edge.from.node)
             || !body.nodes.contains_key(&edge.to.node)
         {
@@ -442,7 +439,7 @@ fn check_body(
     }
 
     // Structured boundaries and loop bounds.
-    for node in body.nodes.values().filter(|node| inside(node.id)) {
+    for node in nodes_of(body, only) {
         let definition = node.definition.id.as_str();
         if definition == ids::WHILE
             && !node
@@ -495,7 +492,7 @@ fn check_body(
             stack.extend(raw.get(&node).into_iter().flatten().copied());
         }
     }
-    for node in body.nodes.values().filter(|node| inside(node.id)) {
+    for node in nodes_of(body, only) {
         if let Some(signature) = resolved.get(&node.id)
             && is_exec_node(signature)
             && !membership.contains_key(&node.id)

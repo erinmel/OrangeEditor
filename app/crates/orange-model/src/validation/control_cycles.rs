@@ -12,7 +12,7 @@ use crate::id::NodeId;
 use super::connections::ConnectionValidation;
 use super::diagnostic::{Diagnostic, DiagnosticCode, Severity, Subject, sort_diagnostics};
 use super::ports::{PortLookupError, PortResolver};
-use super::scope::Scope;
+use super::scope::{NodeSubset, Scope};
 
 /// Result of checking explicit exec-edge cycles for guaranteed suspension.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -72,7 +72,7 @@ pub(crate) fn validate_control_cycles_among(
     resolved: &PortResolver<'_>,
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
-    only: &BTreeSet<NodeId>,
+    only: &NodeSubset<'_>,
 ) -> ControlCycleValidation {
     control_cycles_among(
         document,
@@ -90,7 +90,7 @@ fn control_cycles_among(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     scope: Scope,
-    only: Option<&BTreeSet<NodeId>>,
+    only: Option<&NodeSubset<'_>>,
 ) -> ControlCycleValidation {
     let origin = registry.origin();
     let mut result = ControlCycleValidation {
@@ -114,11 +114,9 @@ fn control_cycles_among(
             BodyRef::Function(id) => Some(id),
         };
         let mut full = Graph::new();
-        let mut edges: Vec<_> = body.edges.values().collect();
-        edges.sort_by_key(|edge| edge.id);
-        for edge in edges {
+        for edge in super::scope::edges_of(body, only) {
             if error_edges.contains(&edge.id)
-                || only.is_some_and(|only| !only.contains(&edge.from.node))
+                || only.is_some_and(|only| !only.nodes.contains(&edge.from.node))
                 || !body.nodes.contains_key(&edge.from.node)
                 || !body.nodes.contains_key(&edge.to.node)
             {

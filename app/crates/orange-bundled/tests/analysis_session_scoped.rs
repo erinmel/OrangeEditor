@@ -871,3 +871,52 @@ fn exec_edits_rerun_only_the_activations_they_join() {
     let work = edit(&mut session, &mut doc, &registry, options, undone);
     assert_eq!(work, SessionWork::Scoped);
 }
+
+#[test]
+fn moving_a_reader_of_another_activation_runs_the_full_analysis() {
+    let (package, registry) = catalog();
+    let (event, variable) = ("40000000-0000-4000-8000-000000000001", id(100));
+    let nodes = vec![
+        json!({"id": id(1), "definition_id": "core/on-event", "definition_version": 1,
+            "config_version": 1, "config": {"event": event},
+            "activation": {"mode": "queue", "capacity": 4, "overflow": "drop-oldest",
+                "on_fault": "continue", "order": 0}}),
+        json!({"id": id(2), "definition_id": "core/set-variable", "definition_version": 1,
+            "config_version": 1, "config": {"variable": variable}}),
+        json!({"id": id(3), "definition_id": "core/on-start", "definition_version": 1,
+            "config_version": 1, "config": {},
+            "activation": {"mode": "queue", "capacity": 4, "overflow": "drop-newest",
+                "on_fault": "continue", "order": 1}}),
+        json!({"id": id(4), "definition_id": "core/set-variable", "definition_version": 1,
+            "config_version": 1, "config": {"variable": variable}}),
+        math(10, "add", 0, 1),
+        math(11, "add", 0, 1),
+        math(12, "add", 0, 1),
+    ]
+    .into_iter()
+    // Unrelated nodes keep the edited activations a small part of the body.
+    .chain((20..40).map(|n| math(n, "add", 0, 1)))
+    .collect();
+    let edges = vec![
+        edge(1, 1, "then", 2, "in"),
+        // The payload reaches the Set through two adds, so only the cone expansion finds it.
+        edge(2, 1, "payload", 10, "a"),
+        edge(7, 10, "sum", 12, "a"),
+        edge(3, 12, "sum", 2, "value"),
+        edge(4, 3, "then", 4, "in"),
+        edge(5, 11, "sum", 4, "value"),
+    ];
+    let base = graph(&package, nodes, edges, vec![]);
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&base).unwrap()).unwrap();
+    raw["variables"] = json!([{"id": variable, "name": "total", "type": "core/u64@1",
+        "scope": "run", "init": {"type": "core/u64@1", "value": "0"}}]);
+    raw["events"] = json!([{"id": event, "name": "tick", "payload": "core/u64@1", "scope": "run"}]);
+    let mut doc = orange_model::from_json(&raw.to_string()).unwrap();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // The Set reading the payload through an add moves to the On Start activation.
+    let moved = vec![disconnect(1), wire(6, 4, "then", 2, "in")];
+    let work = edit(&mut session, &mut doc, &registry, options, moved);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
