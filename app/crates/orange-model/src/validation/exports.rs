@@ -139,7 +139,7 @@ fn serializable(registry: &RegistrySnapshot, ty: Option<&TypeExpr>) -> bool {
 /// Whether the data edge `edge` feeds an export a value from an activation, given that the
 /// export's cone did not before: whether the edge's producer, or anything in its
 /// pure/volatile cone, belongs to one (V12d). Producers come from `index`, so only the
-/// producer's cone is visited, never the export's.
+/// producer's cone is visited, never the export's; a zone end's include its begin's (V12c).
 pub(super) fn edge_crosses_activation(
     document: &GraphDocument,
     resolved: &PortResolver<'_>,
@@ -150,7 +150,7 @@ pub(super) fn edge_crosses_activation(
     let Ok(port) = resolved.port(&edge.from) else {
         return false;
     };
-    let producers = |node: NodeId| {
+    let real = |node: NodeId| {
         index.incident(node).filter_map(move |id| {
             let edge = document.edge(id)?;
             if edge.to.node != node || !document.root().nodes.contains_key(&edge.from.node) {
@@ -166,6 +166,11 @@ pub(super) fn edge_crosses_activation(
                 .then_some(())
                 .and(from.source.map(|source| (edge.from.node, source)))
         })
+    };
+    // As in the whole check, a zone result also reads its begin's prefix.
+    let producers = |node: NodeId| {
+        let begin = zones.get(node).map(|pair| pair.begin);
+        real(node).chain(begin.into_iter().flat_map(real))
     };
     crosses_activation(producers, edge.from.node, port.source, zones)
 }

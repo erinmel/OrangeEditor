@@ -585,11 +585,20 @@ pub(crate) fn data_edge_requires(
     index: &crate::index::DocIndex,
     from: &crate::document::PortRef,
 ) -> bool {
-    let relevant = |port: &crate::document::PortRef| match resolved.port(port) {
-        Ok(port) => !matches!(
-            port.source,
-            None | Some(OutputSource::Computed | OutputSource::State)
-        ),
+    // A zone begin's iteration projection is pure, so no exec region owns it and
+    // [`requirement`] finds none for it (V12c).
+    let relevant = |at: &crate::document::PortRef| match resolved.port(at) {
+        Ok(port) => match port.source {
+            None | Some(OutputSource::Computed | OutputSource::State) => false,
+            Some(OutputSource::Iteration) => {
+                regions.owners.contains_key(&at.node)
+                    || regions
+                        .zones
+                        .owner(at.node)
+                        .is_none_or(|pair| pair.begin != at.node)
+            }
+            Some(_) => true,
+        },
         Err(_) => true,
     };
     let expanding = |node: NodeId| {

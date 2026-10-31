@@ -58,14 +58,18 @@ pub(super) struct Retained {
     /// from an incomplete node, so then no error can suppress one, and a node may gain or
     /// lose input, configuration or node errors without changing any other diagnostic.
     pub complete: bool,
-    /// The report was complete, had no zone, and had errors at most in the per-node node,
-    /// input and configuration lists: the condition under which a structure edit can be
-    /// checked locally. Scoped updates keep it.
+    /// The report was complete, every zone marker belonged to a checked pair, and it had
+    /// errors at most in the per-node node, input and configuration lists: the condition
+    /// under which a structure edit can be checked locally. Scoped updates keep it.
     pub clean: bool,
     /// The report would be clean but for incomplete nodes and their dependency-unavailable
     /// errors, with every function complete. A structure edit can still be checked locally
     /// when nothing it reads or reruns touches an incomplete node or its neighbours.
     pub isolable: bool,
+    /// Every zone marker belonged to a checked pair, so each zone body is closed: no data
+    /// edge leaves it except into its end (V12c). Scoped edits keep it, as they never touch
+    /// a marker.
+    pub zones_checked: bool,
     /// No node may suspend, so stale-capture checks cannot read data edges. Data edges and
     /// nodes are checked locally only then; exec edges recompute the state pass anyway.
     pub quiet: bool,
@@ -397,6 +401,13 @@ pub(super) fn structure_update(
             removed_charge = removed_charge.add(charge)?;
         }
     }
+    let removed_ids = edit.removed_nodes.keys();
+    if !outside_zones(
+        &analysis.report().regions.zones,
+        touched.iter().chain(removed_ids),
+    ) {
+        return None;
+    }
     let admitted = retained.admitted.replace(removed_charge, added_charge)?;
     if !options.fits(admitted) {
         return None;
@@ -432,7 +443,8 @@ pub(super) fn structure_update(
     let built = !retained.orders.contains_key(&home);
     if built {
         let ports = super::ports::PortResolver::new(document, &analysis.report().resolved);
-        let order = super::order::TopoOrder::build(document, &ports, home);
+        let zones = &analysis.report().regions.zones;
+        let order = super::order::TopoOrder::build(document, &ports, home, zones);
         retained.orders.insert(home, order);
     }
     let mut order = retained.orders.get_mut(&home).and_then(Option::as_mut);
@@ -644,7 +656,9 @@ pub(super) fn structure_update(
         }
         scoped.inputs.push((old, check.diagnostics));
         // Only errors outside the function lists could change these flags.
-        retained.clean = retained.complete && !blocking_error(retained, &BTreeSet::new());
+        retained.clean = retained.complete
+            && !blocking_error(retained, &BTreeSet::new())
+            && retained.zones_checked;
         retained.isolable =
             !blocking_error(retained, &analysis.report().incomplete_nodes) && retained.isolable;
     }
@@ -689,6 +703,25 @@ pub(super) fn structure_update(
         .copied()
         .collect();
     Some(scoped)
+}
+
+/// Whether every node a structure edit touches (edge endpoints and added nodes) and every
+/// node it removes lies outside every checked zone: no zone body owns it and it is no end
+/// marker (a begin is owned by its own zone). Such an edit cannot change any zone (V12c).
+///
+/// A zone body is what its begin reaches through data edges, stopping at its end, among
+/// the nodes that reach the end (11 §8.4). With every marker in a checked pair, no data
+/// edge leaves a body except into its end, so everything the begin reaches is the body or
+/// the end. An added edge whose source is outside cannot be reached from any begin, so it
+/// adds nothing the begin reaches; a removed edge with an outside source was never on such
+/// a path, and every path from a body node to the end stays inside the body. The body,
+/// its purity, closure, nesting, exports and paired types therefore stay as they were, and
+/// so do the data-cycle pass's begin-to-end dependencies, which the body order carries.
+fn outside_zones<'a>(
+    zones: &super::zones::ZoneIndex,
+    mut nodes: impl Iterator<Item = &'a NodeId>,
+) -> bool {
+    nodes.all(|id| !zones.owners.contains_key(id) && !zones.pairs.contains_key(id))
 }
 
 /// A pure node whose ports are all typed data ports, outputs with a source: the data
@@ -809,7 +842,7 @@ fn classify_edges(
                 && super::exports::edge_crosses_activation(document, &ports, index, edge, zones))
                 && super::connections::added_edge_is_clean(document, &ports, index, edge, origin);
         }
-        let downstream = data_downstream(document, &ports, index, edge.to.node);
+        let downstream = data_downstream(document, &ports, index, edge.to.node, zones);
         if document
             .exports()
             .iter()
@@ -1224,18 +1257,23 @@ fn commit(
     }
 }
 
-/// `node` and every node it feeds through data edges.
+/// `node` and every node it feeds through data edges, a zone's begin feeding its end as
+/// the data-cycle pass has it.
 fn data_downstream(
     document: &GraphDocument,
     ports: &super::ports::PortResolver<'_>,
     index: &DocIndex,
     node: NodeId,
+    zones: &super::zones::ZoneIndex,
 ) -> BTreeSet<NodeId> {
     let mut seen = BTreeSet::new();
     let mut stack = vec![node];
     while let Some(node) = stack.pop() {
         if !seen.insert(node) {
             continue;
+        }
+        if let Some(pair) = zones.owner(node).filter(|pair| pair.begin == node) {
+            stack.push(pair.end);
         }
         for id in index.incident(node) {
             let Some(edge) = document.edge(id).filter(|edge| edge.from.node == node) else {

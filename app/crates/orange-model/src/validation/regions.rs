@@ -471,7 +471,8 @@ fn check_body(
         }
     }
 
-    // Zones are checked per body; a node subset is only taken from a zone-free body.
+    // Zones are checked per body. A node subset comes from a scoped edit that keeps clear of
+    // every zone, whose checked pairs the caller keeps (V12c).
     if only.is_none() {
         check_zones(
             document,
