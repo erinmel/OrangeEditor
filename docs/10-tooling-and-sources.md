@@ -2730,3 +2730,14 @@ Branch `core/w9-measurement` on `dev` 7ecc4f0 (same toolchain; Cargo.lock unchan
 - **Judgement:** on the clustered W4-sized graph, NFR-15's 2 ms p95 and 10 ms p99 are met on this machine. The connected worst case misses them by about two orders of magnitude; NFR-15 allows connected worst cases if reported separately, and it is reported here. NFR-15 is not passed: the R machine, the 20,000-edge W4 shape, edits outside this workload (exec, function, zone and cycle-closing edits) and visit counters beyond re-resolved nodes remain.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Lazy readers for flow edits (V12d) — 2026-10-31
+
+Branch `v12d-lazy-readers` on `dev` 54d705c (same toolchain; Cargo.lock unchanged). Continues V12d (16).
+
+- **Finding:** a control-flow edit seeded its availability rerun with every node downstream of an edited data edge's target, through any node, and checked moved nodes the same way. Availability expands only unowned pure and volatile producers, so everything past the first other node was rerun for nothing, and a long chain of stored-output nodes pulled its whole exec-connected set into the rerun.
+- **Change:** the seeds are the edge's endpoints and, when the target is pure or volatile, the nodes it feeds through pure and volatile nodes, up to and including the first other node. The moved-node check walks the same way. The edge-only path, which has no order, keeps its full downstream walk for cycles and exports.
+- **Regressions:** the scoped-session tests pass, each comparing the session with a fresh full analysis. Treating no node as expanding fails `a_flow_edit_reruns_the_consumers_its_data_edges_reach`, whose payload reaches its Set through an add.
+- **Limitations:** no workload times a flow edit beside a chain of stored-output nodes, so no latency change is claimed. V12d is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

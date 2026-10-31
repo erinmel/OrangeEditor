@@ -465,11 +465,10 @@ pub(super) fn structure_update(
                 seeds.extend(edit.removed_nodes.keys().copied());
                 for (edge, _) in &edges {
                     seeds.insert(edge.from.node);
-                    if root.nodes.contains_key(&edge.to.node) {
-                        // Consumers the edge feeds, directly or through pure nodes.
-                        seeds.extend(data_downstream(document, &ports, index, edge.to.node));
-                    } else {
-                        seeds.insert(edge.to.node);
+                    seeds.insert(edge.to.node);
+                    if root.nodes.contains_key(&edge.to.node) && expands(&ports, edge.to.node) {
+                        // Consumers that read the edge through the target's lazy cone.
+                        seeds.extend(lazy_readers(document, &ports, index, edge.to.node));
                     }
                 }
                 drop(ports);
@@ -936,7 +935,7 @@ fn recompute_flow(
         .copied()
         .collect();
     let crosses = moved.iter().any(|node| {
-        data_downstream(document, &ports, index, *node)
+        lazy_readers(document, &ports, index, *node)
             .iter()
             .any(|consumer| !component.contains(consumer) && merged.owners.contains_key(consumer))
     });
@@ -1243,6 +1242,42 @@ fn data_downstream(
                 continue;
             };
             if matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data) {
+                stack.push(edge.to.node);
+            }
+        }
+    }
+    seen
+}
+
+/// True for a pure or volatile node, which is never owned, so its consumers read its inputs
+/// lazily (as availability's expanding producers).
+fn expands(ports: &super::ports::PortResolver<'_>, node: NodeId) -> bool {
+    matches!(
+        ports.get(&node).map(|signature| signature.kind),
+        Some(NodeKind::Pure | NodeKind::Volatile)
+    )
+}
+
+/// The nodes whose availability may read `node`'s outputs: those it feeds through data
+/// edges, directly or through expanding nodes. A non-expanding node stores its outputs, so
+/// its consumers read its region and not what lies behind it.
+fn lazy_readers(
+    document: &GraphDocument,
+    ports: &super::ports::PortResolver<'_>,
+    index: &DocIndex,
+    node: NodeId,
+) -> BTreeSet<NodeId> {
+    let mut seen = BTreeSet::new();
+    let mut stack = vec![node];
+    while let Some(producer) = stack.pop() {
+        for id in index.incident(producer) {
+            let Some(edge) = document.edge(id).filter(|edge| edge.from.node == producer) else {
+                continue;
+            };
+            if matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data)
+                && seen.insert(edge.to.node)
+                && expands(ports, edge.to.node)
+            {
                 stack.push(edge.to.node);
             }
         }
