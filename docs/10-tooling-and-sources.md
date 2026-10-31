@@ -2630,3 +2630,14 @@ Branch `core/uncalled-function-edits` on `dev` 48aff63 (same toolchain; Cargo.lo
 - **Limitations:** a called function whose acceptance or summary changes still runs the full analysis; propagation to callers through the reverse call graph is not implemented. V12e is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Summary propagation to callers (V12e) — 2026-10-30
+
+Branch `core/summary-propagation` on `dev` 60a21d1 (same toolchain; Cargo.lock unchanged). Continues V12e (16).
+
+- **Change:** call nodes read a callee's acceptance (kind and suspension) only. When a scoped edit inside a called function keeps its acceptance but changes its summary, the session walks the reverse call graph, rechecks every transitive caller callee-first with `check_function` and the new summaries, requires each to keep its acceptance and completeness, and publishes changed summaries and function diagnostics. It reruns the state pass with the new summaries (over the new region index when the edit also changed control flow) and falls back if that finds an error. A called function whose acceptance changes still runs the full analysis.
+- **Regressions:** `orange-bundled` tests add a run-variable write to a function called from On Start (scoped; summaries change) and to the inner function of a two-level call chain (scoped; the outer function's summary gains the write), and make a Fork branch's call conflict with the other branch's write to the same variable (full analysis on the write conflict). Each step equals the full analysis. Skipping the callers fails the two-level test, and rerunning state with the old summaries fails the conflict test. The session property tests pass with 1,024 cases in release.
+- **Measured:** not separately; the edit reruns the body passes of the edited function and of each transitive caller once.
+- **Limitations:** a called function whose acceptance changes still runs the full analysis, as do edits that make any caller incomplete or change its acceptance. V12e is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

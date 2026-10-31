@@ -216,6 +216,30 @@ pub(super) fn blocking_error(retained: &Retained) -> bool {
         .any(|item| item.severity == Severity::Error)
 }
 
+/// Every function that calls `function`, directly or through other functions, callee first.
+fn transitive_callers(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    function: crate::id::FunctionId,
+) -> Vec<crate::id::FunctionId> {
+    let mut analysis = super::functions::FunctionAnalysis::default();
+    let graph = super::functions::call_graph(document, registry, &mut analysis);
+    let mut callers = BTreeSet::new();
+    let mut stack = vec![function];
+    while let Some(callee) = stack.pop() {
+        for (caller, calls) in &graph {
+            if calls.values().any(|target| *target == callee) && callers.insert(*caller) {
+                stack.push(*caller);
+            }
+        }
+    }
+    let (_, cyclic) = super::functions::find_cycles(&graph);
+    super::functions::callee_first_order(&graph, &cyclic)
+        .into_iter()
+        .filter(|id| *id != function && callers.contains(id))
+        .collect()
+}
+
 /// Whether any Call node in the document targets `function`.
 fn is_called(document: &GraphDocument, function: crate::id::FunctionId) -> bool {
     let target = function.to_string();
@@ -375,7 +399,8 @@ pub(super) fn structure_update(
         let structural = kinds.data || !added_nodes.is_empty() || !edit.removed_nodes.is_empty();
         kinds.flow || flow_nodes || ((!structural || retained.quiet) && !kinds.requires)
     });
-    let mut function_update = None;
+    let mut function_updates = Vec::new();
+    let mut state_override = None;
     let checked = local
         .and_then(|kinds| {
             let inputs = recheck_inputs(document, registry, index, analysis, retained, &targets)?;
@@ -430,18 +455,74 @@ pub(super) fn structure_update(
                     options,
                 )
                 .ok()?;
-                // Callers read a function's acceptance and summary; with no call site,
-                // nothing does, and only its own diagnostics are published.
+                // Call nodes read a function's acceptance, so a called function must keep
+                // it. Callers' summaries and the state pass read its summary; a changed one
+                // is propagated to every transitive caller, each of which must keep its own
+                // acceptance, and the state pass reruns with the new summaries.
                 let empty = Vec::new();
-                let contract = check.accepted != retained.calls.get(&function).copied()
-                    || check.summary.as_ref() != report.functions.get(&function);
-                if check.incomplete || (contract && is_called(document, function)) {
+                let accepted = check.accepted != retained.calls.get(&function).copied();
+                let summary = check.summary.as_ref() != report.functions.get(&function);
+                let called = is_called(document, function);
+                if check.incomplete || (accepted && called) {
                     return None;
                 }
-                if contract
+                if summary && called {
+                    let mut summaries = report.functions.clone();
+                    match &check.summary {
+                        Some(new) => summaries.insert(function, new.clone()),
+                        None => summaries.remove(&function),
+                    };
+                    for caller in transitive_callers(document, registry, function) {
+                        let check = super::acceptance::check_function(
+                            document,
+                            registry,
+                            effects,
+                            index,
+                            &retained.calls,
+                            &summaries,
+                            caller,
+                            options,
+                        )
+                        .ok()?;
+                        if check.incomplete
+                            || check.accepted != retained.calls.get(&caller).copied()
+                        {
+                            return None;
+                        }
+                        let changed = check.summary.as_ref() != report.functions.get(&caller)
+                            || &check.diagnostics
+                                != retained.functions.get(&caller).unwrap_or(&empty);
+                        match &check.summary {
+                            Some(new) => summaries.insert(caller, new.clone()),
+                            None => summaries.remove(&caller),
+                        };
+                        if changed {
+                            function_updates.push((caller, check));
+                        }
+                    }
+                    let regions = flow
+                        .as_ref()
+                        .map_or(&report.regions, |update: &FlowUpdate| &update.regions);
+                    let mut state = super::state::validate_state(
+                        document,
+                        registry,
+                        &report.resolved,
+                        regions,
+                        &summaries,
+                        effects,
+                    );
+                    if has_error(&state) {
+                        return None;
+                    }
+                    sort_diagnostics(&mut state);
+                    state.dedup();
+                    state_override = Some(state);
+                }
+                if accepted
+                    || summary
                     || &check.diagnostics != retained.functions.get(&function).unwrap_or(&empty)
                 {
-                    function_update = Some((function, check));
+                    function_updates.insert(0, (function, check));
                 }
             }
             options.checkpoint().ok()?;
@@ -457,7 +538,7 @@ pub(super) fn structure_update(
 
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
     scoped.checked_config = config.len();
-    if let Some((function, check)) = function_update {
+    for (function, check) in function_updates {
         match check.accepted {
             Some(accepted) => retained.calls.insert(function, accepted),
             None => retained.calls.remove(&function),
@@ -490,12 +571,16 @@ pub(super) fn structure_update(
         // The edit started clean, so only errors outside the function lists could change it.
         retained.clean = retained.complete && !blocking_error(retained);
     }
+    let mut state = state_override;
     if let Some(update) = flow {
         analysis.set_regions(update.regions);
         let old = std::mem::replace(&mut retained.flow, update.flow.clone());
         scoped.inputs.push((old, update.flow));
-        let old = std::mem::replace(&mut retained.state, update.state.clone());
-        scoped.inputs.push((old, update.state));
+        state.get_or_insert(update.state);
+    }
+    if let Some(state) = state {
+        let old = std::mem::replace(&mut retained.state, state.clone());
+        scoped.inputs.push((old, state));
     }
     for (id, list) in config {
         if !list.is_empty() {
