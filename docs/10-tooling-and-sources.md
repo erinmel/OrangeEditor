@@ -2668,3 +2668,24 @@ Branch `core/edits-beside-incomplete-nodes` on `dev` 14deecb (same toolchain; Ca
 - **Limitations:** edits next to incomplete nodes, incomplete functions, zones and other structural errors still run the full analysis. V12c is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Data order and export cones (V12d) — 2026-10-30
+
+Branch `core/data-edits-topological-order` on `dev` 6e63993 (same toolchain; Cargo.lock unchanged). Starts V12d (16).
+
+- **Finding:** a scoped data edge walked everything its target feeds, once to prove it closes no cycle and once to find exports; any export downstream sent the edit to the full analysis.
+- **Change:** the session keeps a topological order of each body's nodes under data edges, built by the body's first structure edit after a full analysis and maintained by later scoped edits (removed nodes leave holes, added nodes go last, added data edges are inserted with the Pearce–Kelly algorithm). An added edge already running forward costs two lookups; otherwise the search and reordering stay between its endpoints' positions. A rejected edge runs the full analysis, so cycle witnesses are never computed incrementally. A body that already holds a node-level cycle keeps the walk. Exports are checked by the added edge's producer cone, and only when an export lies at or after its target in the order; removed edges cannot add an activation-scoped producer to a cone.
+- **Regressions:** `orange-bundled` tests now expect edits feeding an export to be scoped, close a cycle after four edges that run both ways between chains, connect an event payload into an export's cone (full analysis, `E-CROSS-ACTIVATION`), and apply 300 seeded edits of one to three rewirings among ten chains, each equal to the full analysis. Skipping the reordering fails the cycle and random tests. Removing the export cone check fails no test: every activation-scoped producer reached through pure nodes also carries an availability requirement, which already runs the full analysis; the check covers computed outputs of other nodes. The session property tests pass.
+- **Measured** with `orange-measure session-edit`, which now also repeats the wire edit with every chain's last node exported (release, same machine, 15 edits after 3 warmups, before and after in the same session):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| wire into an export, 1,000 chains of 10 | 150.1 ms | 161.2 ms | 0.21 ms | 0.27 ms |
+| wire into an export, 1 chain of 10,000 | 442.6 ms | 468.7 ms | 174.0 ms | 182.8 ms |
+| wire, 1,000 chains of 10 | 0.20 ms | 0.33 ms | 0.20 ms | 0.34 ms |
+| wire, 1 chain of 10,000 | 177.4 ms | 184.7 ms | 167.7 ms | 176.0 ms |
+
+  The single chain is one generic component, so re-resolving it dominates; the export cone walk there covers the half of the chain above the edge. Building a body's order on its first structure edit is part of the warmups and was not timed separately.
+- **Limitations:** flow edits still walk every consumer a data edge reaches, and edits that close a cycle, connected components and the order's first build are not bounded. V12d is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
