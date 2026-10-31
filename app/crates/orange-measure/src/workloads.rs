@@ -759,6 +759,8 @@ pub enum SessionEdit {
     /// [`SessionEdit::Wire`] while an unresolvable node feeds the first node, leaving both
     /// incomplete.
     WireBesideIncomplete,
+    /// [`SessionEdit::Wire`] with every chain's last node exported.
+    WireIntoExport,
 }
 
 pub fn session_edit(
@@ -788,7 +790,13 @@ pub fn session_edit(
             ));
         }
     }
-    let (mut document, registry) = Source::new(nodes, edges).analyzed();
+    let mut source = Source::new(nodes, edges);
+    if matches!(kind, SessionEdit::WireIntoExport) {
+        source.exports = (0..chains)
+            .map(|chain| export(10 + chain * length + length - 1, "sum"))
+            .collect();
+    }
+    let (mut document, registry) = source.analyzed();
     let mut session = AnalysisSession::new(
         &document,
         &registry,
@@ -856,13 +864,15 @@ pub fn session_edit(
             (
                 SessionEdit::Wire
                 | SessionEdit::WireBesideError
-                | SessionEdit::WireBesideIncomplete,
+                | SessionEdit::WireBesideIncomplete
+                | SessionEdit::WireIntoExport,
                 true,
             ) => DocCommand::Disconnect { edge: wired.id },
             (
                 SessionEdit::Wire
                 | SessionEdit::WireBesideError
-                | SessionEdit::WireBesideIncomplete,
+                | SessionEdit::WireBesideIncomplete
+                | SessionEdit::WireIntoExport,
                 false,
             ) => DocCommand::Connect {
                 edge: wired.clone(),
