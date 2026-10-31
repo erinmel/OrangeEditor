@@ -207,6 +207,10 @@ impl ValidationAnalysis {
         }
         changed
     }
+    /// Replaces the region index after a scoped exec edit recomputed it.
+    pub(super) fn set_regions(&mut self, regions: super::regions::RegionIndex) {
+        self.report.regions = regions;
+    }
     /// The resolved signatures, for a scoped session update that adds or removes nodes.
     pub(super) fn resolved_mut(
         &mut self,
@@ -488,7 +492,9 @@ fn run_supported_analysis(
         None => diagnostics.extend(validate_declaration_types(document, registry)),
     }
     options.checkpoint()?;
-    diagnostics.extend(availability.diagnostics);
+    // Control-flow results (availability, state, regions and control cycles) stay apart,
+    // so a scoped exec edit can replace them together.
+    let mut flow = availability.diagnostics;
     diagnostics.extend(super::exports::validate_exports_with_ports(
         document,
         &ports,
@@ -509,7 +515,7 @@ fn run_supported_analysis(
         document, &ports, registry,
     ));
     options.checkpoint()?;
-    diagnostics.extend(validate_state(
+    flow.extend(validate_state(
         document,
         registry,
         &nodes.resolved,
@@ -520,25 +526,27 @@ fn run_supported_analysis(
     options.checkpoint()?;
     let explained_nodes: BTreeSet<_> = diagnostics
         .iter()
+        .chain(&flow)
         .chain(&node_diagnostics)
         .chain(&input_diagnostics)
         .chain(&config_diagnostics)
         .filter(|item| item.severity == Severity::Error)
         .filter_map(|item| item.subject.node)
         .collect();
-    diagnostics.extend(
-        data_cycles
+    let unexplained = |item: &Diagnostic| {
+        item.code != super::DiagnosticCode::DependencyUnavailable
+            || item
+                .subject
+                .node
+                .is_none_or(|node| !explained_nodes.contains(&node))
+    };
+    diagnostics.extend(data_cycles.diagnostics.into_iter().filter(unexplained));
+    flow.extend(
+        regions
             .diagnostics
             .into_iter()
-            .chain(regions.diagnostics)
             .chain(control.diagnostics)
-            .filter(|item| {
-                item.code != super::DiagnosticCode::DependencyUnavailable
-                    || item
-                        .subject
-                        .node
-                        .is_none_or(|node| !explained_nodes.contains(&node))
-            }),
+            .filter(unexplained),
     );
     // The session keeps the input diagnostics apart from the rest, so a literal edit
     // can replace one node's inputs and merge again (16 §5.6).
@@ -559,11 +567,19 @@ fn run_supported_analysis(
                 inputs,
                 base,
                 config,
+                flow: {
+                    let mut flow = flow.clone();
+                    sort_diagnostics(&mut flow);
+                    flow.dedup();
+                    flow
+                },
                 clean: false,
+                quiet: false,
             })
         }
         _ => None,
     };
+    diagnostics.extend(flow);
     diagnostics.extend(node_diagnostics);
     diagnostics.extend(input_diagnostics);
     diagnostics.extend(config_diagnostics);
@@ -583,11 +599,11 @@ fn run_supported_analysis(
             && diagnostics
                 .iter()
                 .all(|item| item.severity != Severity::Error)
-            && regions.index.zones.iter().len() == 0
-            && nodes
-                .resolved
-                .values()
-                .all(|signature| signature.suspension() == Some(Suspends::Never));
+            && regions.index.zones.iter().len() == 0;
+        retained.quiet = nodes
+            .resolved
+            .values()
+            .all(|signature| signature.suspension() == Some(Suspends::Never));
     }
     drop(ports);
     let analysis = ValidationAnalysis {
