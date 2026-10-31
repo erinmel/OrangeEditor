@@ -160,28 +160,48 @@ fn a_literal_that_changes_inference_runs_the_full_analysis() {
 }
 
 #[test]
-fn gaining_or_losing_an_input_error_runs_the_full_analysis() {
+fn input_errors_are_patched_in_place_unless_a_node_is_incomplete() {
     let (mut doc, registry) = chains();
     let mut session = session(&doc, &registry);
     let options = AnalysisOptions::default();
-    let work = edit(
+    // In a complete report an input error suppresses nothing, so gaining, changing and
+    // losing one are all scoped.
+    for value in ["x", "y", "1"] {
+        let work = edit(
+            &mut session,
+            &mut doc,
+            &registry,
+            options,
+            vec![set(11, "b", u64_text(value))],
+        );
+        assert_eq!(work, SessionWork::Scoped);
+    }
+    assert!(session.analysis().report().is_valid());
+    // A structure edit beside an input error is scoped too.
+    edit(
         &mut session,
         &mut doc,
         &registry,
         options,
         vec![set(11, "b", u64_text("x"))],
     );
-    assert_eq!(work, SessionWork::Recompute);
-    assert!(!session.analysis().report().is_valid());
-    // Still invalid: the error status holds, so the edit stays scoped.
     let work = edit(
         &mut session,
         &mut doc,
         &registry,
         options,
-        vec![set(11, "b", u64_text("y"))],
+        vec![disconnect(14)],
     );
     assert_eq!(work, SessionWork::Scoped);
+    // Once a node is incomplete, an error appearing or going could change which
+    // dependency diagnostics are suppressed, so that runs in full.
+    let mut unknown = math(60, "add", 0, 1);
+    unknown["definition_id"] = json!("org.orange.math/unknown");
+    let unknown = DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(unknown).unwrap(),
+    };
+    edit(&mut session, &mut doc, &registry, options, vec![unknown]);
     let work = edit(
         &mut session,
         &mut doc,
@@ -190,7 +210,6 @@ fn gaining_or_losing_an_input_error_runs_the_full_analysis() {
         vec![set(11, "b", u64_text("1"))],
     );
     assert_eq!(work, SessionWork::Recompute);
-    assert!(session.analysis().report().is_valid());
 }
 
 #[test]
@@ -519,18 +538,17 @@ fn package_node_configuration_is_scoped() {
     let work = edit(&mut session, &mut doc, &registry, options, vec![saturating]);
     assert_eq!(work, SessionWork::Scoped);
     assert_eq!(session.stats().full_analysis_runs, 0);
-    // An invalid value adds a configuration error, which runs in full.
+    // An invalid value adds a configuration error; nothing is incomplete, so it is scoped.
     let invalid = configure(11, json!({"int_overflow": "sometimes"}));
     let work = edit(&mut session, &mut doc, &registry, options, vec![invalid]);
-    assert_eq!(work, SessionWork::Recompute);
+    assert_eq!(work, SessionWork::Scoped);
     assert!(!session.analysis().report().is_valid());
-    // Still invalid: the configuration error stays, so the edit is scoped.
     let other = configure(11, json!({"int_overflow": "never"}));
     let work = edit(&mut session, &mut doc, &registry, options, vec![other]);
     assert_eq!(work, SessionWork::Scoped);
     let valid = configure(11, json!({"int_overflow": "checked"}));
     let work = edit(&mut session, &mut doc, &registry, options, vec![valid]);
-    assert_eq!(work, SessionWork::Recompute);
+    assert_eq!(work, SessionWork::Scoped);
     assert!(session.analysis().report().is_valid());
     // Configuration and a literal together are one node edit.
     let both = vec![
@@ -791,10 +809,10 @@ fn exec_edges_that_may_change_more_run_the_full_analysis() {
         vec![disconnect(6)],
     );
     assert_eq!(work, SessionWork::Recompute);
-    // Exec and data edges together.
+    // Exec and data edges together rerun the control-flow passes for both.
     let mixed = vec![disconnect(2), disconnect(4)];
     let work = edit(&mut session, &mut doc, &registry, options, mixed);
-    assert_eq!(work, SessionWork::Recompute);
+    assert_eq!(work, SessionWork::Scoped);
 }
 
 /// Two On Start activations, each running two Set Variable nodes fed by adds.

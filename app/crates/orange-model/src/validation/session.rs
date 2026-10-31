@@ -224,7 +224,8 @@ impl AnalysisSession {
             full_analysis_runs: 0,
             index_rebuilt: false,
             local: LocalWork {
-                inputs_computed: scoped.inputs.len(),
+                inputs_computed: scoped.checked_inputs,
+                config_computed: scoped.checked_config,
                 components_computed: scoped.components,
                 ..LocalWork::default()
             },

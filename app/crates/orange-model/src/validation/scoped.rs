@@ -51,8 +51,13 @@ pub(super) struct Retained {
     pub flow: Vec<Diagnostic>,
     /// State diagnostics, sorted and deduplicated; a scoped exec edit reruns the pass.
     pub state: Vec<Diagnostic>,
-    /// The report had no error, incomplete node or function, or zone: the condition under
-    /// which a structure edit can be checked locally. Scoped updates keep it.
+    /// No node or function was incomplete. Every dependency-unavailable diagnostic comes
+    /// from an incomplete node, so then no error can suppress one, and a node may gain or
+    /// lose input, configuration or node errors without changing any other diagnostic.
+    pub complete: bool,
+    /// The report was complete, had no zone, and had errors at most in the per-node node,
+    /// input and configuration lists: the condition under which a structure edit can be
+    /// checked locally. Scoped updates keep it.
     pub clean: bool,
     /// No node may suspend, so stale-capture checks cannot read data edges. Data edges and
     /// nodes are checked locally only then; exec edges recompute the state pass anyway.
@@ -81,6 +86,10 @@ pub(super) struct Scoped {
     /// Nodes re-resolved, including neighbours read only for availability.
     pub resolved: usize,
     pub components: usize,
+    /// Nodes whose input check ran.
+    pub checked_inputs: usize,
+    /// Nodes whose configuration check ran.
+    pub checked_config: usize,
     /// Nodes added or removed, whose signatures the update published or withdrew.
     pub changed_nodes: BTreeSet<NodeId>,
 }
@@ -151,13 +160,16 @@ pub(super) fn node_update(
             super::config::validate_node_config(BodyRef::Root, node, registry, &mut schemas)
                 .into_iter()
                 .collect();
-        if has_error(&list) != has_error(retained.config.get(id).map_or(&[], Vec::as_slice)) {
+        if !retained.complete
+            && has_error(&list) != has_error(retained.config.get(id).map_or(&[], Vec::as_slice))
+        {
             return None;
         }
         config.push((*id, list));
     }
     options.checkpoint().ok()?;
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
+    scoped.checked_config = config.len();
     for (id, list) in config {
         let old = if list.is_empty() {
             retained.config.remove(&id)
@@ -338,9 +350,6 @@ pub(super) fn structure_update(
                 )
                 .into_iter()
                 .collect();
-                if has_error(&list) {
-                    return None;
-                }
                 config.push((*id, list));
             }
             options.checkpoint().ok()?;
@@ -355,6 +364,7 @@ pub(super) fn structure_update(
     };
 
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
+    scoped.checked_config = config.len();
     if let Some(update) = flow {
         analysis.set_regions(update.regions);
         let old = std::mem::replace(&mut retained.flow, update.flow.clone());
@@ -829,9 +839,9 @@ fn resolution_unchanged(
 /// Each added node's new signature and node diagnostics.
 type Fresh = BTreeMap<NodeId, (SignatureSnapshot, Vec<Diagnostic>)>;
 
-/// The current input diagnostics of `nodes`, whose signatures are unchanged. A node
-/// gaining or losing an input error would change which dependency diagnostics the report
-/// suppresses; that case runs in full.
+/// The current input diagnostics of `nodes`, whose signatures are unchanged. In an
+/// incomplete report, a node gaining or losing an input error would change which
+/// dependency diagnostics the report suppresses; that case runs in full.
 fn recheck_inputs(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -850,7 +860,9 @@ fn recheck_inputs(
             None => Vec::new(),
         };
         sort_diagnostics(&mut list);
-        if has_error(&list) != has_error(retained.inputs.get(id).unwrap_or(&empty)) {
+        if !retained.complete
+            && has_error(&list) != has_error(retained.inputs.get(id).unwrap_or(&empty))
+        {
             return None;
         }
         inputs.push((*id, list));
@@ -867,7 +879,7 @@ fn commit(
     components: usize,
 ) -> Scoped {
     retained.admitted = admitted;
-    let inputs = inputs
+    let inputs: Vec<_> = inputs
         .into_iter()
         .map(|(id, list)| {
             let old = if list.is_empty() {
@@ -879,6 +891,8 @@ fn commit(
         })
         .collect();
     Scoped {
+        checked_inputs: inputs.len(),
+        checked_config: 0,
         inputs,
         resolved,
         components,

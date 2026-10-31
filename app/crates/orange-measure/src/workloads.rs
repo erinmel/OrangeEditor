@@ -754,6 +754,8 @@ pub enum SessionEdit {
     Config,
     /// Alternately adds an add node fed by the middle node and removes it again.
     Node,
+    /// [`SessionEdit::Wire`] while the first node holds an invalid literal, an input error.
+    WireBesideError,
 }
 
 pub fn session_edit(
@@ -797,6 +799,25 @@ pub fn session_edit(
     };
     let wired: orange_model::document::Edge =
         serde_json::from_value(edge(middle, middle - 1, "sum", middle, "a")).expect("edge");
+    if matches!(kind, SessionEdit::WireBesideError) {
+        let invalid = serde_json::from_value(json!({"type": U64, "value": "x"})).expect("literal");
+        let committed = document
+            .apply([DocCommand::SetLiteral {
+                port: PortRef {
+                    node: id(10).parse().expect("node ID"),
+                    port: "b".parse().expect("port ID"),
+                },
+                literal: Some(invalid),
+            }])
+            .expect("edit");
+        session.update(
+            &document,
+            &registry,
+            &committed.change_set,
+            AnalysisOptions::default(),
+        );
+        assert!(!session.analysis().report().is_valid());
+    }
     let mut samples = Vec::new();
     for sample in 0..config.warmup + config.runs {
         let command = match (kind, sample % 2 == 0) {
@@ -807,8 +828,10 @@ pub fn session_edit(
                     literal: Some(literal),
                 }
             }
-            (SessionEdit::Wire, true) => DocCommand::Disconnect { edge: wired.id },
-            (SessionEdit::Wire, false) => DocCommand::Connect {
+            (SessionEdit::Wire | SessionEdit::WireBesideError, true) => {
+                DocCommand::Disconnect { edge: wired.id }
+            }
+            (SessionEdit::Wire | SessionEdit::WireBesideError, false) => DocCommand::Connect {
                 edge: wired.clone(),
             },
             (SessionEdit::Config, saturating) => DocCommand::SetConfig {
@@ -869,7 +892,10 @@ pub fn session_edit(
             samples.push(start.elapsed());
         }
     }
-    assert!(session.analysis().report().is_valid());
+    assert_eq!(
+        session.analysis().report().is_valid(),
+        !matches!(kind, SessionEdit::WireBesideError)
+    );
     samples.sort();
     let at = |q: usize| samples[(samples.len() * q / 100).min(samples.len() - 1)];
     (at(50), at(95))

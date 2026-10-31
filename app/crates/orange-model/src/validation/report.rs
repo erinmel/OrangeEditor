@@ -627,6 +627,7 @@ fn run_supported_analysis(
                 config,
                 flow: sorted(flow.clone()),
                 state: sorted(state.clone()),
+                complete: false,
                 clean: false,
                 quiet: false,
             })
@@ -649,10 +650,15 @@ fn run_supported_analysis(
     options.checkpoint()?;
     if let Some(retained) = &mut retained {
         use crate::document::Suspends;
-        retained.clean = incomplete_nodes.is_empty()
-            && functions.incomplete_functions.is_empty()
-            && diagnostics
+        retained.complete =
+            incomplete_nodes.is_empty() && functions.incomplete_functions.is_empty();
+        // Errors in the per-node lists are allowed: the session replaces those lists itself.
+        retained.clean = retained.complete
+            && retained
+                .base
                 .iter()
+                .chain(&retained.flow)
+                .chain(&retained.state)
                 .all(|item| item.severity != Severity::Error)
             && regions.index.zones.iter().len() == 0;
         retained.quiet = nodes

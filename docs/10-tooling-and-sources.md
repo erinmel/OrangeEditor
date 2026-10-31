@@ -2579,3 +2579,21 @@ Branch `core/scoped-exec-nodes` on `dev` 230daed (same toolchain; Cargo.lock unc
 - **Limitations:** function bodies, zone markers and edits in reports with errors still rerun every pass, and the single-activation case remains far above NFR-15. V12c is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Edits beside errors (V12c) — 2026-10-30
+
+Branch `core/edits-beside-errors` on `dev` 4ca7ac3 (same toolchain; Cargo.lock unchanged). Continues V12c (16).
+
+- **Finding:** every dependency-unavailable diagnostic, the only kind another node's error can suppress, comes from an incomplete node (connections, data cycles, regions, nodes and exports emit it only for nodes or endpoints whose metadata is unavailable). So in a report with no incomplete node or function, a node gaining or losing an input, configuration or node error changes no other diagnostic.
+- **Change:** a full session analysis records whether the report is complete, and calls it clean when it is complete, has no zone, and has errors only in the per-node node, input and configuration lists. Node edits in a complete report no longer require the edited nodes' input or configuration error status to hold, and structure edits are scoped in a clean report even while such errors exist; added nodes may carry configuration errors. Incomplete reports keep the error-status rule, and reports with connection, cycle, region, availability, state, export or other errors still run structure edits in full. Scoped updates now report input and configuration checks separately in `LocalWork`, instead of counting configuration lists as input checks.
+- **Regressions:** `orange-bundled` tests gain, change and lose an input error and a configuration error in place, disconnect an edge beside an input error (scoped), and change an input error after an unresolvable node makes the report incomplete (full analysis); a mixed exec and data edit is now scoped. The configuration-unit session test now expects one scoped configuration and input check. Each step equals the full analysis. The session property tests pass with 1,024 cases in release.
+- **Measured** with `orange-measure session-edit`, which now also repeats the wire edit after an invalid literal on the first node (release, same machine, 15 edits after 3 warmups, before and after in the same session):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| wire beside an input error, 1,000 chains of 10 | 128.6 ms | 140.2 ms | 0.20 ms | 0.29 ms |
+| wire beside an input error, 1 chain of 10,000 | 239.5 ms | 251.4 ms | 164.9 ms | 169.0 ms |
+
+- **Limitations:** incomplete reports, structural errors, zone markers and function bodies still run every pass for structure edits; the connected worst case remains far above NFR-15. V12c is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
