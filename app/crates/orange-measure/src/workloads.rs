@@ -761,6 +761,9 @@ pub enum SessionEdit {
     WireBesideIncomplete,
     /// [`SessionEdit::Wire`] with every chain's last node exported.
     WireIntoExport,
+    /// [`SessionEdit::Wire`], each time right after two untimed edits that run the full
+    /// analysis: closing a cycle in the first chain and opening it again.
+    WireAfterFull,
 }
 
 pub fn session_edit(
@@ -852,7 +855,25 @@ pub fn session_edit(
         assert!(!session.analysis().report().is_valid());
     }
     let mut samples = Vec::new();
+    let cycle: orange_model::document::Edge =
+        serde_json::from_value(edge(8, 10 + length - 1, "sum", 10, "b")).expect("edge");
     for sample in 0..config.warmup + config.runs {
+        if matches!(kind, SessionEdit::WireAfterFull) {
+            for command in [
+                DocCommand::Connect {
+                    edge: cycle.clone(),
+                },
+                DocCommand::Disconnect { edge: cycle.id },
+            ] {
+                let committed = document.apply([command]).expect("edit");
+                session.update(
+                    &document,
+                    &registry,
+                    &committed.change_set,
+                    AnalysisOptions::default(),
+                );
+            }
+        }
         let command = match (kind, sample % 2 == 0) {
             (SessionEdit::Literal, _) => {
                 let literal = serde_json::from_value(literal(2 + sample as u64)).expect("literal");
@@ -865,14 +886,16 @@ pub fn session_edit(
                 SessionEdit::Wire
                 | SessionEdit::WireBesideError
                 | SessionEdit::WireBesideIncomplete
-                | SessionEdit::WireIntoExport,
+                | SessionEdit::WireIntoExport
+                | SessionEdit::WireAfterFull,
                 true,
             ) => DocCommand::Disconnect { edge: wired.id },
             (
                 SessionEdit::Wire
                 | SessionEdit::WireBesideError
                 | SessionEdit::WireBesideIncomplete
-                | SessionEdit::WireIntoExport,
+                | SessionEdit::WireIntoExport
+                | SessionEdit::WireAfterFull,
                 false,
             ) => DocCommand::Connect {
                 edge: wired.clone(),

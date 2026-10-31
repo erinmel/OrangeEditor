@@ -2689,3 +2689,23 @@ Branch `core/data-edits-topological-order` on `dev` 6e63993 (same toolchain; Car
 - **Limitations:** flow edits still walk every consumer a data edge reaches, and edits that close a cycle, connected components and the order's first build are not bounded. V12d is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Data order built with the report (V12d) — 2026-10-30
+
+Branch `core/data-order-with-report` on `dev` 2c6bda0 (same toolchain; Cargo.lock unchanged). Continues V12d (16).
+
+- **Finding:** the root body's data order was built by the first scoped structure edit after each full analysis. The build walked the document index per node with ordered-map in-degrees and took about 14 ms on 10,000 nodes, so the first wire edit after any full analysis cost about 15 ms.
+- **Change:** the build numbers the body's nodes densely, resolves each body edge's source port once and runs Kahn's algorithm over vectors, about 4 ms on 10,000 nodes. The full analysis builds the root body's order when the report is clean or isolable, where it adds that to an analysis of 150 ms or more; function bodies still build theirs on their first structure edit. Scoped edits keep the order as before.
+- **Regressions:** behaviour is unchanged; the scoped-session tests, including the seeded rewiring run, now start from the order built with the report and pass. The session property tests pass.
+- **Measured** with `orange-measure session-edit`, which now also times the wire edit right after two untimed edits that each run the full analysis, closing a cycle in the first chain and opening it again (release, same machine, 15 edits after 3 warmups, before and after in the same session):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| wire after a full analysis, 1,000 chains of 10 | 14.58 ms | 15.34 ms | 0.83 ms | 1.07 ms |
+| wire after a full analysis, 1 chain of 10,000 | 180.7 ms | 202.1 ms | 179.0 ms | 206.9 ms |
+| wire, 1,000 chains of 10 | 0.23 ms | 0.34 ms | 0.21 ms | 0.26 ms |
+
+  The first edit still costs about 0.6 ms more than later ones. Timing the session's update steps showed the same work running slower right after the full pass (structure check about 270 µs instead of 120 µs, local cache invalidation about 200 µs instead of 40 µs), not new work; it was not investigated further.
+- **Limitations:** the build is linear in the root body and runs with every clean full analysis. Flow edits still walk every consumer a data edge reaches. V12d is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
