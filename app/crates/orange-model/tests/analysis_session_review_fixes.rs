@@ -109,7 +109,9 @@ fn deterministic_rejections_stay_fresh_through_layout_undo_redo_and_recheck_chan
             &semantic.change_set,
             AnalysisOptions::default(),
         );
-        assert_eq!(session.stats().full_analysis_runs, 1);
+        // Setting the configuration it already has is a node edit, re-checked in place
+        // unless the domain rejection left nothing to patch.
+        assert_eq!(session.stats().full_analysis_runs, usize::from(foreign));
         assert_eq!(
             session.analysis(),
             &analyze_with_options(

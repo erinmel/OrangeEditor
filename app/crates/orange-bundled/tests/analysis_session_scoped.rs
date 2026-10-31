@@ -591,6 +591,16 @@ fn type_arguments_and_pins_that_keep_inference_are_scoped() {
         let work = edit(&mut session, &mut doc, &registry, options, vec![args]);
         assert_eq!(work, SessionWork::Scoped);
     }
+    // Setting the same arguments or literal again commits an edit that changes nothing.
+    let again = vec![
+        DocCommand::SetTypeArgs {
+            node: node(),
+            args: types(&[("T", "core/i64@1")]),
+        },
+        set(11, "b", u64_text("1")),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, again);
+    assert_eq!(work, SessionWork::Scoped);
     // A pin agreeing with the chain's literals changes no signature.
     let pin = |ty| DocCommand::SetTypePins {
         node: node(),
