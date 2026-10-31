@@ -2597,3 +2597,14 @@ Branch `core/edits-beside-errors` on `dev` 4ca7ac3 (same toolchain; Cargo.lock u
 - **Limitations:** incomplete reports, structural errors, zone markers and function bodies still run every pass for structure edits; the connected worst case remains far above NFR-15. V12c is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Function-body node edits (V12e) — 2026-10-30
+
+Branch `core/function-body-node-edits` on `dev` e37ca68 (same toolchain; Cargo.lock unchanged). Starts V12e (16).
+
+- **Change:** the scoped node path (literals, type arguments, pins and package configuration) no longer requires root-body nodes. Re-resolution of a function-body node, its neighbours and components under the final callee acceptance equals its whole-document result. A function's acceptance reads its body's signatures, incompleteness and errors, and its summary its signatures and effects, so with every signature confirmed unchanged and every edited body node keeping its input and configuration error status, neither changes and no caller can observe the edit. The session therefore keeps the error-status rule for function-body nodes even in a complete report, and checks their configuration against their own body.
+- **Regressions:** an `orange-bundled` test with On Start calling a graph-local action edits a literal and a pin inside the body (scoped), introduces and fixes an input error there (full analysis both ways), and sets a literal that changes the body's inference (full analysis); each step equals the full analysis. Without the function-body error-status rule the input error is scoped and the session misses the caller's call node becoming incomplete, which the test catches. The session property tests pass.
+- **Measured:** not separately; the edit takes the same scoped node path as root literal edits, which `orange-measure session-edit` times at about 0.2 ms on 1,000 independent chains.
+- **Limitations:** structure edits inside function bodies, and edits that change a function's acceptance or summary, still run the full analysis; propagation through the reverse call graph is not implemented. V12e is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
