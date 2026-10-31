@@ -62,6 +62,36 @@ pub(crate) fn validate_control_cycles_in(
     registry: &RegistrySnapshot,
     scope: Scope,
 ) -> ControlCycleValidation {
+    control_cycles_among(document, resolved, connections, registry, scope, None)
+}
+
+/// The same pass for the root-body nodes in `only` alone: an exec-connected set, whose
+/// regions, ownership and diagnostics do not depend on any other node.
+pub(crate) fn validate_control_cycles_among(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    connections: &ConnectionValidation,
+    registry: &RegistrySnapshot,
+    only: &BTreeSet<NodeId>,
+) -> ControlCycleValidation {
+    control_cycles_among(
+        document,
+        resolved,
+        connections,
+        registry,
+        Scope::All,
+        Some(only),
+    )
+}
+
+fn control_cycles_among(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    connections: &ConnectionValidation,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+    only: Option<&BTreeSet<NodeId>>,
+) -> ControlCycleValidation {
     let origin = registry.origin();
     let mut result = ControlCycleValidation {
         incomplete_nodes: connections.incomplete_nodes.clone(),
@@ -88,6 +118,7 @@ pub(crate) fn validate_control_cycles_in(
         edges.sort_by_key(|edge| edge.id);
         for edge in edges {
             if error_edges.contains(&edge.id)
+                || only.is_some_and(|only| !only.contains(&edge.from.node))
                 || !body.nodes.contains_key(&edge.from.node)
                 || !body.nodes.contains_key(&edge.to.node)
             {

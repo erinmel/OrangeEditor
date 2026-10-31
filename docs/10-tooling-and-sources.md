@@ -2523,3 +2523,22 @@ Branch `core/scoped-exec-edges` on `dev` 882442b (same toolchain; Cargo.lock unc
 - **Limitations:** the control-flow passes still visit every body, so exec edits are far from NFR-15; root-scoped passes are V12c. Exec node additions and removals, intrinsic configuration, function bodies and edits in reports with errors still run every pass in full. V12b is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Exec-component scoping (V12c) — 2026-10-30
+
+Branch `core/exec-component-scoping` on `dev` 5dc66de (same toolchain; Cargo.lock unchanged). Starts V12c (16).
+
+- **Profile:** with temporary timers, the scoped exec edit of 2026-10-30 spent about 18 ms in the control-flow passes and 11 to 25 ms patching the published list: disconnecting the middle of 1,000 Set Variable nodes makes about 500 unreachable, and each new warning was inserted into a list of about 10,000 one at a time, after a quadratic difference of the old and new lists.
+- **Change:** the region, control-cycle and availability passes accept a node subset. A scoped exec edit reruns them only for the root-body nodes joined to its edges by exec or event edges, replaces that set's region index entries and diagnostics, and reruns state, now kept as its own list, in full. Availability reads only the set's exec edges and the data edges into its consumers and the expanding producers upstream of them. When a node whose region changed feeds an owned consumer outside the set through data, or a new diagnostic falls outside it, the whole-document passes run as before. The in-place patch finds list differences with one merge and rebuilds the published list in one merge above 32 changes.
+- **Regressions:** an `orange-bundled` test with two On Start activations edits inside one, moves a Set from one to the end of the other and moves it back, each scoped and equal to the full analysis. Shrinking the rerun set to the edit's endpoints fails it and the earlier exec test. Disabling the cross-set fallback fails no test: in a clean report a consumer reading a moved node's requirement-carrying output is always in the rerun set, so the fallback is kept as a guard. The session property tests pass with 1,024 cases in release.
+- **Measured** with `orange-measure session-edit`, which now runs the exec workload as one activation and as 100 activations of 10 Set Variable nodes (release, same machine, 15 edits after 3 warmups):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| exec edge, 1 activation | 43.3 ms | 46.0 ms | 28.4 ms | 29.2 ms |
+| exec edge, 100 activations | 21.6 ms | 22.4 ms | 3.2 ms | 3.3 ms |
+
+  One activation is the connected worst case: its set is the whole graph. The faster patch also lowered the single 10,000-node chain cases of the other edit kinds to about 105 to 124 ms p50.
+- **Limitations:** the subset passes still iterate and sort every body edge before filtering, and the region index is cloned per edit, which keep the 100-activation edit above 2 ms. Exec node additions and removals, function bodies and edits in reports with errors still rerun every pass. V12c is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

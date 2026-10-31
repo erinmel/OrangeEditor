@@ -628,22 +628,36 @@ pub fn analysis_worker_latency(config: Config) -> AnalysisWorkerTimes {
 
 /// Session update latency for one literal edit on `chains` independent add chains of
 /// `length` nodes, as (p50, p95) over `config.runs` edits after `config.warmup`.
-/// Session update latency when the exec edge into the middle of 1,000 Set Variable nodes,
-/// run in turn from On Start and each fed by a 9-add chain (10,001 nodes), is alternately
-/// removed and restored. (p50, p95) over `config.runs` edits after `config.warmup`.
-pub fn session_exec_edit(config: Config) -> (std::time::Duration, std::time::Duration) {
+/// Session update latency when an exec edge in the middle of 1,000 Set Variable nodes,
+/// split evenly across `entries` On Start activations that each run theirs in turn, every
+/// Set fed by a 9-add chain (about 10,000 nodes), is alternately removed and restored.
+/// (p50, p95) over `config.runs` edits after `config.warmup`.
+pub fn session_exec_edit(
+    config: Config,
+    entries: u32,
+) -> (std::time::Duration, std::time::Duration) {
     use orange_model::DocCommand;
     use orange_model::validation::{AnalysisOptions, AnalysisSession};
     use std::collections::BTreeMap;
     use std::time::Instant;
     const SETS: u32 = 1000;
     const ADDS: u32 = 9;
-    let mut nodes = vec![core(1, "on-start")];
+    let per_entry = SETS / entries;
+    let mut nodes = Vec::new();
+    for entry in 0..entries {
+        let mut start = core(30_000 + entry, "on-start");
+        start["activation"]["order"] = json!(entry);
+        nodes.push(start);
+    }
     let mut edges = Vec::new();
     for set in 0..SETS {
         let node = 10 + set;
         nodes.push(var_node(node, "set-variable", TOTAL));
-        let previous = if set == 0 { 1 } else { node - 1 };
+        let previous = if set % per_entry == 0 {
+            30_000 + set / per_entry
+        } else {
+            node - 1
+        };
         edges.push(edge(node, previous, "then", node, "in"));
         let first = 10_000 + set * ADDS;
         for link in 0..ADDS {
@@ -669,7 +683,8 @@ pub fn session_exec_edit(config: Config) -> (std::time::Duration, std::time::Dur
         BTreeMap::new(),
         AnalysisOptions::default(),
     );
-    let middle = 10 + SETS / 2;
+    // The middle Set of the middle activation, and the node before it.
+    let middle = 10 + (entries / 2) * per_entry + per_entry / 2;
     let wired: orange_model::document::Edge =
         serde_json::from_value(edge(middle, middle - 1, "then", middle, "in")).expect("edge");
     let mut samples = Vec::new();

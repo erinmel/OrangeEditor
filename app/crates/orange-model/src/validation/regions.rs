@@ -131,6 +131,36 @@ pub(crate) fn validate_regions_in(
     registry: &RegistrySnapshot,
     scope: Scope,
 ) -> RegionValidation {
+    regions_among(document, resolved, connections, registry, scope, None)
+}
+
+/// The same pass for the root-body nodes in `only` alone: an exec-connected set, whose
+/// regions, ownership and diagnostics do not depend on any other node.
+pub(crate) fn validate_regions_among(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    connections: &ConnectionValidation,
+    registry: &RegistrySnapshot,
+    only: &BTreeSet<NodeId>,
+) -> RegionValidation {
+    regions_among(
+        document,
+        resolved,
+        connections,
+        registry,
+        Scope::All,
+        Some(only),
+    )
+}
+
+fn regions_among(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    connections: &ConnectionValidation,
+    registry: &RegistrySnapshot,
+    scope: Scope,
+    only: Option<&BTreeSet<NodeId>>,
+) -> RegionValidation {
     let origin = registry.origin();
     let mut result = RegionValidation {
         incomplete_nodes: connections.incomplete_nodes.clone(),
@@ -155,6 +185,7 @@ pub(crate) fn validate_regions_in(
             &error_edges,
             origin,
             &mut result,
+            only,
         );
     }
     sort_diagnostics(&mut result.diagnostics);
@@ -193,6 +224,10 @@ fn is_exec_node(signature: &SignatureSnapshot) -> bool {
 }
 
 #[allow(clippy::too_many_lines)]
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a node subset joins the body, its function and the shared error edges"
+)]
 fn check_body(
     document: &GraphDocument,
     resolved: &PortResolver<'_>,
@@ -201,9 +236,11 @@ fn check_body(
     error_edges: &BTreeSet<EdgeId>,
     origin: &HostOrigin,
     result: &mut RegionValidation,
+    only: Option<&BTreeSet<NodeId>>,
 ) {
+    let inside = |node: NodeId| only.is_none_or(|only| only.contains(&node));
     let mut local_incomplete = BTreeSet::new();
-    for node in body.nodes.values() {
+    for node in body.nodes.values().filter(|node| inside(node.id)) {
         if !resolved.contains_key(&node.id) {
             local_incomplete.insert(node.id);
         }
@@ -216,6 +253,7 @@ fn check_body(
     edges.sort_by_key(|edge| edge.id);
     for edge in edges {
         if error_edges.contains(&edge.id)
+            || !inside(edge.from.node)
             || !body.nodes.contains_key(&edge.from.node)
             || !body.nodes.contains_key(&edge.to.node)
         {
@@ -404,7 +442,7 @@ fn check_body(
     }
 
     // Structured boundaries and loop bounds.
-    for node in body.nodes.values() {
+    for node in body.nodes.values().filter(|node| inside(node.id)) {
         let definition = node.definition.id.as_str();
         if definition == ids::WHILE
             && !node
@@ -436,15 +474,18 @@ fn check_body(
         }
     }
 
-    check_zones(
-        document,
-        resolved,
-        body,
-        function,
-        error_edges,
-        origin,
-        result,
-    );
+    // Zones are checked per body; a node subset is only taken from a zone-free body.
+    if only.is_none() {
+        check_zones(
+            document,
+            resolved,
+            body,
+            function,
+            error_edges,
+            origin,
+            result,
+        );
+    }
 
     // Unreachable exec nodes, except those that unresolved nodes may feed.
     let mut maybe = BTreeSet::new();
@@ -454,7 +495,7 @@ fn check_body(
             stack.extend(raw.get(&node).into_iter().flatten().copied());
         }
     }
-    for node in body.nodes.values() {
+    for node in body.nodes.values().filter(|node| inside(node.id)) {
         if let Some(signature) = resolved.get(&node.id)
             && is_exec_node(signature)
             && !membership.contains_key(&node.id)
