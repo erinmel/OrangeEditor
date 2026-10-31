@@ -764,6 +764,9 @@ pub enum SessionEdit {
     /// [`SessionEdit::Wire`], each time right after two untimed edits that run the full
     /// analysis: closing a cycle in the first chain and opening it again.
     WireAfterFull,
+    /// [`SessionEdit::Wire`] in a graph that also holds one Repeat zone, apart from the
+    /// chains: begin, one body add, end and an add reading the result (V12c).
+    WireBesideZone,
 }
 
 pub fn session_edit(
@@ -792,6 +795,26 @@ pub fn session_edit(
                 "a",
             ));
         }
+    }
+    if matches!(kind, SessionEdit::WireBesideZone) {
+        let marker = |n: u32, definition: &str| {
+            json!({"id": id(n), "definition_id": definition, "definition_version": 1,
+                "config_version": 1, "config": {"zone": "z"}, "type_pins": {"A": U64}})
+        };
+        let mut begin = marker(1, "core/repeat-begin");
+        begin["inputs"] = json!({"count": {"type": "core/i64@1", "value": "3"},
+            "initial": literal(0)});
+        nodes.extend([
+            begin,
+            math(2, "add", 0, 1),
+            marker(3, "core/repeat-end"),
+            math(4, "add", 0, 1),
+        ]);
+        edges.extend([
+            edge(1, 1, "carried", 2, "a"),
+            edge(2, 2, "sum", 3, "next"),
+            edge(3, 3, "result", 4, "a"),
+        ]);
     }
     let mut source = Source::new(nodes, edges);
     if matches!(kind, SessionEdit::WireIntoExport) {
@@ -887,7 +910,8 @@ pub fn session_edit(
                 | SessionEdit::WireBesideError
                 | SessionEdit::WireBesideIncomplete
                 | SessionEdit::WireIntoExport
-                | SessionEdit::WireAfterFull,
+                | SessionEdit::WireAfterFull
+                | SessionEdit::WireBesideZone,
                 true,
             ) => DocCommand::Disconnect { edge: wired.id },
             (
@@ -895,7 +919,8 @@ pub fn session_edit(
                 | SessionEdit::WireBesideError
                 | SessionEdit::WireBesideIncomplete
                 | SessionEdit::WireIntoExport
-                | SessionEdit::WireAfterFull,
+                | SessionEdit::WireAfterFull
+                | SessionEdit::WireBesideZone,
                 false,
             ) => DocCommand::Connect {
                 edge: wired.clone(),
@@ -965,6 +990,9 @@ pub fn session_edit(
             SessionEdit::WireBesideError | SessionEdit::WireBesideIncomplete
         )
     );
+    if matches!(kind, SessionEdit::WireBesideZone) {
+        assert_eq!(session.analysis().report().regions.zones.iter().len(), 1);
+    }
     samples.sort();
     let at = |q: usize| samples[(samples.len() * q / 100).min(samples.len() - 1)];
     (at(50), at(95))
