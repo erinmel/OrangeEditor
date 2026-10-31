@@ -113,6 +113,10 @@ fn main() {
                 SessionEdit::WireBesideError,
                 "disconnect/connect beside an input error",
             ),
+            (
+                SessionEdit::WireBesideIncomplete,
+                "disconnect/connect beside an incomplete node",
+            ),
         ] {
             for (chains, length) in [(1000, 10), (1, 10_000)] {
                 let (p50, p95) = workloads::session_edit(config, chains, length, edit);
