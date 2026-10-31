@@ -657,6 +657,7 @@ fn run_supported_analysis(
                 complete: false,
                 clean: false,
                 isolable: false,
+                zones_checked: false,
                 quiet: false,
                 orders: BTreeMap::new(),
             })
@@ -681,13 +682,20 @@ fn run_supported_analysis(
         use crate::document::Suspends;
         retained.complete =
             incomplete_nodes.is_empty() && functions.incomplete_functions.is_empty();
-        let zoned = regions.index.zones.iter().len() != 0;
+        // Every zone marker belongs to a checked pair, so each zone's body is closed (V12c).
+        // A body with a zone fault publishes none and has an error anyway.
+        let markers = document
+            .bodies()
+            .flat_map(|body| body.nodes.values())
+            .filter(|node| super::zones::ZoneKind::marker(node.definition.id.as_str()).is_some())
+            .count();
+        retained.zones_checked = markers == 2 * regions.index.zones.iter().len();
         retained.clean = retained.complete
             && !super::scoped::blocking_error(retained, &BTreeSet::new())
-            && !zoned;
+            && retained.zones_checked;
         retained.isolable = functions.incomplete_functions.is_empty()
             && !super::scoped::blocking_error(retained, &incomplete_nodes)
-            && !zoned;
+            && retained.zones_checked;
         retained.quiet = nodes
             .resolved
             .values()
@@ -695,7 +703,12 @@ fn run_supported_analysis(
         // The root body's data order, which scoped structure edits there keep, built here
         // rather than by the first of them; function bodies build theirs when first edited.
         if retained.clean || retained.isolable {
-            let order = super::order::TopoOrder::build(document, &ports, crate::BodyRef::Root);
+            let order = super::order::TopoOrder::build(
+                document,
+                &ports,
+                crate::BodyRef::Root,
+                &regions.index.zones,
+            );
             retained.orders.insert(crate::BodyRef::Root, order);
         }
     }

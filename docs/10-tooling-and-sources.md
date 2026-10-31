@@ -2741,3 +2741,23 @@ Branch `v12d-lazy-readers` on `dev` 54d705c (same toolchain; Cargo.lock unchange
 - **Limitations:** no workload times a flow edit beside a chain of stored-output nodes, so no latency change is claimed. V12d is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Zones (V12c) — 2026-10-31
+
+Branch `v12c-zones` on `dev` b234b0f (same toolchain; Cargo.lock unchanged). Continues V12c (16).
+
+- **Finding:** any report holding a zone was neither clean nor isolable, so every structure edit in a graph with one zone anywhere ran the full analysis, about 190 ms on 10,000 nodes. Building the body data order for zoned reports also showed that the order binary-searched the body's node IDs, which a body keeps in insertion order: a body not listed in ID order lost data edges from its order and could accept an edge that closes a data cycle.
+- **Change:** a report is clean or isolable with zones when every zone marker belongs to a checked pair. A structure edit is scoped there when no edited edge endpoint and no added or removed node is owned by a zone or is an end marker; then no zone's membership, closure, nesting, export or paired-type result can change (16). The body data order and the edge-only downstream walk add an edge from each zone's begin to its end, as the data-cycle pass does; the export cone check of an added edge reads a zone end's begin prefix, as the whole export check does; the per-edge availability check treats a zone begin's iteration projection as carrying no requirement, as availability does. The order now sorts the body's node IDs before indexing them.
+- **Regressions:** new scoped-session tests compare every edit with a fresh full analysis on a graph with two Repeat zones: edits away from the zones are scoped; pulling a node into a body, removing a body node or a capture's edge, a value leaving a body and an edge that closes a cycle only through a zone's begin-to-end dependency run the full analysis; adding an unpaired marker and removing an end marker run the full analysis; a seeded rewiring run around the zones matches the full analysis at every step. A payload behind a zone's prefix reaching an export through an added edge runs the full analysis, and a body listing a three-node chain before lower IDs rejects an edge that closes a cycle. Disabling the zone condition, the order's begin-to-end edges (at build or at insertion), the ID sort, the export prefix or the iteration exemption each fails at least one of these tests. Disabling the edge-only walk's begin-to-end edge, the marker-count condition or the condition's reapplication after a function update fails none: the first is reached only when the body order has a node-level cycle, and the others are defensive, since a zone fault always publishes an error.
+- **Measured** with `orange-measure session-edit`, which now also times the wire edit with one Repeat zone (begin, one body add, end and a reader) beside the chains (release, same machine, 15 edits after 3 warmups, before and after in the same session; before is this branch's measure code on the base model code with the ID sort):
+
+| Workload | p50 before | p95 before | p50 after | p95 after |
+|---|---:|---:|---:|---:|
+| wire beside a zone, 1,000 chains of 10 | 189.8 ms | 198.1 ms | 0.30 ms | 0.31 ms |
+| wire beside a zone, 1 chain of 10,000 | 342.6 ms | 377.0 ms | 220.8 ms | 271.8 ms |
+| wire, 1,000 chains of 10 | 0.31 ms | 0.34 ms | 0.31 ms | 0.33 ms |
+
+  The single chain is one generic component, so re-resolving it dominates as in the zone-free wire edit (217.4 ms p50 in the same after run).
+- **Limitations:** edits touching a zone body, including adding or removing a capture's edge, and zone marker edits still run the full analysis. Function-body zones take the same rule but no test edits beside one. V12c is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.

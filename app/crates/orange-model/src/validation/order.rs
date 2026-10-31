@@ -14,13 +14,19 @@ use crate::index::DocIndex;
 use super::ports::PortResolver;
 
 /// A topological order of one body's nodes under its data edges, where a data edge is any
-/// body edge leaving a data port. Node-level order is coarser than the data-cycle pass's
-/// port-level graph, so an edge it accepts closes no cycle there either.
+/// body edge leaving a data port, and each checked zone's begin to its end: the data-cycle
+/// pass makes a zone result depend on its begin's prefix inputs (V12c). Node-level order is
+/// coarser than that pass's port-level graph, so an edge it accepts closes no cycle there
+/// either.
 #[derive(Clone, Debug, Default)]
 pub(super) struct TopoOrder {
     position: BTreeMap<NodeId, usize>,
     /// The next free position; removed nodes leave holes.
     next: usize,
+    /// Each checked zone's end by its begin, and its begin by its end. Scoped edits never
+    /// add, remove or reconfigure a marker, so the pairs hold while the order is kept.
+    ends: BTreeMap<NodeId, NodeId>,
+    begins: BTreeMap<NodeId, NodeId>,
 }
 
 /// The far ends of the data edges leaving `node`, or entering it unless `forward`.
@@ -51,10 +57,17 @@ impl TopoOrder {
         document: &GraphDocument,
         ports: &PortResolver<'_>,
         body: BodyRef,
+        zones: &super::zones::ZoneIndex,
     ) -> Option<Self> {
         let body = document.body(body)?;
-        // Dense indices over the sorted node IDs, and each data edge resolved once.
-        let ids: Vec<NodeId> = body.nodes.keys().copied().collect();
+        let ends: BTreeMap<NodeId, NodeId> =
+            zones.iter().map(|pair| (pair.begin, pair.end)).collect();
+        let begins: BTreeMap<NodeId, NodeId> =
+            zones.iter().map(|pair| (pair.end, pair.begin)).collect();
+        // Dense indices over the sorted node IDs, and each data edge resolved once. A body
+        // keeps its nodes in insertion order, so the IDs are sorted here.
+        let mut ids: Vec<NodeId> = body.nodes.keys().copied().collect();
+        ids.sort_unstable();
         let dense = |node: NodeId| ids.binary_search(&node).ok();
         let mut next: Vec<Vec<usize>> = vec![Vec::new(); ids.len()];
         let mut indegree = vec![0_usize; ids.len()];
@@ -63,6 +76,12 @@ impl TopoOrder {
                 continue;
             };
             if matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data) {
+                next[from].push(to);
+                indegree[to] += 1;
+            }
+        }
+        for (begin, end) in &ends {
+            if let (Some(from), Some(to)) = (dense(*begin), dense(*end)) {
                 next[from].push(to);
                 indegree[to] += 1;
             }
@@ -85,6 +104,8 @@ impl TopoOrder {
         Some(Self {
             position: placed.into_iter().collect(),
             next: ids.len(),
+            ends,
+            begins,
         })
     }
 
@@ -137,6 +158,7 @@ impl TopoOrder {
             }
             if self.position(node).is_some_and(within) && forward.insert(node) {
                 stack.extend(data_edges(document, ports, index, node, true));
+                stack.extend(self.ends.get(&node).copied());
             }
         }
         let mut backward = BTreeSet::new();
@@ -144,6 +166,7 @@ impl TopoOrder {
         while let Some(node) = stack.pop() {
             if self.position(node).is_some_and(within) && backward.insert(node) {
                 stack.extend(data_edges(document, ports, index, node, false));
+                stack.extend(self.begins.get(&node).copied());
             }
         }
         // Reuse the affected positions: the backward set first, then the forward set, each in

@@ -464,6 +464,25 @@ fn edges_that_close_a_cycle_after_reordering_run_the_full_analysis() {
 }
 
 #[test]
+fn a_cycle_in_a_body_listed_out_of_id_order_runs_the_full_analysis() {
+    // A body keeps its nodes in insertion order, which the data order must not rely on.
+    let (package, registry) = catalog();
+    let nodes = (10..13).chain(1..6).map(|n| math(n, "add", 0, 1)).collect();
+    let edges = vec![edge(11, 10, "sum", 11, "a"), edge(12, 11, "sum", 12, "a")];
+    let mut doc = graph(&package, nodes, edges, vec![]);
+    let mut session = session(&doc, &registry);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        AnalysisOptions::default(),
+        vec![connect(13, 12, 10, "a")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+#[test]
 fn random_rewiring_equals_the_full_analysis() {
     let (mut doc, registry) = chains();
     let mut session = session(&doc, &registry);
@@ -1573,4 +1592,283 @@ fn control_flow_beside_an_unresolved_feed_runs_the_full_analysis() {
         vec![disconnect(5)],
     );
     assert_eq!(work, SessionWork::Recompute);
+}
+
+/// A zone marker of the `zone` pair, carrying `u64` values.
+fn marker(n: u32, definition: &str, zone: &str) -> Json {
+    let mut node = json!({"id": id(n), "definition_id": format!("core/{definition}"),
+        "definition_version": 1, "config_version": 1, "config": {"zone": zone},
+        "type_pins": {"A": "core/u64@1"}});
+    if definition.ends_with("begin") {
+        node["inputs"] = json!({"count": {"type": "core/i64@1", "value": "3"}});
+    }
+    node
+}
+
+/// The ten chains of [`chains`] and two Repeat zones. Zone `z` (begin 1, end 3) adds `13`'s
+/// sum to `10`'s three times through body adds 2 and 5, and add 4 reads its result, which
+/// is exported. Zone `w` (begin 6, end 7) has an empty body: its end takes `19`'s sum, and
+/// add 8 reads its result, so only the data-cycle pass's begin-to-end dependency joins
+/// `16`, which feeds its begin, to 8.
+fn zoned() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (package, registry) = catalog();
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for chain in 0..10 {
+        let first = 10 + chain * 3;
+        for link in 0..3 {
+            nodes.push(math(first + link, "add", 0, 1));
+            if link > 0 {
+                let to = first + link;
+                edges.push(edge(to, to - 1, "sum", to, "a"));
+            }
+        }
+    }
+    nodes.extend([
+        marker(1, "repeat-begin", "z"),
+        math(2, "add", 0, 1),
+        marker(3, "repeat-end", "z"),
+        math(4, "add", 0, 1),
+        math(5, "add", 0, 1),
+        marker(6, "repeat-begin", "w"),
+        marker(7, "repeat-end", "w"),
+        math(8, "add", 0, 1),
+    ]);
+    edges.extend([
+        edge(200, 10, "sum", 1, "initial"),
+        edge(201, 1, "carried", 2, "a"),
+        edge(202, 13, "sum", 2, "b"),
+        edge(203, 2, "sum", 5, "a"),
+        edge(204, 5, "sum", 3, "next"),
+        edge(205, 3, "result", 4, "a"),
+        edge(206, 16, "sum", 6, "initial"),
+        edge(207, 19, "sum", 7, "next"),
+        edge(208, 7, "result", 8, "a"),
+    ]);
+    (
+        graph(&package, nodes, edges, vec![export(4, "sum")]),
+        registry,
+    )
+}
+
+#[test]
+fn structure_edits_away_from_zones_are_scoped() {
+    let (mut doc, registry) = zoned();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    assert_eq!(session.analysis().report().regions.zones.iter().len(), 2);
+    let edits = [
+        vec![connect(90, 22, 23, "b")],
+        vec![disconnect(90)],
+        // A capture's producer and the zone result's reader are outside the zone.
+        vec![connect(91, 13, 25, "b")],
+        vec![connect(92, 4, 28, "b")],
+        // A cone through an end reaches the begin's iteration projection, which no exec
+        // region owns, so the edge carries no availability requirement.
+        vec![connect(93, 8, 31, "b")],
+        vec![add_node(94), connect(94, 12, 94, "a")],
+        vec![remove_nodes(&[94])],
+        vec![disconnect(92), disconnect(91)],
+    ];
+    for commands in edits {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(work, SessionWork::Scoped);
+    }
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    assert!(session.analysis().report().is_valid());
+}
+
+#[test]
+fn edits_that_reach_a_zone_run_the_full_analysis() {
+    let (mut doc, registry) = zoned();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let body = |session: &AnalysisSession| {
+        let zones = &session.analysis().report().regions.zones;
+        let end: orange_model::id::NodeId = id(3).parse().unwrap();
+        (10..100)
+            .filter(|n| {
+                zones
+                    .owner(id(*n).parse().unwrap())
+                    .is_some_and(|zone| zone.end == end)
+            })
+            .count()
+    };
+    // A new node wired between two body nodes joins the body.
+    let pulled = vec![
+        add_node(95),
+        connect(95, 2, 95, "a"),
+        connect(96, 95, 5, "b"),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, pulled);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().is_valid());
+    assert_eq!(body(&session), 1);
+    // Removing a body node, or a capture's edge, touches a body node.
+    for commands in [vec![remove_nodes(&[95])], vec![disconnect(202)]] {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(work, SessionWork::Recompute);
+        assert!(session.analysis().report().is_valid());
+    }
+    // A value leaving the body.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![connect(97, 2, 34, "b")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(97)],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().is_valid());
+    // An edge between outside nodes that closes a cycle only through zone `w`'s result
+    // reading its begin's prefix.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![connect(98, 8, 16, "b")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+#[test]
+fn a_payload_behind_a_zone_prefix_reaching_an_export_runs_the_full_analysis() {
+    let (package, registry) = catalog();
+    let event = "40000000-0000-4000-8000-000000000001";
+    let on_event = json!({"id": id(50), "definition_id": "core/on-event",
+        "definition_version": 1, "config_version": 1, "config": {"event": event},
+        "activation": {"mode": "queue", "capacity": 4, "overflow": "drop-oldest",
+            "on_fault": "continue", "order": 0}});
+    // The payload feeds the begin's prefix; the end takes a capture, so no body path joins
+    // the begin to the reader of the result.
+    let nodes = vec![
+        on_event,
+        math(60, "add", 0, 1),
+        marker(61, "repeat-begin", "z"),
+        marker(62, "repeat-end", "z"),
+        math(63, "add", 0, 1),
+        math(64, "add", 0, 1),
+        math(65, "add", 0, 1),
+    ];
+    let edges = vec![
+        edge(70, 50, "payload", 60, "a"),
+        edge(71, 60, "sum", 61, "initial"),
+        edge(72, 63, "sum", 62, "next"),
+        edge(73, 62, "result", 64, "a"),
+    ];
+    let base = graph(&package, nodes, edges, vec![export(65, "sum")]);
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&base).unwrap()).unwrap();
+    raw["events"] = json!([{"id": event, "name": "tick", "payload": "core/u64@1", "scope": "run"}]);
+    let mut doc = orange_model::from_json(&raw.to_string()).unwrap();
+    let mut session = session(&doc, &registry);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        AnalysisOptions::default(),
+        vec![connect(74, 64, 65, "a")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+#[test]
+fn zone_markers_run_the_full_analysis() {
+    let (mut doc, registry) = zoned();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let unpaired = DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(marker(50, "repeat-begin", "u")).unwrap(),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![unpaired]);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[50])],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[7])],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+#[test]
+fn random_rewiring_around_zones_equals_the_full_analysis() {
+    let (mut doc, registry) = zoned();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let mut seed: u64 = 41;
+    let mut next = |bound: u32| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) as u32 % bound
+    };
+    // The chains and both zones' readers, which also feed or capture into body add 2's
+    // `b`; a body node feeding anything else would leave the report invalid for good.
+    let readers: Vec<u32> = (10..40).chain([4, 8]).collect();
+    let mut wired: BTreeMap<(u32, &str), u32> = BTreeMap::new();
+    for chain in 0..10 {
+        for link in 1..3 {
+            let to = 10 + chain * 3 + link;
+            wired.insert((to, "a"), to);
+        }
+    }
+    wired.extend([((2, "b"), 202), ((4, "a"), 205), ((8, "a"), 208)]);
+    let mut scoped = 0;
+    let mut n = 300;
+    for _ in 0..300 {
+        let mut commands = Vec::new();
+        let mut inputs = Vec::new();
+        for _ in 0..=next(3) {
+            let from = readers[next(readers.len() as u32) as usize];
+            let to = match next(readers.len() as u32 + 1) as usize {
+                at if at == readers.len() => 2,
+                at => readers[at],
+            };
+            let input = if to == 2 || next(2) != 0 { "b" } else { "a" };
+            if inputs.contains(&(to, input)) {
+                continue;
+            }
+            inputs.push((to, input));
+            commands.push(match wired.remove(&(to, input)) {
+                Some(edge) => disconnect(edge),
+                None if from != to => {
+                    n += 1;
+                    wired.insert((to, input), n);
+                    connect(n, from, to, input)
+                }
+                None => continue,
+            });
+        }
+        if !commands.is_empty()
+            && edit(&mut session, &mut doc, &registry, options, commands) == SessionWork::Scoped
+        {
+            scoped += 1;
+        }
+    }
+    assert!(scoped >= 30, "{scoped}");
 }
