@@ -1923,8 +1923,8 @@ fn edits_that_keep_a_connected_solution_skip_the_component_solve() {
     ] {
         let work = edit(&mut session, &mut doc, &registry, options, commands);
         assert!(kept(&session, work), "{work:?}");
-        // The node, its two neighbours and theirs, of 1,200.
-        assert!(session.stats().input_nodes <= 5, "{:?}", session.stats());
+        // The node and its two neighbours, of 1,200.
+        assert!(session.stats().input_nodes <= 3, "{:?}", session.stats());
     }
     // Disconnecting an input activates its literal; the other input still joins the
     // chain, so the node and its source keep their types.
@@ -2140,4 +2140,30 @@ fn a_shared_concrete_source_is_not_expanded() {
         assert!(kept(&session, work), "{work:?}");
         assert!(session.stats().input_nodes <= 2, "{:?}", session.stats());
     }
+    // A node added in place keeps its solved arguments too, so a later edit of it is
+    // checked beside it.
+    let added = vec![
+        add_node(200),
+        DocCommand::Connect {
+            edge: serde_json::from_value(edge(1200, 10, "value", 200, "a")).unwrap(),
+        },
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, added);
+    assert_eq!(work, SessionWork::Scoped);
+    let pin = DocCommand::SetTypePins {
+        node: id(200).parse().unwrap(),
+        pins: types(&[("T", "core/u64@1")]),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![pin]);
+    assert!(kept(&session, work), "{work:?}");
+    // A configuration version no provider supports leaves the shared source unresolved,
+    // which the source's own resolution shows.
+    let version = DocCommand::SetConfig {
+        node: id(10).parse().unwrap(),
+        config_version: 2,
+        config: serde_json::from_value(json!({})).unwrap(),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![version]);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
 }
