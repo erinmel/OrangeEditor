@@ -2619,3 +2619,14 @@ Branch `core/function-body-structure-edits` on `dev` cf3e8f7 (same toolchain; Ca
 - **Limitations:** edits that change a function's acceptance, summary or diagnostics run the full analysis; propagation through the reverse call graph is not implemented. V12e is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Uncalled function edits (V12e) — 2026-10-30
+
+Branch `core/uncalled-function-edits` on `dev` 48aff63 (same toolchain; Cargo.lock unchanged). Continues V12e (16).
+
+- **Change:** callers read a function's acceptance and summary only through Call nodes. When a scoped structure edit inside a function body changes them and no Call node in any body targets the function, the session publishes the new acceptance and summary, swaps the function's own function-pass and conformance diagnostics in its kept lists and the published list, and recomputes whether the report is clean; with a call site it still runs the full analysis. A function's own function-pass and conformance errors no longer make a complete report unclean, since a called function with an error would leave its call sites incomplete.
+- **Regressions:** an `orange-bundled` test removes a function's only call site, cuts the function's path to Return (a missing-return error, scoped) and restores it (scoped, report valid again); each step equals the full analysis. Ignoring call sites makes the called-function test fail. The session property tests pass with 1,024 cases in release.
+- **Measured:** not separately; the edit reruns the edited function's body passes once.
+- **Limitations:** a called function whose acceptance or summary changes still runs the full analysis; propagation to callers through the reverse call graph is not implemented. V12e is not complete and NFR-15 is not qualified.
+
+**Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
