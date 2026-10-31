@@ -2641,3 +2641,11 @@ Branch `core/summary-propagation` on `dev` 60a21d1 (same toolchain; Cargo.lock u
 - **Limitations:** a called function whose acceptance changes still runs the full analysis, as do edits that make any caller incomplete or change its acceptance. V12e is not complete and NFR-15 is not qualified.
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
+
+### Acceptance changes of called functions (V12e) — 2026-10-30
+
+Branch `docs/v12e-acceptance-changes` on `dev` 9d20ac9 (same toolchain; Cargo.lock unchanged). Records a V12e finding; no code change.
+
+- **Finding:** a prototype scoped a called function moving between pure and volatile acceptance by updating its call sites' recorded kind. Its test fixture showed that case cannot occur in a valid report: `summarize_function` reports `E-FUNCTION-KIND` whenever the declared kind differs from the kind the body implies, so an accepted function's kind is always its declared kind and a body edit cannot change it. A call site records its callee's kind and, only for async and iterator kinds, its suspension. A called function's acceptance therefore changes only by being lost, which leaves its call sites incomplete and needs the full analysis, or by an async or iterator function's suspension moving between `maybe` and `always`, which only control-cycle certification reads. The prototype was discarded; both cases still run the full analysis, and the remaining V12e work is limited to them.
+
+**Checks:** documentation only.
