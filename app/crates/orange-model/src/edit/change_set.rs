@@ -329,8 +329,10 @@ impl Tracker {
         })
     }
 
-    /// The prior literals when every semantic change replaced only literals of nodes
-    /// that exist before and after in the same body, and some literal differs.
+    /// The prior fields when every semantic change replaced only literals, type arguments,
+    /// pins or configuration of nodes that exist before and after in the same body. A
+    /// replacement by equal values, such as setting a literal to its current value, is a
+    /// node edit too, which a session re-checks in place.
     fn node_edit(&self, document: &GraphDocument) -> Option<NodeEdit> {
         let prior = self.prior.as_ref()?;
         if !self.semantic
@@ -343,7 +345,6 @@ impl Tracker {
         {
             return None;
         }
-        let mut changed = false;
         let mut before = BTreeMap::new();
         for (id, entry) in prior {
             let (body, old) = entry.as_ref()?;
@@ -360,11 +361,9 @@ impl Tracker {
             if same != *now {
                 return None;
             }
-            let fields = NodeFields::of(old);
-            changed |= fields != NodeFields::of(now);
-            before.insert(*id, fields);
+            before.insert(*id, NodeFields::of(old));
         }
-        changed.then_some(NodeEdit { before })
+        Some(NodeEdit { before })
     }
 
     pub fn finish(
