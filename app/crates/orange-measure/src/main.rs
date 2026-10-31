@@ -121,6 +121,10 @@ fn main() {
                 SessionEdit::WireIntoExport,
                 "disconnect/connect into an export",
             ),
+            (
+                SessionEdit::WireAfterFull,
+                "disconnect/connect after a full analysis",
+            ),
         ] {
             for (chains, length) in [(1000, 10), (1, 10_000)] {
                 let (p50, p95) = workloads::session_edit(config, chains, length, edit);
