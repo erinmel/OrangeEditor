@@ -628,6 +628,76 @@ pub fn analysis_worker_latency(config: Config) -> AnalysisWorkerTimes {
 
 /// Session update latency for one literal edit on `chains` independent add chains of
 /// `length` nodes, as (p50, p95) over `config.runs` edits after `config.warmup`.
+/// Session update latency when the exec edge into the middle of 1,000 Set Variable nodes,
+/// run in turn from On Start and each fed by a 9-add chain (10,001 nodes), is alternately
+/// removed and restored. (p50, p95) over `config.runs` edits after `config.warmup`.
+pub fn session_exec_edit(config: Config) -> (std::time::Duration, std::time::Duration) {
+    use orange_model::DocCommand;
+    use orange_model::validation::{AnalysisOptions, AnalysisSession};
+    use std::collections::BTreeMap;
+    use std::time::Instant;
+    const SETS: u32 = 1000;
+    const ADDS: u32 = 9;
+    let mut nodes = vec![core(1, "on-start")];
+    let mut edges = Vec::new();
+    for set in 0..SETS {
+        let node = 10 + set;
+        nodes.push(var_node(node, "set-variable", TOTAL));
+        let previous = if set == 0 { 1 } else { node - 1 };
+        edges.push(edge(node, previous, "then", node, "in"));
+        let first = 10_000 + set * ADDS;
+        for link in 0..ADDS {
+            nodes.push(math(first + link, "add", 0, 1));
+            if link > 0 {
+                edges.push(edge(
+                    first + link,
+                    first + link - 1,
+                    "sum",
+                    first + link,
+                    "a",
+                ));
+            }
+        }
+        edges.push(edge(20_000 + set, first + ADDS - 1, "sum", node, "value"));
+    }
+    let mut source = Source::new(nodes, edges);
+    source.variables = vec![run_variable(TOTAL, U64, Some(json!("0")))];
+    let (mut document, registry) = source.analyzed();
+    let mut session = AnalysisSession::new(
+        &document,
+        &registry,
+        BTreeMap::new(),
+        AnalysisOptions::default(),
+    );
+    let middle = 10 + SETS / 2;
+    let wired: orange_model::document::Edge =
+        serde_json::from_value(edge(middle, middle - 1, "then", middle, "in")).expect("edge");
+    let mut samples = Vec::new();
+    for sample in 0..config.warmup + config.runs {
+        let command = if sample % 2 == 0 {
+            DocCommand::Disconnect { edge: wired.id }
+        } else {
+            DocCommand::Connect {
+                edge: wired.clone(),
+            }
+        };
+        let committed = document.apply([command]).expect("edit");
+        let start = Instant::now();
+        session.update(
+            &document,
+            &registry,
+            &committed.change_set,
+            AnalysisOptions::default(),
+        );
+        if sample >= config.warmup {
+            samples.push(start.elapsed());
+        }
+    }
+    samples.sort();
+    let at = |q: usize| samples[(samples.len() * q / 100).min(samples.len() - 1)];
+    (at(50), at(95))
+}
+
 /// The edit `session_edit` repeats on the middle node.
 #[derive(Clone, Copy)]
 pub enum SessionEdit {

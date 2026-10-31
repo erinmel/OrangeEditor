@@ -119,6 +119,12 @@ fn main() {
                 );
             }
         }
+        let (p50, p95) = workloads::session_exec_edit(config);
+        println!(
+            "session exec edge edit (1000 sets with 9-add chains) p50: {:.3} ms, p95: {:.3} ms",
+            ms(p50),
+            ms(p95)
+        );
     }
     if "analysis-worker".contains(filter.as_str()) {
         let times = workloads::analysis_worker_latency(config);
