@@ -102,8 +102,18 @@ fn main() {
     }
     if "w9".contains(filter.as_str()) {
         let ms = |duration: std::time::Duration| duration.as_secs_f64() * 1e3;
-        for (connected, kind) in [(false, "clustered"), (true, "connected")] {
-            let run = workloads::w9_session_edits(connected);
+        for (connected, adds, shared_get, kind) in [
+            (false, 8, false, "clustered"),
+            (true, 8, false, "connected"),
+            (false, 9, false, "clustered 20k"),
+            (true, 9, false, "connected 20k"),
+            (false, 9, true, "shared-get 20k"),
+        ] {
+            let run = workloads::w9_session_edits(workloads::W9Shape {
+                connected,
+                adds,
+                shared_get,
+            });
             println!(
                 "w9 {kind} ({} nodes, {} edges, 1000 edits) p50: {:.3} ms, p95: {:.3} ms, p99: {:.3} ms, max: {:.3} ms; scoped {} (at most {} nodes re-resolved), full {} (p50 {:.3} ms)",
                 run.nodes,

@@ -1014,12 +1014,23 @@ pub struct W9 {
     pub full_p50: std::time::Duration,
 }
 
-/// W9 on a W4-sized graph (06): 1,000 clusters of a Get, eight adds and a Set, each add
-/// reading the two values before it, and every Set in one of ten exec chains; then 1,000
-/// seeded random edits, a quarter each disconnect or connect of an add input, literal and
-/// type argument. When `connected`, each cluster's first add reads the previous cluster's
-/// last add instead of its Get, so all adds form one generic component.
-pub fn w9_session_edits(connected: bool) -> W9 {
+/// The W9 graph's cluster shape.
+#[derive(Clone, Copy)]
+pub struct W9Shape {
+    /// Each cluster's first add reads the previous cluster's last add instead of the Get,
+    /// so all adds form one generic component.
+    pub connected: bool,
+    /// Adds per cluster: eight give 18,000 edges, nine W4's 20,000.
+    pub adds: u32,
+    /// One Get per exec chain, read by its 100 clusters, instead of one per cluster.
+    pub shared_get: bool,
+}
+
+/// W9 on a W4-sized graph (06): ten On Start entries, each with an exec chain through the
+/// Sets of 100 clusters of adds, each add reading the two values before it, and a Set
+/// storing the last; then 1,000 seeded random edits, a quarter each disconnect or connect
+/// of an add input, literal and type argument.
+pub fn w9_session_edits(shape: W9Shape) -> W9 {
     use orange_model::DocCommand;
     use orange_model::document::{Edge, PortRef};
     use orange_model::validation::{AnalysisOptions, AnalysisSession, SessionWork};
@@ -1027,31 +1038,46 @@ pub fn w9_session_edits(connected: bool) -> W9 {
     use std::time::{Duration, Instant};
     const CLUSTERS: u32 = 1000;
     const ENTRIES: u32 = 10;
-    const ADDS: u32 = 8;
+    let adds = shape.adds;
+    // Cluster `c` holds the IDs from `10 + c * stride`: its own Get if it has one, its
+    // adds and last its Set.
+    let own_get = u32::from(!shape.shared_get);
+    let stride = if own_get + adds < 10 { 10 } else { 20 };
+    let base = |cluster: u32| 10 + cluster * stride;
+    let add_of = |cluster: u32, k: u32| base(cluster) + own_get + k;
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
     for entry in 0..ENTRIES {
         let mut start = core(30_000 + entry, "on-start");
         start["activation"]["order"] = json!(entry);
         nodes.push(start);
+        if shape.shared_get {
+            nodes.push(var_node(40_000 + entry, "get-variable", TOTAL));
+        }
     }
     // Every add input's edge, keyed by (add, input), so edits can remove and restore it.
     let mut inputs: BTreeMap<(u32, &str), Json> = BTreeMap::new();
     let per_entry = CLUSTERS / ENTRIES;
     for cluster in 0..CLUSTERS {
-        let get = 10 + cluster * 10;
-        let add = |k: u32| get + 1 + k;
-        let set = get + 9;
+        let get = if shape.shared_get {
+            40_000 + cluster / per_entry
+        } else {
+            base(cluster)
+        };
+        let add = |k: u32| add_of(cluster, k);
+        let set = add(adds);
         let n = 100_000 + cluster * 20;
-        nodes.push(var_node(get, "get-variable", TOTAL));
-        for k in 0..ADDS {
+        if !shape.shared_get {
+            nodes.push(var_node(get, "get-variable", TOTAL));
+        }
+        for k in 0..adds {
             nodes.push(math(add(k), "add", 0, 1));
         }
         nodes.push(var_node(set, "set-variable", TOTAL));
-        for k in 0..ADDS {
+        for k in 0..adds {
             let (a, b) = match k {
-                0 if connected && cluster > 0 => {
-                    let last = get - 10 + 1 + ADDS - 1;
+                0 if shape.connected && cluster > 0 => {
+                    let last = add_of(cluster - 1, adds - 1);
                     ((last, "sum"), (last, "sum"))
                 }
                 0 => ((get, "value"), (get, "value")),
@@ -1061,18 +1087,19 @@ pub fn w9_session_edits(connected: bool) -> W9 {
             inputs.insert((add(k), "a"), edge(n + 2 * k, a.0, a.1, add(k), "a"));
             inputs.insert((add(k), "b"), edge(n + 2 * k + 1, b.0, b.1, add(k), "b"));
         }
-        edges.push(edge(n + 16, add(ADDS - 1), "sum", set, "value"));
+        edges.push(edge(n + 2 * adds, add(adds - 1), "sum", set, "value"));
         let previous = if cluster % per_entry == 0 {
             (30_000 + cluster / per_entry, "then")
         } else {
-            (set - 10, "then")
+            (set - stride, "then")
         };
-        edges.push(edge(n + 17, previous.0, previous.1, set, "in"));
+        edges.push(edge(n + 2 * adds + 1, previous.0, previous.1, set, "in"));
     }
     edges.extend(inputs.values().cloned());
     let mut source = Source::new(nodes, edges);
     source.variables = vec![run_variable(TOTAL, U64, Some(json!("0")))];
     let (mut document, registry) = source.analyzed();
+    let (node_count, edge_count) = (document.root().nodes.len(), document.root().edges.len());
     let options = AnalysisOptions::default();
     let mut session = AnalysisSession::new(&document, &registry, BTreeMap::new(), options);
     let edges: Vec<(u32, &str, Edge)> = inputs
@@ -1092,7 +1119,7 @@ pub fn w9_session_edits(connected: bool) -> W9 {
     let mut full_samples = Vec::new();
     let (mut scoped, mut max_resolved) = (0, 0);
     for _ in 0..1000 {
-        let add = 11 + (next(CLUSTERS as usize) as u32) * 10 + next(ADDS as usize) as u32;
+        let add = add_of(next(CLUSTERS as usize) as u32, next(adds as usize) as u32);
         let command = match next(4) {
             0 | 1 => {
                 let at = next(edges.len());
@@ -1149,8 +1176,8 @@ pub fn w9_session_edits(connected: bool) -> W9 {
             .unwrap_or_default()
     };
     W9 {
-        nodes: document.root().nodes.len(),
-        edges: document.root().edges.len(),
+        nodes: node_count,
+        edges: edge_count,
         p50: at(&samples, 50),
         p95: at(&samples, 95),
         p99: at(&samples, 99),
