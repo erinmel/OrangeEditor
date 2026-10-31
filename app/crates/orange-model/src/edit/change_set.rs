@@ -75,20 +75,21 @@ pub struct ChangeSet {
     pub(crate) decls: Delta<DeclId>,
     /// Present when the only semantic change is to the literals of existing nodes.
     literals: Option<Arc<NodeEdit>>,
-    /// Present when the only semantic change adds or removes edges.
-    wiring: Option<Arc<EdgeEdit>>,
+    /// Present when the only semantic change adds or removes whole nodes and edges.
+    structure: Option<Arc<StructureEdit>>,
 }
 
-/// Journal evidence that a transaction only added or removed edges: no node, declaration
-/// or shared metadata changed, and no edge was replaced in place. Holds each removed
-/// edge with its body.
+/// Journal evidence that a transaction only added or removed whole nodes and edges: no
+/// declaration or shared metadata changed, and no node or edge was replaced in place.
+/// Holds each removed node and edge with its body; the added ones are the change set's.
 #[derive(Debug, PartialEq)]
-pub(crate) struct EdgeEdit {
-    pub removed: BTreeMap<EdgeId, (BodyRef, Edge)>,
+pub(crate) struct StructureEdit {
+    pub removed_nodes: BTreeMap<NodeId, (BodyRef, Box<NodeInstance>)>,
+    pub removed_edges: BTreeMap<EdgeId, (BodyRef, Edge)>,
 }
 
-// Edge extensions are JSON values, which never hold NaN, so equality is total.
-impl Eq for EdgeEdit {}
+// Node and edge payloads hold JSON values, which never hold NaN, so equality is total.
+impl Eq for StructureEdit {}
 
 /// Journal evidence that a transaction changed only node literals, type arguments, type
 /// pins or configuration: each changed node kept its body and every other field. Holds
@@ -128,10 +129,10 @@ impl ChangeSet {
     pub(crate) fn node_edit(&self) -> Option<&NodeEdit> {
         self.literals.as_deref()
     }
-    /// The removed edges when this change only added or removed edges; the added ones are
-    /// `edges().added`.
-    pub(crate) fn edge_edit(&self) -> Option<&EdgeEdit> {
-        self.wiring.as_deref()
+    /// The removed nodes and edges when this change only added or removed whole nodes and
+    /// edges; the added ones are `nodes().added` and `edges().added`.
+    pub(crate) fn structure_edit(&self) -> Option<&StructureEdit> {
+        self.structure.as_deref()
     }
     pub fn from_revision(&self) -> u64 {
         self.from_revision
@@ -191,7 +192,7 @@ impl ChangeSet {
             edges: self.edges.reversed(),
             decls: self.decls.reversed(),
             literals: None,
-            wiring: None,
+            structure: None,
         }
     }
 }
@@ -236,10 +237,11 @@ impl Tracker {
     /// `inverse` is what applying the patch returned; its entry is the slot's prior value.
     pub fn record(&mut self, inverse: &Patch) {
         self.semantic |= !inverse.is_layout();
-        if !matches!(inverse, Patch::Node { .. } | Patch::Editor { .. }) {
+        if !matches!(
+            inverse,
+            Patch::Node { .. } | Patch::Edge { .. } | Patch::Editor { .. }
+        ) {
             self.prior = None;
-        }
-        if !matches!(inverse, Patch::Edge { .. } | Patch::Editor { .. }) {
             self.prior_edges = None;
         }
         match inverse {
@@ -295,30 +297,50 @@ impl Tracker {
     }
 
     /// The removed edges when every semantic change added or removed whole edges.
-    fn edge_edit(&self, document: &GraphDocument) -> Option<EdgeEdit> {
-        let prior = self.prior_edges.as_ref()?;
-        if !self.semantic || self.global_dirty || prior.is_empty() {
+    fn structure_edit(&self, document: &GraphDocument) -> Option<StructureEdit> {
+        let (nodes, edges) = (self.prior.as_ref()?, self.prior_edges.as_ref()?);
+        if !self.semantic || self.global_dirty || nodes.is_empty() && edges.is_empty() {
             return None;
         }
-        let mut removed = BTreeMap::new();
-        for (id, before) in prior {
-            match (before, document.locate_edge(*id)) {
+        let mut removed_nodes = BTreeMap::new();
+        for (id, before) in nodes {
+            match (before, document.locate_node(*id)) {
                 (None, Some(_)) => {}
                 (Some(before), None) => {
-                    removed.insert(*id, before.clone());
+                    removed_nodes.insert(*id, before.clone());
                 }
                 // Replaced in place, or added and removed again.
                 _ => return None,
             }
         }
-        Some(EdgeEdit { removed })
+        let mut removed_edges = BTreeMap::new();
+        for (id, before) in edges {
+            match (before, document.locate_edge(*id)) {
+                (None, Some(_)) => {}
+                (Some(before), None) => {
+                    removed_edges.insert(*id, before.clone());
+                }
+                _ => return None,
+            }
+        }
+        Some(StructureEdit {
+            removed_nodes,
+            removed_edges,
+        })
     }
 
     /// The prior literals when every semantic change replaced only literals of nodes
     /// that exist before and after in the same body, and some literal differs.
     fn node_edit(&self, document: &GraphDocument) -> Option<NodeEdit> {
         let prior = self.prior.as_ref()?;
-        if !self.semantic || self.global_dirty || prior.is_empty() {
+        if !self.semantic
+            || self.global_dirty
+            || prior.is_empty()
+            || self
+                .prior_edges
+                .as_ref()
+                .is_none_or(|edges| !edges.is_empty())
+        {
             return None;
         }
         let mut changed = false;
@@ -354,10 +376,10 @@ impl Tracker {
         committed: bool,
     ) -> ChangeSet {
         let literals = self.node_edit(document).map(Arc::new);
-        let wiring = self.edge_edit(document).map(Arc::new);
+        let structure = self.structure_edit(document).map(Arc::new);
         ChangeSet {
             literals,
-            wiring,
+            structure,
             from_revision,
             to_revision: document.revision(),
             from_state,

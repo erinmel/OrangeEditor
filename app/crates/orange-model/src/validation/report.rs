@@ -207,6 +207,12 @@ impl ValidationAnalysis {
         }
         changed
     }
+    /// The resolved signatures, for a scoped session update that adds or removes nodes.
+    pub(super) fn resolved_mut(
+        &mut self,
+    ) -> &mut BTreeMap<NodeId, crate::document::SignatureSnapshot> {
+        &mut self.report.resolved
+    }
     pub fn report(&self) -> &ValidationReport {
         &self.report
     }
@@ -473,7 +479,9 @@ fn run_supported_analysis(
             nodes.incomplete_nodes.clone(),
         )
     });
-    let mut diagnostics = nodes.diagnostics;
+    // Node diagnostics stay apart too, so a scoped update can add or drop a node's.
+    let node_diagnostics = nodes.diagnostics;
+    let mut diagnostics = Vec::new();
     diagnostics.extend(super::inputs::validate_type_locks(document, registry));
     match &local {
         Some(local) => diagnostics.extend(local.declaration_diagnostics().cloned()),
@@ -512,6 +520,7 @@ fn run_supported_analysis(
     options.checkpoint()?;
     let explained_nodes: BTreeSet<_> = diagnostics
         .iter()
+        .chain(&node_diagnostics)
         .chain(&input_diagnostics)
         .chain(&config_diagnostics)
         .filter(|item| item.severity == Severity::Error)
@@ -555,6 +564,7 @@ fn run_supported_analysis(
         }
         _ => None,
     };
+    diagnostics.extend(node_diagnostics);
     diagnostics.extend(input_diagnostics);
     diagnostics.extend(config_diagnostics);
     sort_diagnostics(&mut diagnostics);

@@ -214,8 +214,10 @@ fn literals_with_structural_edits_run_the_full_analysis() {
         body: BodyRef::Root,
         node,
     };
+    // A new node beside a changed one is neither a node edit nor a structure edit.
+    let both = vec![add, set(11, "b", u64_text("2"))];
     assert_eq!(
-        edit(&mut session, &mut doc, &registry, options, vec![add]),
+        edit(&mut session, &mut doc, &registry, options, both),
         SessionWork::Recompute
     );
 }
@@ -562,4 +564,119 @@ fn intrinsic_configuration_runs_the_full_analysis() {
         vec![configure(50, json!({"x": 1}))],
     );
     assert_eq!(work, SessionWork::Recompute);
+}
+
+fn add_node(n: u32) -> DocCommand {
+    DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(math(n, "add", 1, 2)).unwrap(),
+    }
+}
+
+fn remove_nodes(ids: &[u32]) -> DocCommand {
+    DocCommand::RemoveNodes {
+        ids: ids.iter().map(|n| id(*n).parse().unwrap()).collect(),
+    }
+}
+
+#[test]
+fn pure_package_nodes_are_added_and_removed_in_place() {
+    let (mut doc, registry) = chains();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let new: orange_model::id::NodeId = id(90).parse().unwrap();
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![add_node(90)],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    assert!(session.resolved(new).is_some());
+    assert_eq!(
+        session.changed_nodes().iter().copied().collect::<Vec<_>>(),
+        [new]
+    );
+    // A pasted node with its wire, then its removal with that wire.
+    let pasted = vec![add_node(91), connect(91, 12, 91, "a")];
+    let work = edit(&mut session, &mut doc, &registry, options, pasted);
+    assert_eq!(work, SessionWork::Scoped);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[91])],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[90])],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert!(session.resolved(new).is_none());
+
+    // Removing a chain's middle node takes both its wires; undo restores all three.
+    let committed = doc.apply([remove_nodes(&[11])]).unwrap();
+    session.update(&doc, &registry, &committed.change_set, options);
+    assert_eq!(session.stats().work, SessionWork::Scoped);
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+    let undone = doc.revert(committed.inverse).unwrap();
+    session.update(&doc, &registry, &undone.change_set, options);
+    assert_eq!(session.stats().work, SessionWork::Scoped);
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+}
+
+#[test]
+fn other_node_additions_and_removals_run_the_full_analysis() {
+    let (package, registry) = catalog();
+    let nodes = (0..3).map(|link| math(10 + link, "add", 0, 1)).collect();
+    let mut doc = graph(&package, nodes, vec![], vec![export(12, "sum")]);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // A core intrinsic.
+    let on_start: NodeInstance = serde_json::from_value(json!({"id": id(50),
+        "definition_id": "core/on-start", "definition_version": 1, "config_version": 1,
+        "config": {}, "activation": {"mode": "queue", "capacity": 4,
+            "overflow": "drop-newest", "on_fault": "continue", "order": 0}}))
+    .unwrap();
+    let intrinsic = DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: on_start,
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![intrinsic]);
+    assert_eq!(work, SessionWork::Recompute);
+    // Undo the intrinsic so the report is clean again, then remove an exported node.
+    let committed = doc.apply([remove_nodes(&[50])]).unwrap();
+    session.update(&doc, &registry, &committed.change_set, options);
+    assert!(session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[12])],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    // A package node that does not resolve.
+    let mut unknown = math(60, "add", 0, 1);
+    unknown["definition_id"] = json!("org.orange.math/unknown");
+    let unknown = DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(unknown).unwrap(),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![unknown]);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
 }

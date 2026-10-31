@@ -127,7 +127,7 @@ impl LocalValidation {
             && change.to_state() == document.state_id()
             && change.to_semantic_state() == document.semantic_state_id()
             && self.registry_generation == Some(registry.generation());
-        if bound && change.edge_edit().is_some() {
+        if bound && change.structure_edit().is_some() {
             self.invalidate(document, change);
             self.state = Some(document.state_id());
             return;

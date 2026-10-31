@@ -179,13 +179,13 @@ impl AnalysisSession {
         let (Some(retained), Some(index)) = (&mut self.retained, &mut self.index) else {
             return false;
         };
-        if (change.node_edit().is_none() && change.edge_edit().is_none())
+        if (change.node_edit().is_none() && change.structure_edit().is_none())
             || index.state_id() != change.from_state()
         {
             return false;
         }
         index.update(document, change);
-        let scoped = match (change.node_edit(), change.edge_edit()) {
+        let scoped = match (change.node_edit(), change.structure_edit()) {
             (Some(edit), _) => super::scoped::node_update(
                 document,
                 registry,
@@ -195,15 +195,14 @@ impl AnalysisSession {
                 retained,
                 edit,
             ),
-            (None, Some(edit)) => super::scoped::edge_update(
+            (None, Some(_)) => super::scoped::structure_update(
                 document,
                 registry,
                 &options,
                 index,
-                &self.analysis,
+                &mut self.analysis,
                 retained,
-                &change.edges().added,
-                edit,
+                change,
             ),
             (None, None) => None,
         };
@@ -214,7 +213,7 @@ impl AnalysisSession {
         self.changed_subjects =
             self.analysis
                 .patch(document.semantic_state_id(), &retained.base, &scoped.inputs);
-        self.changed_nodes.clear();
+        self.changed_nodes = scoped.changed_nodes;
         self.revision = document.revision();
         self.content_state = document.state_id();
         self.stats = EditStats {

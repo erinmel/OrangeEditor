@@ -19,9 +19,11 @@ use super::limits::Admitted;
 use super::nodes::{CallEvidence, validate_node_ids};
 use super::{AnalysisOptions, Diagnostic, Severity, ValidationAnalysis, sort_diagnostics};
 use crate::catalog::RegistrySnapshot;
-use crate::document::{BodyRef, Edge, GraphDocument, PortDirection, PortKind};
-use crate::edit::{EdgeEdit, NodeEdit};
-use crate::id::{EdgeId, NodeId};
+use crate::document::{
+    BodyRef, Edge, GraphDocument, NodeKind, PortDirection, PortKind, SignatureSnapshot,
+};
+use crate::edit::{ChangeSet, NodeEdit};
+use crate::id::NodeId;
 use crate::index::DocIndex;
 
 /// What the last full analysis kept for scoped updates.
@@ -67,6 +69,8 @@ pub(super) struct Scoped {
     /// Nodes re-resolved, including neighbours read only for availability.
     pub resolved: usize,
     pub components: usize,
+    /// Nodes added or removed, whose signatures the update published or withdrew.
+    pub changed_nodes: BTreeSet<NodeId>,
 }
 
 /// Re-checks a literal, type argument or pin edit against `retained`, which it updates only on success. `None`
@@ -114,8 +118,15 @@ pub(super) fn node_update(
         return None;
     }
     let touched: BTreeSet<NodeId> = edit.before.keys().copied().collect();
-    let (resolved, components) =
-        resolution_unchanged(document, registry, index, analysis, retained, &touched)?;
+    let (resolved, components, _) = resolution_unchanged(
+        document,
+        registry,
+        index,
+        analysis,
+        retained,
+        &touched,
+        &BTreeSet::new(),
+    )?;
     let inputs = recheck_inputs(document, registry, index, analysis, retained, &touched)?;
     let mut config = Vec::new();
     let mut schemas = super::config::ConfigSchemas::default();
@@ -150,46 +161,74 @@ fn has_error(list: &[Diagnostic]) -> bool {
     list.iter().any(|d| d.severity == Severity::Error)
 }
 
-/// Re-checks an edit that only added or removed edges. Every edge must join two data ports
-/// in the root body of a clean report. Such an edge then reaches only node resolution, the
-/// connection checks of an added edge and its ports, its target's inputs, data cycles,
-/// availability and export cones, and each of those is checked for the edge alone.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the added edges come from the change set, the removed ones from the journal"
-)]
-pub(super) fn edge_update(
+/// Re-checks an edit that only added or removed whole nodes and edges, in the root body of
+/// a clean report. Every added or removed node must be a pure package node whose ports are
+/// all typed data ports and that no export names; such a node is read only by its own
+/// resolution, inputs and configuration, its edges and admission. Every edge must join two
+/// data ports; it reaches only node resolution, the connection checks of an added edge and
+/// its ports, its target's inputs, data cycles, availability and export cones, and each of
+/// those is checked for the edge alone. A removed edge or node in a clean report can only
+/// take requirements and cycles away.
+pub(super) fn structure_update(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     options: &AnalysisOptions<'_>,
     index: &DocIndex,
-    analysis: &ValidationAnalysis,
+    analysis: &mut ValidationAnalysis,
     retained: &mut Retained,
-    added: &BTreeSet<EdgeId>,
-    edit: &EdgeEdit,
+    change: &ChangeSet,
 ) -> Option<Scoped> {
     options.checkpoint().ok()?;
+    let edit = change.structure_edit()?;
     if !retained.clean {
         return None;
     }
     let root = document.root();
-    let mut edges: Vec<(&Edge, bool)> = Vec::with_capacity(added.len() + edit.removed.len());
-    for id in added {
+    let added_nodes = &change.nodes().added;
+    let exported = |id: &NodeId| document.exports().iter().any(|export| export.node == *id);
+    let mut removed_charge = Admitted::default();
+    let mut added_charge = Admitted::default();
+    for id in added_nodes {
+        let node = root.nodes.get(id)?;
+        if node.provider.is_none() || exported(id) {
+            return None;
+        }
+        added_charge = added_charge.add(Admitted::of_node(document, registry, node))?;
+    }
+    for (id, (body, node)) in &edit.removed_nodes {
+        if *body != BodyRef::Root
+            || node.provider.is_none()
+            || exported(id)
+            || !pure_data(analysis.report().resolved.get(id)?)
+        {
+            return None;
+        }
+        removed_charge = removed_charge.add(Admitted::of_node(document, registry, node))?;
+    }
+    let added_edges = &change.edges().added;
+    let mut edges: Vec<(&Edge, bool)> =
+        Vec::with_capacity(added_edges.len() + edit.removed_edges.len());
+    for id in added_edges {
         edges.push((root.edges.get(id)?, true));
     }
-    for (body, edge) in edit.removed.values() {
+    for (body, edge) in edit.removed_edges.values() {
         if *body != BodyRef::Root {
             return None;
         }
         edges.push((edge, false));
     }
-    let mut removed_charge = Admitted::default();
-    let mut added_charge = Admitted::default();
-    let mut touched = BTreeSet::new();
-    let mut targets = BTreeSet::new();
+    let mut touched: BTreeSet<NodeId> = added_nodes.clone();
+    let mut targets: BTreeSet<NodeId> = added_nodes.clone();
     for (edge, is_added) in &edges {
-        if !root.nodes.contains_key(&edge.from.node) || !root.nodes.contains_key(&edge.to.node) {
-            return None;
+        for end in [edge.from.node, edge.to.node] {
+            if root.nodes.contains_key(&end) {
+                touched.insert(end);
+            } else if *is_added {
+                return None;
+            }
+        }
+        if root.nodes.contains_key(&edge.to.node) {
+            targets.insert(edge.to.node);
         }
         let charge = Admitted::of_edge(edge);
         if *is_added {
@@ -197,21 +236,133 @@ pub(super) fn edge_update(
         } else {
             removed_charge = removed_charge.add(charge)?;
         }
-        touched.insert(edge.from.node);
-        touched.insert(edge.to.node);
-        targets.insert(edge.to.node);
     }
     let admitted = retained.admitted.replace(removed_charge, added_charge)?;
     if !options.fits(admitted) {
         return None;
     }
-    let (resolved, components) =
-        resolution_unchanged(document, registry, index, analysis, retained, &touched)?;
+    let (resolved, components, fresh) = resolution_unchanged(
+        document,
+        registry,
+        index,
+        analysis,
+        retained,
+        &touched,
+        added_nodes,
+    )?;
+    if fresh.values().any(|(signature, _)| !pure_data(signature)) {
+        return None;
+    }
 
+    // Stage the new node set's signatures so the edge and input checks see it; a failed
+    // check restores the published ones before the caller runs the full analysis.
+    let staged: Vec<(NodeId, SignatureSnapshot)> = edit
+        .removed_nodes
+        .keys()
+        .filter_map(|id| analysis.resolved_mut().remove(id).map(|old| (*id, old)))
+        .collect();
+    for (id, (signature, _)) in &fresh {
+        analysis.resolved_mut().insert(*id, signature.clone());
+    }
+    let checked = edges_are_local(document, registry, index, analysis, &edges)
+        .then(|| recheck_inputs(document, registry, index, analysis, retained, &targets))
+        .flatten()
+        .and_then(|inputs| {
+            let mut schemas = super::config::ConfigSchemas::default();
+            let mut config = Vec::new();
+            for id in added_nodes {
+                let list: Vec<Diagnostic> = super::config::validate_node_config(
+                    BodyRef::Root,
+                    document.node(*id)?,
+                    registry,
+                    &mut schemas,
+                )
+                .into_iter()
+                .collect();
+                if has_error(&list) {
+                    return None;
+                }
+                config.push((*id, list));
+            }
+            options.checkpoint().ok()?;
+            Some((inputs, config))
+        });
+    let Some((inputs, config)) = checked else {
+        for id in fresh.keys() {
+            analysis.resolved_mut().remove(id);
+        }
+        analysis.resolved_mut().extend(staged);
+        return None;
+    };
+
+    let mut scoped = commit(retained, admitted, inputs, resolved, components);
+    for (id, list) in config {
+        if !list.is_empty() {
+            retained.config.insert(id, list.clone());
+            scoped.inputs.push((Vec::new(), list));
+        }
+    }
+    for (id, (_, list)) in fresh {
+        if !list.is_empty() {
+            retained.node_diagnostics.insert(id, list.clone());
+            scoped.inputs.push((Vec::new(), list));
+        }
+    }
+    for id in edit.removed_nodes.keys() {
+        retained.node_incomplete.remove(id);
+        for map in [
+            &mut retained.node_diagnostics,
+            &mut retained.inputs,
+            &mut retained.config,
+        ] {
+            if let Some(old) = map.remove(id) {
+                scoped.inputs.push((old, Vec::new()));
+            }
+        }
+    }
+    scoped.changed_nodes = added_nodes
+        .iter()
+        .chain(edit.removed_nodes.keys())
+        .copied()
+        .collect();
+    Some(scoped)
+}
+
+/// A pure node whose ports are all typed data ports, outputs with a source: the data
+/// cycle pass needs nothing else of it, and no control or region pass sees it.
+fn pure_data(signature: &SignatureSnapshot) -> bool {
+    signature.kind == NodeKind::Pure
+        && signature.ports.iter().all(|port| {
+            port.kind == PortKind::Data
+                && port.ty.is_some()
+                && (port.direction == PortDirection::Input || port.source.is_some())
+        })
+}
+
+/// Whether each edge, with the staged signatures, can only change its target's inputs.
+fn edges_are_local(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    index: &DocIndex,
+    analysis: &ValidationAnalysis,
+    edges: &[(&Edge, bool)],
+) -> bool {
     let report = analysis.report();
     let ports = super::ports::PortResolver::new(document, &report.resolved);
     let origin = registry.origin();
-    for (edge, is_added) in &edges {
+    let root = document.root();
+    edges.iter().all(|(edge, is_added)| {
+        let published = report
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.subject.edge == Some(edge.id));
+        if !is_added
+            && (!root.nodes.contains_key(&edge.from.node)
+                || !root.nodes.contains_key(&edge.to.node))
+        {
+            // The edge went with a removed node, which was pure and clean.
+            return !published;
+        }
         let data = matches!(
             (ports.port(&edge.from), ports.port(&edge.to)),
             (Ok(from), Ok(to)) if from.kind == PortKind::Data
@@ -228,7 +379,7 @@ pub(super) fn edge_update(
                 &edge.from,
             )
         {
-            return None;
+            return false;
         }
         let downstream = data_downstream(document, &ports, index, edge.to.node);
         if document
@@ -236,34 +387,25 @@ pub(super) fn edge_update(
             .iter()
             .any(|export| downstream.contains(&export.node))
         {
-            return None;
+            return false;
         }
         if *is_added {
             // Acyclic before, so a new cycle must lead from the target back to the source.
-            if downstream.contains(&edge.from.node)
-                || !super::connections::added_data_edge_is_clean(
+            !downstream.contains(&edge.from.node)
+                && super::connections::added_data_edge_is_clean(
                     document, &ports, index, edge, origin,
                 )
-            {
-                return None;
-            }
-        } else if report
-            .diagnostics
-            .iter()
-            .any(|diagnostic| diagnostic.subject.edge == Some(edge.id))
-        {
-            return None;
+        } else {
+            !published
         }
-    }
-    drop(ports);
-    let inputs = recheck_inputs(document, registry, index, analysis, retained, &targets)?;
-    options.checkpoint().ok()?;
-    Some(commit(retained, admitted, inputs, resolved, components))
+    })
 }
 
 /// Re-resolves `touched`, their neighbours and those nodes' generic components, with every
 /// neighbour of that set available, and confirms each result equals the retained one.
-/// Returns how many nodes were resolved and how many components they span.
+/// Nodes in `added` are new: each must resolve without errors, and its results are returned.
+/// Returns how many nodes were resolved, how many components they span and the new nodes'
+/// results.
 fn resolution_unchanged(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -271,7 +413,8 @@ fn resolution_unchanged(
     analysis: &ValidationAnalysis,
     retained: &Retained,
     touched: &BTreeSet<NodeId>,
-) -> Option<(usize, usize)> {
+    added: &BTreeSet<NodeId>,
+) -> Option<(usize, usize, Fresh)> {
     let near = with_neighbours(document, index, touched);
     let components = crate::inference::component::component_nodes(
         document,
@@ -294,7 +437,17 @@ fn resolution_unchanged(
     let fresh = by_node(&nodes.diagnostics)?;
     let report = analysis.report();
     let empty = Vec::new();
+    let mut fresh_added = Fresh::new();
     for id in &affected {
+        if added.contains(id) {
+            // A new node has nothing to compare with: it must resolve without errors.
+            let list = fresh.get(id).cloned().unwrap_or_default();
+            if nodes.incomplete_nodes.contains(id) || has_error(&list) {
+                return None;
+            }
+            fresh_added.insert(*id, (nodes.resolved.get(id)?.clone(), list));
+            continue;
+        }
         if nodes.resolved.get(id) != report.resolved.get(id)
             || nodes.incomplete_nodes.contains(id) != retained.node_incomplete.contains(id)
             || fresh.get(id).unwrap_or(&empty)
@@ -303,8 +456,14 @@ fn resolution_unchanged(
             return None;
         }
     }
-    Some((ids.len(), components.len()))
+    if added.iter().any(|id| !fresh_added.contains_key(id)) {
+        return None;
+    }
+    Some((ids.len(), components.len(), fresh_added))
 }
+
+/// Each added node's new signature and node diagnostics.
+type Fresh = BTreeMap<NodeId, (SignatureSnapshot, Vec<Diagnostic>)>;
 
 /// The current input diagnostics of `nodes`, whose signatures are unchanged. A node
 /// gaining or losing an input error would change which dependency diagnostics the report
@@ -359,6 +518,7 @@ fn commit(
         inputs,
         resolved,
         components,
+        changed_nodes: BTreeSet::new(),
     }
 }
 
