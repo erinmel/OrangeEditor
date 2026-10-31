@@ -128,18 +128,19 @@ fn one_config_edit_reuses_other_units_and_publishes_only_changed_subjects() {
         &changed.change_set,
         AnalysisOptions::default(),
     );
-    assert_eq!(stats.work, SessionWork::Recompute);
+    // A configuration edit on a package node is scoped: only its own configuration and
+    // input checks run, and no other node is visited.
+    assert_eq!(stats.work, SessionWork::Scoped);
     assert_eq!(
         (stats.local.config_computed, stats.local.config_hits),
-        (1, 15)
+        (1, 0)
     );
-    assert_eq!(stats.local.nodes_visited, 16);
-    // Only the edited node's input check runs again.
+    assert_eq!(stats.local.nodes_visited, 0);
     assert_eq!(
         (stats.local.inputs_computed, stats.local.input_hits),
-        (1, 15)
+        (1, 0)
     );
-    assert_eq!(stats.full_analysis_runs, 1);
+    assert_eq!(stats.full_analysis_runs, 0);
     assert_eq!(session.analysis(), &full(&document, &registry));
 
     let subject = Subject::new(Some(node_id(7)), None, None);
@@ -189,7 +190,7 @@ fn one_config_edit_reuses_other_units_and_publishes_only_changed_subjects() {
     );
     assert_eq!(
         (stats.local.config_computed, stats.local.config_hits),
-        (1, 15)
+        (1, 0)
     );
     assert!(session.diagnostics().is_empty());
     assert_eq!(session.changed_subjects(), &[subject.clone()].into());
