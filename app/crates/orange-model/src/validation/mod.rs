@@ -36,6 +36,7 @@ mod inputs;
 mod limits;
 mod local;
 mod nodes;
+mod order;
 pub(crate) mod ports;
 mod regions;
 mod report;

@@ -409,7 +409,7 @@ fn edges_that_may_change_more_run_the_full_analysis() {
 }
 
 #[test]
-fn edges_feeding_an_export_run_the_full_analysis() {
+fn edges_feeding_an_export_are_scoped() {
     let (package, registry) = catalog();
     let nodes = (0..3).map(|link| math(10 + link, "add", 0, 1)).collect();
     let edges = vec![edge(11, 10, "sum", 11, "a")];
@@ -423,8 +423,7 @@ fn edges_feeding_an_export_run_the_full_analysis() {
         options,
         vec![connect(12, 11, 12, "a")],
     );
-    assert_eq!(work, SessionWork::Recompute);
-    // Removing an edge upstream of the export runs in full too.
+    assert_eq!(work, SessionWork::Scoped);
     let work = edit(
         &mut session,
         &mut doc,
@@ -432,7 +431,88 @@ fn edges_feeding_an_export_run_the_full_analysis() {
         options,
         vec![disconnect(11)],
     );
+    assert_eq!(work, SessionWork::Scoped);
+}
+
+#[test]
+fn edges_that_close_a_cycle_after_reordering_run_the_full_analysis() {
+    let (mut doc, registry) = chains();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // Chains 10-12, 13-15 and 16-18 feed one another in both id directions, so whatever
+    // order the first edit builds, a later one runs against it.
+    for (n, from, to) in [(90, 15, 10), (91, 12, 16), (92, 27, 19), (93, 24, 28)] {
+        let work = edit(
+            &mut session,
+            &mut doc,
+            &registry,
+            options,
+            vec![connect(n, from, to, "a")],
+        );
+        assert_eq!(work, SessionWork::Scoped);
+    }
+    // 18 -> 13 closes 13..15 -> 10..12 -> 16..18 -> 13.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![connect(94, 18, 13, "a")],
+    );
     assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+#[test]
+fn random_rewiring_equals_the_full_analysis() {
+    let (mut doc, registry) = chains();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // A seed whose batches reach the pending-edge case.
+    let mut seed: u64 = 23;
+    let mut next = |bound: u32| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) as u32 % bound
+    };
+    let mut wired: BTreeMap<(u32, &str), u32> = BTreeMap::new();
+    for chain in 0..10 {
+        for link in 1..3 {
+            let to = 10 + chain * 3 + link;
+            wired.insert((to, "a"), to);
+        }
+    }
+    let mut scoped = 0;
+    let mut n = 100;
+    for _ in 0..300 {
+        // One to three rewirings per edit, each of a different input.
+        let mut commands = Vec::new();
+        let mut inputs = Vec::new();
+        for _ in 0..=next(3) {
+            let (from, to) = (10 + next(30), 10 + next(30));
+            let input = if next(2) == 0 { "a" } else { "b" };
+            if inputs.contains(&(to, input)) {
+                continue;
+            }
+            inputs.push((to, input));
+            commands.push(match wired.remove(&(to, input)) {
+                Some(edge) => disconnect(edge),
+                None if from != to => {
+                    n += 1;
+                    wired.insert((to, input), n);
+                    connect(n, from, to, input)
+                }
+                None => continue,
+            });
+        }
+        if !commands.is_empty()
+            && edit(&mut session, &mut doc, &registry, options, commands) == SessionWork::Scoped
+        {
+            scoped += 1;
+        }
+    }
+    assert!(scoped >= 30, "{scoped}");
 }
 
 #[test]
@@ -460,6 +540,33 @@ fn an_edge_from_an_event_payload_runs_the_full_analysis() {
     // The payload carries an availability requirement to whatever consumes the add.
     let work = edit(&mut session, &mut doc, &registry, options, vec![payload]);
     assert_eq!(work, SessionWork::Recompute);
+}
+
+#[test]
+fn an_event_payload_reaching_an_export_runs_the_full_analysis() {
+    let (package, registry) = catalog();
+    let event = "40000000-0000-4000-8000-000000000001";
+    let on_event = json!({"id": id(50), "definition_id": "core/on-event",
+        "definition_version": 1, "config_version": 1, "config": {"event": event},
+        "activation": {"mode": "queue", "capacity": 4, "overflow": "drop-oldest",
+            "on_fault": "continue", "order": 0}});
+    let base = graph(
+        &package,
+        vec![on_event, math(60, "add", 0, 1), math(61, "add", 0, 1)],
+        vec![edge(62, 60, "sum", 61, "a")],
+        vec![export(61, "sum")],
+    );
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&base).unwrap()).unwrap();
+    raw["events"] = json!([{"id": event, "name": "tick", "payload": "core/u64@1", "scope": "run"}]);
+    let mut doc = orange_model::from_json(&raw.to_string()).unwrap();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let payload = DocCommand::Connect {
+        edge: serde_json::from_value::<Edge>(edge(63, 50, "payload", 60, "a")).unwrap(),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![payload]);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
 }
 
 fn types(pairs: &[(&str, &str)]) -> BTreeMap<String, orange_model::id::TypeExpr> {

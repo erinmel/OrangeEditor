@@ -69,6 +69,9 @@ pub(super) struct Retained {
     /// No node may suspend, so stale-capture checks cannot read data edges. Data edges and
     /// nodes are checked locally only then; exec edges recompute the state pass anyway.
     pub quiet: bool,
+    /// Each body's data dependency order, built by the first structure edit there that needs
+    /// it and kept by later ones; `None` when its nodes form a data cycle (V12d).
+    pub orders: BTreeMap<BodyRef, Option<super::order::TopoOrder>>,
 }
 
 /// `diagnostics` grouped by subject node and sorted, or `None` if one has no node.
@@ -422,7 +425,25 @@ pub(super) fn structure_update(
     for (id, (signature, _)) in &fresh {
         analysis.resolved_mut().insert(*id, signature.clone());
     }
-    let kinds = classify_edges(document, registry, index, analysis, &edges);
+    // A body's first structure edit builds its order from the edited document, which then
+    // already accounts for the edit; later ones bring it up to date.
+    let built = !retained.orders.contains_key(&home);
+    if built {
+        let ports = super::ports::PortResolver::new(document, &analysis.report().resolved);
+        let order = super::order::TopoOrder::build(document, &ports, index, home);
+        retained.orders.insert(home, order);
+    }
+    let mut order = retained.orders.get_mut(&home).and_then(Option::as_mut);
+    if let Some(order) = order.as_deref_mut().filter(|_| !built) {
+        for id in edit.removed_nodes.keys() {
+            order.remove(*id);
+        }
+        for id in added_nodes {
+            order.push(*id);
+        }
+    }
+    let zones = &analysis.report().regions.zones;
+    let kinds = classify_edges(document, registry, index, analysis, &edges, order, zones);
     // Without a control-flow rerun, data edges and pure nodes need the quiet condition, for
     // the stale-capture check, and no availability requirement. With one, which exec edges
     // and flow nodes force, the rerun covers both: state reruns in full and availability
@@ -705,13 +726,17 @@ struct EdgeKinds {
 }
 
 /// Classifies each edge with the staged signatures, or `None` when one may change more than
-/// its target's inputs and, for exec edges, the control-flow passes.
+/// its target's inputs and, for exec edges, the control-flow passes. With the body's data
+/// order, an added data edge is checked for cycles within its order interval and for
+/// exports by its producer's cone; without one, by walking everything it feeds.
 fn classify_edges(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     index: &DocIndex,
     analysis: &ValidationAnalysis,
     edges: &[(&Edge, bool)],
+    mut order: Option<&mut super::order::TopoOrder>,
+    zones: &super::zones::ZoneIndex,
 ) -> Option<EdgeKinds> {
     let report = analysis.report();
     let ports = super::ports::PortResolver::new(document, &report.resolved);
@@ -762,6 +787,27 @@ fn classify_edges(
             index,
             &edge.from,
         );
+        if let Some(order) = order.as_deref_mut() {
+            if !*is_added {
+                // A removed edge only shrinks cones, and closes no cycle.
+                return !published;
+            }
+            if !order.insert(document, &ports, index, edge.from.node, edge.to.node) {
+                return false;
+            }
+            // Before the edge, no export's cone crossed an activation, and the edge adds
+            // its producer's cone to those of the exports it can reach, which lie at or
+            // after its target in the order. The availability requirement already covers
+            // producers reached through pure nodes; this covers any other computed output.
+            let at = order.position(edge.to.node);
+            let reaches_export = document
+                .exports()
+                .iter()
+                .any(|export| order.position(export.node) >= at);
+            return !(reaches_export
+                && super::exports::edge_crosses_activation(document, &ports, index, edge, zones))
+                && super::connections::added_edge_is_clean(document, &ports, index, edge, origin);
+        }
         let downstream = data_downstream(document, &ports, index, edge.to.node);
         if document
             .exports()

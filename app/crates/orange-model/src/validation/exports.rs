@@ -111,8 +111,9 @@ pub(crate) fn validate_exports_with_ports(
         if !serializable(registry, port.ty.as_ref()) {
             report(DiagnosticCode::ExportType);
         }
+        let producers = |node| incoming.get(&node).into_iter().flatten().copied();
         if zones.owner(export.node).is_some()
-            || crosses_activation(&incoming, export.node, port.source, zones)
+            || crosses_activation(producers, export.node, port.source, zones)
         {
             report(DiagnosticCode::CrossActivation);
         }
@@ -135,10 +136,44 @@ fn serializable(registry: &RegistrySnapshot, ty: Option<&TypeExpr>) -> bool {
             .is_ok_and(|witness| witness.is_some())
 }
 
+/// Whether the data edge `edge` feeds an export a value from an activation, given that the
+/// export's cone did not before: whether the edge's producer, or anything in its
+/// pure/volatile cone, belongs to one (V12d). Producers come from `index`, so only the
+/// producer's cone is visited, never the export's.
+pub(super) fn edge_crosses_activation(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    index: &crate::index::DocIndex,
+    edge: &crate::document::Edge,
+    zones: &super::zones::ZoneIndex,
+) -> bool {
+    let Ok(port) = resolved.port(&edge.from) else {
+        return false;
+    };
+    let producers = |node: NodeId| {
+        index.incident(node).filter_map(move |id| {
+            let edge = document.edge(id)?;
+            if edge.to.node != node || !document.root().nodes.contains_key(&edge.from.node) {
+                return None;
+            }
+            let (Ok(from), Ok(to)) = (resolved.port(&edge.from), resolved.port(&edge.to)) else {
+                return None;
+            };
+            (from.kind == PortKind::Data
+                && to.kind == PortKind::Data
+                && from.direction == PortDirection::Output
+                && to.direction == PortDirection::Input)
+                .then_some(())
+                .and(from.source.map(|source| (edge.from.node, source)))
+        })
+    };
+    crosses_activation(producers, edge.from.node, port.source, zones)
+}
+
 /// Whether the exported value, or anything in its pure/volatile cone, belongs to an
 /// activation (payload, iteration or execution-sourced output).
-fn crosses_activation(
-    incoming: &BTreeMap<NodeId, Vec<(NodeId, OutputSource)>>,
+fn crosses_activation<I: IntoIterator<Item = (NodeId, OutputSource)>>(
+    incoming: impl Fn(NodeId) -> I,
     node: NodeId,
     source: Option<OutputSource>,
     zones: &super::zones::ZoneIndex,
@@ -158,7 +193,7 @@ fn crosses_activation(
     let mut visited = BTreeSet::from([node]);
     let mut stack = vec![node];
     while let Some(node) = stack.pop() {
-        for &(producer, source) in incoming.get(&node).into_iter().flatten() {
+        for (producer, source) in incoming(node) {
             if source == OutputSource::Iteration
                 && zones
                     .owner(producer)

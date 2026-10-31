@@ -658,6 +658,7 @@ fn run_supported_analysis(
                 clean: false,
                 isolable: false,
                 quiet: false,
+                orders: BTreeMap::new(),
             })
         }
         _ => None,
