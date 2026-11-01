@@ -961,3 +961,5 @@ Zone compiler layout slice (2026-10-27): DataPlan now retains plan-local `ZoneIx
 Compare-and-set and harness (2026-10-27):
 - **Compare-and-set** relies on values having been checked when stored or published. It decides equality structurally and uses checked, order-insensitive map equality only for shapes that contain a map.
 - **Harness.** `orange-measure` is a development-only harness. Its counting allocator is the only `unsafe` code in the repository, contained by crate-local lints.
+
+Standalone data interruption (2026-10-31): `DataActivation` keeps a private drive-open marker separate from ordinary epoch failure/cancellation. A normal drive return clears it; unwinding leaves it set. Subsequent data pulls, input publication and epoch starts report `DataError::Interrupted`, so retained slots cannot appear as a new epoch's completed result after callback work was lost. The marker cannot be reset by a new epoch or cleanup to revive execution. The host releases the activation and constructs a replacement. This adds an unfrozen Rust error variant/private state, not a saved field, language outcome, provider interface or replay format.

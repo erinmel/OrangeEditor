@@ -67,6 +67,212 @@ fn activation_frames_borrow_immutable_constants_from_the_retained_plan() {
     );
 }
 
+#[derive(Debug)]
+struct PanicsOnSecondEntropyCall(Arc<std::sync::atomic::AtomicUsize>);
+
+impl EntropyKernel for PanicsOnSecondEntropyCall {
+    fn evaluate(
+        &self,
+        _: &[Value],
+        outputs: &mut [Value],
+        _: &mut dyn EntropySource,
+    ) -> Result<(), KernelFault> {
+        let call = self.0.fetch_add(1, Ordering::Relaxed);
+        if call == 1 {
+            panic!("synthetic callback panic on second epoch");
+        }
+        outputs[0] = Value::U64(42 + call as u64);
+        Ok(())
+    }
+}
+
+struct PanickingEntropyResolver {
+    package: orange_bundled::MathPackage,
+    kernel: Arc<PanicsOnSecondEntropyCall>,
+}
+
+impl PureKernelResolver for PanickingEntropyResolver {
+    fn resolve_binding(
+        &self,
+        request: &orange_compiler::BindingRequest<'_>,
+    ) -> Result<KernelBinding, ResolveError> {
+        self.package.resolve_binding(request)
+    }
+}
+
+impl EntropyKernelResolver for PanickingEntropyResolver {
+    fn resolve_entropy_binding(
+        &self,
+        request: &orange_compiler::BindingRequest<'_>,
+    ) -> Result<EntropyBinding, ResolveError> {
+        let mut binding = self.package.resolve_entropy_binding(request)?;
+        binding.kernel = self.kernel.clone();
+        Ok(binding)
+    }
+}
+
+#[test]
+fn caught_callback_panic_cannot_retry_a_data_activation_in_the_same_epoch() {
+    let (package, snapshot) = catalog();
+    let doc = graph(&package, vec![random(1)], vec![], vec![export(1, "value")]);
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let resolver = PanickingEntropyResolver {
+        package,
+        kernel: Arc::new(PanicsOnSecondEntropyCall(calls.clone())),
+    };
+    let plan = Arc::new(
+        compile_data(
+            &doc,
+            snapshot.clone(),
+            &analyze(&doc, &snapshot),
+            &resolver,
+            CompileOptions::default(),
+        )
+        .unwrap(),
+    );
+    let cancel = CancelToken::new();
+    let mut activation = start(
+        plan.clone(),
+        &doc,
+        &snapshot,
+        0,
+        0,
+        DataOptions {
+            cancel: Some(cancel.clone()),
+            ..Default::default()
+        },
+    );
+    activation.begin_epoch().unwrap();
+    assert_eq!(
+        activation.export(0).unwrap().unwrap().outcome,
+        Ok(&Value::U64(42))
+    );
+
+    activation.begin_epoch().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = activation.export(0);
+    }));
+    assert!(panic.is_err());
+    assert!(format!("{activation:?}").contains("interrupted: true"));
+
+    // Interruption takes precedence over cancellation and remains sticky across
+    // all public state transitions and pulls.
+    cancel.cancel();
+    assert!(matches!(activation.export(0), Err(DataError::Interrupted)));
+    assert_eq!(activation.begin_epoch(), Err(DataError::Interrupted));
+    assert_eq!(
+        activation.set_input(0, Value::U64(1)),
+        Err(DataError::Interrupted)
+    );
+    assert_eq!(
+        activation.set_input_outcome(0, orange_compiler::FoldedValue::Value(Value::U64(1))),
+        Err(DataError::Interrupted)
+    );
+    for budget in [0, 1] {
+        let mut budget = budget;
+        assert!(matches!(
+            activation.poll_export(0, &mut budget),
+            Err(DataError::Interrupted)
+        ));
+    }
+    cancel.clear();
+    assert_eq!(activation.begin_epoch(), Err(DataError::Interrupted));
+    assert!(matches!(activation.export(0), Err(DataError::Interrupted)));
+    assert_eq!(
+        DataError::Interrupted.message_key(),
+        "core/data-interrupted"
+    );
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+
+    // Dropping the interrupted activation and creating another restores normal
+    // evaluation; the resolver's third callback has a distinct result.
+    drop(activation);
+    let mut fresh = start(plan, &doc, &snapshot, 0, 1, DataOptions::default());
+    fresh.begin_epoch().unwrap();
+    assert_eq!(
+        fresh.export(0).unwrap().unwrap().outcome,
+        Ok(&Value::U64(44))
+    );
+}
+
+#[derive(Debug)]
+struct PanicsOnSecondPureCall(Arc<std::sync::atomic::AtomicUsize>);
+
+impl orange_compiler::PureKernel for PanicsOnSecondPureCall {
+    fn fold(&self, _: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
+        let call = self.0.fetch_add(1, Ordering::Relaxed);
+        if call == 1 {
+            panic!("synthetic pure callback panic on second epoch");
+        }
+        outputs[0] = Value::U64(42 + call as u64);
+        Ok(())
+    }
+}
+
+struct PanickingPureResolver {
+    package: orange_bundled::MathPackage,
+    kernel: Arc<PanicsOnSecondPureCall>,
+}
+
+impl PureKernelResolver for PanickingPureResolver {
+    fn resolve_binding(
+        &self,
+        request: &orange_compiler::BindingRequest<'_>,
+    ) -> Result<KernelBinding, ResolveError> {
+        let mut binding = self.package.resolve_binding(request)?;
+        binding.kernel = self.kernel.clone();
+        Ok(binding)
+    }
+}
+
+impl EntropyKernelResolver for PanickingPureResolver {
+    fn resolve_entropy_binding(
+        &self,
+        request: &orange_compiler::BindingRequest<'_>,
+    ) -> Result<EntropyBinding, ResolveError> {
+        self.package.resolve_entropy_binding(request)
+    }
+}
+
+#[test]
+fn caught_dynamic_pure_callback_panic_interrupts_the_activation() {
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![random(1), math(2, "add", 0, 0)],
+        vec![edge(1, 1, "value", 2, "a")],
+        vec![export(2, "sum")],
+    );
+    let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let resolver = PanickingPureResolver {
+        package,
+        kernel: Arc::new(PanicsOnSecondPureCall(calls.clone())),
+    };
+    let plan = Arc::new(
+        compile_data(
+            &doc,
+            snapshot.clone(),
+            &analyze(&doc, &snapshot),
+            &resolver,
+            CompileOptions::default(),
+        )
+        .unwrap(),
+    );
+    let mut activation = start(plan, &doc, &snapshot, 0, 0, DataOptions::default());
+    activation.begin_epoch().unwrap();
+    assert_eq!(
+        activation.export(0).unwrap().unwrap().outcome,
+        Ok(&Value::U64(42))
+    );
+    activation.begin_epoch().unwrap();
+    let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let _ = activation.export(0);
+    }));
+    assert!(panic.is_err());
+    assert!(matches!(activation.export(0), Err(DataError::Interrupted)));
+    assert_eq!(calls.load(Ordering::Relaxed), 2);
+}
+
 #[test]
 #[ignore = "manual release-only local timing baseline; no NFR threshold"]
 fn root_data_epoch_timing_baseline() {
