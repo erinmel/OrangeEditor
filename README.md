@@ -24,6 +24,13 @@ cargo run -p orange-bundled --example headless_fork --locked
 
 Saved graphs use versioned compact JSON for editing and interchange. Compilation produces typed Rust values and dense slot indices in memory, following the four representations in [12](docs/12-graph-data-structures.md). Execution does not require repeatedly parsing the saved JSON. Binary persistence and compiled-plan caching are separate choices; the measured format comparison and JSON import improvement are recorded in [10](docs/10-tooling-and-sources.md).
 
+The [headless authoring example](app/crates/orange-bundled/examples/headless_authoring.rs) composes editing, undo/redo, retained analysis, compilation and execution on one worker. Capacity-one channels carry ordered commands and metadata acknowledgements; the document/session are not cloned for each edit. It checks layout no-work, a running plan becoming stale while retaining its original result, replacement execution, shutdown and channel failure. Its synchronous caller is a deterministic demonstration, not a UI adapter or a latency guarantee.
+
+```sh
+cargo run -p orange-bundled --example headless_authoring --locked
+cargo test -p orange-bundled --example headless_authoring --locked
+```
+
 Run from the repository root with the toolchain in [rust-toolchain.toml](rust-toolchain.toml) and the checked-in Cargo.lock:
 
 ```sh

@@ -106,6 +106,8 @@ All product-owned visible and accessible text follows [13](13-internationalizati
 
 ## Architecture invariants
 
+Headless authoring ownership example (2026-10-31): `headless_authoring` demonstrates a host-owned worker with one editable document, its `AnalysisSession`, history and checked runtime state. Capacity-one command/reply channels preserve sequence and publish bounded acknowledgements rather than copying a document or full report for every edit. Layout changes retain semantic evidence; edits do not change an already-started immutable plan. The tested example includes undo/redo, stale-plan inspection, replacement execution, shutdown, bad sequence and host disconnection. Its caller deliberately blocks to make the demonstration deterministic; a real UI must use nonblocking submission/polling and preserve accepted commands. This composes existing public APIs without adding a generic worker framework, a core UI dependency or a new execution domain. Production admission, history/queue byte limits, cancellation responsiveness and platform/UI qualification remain host work.
+
 1. Core crates build/test without UI, GPU or network access.
 2. Each side effect has one owning activation and one cancellable lifetime.
 3. Graph/package IDs outlive processes; runtime/entity IDs do not.

@@ -2386,6 +2386,34 @@ Branch `core/function-step-context` on `dev` adadaa3 (same toolchain; Cargo.lock
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
 
+### Retained-session memory attribution and headless authoring composition — 2026-10-31
+
+Architecture hardening B0/C0, branch `codex/hardening-authoring-host`, based on `dev` e9aead5 (the inference-cache improvement in PR #100). Windows x86_64 MSVC, Rust/Cargo 1.99.1, default workspace features, unchanged checked-in Cargo.lock. This record separates a temporary allocation probe from the shipped example; neither passes NFR-15 or the real UI gate.
+
+**Memory method:** a temporary standalone release executable reused `orange-measure`'s counting allocator and graph builder. It constructed valid connected chains of 2,000/10,000 bundled generic Add nodes with one export, then measured the additional requested live heap from `AnalysisSession::new`. A temporary consuming helper partitioned the session into owned fields; dropping these separately attributed released allocations. The helper was removed and `validation/session.rs` restored byte-for-byte (SHA-256 `14844CEB36050C0007DAD3B624C8AF5EDD6AD33878BE05C8754B2906DEEEE26E`); no probe API or allocator change is shipped. Invocation: `powershell -NoProfile -ExecutionPolicy Bypass -File .artifacts/b0-probe/run.ps1`, which ran `cargo run --release --manifest-path .artifacts/b0-probe/Cargo.toml --offline` in the isolated worktree. Probe source/logs were retained in ignored working artifacts during review.
+
+| Requested live heap, MiB | 2,000 nodes | 10,000 nodes |
+|---|---:|---:|
+| Additional retained session, before partitioning | 21.268 | 104.968 |
+| Local validation caches | 11.851 | 59.266 |
+| Retained generic arguments | 1.208 | 6.039 |
+| Retained solution metadata | 2.377 | 11.888 |
+| Document index | 2.512 | 11.163 |
+| Published analysis | 2.858 | 14.285 |
+| Other session state | 0.463 | 2.328 |
+
+The last six rows are drop-attribution estimates. Drop order was other state, generic arguments, retained metadata, local caches, index, then published analysis. Shared storage is attributed to its last surviving owner, not counted once per reference. Temporary partition handles added about 0.002 MiB. After all parts dropped, total requested process heap was 7.183/32.324 MiB, including the still-owned document, registry and process baseline. This is one run per size for attribution, not a paired optimization benchmark, peak heap, OS working set/RSS, leak qualification or an exact accounting of exclusive field ownership. No timing claim follows from it.
+
+**Decision:** local validation caches are the largest measured session category (about 56%). Removing useful inference caches, changing document ownership globally or introducing persistent storage is not justified by these totals alone. Cache/signature sharing needs a separately measured candidate with full-analysis equivalence and peak/working-set evidence. The targeted function-membership index is a separate measured work unit; this probe uses the common base before that change.
+
+**Host composition:** `orange-bundled/examples/headless_authoring.rs` demonstrates one background owner of the document, retained analysis, undo/redo and checked plan/runtime state. Capacity-one channels carry ordered commands and small metadata acknowledgements. It uses existing public APIs without cloning the document/session or materializing a complete report for each edit. The workflow loads a graph, edits/undoes/redoes, checks layout no-work, starts a plan, edits while it runs, observes the old plan becoming stale while it still computes its original result (4), stops/disposes it, then compiles/runs the new result (8) and joins the worker. Tests also cover invalid command sequence and host disconnection. This is an embedding example, not a replacement for `AnalysisWorker`.
+
+**Checks executed:** `cargo run -p orange-bundled --example headless_authoring --locked` passed with the expected result; `cargo test -p orange-bundled --example headless_authoring --locked` passed both tests. `cargo test --workspace --locked` passed 1,031 tests with 15 ignored across 94 result groups. `cargo fmt --all --check`, `cargo clippy --workspace --all-targets --locked -- -D warnings`, `cargo doc --workspace --no-deps --locked` with `RUSTDOCFLAGS=-D warnings`, `node tools/check-cargo-metadata.mjs` and `git diff --check` passed. Local incremental compilation reported a filesystem hard-link fallback to copying; no code lint failure occurred. The example is registered with `test = true` so workspace tests exercise its behavior. Remote platform/MSRV/security checks remain required for the published candidate.
+
+`cargo test --release -p orange-bundled --example headless_authoring --locked` also passed both tests.
+
+**Limits:** the deterministic caller deliberately blocks for acknowledgements. A real UI still needs nonblocking submission/polling, bounded history/bytes, cancellation and edit-burst/newest-result qualification. This example proves composition and ownership on a small graph, not production worker latency, retained-view design, comprehensive admission or UI readiness. The existing snapshot worker and full-analysis fallback remain unchanged; broader B0/B1 measurements and architecture selection remain open.
+
 ### Session edit measurement and dense data cycles (V12b) — 2026-10-30
 
 Branch `core/session-edit-costs` on `dev` 4a3632a (same toolchain; Cargo.lock unchanged). Continues audit finding A06 and V12b (16).

@@ -201,6 +201,8 @@ The target session adds O(nodes + edges) indexes and unit results to the existin
 
 ## 9. Delivery slices
 
+Host composition evidence (2026-10-31): the tested `orange-bundled` example `headless_authoring` keeps a document, retained session and edit history under one background owner and exchanges ordered commands/metadata through capacity-one channels. It avoids per-edit full snapshots and `materialize()` while proving history/freshness and immutable running-plan behavior on a small workflow. This is a host-side alternative to the existing full-snapshot `AnalysisWorker`; that API is unchanged. Blocking caller operations are demonstration scaffolding, not a UI-thread policy. No large-graph latency, overall memory or UI gate is passed by the example.
+
 Closely related slices may share a reviewable PR to `dev`; each implemented behavior keeps the full-pass equivalence gate. Current delivery is V12a plus bounded V12b, with conservative full passes elsewhere.
 
 | Slice | Content | Done when |
