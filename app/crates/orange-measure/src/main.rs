@@ -8,9 +8,13 @@
 //! `FILTER` keeps workloads whose name contains it. Numbers describe the machine they ran
 //! on; they are evidence for choosing optimizations, not acceptance thresholds.
 
+mod authoring;
 mod counter;
 mod graph;
 mod harness;
+mod import_measure;
+mod index_measure;
+mod lifecycle_measure;
 mod workloads;
 
 use harness::{Config, Row};
@@ -70,12 +74,27 @@ fn main() {
         config.warmup,
         config.runs
     );
+    if filter == "index-update" {
+        index_measure::run(config);
+        return;
+    }
+    if filter == "import-profile" {
+        import_measure::run(config);
+        return;
+    }
+    if filter == "ownership-memory" {
+        lifecycle_measure::run(config);
+        return;
+    }
     let rows: Vec<Row> = WORKLOADS
         .iter()
         .filter(|(name, _)| name.contains(filter.as_str()))
         .map(|(_, workload)| workload(config))
         .collect();
     harness::print_table(&rows);
+    if "authoring-compare".contains(filter.as_str()) {
+        authoring::run(config);
+    }
     if "oversized-map-zone".contains(filter.as_str()) {
         println!(
             "oversized map zone: {} peak heap bytes before ResourceLimit",
