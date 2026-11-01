@@ -15,7 +15,7 @@ use crate::document::{
     BodyRef, Edge, GraphBody, GraphDocument, NodeInstance, PortRef, SignatureSnapshot,
 };
 use crate::edit::{ChangeSet, DeclId};
-use crate::id::{EdgeId, NodeId};
+use crate::id::{EdgeId, FunctionId, NodeId};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct DocIndex {
@@ -26,6 +26,15 @@ pub struct DocIndex {
     incoming: HashMap<PortRef, BTreeSet<EdgeId>>,
     outgoing: HashMap<PortRef, BTreeSet<EdgeId>>,
     incident: HashMap<NodeId, BTreeSet<EdgeId>>,
+    /// Membership is retained only for function bodies. Root nodes and edges need
+    /// no secondary directory because the root body is never wholesale replaced.
+    function_members: HashMap<FunctionId, BodyMembers>,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct BodyMembers {
+    nodes: BTreeSet<NodeId>,
+    edges: BTreeSet<EdgeId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,8 +57,10 @@ impl DocIndex {
     }
 
     /// Brings the index up to date with `document` after the transaction that produced
-    /// `change`. Cost is proportional to the change, plus the size of any function body
-    /// the transaction replaced or removed.
+    /// `change`. Function membership lookups are average O(1); ordered membership and
+    /// incidence-set edits are O(log n) in the affected function or endpoint degree.
+    /// Replacing or removing a function visits only its previous members, not unrelated
+    /// root or function contents.
     pub fn update(&mut self, document: &GraphDocument, change: &ChangeSet) {
         if self.state != change.from_state() || document.state_id() != change.to_state() {
             *self = Self::build(document);
@@ -68,7 +79,7 @@ impl DocIndex {
         {
             if let DeclId::Function(id) = decl {
                 let body_ref = BodyRef::Function(*id);
-                self.remove_body(body_ref);
+                self.remove_body(body_ref, document);
                 if let Some(body) = document.body(body_ref) {
                     self.add_body(body_ref, body);
                 }
@@ -76,11 +87,11 @@ impl DocIndex {
         }
         let (nodes, edges) = (&change.nodes, &change.edges);
         for id in nodes.removed.iter() {
-            self.nodes.remove(id);
+            self.remove_node(*id);
         }
         for id in nodes.added.iter().chain(&nodes.changed) {
             if let Some(body) = document.locate_node(*id) {
-                self.nodes.insert(*id, body);
+                self.insert_node(body, *id);
             }
         }
         for id in edges.removed.iter().chain(&edges.changed) {
@@ -141,29 +152,88 @@ impl DocIndex {
     }
 
     fn add_body(&mut self, body_ref: BodyRef, body: &GraphBody) {
+        if let BodyRef::Function(id) = body_ref {
+            self.function_members.entry(id).or_default();
+        }
         for id in body.nodes.keys() {
-            self.nodes.insert(*id, body_ref);
+            self.insert_node(body_ref, *id);
         }
         for edge in body.edges.values() {
             self.insert_edge(body_ref, edge);
         }
     }
 
-    fn remove_body(&mut self, body_ref: BodyRef) {
-        self.nodes.retain(|_, body| *body != body_ref);
-        let edges: Vec<EdgeId> = self
-            .edges
-            .iter()
-            .filter(|(_, entry)| entry.body == body_ref)
-            .map(|(id, _)| *id)
-            .collect();
+    fn remove_body(&mut self, body_ref: BodyRef, document: &GraphDocument) {
+        let BodyRef::Function(function) = body_ref else {
+            return;
+        };
+        // Keep the map entry, even for an empty function, so incremental and fresh
+        // builds have the same private representation. Taking the sets lets removals
+        // proceed without scanning unrelated root or function membership.
+        let members = self.function_members.entry(function).or_default();
+        let nodes = std::mem::take(&mut members.nodes);
+        let edges = std::mem::take(&mut members.edges);
+        for id in nodes {
+            // A transaction may move an ID into another function before this body is
+            // visited. The index owner guard preserves that newer location.
+            if self.nodes.get(&id) == Some(&body_ref) {
+                self.remove_node(id);
+            }
+        }
         for id in edges {
-            self.remove_edge(id);
+            if self
+                .edges
+                .get(&id)
+                .is_some_and(|entry| entry.body == body_ref)
+            {
+                self.remove_edge(id);
+            }
+        }
+        if document.body(body_ref).is_none() {
+            self.function_members.remove(&function);
+        }
+    }
+
+    fn insert_node(&mut self, body: BodyRef, id: NodeId) {
+        let previous = self.nodes.insert(id, body);
+        if previous == Some(body) {
+            return;
+        }
+        if let Some(BodyRef::Function(function)) = previous
+            && let Some(members) = self.function_members.get_mut(&function)
+        {
+            members.nodes.remove(&id);
+        }
+        if let BodyRef::Function(function) = body {
+            self.function_members
+                .entry(function)
+                .or_default()
+                .nodes
+                .insert(id);
+        }
+    }
+
+    fn remove_node(&mut self, id: NodeId) {
+        let Some(body) = self.nodes.remove(&id) else {
+            return;
+        };
+        if let BodyRef::Function(function) = body
+            && let Some(members) = self.function_members.get_mut(&function)
+        {
+            members.nodes.remove(&id);
         }
     }
 
     fn insert_edge(&mut self, body: BodyRef, edge: &Edge) {
         let id = edge.id;
+        let entry = EdgeEntry {
+            body,
+            from: edge.from.clone(),
+            to: edge.to.clone(),
+        };
+        if let Some(previous) = self.edges.insert(id, entry) {
+            self.remove_edge_entry(id, previous);
+        }
         self.incoming.entry(edge.to.clone()).or_default().insert(id);
         self.outgoing
             .entry(edge.from.clone())
@@ -171,20 +241,28 @@ impl DocIndex {
             .insert(id);
         self.incident.entry(edge.from.node).or_default().insert(id);
         self.incident.entry(edge.to.node).or_default().insert(id);
-        self.edges.insert(
-            id,
-            EdgeEntry {
-                body,
-                from: edge.from.clone(),
-                to: edge.to.clone(),
-            },
-        );
+        if let BodyRef::Function(function) = body {
+            self.function_members
+                .entry(function)
+                .or_default()
+                .edges
+                .insert(id);
+        }
     }
 
     fn remove_edge(&mut self, id: EdgeId) {
         let Some(entry) = self.edges.remove(&id) else {
             return;
         };
+        self.remove_edge_entry(id, entry);
+    }
+
+    fn remove_edge_entry(&mut self, id: EdgeId, entry: EdgeEntry) {
+        if let BodyRef::Function(function) = entry.body
+            && let Some(members) = self.function_members.get_mut(&function)
+        {
+            members.edges.remove(&id);
+        }
         remove_from(&mut self.incoming, &entry.to, id);
         remove_from(&mut self.outgoing, &entry.from, id);
         remove_from(&mut self.incident, &entry.from.node, id);

@@ -2710,6 +2710,17 @@ Branch `core/data-order-with-report` on `dev` 2c6bda0 (same toolchain; Cargo.loc
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
 
+### Function-owned index membership (A4) — 2026-10-31
+
+Branch `codex/hardening-function-index` on e9aead5; Windows x86_64 MSVC, Rust/Cargo 1.99.1, default features and unchanged Cargo.lock. Only private derived-index representation and focused regressions change; graph JSON, provider identities and public signatures are unchanged.
+
+- **Change:** function-only node/edge membership sets replace whole-index scans on function replacement/removal. Root contents add no secondary membership allocation. Insertion/removal updates both membership and adjacency, while current-index ownership guards preserve IDs moved between functions in either update order. No whole-document location lookup is used to remove old body members. Freshness mismatch still rebuilds.
+- **Behavior:** focused tests cover empty/replaced/removed functions, body-local node edits, moved node/edge IDs in both function orderings, undo/redo and equality to a fresh build. Existing randomized index/edit equivalence checks remain in the suite.
+- **Timing:** the same temporary release probe measures transaction application plus `DocIndex::update`, excluding setup/build, with nine samples per case. Baseline e9aead5 versus final source, median microseconds: 1,000 unrelated root nodes, replacement 13.0 to 13.9 and removal 5.0 to 2.9; 10,000 root nodes, replacement 94.3 to 19.8 and removal 41.3 to 3.1. The 10k fixture improves about 4.8x/13.3x; the small replacement difference is noise-level, not a general regression/speedup claim. Command: `cargo test --release -p orange-model --test doc_index function_body_update_scaling_probe --locked -- --ignored --nocapture`; the temporary probe was removed after measurement, with source/logs retained in ignored work artifacts.
+- **Memory:** a separate counting-allocator probe built documents before measuring index allocation. `DocIndex` inline size is 248 to 296 bytes (+48). Root-only retained heap is unchanged: 1,320,868 bytes for 1k nodes and 11,745,156 for 10k. Sixteen functions of 32 nodes/31 edges add 35,888 bytes for 1,008 member IDs, including map/set overhead, at either root size. Every measured index drop returns live heap to its pre-build level. Command: `cargo run --offline --manifest-path .artifacts/a4/memory-probe/Cargo.toml --release`, against original/final source with byte-exact restoration. These are requested heap sizes, not RSS.
+- **Executed:** `cargo test --workspace --locked --offline`: 1,031 passed, 0 failed, 15 ignored in 93 result groups including doctests; the focused index suite passes all five tests. Formatting, workspace/all-target Clippy with warnings denied, workspace Rustdoc with warnings denied, architecture metadata policy and diff checks passed. Platform/MSRV/security qualification remains the exact-head CI responsibility.
+- **Limitations:** ordered membership adds O(log body-size) edits/storage for functions; document transaction work and other analysis passes have their own costs. No NFR-05/15 or whole-application performance gate is passed.
+
 ### W9 measurement and no-op node edits (V12f) — 2026-10-30
 
 Branch `core/w9-measurement` on `dev` 7ecc4f0 (same toolchain; Cargo.lock unchanged). Starts V12f (16).
