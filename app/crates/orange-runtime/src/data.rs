@@ -63,6 +63,8 @@ pub enum DataError {
     StaleDocument,
     #[error("The data plan belongs to another registry snapshot.")]
     StaleRegistry,
+    #[error("Data evaluation was interrupted by a provider panic; discard this activation.")]
+    Interrupted,
     #[error("Data evaluation exceeds a host resource limit.")]
     ResourceLimit,
     #[error("Data evaluation was cancelled.")]
@@ -87,6 +89,7 @@ impl DataError {
         match self {
             Self::StaleDocument => "core/data-stale-document",
             Self::StaleRegistry => "core/data-stale-registry",
+            Self::Interrupted => "core/data-interrupted",
             Self::ResourceLimit => "core/data-resource-limit",
             Self::Cancelled => "core/data-cancelled",
             Self::NoEpoch => "core/data-no-epoch",
@@ -251,8 +254,10 @@ impl PreparedData {
     }
 }
 
-/// Frozen root-data activation with explicit consumption epochs. This is not a
-/// run actor, event scheduler, control/function frame or host-service context.
+/// Frozen root-data activation with explicit consumption epochs. If a trusted
+/// provider callback unwinds through a pull, the activation becomes interrupted
+/// and must be dropped; create a new activation to resume evaluation. This is not
+/// a run actor, event scheduler, control/function frame or host-service context.
 ///
 /// ```compile_fail
 /// let frame = orange_runtime::DataActivation::default();
@@ -292,6 +297,7 @@ impl std::fmt::Debug for DataActivation {
             .field("epoch", &self.state.epoch)
             .field("operations", &self.state.operations)
             .field("failed", &self.state.failed)
+            .field("interrupted", &self.state.interrupted)
             .finish_non_exhaustive()
     }
 }
@@ -375,6 +381,7 @@ impl DataActivation {
             operations: 0,
             fuel_used: 0,
             failed: None,
+            interrupted: false,
             work: Vec::with_capacity(resources.work_items),
             pending: None,
             work_limit: resources.work_items,
@@ -438,6 +445,9 @@ impl DataActivation {
         self.state.close_epoch();
     }
     fn checkpoint(&mut self) -> Result<(), DataError> {
+        if self.state.interrupted {
+            return Err(DataError::Interrupted);
+        }
         if let Err(error) = checkpoint(self.state.cancel.as_ref()) {
             if self.state.epoch.is_some() {
                 self.state.failed = Some(error);
@@ -512,6 +522,8 @@ impl DataActivation {
     }
     /// Pull one ordered export inside the current explicit epoch. Other pulls in
     /// the same epoch share producers. Borrowed results prevent concurrent mutation.
+    /// A provider panic interrupts this activation, after which this returns
+    /// [`DataError::Interrupted`].
     pub fn export(&mut self, index: usize) -> Result<Option<EvaluatedExport<'_>>, DataError> {
         let mut budget = usize::MAX;
         match self.poll_export(index, &mut budget)? {
@@ -521,6 +533,8 @@ impl DataActivation {
     }
     /// Consume at most the supplied number of iterative work items. Pending work
     /// can resume only at the same producer; no new epoch or entropy draw is implied.
+    /// If a provider callback unwinds during the pull, this activation is interrupted
+    /// and every later stateful operation returns [`DataError::Interrupted`].
     pub fn poll_export(
         &mut self,
         index: usize,
@@ -555,7 +569,12 @@ impl DataActivation {
         let Some(node) = self.plan.export_node(index) else {
             return Ok(HostPoll::Ready(None));
         };
+        // Set the marker before entering trusted provider code. A panic unwinds past
+        // the reset below, leaving this activation permanently unusable. Every
+        // normal Drive result, including Err, clears the marker before handling it.
+        self.state.interrupted = true;
         let driven = self.state.drive(&self.plan, node, budget, host);
+        self.state.interrupted = false;
         if driven == Err(DataError::PullInProgress) {
             return Err(DataError::PullInProgress);
         }
@@ -634,6 +653,9 @@ struct Frame {
     operations: usize,
     fuel_used: usize,
     failed: Option<DataError>,
+    /// Sticky if trusted code unwinds while `drive` is active. Epoch reset and
+    /// cleanup deliberately do not clear it.
+    interrupted: bool,
     work: Vec<Work>,
     pending: Option<NodeIx>,
     work_limit: usize,
