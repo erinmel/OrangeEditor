@@ -322,6 +322,13 @@ pub fn from_json(text: &str) -> Result<GraphDocument, CodecError> {
 
 /// Loads a format v1 document subject to caller-supplied import limits.
 ///
+/// Use this function, or [`from_json`] with its default limits, for graph text from an
+/// untrusted source. Hosts reading files or other streams should also bound the bytes
+/// they read before constructing `text`; this function can enforce limits only after
+/// the caller has allocated the input string. Direct Serde deserialization of
+/// [`GraphDocument`] applies structural, identity and nesting checks, but cannot detect
+/// duplicate JSON object keys or enforce the importer's byte, node and edge quotas.
+///
 /// The byte limit is enforced before parsing. One streaming pass then reads the envelope,
 /// finds repeated keys and counts the nodes and edges of the root and every function body.
 /// Errors come in this order: format, version, duplicate key, node quota, edge quota,
