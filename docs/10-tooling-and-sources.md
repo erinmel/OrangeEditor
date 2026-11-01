@@ -2386,6 +2386,14 @@ Branch `core/function-step-context` on `dev` adadaa3 (same toolchain; Cargo.lock
 
 **Checks:** `cargo test --workspace --locked` passes; fmt, clippy `-D warnings` and rustdoc `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
 
+### Headless authoring state and cleanup corrections — 2026-11-01 UTC
+
+Review R1–R3/R7, based on `dev` 6854560; selected Rust/Cargo 1.99.1, Windows x86_64 MSVC, default features and unchanged Cargo.lock. The corrected example owns a RunSlot with its pinned plan and run identity; active current/inspected values and retained terminal history are separate. Repeated starts and empty undo are recoverable rejections. A normal shutdown performs graceful stop; request/reply loss, invalid sequence, fatal host failure and caught command-loop unwind terminate the session through bounded immediate cleanup. Panic payloads are not included in WorkerReport. Native callbacks remain trusted and non-preemptible; a panic during cleanup is an explicit failed cleanup, not claimed recovery.
+
+The graph now contains a real Wait and an On Stop marker. Focused checks cover old-plan execution after editing inside the wait, stop/restart initial zero, terminal/run identities, normal On Stop, immediate wait retirement, wrong sequence, disconnects and fatal/unwind exits. History keeps 64 recent entries and the caller closes both channels and joins before propagating a conversation error. Fresh execution accepts the current graph's value instead of requiring the original script's expected constant. Normal graph semantics and public core APIs are unchanged.
+
+Executed checks and final-candidate counts are recorded in the correction PR and the combined correction qualification below. The earlier two-test demonstration did not qualify these failure paths; this entry supersedes its ownership/cleanup evidence. The synchronous caller remains a demonstration, and UI scheduling/platform/service gates remain separate.
+
 ### Retained-session memory attribution and headless authoring composition — 2026-10-31
 
 Architecture hardening B0/C0, branch `codex/hardening-authoring-host`, based on `dev` e9aead5 (the inference-cache improvement in PR #100). Windows x86_64 MSVC, Rust/Cargo 1.99.1, default workspace features, unchanged checked-in Cargo.lock. This record separates a temporary allocation probe from the shipped example; neither passes NFR-15 or the real UI gate.
