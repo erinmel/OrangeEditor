@@ -165,7 +165,36 @@ The wrapper records the *whole child process*, including fixtures, all cases in 
 | edit matrix | 225.59 |
 | W9 | 284.24 |
 
-The current edit matrix covers connected/clustered data edits, add/remove nodes, errors, incomplete nodes, exports, zones and exec node/edge changes. The W9 invocation additionally records function-body literals, reconnection, cycle closure/reopening and full-scope counts on all five graph shapes. Closing/opening cycles still uses full analysis; this is a separately reported worst case. Existing W9 work counters count re-resolved nodes rather than every validation visit, as documented in 16. These development observations do not pass NFR-05/15 or replace reference-machine and real-UI evidence.
+**Current edit matrix and full-scope costs**
+
+These breadth checks are one current-source process per profile, not the three paired comparisons above. The session-edit invocation used two warmups and seven measured samples. Its p95 values in milliseconds are:
+
+| Edit | 1,000 independent ten-node chains | One connected 10,000-node chain |
+|---|---:|---:|
+| literal | 0.118 | 0.080 |
+| disconnect/connect | 0.122 | 0.103 |
+| type pin | 0.125 | 0.083 |
+| config | 0.125 | 0.088 |
+| add/remove node | 0.487 | 109.939 |
+| disconnect/connect beside an input error | 0.132 | 0.071 |
+| disconnect/connect beside an incomplete node | 0.246 | 178.619 |
+| disconnect/connect into an export | 0.142 | 4.758 |
+| disconnect/connect after full analysis | 0.640 | 7.657 |
+| disconnect/connect beside a zone | 0.127 | 0.062 |
+
+For 1,000 Set nodes with nine-Add chains, exec-edge p95 is 5.628 ms with one activation and 0.253 ms with 100 activations; exec-node p95 is 5.721 ms and 0.592 ms respectively. Fast literal edits do not establish fast structural edits or error recovery on every topology.
+
+W9 keeps its fixed 1,000 seeded mixed edits, plus separate 250-edit exec/body/reconnection categories and 20-edit cycle categories. The reconnection category also includes reconnect operations paired with disconnects; category counts are not a disjoint partition of the 1,000 seeded edits. Times below are milliseconds:
+
+| Shape (nodes / edges) | Seeded p95 / p99 | Connect p95 | Exec-edge p95 | Body-literal p95 | Cycle-close / open p95 |
+|---|---:|---:|---:|---:|---:|
+| clustered (10,014 / 18,004) | 0.284 / 0.781 | 0.293 | 1.002 | 0.244 | 194.578 / 194.050 |
+| connected (10,014 / 18,004) | 0.430 / 2.197 | 2.830 | 0.862 | 0.203 | 1,532.401 / 1,534.615 |
+| clustered (11,014 / 20,004) | 0.354 / 0.641 | 0.358 | 1.008 | 0.344 | 175.957 / 173.400 |
+| connected (11,014 / 20,004) | 0.488 / 2.325 | 6.749 | 0.927 | 0.196 | 1,799.361 / 1,749.163 |
+| shared Get (10,024 / 20,004) | 0.290 / 0.637 | 0.424 | 0.986 | 0.232 | 189.191 / 171.752 |
+
+The seeded edits were scoped in all five shapes, with at most seven nodes re-resolved; every cycle close/open used full analysis. The connected cases' cycle tails reach about 1.8 seconds and need separate profiling before any latency guarantee. Work counters count re-resolved nodes rather than every validation visit, as documented in 16; zero re-resolved during a full rebuild does not mean zero work. These single-process breadth observations do not establish cross-run tail stability, pass NFR-05/15 or replace reference-machine and real-UI evidence.
 
 **Qualification and remaining product gates**
 
