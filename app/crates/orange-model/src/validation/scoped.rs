@@ -779,8 +779,26 @@ pub(super) fn structure_update(
     let mut state = state_override;
     if let Some(update) = flow {
         analysis.set_regions(update.regions);
-        let old = std::mem::replace(&mut retained.flow, update.flow.clone());
-        scoped.inputs.push((old, update.flow));
+        if update.component.is_empty() {
+            let old = std::mem::replace(&mut retained.flow, update.flow.clone());
+            scoped.inputs.push((old, update.flow));
+        } else {
+            // Only the component's diagnostics change, so only they are compared and
+            // patched; every other kept item stays in place and in order.
+            let component = &update.component;
+            let (old, mut kept): (Vec<Diagnostic>, Vec<Diagnostic>) =
+                std::mem::take(&mut retained.flow)
+                    .into_iter()
+                    .partition(|item| {
+                        item.subject
+                            .node
+                            .is_some_and(|node| component.contains(&node))
+                    });
+            kept.extend(update.flow.iter().cloned());
+            sort_diagnostics(&mut kept);
+            retained.flow = kept;
+            scoped.inputs.push((old, update.flow));
+        }
         state.get_or_insert(update.state);
     }
     if let Some(state) = state {
@@ -984,6 +1002,9 @@ fn classify_edges(
 
 /// New control-flow results after an exec edit.
 struct FlowUpdate {
+    /// The new availability, region and control-cycle diagnostics of the component's
+    /// nodes, which replace theirs, or of the whole document when `component` is empty;
+    /// sorted and deduplicated.
     flow: Vec<Diagnostic>,
     state: Vec<Diagnostic>,
     regions: super::regions::RegionIndex,
@@ -1168,13 +1189,7 @@ fn recompute_flow(
     {
         return whole_flow(document, registry, analysis, effects, &ports, free);
     }
-    let mut flow: Vec<Diagnostic> = retained
-        .flow
-        .iter()
-        .filter(|item| !local(item))
-        .cloned()
-        .collect();
-    flow.extend(fresh);
+    let mut flow = fresh;
     sort_diagnostics(&mut flow);
     flow.dedup();
     let mut state = state;

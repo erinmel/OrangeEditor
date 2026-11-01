@@ -146,9 +146,10 @@ pub struct ValidationAnalysis {
     covered: &'static [ValidationCheck],
 }
 
-/// Above this many changed items, [`ValidationAnalysis::patch`] rebuilds the published list
-/// in one merge rather than inserting and removing items one by one.
-const SPLICE_LIMIT: usize = 32;
+/// Above this many changed items, [`ValidationAnalysis::patch`] rebuilds the stretch of the
+/// published list they span rather than inserting and removing items one by one, each of
+/// which shifts the rest of the list.
+const SPLICE_LIMIT: usize = 1;
 
 impl ValidationAnalysis {
     /// Read-only semantic content identity, restored by undo/redo. Layout edits do not
@@ -239,27 +240,40 @@ impl ValidationAnalysis {
                     }
                 }
             } else {
-                // Many changes: one merge instead of shifting the list per item.
-                let previous = std::mem::take(all);
-                all.reserve(previous.len() + came.len());
-                let mut came = came.into_iter().peekable();
-                let mut gone = gone.into_iter().peekable();
-                for item in previous {
-                    while let Some(next) =
-                        came.next_if(|next| diagnostic_order(next, &item).is_lt())
-                    {
-                        all.push(next.clone());
+                // Many changes: find each one's place by binary search and rebuild only
+                // the stretch between the first and the last, so the rest of the list is
+                // neither compared nor copied, only shifted. Both lists are sorted, so the
+                // positions come out in order.
+                let find =
+                    |item: &Diagnostic| all.binary_search_by(|probe| diagnostic_order(probe, item));
+                let drops: Vec<usize> = gone.iter().filter_map(|item| find(item).ok()).collect();
+                let inserts: Vec<(usize, &Diagnostic)> = came
+                    .iter()
+                    .filter_map(|item| find(item).err().map(|at| (at, *item)))
+                    .collect();
+                let first = drops
+                    .first()
+                    .into_iter()
+                    .chain(inserts.first().map(|(at, _)| at));
+                let last = drops.last().map(|at| at + 1).into_iter();
+                let last = last.chain(inserts.last().map(|(at, _)| *at)).max();
+                let (Some(&lo), Some(hi)) = (first.min(), last) else {
+                    continue;
+                };
+                let stretch: Vec<Diagnostic> = all.drain(lo..hi).collect();
+                let mut rebuilt = Vec::with_capacity(stretch.len() + inserts.len());
+                let mut drop = drops.into_iter().peekable();
+                let mut insert = inserts.into_iter().peekable();
+                for (at, item) in (lo..).zip(stretch) {
+                    while let Some((_, next)) = insert.next_if(|(position, _)| *position == at) {
+                        rebuilt.push(next.clone());
                     }
-                    came.next_if(|next| **next == item);
-                    while gone
-                        .next_if(|next| diagnostic_order(next, &item).is_lt())
-                        .is_some()
-                    {}
-                    if gone.next_if(|next| **next == item).is_none() {
-                        all.push(item);
+                    if drop.next_if(|position| *position == at).is_none() {
+                        rebuilt.push(item);
                     }
                 }
-                all.extend(came.cloned());
+                rebuilt.extend(insert.map(|(_, item)| item.clone()));
+                all.splice(lo..lo, rebuilt);
             }
         }
         changed
