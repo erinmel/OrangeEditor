@@ -2803,6 +2803,16 @@ Branch `v12f-w9-wider` on `dev` 54d705c (Windows MSVC, Rust 1.99.1, Cargo 1.99.1
 
 **Checks:** `cargo test --workspace --locked` passes; fmt and clippy `-D warnings` pass. Linux, macOS and the MSRV toolchain were not run locally.
 
+### Inference boundaries and bounded text loading (A2/A3) — 2026-10-31
+
+Branch `codex/hardening-validation` on e9aead5; Windows x86_64 MSVC, Rust/Cargo 1.99.1, default features and unchanged Cargo.lock (`15e47ed4dcda0c445f81d54e367a1291e509af4937569f4ad694afb8e122a1e4`). Qualification and Rustdoc only; no production inference algorithm or saved-format change.
+
+- **Cases:** an incomplete report beside an unchanged generic chain uses component resolution, then ordered undo restores completeness and kept-solution updates; a public registered handle type with a 16.4 KB name reaches the resolved-type byte-bound fallback; a Core For-each list-to-map configuration changes its contract and recomputes. Every session result is compared with full analysis.
+- **Guard checks:** temporarily replacing the completeness guard or the type-byte guard with true makes its corresponding regression fail. Source bytes were restored and the complete scoped suite rerun successfully. These tests verify the real public paths rather than manufacture internal retained state.
+- **Input boundary:** current headless examples already use the bounded importer. Its public Rustdoc now explicitly recommends bounded host reads plus `from_json_with_limits` for untrusted text, and distinguishes generic Serde's structural checks from importer-only quotas/duplicate-key rejection. No unsafe product loading adapter was found or invented, and general Serde support remains available.
+- **Executed:** `cargo test -p orange-bundled --test analysis_session_scoped --locked --offline`: 46 passed; `cargo test -p orange-model --test import_integrity --test codec_errors --locked --offline`: 20 passed. Formatting, workspace/all-target Clippy with warnings denied, workspace Rustdoc with warnings denied and diff checks passed. Both guard mutations were detected and the restored scoped suite passed all 46 tests.
+- **Limitations:** no NFR, general package config callback, UI, platform or sandbox gate is passed. Linux/macOS/MSRV/full workspace/security checks are required from exact-head CI rather than inferred from this focused local qualification.
+
 ### Kept inference solutions (V12f) — 2026-10-31
 
 Branch `v12f-connected` on `dev` dd89e38, rebased onto 192713f (same toolchain; Cargo.lock unchanged). Continues V12f (16).

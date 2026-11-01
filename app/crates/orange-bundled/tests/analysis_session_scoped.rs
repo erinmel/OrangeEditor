@@ -7,7 +7,7 @@ mod support;
 
 use std::collections::BTreeMap;
 
-use orange_model::catalog::RegistrySnapshot;
+use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
 use orange_model::document::{Edge, NodeInstance, PortRef};
 use orange_model::validation::{
     AnalysisLimits, AnalysisOptions, AnalysisSession, SessionWork, analyze_with_options,
@@ -1956,6 +1956,181 @@ fn edits_that_keep_a_connected_solution_skip_the_component_solve() {
         vec![configure(300, json!({"int_overflow": "saturating"}))],
     );
     assert!(kept(&session, work), "{work:?}");
+}
+
+#[test]
+fn incomplete_report_prevents_kept_solution_until_repaired() {
+    let (package, registry) = catalog();
+    let nodes: Vec<Json> = (10..16).map(|n| math(n, "add", 0, 1)).collect();
+    let edges: Vec<Json> = (11..16)
+        .map(|n| edge(1000 + n, n - 1, "sum", n, "a"))
+        .collect();
+    let mut doc = graph(&package, nodes, edges, vec![]);
+    let options = AnalysisOptions::default();
+    let mut session = session(&doc, &registry);
+    let incomplete = doc.apply(vec![unknown_node(60)]).unwrap();
+    session.update(&doc, &registry, &incomplete.change_set, options);
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+    assert!(!session.analysis().report().incomplete_nodes.is_empty());
+
+    // This changes only a literal value, so the generic chain keeps its signatures. The
+    // incomplete node is unrelated, but completeness still prevents the kept-solution
+    // proof and the safe path resolves the touched component.
+    let literal = doc.apply(vec![set(12, "b", u64_text("9"))]).unwrap();
+    let work = session
+        .update(&doc, &registry, &literal.change_set, options)
+        .work;
+    assert_eq!(work, SessionWork::Scoped);
+    assert!(session.stats().local.components_computed > 0);
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+
+    // Undo in history order: first restore the literal, then remove the incomplete node.
+    let undone_literal = doc.revert(literal.inverse).unwrap();
+    session.update(&doc, &registry, &undone_literal.change_set, options);
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+    let undone = doc.revert(incomplete.inverse).unwrap();
+    let work = session
+        .update(&doc, &registry, &undone.change_set, options)
+        .work;
+    assert_eq!(work, SessionWork::Recompute);
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+    assert!(session.analysis().report().incomplete_nodes.is_empty());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![set(12, "b", u64_text("10"))],
+    );
+    assert!(kept(&session, work), "{work:?}");
+}
+
+#[test]
+fn for_each_mode_configuration_recomputes_its_projected_contract() {
+    let (package, registry) = catalog();
+    let node = json!({
+        "id": id(50),
+        "definition_id": "core/for-each",
+        "definition_version": 1,
+        "config_version": 1,
+        "config": {"mode": "list"},
+        "type_pins": {"T": "core/u64@1"},
+        "inputs": {"items": {"type": "core/list@1<core/u64@1>", "value": []}}
+    });
+    let mut doc = graph(&package, vec![node.clone()], vec![], vec![]);
+    let options = AnalysisOptions::default();
+    let mut session = AnalysisSession::new(&doc, &registry, BTreeMap::new(), options);
+    let before = registry
+        .contract(&doc, doc.node(id(50).parse().unwrap()).unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(
+        before
+            .ports
+            .iter()
+            .any(|port| port.port_id.as_str() == "element")
+    );
+
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![configure(50, json!({"mode": "map"}))],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    let after = registry
+        .contract(&doc, doc.node(id(50).parse().unwrap()).unwrap())
+        .unwrap()
+        .unwrap();
+    assert!(
+        !after
+            .ports
+            .iter()
+            .any(|port| port.port_id.as_str() == "element")
+    );
+    assert!(
+        after
+            .ports
+            .iter()
+            .any(|port| port.port_id.as_str() == "key")
+    );
+    assert!(
+        after
+            .ports
+            .iter()
+            .any(|port| port.port_id.as_str() == "value")
+    );
+    assert_ne!(before, after);
+}
+
+#[test]
+fn oversized_resolved_type_uses_component_fallback() {
+    let nominal = format!("x/{}@1", "a".repeat(16_400));
+    let nominal_expr = nominal.parse().unwrap();
+    let mut type_builder = orange_model::types::TypeRegistryBuilder::core();
+    type_builder
+        .register_handle_kind("x", &nominal_expr)
+        .unwrap();
+    let type_registry = std::sync::Arc::new(type_builder.build().unwrap());
+    let origin =
+        orange_model::validation::HostOrigin::new("0.0.0", format!("sha256:{}", "a".repeat(64)))
+            .unwrap();
+    let registry = RegistryBuilder::core(origin)
+        .types(type_registry)
+        .build()
+        .unwrap();
+    let collection = format!("core/list@1<{nominal}>");
+    let node = json!({
+        "id": id(50),
+        "definition_id": "core/for-each",
+        "definition_version": 1,
+        "config_version": 1,
+        "config": {"mode": "list"},
+        "type_pins": {"T": nominal},
+        "inputs": {"items": {"type": collection, "value": []}}
+    });
+    let mut doc = orange_model::from_json(
+        &json!({
+            "format": "orange.graph",
+            "format_version": 1,
+            "graph_id": "20000000-0000-4000-8000-000000000001",
+            "revision": 0,
+            "nodes": [node],
+            "edges": []
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let options = AnalysisOptions::default();
+    let mut session = session(&doc, &registry);
+    // Re-setting the same pin is a journaled scoped edit. Its contract and signatures are
+    // unchanged. The resolved input port contains the oversized concrete argument; the
+    // published type-byte guard excludes it from kept-solution use.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![DocCommand::SetTypePins {
+            node: id(50).parse().unwrap(),
+            pins: types(&[("T", &nominal)]),
+        }],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert!(session.stats().local.components_computed > 0);
 }
 
 #[test]
