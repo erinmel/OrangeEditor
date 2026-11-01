@@ -33,7 +33,9 @@ pub mod validation;
 pub mod value;
 mod variable;
 
-pub use document::codec::{ImportLimits, from_json, from_json_with_limits, to_json};
+pub use document::codec::{
+    ImportBudget, ImportLimits, from_json, from_json_with_budget, from_json_with_limits, to_json,
+};
 pub use document::{BodyRef, GraphDocument};
 pub use edit::{ChangeSet, Committed, DeclId, Delta, DocCommand, Inverse, LayoutCommand};
 pub use error::{

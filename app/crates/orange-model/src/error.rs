@@ -289,6 +289,12 @@ pub enum ImportResource {
     Nodes,
     /// Edges across the root and all function bodies, counted while parsing.
     Edges,
+    /// JSON values (containers and primitives, including the root), counted while scanning.
+    JsonValues,
+    /// Decoded UTF-8 bytes in all object keys, counted while scanning.
+    JsonKeyBytes,
+    /// Decoded UTF-8 bytes in all string values, counted while scanning.
+    JsonStringBytes,
 }
 
 impl std::fmt::Display for ImportResource {
@@ -297,6 +303,9 @@ impl std::fmt::Display for ImportResource {
             Self::Bytes => "byte",
             Self::Nodes => "node",
             Self::Edges => "edge",
+            Self::JsonValues => "JSON value",
+            Self::JsonKeyBytes => "JSON key byte",
+            Self::JsonStringBytes => "JSON string byte",
         })
     }
 }
