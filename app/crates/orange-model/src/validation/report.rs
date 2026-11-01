@@ -538,13 +538,26 @@ fn run_supported_analysis(
     )?;
 
     let ports = super::ports::PortResolver::resume(document, &nodes.resolved, projections);
-    let availability = super::availability::validate_availability_with_ports(
-        document,
-        &ports,
-        &connections,
-        &regions.index,
-        registry,
-    );
+    // A session also keeps the lazy cones the pass found free of requirements (V12c).
+    let mut free = BTreeSet::new();
+    let availability = if local.is_some() {
+        super::availability::validate_availability_noting_free(
+            document,
+            &ports,
+            &connections,
+            &regions.index,
+            registry,
+            &mut free,
+        )
+    } else {
+        super::availability::validate_availability_with_ports(
+            document,
+            &ports,
+            &connections,
+            &regions.index,
+            registry,
+        )
+    };
     options.checkpoint()?;
     // Scoped updates may take the inference solution as kept only while no published type
     // can exceed the unifier's expansion budget (16, V12f "Kept solutions").
@@ -666,6 +679,7 @@ fn run_supported_analysis(
                 orders: BTreeMap::new(),
                 args,
                 bounded,
+                free,
             })
         }
         _ => None,

@@ -7,6 +7,9 @@ use crate::id::FunctionId;
 /// caller gathers them through the document index, so the pass never walks the body.
 pub(crate) struct NodeSubset<'a> {
     pub nodes: &'a std::collections::BTreeSet<crate::id::NodeId>,
+    /// The nodes among `nodes` that availability checks as consumers; the region and
+    /// control-cycle passes ignore it.
+    pub consumers: &'a std::collections::BTreeSet<crate::id::NodeId>,
     pub edges: Vec<&'a crate::document::Edge>,
 }
 
