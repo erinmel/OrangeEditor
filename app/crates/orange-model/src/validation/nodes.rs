@@ -80,6 +80,7 @@ pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> 
         Scope::All,
         &index,
         None,
+        None,
     )
 }
 
@@ -90,6 +91,7 @@ pub(crate) fn validate_nodes_with(
     scope: Scope,
     index: &DocIndex,
     components: Option<&mut ComponentCache>,
+    kept: Option<&mut BTreeMap<NodeId, TypeArgs>>,
 ) -> NodeValidation {
     validate_node_ids(
         document,
@@ -97,19 +99,32 @@ pub(crate) fn validate_nodes_with(
         calls,
         &node_ids(document, scope),
         index,
-        components,
+        Inference::Solve(components),
+        kept,
     )
 }
 
+/// Where node resolution takes each generic node's type arguments from.
+pub(crate) enum Inference<'c> {
+    /// Solve the generic components of the nodes, reusing a session's valid entries.
+    Solve(Option<&'c mut ComponentCache>),
+    /// One component already known to hold the current solution for its nodes, with no
+    /// issues; any of them that is ineligible or reads an unavailable neighbour leaves
+    /// all of them incomplete, as a solved component would.
+    Known(crate::inference::ComponentInference),
+}
+
 /// Node resolution of `ids` (ascending) alone. A node's result equals the whole-scope
-/// result when `ids` holds its generic component and every data neighbour of it.
+/// result when `ids` holds its generic component and every data neighbour of it. With
+/// `kept`, each generic node's solved arguments are recorded there.
 pub(crate) fn validate_node_ids(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     calls: &CallEvidence,
     ids: &[NodeId],
     index: &DocIndex,
-    components: Option<&mut ComponentCache>,
+    inference: Inference<'_>,
+    kept: Option<&mut BTreeMap<NodeId, TypeArgs>>,
 ) -> NodeValidation {
     let origin = registry.origin();
     let mut report = NodeValidation::default();
@@ -132,8 +147,8 @@ pub(crate) fn validate_node_ids(
         ids,
         origin,
     };
-    let fresh_args = infer_fresh_args(&pass, components, &mut report, &mut diagnostics);
-    project_nodes(&pass, fresh_args, &mut report, &mut diagnostics);
+    let fresh_args = infer_fresh_args(&pass, inference, &mut report, &mut diagnostics);
+    project_nodes(&pass, fresh_args, kept, &mut report, &mut diagnostics);
 
     sort_diagnostics(&mut diagnostics);
     report.diagnostics = diagnostics;
@@ -398,13 +413,16 @@ fn suspension_contract_issue(
 
 fn infer_fresh_args(
     pass: &NodePass<'_>,
-    cache: Option<&mut ComponentCache>,
+    inference: Inference<'_>,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> BTreeMap<NodeId, TypeArgs> {
-    let components = match cache {
-        Some(cache) => cache.infer(pass.document, pass.index, pass.ids, pass.registry),
-        None => infer_components(
+    let components = match inference {
+        Inference::Known(component) => vec![component],
+        Inference::Solve(Some(cache)) => {
+            cache.infer(pass.document, pass.index, pass.ids, pass.registry)
+        }
+        Inference::Solve(None) => infer_components(
             pass.document,
             pass.index,
             pass.ids.iter().copied(),
@@ -534,6 +552,7 @@ type ProjectionCache =
 fn project_nodes(
     pass: &NodePass<'_>,
     mut fresh_args: BTreeMap<NodeId, TypeArgs>,
+    mut kept: Option<&mut BTreeMap<NodeId, TypeArgs>>,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
 ) {
@@ -553,6 +572,9 @@ fn project_nodes(
         let args = if contract.type_params.is_empty() {
             BTreeMap::new()
         } else if let Some(args) = fresh_args.remove(id) {
+            if let Some(kept) = kept.as_deref_mut() {
+                kept.insert(*id, args.clone());
+            }
             args
         } else {
             report.incomplete_nodes.insert(*id);

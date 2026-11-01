@@ -1872,3 +1872,298 @@ fn random_rewiring_around_zones_equals_the_full_analysis() {
     }
     assert!(scoped >= 30, "{scoped}");
 }
+
+/// One generic component: `length` adds from node 10, each reading the previous sum into
+/// both inputs. Only the first add's literals are active, so they ground every add's `T`;
+/// with `literals`, every other add also keeps its (shadowed) literals.
+fn connected_chain(
+    length: u32,
+    literals: bool,
+) -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (package, registry) = catalog();
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for k in 0..length {
+        let mut node = math(10 + k, "add", 0, 1);
+        if k > 0 {
+            if !literals {
+                node["inputs"] = json!({});
+            }
+            edges.push(edge(1000 + 2 * k, 9 + k, "sum", 10 + k, "a"));
+            edges.push(edge(1001 + 2 * k, 9 + k, "sum", 10 + k, "b"));
+        }
+        nodes.push(node);
+    }
+    (graph(&package, nodes, edges, vec![]), registry)
+}
+
+/// The edit was scoped without solving any component in full.
+fn kept(session: &AnalysisSession, work: SessionWork) -> bool {
+    work == SessionWork::Scoped && session.stats().local.components_computed == 0
+}
+
+#[test]
+fn edits_that_keep_a_connected_solution_skip_the_component_solve() {
+    let (mut doc, registry) = connected_chain(1200, true);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let pin = |node: u32, ty: &str| DocCommand::SetTypePins {
+        node: id(node).parse().unwrap(),
+        pins: types(&[("T", ty)]),
+    };
+    // A literal, a pin and a type argument that keep `T` are checked beside the node.
+    for commands in [
+        vec![set(10, "b", u64_text("7"))],
+        vec![set(300, "a", u64_text("7"))],
+        vec![pin(300, "core/u64@1")],
+        vec![DocCommand::SetTypeArgs {
+            node: id(300).parse().unwrap(),
+            args: types(&[("T", "core/i64@1")]),
+        }],
+    ] {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert!(kept(&session, work), "{work:?}");
+        // The node and its two neighbours, of 1,200.
+        assert!(session.stats().input_nodes <= 3, "{:?}", session.stats());
+    }
+    // Disconnecting an input activates its literal; the other input still joins the
+    // chain, so the node and its source keep their types.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(1000 + 2 * 990)],
+    );
+    assert!(kept(&session, work), "{work:?}");
+    // Reconnecting it shadows that literal again, and the nearest other evidence, the pin,
+    // is 700 adds away, past the local budget: the component is solved in full.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![connect(1000 + 2 * 990, 999, 1000, "a")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.stats().local.components_computed, 1);
+    // Package configuration that keeps the contract keeps the template.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![configure(300, json!({"int_overflow": "saturating"}))],
+    );
+    assert!(kept(&session, work), "{work:?}");
+}
+
+#[test]
+fn edits_that_change_a_connected_solution_still_equal_the_full_analysis() {
+    let (mut doc, registry) = connected_chain(600, false);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let i64_text = |value: &str| Some(json!({"type": "core/i64@1", "value": value}));
+    // A pin that conflicts with the chain's type.
+    let pin = |ty: &str| DocCommand::SetTypePins {
+        node: id(300).parse().unwrap(),
+        pins: types(&[("T", ty)]),
+    };
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![pin("core/i64@1")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    let clear = DocCommand::SetTypePins {
+        node: id(300).parse().unwrap(),
+        pins: BTreeMap::new(),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![clear]);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().is_valid());
+    // Literals that move the whole chain to another type, consistently (away from its
+    // stored signatures), and back.
+    for ty in [i64_text, u64_text] {
+        let both = vec![set(10, "a", ty("1")), set(10, "b", ty("2"))];
+        let work = edit(&mut session, &mut doc, &registry, options, both);
+        assert_eq!(work, SessionWork::Recompute);
+    }
+    assert!(session.analysis().report().is_valid());
+}
+
+#[test]
+fn removing_the_only_evidence_of_a_connected_chain_is_not_kept() {
+    // Every published type downstream still reads u64, but nothing grounds it any more:
+    // fixing the neighbours' published types would wrongly keep the solution.
+    let (mut doc, registry) = connected_chain(40, false);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(1002), disconnect(1003)],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![connect(1002, 10, 11, "a"), connect(1003, 10, 11, "b")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(session.analysis().report().is_valid());
+    // With one grounding input left, the first add keeps its type; removing the other
+    // literal leaves the whole chain without evidence.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![set(10, "b", None)],
+    );
+    assert!(kept(&session, work), "{work:?}");
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![set(10, "a", None)],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+#[test]
+fn random_edits_of_a_connected_component_equal_the_full_analysis() {
+    // Adds 10..70; add k reads k-1 into `a` and k-2 into `b`, all one component.
+    let (package, registry) = catalog();
+    let mut nodes = Vec::new();
+    let mut wired: BTreeMap<(u32, &str), u32> = BTreeMap::new();
+    let mut edges = Vec::new();
+    for k in 10..70 {
+        nodes.push(math(k, "add", 0, 1));
+        for (input, from) in [("a", k - 1), ("b", k - 2)] {
+            if from >= 10 {
+                let n = 2000 + 2 * k + u32::from(input == "b");
+                edges.push(edge(n, from, "sum", k, input));
+                wired.insert((k, input), n);
+            }
+        }
+    }
+    let mut doc = graph(&package, nodes, edges, vec![]);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let mut seed: u64 = 0x00c0_ffee;
+    let mut next = |bound: u32| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) as u32 % bound
+    };
+    let (mut kept_edits, mut n) = (0, 3000);
+    for _ in 0..400 {
+        let node = 10 + next(60);
+        let input = if next(2) == 0 { "a" } else { "b" };
+        // Mostly the chain's type; sometimes another one, which changes or breaks it.
+        let ty = if next(8) == 0 {
+            "core/i64@1"
+        } else {
+            "core/u64@1"
+        };
+        let commands = match next(5) {
+            0 => vec![set(node, input, Some(json!({"type": ty, "value": "3"})))],
+            1 => vec![set(node, input, None)],
+            2 => vec![DocCommand::SetTypePins {
+                node: id(node).parse().unwrap(),
+                pins: if next(2) == 0 {
+                    types(&[("T", ty)])
+                } else {
+                    BTreeMap::new()
+                },
+            }],
+            _ => match wired.remove(&(node, input)) {
+                Some(edge) => vec![disconnect(edge)],
+                // Only from an earlier add, so no cycle forms.
+                None if node > 10 => {
+                    n += 1;
+                    wired.insert((node, input), n);
+                    vec![connect(n, 10 + next(node - 10), node, input)]
+                }
+                None => continue,
+            },
+        };
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        if kept(&session, work) {
+            kept_edits += 1;
+        }
+    }
+    // About a third of the edits; most others change or break the chain's type.
+    assert!(kept_edits >= 60, "{kept_edits}");
+}
+
+#[test]
+fn a_shared_concrete_source_is_not_expanded() {
+    // One random source read by a hundred separate adds, as one Get Variable is read by
+    // many clusters: an edit of one add re-resolves it and its source, not the source's
+    // other readers.
+    let (package, registry) = catalog();
+    let mut nodes = vec![random(10)];
+    let mut edges = Vec::new();
+    for k in 0..100 {
+        nodes.push(math(11 + k, "add", 0, 1));
+        edges.push(edge(1000 + k, 10, "value", 11 + k, "b"));
+    }
+    let mut doc = graph(&package, nodes, edges, vec![]);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let pin = DocCommand::SetTypePins {
+        node: id(50).parse().unwrap(),
+        pins: types(&[("T", "core/u64@1")]),
+    };
+    for commands in [
+        vec![pin],
+        vec![set(50, "a", u64_text("4"))],
+        vec![disconnect(1039)],
+        vec![DocCommand::Connect {
+            edge: serde_json::from_value(edge(1039, 10, "value", 50, "b")).unwrap(),
+        }],
+    ] {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert!(kept(&session, work), "{work:?}");
+        assert!(session.stats().input_nodes <= 2, "{:?}", session.stats());
+    }
+    // A node added in place keeps its solved arguments too, so a later edit of it is
+    // checked beside it.
+    let added = vec![
+        add_node(200),
+        DocCommand::Connect {
+            edge: serde_json::from_value(edge(1200, 10, "value", 200, "a")).unwrap(),
+        },
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, added);
+    assert_eq!(work, SessionWork::Scoped);
+    let pin = DocCommand::SetTypePins {
+        node: id(200).parse().unwrap(),
+        pins: types(&[("T", "core/u64@1")]),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![pin]);
+    assert!(kept(&session, work), "{work:?}");
+    // A configuration version no provider supports leaves the shared source unresolved,
+    // which the source's own resolution shows.
+    let version = DocCommand::SetConfig {
+        node: id(10).parse().unwrap(),
+        config_version: 2,
+        config: serde_json::from_value(json!({})).unwrap(),
+    };
+    let work = edit(&mut session, &mut doc, &registry, options, vec![version]);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}

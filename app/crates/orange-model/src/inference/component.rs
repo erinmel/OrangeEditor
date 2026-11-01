@@ -219,6 +219,86 @@ pub(crate) fn component_nodes(
     components
 }
 
+/// Most generic nodes [`solution_kept`] solves around an edit before it gives up.
+pub(crate) const KEPT_SOLUTION_BUDGET: usize = 512;
+
+/// Whether an edit that changed only equations over the variables of `touched` nodes
+/// keeps the most general unifier of every generic component, which `solved` holds per
+/// node from before the edit (16, V12f "Kept solutions").
+///
+/// Let `E` and `E'` be the equation sets before and after the edit, `D = E \ E'` and
+/// `A = E' \ E`, and `σ` the solution of `E`, ground on every variable of the components
+/// `D ∪ A` touches. The caller guarantees that every variable of `D ∪ A` belongs to a
+/// generic node of `touched` (pins and literals are scoped to their node, an edge's
+/// equation to its endpoints, and no template changed). This function solves `L`, the
+/// equations of `E'` whose variables all belong to a set `W` of generic nodes grown
+/// breadth-first from `touched` through the components, and succeeds only when the most
+/// general unifier `μ` of `L` exists and maps every type parameter of every generic
+/// touched node to the ground type `σ` gives it. Then:
+///
+/// - every unifier `θ` of `E'` unifies `L ⊆ E'`, so it is an instance of `μ` and agrees
+///   with `σ` on the variables of `D ∪ A`; since `σ` satisfies `D`, `θ` satisfies `D` and
+///   therefore all of `E = (E' \ A) ∪ D`, so `θ` is an instance of `σ`, which is ground,
+///   and `θ = σ` on those components;
+/// - `σ` satisfies `E' \ A ⊆ E`, and `A ⊆ L` mentions only variables on which `σ = μ`,
+///   so `σ` unifies `E'`.
+///
+/// So `σ` is the most general unifier of `E'`: every node keeps its arguments, however
+/// the edit splits or joins components, and since unification fails exactly when no
+/// unifier exists, solving `E'` meets no conflict or occurs check. Growing `W` only adds
+/// equations, which can ground a variable but never change a ground one, so a ground
+/// binding that differs from `σ` ends the search. Anything else, an equation that does
+/// not build, a conflict, an unresolved parameter after the whole component or more
+/// than `budget` nodes, returns false and the caller solves the components in full.
+pub(crate) fn solution_kept<'s>(
+    document: &GraphDocument,
+    index: &DocIndex,
+    registry: &RegistrySnapshot,
+    touched: &BTreeSet<NodeId>,
+    solved: impl Fn(NodeId) -> Option<&'s TypeArgs>,
+    budget: usize,
+) -> bool {
+    let graph = Graph {
+        document,
+        index,
+        registry,
+        templates: RefCell::default(),
+        edges: RefCell::default(),
+    };
+    let seeds: BTreeSet<NodeId> = touched
+        .iter()
+        .copied()
+        .filter(|id| graph.generic(*id).is_some())
+        .collect();
+    let mut nodes = seeds.clone();
+    let mut frontier = seeds.clone();
+    // Solve at radius 0, 1, 2, 4, ...: each solve costs about |W|, so the total stays
+    // within a small multiple of the last one.
+    let (mut radius, mut next_check) = (0usize, 0usize);
+    loop {
+        let grown: BTreeSet<NodeId> = frontier
+            .iter()
+            .flat_map(|id| graph.generic_neighbours(*id))
+            .filter(|id| !nodes.contains(id))
+            .collect();
+        if radius == next_check || grown.is_empty() {
+            match graph.kept(&nodes, &seeds, &solved) {
+                Some(true) => return true,
+                Some(false) => return false,
+                None if grown.is_empty() => return false,
+                None => {}
+            }
+            next_check = (next_check * 2).max(1);
+        }
+        nodes.extend(grown.iter().copied());
+        if nodes.len() > budget {
+            return false;
+        }
+        frontier = grown;
+        radius += 1;
+    }
+}
+
 /// The document and registry are fixed for one inference call, so each node's template and
 /// each data edge are resolved once. The component search meets every edge from both ends
 /// and equation building reads it again.
@@ -522,6 +602,57 @@ impl Graph<'_> {
             }
         }
         result
+    }
+
+    /// [`solution_kept`]'s check on `nodes`: `Some(true)` when the equations among them
+    /// ground every parameter of `seeds` to its `solved` type, `Some(false)` when they
+    /// cannot (a failed equation, a conflict, or a ground type that differs), `None` when
+    /// some parameter is still open.
+    fn kept<'s>(
+        &self,
+        nodes: &BTreeSet<NodeId>,
+        seeds: &BTreeSet<NodeId>,
+        solved: &impl Fn(NodeId) -> Option<&'s TypeArgs>,
+    ) -> Option<bool> {
+        let Ok(equations) = self.equations(nodes) else {
+            return Some(false);
+        };
+        let inside = |term: &ScopedTypeTerm| {
+            term.variables()
+                .iter()
+                .all(|variable| nodes.contains(&variable.node))
+        };
+        let local = equations
+            .into_iter()
+            .filter(|equation| inside(&equation.left) && inside(&equation.right));
+        let Ok(unification) = unify(local) else {
+            return Some(false);
+        };
+        let mut open = false;
+        for &id in seeds {
+            let (Some(template), Some(args)) = (self.generic(id), solved(id)) else {
+                return Some(false);
+            };
+            if args.len() != template.type_params.len() {
+                return Some(false);
+            }
+            for parameter in &template.type_params {
+                let variable = ScopedTypeTerm::Variable(TypeVariable::new(id, &parameter.name));
+                let Ok(resolved) = unification.resolve(&variable) else {
+                    return Some(false);
+                };
+                match resolved.to_concrete_type_term() {
+                    Ok(term) => {
+                        if args.get(&parameter.name) != Some(&term.to_type_expr()) {
+                            return Some(false);
+                        }
+                    }
+                    Err(ConcreteTypeError::Unresolved { .. }) => open = true,
+                    Err(_) => return Some(false),
+                }
+            }
+        }
+        (!open).then_some(true)
     }
 
     /// Equations in node, then pin, literal and edge order. Each edge appears once.
