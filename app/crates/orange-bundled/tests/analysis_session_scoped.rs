@@ -2342,3 +2342,204 @@ fn a_shared_concrete_source_is_not_expanded() {
     assert_eq!(work, SessionWork::Recompute);
     assert!(!session.analysis().report().is_valid());
 }
+
+#[test]
+fn a_requirement_brought_into_a_known_free_cone_is_still_found() {
+    let (mut doc, registry) = payload_reader();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // An unrelated add now feeds the On Start Set's add; checking the edge notes both adds'
+    // cones as free of requirements.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![connect(9, 21, 11, "a")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    // A control-flow edit that wires the event payload two adds upstream of that Set: the
+    // Set now reads another activation's payload although both adds were noted free.
+    let start: NodeInstance = serde_json::from_value(json!({"id": id(60),
+        "definition_id": "core/on-start", "definition_version": 1, "config_version": 1,
+        "config": {}, "activation": {"mode": "queue", "capacity": 4,
+            "overflow": "drop-newest", "on_fault": "continue", "order": 2}}))
+    .unwrap();
+    let both = vec![
+        DocCommand::AddNode {
+            body: BodyRef::Root,
+            node: start,
+        },
+        wire(8, 1, "payload", 21, "b"),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, both);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+/// An On Event activation and an On Start one, each running three Sets in a chain; every
+/// Set reads an add whose `a` reads another add. The event payload feeds the first Set's
+/// inner add. Twenty unrelated adds keep each activation a small part of the body.
+fn random_flow() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (package, registry) = catalog();
+    let (event, variable) = ("40000000-0000-4000-8000-000000000001", id(100));
+    let entry = |n: u32, definition: &str, order: u32| {
+        let mut node = json!({"id": id(n), "definition_id": definition,
+            "definition_version": 1, "config_version": 1, "config": {},
+            "activation": {"mode": "queue", "capacity": 4, "overflow": "drop-oldest",
+                "on_fault": "continue", "order": order}});
+        if definition == "core/on-event" {
+            node["config"] = json!({"event": event});
+        }
+        node
+    };
+    let set = |n: u32| {
+        json!({"id": id(n), "definition_id": "core/set-variable", "definition_version": 1,
+            "config_version": 1, "config": {"variable": variable}})
+    };
+    let mut nodes = vec![entry(1, "core/on-event", 0), entry(3, "core/on-start", 1)];
+    let mut edges = Vec::new();
+    for k in 0..6 {
+        nodes.push(set(50 + k));
+        nodes.push(math(60 + 2 * k, "add", 0, 1));
+        nodes.push(math(61 + 2 * k, "add", 0, 1));
+        let previous = match k {
+            0 => 1,
+            3 => 3,
+            _ => 49 + k,
+        };
+        edges.push(edge(200 + k, previous, "then", 50 + k, "in"));
+        edges.push(edge(250 + k, 61 + 2 * k, "sum", 60 + 2 * k, "a"));
+        edges.push(edge(270 + k, 60 + 2 * k, "sum", 50 + k, "value"));
+    }
+    edges.push(edge(300, 1, "payload", 61, "b"));
+    nodes.extend((80..100).map(|n| math(n, "add", 0, 1)));
+    let base = graph(&package, nodes, edges, vec![]);
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&base).unwrap()).unwrap();
+    raw["variables"] = json!([{"id": variable, "name": "total", "type": "core/u64@1",
+        "scope": "run", "init": {"type": "core/u64@1", "value": "0"}}]);
+    raw["events"] = json!([{"id": event, "name": "tick", "payload": "core/u64@1", "scope": "run"}]);
+    (orange_model::from_json(&raw.to_string()).unwrap(), registry)
+}
+
+#[test]
+fn random_exec_edits_equal_the_full_analysis() {
+    let (mut doc, registry) = random_flow();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let mut seed: u64 = 41;
+    let mut next = |bound: u32| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) as u32 % bound
+    };
+    // Exec edges of the Sets, the inner adds' chain edges and payload edges into the inner
+    // adds, each wired or not.
+    let mut exec = [true; 6];
+    let mut chained = [true; 6];
+    let mut payload = [true, false, false, false, false, false];
+    let (mut scoped, mut flagged) = (0, 0);
+    for _ in 0..300 {
+        let mut commands = Vec::new();
+        let k = next(6);
+        let mut toggle_exec = |k: u32, commands: &mut Vec<DocCommand>| {
+            let at = k as usize;
+            exec[at] = !exec[at];
+            let previous = match k {
+                0 => 1,
+                3 => 3,
+                _ => 49 + k,
+            };
+            commands.push(if exec[at] {
+                wire(200 + k, previous, "then", 50 + k, "in")
+            } else {
+                disconnect(200 + k)
+            });
+        };
+        match next(4) {
+            0 => toggle_exec(k, &mut commands),
+            1 => {
+                let at = k as usize;
+                chained[at] = !chained[at];
+                commands.push(if chained[at] {
+                    connect(250 + k, 61 + 2 * k, 60 + 2 * k, "a")
+                } else {
+                    disconnect(250 + k)
+                });
+            }
+            kind => {
+                // A payload edge, alone or with an exec edge of another Set.
+                let at = k as usize;
+                payload[at] = !payload[at];
+                commands.push(if payload[at] {
+                    wire(300 + k, 1, "payload", 61 + 2 * k, "b")
+                } else {
+                    disconnect(300 + k)
+                });
+                if kind == 3 {
+                    toggle_exec((k + 1 + next(5)) % 6, &mut commands);
+                }
+            }
+        }
+        if edit(&mut session, &mut doc, &registry, options, commands) == SessionWork::Scoped {
+            scoped += 1;
+        }
+        if !session.analysis().report().is_valid() {
+            flagged += 1;
+        }
+    }
+    assert!(scoped >= 100, "{scoped}");
+    assert!(flagged >= 30, "{flagged}");
+}
+
+#[test]
+fn a_cone_found_to_carry_a_requirement_is_not_noted_free() {
+    let (mut doc, registry) = payload_reader();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // A Set appended to the On Event activation: the Set before it is checked again, and
+    // the walk behind it finds the payload two adds upstream.
+    let appended = vec![set_node(7), wire(30, 2, "then", 7, "in")];
+    let work = edit(&mut session, &mut doc, &registry, options, appended);
+    assert_eq!(work, SessionWork::Scoped);
+    // Moving that Set to the On Start activation must still find the payload.
+    let moved = vec![disconnect(1), wire(6, 4, "then", 2, "in")];
+    let work = edit(&mut session, &mut doc, &registry, options, moved);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}
+
+#[test]
+fn exec_edits_check_values_available_only_after_their_producer_ran() {
+    let (mut doc, registry) = called_function();
+    // Unrelated adds keep the activation a small part of the body, and the Set reads the
+    // call's result through an add.
+    let mut setup: Vec<DocCommand> = (40..50).map(add_node).collect();
+    setup.extend([
+        disconnect(4),
+        wire(60, 3, "result", 40, "a"),
+        wire(61, 40, "sum", 4, "value"),
+    ]);
+    let _ = doc.apply(setup).unwrap();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // A Set appended after the reader keeps the result available.
+    let appended = vec![
+        set_node(7),
+        wire(62, 4, "then", 7, "in"),
+        wire(65, 41, "sum", 7, "value"),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, appended);
+    assert_eq!(work, SessionWork::Scoped);
+    // Running the reader before the call reads a value not yet produced.
+    let reordered = vec![
+        disconnect(1),
+        disconnect(3),
+        wire(63, 1, "then", 4, "in"),
+        wire(64, 7, "then", 3, "in"),
+    ];
+    let work = edit(&mut session, &mut doc, &registry, options, reordered);
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+}

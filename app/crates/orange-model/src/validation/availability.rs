@@ -311,11 +311,42 @@ pub(crate) fn validate_availability_with_ports(
     regions: &RegionIndex,
     registry: &RegistrySnapshot,
 ) -> AvailabilityValidation {
-    availability_among(document, resolved, connections, regions, registry, None)
+    availability_among(
+        document,
+        resolved,
+        connections,
+        regions,
+        registry,
+        None,
+        None,
+    )
 }
 
-/// The same pass for the consumers in `only` alone: an exec-connected set of root-body
-/// nodes, whose control flow no other node reaches. Data cones still read every edge.
+/// The whole pass, also adding to `free` every expanding producer whose lazy cone it found
+/// to carry no requirement, as [`data_edge_requires`] would see it (V12c).
+pub(crate) fn validate_availability_noting_free(
+    document: &GraphDocument,
+    resolved: &PortResolver<'_>,
+    connections: &ConnectionValidation,
+    regions: &RegionIndex,
+    registry: &RegistrySnapshot,
+    free: &mut BTreeSet<NodeId>,
+) -> AvailabilityValidation {
+    availability_among(
+        document,
+        resolved,
+        connections,
+        regions,
+        registry,
+        None,
+        Some(free),
+    )
+}
+
+/// The same pass for an exec-connected set of root-body nodes, `only.nodes`, whose control
+/// flow no other node reaches. The whole set's control flow is built, but only the nodes
+/// in `only.consumers` are checked as consumers; `only.edges` must hold the set's exec
+/// edges and those consumers' data cones.
 pub(crate) fn validate_availability_among(
     document: &GraphDocument,
     resolved: &PortResolver<'_>,
@@ -331,6 +362,7 @@ pub(crate) fn validate_availability_among(
         regions,
         registry,
         Some(only),
+        None,
     )
 }
 
@@ -341,6 +373,7 @@ fn availability_among(
     regions: &RegionIndex,
     registry: &RegistrySnapshot,
     only: Option<&NodeSubset<'_>>,
+    mut free: Option<&mut BTreeSet<NodeId>>,
 ) -> AvailabilityValidation {
     let error_edges: BTreeSet<_> = connections
         .diagnostics
@@ -362,7 +395,7 @@ fn availability_among(
             origin: registry.origin(),
             function,
         };
-        check_body(&context, body, &mut result, only);
+        check_body(&context, body, &mut result, only, free.as_deref_mut());
     }
     sort_diagnostics(&mut result.diagnostics);
     result.diagnostics.dedup();
@@ -444,23 +477,30 @@ fn check_body(
     body: &GraphBody,
     result: &mut AvailabilityValidation,
     only: Option<&NodeSubset<'_>>,
+    mut free: Option<&mut BTreeSet<NodeId>>,
 ) {
     let Context {
         resolved, regions, ..
     } = *context;
     let mut targets: BTreeMap<(NodeId, PortKey), Vec<NodeId>> = BTreeMap::new();
     let mut incoming: BTreeMap<NodeId, Vec<DataEdge>> = BTreeMap::new();
+    // Nodes with an incoming edge this pass skips, which [`data_edge_requires`] would still
+    // read: a cone through one of them is not known to be free.
+    let mut skipped = BTreeSet::new();
     for edge in edges_of(body, only) {
         if context.error_edges.contains(&edge.id)
             || !body.nodes.contains_key(&edge.from.node)
             || !body.nodes.contains_key(&edge.to.node)
         {
+            skipped.insert(edge.to.node);
             continue;
         }
         let (Ok(from), Ok(to)) = (resolved.port(&edge.from), resolved.port(&edge.to)) else {
+            skipped.insert(edge.to.node);
             continue;
         };
         if from.direction != PortDirection::Output || to.direction != PortDirection::Input {
+            skipped.insert(edge.to.node);
             continue;
         }
         match (from.kind, to.kind) {
@@ -504,6 +544,9 @@ fn check_body(
     let mut cones: BTreeMap<NodeId, Vec<&DataEdge>> = BTreeMap::new();
     let mut uses = AvailabilityUses::new();
     for consumer in nodes_of(body, only).into_iter().map(|node| &node.id) {
+        if only.is_some_and(|only| !only.consumers.contains(consumer)) {
+            continue;
+        }
         let Some(region) = regions.owners.get(consumer) else {
             continue;
         };
@@ -515,9 +558,17 @@ fn check_body(
             let direct = item.edge;
             let producer = direct.from.node;
             let behind: &[&DataEdge] = if expands(context, producer) {
-                cones
-                    .entry(producer)
-                    .or_insert_with(|| cone(context, &incoming, producer))
+                cones.entry(producer).or_insert_with(|| {
+                    let mut reached = free.is_some().then(BTreeSet::new);
+                    let items = cone(context, &incoming, producer, reached.as_mut());
+                    if let (Some(free), Some(reached)) = (free.as_deref_mut(), reached)
+                        && items.is_empty()
+                        && reached.iter().all(|node| !skipped.contains(node))
+                    {
+                        free.extend(reached);
+                    }
+                    items
+                })
             } else {
                 &[]
             };
@@ -578,12 +629,19 @@ fn check_body(
 /// own source carries one, or an edge in the lazy cone behind an expanding producer does,
 /// as [`cone`] and [`requirement`] see them. When neither does, adding or removing such an
 /// edge cannot change this pass. Unknown metadata counts as a requirement.
+///
+/// `free` holds expanding nodes already known to have such a cone: the walk does not
+/// enter them, and when it finds no requirement it adds every expanding node it entered,
+/// whose cones it has then read in full (V12c). The caller keeps `free` true of the
+/// document: an added edge can only make a cone carry a requirement if this function
+/// reports one for it, and removed edges only shrink cones.
 pub(crate) fn data_edge_requires(
     document: &GraphDocument,
     resolved: &PortResolver<'_>,
     regions: &RegionIndex,
     index: &crate::index::DocIndex,
     from: &crate::document::PortRef,
+    free: &mut BTreeSet<NodeId>,
 ) -> bool {
     // A zone begin's iteration projection is pure, so no exec region owns it and
     // [`requirement`] finds none for it (V12c).
@@ -613,7 +671,7 @@ pub(crate) fn data_edge_requires(
     let mut visited = BTreeSet::new();
     let mut stack = vec![from.node];
     while let Some(node) = stack.pop() {
-        if !expanding(node) || !visited.insert(node) {
+        if free.contains(&node) || !expanding(node) || !visited.insert(node) {
             continue;
         }
         for id in index.incident(node) {
@@ -633,18 +691,21 @@ pub(crate) fn data_edge_requires(
             stack.push(edge.from.node);
         }
     }
+    free.extend(visited);
     false
 }
 
-/// The edges [`validate_availability_among`] reads for `nodes`: their exec edges, and the
-/// edges into them and into every expanding producer upstream of them, as their data cones
-/// do. Gathered through `index`, sorted by ID.
+/// The edges [`validate_availability_among`] reads for `nodes` checking `consumers` among
+/// them: the edges leaving `nodes`, which hold their exec edges, and the edges into the
+/// consumers and into every expanding producer upstream of them, as their data cones do.
+/// Gathered through `index`, sorted by ID.
 pub(crate) fn subset_edges<'a>(
     document: &'a GraphDocument,
     resolved: &PortResolver<'_>,
     regions: &RegionIndex,
     index: &crate::index::DocIndex,
     nodes: &BTreeSet<NodeId>,
+    consumers: &BTreeSet<NodeId>,
 ) -> Vec<&'a Edge> {
     let expanding = |node: NodeId| {
         matches!(
@@ -653,16 +714,20 @@ pub(crate) fn subset_edges<'a>(
         ) && !regions.owners.contains_key(&node)
     };
     let mut ids = BTreeSet::new();
-    let mut needed = nodes.clone();
-    let mut stack: Vec<NodeId> = nodes.iter().copied().collect();
+    for &node in nodes {
+        ids.extend(index.incident(node).filter(|id| {
+            document
+                .edge(*id)
+                .is_some_and(|edge| edge.from.node == node)
+        }));
+    }
+    let mut needed = consumers.clone();
+    let mut stack: Vec<NodeId> = consumers.iter().copied().collect();
     while let Some(node) = stack.pop() {
         for id in index.incident(node) {
             let Some(edge) = document.edge(id) else {
                 continue;
             };
-            if edge.from.node == node && nodes.contains(&node) {
-                ids.insert(id);
-            }
             if edge.to.node == node {
                 ids.insert(id);
                 if expanding(edge.from.node) && needed.insert(edge.from.node) {
@@ -687,14 +752,19 @@ fn expands(context: &Context, producer: NodeId) -> bool {
 
 /// The edges behind an expanding `producer` that may carry a requirement: every input edge
 /// reachable upstream through expanding producers, keeping only payload, iteration and
-/// execution sources ([`requirement`] ignores the rest), each once.
+/// execution sources ([`requirement`] ignores the rest), each once. With `reached`, also
+/// notes there the expanding nodes whose inputs it read, `producer` included.
 fn cone<'e, 'a>(
     context: &Context,
     incoming: &'e BTreeMap<NodeId, Vec<DataEdge<'a>>>,
     producer: NodeId,
+    mut reached: Option<&mut BTreeSet<NodeId>>,
 ) -> Vec<&'e DataEdge<'a>> {
     let mut cone = Vec::new();
     let mut visited = BTreeSet::new();
+    if let Some(reached) = reached.as_deref_mut() {
+        reached.insert(producer);
+    }
     let mut stack: Vec<_> = incoming.get(&producer).into_iter().flatten().collect();
     while let Some(item) = stack.pop() {
         if !visited.insert(item.edge.id) {
@@ -702,6 +772,9 @@ fn cone<'e, 'a>(
         }
         let upstream = item.edge.from.node;
         if expands(context, upstream) {
+            if let Some(reached) = reached.as_deref_mut() {
+                reached.insert(upstream);
+            }
             stack.extend(incoming.get(&upstream).into_iter().flatten());
         }
         if !matches!(

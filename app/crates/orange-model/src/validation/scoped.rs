@@ -84,6 +84,12 @@ pub(super) struct Retained {
     /// Every published port type is short enough that no term the unifier builds from it
     /// can exceed its expansion budget ([`types_bounded`]). Added nodes keep it current.
     pub bounded: bool,
+    /// Expanding (unowned pure or volatile) nodes whose lazy cone is known to carry no
+    /// availability requirement (V12c): noted by the full availability pass and by
+    /// [`super::availability::data_edge_requires`], which then need not walk them again.
+    /// A structure edit whose data edges may bring a requirement clears it, removed nodes
+    /// leave it, and removed edges only shrink cones.
+    pub free: BTreeSet<NodeId>,
 }
 
 /// Whether no port of `signatures` has a type longer than the unifier's per-term budget of
@@ -549,7 +555,20 @@ pub(super) fn structure_update(
         }
     }
     let zones = &analysis.report().regions.zones;
-    let kinds = classify_edges(document, registry, index, analysis, &edges, order, zones);
+    // Every walk below keeps `free` true of the edited document, except that a data edge
+    // bringing a requirement into a cone is reported as requiring one: then it is cleared.
+    // A failed update leaves it empty, which is always true, for the full analysis to
+    // replace.
+    let mut free = std::mem::take(&mut retained.free);
+    for id in edit.removed_nodes.keys() {
+        free.remove(id);
+    }
+    let kinds = classify_edges(
+        document, registry, index, analysis, &edges, order, zones, &mut free,
+    );
+    if kinds.is_some_and(|kinds| kinds.requires) {
+        free.clear();
+    }
     // Without a control-flow rerun, data edges and pure nodes need the quiet condition, for
     // the stale-capture check, and no availability requirement. With one, which exec edges
     // and flow nodes force, the rerun covers both: state reruns in full and availability
@@ -577,7 +596,7 @@ pub(super) fn structure_update(
                 }
                 drop(ports);
                 Some(recompute_flow(
-                    document, registry, index, analysis, retained, effects, &seeds,
+                    document, registry, index, analysis, retained, effects, &seeds, &mut free,
                 )?)
             } else {
                 None
@@ -717,6 +736,7 @@ pub(super) fn structure_update(
 
     args.apply(retained);
     retained.bounded &= types_bounded(fresh.values().map(|(signature, _)| signature));
+    retained.free = free;
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
     scoped.checked_config = config.len();
     for (function, check) in function_updates {
@@ -759,8 +779,26 @@ pub(super) fn structure_update(
     let mut state = state_override;
     if let Some(update) = flow {
         analysis.set_regions(update.regions);
-        let old = std::mem::replace(&mut retained.flow, update.flow.clone());
-        scoped.inputs.push((old, update.flow));
+        if update.component.is_empty() {
+            let old = std::mem::replace(&mut retained.flow, update.flow.clone());
+            scoped.inputs.push((old, update.flow));
+        } else {
+            // Only the component's diagnostics change, so only they are compared and
+            // patched; every other kept item stays in place and in order.
+            let component = &update.component;
+            let (old, mut kept): (Vec<Diagnostic>, Vec<Diagnostic>) =
+                std::mem::take(&mut retained.flow)
+                    .into_iter()
+                    .partition(|item| {
+                        item.subject
+                            .node
+                            .is_some_and(|node| component.contains(&node))
+                    });
+            kept.extend(update.flow.iter().cloned());
+            sort_diagnostics(&mut kept);
+            retained.flow = kept;
+            scoped.inputs.push((old, update.flow));
+        }
         state.get_or_insert(update.state);
     }
     if let Some(state) = state {
@@ -858,6 +896,10 @@ struct EdgeKinds {
 /// its target's inputs and, for exec edges, the control-flow passes. With the body's data
 /// order, an added data edge is checked for cycles within its order interval and for
 /// exports by its producer's cone; without one, by walking everything it feeds.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the availability check also reads and extends the known requirement-free cones"
+)]
 fn classify_edges(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -866,6 +908,7 @@ fn classify_edges(
     edges: &[(&Edge, bool)],
     mut order: Option<&mut super::order::TopoOrder>,
     zones: &super::zones::ZoneIndex,
+    free: &mut BTreeSet<NodeId>,
 ) -> Option<EdgeKinds> {
     let report = analysis.report();
     let ports = super::ports::PortResolver::new(document, &report.resolved);
@@ -915,6 +958,7 @@ fn classify_edges(
             &report.regions,
             index,
             &edge.from,
+            free,
         );
         if let Some(order) = order.as_deref_mut() {
             if !*is_added {
@@ -958,6 +1002,9 @@ fn classify_edges(
 
 /// New control-flow results after an exec edit.
 struct FlowUpdate {
+    /// The new availability, region and control-cycle diagnostics of the component's
+    /// nodes, which replace theirs, or of the whole document when `component` is empty;
+    /// sorted and deduplicated.
     flow: Vec<Diagnostic>,
     state: Vec<Diagnostic>,
     regions: super::regions::RegionIndex,
@@ -973,6 +1020,15 @@ struct FlowUpdate {
 /// whose ownership changed feeds an owned consumer elsewhere through data, that
 /// consumer's availability could change too, and the whole document is rerun instead.
 /// `None` when the passes find an error, an incomplete node or a control cycle.
+///
+/// Availability checks only the set's consumers that read a requirement, directly or
+/// through the lazy cone behind a data input, as `free` and
+/// [`super::availability::data_edge_requires`] tell; any other consumer has no
+/// availability diagnostic in any region.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "availability also reads and extends the known requirement-free cones"
+)]
 fn recompute_flow(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -981,6 +1037,7 @@ fn recompute_flow(
     retained: &Retained,
     effects: &BTreeMap<NodeId, LeafEffects>,
     seeds: &BTreeSet<NodeId>,
+    free: &mut BTreeSet<NodeId>,
 ) -> Option<FlowUpdate> {
     let report = analysis.report();
     let ports = super::ports::PortResolver::new(document, &report.resolved);
@@ -989,16 +1046,13 @@ fn recompute_flow(
     // Once the set is most of the body, gathering it through the index costs more than the
     // whole-document passes, which give the same result.
     if component.len() > document.root().nodes.len() / 2 {
-        return whole_flow(document, registry, analysis, effects, &ports);
+        return whole_flow(document, registry, analysis, effects, &ports, free);
     }
-    // Availability reads the data cones of the set's consumers. Pure and volatile nodes are
-    // never owned, so the cones do not depend on the regions about to change.
-    let cones =
-        super::availability::subset_edges(document, &ports, &report.regions, index, &component);
     // Exec edges never leave the component, so its own outgoing edges are all the region
     // and control-cycle passes read.
     let outgoing = NodeSubset {
         nodes: &component,
+        consumers: &component,
         edges: {
             let mut ids = BTreeSet::new();
             for &node in &component {
@@ -1068,20 +1122,50 @@ fn recompute_flow(
             .any(|consumer| !component.contains(consumer) && merged.owners.contains_key(consumer))
     });
     if crosses {
-        return whole_flow(document, registry, analysis, effects, &ports);
+        return whole_flow(document, registry, analysis, effects, &ports, free);
     }
 
-    let availability = super::availability::validate_availability_among(
-        document,
-        &ports,
-        &connections,
-        &merged,
-        registry,
-        &NodeSubset {
-            nodes: &component,
-            edges: cones,
-        },
-    );
+    // Pure and volatile nodes are never owned, so lazy cones do not depend on regions;
+    // should one's ownership change anyway, forget which cones are known to be free.
+    if moved.iter().any(|node| {
+        matches!(
+            ports.get(node).map(|signature| signature.kind),
+            Some(NodeKind::Pure | NodeKind::Volatile)
+        )
+    }) {
+        free.clear();
+    }
+    // Availability reports only on owned consumers, and only for values whose producer, or
+    // an edge in the lazy cone behind it, carries a requirement. Every other node of the
+    // set has no availability diagnostic, before or after the edit.
+    let consumers: BTreeSet<NodeId> = component
+        .iter()
+        .copied()
+        .filter(|node| {
+            merged.owners.contains_key(node)
+                && reads_requirement(document, &ports, &merged, index, *node, free)
+        })
+        .collect();
+    let availability = if consumers.is_empty() {
+        super::availability::AvailabilityValidation::default()
+    } else {
+        // The set's exec edges and the data cones of those consumers.
+        let cones = super::availability::subset_edges(
+            document, &ports, &merged, index, &component, &consumers,
+        );
+        super::availability::validate_availability_among(
+            document,
+            &ports,
+            &connections,
+            &merged,
+            registry,
+            &NodeSubset {
+                nodes: &component,
+                consumers: &consumers,
+                edges: cones,
+            },
+        )
+    };
     let state = super::state::validate_state(
         document,
         registry,
@@ -1103,15 +1187,9 @@ fn recompute_flow(
         || has_error(&fresh)
         || has_error(&state)
     {
-        return whole_flow(document, registry, analysis, effects, &ports);
+        return whole_flow(document, registry, analysis, effects, &ports, free);
     }
-    let mut flow: Vec<Diagnostic> = retained
-        .flow
-        .iter()
-        .filter(|item| !local(item))
-        .cloned()
-        .collect();
-    flow.extend(fresh);
+    let mut flow = fresh;
     sort_diagnostics(&mut flow);
     flow.dedup();
     let mut state = state;
@@ -1133,6 +1211,7 @@ fn whole_flow(
     analysis: &ValidationAnalysis,
     effects: &BTreeMap<NodeId, LeafEffects>,
     ports: &super::ports::PortResolver<'_>,
+    free: &mut BTreeSet<NodeId>,
 ) -> Option<FlowUpdate> {
     let report = analysis.report();
     let connections = super::connections::ConnectionValidation::default();
@@ -1151,12 +1230,13 @@ fn whole_flow(
     {
         return None;
     }
-    let mut flow = super::availability::validate_availability_with_ports(
+    let mut flow = super::availability::validate_availability_noting_free(
         document,
         ports,
         &connections,
         &regions.index,
         registry,
+        free,
     )
     .diagnostics;
     let mut state = super::state::validate_state(
@@ -1181,6 +1261,30 @@ fn whole_flow(
         state,
         regions: regions.index,
         component: BTreeSet::new(),
+    })
+}
+
+/// Whether availability may find a requirement on `node`'s values: some data input whose
+/// producer's output, or an edge in the lazy cone behind it, carries one, or whose ports
+/// do not resolve.
+fn reads_requirement(
+    document: &GraphDocument,
+    ports: &super::ports::PortResolver<'_>,
+    regions: &super::regions::RegionIndex,
+    index: &DocIndex,
+    node: NodeId,
+    free: &mut BTreeSet<NodeId>,
+) -> bool {
+    index.incident(node).any(|id| {
+        let Some(edge) = document.edge(id).filter(|edge| edge.to.node == node) else {
+            return false;
+        };
+        match (ports.port(&edge.from), ports.port(&edge.to)) {
+            (Ok(from), Ok(to)) if from.kind != PortKind::Data || to.kind != PortKind::Data => false,
+            _ => super::availability::data_edge_requires(
+                document, ports, regions, index, &edge.from, free,
+            ),
+        }
     })
 }
 
