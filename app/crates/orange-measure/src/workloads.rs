@@ -1404,14 +1404,7 @@ fn w9_function(f: u32) -> Json {
 
 #[cfg(test)]
 mod tests {
-    /// The counting allocator is process-wide, so measurements must not run side by side.
-    static MEASURING: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
-    fn exclusive() -> std::sync::MutexGuard<'static, ()> {
-        MEASURING
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-    }
+    use crate::counter::exclusive;
 
     /// Reserving the 10,000-item result before refusing it took about 80 KB.
     #[test]
