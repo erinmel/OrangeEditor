@@ -178,6 +178,7 @@ fn setup(package: MathPackage, registry: Arc<RegistrySnapshot>) -> Result<HostSt
 }
 
 fn host_registry() -> Result<(MathPackage, Arc<RegistrySnapshot>), BoxError> {
+    // Illustrative build identity. A production host authenticates actual provider bytes.
     let digest = format!("sha256:{}", "e".repeat(64));
     let package = MathPackage::new(digest.clone())?;
     let registry = package
