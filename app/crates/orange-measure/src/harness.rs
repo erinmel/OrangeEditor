@@ -301,6 +301,7 @@ mod tests {
 
     #[test]
     fn nearest_rank_percentiles() {
+        let _measuring = crate::counter::exclusive();
         let sample: Vec<_> = (1..=20).map(Duration::from_nanos).collect();
         assert_eq!(percentile(&sample, 50), Duration::from_nanos(10));
         assert_eq!(percentile(&sample, 95), Duration::from_nanos(19));
