@@ -2,9 +2,11 @@
 //! document-wide structural invariants. Semantic validation is not done here.
 
 use std::borrow::Cow;
+use std::cell::Cell;
 use std::collections::HashSet;
 use std::fmt::Display;
 use std::hash::Hash;
+use std::rc::Rc;
 
 use serde::de::{self, DeserializeSeed, Deserializer, MapAccess, SeqAccess, Visitor};
 use serde::{Deserialize, Serialize};
@@ -21,9 +23,10 @@ pub const FORMAT_VERSION: u32 = 1;
 ///
 /// The defaults are 64 MiB of JSON text, 100,000 nodes, and 500,000 edges. `max_bytes` is
 /// checked before parsing. Node and edge limits are checked on counts taken by a streaming
-/// pre-pass that keeps no values, so an over-quota document is rejected before any node or
-/// edge is built. A document within its quotas is still built in memory proportional to
-/// its size, which `max_bytes` bounds.
+/// pre-pass that keeps no values. [`ImportBudget`] adds limits for total JSON values, decoded
+/// object-key bytes, and decoded string bytes. These checks run before any node or edge is
+/// built; accepted documents are still materialized in memory, bounded by the byte and JSON
+/// budgets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ImportLimits {
     pub max_bytes: usize,
@@ -47,6 +50,33 @@ impl Default for ImportLimits {
     }
 }
 
+/// Budgets for decoded JSON structure and text in one imported document.
+///
+/// Values include every container and primitive, including the root object. Key and string
+/// budgets count decoded UTF-8 bytes, so JSON escapes count by their decoded character size.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ImportBudget {
+    pub max_values: usize,
+    pub max_key_bytes: usize,
+    pub max_string_bytes: usize,
+}
+
+impl ImportBudget {
+    pub const fn new(max_values: usize, max_key_bytes: usize, max_string_bytes: usize) -> Self {
+        Self {
+            max_values,
+            max_key_bytes,
+            max_string_bytes,
+        }
+    }
+}
+
+impl Default for ImportBudget {
+    fn default() -> Self {
+        Self::new(1_000_000, 8 * 1024 * 1024, 32 * 1024 * 1024)
+    }
+}
+
 /// The first pass over the whole text: the envelope fields, the first repeated object key
 /// at any depth (Serde maps would otherwise keep the last value silently), and the node and
 /// edge counts of every body. It keeps no values, so quotas apply before anything is built.
@@ -59,11 +89,54 @@ struct Header {
 
 /// Array elements under the root's and each function's `nodes` and `edges`, and the
 /// deepest container nesting seen, the root object being 1.
-#[derive(Default)]
 struct Counts {
     nodes: usize,
     edges: usize,
     nesting: usize,
+    json_values: usize,
+    json_key_bytes: usize,
+    json_string_bytes: usize,
+    budget: ImportBudget,
+    violation: Rc<Cell<Option<(ImportResource, usize, usize)>>>,
+}
+
+impl Counts {
+    fn new(
+        budget: ImportBudget,
+        violation: Rc<Cell<Option<(ImportResource, usize, usize)>>>,
+    ) -> Self {
+        Self {
+            nodes: 0,
+            edges: 0,
+            nesting: 0,
+            json_values: 0,
+            json_key_bytes: 0,
+            json_string_bytes: 0,
+            budget,
+            violation,
+        }
+    }
+
+    fn charge<E: de::Error>(&mut self, resource: ImportResource, amount: usize) -> Result<(), E> {
+        if self.violation.get().is_some() {
+            return Err(E::custom("import budget exceeded"));
+        }
+        let (actual, max) = match resource {
+            ImportResource::JsonValues => (&mut self.json_values, self.budget.max_values),
+            ImportResource::JsonKeyBytes => (&mut self.json_key_bytes, self.budget.max_key_bytes),
+            ImportResource::JsonStringBytes => {
+                (&mut self.json_string_bytes, self.budget.max_string_bytes)
+            }
+            _ => return Ok(()),
+        };
+        *actual = actual.saturating_add(amount);
+        if *actual > max {
+            let actual = *actual;
+            self.violation.set(Some((resource, max, actual)));
+            return Err(E::custom("import budget exceeded"));
+        }
+        Ok(())
+    }
 }
 
 /// Where a scanned value sits in the document, so only graph bodies are counted.
@@ -107,13 +180,25 @@ impl Counts {
     }
 }
 
-impl<'de> Deserialize<'de> for Header {
-    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        deserializer.deserialize_map(HeaderVisitor)
+struct HeaderSeed {
+    budget: ImportBudget,
+    violation: Rc<Cell<Option<(ImportResource, usize, usize)>>>,
+}
+
+impl<'de> DeserializeSeed<'de> for HeaderSeed {
+    type Value = Header;
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Header, D::Error> {
+        deserializer.deserialize_map(HeaderVisitor {
+            budget: self.budget,
+            violation: self.violation,
+        })
     }
 }
 
-struct HeaderVisitor;
+struct HeaderVisitor {
+    budget: ImportBudget,
+    violation: Rc<Cell<Option<(ImportResource, usize, usize)>>>,
+}
 
 impl<'de> Visitor<'de> for HeaderVisitor {
     type Value = Header;
@@ -126,17 +211,22 @@ impl<'de> Visitor<'de> for HeaderVisitor {
         let (mut format, mut format_version) = (None, None);
         let mut seen = Seen::default();
         let mut duplicate = None;
-        let mut counts = Counts {
-            nesting: 1,
-            ..Counts::default()
-        };
+        let mut counts = Counts::new(self.budget, self.violation);
+        counts.charge::<A::Error>(ImportResource::JsonValues, 1)?; // root object
+        counts.nesting = 1;
         while let Some(Key(key)) = map.next_key()? {
+            counts.charge::<A::Error>(ImportResource::JsonKeyBytes, key.len())?;
             let found = match key.as_ref() {
                 "format" => {
-                    format = Some(map.next_value::<String>()?);
+                    counts.charge::<A::Error>(ImportResource::JsonValues, 1)?;
+                    let value = map.next_value_seed(BudgetStringSeed {
+                        counts: &mut counts,
+                    })?;
+                    format = Some(value);
                     None
                 }
                 "format_version" => {
+                    counts.charge::<A::Error>(ImportResource::JsonValues, 1)?;
                     format_version = Some(map.next_value::<u32>()?);
                     None
                 }
@@ -159,6 +249,45 @@ impl<'de> Visitor<'de> for HeaderVisitor {
     }
 }
 
+struct BudgetStringSeed<'c> {
+    counts: &'c mut Counts,
+}
+
+impl<'de> DeserializeSeed<'de> for BudgetStringSeed<'_> {
+    type Value = String;
+    fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<String, D::Error> {
+        deserializer.deserialize_str(BudgetStringVisitor {
+            counts: self.counts,
+        })
+    }
+}
+
+struct BudgetStringVisitor<'c> {
+    counts: &'c mut Counts,
+}
+
+impl Visitor<'_> for BudgetStringVisitor<'_> {
+    type Value = String;
+    fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("a JSON string")
+    }
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<String, E> {
+        self.counts
+            .charge::<E>(ImportResource::JsonStringBytes, value.len())?;
+        Ok(value.to_owned())
+    }
+    fn visit_borrowed_str<E: de::Error>(self, value: &'_ str) -> Result<String, E> {
+        self.counts
+            .charge::<E>(ImportResource::JsonStringBytes, value.len())?;
+        Ok(value.to_owned())
+    }
+    fn visit_string<E: de::Error>(self, value: String) -> Result<String, E> {
+        self.counts
+            .charge::<E>(ImportResource::JsonStringBytes, value.len())?;
+        Ok(value)
+    }
+}
+
 /// Any JSON value at `place`, yielding only the first repeated object key found inside it
 /// and adding the body items it holds to `counts`. Shape is not checked here, so a newer
 /// document still reaches the version gate. `depth` is the nesting this value has if it is
@@ -173,6 +302,8 @@ impl<'de> DeserializeSeed<'de> for Scan<'_> {
     type Value = Option<String>;
 
     fn deserialize<D: Deserializer<'de>>(self, deserializer: D) -> Result<Self::Value, D::Error> {
+        self.counts
+            .charge::<D::Error>(ImportResource::JsonValues, 1)?;
         deserializer.deserialize_any(self)
     }
 }
@@ -195,7 +326,9 @@ impl<'de> Visitor<'de> for Scan<'_> {
     fn visit_f64<E>(self, _: f64) -> Result<Self::Value, E> {
         Ok(None)
     }
-    fn visit_str<E>(self, _: &str) -> Result<Self::Value, E> {
+    fn visit_str<E: de::Error>(self, value: &str) -> Result<Self::Value, E> {
+        self.counts
+            .charge::<E>(ImportResource::JsonStringBytes, value.len())?;
         Ok(None)
     }
     fn visit_unit<E>(self) -> Result<Self::Value, E> {
@@ -229,6 +362,7 @@ impl<'de> Visitor<'de> for Scan<'_> {
         let mut seen = Seen::default();
         let mut duplicate = None;
         while let Some(Key(key)) = map.next_key()? {
+            counts.charge::<A::Error>(ImportResource::JsonKeyBytes, key.len())?;
             let child = place.field(&key);
             note_key(&mut seen, key, &mut duplicate);
             let found = map.next_value_seed(Scan {
@@ -317,7 +451,7 @@ struct EnvelopeOut<'a> {
 /// Loads a format v1 document. The format and version are checked before the body is
 /// parsed, so a newer document reports its version instead of a shape error.
 pub fn from_json(text: &str) -> Result<GraphDocument, CodecError> {
-    from_json_with_limits(text, ImportLimits::default())
+    from_json_with_budget(text, ImportLimits::default(), ImportBudget::default())
 }
 
 /// Loads a format v1 document subject to caller-supplied import limits.
@@ -327,20 +461,78 @@ pub fn from_json(text: &str) -> Result<GraphDocument, CodecError> {
 /// they read before constructing `text`; this function can enforce limits only after
 /// the caller has allocated the input string. Direct Serde deserialization of
 /// [`GraphDocument`] applies structural, identity and nesting checks, but cannot detect
-/// duplicate JSON object keys or enforce the importer's byte, node and edge quotas.
+/// duplicate JSON object keys or enforce the importer's byte, graph-item and decoded-JSON
+/// quotas.
 ///
-/// The byte limit is enforced before parsing. One streaming pass then reads the envelope,
-/// finds repeated keys and counts the nodes and edges of the root and every function body.
-/// Errors come in this order: format, version, duplicate key, node quota, edge quota,
+/// This compatibility entry point uses [`ImportBudget::default`] for decoded JSON values,
+/// object-key bytes and string bytes. A JSON-resource violation found during the streaming
+/// prepass takes precedence over format/version/duplicate diagnostics; without one, the
+/// normal ordering below applies. Hosts may select a larger profile through
+/// [`from_json_with_budget`]. The byte limit is enforced before parsing. One streaming pass
+/// reads the envelope, finds repeated keys, counts body nodes/edges and enforces JSON budgets
+/// before building a DOM. A JSON budget hit takes precedence over later format, version or
+/// duplicate-key errors because scanning stops at the first resource violation. Otherwise,
+/// errors come in this order: format, version, duplicate key, node quota, edge quota,
 /// nesting, then shape and identity errors from building the document. Nesting deeper than
-/// the JSON parser's own recursion bound is reported as a JSON error. Quotas therefore bound what is
-/// built: an over-quota document fails before any node or edge is materialized.
+/// the JSON parser's own recursion bound is reported as a JSON error. Quotas therefore bound
+/// what is built: an over-quota document fails before any node or edge is materialized.
 pub fn from_json_with_limits(
     text: &str,
     limits: ImportLimits,
 ) -> Result<GraphDocument, CodecError> {
+    from_json_with_budget(text, limits, ImportBudget::default())
+}
+
+/// Loads a format v1 document with explicit byte, graph-item and decoded-JSON budgets.
+///
+/// For untrusted streams, bound the host read before decoding UTF-8 or calling this importer:
+///
+/// ```
+/// use std::io::{Cursor, Read};
+/// use orange_model::{ImportBudget, ImportLimits, from_json_with_budget};
+///
+/// fn import<R: Read>(reader: R) -> Result<(), Box<dyn std::error::Error>> {
+///     let max_bytes = ImportLimits::default().max_bytes;
+///     let mut limited = reader.take((max_bytes + 1) as u64);
+///     let mut bytes = Vec::new();
+///     limited.read_to_end(&mut bytes)?;
+///     if bytes.len() > max_bytes { return Err("document byte limit exceeded".into()); }
+///     let text = std::str::from_utf8(&bytes)?;
+///     let _document = from_json_with_budget(text, ImportLimits::default(), ImportBudget::default())?;
+///     Ok(())
+/// }
+///
+/// let source = r#"{"format":"orange.graph","format_version":1,"graph_id":"a0f3822f-9cf8-4ab6-a2bf-e21fd345c3c6","revision":0,"package_lock":[],"type_lock":[],"variables":[],"events":[],"signatures":{},"nodes":[],"edges":[],"functions":[],"exports":[],"editor":{}}"#;
+/// import(Cursor::new(source.as_bytes()))?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub fn from_json_with_budget(
+    text: &str,
+    limits: ImportLimits,
+    budget: ImportBudget,
+) -> Result<GraphDocument, CodecError> {
     enforce_limit(ImportResource::Bytes, text.len(), limits.max_bytes)?;
-    let header: Header = serde_json::from_str(text)?;
+    let violation = Rc::new(Cell::new(None));
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let header = match (HeaderSeed {
+        budget,
+        violation: Rc::clone(&violation),
+    })
+    .deserialize(&mut deserializer)
+    {
+        Ok(header) => header,
+        Err(error) => {
+            if let Some((resource, max, actual)) = violation.get() {
+                return Err(CodecError::ImportLimitExceeded {
+                    resource,
+                    max,
+                    actual,
+                });
+            }
+            return Err(error.into());
+        }
+    };
+    deserializer.end()?;
     if header.format != FORMAT {
         return Err(CodecError::UnsupportedFormat {
             found: header.format.into(),
