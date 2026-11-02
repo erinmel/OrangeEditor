@@ -60,6 +60,11 @@ impl OwnerIds {
     pub(super) fn region(&mut self) -> Result<RegionId, RunError> {
         self.mint().map(RegionId)
     }
+    /// Dynamic roots share one fresh owner identity, just like startup roots.
+    pub(super) fn root(&mut self) -> Result<(u64, StrandId, RegionId), RunError> {
+        let id = self.mint()?;
+        Ok((id, StrandId(id), RegionId(id)))
+    }
     fn mint(&mut self) -> Result<u64, RunError> {
         let id = self.next;
         self.next = id.checked_add(1).ok_or(RunError::ResourceLimit)?;

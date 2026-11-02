@@ -356,6 +356,7 @@ impl Cells<'_> {
                     HostSource::Error(_)
                     | HostSource::Index(_)
                     | HostSource::Value(_)
+                    | HostSource::EventPayload(_)
                     | HostSource::Update(_, _)
                     | HostSource::CallOutput(_, _) => {
                         self.layout.outputs[i].and_then(|slot| shared.outputs[slot].clone())
