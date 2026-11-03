@@ -1,8 +1,9 @@
 //! Counting global allocator: the only unsafe code in this crate.
 //!
 //! Every call forwards unchanged to [`System`] and then updates relaxed atomics. The
-//! harness is single-threaded, so relaxed ordering is enough to read consistent totals
-//! between workload phases. A `realloc` counts as one allocation of its new size.
+//! windows are orchestrated one at a time, including allocations by measured workers.
+//! Atomics account across threads; channel/join boundaries delimit completed phases.
+//! A `realloc` counts as one allocation of its new size.
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering::Relaxed};
@@ -11,6 +12,15 @@ static ALLOCATIONS: AtomicU64 = AtomicU64::new(0);
 static ALLOCATED_BYTES: AtomicU64 = AtomicU64::new(0);
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static PEAK_LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
+
+/// Every test in this binary shares the allocator, even tests that only spawn workers.
+#[cfg(test)]
+pub(crate) fn exclusive() -> std::sync::MutexGuard<'static, ()> {
+    static MEASURING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+    MEASURING
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
 
 pub struct CountingAllocator;
 

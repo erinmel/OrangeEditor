@@ -195,6 +195,8 @@ The target session adds O(nodes + edges) indexes and unit results to the existin
 
 ## 8. Integration
 
+Measured ownership decision (2026-11-01; [verification](17-authoring-verification.md)): repeated same-workflow comparisons favor a background owner of the editable document and retained session for command-driven authoring, avoiding repeated full clones. Keep the existing snapshot API for hosts that deliberately own immutable images. Both paths must publish against the newest requested semantic/registry/effect identity, not just a worker-local current result. The development harness checks ordered history, missing/foreign receipt fallback, registry/effect changes, cancellation/recovery and accepted-job shutdown, and measures caller work, newest-result latency, burst heap and retirement separately. Clean, warning-bearing and error-bearing memory are distinct. This selects an ownership direction for the measured core workflow, not a frozen host protocol or passed real-UI/NFR gate; persistent document internals are not justified by these results.
+
 - The editor host keeps the document and session. Every committed `apply`, `revert` or `apply_inferred` passes its `ChangeSet` to `update`; `plan_edit()` reuses the session's optional index for trials.
 - Trial edits made with `GraphDocument::scratch` never reach the session; they are rolled back before commit.
 - The compiler requires a fresh `ValidationAnalysis`; `analysis()` already supplies a borrow for immediate compilation. `materialize()` clones an owned snapshot when a worker or retained request needs ownership. Neither route constructs compiler evidence directly from individual cache buckets.
@@ -202,7 +204,7 @@ The target session adds O(nodes + edges) indexes and unit results to the existin
 
 ## 9. Delivery slices
 
-Host composition evidence (2026-10-31): the tested `orange-bundled` example `headless_authoring` keeps a document, retained session and edit history under one background owner and exchanges ordered commands/metadata through capacity-one channels. It avoids per-edit full snapshots and `materialize()` while proving history/freshness and immutable running-plan behavior on a small workflow. This is a host-side alternative to the existing full-snapshot `AnalysisWorker`; that API is unchanged. Blocking caller operations are demonstration scaffolding, not a UI-thread policy. No large-graph latency, overall memory or UI gate is passed by the example.
+Host composition evidence (corrected 2026-11-01 UTC): `headless_authoring` retains one document/session and 64 recent history entries on a background owner, without per-edit snapshots or `materialize()`. Run/plan/inspection identity and terminal history stay distinct; a replacement starts with initial state. Tests edit after entering a real wait, resume the old immutable plan, reject invalid active-run transitions without replacement, recover from empty history, and retire continuations/dispose on normal shutdown, channel loss, wrong sequence and fatal host failure. On Stop effects distinguish graceful shutdown from the documented immediate failure policy. This composes existing APIs; `AnalysisWorker` remains unchanged. Blocking caller operations are demonstration scaffolding, not a UI policy, and the small example alone passes no latency/memory/UI gate.
 
 Closely related slices may share a reviewable PR to `dev`; each implemented behavior keeps the full-pass equivalence gate. Current delivery is V12a plus bounded V12b, with conservative full passes elsewhere.
 

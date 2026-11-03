@@ -5,8 +5,9 @@
 //! plans also support seeded volatile calls. Control plans additionally admit the
 //! documented entries, Get/Set, branches, Sequence, Count/While/ForEach, Fork, scalar
 //! Switch, Match-result, Gate/DoOnce/FlipFlop/Register, Core variable updates, virtual
-//! Wait/Yield and graph-local Action/Async calls. Events, package-provided function bodies,
-//! clock readers and host services remain unsupported. The README tracks this profile.
+//! Wait/Yield and graph-local Action/Async calls. Run-scoped OnEvent/Emit support FIFO
+//! Queue handlers with bounded lossy/fault overflow. Other event families/reentrancy,
+//! package-provided bodies, clock readers and host services remain unsupported.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -25,8 +26,8 @@ mod zones;
 
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
 pub use control::{
-    ControlCell, ControlIx, ControlNode, ControlOperation, ControlPlan, ControlState,
-    ControlVariable, ExecInput, ExecTarget, ForkJoin, FunctionLayout, HostSource,
+    ControlCell, ControlEvent, ControlIx, ControlNode, ControlOperation, ControlPlan, ControlState,
+    ControlVariable, EventHandler, ExecInput, ExecTarget, ForkJoin, FunctionLayout, HostSource,
     IterationProjection, SwitchCase, SwitchKey, UpdateDemand, UpdateOperation, UpdateProjection,
     compile_control,
 };

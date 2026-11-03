@@ -66,6 +66,9 @@ impl Regions {
     pub fn mint_region(&mut self) -> Result<RegionId, RunError> {
         self.ids.region()
     }
+    pub fn mint_root(&mut self) -> Result<(u64, StrandId, RegionId), RunError> {
+        self.ids.root()
+    }
     /// Adds a region; a child region is also listed under its parent. Its live strands
     /// join the live count.
     pub fn open(&mut self, id: RegionId, region: Region) -> Result<(), RunError> {

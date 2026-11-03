@@ -28,7 +28,11 @@ use cells::SegmentWrites;
 use function::{Frames, FunctionFrame, FunctionReturn, FunctionStep, PendingCall, call_returned};
 mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
+mod activations;
+mod events;
 mod ids;
+use activations::Activations;
+pub use events::{EventMetadata, RunEventStats};
 mod ready;
 mod regions;
 mod timers;
@@ -119,6 +123,11 @@ pub struct RunLimits {
     /// and run-owned frame cells, multiplied by the frame count. Values are
     /// shared clones charged by `max_state_bytes`, not by this limit.
     pub max_frame_storage_bytes: usize,
+    /// Pending handler deliveries, separate from activation-owned payloads.
+    pub max_pending_events: usize,
+    pub max_pending_event_bytes: usize,
+    /// Nominal event-payload charge across queues and live handler roots together.
+    pub max_live_event_payload_bytes: usize,
 }
 impl Default for RunLimits {
     fn default() -> Self {
@@ -133,6 +142,9 @@ impl Default for RunLimits {
             max_region_depth: 1024,
             max_timers: 1024,
             max_frame_storage_bytes: 64 * 1024 * 1024,
+            max_pending_events: 1024,
+            max_pending_event_bytes: 16 * 1024 * 1024,
+            max_live_event_payload_bytes: 16 * 1024 * 1024,
         }
     }
 }
@@ -143,6 +155,7 @@ pub struct RunOptions {
     pub drain_timeout_ns: u64,
     pub cleanup_timeout_ns: u64,
     pub max_cleanup_operations: usize,
+    pub max_cause_depth: u16,
 }
 impl Default for RunOptions {
     fn default() -> Self {
@@ -152,6 +165,7 @@ impl Default for RunOptions {
             drain_timeout_ns: 2_000_000_000,
             cleanup_timeout_ns: 500_000_000,
             max_cleanup_operations: 1024,
+            max_cause_depth: 64,
         }
     }
 }
@@ -400,6 +414,7 @@ struct Strand {
 /// before any error or transfer is handled, so ownership code never sees a gap.
 /// `retained_bytes`, `local_bytes` and `owned_bytes` share `max_state_bytes`.
 struct ActivationState {
+    cause_depth: u16,
     retained_bytes: usize,
     owned_bytes: Arc<std::sync::atomic::AtomicUsize>,
     cleanup_scope: Option<CleanupScope>,
@@ -481,7 +496,8 @@ fn demand_root(operation: &ControlOperation, input: ExecInput) -> Option<usize> 
         }
         | ControlOperation::Count { count: root, .. }
         | ControlOperation::Wait { duration: root }
-        | ControlOperation::Set { value: root, .. } => Some(*root),
+        | ControlOperation::Set { value: root, .. }
+        | ControlOperation::Emit { payload: root, .. } => Some(*root),
         ControlOperation::Register { next, .. } if input != ExecInput::Reset => Some(*next),
         _ => None,
     }
@@ -542,7 +558,10 @@ pub struct Run {
     options: RunOptions,
     state: RunState,
     ready: ReadyQueue<Strand>,
-    activations: Vec<Option<Box<ActivationState>>>,
+    activations: Activations,
+    events: events::Events,
+    event_template: Option<events::ActivationTemplate>,
+    seed: u64,
     regions: Regions,
     trace: Trace,
     operations: usize,
@@ -672,7 +691,11 @@ impl Run {
             .and_then(|bytes| bytes.checked_mul(capacity))
             .filter(|total| *total <= options.limits.max_frame_storage_bytes)
             .ok_or(RunError::ResourceLimit)?;
-        let prepared = if capacity > 0 {
+        let has_events = plan
+            .events()
+            .iter()
+            .any(|event| !event.handlers().is_empty());
+        let prepared = if capacity > 0 || has_events {
             Some(PreparedData::new(plan.data().clone(), options.data.limits)?)
         } else {
             None
@@ -685,6 +708,7 @@ impl Run {
             .enumerate()
         {
             activations.push(Some(Box::new(ActivationState {
+                cause_depth: 0,
                 retained_bytes: 0,
                 owned_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 cleanup_scope: None,
@@ -741,6 +765,36 @@ impl Run {
         }
         let variable_count = plan.variables().len();
         let state_count = plan.states().len();
+        let event_template = if has_events {
+            let frame_storage = layout
+                .frame_storage(&plan, locals.len() + local_states.len())
+                .ok_or(RunError::ResourceLimit)?;
+            let template_storage = local_bytes
+                .checked_add(
+                    (locals.len() + local_states.len())
+                        .checked_mul(std::mem::size_of::<Option<Value>>())
+                        .ok_or(RunError::ResourceLimit)?,
+                )
+                .ok_or(RunError::ResourceLimit)?;
+            let minimum = (plan.stops().len() + 1).max(capacity);
+            frame_storage
+                .checked_mul(minimum)
+                .and_then(|n| n.checked_add(template_storage))
+                .filter(|n| *n <= options.limits.max_frame_storage_bytes)
+                .ok_or(RunError::ResourceLimit)?;
+            Some(events::ActivationTemplate {
+                prepared: prepared.ok_or(RunError::InvalidState)?,
+                locals,
+                states: local_states,
+                local_bytes,
+                frame_storage,
+                template_storage,
+                source_revision: document.revision(),
+            })
+        } else {
+            None
+        };
+        let events = events::Events::new(&plan);
         Ok(Self {
             frames: Frames::default(),
             id: run_identity()?,
@@ -748,7 +802,10 @@ impl Run {
             options,
             state: RunState::Running,
             ready,
-            activations,
+            activations: Activations::new(activations),
+            events,
+            event_template,
+            seed,
             regions,
             trace: Trace::default(),
             operations: 0,
@@ -802,7 +859,7 @@ impl Run {
     }
     pub fn ownership(&self) -> RunOwnership {
         RunOwnership {
-            activations: self.activations.iter().flatten().count(),
+            activations: self.activations.len(),
             strands: self.regions.live_strands(),
             regions: self.regions.len(),
             timers: self.timers.len(),
@@ -979,12 +1036,20 @@ impl Run {
                 self.ready.push_back(timer.activation.id, timer.activation);
                 continue;
             }
+            match self.dispatch_event(&plan) {
+                Ok(true) => {
+                    remaining -= 1;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => return self.fail(error),
+            }
             // One pending consumption owns the shared activation evaluator.
             // Other activations can interleave; sibling strands cannot open a
             // replacement epoch or reset activation entropy/fuel under it.
             let pull_owner = self.ready.front().and_then(|front| {
                 self.activations
-                    .get(front.sequence as usize)
+                    .get(front.sequence)
                     .and_then(Option::as_ref)
                     .and_then(|a| a.pull_owner)
                     .filter(|owner| *owner != front.id)
@@ -1000,7 +1065,9 @@ impl Run {
             last = Some(activation.id);
             let mut quantum = if activation.cleanup {
                 remaining.min(activation.cleanup_remaining).min(
-                    self.activations[activation.sequence as usize]
+                    self.activations
+                        .get(activation.sequence)
+                        .ok_or(RunError::InvalidState)?
                         .as_ref()
                         .ok_or(RunError::InvalidState)?
                         .cleanup_remaining,
@@ -1018,7 +1085,7 @@ impl Run {
                 remaining -= 1;
                 let shared = self
                     .activations
-                    .get_mut(activation.sequence as usize)
+                    .get_mut(activation.sequence)
                     .and_then(Option::as_mut)
                     .ok_or(RunError::InvalidState)?;
                 if let Some(scope) = shared.cleanup_scope.take() {
@@ -1036,7 +1103,7 @@ impl Run {
             }
             let mut shared = self
                 .activations
-                .get_mut(activation.sequence as usize)
+                .get_mut(activation.sequence)
                 .and_then(Option::take)
                 .ok_or(RunError::InvalidState)?;
             // Entry failure must follow the same restoration/retirement path as execution
@@ -1060,7 +1127,10 @@ impl Run {
                 }
                 shared.pull_owner = None;
             }
-            self.activations[activation.sequence as usize] = Some(shared);
+            *self
+                .activations
+                .get_mut(activation.sequence)
+                .ok_or(RunError::InvalidState)? = Some(shared);
             if let Err(error) = result {
                 if activation.cleanup {
                     self.cleanup_truncated = self.cleanup_truncated.saturating_add(1);
@@ -1155,7 +1225,16 @@ impl Run {
             && self.state != RunState::Cancelling
             && self.state != RunState::Stopped
             && self.operations == self.options.limits.max_operations
-            && (!self.ready.is_empty() || !self.timers.is_empty())
+            && (!self.ready.is_empty() || !self.timers.is_empty() || self.events.pending() > 0)
+        {
+            return self.fail(RunError::ResourceLimit);
+        }
+        // A capacity-blocked delivery may sleep behind a live timer. Without
+        // any runnable owner or future wakeup it must fail, not masquerade as idle.
+        if self.events.pending() > 0
+            && self.ready.is_empty()
+            && self.timers.is_empty()
+            && !self.event_dispatchable()
         {
             return self.fail(RunError::ResourceLimit);
         }
@@ -1167,7 +1246,9 @@ impl Run {
         };
         Ok(RunProgress {
             operations: count,
-            ready: !self.ready.is_empty() || self.timers.is_due(self.now),
+            ready: !self.ready.is_empty()
+                || self.timers.is_due(self.now)
+                || self.event_dispatchable(),
             next_wakeup,
         })
     }
@@ -1196,6 +1277,7 @@ impl Run {
         if matches!(self.state, RunState::Draining | RunState::Cancelling)
             && self.ready.is_empty()
             && self.timers.is_empty()
+            && self.events.pending() == 0
         {
             self.deadline = None;
             self.transition(RunState::Stopped);
@@ -1211,6 +1293,7 @@ impl Run {
         self.regions.clear();
         self.frames.clear();
         self.activations.clear();
+        self.events.abort();
         self.deadline = None;
         self.transition(RunState::Stopped);
     }
@@ -1264,6 +1347,13 @@ impl Run {
             },
         };
         let step = match operation {
+            ControlOperation::Emit { event, .. } => {
+                let payload = value.ok_or(RunError::InvalidState)?;
+                match self.emit_event(plan, activation, shared, ix, *event, payload) {
+                    Ok(()) => (node.then(), ControlOutcome::Then, None),
+                    Err(fault) => failure(node, fault),
+                }
+            }
             ControlOperation::Call { .. } | ControlOperation::Return { .. } => {
                 match self
                     .cells()
@@ -1527,6 +1617,7 @@ impl Run {
         // Cancellation must remain possible at the end of the virtual clock range.
         let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
         self.transition(RunState::Cancelling);
+        self.events.clear();
         self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
         self.stop_ready.clear();
         let roots = self.regions.roots();
@@ -1551,7 +1642,9 @@ impl Run {
         self.plan = None;
         self.frames.release();
         self.ready = ReadyQueue::with_capacity(0);
-        self.activations = Vec::new();
+        self.events.release(self.activations.high_water());
+        self.activations = Activations::default();
+        self.event_template = None;
         self.regions.release();
         self.variables = Vec::new();
         self.states = Vec::new();

@@ -3,8 +3,9 @@
 //! Current profile: `DataActivation` evaluates checked data plans, iteration zones
 //! included. `Run` owns bounded scheduling, local/run cells, invocation frames for
 //! graph-local Action/Async calls and staged stop/disposal for the admitted control
-//! subset, including Fork joins, typed collection iteration and atomic state. Events and
-//! general host resources and services remain open.
+//! subset, including Fork joins, typed collection iteration, atomic state and bounded
+//! run-scoped FIFO event handlers. General event ingress/reentrancy/replay/reactivity,
+//! resources and services remain open.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -20,6 +21,6 @@ pub use entropy::{
     EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,
 };
 pub use run::{
-    ControlOutcome, Run, RunError, RunEvent, RunLimits, RunOptions, RunOwnership, RunProgress,
-    RunState, StopMode,
+    ControlOutcome, EventMetadata, Run, RunError, RunEvent, RunEventStats, RunLimits, RunOptions,
+    RunOwnership, RunProgress, RunState, StopMode,
 };

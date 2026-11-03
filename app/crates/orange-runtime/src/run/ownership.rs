@@ -196,7 +196,7 @@ impl Run {
         for frame in frames {
             let shared = self
                 .activations
-                .get_mut(activation as usize)
+                .get_mut(activation)
                 .and_then(Option::as_deref_mut)
                 .ok_or(RunError::InvalidState)?;
             self.frames.retire(frame, plan, &self.layout, shared)?;
@@ -219,7 +219,10 @@ impl Run {
         {
             return self.fail(RunError::ResourceLimit);
         }
-        let shared = self.activations[caller.sequence as usize]
+        let shared = self
+            .activations
+            .get_mut(caller.sequence)
+            .ok_or(RunError::InvalidState)?
             .as_deref()
             .ok_or(RunError::InvalidState)?;
         let frame = Frames::prepare(
@@ -289,7 +292,10 @@ impl Run {
         result: FunctionReturn,
     ) -> Result<(), RunError> {
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
-        let mut shared = self.activations[caller.sequence as usize]
+        let mut shared = self
+            .activations
+            .get_mut(caller.sequence)
+            .ok_or(RunError::InvalidState)?
             .take()
             .ok_or(RunError::InvalidState)?;
         let result = call_returned(
@@ -302,7 +308,10 @@ impl Run {
             self.options.limits.max_state_bytes,
         )
         .and_then(|step| self.complete(&plan, caller, &mut shared, owner, step));
-        self.activations[caller.sequence as usize] = Some(shared);
+        *self
+            .activations
+            .get_mut(caller.sequence)
+            .ok_or(RunError::InvalidState)? = Some(shared);
         result
     }
     pub(super) fn complete_regions(&mut self, mut id: RegionId) -> Result<(), RunError> {
@@ -355,7 +364,7 @@ impl Run {
                 if let Some(owner) = owner {
                     let shared = self
                         .activations
-                        .get_mut(r.activation as usize)
+                        .get_mut(r.activation)
                         .and_then(Option::as_mut)
                         .ok_or(RunError::InvalidState)?;
                     Self::publish_index(
@@ -393,7 +402,7 @@ impl Run {
                 }
                 id = parent;
             } else {
-                self.activations[r.activation as usize] = None;
+                self.retire_activation(r.activation)?;
                 return Ok(());
             }
         }
@@ -585,7 +594,7 @@ impl Run {
                 .prune(ids, retired, cleanup.iter().map(|s| s.id).collect())?;
         if let Some(shared) = self
             .activations
-            .get_mut(activation as usize)
+            .get_mut(activation)
             .and_then(Option::as_mut)
         {
             if let Some(scope) = shared.cleanup_scope.take() {

@@ -5,10 +5,15 @@ use crate::data_compile::{DemandRoot, lower_roots};
 use crate::*;
 use orange_model::GraphDocument;
 use orange_model::Value;
+use orange_model::catalog::ReferenceKind;
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::catalog::intrinsic_id as ids;
-use orange_model::document::{FaultPolicy, NodeKind, PortDirection, PortKind, VarScope};
-use orange_model::id::{NodeId, VariableId};
+use orange_model::document::{
+    EventScope, FaultPolicy, NodeKind, OverflowPolicy, PortDirection, PortKind, ReentrancyMode,
+    VarScope,
+};
+use orange_model::edit::DeclId;
+use orange_model::id::{EventDeclId, NodeId, VariableId};
 use orange_model::validation::ValidationAnalysis;
 use orange_model::value::shape::VALUE_CHARGE;
 use std::collections::{BTreeMap, BTreeSet};
@@ -131,6 +136,11 @@ pub enum ControlOperation {
         cases: Box<[SwitchCase]>,
         default: Option<ExecTarget>,
     },
+    /// Enqueues a run-scope event after evaluating its payload demand root.
+    Emit {
+        event: usize,
+        payload: usize,
+    },
     MatchResult {
         result: usize,
         boxed: bool,
@@ -243,6 +253,7 @@ pub enum HostSource {
         index: usize,
     },
     CallOutput(ControlIx, usize),
+    EventPayload(ControlIx),
     Error(ControlIx),
     Index(ControlIx),
     Value(ControlIx),
@@ -261,6 +272,44 @@ pub struct ControlNode {
     pub(crate) cancelled: Option<ExecTarget>,
     pub(crate) fault_policy: FaultPolicy,
     pub(crate) loop_owner: Option<ControlIx>,
+}
+
+/// Checked run-scope event metadata used by the runtime dispatcher.
+#[derive(Debug, Clone)]
+pub struct ControlEvent {
+    id: EventDeclId,
+    payload_type: ValueShape,
+    handlers: Box<[EventHandler]>,
+}
+impl ControlEvent {
+    pub fn id(&self) -> EventDeclId {
+        self.id
+    }
+    pub fn payload_type(&self) -> &ValueShape {
+        &self.payload_type
+    }
+    pub fn handlers(&self) -> &[EventHandler] {
+        &self.handlers
+    }
+}
+
+/// One admitted top-level On Event entry, in persisted handler order.
+#[derive(Debug, Clone, Copy)]
+pub struct EventHandler {
+    entry: ControlIx,
+    capacity: usize,
+    overflow: OverflowPolicy,
+}
+impl EventHandler {
+    pub fn entry(&self) -> ControlIx {
+        self.entry
+    }
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+    pub fn overflow(&self) -> OverflowPolicy {
+        self.overflow
+    }
 }
 impl ControlNode {
     /// Static compilation scope; zero is the root, not a runtime invocation ID.
@@ -325,6 +374,7 @@ pub struct ControlPlan {
     pub(crate) nodes: Box<[ControlNode]>,
     pub(crate) starts: Box<[ControlIx]>,
     pub(crate) stops: Box<[ControlIx]>,
+    events: Box<[ControlEvent]>,
     pub(crate) variables: Box<[ControlVariable]>,
     states: Box<[ControlState]>,
     pub(crate) host_sources: Box<[HostSource]>,
@@ -339,6 +389,7 @@ impl std::fmt::Debug for ControlPlan {
             .field("nodes", &self.nodes.len())
             .field("starts", &self.starts.len())
             .field("stops", &self.stops.len())
+            .field("events", &self.events.len())
             .finish_non_exhaustive()
     }
 }
@@ -357,6 +408,9 @@ impl ControlPlan {
     }
     pub fn stops(&self) -> &[ControlIx] {
         &self.stops
+    }
+    pub fn events(&self) -> &[ControlEvent] {
+        &self.events
     }
     pub fn variables(&self) -> &[ControlVariable] {
         &self.variables
@@ -479,6 +533,7 @@ pub fn compile_control(
         .enumerate()
         .map(|(i, id)| (*id, ControlIx(i)))
         .collect();
+    let (events, event_ids) = prepare_events(&cx, &controls, &control_ix, &mut graph_items)?;
     let mut bytes = 0;
     let (variables, variable_nodes) = collect_variables(&cx, &mut bytes)?;
     let mut functions = function_layouts(&cx, &control_ix, &variables, &variable_nodes)?;
@@ -488,6 +543,7 @@ pub fn compile_control(
         cx: &cx,
         edges: &edges,
         control_ix: &control_ix,
+        event_ids: &event_ids,
         variables: &variables,
         variable_nodes: &variable_nodes,
         state_nodes: &state_nodes,
@@ -615,6 +671,7 @@ pub fn compile_control(
             HostSource::Index(owner) => index_targets[owner.index()].push(i),
             HostSource::Error(owner) => error_targets[owner.index()].push(i),
             HostSource::Value(owner)
+            | HostSource::EventPayload(owner)
             | HostSource::Update(owner, _)
             | HostSource::CallOutput(owner, _) => value_targets[owner.index()].push(i),
             HostSource::Variable(_)
@@ -656,6 +713,7 @@ pub fn compile_control(
         nodes: nodes.into(),
         starts: starts.into(),
         stops: stops.into(),
+        events: events.into(),
         variables: variables.into(),
         states: states.into(),
         host_sources: host_sources.into(),
@@ -694,6 +752,8 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::MATCH_RESULT
                     | ids::ON_START
                     | ids::ON_STOP
+                    | ids::ON_EVENT
+                    | ids::EMIT
                     | ids::BRANCH
                     | ids::SET_VARIABLE
                     | ids::UPDATE_VARIABLE
@@ -719,6 +779,93 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
         }
     }
     Ok(controls)
+}
+
+fn prepare_events(
+    cx: &Cx<'_>,
+    controls: &BTreeSet<ControlKey>,
+    control_ix: &BTreeMap<ControlKey, ControlIx>,
+    graph_items: &mut usize,
+) -> Result<(Vec<ControlEvent>, BTreeMap<EventDeclId, usize>), CompileError> {
+    let mut referenced: BTreeMap<EventDeclId, Vec<(u32, NodeId, EventHandler)>> = BTreeMap::new();
+    let mut payload_types = BTreeMap::new();
+    for &(scope, node_id) in controls {
+        cx.options.checkpoint()?;
+        let node = cx.node((scope, node_id));
+        let is_handler = node.definition.id.as_str() == ids::ON_EVENT;
+        let is_emitter = node.definition.id.as_str() == ids::EMIT;
+        if !is_handler && !is_emitter {
+            continue;
+        }
+        let event_id = match cx.snapshot.reference(node, ReferenceKind::Event) {
+            Ok(DeclId::Event(id)) => id,
+            _ => return Err(CompileError::UnsupportedNode { node: node_id }),
+        };
+        let declaration = cx
+            .document
+            .events()
+            .get(&event_id)
+            .ok_or(CompileError::UnsupportedNode { node: node_id })?;
+        if declaration.scope != EventScope::Run {
+            return Err(CompileError::UnsupportedNode { node: node_id });
+        }
+        let payload_type = ValueShape::of(&declaration.payload)
+            .ok_or(CompileError::UnsupportedNode { node: node_id })?;
+        payload_types.entry(event_id).or_insert(payload_type);
+        // Charge before retaining executable event metadata. The type is a bounded
+        // recursive shape (ValueShape::of enforces the language nesting limit).
+        charge(graph_items, 1, cx.options.limits.max_graph_items)?;
+        if is_handler {
+            if scope != 0 {
+                return Err(CompileError::UnsupportedNode { node: node_id });
+            }
+            let policy = node
+                .activation
+                .as_ref()
+                .ok_or(CompileError::ValidationIncomplete)?;
+            if policy.mode != ReentrancyMode::Queue
+                || policy.capacity == 0
+                || policy.overflow == OverflowPolicy::Backpressure
+            {
+                return Err(CompileError::UnsupportedNode { node: node_id });
+            }
+            charge(graph_items, 1, cx.options.limits.max_graph_items)?;
+            let handler = EventHandler {
+                entry: *control_ix
+                    .get(&(scope, node_id))
+                    .ok_or(CompileError::ValidationIncomplete)?,
+                capacity: usize::try_from(policy.capacity)
+                    .map_err(|_| CompileError::ResourceLimit)?,
+                overflow: policy.overflow,
+            };
+            referenced
+                .entry(event_id)
+                .or_default()
+                .push((policy.order, node_id, handler));
+        } else {
+            referenced.entry(event_id).or_default();
+        }
+    }
+
+    let mut indices = BTreeMap::new();
+    let mut events = Vec::with_capacity(referenced.len());
+    for (id, mut handlers) in referenced {
+        cx.options.checkpoint()?;
+        handlers.sort_by_key(|(order, node, _)| (*order, *node));
+        let payload_type = payload_types
+            .remove(&id)
+            .ok_or(CompileError::ValidationIncomplete)?;
+        indices.insert(id, events.len());
+        events.push(ControlEvent {
+            id,
+            payload_type,
+            handlers: handlers
+                .into_iter()
+                .map(|(_, _, handler)| handler)
+                .collect(),
+        });
+    }
+    Ok((events, indices))
 }
 
 /// Variable layouts for every Get/Set/Update, including unused or lazy call bodies,
@@ -960,6 +1107,7 @@ struct NodeLowering<'a, 'c> {
     cx: &'a Cx<'c>,
     edges: &'a BTreeMap<PortSite, ExecTarget>,
     control_ix: &'a BTreeMap<ControlKey, ControlIx>,
+    event_ids: &'a BTreeMap<EventDeclId, usize>,
     variables: &'a [ControlVariable],
     variable_nodes: &'a BTreeMap<NodeId, usize>,
     state_nodes: &'a BTreeMap<ControlKey, usize>,
@@ -1105,6 +1253,19 @@ impl NodeLowering<'_, '_> {
                 next: self.input(key, orange_model::port_id!("next")),
             },
             ids::SWITCH => self.switch(key)?,
+            ids::EMIT => {
+                let event_id = match cx.snapshot.reference(node, ReferenceKind::Event) {
+                    Ok(DeclId::Event(id)) => id,
+                    _ => return Err(CompileError::UnsupportedNode { node: id }),
+                };
+                ControlOperation::Emit {
+                    event: *self
+                        .event_ids
+                        .get(&event_id)
+                        .ok_or(CompileError::ValidationIncomplete)?,
+                    payload: self.input(key, orange_model::port_id!("payload")),
+                }
+            }
             ids::MATCH_RESULT => {
                 let port = cx.port(key, "result")?;
                 let ValueShape::Result(inner) = port_type(id, port)? else {
@@ -1126,6 +1287,7 @@ impl NodeLowering<'_, '_> {
                 entries.push(self.control_ix[&key]);
                 ControlOperation::Entry
             }
+            ids::ON_EVENT => ControlOperation::Entry,
             ids::BRANCH => ControlOperation::Branch {
                 condition: self.input(key, orange_model::port_id!("condition")),
                 when_true: self.target(key, "true"),
@@ -1302,6 +1464,9 @@ fn host_source(
         return Ok(HostSource::Argument { scope, index });
     }
     let operation = tables.nodes[owner.index()].operation();
+    if port == "payload" && cx.node((scope, source.node)).definition.id.as_str() == ids::ON_EVENT {
+        return Ok(HostSource::EventPayload(owner));
+    }
     if matches!(operation, ControlOperation::Call { .. }) && port != "error" {
         return Ok(HostSource::CallOutput(
             owner,
