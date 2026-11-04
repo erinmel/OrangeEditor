@@ -19,6 +19,8 @@ pub enum CompileError {
     KernelUnavailable { node: NodeId },
     #[error("Resolved executable metadata violates the checked contract.")]
     KernelContract { node: NodeId },
+    #[error("The executable provider does not support this node's resolved types.")]
+    KernelUnsupportedType { node: NodeId },
     #[error("The input literal cannot supply its declared slot type.")]
     InvalidLiteral { node: NodeId, port: PortKey },
     #[error("Compilation exceeds the host's resource limits.")]
@@ -37,6 +39,7 @@ impl CompileError {
             Self::UnsupportedPort { .. } => "core/compile-unsupported-port",
             Self::KernelUnavailable { .. } => "core/compile-kernel-unavailable",
             Self::KernelContract { .. } => "core/compile-kernel-contract",
+            Self::KernelUnsupportedType { .. } => "core/compile-kernel-unsupported-type",
             Self::InvalidLiteral { .. } => "core/compile-invalid-literal",
             Self::ResourceLimit => "core/compile-resource-limit",
             Self::Cancelled => "core/compile-cancelled",

@@ -57,6 +57,10 @@ pub enum ResolveError {
     Unavailable,
     #[error("the node violates the kernel's contract")]
     Contract,
+    /// The provider is available but has no executable kernel for the node's resolved
+    /// types, for example a constraint proven only by a package implementation.
+    #[error("the kernel does not support the node's resolved types")]
+    UnsupportedType,
 }
 
 /// The exact facts one executable node binds from: its ID, definition, provider,

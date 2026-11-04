@@ -131,6 +131,14 @@ impl MathPackage {
             implements: Default::default(),
             specializations: Default::default(),
         };
+        // Comparisons list no specializations: their declared constraint decides, and
+        // `resolve_comparison` refuses types the host cannot compare itself.
+        for definition in crate::comparison_definitions()? {
+            provider
+                .implements
+                .insert((definition.definition.clone(), definition.config_version));
+            builder = builder.definition(definition);
+        }
         for definition in definitions {
             let supported = if definition.type_params.is_empty() {
                 vec![TypeArgs::new()]

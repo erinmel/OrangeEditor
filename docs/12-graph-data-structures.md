@@ -405,6 +405,21 @@ Package entry (event source acquired in the run's Starting phase):
 }
 ```
 
+### 4.1 Bundled comparison definitions
+
+`org.orange.math` (provider `native-v1`) publishes these pure, deterministic definitions, each at definition version 1 and config version 1 with an empty config schema (`additionalProperties: false`). Ports: data inputs `a: $T`, `b: $T` in that order, and computed output `result: core/bool@1`. The provider lists no specializations for them, so the declared constraint decides at validation ([11 §5.5](11-graph-language.md)).
+
+| Definition | `T` constraint | `result` is true when |
+|---|---|---|
+| `org.orange.math/equal` | `eq` | `a` equals `b` |
+| `org.orange.math/not-equal` | `eq` | `a` does not equal `b` |
+| `org.orange.math/less` | `ord` | `a` orders before `b` |
+| `org.orange.math/less-or-equal` | `ord` | `a` does not order after `b` |
+| `org.orange.math/greater` | `ord` | `a` orders after `b` |
+| `org.orange.math/greater-or-equal` | `ord` | `a` does not order before `b` |
+
+The executable subset and per-shape rules are normative in [11 §5.4](11-graph-language.md). A type validation accepts but the kernel cannot execute fails compilation with `CompileError::KernelUnsupportedType`.
+
 ## 5. Type and converter definitions
 
 ```json
