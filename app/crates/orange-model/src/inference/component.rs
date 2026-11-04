@@ -17,7 +17,7 @@ use thiserror::Error;
 
 use super::unify::{
     ConcreteTypeError, EquationContext, EquationEvidence, ScopedTypeTerm, TypeEquation,
-    TypeScopeError, TypeVariable, UnificationError, unify,
+    TypeScopeError, TypeVariable, Unification, UnificationError, unify,
 };
 use crate::GraphDocument;
 use crate::catalog::{
@@ -25,8 +25,8 @@ use crate::catalog::{
     is_function_marker, rigid_params,
 };
 use crate::document::{
-    GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, SignatureSnapshot, TypeParam,
-    TypeParamName,
+    BodyRef, GraphBody, NodeInstance, PortDescriptor, PortKind, PortRef, SignatureSnapshot,
+    TypeParam, TypeParamName,
 };
 use crate::error::IdError;
 use crate::id::{EdgeId, NodeId, TypeExpr};
@@ -224,40 +224,48 @@ pub(crate) const KEPT_SOLUTION_BUDGET: usize = 512;
 
 /// Whether an edit that changed only equations over the variables of `touched` nodes
 /// keeps the most general unifier of every generic component, which `solved` holds per
-/// node from before the edit (16, V12f "Kept solutions").
+/// node from before the edit (16, V12f "Kept solutions"). `added` are touched nodes new
+/// to the document, which `solved` does not hold: when the solution is kept, their
+/// arguments are returned, checked as [`infer_components`] checks them. `None` leaves the
+/// caller to solve the components in full.
 ///
 /// Let `E` and `E'` be the equation sets before and after the edit, `D = E \ E'` and
 /// `A = E' \ E`, and `σ` the solution of `E`, ground on every variable of the components
 /// `D ∪ A` touches. The caller guarantees that every variable of `D ∪ A` belongs to a
-/// generic node of `touched` (pins and literals are scoped to their node, an edge's
-/// equation to its endpoints, and no template changed). This function solves `L`, the
+/// generic node of `touched` or to a removed node (pins and literals are scoped to their
+/// node, an edge's equation to its endpoints, a removed node's edges go with it and their
+/// other endpoints are touched, and no template changed). This function solves `L`, the
 /// equations of `E'` whose variables all belong to a set `W` of generic nodes grown
 /// breadth-first from `touched` through the components, and succeeds only when the most
 /// general unifier `μ` of `L` exists and maps every type parameter of every generic
-/// touched node to the ground type `σ` gives it. Then:
+/// touched node to a ground type: the one `σ` gives it, unless the node is added. Let
+/// `σ'` be `σ` on the variables of the nodes that remain and `μ` on those of added nodes.
+/// Then:
 ///
 /// - every unifier `θ` of `E'` unifies `L ⊆ E'`, so it is an instance of `μ` and agrees
-///   with `σ` on the variables of `D ∪ A`; since `σ` satisfies `D`, `θ` satisfies `D` and
-///   therefore all of `E = (E' \ A) ∪ D`, so `θ` is an instance of `σ`, which is ground,
-///   and `θ = σ` on those components;
-/// - `σ` satisfies `E' \ A ⊆ E`, and `A ⊆ L` mentions only variables on which `σ = μ`,
-///   so `σ` unifies `E'`.
+///   with `σ'` on the variables of `D ∪ A`; extended by `σ` on removed nodes' variables,
+///   it satisfies `D`, which `σ` satisfies and which mentions no added node, and
+///   therefore all of `E = (E' \ A) ∪ D`; so it is an instance of `σ`, which is ground,
+///   and `θ = σ'` on those components;
+/// - `σ'` satisfies `E' \ A ⊆ E`, and `A ⊆ L` mentions only variables on which `σ' = μ`,
+///   so `σ'` unifies `E'`.
 ///
-/// So `σ` is the most general unifier of `E'`: every node keeps its arguments, however
-/// the edit splits or joins components, and since unification fails exactly when no
-/// unifier exists, solving `E'` meets no conflict or occurs check. Growing `W` only adds
-/// equations, which can ground a variable but never change a ground one, so a ground
+/// So `σ'` is the most general unifier of `E'`: every remaining node keeps its arguments,
+/// however the edit splits or joins components, and since unification fails exactly when
+/// no unifier exists, solving `E'` meets no conflict or occurs check. Growing `W` only
+/// adds equations, which can ground a variable but never change a ground one, so a ground
 /// binding that differs from `σ` ends the search. Anything else, an equation that does
-/// not build, a conflict, an unresolved parameter after the whole component or more
-/// than `budget` nodes, returns false and the caller solves the components in full.
+/// not build, a conflict, an unresolved parameter after the whole component, an added
+/// node's argument the solver would report, or more than `budget` nodes, returns `None`.
 pub(crate) fn solution_kept<'s>(
     document: &GraphDocument,
     index: &DocIndex,
     registry: &RegistrySnapshot,
     touched: &BTreeSet<NodeId>,
+    added: &BTreeSet<NodeId>,
     solved: impl Fn(NodeId) -> Option<&'s TypeArgs>,
     budget: usize,
-) -> bool {
+) -> Option<BTreeMap<NodeId, TypeArgs>> {
     let graph = Graph {
         document,
         index,
@@ -282,22 +290,39 @@ pub(crate) fn solution_kept<'s>(
             .filter(|id| !nodes.contains(id))
             .collect();
         if radius == next_check || grown.is_empty() {
-            match graph.kept(&nodes, &seeds, &solved) {
-                Some(true) => return true,
-                Some(false) => return false,
-                None if grown.is_empty() => return false,
-                None => {}
+            match graph.kept(&nodes, &seeds, added, &solved) {
+                Kept::Yes(args) => return Some(args),
+                Kept::No => return None,
+                Kept::Open if grown.is_empty() => return None,
+                Kept::Open => {}
             }
             next_check = (next_check * 2).max(1);
         }
         nodes.extend(grown.iter().copied());
         if nodes.len() > budget {
-            return false;
+            return None;
         }
         frontier = grown;
         radius += 1;
     }
 }
+
+/// [`Graph::kept`]'s outcome.
+enum Kept {
+    /// Every seed is ground as required; the added seeds' checked arguments.
+    Yes(BTreeMap<NodeId, TypeArgs>),
+    /// An equation, a binding or an added seed's argument check failed.
+    No,
+    /// Some parameter is still open.
+    Open,
+}
+
+/// Argument checks by parameter name, constraints, solved type and body: a check never
+/// depends on the node, so equal checks across nodes run once.
+type ArgChecks = HashMap<
+    (TypeParamName, Vec<String>, TypeTerm, Option<BodyRef>),
+    Result<TypeExpr, InferenceIssue>,
+>;
 
 /// The document and registry are fixed for one inference call, so each node's template and
 /// each data edge are resolved once. The component search meets every edge from both ends
@@ -517,86 +542,9 @@ impl Graph<'_> {
         };
         // A check depends on the parameter's declaration, the solved type and the body's
         // rigid parameters, never on the node, so equal checks across nodes run once.
-        let mut checked = HashMap::new();
+        let mut checked = ArgChecks::new();
         for &id in &result.nodes {
-            let Some(template) = self.generic(id) else {
-                continue;
-            };
-            let Some((_, node)) = self.node(id) else {
-                continue;
-            };
-            let body = self.document.locate_node(id);
-            let mut args = BTreeMap::new();
-            let mut complete = true;
-            for parameter in &template.type_params {
-                let variable = ScopedTypeTerm::Variable(TypeVariable::new(id, &parameter.name));
-                let resolved = unification.resolve(&variable).map_err(InferenceIssue::from);
-                match resolved.map(|term| term.to_concrete_type_term()) {
-                    Ok(Ok(term)) => match checked
-                        .entry((
-                            parameter.name.clone(),
-                            parameter.constraints.clone(),
-                            term,
-                            body,
-                        ))
-                        .or_insert_with_key(|(_, _, term, body)| {
-                            check_argument(
-                                types,
-                                id,
-                                parameter,
-                                term,
-                                body_rigid_params(self.document, *body),
-                            )
-                        })
-                        .clone()
-                        .map_err(|issue| issue.for_node(id))
-                    {
-                        Ok(ty) => {
-                            args.insert(parameter.name.clone(), ty);
-                        }
-                        Err(issue) => {
-                            complete = false;
-                            result.issues.push(issue);
-                        }
-                    },
-                    Ok(Err(ConcreteTypeError::Unresolved { .. })) => {
-                        complete = false;
-                        result.issues.push(InferenceIssue::Ambiguous {
-                            node: id,
-                            parameter: parameter.name.clone(),
-                        });
-                    }
-                    Ok(Err(ConcreteTypeError::TooDeep)) => {
-                        complete = false;
-                        result.issues.push(budget_exceeded(TypeScopeError::TooDeep));
-                    }
-                    Ok(Err(ConcreteTypeError::TooLarge { max_nodes })) => {
-                        complete = false;
-                        result
-                            .issues
-                            .push(budget_exceeded(TypeScopeError::TooLarge { max_nodes }));
-                    }
-                    Err(issue) => {
-                        complete = false;
-                        result.issues.push(issue);
-                    }
-                }
-            }
-            // A rigid body argument is checked against its declared constraints above.
-            // Exact provider support is meaningful only after call specialization; the
-            // compiler must check every concrete body binding before executing callbacks.
-            if complete
-                && template.check_specializations
-                && !args
-                    .values()
-                    .any(|ty| TypeTerm::parse(ty).is_ok_and(|t| t.contains_param()))
-                && !self.specialized(node, &args)
-            {
-                result.issues.push(InferenceIssue::NoSpecialization {
-                    node: id,
-                    type_args: args.clone(),
-                });
-            }
+            let args = self.node_args(id, &unification, types, &mut checked, &mut result.issues);
             if !args.is_empty() {
                 result.type_args.insert(id, args);
             }
@@ -604,18 +552,106 @@ impl Graph<'_> {
         result
     }
 
-    /// [`solution_kept`]'s check on `nodes`: `Some(true)` when the equations among them
-    /// ground every parameter of `seeds` to its `solved` type, `Some(false)` when they
-    /// cannot (a failed equation, a conflict, or a ground type that differs), `None` when
-    /// some parameter is still open.
+    /// A generic node's arguments under `unification`, with the issues the solver reports
+    /// for them pushed to `issues`.
+    fn node_args(
+        &self,
+        id: NodeId,
+        unification: &Unification,
+        types: &TypeRegistry,
+        checked: &mut ArgChecks,
+        issues: &mut Vec<InferenceIssue>,
+    ) -> TypeArgs {
+        let mut args = BTreeMap::new();
+        let (Some(template), Some((_, node))) = (self.generic(id), self.node(id)) else {
+            return args;
+        };
+        let body = self.document.locate_node(id);
+        let mut complete = true;
+        for parameter in &template.type_params {
+            let variable = ScopedTypeTerm::Variable(TypeVariable::new(id, &parameter.name));
+            let resolved = unification.resolve(&variable).map_err(InferenceIssue::from);
+            match resolved.map(|term| term.to_concrete_type_term()) {
+                Ok(Ok(term)) => match checked
+                    .entry((
+                        parameter.name.clone(),
+                        parameter.constraints.clone(),
+                        term,
+                        body,
+                    ))
+                    .or_insert_with_key(|(_, _, term, body)| {
+                        check_argument(
+                            types,
+                            id,
+                            parameter,
+                            term,
+                            body_rigid_params(self.document, *body),
+                        )
+                    })
+                    .clone()
+                    .map_err(|issue| issue.for_node(id))
+                {
+                    Ok(ty) => {
+                        args.insert(parameter.name.clone(), ty);
+                    }
+                    Err(issue) => {
+                        complete = false;
+                        issues.push(issue);
+                    }
+                },
+                Ok(Err(ConcreteTypeError::Unresolved { .. })) => {
+                    complete = false;
+                    issues.push(InferenceIssue::Ambiguous {
+                        node: id,
+                        parameter: parameter.name.clone(),
+                    });
+                }
+                Ok(Err(ConcreteTypeError::TooDeep)) => {
+                    complete = false;
+                    issues.push(budget_exceeded(TypeScopeError::TooDeep));
+                }
+                Ok(Err(ConcreteTypeError::TooLarge { max_nodes })) => {
+                    complete = false;
+                    issues.push(budget_exceeded(TypeScopeError::TooLarge { max_nodes }));
+                }
+                Err(issue) => {
+                    complete = false;
+                    issues.push(issue);
+                }
+            }
+        }
+        // A rigid body argument is checked against its declared constraints above.
+        // Exact provider support is meaningful only after call specialization; the
+        // compiler must check every concrete body binding before executing callbacks.
+        if complete
+            && template.check_specializations
+            && !args
+                .values()
+                .any(|ty| TypeTerm::parse(ty).is_ok_and(|t| t.contains_param()))
+            && !self.specialized(node, &args)
+        {
+            issues.push(InferenceIssue::NoSpecialization {
+                node: id,
+                type_args: args.clone(),
+            });
+        }
+        args
+    }
+
+    /// [`solution_kept`]'s check on `nodes`: [`Kept::Yes`] when the equations among them
+    /// ground every parameter of `seeds`, to its `solved` type unless the seed is `added`,
+    /// and every added seed's arguments pass the solver's checks; [`Kept::No`] when they
+    /// cannot (a failed equation, a conflict, a ground type that differs or a failed
+    /// check); [`Kept::Open`] when some parameter is still open.
     fn kept<'s>(
         &self,
         nodes: &BTreeSet<NodeId>,
         seeds: &BTreeSet<NodeId>,
+        added: &BTreeSet<NodeId>,
         solved: &impl Fn(NodeId) -> Option<&'s TypeArgs>,
-    ) -> Option<bool> {
+    ) -> Kept {
         let Ok(equations) = self.equations(nodes) else {
-            return Some(false);
+            return Kept::No;
         };
         let inside = |term: &ScopedTypeTerm| {
             term.variables()
@@ -626,33 +662,60 @@ impl Graph<'_> {
             .into_iter()
             .filter(|equation| inside(&equation.left) && inside(&equation.right));
         let Ok(unification) = unify(local) else {
-            return Some(false);
+            return Kept::No;
         };
         let mut open = false;
         for &id in seeds {
-            let (Some(template), Some(args)) = (self.generic(id), solved(id)) else {
-                return Some(false);
+            let Some(template) = self.generic(id) else {
+                return Kept::No;
             };
-            if args.len() != template.type_params.len() {
-                return Some(false);
-            }
+            let args = if added.contains(&id) {
+                None
+            } else {
+                match solved(id) {
+                    Some(args) if args.len() == template.type_params.len() => Some(args),
+                    _ => return Kept::No,
+                }
+            };
             for parameter in &template.type_params {
                 let variable = ScopedTypeTerm::Variable(TypeVariable::new(id, &parameter.name));
                 let Ok(resolved) = unification.resolve(&variable) else {
-                    return Some(false);
+                    return Kept::No;
                 };
                 match resolved.to_concrete_type_term() {
                     Ok(term) => {
-                        if args.get(&parameter.name) != Some(&term.to_type_expr()) {
-                            return Some(false);
+                        if args.is_some_and(|args| {
+                            args.get(&parameter.name) != Some(&term.to_type_expr())
+                        }) {
+                            return Kept::No;
                         }
                     }
                     Err(ConcreteTypeError::Unresolved { .. }) => open = true,
-                    Err(_) => return Some(false),
+                    Err(_) => return Kept::No,
                 }
             }
         }
-        (!open).then_some(true)
+        if open {
+            return Kept::Open;
+        }
+        // Every added seed is ground; its arguments must pass the checks a solve runs.
+        let mut checked = ArgChecks::new();
+        let mut issues = Vec::new();
+        let mut fresh = BTreeMap::new();
+        for &id in seeds.intersection(added) {
+            let args = self.node_args(
+                id,
+                &unification,
+                self.registry.types(),
+                &mut checked,
+                &mut issues,
+            );
+            if !issues.is_empty() {
+                return Kept::No;
+            }
+            fresh.insert(id, args);
+        }
+        Kept::Yes(fresh)
     }
 
     /// Equations in node, then pin, literal and edge order. Each edge appears once.

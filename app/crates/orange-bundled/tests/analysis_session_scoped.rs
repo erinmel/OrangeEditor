@@ -2319,6 +2319,140 @@ fn removing_the_only_evidence_of_a_connected_chain_is_not_kept() {
     assert!(!session.analysis().report().is_valid());
 }
 
+/// An add with only `b` set (to `ty`), so a wire into `a` joins it to its source.
+fn leaf(n: u32, ty: &str) -> DocCommand {
+    let mut node = math(n, "add", 0, 1);
+    node["inputs"] = json!({"b": {"type": ty, "value": "1"}});
+    DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(node).unwrap(),
+    }
+}
+
+/// Applies `commands`, checks the session against the full analysis and that it kept the
+/// component's solution, resolving at most `nodes` nodes.
+fn kept_edit(
+    session: &mut AnalysisSession,
+    doc: &mut GraphDocument,
+    registry: &RegistrySnapshot,
+    commands: Vec<DocCommand>,
+    nodes: usize,
+) {
+    let work = edit(session, doc, registry, AnalysisOptions::default(), commands);
+    assert!(kept(session, work), "{work:?}");
+    assert!(
+        session.stats().input_nodes <= nodes,
+        "{:?}",
+        session.stats()
+    );
+}
+
+#[test]
+fn node_edits_that_keep_a_connected_solution_skip_the_component_solve() {
+    let (mut doc, registry) = connected_chain(1200, true);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // An isolated add, and an add wired to the chain in the same transaction: the added
+    // node, its source and the source's neighbours.
+    kept_edit(&mut session, &mut doc, &registry, vec![add_node(5000)], 1);
+    let pasted = vec![leaf(5001, "core/u64@1"), connect(5001, 12, 5001, "a")];
+    kept_edit(&mut session, &mut doc, &registry, pasted, 4);
+    // The added node's solution is kept with the others'.
+    let literal = vec![set(5001, "b", u64_text("5"))];
+    kept_edit(&mut session, &mut doc, &registry, literal, 2);
+    // An add, then its wire.
+    kept_edit(&mut session, &mut doc, &registry, vec![add_node(5002)], 1);
+    let wire = vec![connect(5002, 20, 5002, "a")];
+    kept_edit(&mut session, &mut doc, &registry, wire, 4);
+    // Removing a node whose wire is already gone reads nothing else.
+    kept_edit(&mut session, &mut doc, &registry, vec![disconnect(5002)], 4);
+    kept_edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![remove_nodes(&[5002])],
+        0,
+    );
+    // Removing the wired add with its wire, and the isolated one.
+    kept_edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![remove_nodes(&[5001])],
+        3,
+    );
+    kept_edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![remove_nodes(&[5000])],
+        0,
+    );
+    // Removing an add inside the chain activates its reader's literals, which keep `T`;
+    // undo restores the add and its four wires.
+    let committed = doc.apply([remove_nodes(&[15])]).unwrap();
+    let work = session
+        .update(&doc, &registry, &committed.change_set, options)
+        .work;
+    assert!(kept(&session, work), "{work:?}");
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+    let undone = doc.revert(committed.inverse).unwrap();
+    let work = session
+        .update(&doc, &registry, &undone.change_set, options)
+        .work;
+    assert!(kept(&session, work), "{work:?}");
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+    assert_eq!(session.stats().full_analysis_runs, 0);
+}
+
+#[test]
+fn node_edits_that_change_a_connected_solution_equal_the_full_analysis() {
+    // Only the first add's literals ground the chain.
+    let (mut doc, registry) = connected_chain(40, false);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let mut run = |doc: &mut GraphDocument, commands: Vec<DocCommand>, valid: bool| {
+        let work = edit(&mut session, doc, &registry, options, commands);
+        assert!(!kept(&session, work), "{work:?}");
+        assert_eq!(session.analysis().report().is_valid(), valid);
+    };
+    // Removing a middle add leaves everything after it without evidence; restoring it and
+    // its four wires grounds them again.
+    run(&mut doc, vec![remove_nodes(&[20])], false);
+    let mut node = math(20, "add", 0, 1);
+    node["inputs"] = json!({});
+    let restore = vec![
+        DocCommand::AddNode {
+            body: BodyRef::Root,
+            node: serde_json::from_value(node).unwrap(),
+        },
+        connect(1020, 19, 20, "a"),
+        connect(1021, 19, 20, "b"),
+        connect(1022, 20, 21, "a"),
+        connect(1023, 20, 21, "b"),
+    ];
+    run(&mut doc, restore, true);
+    // A wired add whose own literal conflicts with its source's type.
+    let pasted = vec![leaf(5000, "core/i64@1"), connect(5000, 30, 5000, "a")];
+    run(&mut doc, pasted, false);
+    run(&mut doc, vec![remove_nodes(&[5000])], true);
+    // An add with nothing to ground its `T`.
+    let mut open = math(5001, "add", 0, 1);
+    open["inputs"] = json!({});
+    let open = DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(open).unwrap(),
+    };
+    run(&mut doc, vec![open], false);
+    run(&mut doc, vec![remove_nodes(&[5001])], true);
+}
+
 #[test]
 fn random_edits_of_a_connected_component_equal_the_full_analysis() {
     // Adds 10..70; add k reads k-1 into `a` and k-2 into `b`, all one component.
@@ -2385,6 +2519,154 @@ fn random_edits_of_a_connected_component_equal_the_full_analysis() {
     }
     // About a third of the edits; most others change or break the chain's type.
     assert!(kept_edits >= 60, "{kept_edits}");
+}
+
+#[test]
+fn function_body_node_edits_keep_the_body_solution() {
+    let (mut doc, registry) = called_function();
+    let mut session = session(&doc, &registry);
+    let body = BodyRef::Function(id(200).parse().unwrap());
+    // An add reading the body's add, grounded by its own literal, then its removal.
+    let mut node = math(206, "add", 0, 1);
+    node["inputs"] = json!({"b": {"type": "core/u64@1", "value": "1"}});
+    let pasted = vec![
+        DocCommand::AddNode {
+            body,
+            node: serde_json::from_value(node).unwrap(),
+        },
+        wire(206, 204, "sum", 206, "a"),
+    ];
+    kept_edit(&mut session, &mut doc, &registry, pasted, 4);
+    kept_edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![remove_nodes(&[206])],
+        3,
+    );
+    // An isolated add in the body and its removal.
+    let alone = vec![DocCommand::AddNode {
+        body,
+        node: serde_json::from_value(math(207, "add", 1, 2)).unwrap(),
+    }];
+    kept_edit(&mut session, &mut doc, &registry, alone, 1);
+    kept_edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![remove_nodes(&[207])],
+        0,
+    );
+    assert_eq!(session.stats().full_analysis_runs, 0);
+}
+
+#[test]
+fn removing_the_only_evidence_node_leaves_the_chain_ambiguous() {
+    // An added source feeding the first add shadows its literals, which are then cleared:
+    // the source is the chain's only evidence.
+    let (mut doc, registry) = connected_chain(40, false);
+    let mut session = session(&doc, &registry);
+    let source = DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(math(5000, "add", 0, 1)).unwrap(),
+    };
+    let pasted = vec![
+        source,
+        connect(5000, 5000, 10, "a"),
+        connect(5001, 5000, 10, "b"),
+    ];
+    kept_edit(&mut session, &mut doc, &registry, pasted, 4);
+    let cleared = vec![set(10, "a", None), set(10, "b", None)];
+    kept_edit(&mut session, &mut doc, &registry, cleared, 4);
+    assert!(session.analysis().report().is_valid());
+    let options = AnalysisOptions::default();
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[5000])],
+    );
+    assert!(!kept(&session, work), "{work:?}");
+    assert!(
+        session
+            .analysis()
+            .report()
+            .diagnostics
+            .iter()
+            .any(|d| d.code == orange_model::validation::DiagnosticCode::TypeAmbiguous)
+    );
+}
+
+#[test]
+fn random_node_edits_of_a_connected_component_equal_the_full_analysis() {
+    // Adds 10..70; add k reads k-1 into `a` and k-2 into `b`, all one component.
+    let (package, registry) = catalog();
+    let mut nodes = Vec::new();
+    let mut edges = Vec::new();
+    for k in 10..70 {
+        nodes.push(math(k, "add", 0, 1));
+        for (input, from) in [("a", k - 1), ("b", k - 2)] {
+            if from >= 10 {
+                let n = 2000 + 2 * k + u32::from(input == "b");
+                edges.push(edge(n, from, "sum", k, input));
+            }
+        }
+    }
+    let mut doc = graph(&package, nodes, edges, vec![]);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let mut seed: u64 = 0x0add_0de1;
+    let mut next = |bound: u32| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) as u32 % bound
+    };
+    let mut check = |doc: &GraphDocument, change: &orange_model::edit::ChangeSet| {
+        let work = session.update(doc, &registry, change, options).work;
+        assert_eq!(
+            session.analysis(),
+            &analyze_with_options(doc, &registry, BTreeMap::new(), options)
+        );
+        kept(&session, work)
+    };
+    let (mut kept_edits, mut leaves) = (0, Vec::new());
+    for step in 0..300 {
+        let commands = match next(3) {
+            // A leaf add, mostly of the chain's type, alone or reading a chain add.
+            0 => {
+                let leaf_id = 6000 + step;
+                let ty = if next(8) == 0 {
+                    "core/i64@1"
+                } else {
+                    "core/u64@1"
+                };
+                leaves.push(leaf_id);
+                let mut commands = vec![leaf(leaf_id, ty)];
+                if next(2) == 0 {
+                    commands.push(connect(leaf_id, 10 + next(60), leaf_id, "a"));
+                }
+                commands
+            }
+            1 if !leaves.is_empty() => {
+                let at = next(leaves.len() as u32) as usize;
+                vec![remove_nodes(&[leaves.swap_remove(at)])]
+            }
+            // A chain add with its wires, then its restoration.
+            _ => {
+                let committed = doc.apply([remove_nodes(&[10 + next(60)])]).unwrap();
+                kept_edits += usize::from(check(&doc, &committed.change_set));
+                let undone = doc.revert(committed.inverse).unwrap();
+                kept_edits += usize::from(check(&doc, &undone.change_set));
+                continue;
+            }
+        };
+        let committed = doc.apply(commands).unwrap();
+        kept_edits += usize::from(check(&doc, &committed.change_set));
+    }
+    // Most edits; an i64 leaf on the chain breaks it until it is removed.
+    assert!(kept_edits >= 200, "{kept_edits}");
 }
 
 #[test]

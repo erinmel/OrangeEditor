@@ -196,6 +196,16 @@ W9 keeps its fixed 1,000 seeded mixed edits, plus separate 250-edit exec/body/re
 
 The connect column is from a later run with the two-way data-order repair ([10](10-tooling-and-sources.md)); the other columns are from the earlier run. That run's connect maximum on connected 20k is still 16.6 ms: one reconnect whose two sides each span about 5,000 nodes, one of which a kept total order must move.
 
+Node edits (2026-11-03): per four seeded edits, W9 also adds an add, alone (112 edits) or reading a random cluster add in the same transaction (138), removes a random added add (250), and removes a cluster add other than its last with its edges and restores them (250 each). p95 / p99 in milliseconds, before and after node edits kept the inference solution, in one session; every node edit was scoped in both runs, re-resolving up to 11,001 nodes before and at most 10 after. The node edits draw from the second seed, so the other non-seeded kinds now follow a different sequence than in the rows above; the 1,000 seeded edits are unchanged.
+
+| Shape | Add alone | Add with an edge | Added remove | Chain remove | Chain restore |
+|---|---:|---:|---:|---:|---:|
+| clustered | 0.451 / 0.657 → 0.478 / 0.649 | 0.577 / 0.889 → 0.359 / 0.687 | 0.471 / 0.668 → 0.277 / 0.586 | 0.798 / 0.919 → 0.581 / 0.831 | 0.696 / 0.751 → 0.538 / 0.640 |
+| connected | 0.458 / 0.505 → 0.492 / 0.515 | 178.6 / 198.9 → 0.559 / 1.193 | 173.2 / 192.2 → 0.201 / 0.549 | 180.2 / 194.2 → 0.477 / 0.610 | 181.8 / 198.7 → 0.384 / 0.919 |
+| clustered 20k | 0.511 / 0.729 → 0.445 / 0.707 | 0.612 / 0.943 → 0.349 / 0.753 | 0.512 / 0.808 → 0.311 / 0.699 | 0.851 / 1.055 → 0.683 / 0.852 | 0.741 / 0.880 → 0.605 / 0.624 |
+| connected 20k | 0.555 / 0.623 → 0.498 / 0.552 | 505.5 / 601.1 → 0.623 / 1.701 | 224.0 / 562.8 → 0.223 / 0.521 | 240.5 / 655.8 → 0.507 / 0.708 | 259.5 / 682.4 → 0.438 / 2.212 |
+| shared Get 20k | 0.449 / 0.716 → 0.447 / 0.684 | 15.17 / 15.65 → 0.355 / 0.756 | 14.72 / 15.82 → 0.289 / 0.719 | 15.54 / 16.49 → 0.635 / 0.876 | 15.03 / 15.92 → 0.661 / 0.730 |
+
 The seeded edits were scoped in all five shapes, with at most seven nodes re-resolved; every cycle close/open used full analysis. The connected cases' cycle tails reach about 1.8 seconds and need separate profiling before any latency guarantee. Work counters count re-resolved nodes rather than every validation visit, as documented in 16; zero re-resolved during a full rebuild does not mean zero work. These single-process breadth observations do not establish cross-run tail stability, pass NFR-05/15 or replace reference-machine and real-UI evidence.
 
 **Qualification and remaining product gates**
