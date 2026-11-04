@@ -19,9 +19,9 @@ use orange_compiler::{
     compile_pure,
 };
 use orange_model::catalog::{
-    Determinism, NodeDefinition, Ports, ProviderKey, RegistryBuilder, RegistrySnapshot,
+    NodeDefinition, Ports, ProviderKey, RegistryBuilder, RegistrySnapshot,
 };
-use orange_model::document::{BodyRef, DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+use orange_model::document::{BodyRef, DefinitionRef};
 use orange_model::id::NodeId;
 use orange_model::rebind::{
     RebindOutcome, RebindRequest, RebindSelection, apply_rebind, plan_rebind,
@@ -37,6 +37,7 @@ use serde_json::json;
 
 const MANIFEST_1: &[u8] = include_bytes!("fixtures/acme.math/manifest-1.0.0.json");
 const MANIFEST_2: &[u8] = include_bytes!("fixtures/acme.math/manifest-2.0.0.json");
+const TRIPLE_DEFINITION: &str = include_str!("fixtures/acme.math/triple.json");
 const PACKAGE: &str = "acme.math";
 const TRIPLE: &str = "acme.math/triple";
 const ADD: &str = "org.orange.math/add";
@@ -70,32 +71,12 @@ fn bundled() -> (MathPackage, Arc<RegistrySnapshot>) {
     (package, snapshot)
 }
 
-/// The definition `acme.math/triple` ships: one i64 in, three times it out.
-fn triple_definition() -> NodeDefinition {
-    let ty: orange_model::id::TypeExpr = I64.parse().unwrap();
-    NodeDefinition {
-        definition: dref(TRIPLE),
-        config_version: 1,
-        kind: NodeKind::Pure,
-        volatility: None,
-        determinism: Determinism::Deterministic,
-        suspends: None,
-        type_params: vec![],
-        ports: Ports::Declared(vec![
-            PortDescriptor::data_in("value", ty.clone()),
-            PortDescriptor::data_out("result", ty, OutputSource::Computed),
-        ]),
-        references: vec![],
-        specializations: None,
-        config_schema: None,
-    }
-}
-
-/// A staged package version: the decoded manifest fixture and its shipped definition.
+/// A staged package version: the decoded manifest fixture and its shipped definition file,
+/// `acme.math/triple` (one i64 in, three times it out).
 fn acme(manifest: &[u8]) -> PackageContents {
     PackageContents::new(
         PackageManifest::from_json(manifest).unwrap(),
-        vec![triple_definition()],
+        vec![NodeDefinition::from_json(TRIPLE_DEFINITION).unwrap()],
     )
 }
 
