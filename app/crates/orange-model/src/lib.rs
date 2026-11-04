@@ -9,7 +9,8 @@
 //! identity); `value` (runtime values and the typed literal codec); `edit` (transactions and
 //! undo); `index`, `signature` and `paste` (derived lookups, semantic signatures and
 //! copy/paste); `validation` (one read-only `validate` entry point over node, input,
-//! connection and function passes).
+//! connection and function passes); `rebind` (explicit provider rebinds checked with
+//! `validate`).
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -25,6 +26,7 @@ pub mod index;
 pub mod inference;
 pub mod origin;
 pub mod paste;
+pub mod rebind;
 pub mod scalar;
 pub mod signature;
 pub mod type_term;
