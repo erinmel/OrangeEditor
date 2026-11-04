@@ -516,3 +516,157 @@ fn wide_case_validation_rejects_duplicates_without_changing_case_identity() {
         1
     );
 }
+
+const LIGHT: &str = "org.example/light@1";
+
+/// The math package plus a package enum `light` (red, amber(u32), green) deriving `eq`.
+fn enum_catalog() -> (
+    orange_bundled::MathPackage,
+    Arc<orange_model::catalog::RegistrySnapshot>,
+) {
+    use orange_model::type_term::TypeTerm;
+    use orange_model::types::{Constraint, TypeRegistryBuilder};
+    use orange_model::value::literal_codec::{EnumSchema, VariantSchema};
+    let light: orange_model::id::TypeExpr = LIGHT.parse().unwrap();
+    let mut types = TypeRegistryBuilder::core();
+    let variant = |id: &str, payload: Option<&str>| VariantSchema {
+        variant_id: id.into(),
+        payload: payload.map(|ty| TypeTerm::parse(&ty.parse().unwrap()).unwrap()),
+    };
+    let variants = vec![
+        variant("red", None),
+        variant("amber", Some("core/u32@1")),
+        variant("green", None),
+    ];
+    types
+        .register_enum("org.example", &light, EnumSchema { variants })
+        .unwrap();
+    types
+        .derive_constraint("org.example", &light, Constraint::Eq)
+        .unwrap();
+    let digest = format!("sha256:{}", "a".repeat(64));
+    let package = orange_bundled::MathPackage::new(digest.clone()).unwrap();
+    let builder = orange_model::catalog::RegistryBuilder::core(
+        orange_model::validation::HostOrigin::new("0.0.0", digest).unwrap(),
+    )
+    .types(Arc::new(types.build().unwrap()));
+    let snapshot = package.register(builder).unwrap().build().unwrap();
+    (package, snapshot)
+}
+
+/// on-start -> switch(2) over `cases`; every case and (optionally) default end in a branch.
+fn light_graph(
+    package: &orange_bundled::MathPackage,
+    key: Json,
+    cases: &[(u16, Json)],
+    default: bool,
+) -> GraphDocument {
+    let mut nodes = vec![core(1, "on-start"), switch(2, LIGHT, key, cases)];
+    let mut edges = vec![edge(1, 1, "then", 2, "in")];
+    for (instance, _) in cases {
+        let n = 10 + u32::from(*instance);
+        nodes.push(branch(n, true));
+        edges.push(edge(n, 2, &format!("case#{instance}"), n, "in"));
+    }
+    if default {
+        nodes.push(branch(5, false));
+        edges.push(edge(5, 2, "default", 5, "in"));
+    }
+    graph(package, nodes, edges, vec![])
+}
+
+#[test]
+fn enum_switch_routes_by_variant_tag_ignoring_payloads() {
+    use orange_compiler::SwitchKey;
+    let (package, snapshot) = enum_catalog();
+    let partial = [(4, json!("amber")), (1, json!("red"))];
+    let exhaustive = [(0, json!("green")), (4, json!("amber")), (1, json!("red"))];
+    for (cases, default) in [(&partial[..], true), (&exhaustive[..], false)] {
+        for (key, expected) in [
+            (json!({"variant":"red"}), Some(1)),
+            (json!({"variant":"amber","payload":7}), Some(4)),
+            (json!({"variant":"amber","payload":9}), Some(4)),
+            (json!({"variant":"green"}), (!default).then_some(0)),
+        ] {
+            let doc = light_graph(&package, key, cases, default);
+            let analysis = analyze(&doc, &snapshot);
+            assert!(
+                analysis.is_ready_for_lowering(&doc, &snapshot),
+                "{:?}",
+                analysis.report().diagnostics
+            );
+            let plan = compile_control(
+                &doc,
+                snapshot.clone(),
+                &analysis,
+                &package,
+                CompileOptions::default(),
+            )
+            .unwrap();
+            // Cases lower to schema tags in tag order, keeping their source instances.
+            let ControlOperation::Switch { cases: table, .. } = plan.nodes()[1].operation() else {
+                panic!("not a switch");
+            };
+            let lowered: Vec<_> = table
+                .iter()
+                .map(|c| (c.key().clone(), c.instance()))
+                .collect();
+            let mut want = vec![(SwitchKey::Variant(0), 1), (SwitchKey::Variant(1), 4)];
+            if !default {
+                want.push((SwitchKey::Variant(2), 0));
+            }
+            assert_eq!(lowered, want);
+            let mut run =
+                Run::start(Arc::new(plan), &doc, &snapshot, 1, RunOptions::default()).unwrap();
+            run_all(&mut run, 1);
+            let event = run
+                .trace()
+                .iter()
+                .find(|e| e.node.to_string() == id(2))
+                .unwrap();
+            assert_eq!(
+                event.outcome,
+                expected.map_or(ControlOutcome::Default, ControlOutcome::Case)
+            );
+            let visited: Vec<_> = run.trace().iter().map(|e| e.node.to_string()).collect();
+            assert_eq!(visited.contains(&id(5)), expected.is_none());
+        }
+    }
+}
+
+#[test]
+fn enum_switch_cases_must_name_distinct_variants_and_cover_the_schema_or_default() {
+    let (package, snapshot) = enum_catalog();
+    let red = json!({"variant":"red"});
+    for (cases, default) in [
+        (vec![(0, json!("red")), (1, json!("blue"))], true),
+        (vec![(0, json!("red")), (1, json!("red"))], true),
+        (vec![(0, json!("red")), (1, json!(1))], true),
+        (vec![(0, json!("red")), (1, json!("amber"))], false),
+    ] {
+        let doc = light_graph(&package, red.clone(), &cases, default);
+        let analysis = analyze(&doc, &snapshot);
+        assert!(!analysis.is_ready_for_lowering(&doc, &snapshot));
+        let faults: Vec<_> = analysis
+            .report()
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == orange_model::validation::DiagnosticCode::SwitchCase)
+            .map(|d| d.subject.node.map(|n| n.to_string()))
+            .collect();
+        assert_eq!(faults, [Some(id(2))], "{cases:?}");
+        let resolver = Counting::new(package.clone());
+        assert_eq!(
+            compile_control(
+                &doc,
+                snapshot.clone(),
+                &analysis,
+                &resolver,
+                CompileOptions::default()
+            )
+            .unwrap_err(),
+            CompileError::ValidationIncomplete
+        );
+        assert_eq!(resolver.pure.load(Ordering::Relaxed), 0);
+    }
+}
