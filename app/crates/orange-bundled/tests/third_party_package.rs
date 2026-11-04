@@ -3,7 +3,9 @@
 //! activation and override", "Hot update/removal"; 12 §8; ADR-07).
 //!
 //! `acme.math` ships its own node `acme.math/triple` and a provider `fast` that also fills
-//! the bundled slot `node:org.orange.math/add@1`. The host starts from the bundled registry,
+//! the bundled slot `node:org.orange.math/add@1`, specialized to i64. Definitions decode from
+//! the package's files and nodes bind through new-binding defaults with public helpers. The
+//! host starts from the bundled registry,
 //! installs version 1.0.0 from its manifest fixture, selects it for new bindings and authors
 //! a graph; the graph compiles and folds through the package's kernels. Version 2.0.0 moves
 //! new bindings only; the graph keeps its exact 1.0.0 lock until an explicit rebind. Removing
@@ -19,7 +21,9 @@ use orange_compiler::{
     compile_pure,
 };
 use orange_model::binding::{NewNode, new_node_edit};
-use orange_model::catalog::{NodeDefinition, ProviderKey, RegistryBuilder, RegistrySnapshot};
+use orange_model::catalog::{
+    NodeDefinition, ProviderKey, RegistryBuilder, RegistrySnapshot, TypeArgs,
+};
 use orange_model::document::DefinitionRef;
 use orange_model::id::NodeId;
 use orange_model::rebind::{
@@ -69,13 +73,19 @@ fn bundled() -> (MathPackage, Arc<RegistrySnapshot>) {
     (package, snapshot)
 }
 
-/// A staged package version: the decoded manifest fixture and its shipped definition file,
-/// `acme.math/triple` (one i64 in, three times it out).
+/// The argument sets acme's kernels implement for the generic bundled `add`: i64 only.
+fn i64_only() -> Vec<TypeArgs> {
+    vec![TypeArgs::from([("T".into(), I64.parse().unwrap())])]
+}
+
+/// A staged package version: the decoded manifest fixture, its shipped definition file
+/// `acme.math/triple` (one i64 in, three times it out), and `fast` restricted to i64 `add`.
 fn acme(manifest: &[u8]) -> PackageContents {
     PackageContents::new(
         PackageManifest::from_json(manifest).unwrap(),
         vec![NodeDefinition::from_json(TRIPLE_DEFINITION).unwrap()],
     )
+    .with_specializations("fast", dref(ADD), i64_only())
 }
 
 fn package_key(version: &str) -> PackageKey {
@@ -295,6 +305,10 @@ fn third_party_package_installs_replaces_rebinds_and_rolls_back() {
     assert!(installed.provides(&dref(ADD), 1, native.provider_key()));
     assert!(installed.provides(&dref(ADD), 1, &v1));
     assert!(installed.provides(&dref(TRIPLE), 1, &v1));
+    assert_eq!(
+        installed.specializations(&dref(ADD), Some(&v1)),
+        Some(i64_only().as_slice())
+    );
 
     // 2. The user selects acme for new bindings of its node and of the bundled `add` slot.
     let _ = store.select_default(dref(ADD), v1.clone()).unwrap();
