@@ -1100,10 +1100,11 @@ pub struct W9Bucket {
     pub scoped: usize,
     /// The most nodes one scoped edit re-resolved (`EditStats::input_nodes`).
     pub max_resolved: usize,
-    /// Units visited per edit over every pass (`EditStats::visits.total()`).
+    /// Items iterated per edit, summed over every pass (`EditStats::visits.total()`).
     pub nodes: W9Spread,
     pub edges: W9Spread,
     pub ports: W9Spread,
+    pub diagnostics: W9Spread,
     pub bodies: W9Spread,
     /// Edits that ran the full analysis, by cause: the scoped update's fallback reason, or
     /// the rebuild reason.
@@ -1662,6 +1663,7 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
             nodes: W9Spread::of(kept.iter().map(|record| record.5.nodes).collect()),
             edges: W9Spread::of(kept.iter().map(|record| record.5.edges).collect()),
             ports: W9Spread::of(kept.iter().map(|record| record.5.ports).collect()),
+            diagnostics: W9Spread::of(kept.iter().map(|record| record.5.diagnostics).collect()),
             bodies: W9Spread::of(kept.iter().map(|record| record.5.bodies).collect()),
             full: kept.iter().filter_map(|record| record.6.clone()).fold(
                 BTreeMap::new(),

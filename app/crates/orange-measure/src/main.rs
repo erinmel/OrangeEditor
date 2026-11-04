@@ -158,8 +158,8 @@ fn main() {
                     bucket.max_resolved
                 );
                 println!(
-                    "    visited p50/p95/max: nodes {}, edges {}, ports {}, bodies {}",
-                    bucket.nodes, bucket.edges, bucket.ports, bucket.bodies
+                    "    visited p50/p95/max: nodes {}, edges {}, ports {}, diagnostics {}, bodies {}",
+                    bucket.nodes, bucket.edges, bucket.ports, bucket.diagnostics, bucket.bodies
                 );
                 for (cause, count) in &bucket.full {
                     println!("    full analysis, {cause}: {count}");
