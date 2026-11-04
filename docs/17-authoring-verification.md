@@ -210,6 +210,18 @@ The seeded edits were scoped in all five shapes, with at most seven nodes re-res
 
 Zone edits (2026-11-03): every W9 graph now also holds fifty Repeat zones of four body adds (10,314 to 11,314 nodes, 18,454 to 20,454 edges), and a third seed adds body literals, body edge toggles, body node adds and removals, capture toggles and capture retargets. Before re-checking reached zones ([16 §3](16-incremental-validation.md)), on the clustered graph every structure kind ran the full analysis: p95 249 to 371 ms, p99 623 to 726 ms; body literals were already scoped (p95 0.489 ms). After, on all five graphs every zone kind is scoped: p95 at most 0.931 ms (body node add) and at most 0.30 ms for the others, p99 at most 1.34 ms. The before run of the other four graphs was not completed.
 
+Cycle edits (2026-11-04, development machine, not the R machine): closing a data cycle in a cluster and opening it again used to run the full analysis. The root body's data order now holds the edges a cycle runs through, and the session recomputes only the cycles among the nodes between them ([16 §3](16-incremental-validation.md)). Both runs used `cargo run --release -p orange-measure -- w9` on the same source but for this change, in one session per graph. p95 / p99 in milliseconds, before → after; with 20 edits of each kind, both are its slowest edit:
+
+| Shape (nodes / edges) | Cycle close | Cycle open |
+|---|---:|---:|
+| clustered (10,314 / 18,454) | 285.9 / 285.9 → 0.264 / 0.264 | 271.8 / 271.8 → 0.270 / 0.270 |
+| connected (10,314 / 18,454) | 1,785.6 / 1,785.6 → 0.234 / 0.234 | 1,901.0 / 1,901.0 → 0.224 / 0.224 |
+| clustered 20k (11,314 / 20,454) | 337.4 / 337.4 → 0.360 / 0.360 | 295.9 / 295.9 → 0.292 / 0.292 |
+| connected 20k (11,314 / 20,454) | 2,083.4 / 2,083.4 → 0.284 / 0.284 | 2,054.9 / 2,054.9 → 0.216 / 0.216 |
+| shared Get 20k (10,324 / 20,454) | 337.0 / 337.0 → 0.261 / 0.261 | 311.9 / 311.9 → 0.329 / 0.329 |
+
+Every cycle edit is now scoped, re-resolving at most 14 nodes, so no W9 edit of any kind runs the full analysis. No other kind's p95 rose; with no full analysis between edits, the seeded edits' p99 fell from 0.82–3.07 ms to 0.24–0.30 ms and every kind but exec edges (p95 0.91–1.05 ms, p99 at most 1.30 ms) stays under 0.8 ms p95. A cycle in a document with exports, in a function body or in an incomplete report still runs the full analysis.
+
 **Qualification and remaining product gates**
 
 Host example and importer behavior are qualified by focused regressions, the combined debug/release workspace suites, warnings-denied Clippy/Rustdoc, dependency policy and exact-head platform/MSRV/security CI. Authoring newest-publication/cancellation scenarios also have small ordinary unit tests, so CI does not rely on executing a heavy performance profile. Exact final counts and source/CI identities are recorded in the correction PRs and 10.

@@ -297,6 +297,18 @@ impl ValidationAnalysis {
             None => self.report.functions.remove(&function),
         };
     }
+    /// Replaces the data-cycle witnesses not kept by `keep` with `paths`, after a scoped
+    /// structure edit recomputed one body's cycles.
+    pub(super) fn replace_cycle_paths(
+        &mut self,
+        keep: impl Fn(&[PortRef]) -> bool,
+        paths: Vec<Vec<PortRef>>,
+    ) {
+        let all = &mut self.report.data_cycle_paths;
+        all.retain(|path| keep(path));
+        all.extend(paths);
+        super::data_cycles::sort_cycle_paths(all);
+    }
     /// The resolved signatures, for a scoped session update that adds or removes nodes.
     pub(super) fn resolved_mut(
         &mut self,
@@ -659,6 +671,19 @@ fn run_supported_analysis(
                 .node
                 .is_none_or(|node| !explained_nodes.contains(&node))
     };
+    // The root body's data cycles, which root structure edits recompute (V12d).
+    let root_cycles: Vec<Diagnostic> = data_cycles
+        .diagnostics
+        .iter()
+        .filter(|item| {
+            item.code == DiagnosticCode::CycleData
+                && item
+                    .subject
+                    .node
+                    .is_some_and(|node| document.locate_node(node) == Some(crate::BodyRef::Root))
+        })
+        .cloned()
+        .collect();
     diagnostics.extend(data_cycles.diagnostics.into_iter().filter(unexplained));
     flow.extend(
         regions
@@ -696,6 +721,7 @@ fn run_supported_analysis(
                 zone_bodies: BTreeMap::new(),
                 quiet: false,
                 orders: BTreeMap::new(),
+                cycles: root_cycles,
                 args,
                 bounded,
                 free,
@@ -742,12 +768,14 @@ fn run_supported_analysis(
             .all(|signature| signature.suspension() == Some(Suspends::Never));
         // The root body's data order, which scoped structure edits there keep, built here
         // rather than by the first of them; function bodies build theirs when first edited.
+        // A complete report's root order holds the edges its cycles run through.
         if retained.clean || retained.isolable {
             let order = super::order::TopoOrder::build(
                 document,
                 &ports,
                 crate::BodyRef::Root,
                 &regions.index.zones,
+                retained.complete,
             );
             retained.orders.insert(crate::BodyRef::Root, order);
         }
