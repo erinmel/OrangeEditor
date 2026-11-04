@@ -507,11 +507,165 @@ fn rollback_restores_the_prior_generation() {
     assert_eq!(codes(&document(), &restored), vec![]);
 
     assert!(Arc::ptr_eq(&store.rollback().unwrap(), &base));
-    assert!(store.package(&pkg("1.0.0")).is_none());
+    assert_eq!(
+        store.package(&pkg("1.0.0")).unwrap().state(),
+        PackageState::Removed
+    );
     assert_eq!(
         store.rollback().unwrap_err(),
         TransactionError::NothingToRollBack
     );
+    assert_eq!(
+        Recovery::from_entries(store.journal().entries()).committed,
+        Some(vec![])
+    );
+}
+
+#[test]
+fn rollback_keeps_version_identity_and_reconciles_quarantine() {
+    let mut store = store();
+    store.install(contents("1.0.0", HEX_1)).unwrap();
+    store.rollback().unwrap();
+    assert_eq!(
+        store.published_digest(&pkg("1.0.0")),
+        Some(&*format!("sha256:{HEX_1}"))
+    );
+    assert_eq!(
+        store.install(contents("1.0.0", HEX_2)).unwrap_err(),
+        TransactionError::DigestConflict(pkg("1.0.0"))
+    );
+    store.install(contents("1.0.0", HEX_1)).unwrap();
+
+    // A failed reinstall over a tombstone is quarantined; rolling back the removal makes
+    // the version active again and drops the stale quarantine entry.
+    store.remove(&pkg("1.0.0")).unwrap();
+    let mut incompatible = manifest_json("1.0.0", HEX_1);
+    incompatible["host_api"] = json!({"major": 2, "min_minor": 0, "max_minor": 0});
+    let attempt = PackageContents::new(parse(&incompatible).unwrap(), vec![definition(NODE)]);
+    assert!(store.install(attempt).is_err());
+    assert!(store.quarantined(&pkg("1.0.0")).is_some());
+    store.rollback().unwrap();
+    assert_eq!(
+        store.package(&pkg("1.0.0")).unwrap().state(),
+        PackageState::Active
+    );
+    assert_eq!(store.quarantined(&pkg("1.0.0")), None);
+}
+
+#[test]
+fn recovery_reports_a_clean_rollback_as_removed_not_abandoned() {
+    let mut store = store();
+    store.install(contents("1.0.0", HEX_1)).unwrap();
+    store.install(contents("2.0.0", HEX_2)).unwrap();
+    store.rollback().unwrap();
+
+    let recovery = Recovery::from_entries(store.journal().entries());
+    assert_eq!(recovery.committed, Some(vec![pkg("1.0.0")]));
+    assert_eq!(recovery.abandoned, vec![]);
+    assert_eq!(recovery.removed, vec![pkg("2.0.0")]);
+    assert_eq!(
+        store.journal().entries().last(),
+        Some(&JournalEntry::Committed {
+            generation: store.current().generation(),
+            active: vec![pkg("1.0.0")],
+            published: [
+                (pkg("1.0.0"), format!("sha256:{HEX_1}")),
+                (pkg("2.0.0"), format!("sha256:{HEX_2}")),
+            ]
+            .into(),
+            revoked: Default::default(),
+        })
+    );
+}
+
+/// A package with no nodes, used beside the main one.
+fn other(digest: &str) -> PackageContents {
+    let manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": "org.example.other", "version": "1.0.0", "publisher": "org.example",
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+        "integrity": {"algorithm": "sha256", "payload_digest": digest}
+    });
+    PackageContents::new(parse(&manifest).unwrap(), vec![])
+}
+
+#[test]
+fn restart_restores_active_removed_and_revoked_versions() {
+    const HEX_3: &str = "3333333333333333333333333333333333333333333333333333333333333333";
+    let mut store = store();
+    store.install(contents("1.0.0", HEX_1)).unwrap();
+    store
+        .update(&pkg("1.0.0"), contents("2.0.0", HEX_2))
+        .unwrap();
+    store.remove(&pkg("1.0.0")).unwrap();
+    store.install(other(HEX_3)).unwrap();
+    let other_key = other(HEX_3).manifest().key().clone();
+    store.revoke(&other_key).unwrap();
+
+    let recovery = Recovery::from_entries(store.journal().entries());
+    assert_eq!(recovery.committed, Some(vec![pkg("2.0.0")]));
+    assert_eq!(recovery.removed, vec![pkg("1.0.0")]);
+    assert_eq!(recovery.revoked, [format!("sha256:{HEX_3}")].into());
+
+    let restart = |contents| {
+        PackageStore::restore(
+            RegistrySnapshot::core(origin()),
+            HOST,
+            MemoryJournal::new(),
+            &recovery,
+            contents,
+        )
+    };
+    assert_eq!(
+        restart(vec![]).unwrap_err(),
+        TransactionError::RecoveryMismatch(pkg("2.0.0"))
+    );
+    assert_eq!(
+        restart(vec![contents("1.0.0", HEX_1)]).unwrap_err(),
+        TransactionError::RecoveryMismatch(pkg("1.0.0"))
+    );
+    let mut restored = restart(vec![contents("2.0.0", HEX_2)]).unwrap();
+    assert!(
+        restored
+            .current()
+            .provides(&dref(NODE), 1, &provider("2.0.0", HEX_2))
+    );
+    assert!(
+        restored
+            .current()
+            .provider(&provider("1.0.0", HEX_1))
+            .is_none()
+    );
+    assert!(!restored.can_roll_back());
+    assert_eq!(
+        codes(&document(), restored.current()),
+        vec![DiagnosticCode::ProviderUnavailable]
+    );
+    assert_eq!(
+        restored.install(contents("1.0.0", HEX_2)).unwrap_err(),
+        TransactionError::DigestConflict(pkg("1.0.0"))
+    );
+    assert_eq!(
+        restored.install(other(HEX_3)).unwrap_err(),
+        TransactionError::Revoked(other_key)
+    );
+    restored.install(contents("1.0.0", HEX_1)).unwrap();
+}
+
+#[test]
+fn revoking_a_digest_deactivates_every_version_published_with_it() {
+    let mut store = store();
+    store.install(contents("1.0.0", HEX_1)).unwrap();
+    store.install(contents("1.0.1", HEX_1)).unwrap();
+    let revoked = store.revoke(&pkg("1.0.0")).unwrap();
+    for version in ["1.0.0", "1.0.1"] {
+        assert_eq!(
+            store.package(&pkg(version)).unwrap().state(),
+            PackageState::Revoked
+        );
+        assert!(revoked.provider(&provider(version, HEX_1)).is_none());
+    }
+    assert!(store.is_revoked(&format!("sha256:{HEX_1}")));
     assert_eq!(
         Recovery::from_entries(store.journal().entries()).committed,
         Some(vec![])

@@ -5,7 +5,9 @@
 /// An installation attempt advances Discovered → Staged → Validated → Granted → Activating →
 /// Active; any pre-active step may fail to Quarantined, which is terminal for that attempt.
 /// An active version is Removed (a tombstone) or Revoked; a removed version may also be
-/// revoked. Reinstalling a removed version starts a new attempt at Discovered.
+/// revoked. Reinstalling a removed version starts a new attempt at Discovered. A rollback is
+/// not a lifecycle step: it may return a removed version to Active, or leave a version whose
+/// installation it undoes as a Removed tombstone.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum PackageState {
     /// The manifest was read; nothing is checked yet.

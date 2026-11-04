@@ -12,7 +12,7 @@ use orange_model::document::DefinitionRef;
 use orange_model::id::DefinitionId;
 use thiserror::Error;
 
-use crate::journal::{Journal, JournalEntry, JournalError, MemoryJournal};
+use crate::journal::{Journal, JournalEntry, JournalError, MemoryJournal, Recovery};
 use crate::lifecycle::PackageState;
 use crate::manifest::{
     HostApiRange, HostApiVersion, PackageKey, PackageManifest, ProviderSlot, SlotKind,
@@ -153,6 +153,10 @@ pub enum TransactionError {
     /// No earlier generation is available to restore.
     #[error("no earlier registry generation to roll back to")]
     NothingToRollBack,
+    /// Restored contents do not match the recovered committed set: a version is missing,
+    /// not committed active, or has another digest.
+    #[error("restored package `{0}` does not match the last committed generation")]
+    RecoveryMismatch(PackageKey),
     /// Registry publication rejected the next generation.
     #[error(transparent)]
     Registry(#[from] RegistryError),
@@ -191,8 +195,11 @@ pub struct PackageStore<J = MemoryJournal> {
     current: Committed,
     /// Earlier committed states, oldest first; [`rollback`](Self::rollback) restores the last.
     history: Vec<Committed>,
-    /// The last failed attempt per version.
+    /// The last failed attempt per version; never kept for a version that is active.
     quarantined: BTreeMap<PackageKey, TransactionError>,
+    /// The content digest of every version ever published. Rollback never removes an entry:
+    /// a version names one immutable build for good.
+    published: BTreeMap<PackageKey, String>,
     /// Revoked content digests, which no transaction or rollback can reinstate.
     revoked: BTreeSet<String>,
     journal: J,
@@ -209,9 +216,70 @@ impl<J: Journal> PackageStore<J> {
             },
             history: Vec::new(),
             quarantined: BTreeMap::new(),
+            published: BTreeMap::new(),
             revoked: BTreeSet::new(),
             journal,
         }
+    }
+
+    /// Rebuilds a store after a restart from `recovery` and the staged contents of exactly
+    /// the versions its last commit made active. Published digests and revocations are
+    /// restored, so removed versions keep their identity and revoked digests stay blocked;
+    /// removed versions have no record, since their manifests are not reloaded. Active
+    /// versions are reinstalled in dependency order and journaled to `journal`. The rebuilt
+    /// store has no rollback history.
+    pub fn restore(
+        base: Arc<RegistrySnapshot>,
+        host_api: HostApiVersion,
+        journal: J,
+        recovery: &Recovery,
+        contents: Vec<PackageContents>,
+    ) -> Result<Self, TransactionError> {
+        let mut store = Self::new(base, host_api, journal);
+        store.published = recovery.published.clone();
+        store.revoked = recovery.revoked.clone();
+        let active = recovery.committed.as_deref().unwrap_or_default();
+        let mut pending = Vec::with_capacity(contents.len());
+        for item in contents {
+            let key = item.manifest.key();
+            let expected = store.published.get(key).map(String::as_str);
+            if !active.contains(key) || expected != Some(item.manifest.content_digest()) {
+                return Err(TransactionError::RecoveryMismatch(key.clone()));
+            }
+            pending.push(item);
+        }
+        if let Some(missing) = active
+            .iter()
+            .find(|key| !pending.iter().any(|item| item.manifest.key() == *key))
+        {
+            return Err(TransactionError::RecoveryMismatch(missing.clone()));
+        }
+        while !pending.is_empty() {
+            let ready = pending.iter().position(|item| {
+                item.manifest.dependencies().iter().all(|dependency| {
+                    store
+                        .current
+                        .packages
+                        .keys()
+                        .any(|key| key.id == dependency.id && key.version == dependency.version)
+                })
+            });
+            // With no installable version left, install the first to report its error.
+            let item = pending.remove(ready.unwrap_or(0));
+            store.install(item)?;
+        }
+        store.history.clear();
+        Ok(store)
+    }
+
+    /// The content digest a version was published with, including removed versions.
+    pub fn published_digest(&self, key: &PackageKey) -> Option<&str> {
+        self.published.get(key).map(String::as_str)
+    }
+
+    /// Whether `content_digest` was revoked.
+    pub fn is_revoked(&self, content_digest: &str) -> bool {
+        self.revoked.contains(content_digest)
     }
 
     /// The current registry generation.
@@ -286,7 +354,7 @@ impl<J: Journal> PackageStore<J> {
             .new_binding_default(definition, provider)
             .build()?;
         let packages = self.current.packages.clone();
-        self.commit(snapshot, packages)
+        self.commit(snapshot, packages, None)
     }
 
     /// Hides an active version: its providers leave the next generation and any default
@@ -308,49 +376,104 @@ impl<J: Journal> PackageStore<J> {
                 dependent: dependent.manifest.key().clone(),
             });
         }
-        self.retire(key, PackageState::Removed)
+        self.retire(std::slice::from_ref(key), PackageState::Removed, None)
     }
 
-    /// Revokes an active or removed version: it leaves the registry like a removal, its
-    /// digest can no longer be installed, and earlier generations are discarded so rollback
-    /// cannot reinstate it. Dependents are not protected; revocation is policy.
+    /// Revokes the content digest of a published version. Revocation is immediate policy
+    /// enforcement on the bytes (04), so every active or removed version published with that
+    /// digest leaves the registry and becomes Revoked, the digest can no longer be installed,
+    /// and earlier generations are discarded so rollback cannot reinstate it. Dependents are
+    /// not protected. A version known only from [`restore`](Self::restore) is revoked by
+    /// digest without a record.
     pub fn revoke(&mut self, key: &PackageKey) -> Result<Arc<RegistrySnapshot>, TransactionError> {
-        let record = self
-            .current
-            .packages
+        let digest = self
+            .published
             .get(key)
+            .cloned()
             .ok_or_else(|| TransactionError::NotInstalled(key.clone()))?;
-        if !record.state.can_become(PackageState::Revoked) {
+        if let Some(record) = self.current.packages.get(key)
+            && !record.state.can_become(PackageState::Revoked)
+        {
             return Err(TransactionError::WrongState {
                 key: key.clone(),
                 state: record.state,
             });
         }
-        let digest = record.manifest.content_digest().to_owned();
-        let snapshot = self.retire(key, PackageState::Revoked)?;
-        self.revoked.insert(digest);
+        let targets: Vec<PackageKey> = self
+            .current
+            .packages
+            .iter()
+            .filter(|(_, record)| {
+                record.manifest.content_digest() == digest
+                    && record.state.can_become(PackageState::Revoked)
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+        let snapshot = self.retire(&targets, PackageState::Revoked, Some(&digest))?;
         self.history.clear();
         Ok(snapshot)
     }
 
-    /// Restores the previous generation, with its default selections and package records.
-    /// The restored snapshot is the same `Arc` that was current before; plans built against
-    /// the abandoned generation see a different generation and are stale. Already committed
-    /// external effects are not undone.
+    /// Restores the previous generation and its default selections. The restored snapshot
+    /// is the same `Arc` that was current before; plans built against the abandoned
+    /// generation see a different generation and are stale. Version identity is not rolled
+    /// back: a version the restored generation lacks stays recorded as a Removed tombstone
+    /// with its digest, and a quarantine entry is dropped for any version made active again.
+    /// Already committed external effects are not undone.
     pub fn rollback(&mut self) -> Result<Arc<RegistrySnapshot>, TransactionError> {
-        let previous = self
+        let mut previous = self
             .history
             .pop()
             .ok_or(TransactionError::NothingToRollBack)?;
-        let entry = JournalEntry::Committed {
-            generation: previous.snapshot.generation(),
-            active: previous.active(),
-        };
-        if let Err(error) = self.journal.append(entry) {
+        let generation = previous.snapshot.generation();
+        let mut retired = Vec::new();
+        let mut kept = Vec::new();
+        for (key, record) in &self.current.packages {
+            if previous.packages.contains_key(key) {
+                continue;
+            }
+            kept.push(key.clone());
+            let tombstone = if record.state.is_active() {
+                retired.push(key.clone());
+                PackageRecord {
+                    state: PackageState::Removed,
+                    generation,
+                    ..record.clone()
+                }
+            } else {
+                record.clone()
+            };
+            previous.packages.insert(key.clone(), tombstone);
+        }
+        let reactivated: Vec<PackageKey> = previous
+            .packages
+            .iter()
+            .filter(|(key, record)| {
+                record.state.is_active()
+                    && self
+                        .current
+                        .packages
+                        .get(*key)
+                        .is_some_and(|current| !current.state.is_active())
+            })
+            .map(|(key, _)| key.clone())
+            .collect();
+
+        let journaled = retired
+            .iter()
+            .try_for_each(|key| self.transition(key, PackageState::Removed))
+            .and_then(|()| self.journal_commit(&previous, None));
+        if let Err(error) = journaled {
+            previous.packages.retain(|key, _| !kept.contains(key));
             self.history.push(previous);
             return Err(error.into());
         }
         self.current = previous;
+        for key in &reactivated {
+            self.quarantined.remove(key);
+            // The commit is durable; a lost activation record cannot undo it.
+            let _ = self.transition(key, PackageState::Active);
+        }
         Ok(Arc::clone(&self.current.snapshot))
     }
 
@@ -381,17 +504,42 @@ impl<J: Journal> PackageStore<J> {
         })
     }
 
+    /// Journals `next` as committed: its active set plus the store's identity state, with
+    /// `next`'s versions published and `revoke` added to the revoked digests. On success the
+    /// store adopts that identity state.
+    fn journal_commit(
+        &mut self,
+        next: &Committed,
+        revoke: Option<&str>,
+    ) -> Result<(), JournalError> {
+        let mut published = self.published.clone();
+        for (key, record) in &next.packages {
+            published
+                .entry(key.clone())
+                .or_insert_with(|| record.manifest.content_digest().to_owned());
+        }
+        let mut revoked = self.revoked.clone();
+        revoked.extend(revoke.map(str::to_owned));
+        self.journal.append(JournalEntry::Committed {
+            generation: next.snapshot.generation(),
+            active: next.active(),
+            published: published.clone(),
+            revoked: revoked.clone(),
+        })?;
+        self.published = published;
+        self.revoked = revoked;
+        Ok(())
+    }
+
     /// Journals `packages` as committed with `snapshot`, then makes them current.
     fn commit(
         &mut self,
         snapshot: Arc<RegistrySnapshot>,
         packages: BTreeMap<PackageKey, PackageRecord>,
+        revoke: Option<&str>,
     ) -> Result<Arc<RegistrySnapshot>, TransactionError> {
         let next = Committed { snapshot, packages };
-        self.journal.append(JournalEntry::Committed {
-            generation: next.snapshot.generation(),
-            active: next.active(),
-        })?;
+        self.journal_commit(&next, revoke)?;
         let previous = std::mem::replace(&mut self.current, next);
         self.history.push(previous);
         Ok(Arc::clone(&self.current.snapshot))
@@ -480,7 +628,11 @@ impl<J: Journal> PackageStore<J> {
                 providers,
             },
         );
-        self.commit(snapshot, packages)
+        let snapshot = self.commit(snapshot, packages, None)?;
+        // The commit is durable and names the version active; a lost activation record
+        // cannot undo it, and recovery reads the commit first.
+        let _ = self.transition(key, PackageState::Active);
+        Ok(snapshot)
     }
 
     /// Contribution validation before any registry work: digest identity, host API,
@@ -494,8 +646,10 @@ impl<J: Journal> PackageStore<J> {
         if self.revoked.contains(manifest.content_digest()) {
             return Err(TransactionError::Revoked(key.clone()));
         }
-        if let Some(record) = self.current.packages.get(key)
-            && record.manifest.content_digest() != manifest.content_digest()
+        if self
+            .published
+            .get(key)
+            .is_some_and(|digest| digest != manifest.content_digest())
         {
             return Err(TransactionError::DigestConflict(key.clone()));
         }
@@ -583,38 +737,54 @@ impl<J: Journal> PackageStore<J> {
         })
     }
 
-    /// Takes `key` out of the next generation and records it in `state` (Removed or Revoked).
+    /// Takes `keys` out of the next generation and records them in `state` (Removed or
+    /// Revoked), adding `revoke` to the revoked digests.
     fn retire(
         &mut self,
-        key: &PackageKey,
+        keys: &[PackageKey],
         state: PackageState,
+        revoke: Option<&str>,
     ) -> Result<Arc<RegistrySnapshot>, TransactionError> {
-        let record = self
-            .current
-            .packages
-            .get(key)
-            .ok_or_else(|| TransactionError::NotInstalled(key.clone()))?
-            .clone();
-        let snapshot = if record.state.is_active() {
-            let builder = record.providers.iter().cloned().fold(
-                RegistryBuilder::from_snapshot(&self.current.snapshot),
-                |builder, provider| builder.remove_provider(provider),
-            );
-            builder.build()?
+        let mut records = Vec::with_capacity(keys.len());
+        for key in keys {
+            let record = self
+                .current
+                .packages
+                .get(key)
+                .ok_or_else(|| TransactionError::NotInstalled(key.clone()))?;
+            records.push((key, record.clone()));
+        }
+        let providers: Vec<ProviderKey> = records
+            .iter()
+            .filter(|(_, record)| record.state.is_active())
+            .flat_map(|(_, record)| record.providers.iter().cloned())
+            .collect();
+        let snapshot = if records.iter().any(|(_, record)| record.state.is_active()) {
+            providers
+                .into_iter()
+                .fold(
+                    RegistryBuilder::from_snapshot(&self.current.snapshot),
+                    RegistryBuilder::remove_provider,
+                )
+                .build()?
         } else {
             Arc::clone(&self.current.snapshot)
         };
-        self.transition(key, state)?;
+        for key in keys {
+            self.transition(key, state)?;
+        }
         let mut packages = self.current.packages.clone();
-        packages.insert(
-            key.clone(),
-            PackageRecord {
-                state,
-                generation: snapshot.generation(),
-                ..record
-            },
-        );
-        self.commit(snapshot, packages)
+        for (key, record) in records {
+            packages.insert(
+                key.clone(),
+                PackageRecord {
+                    state,
+                    generation: snapshot.generation(),
+                    ..record
+                },
+            );
+        }
+        self.commit(snapshot, packages, revoke)
     }
 }
 

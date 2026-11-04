@@ -1,8 +1,9 @@
 //! The crash-journal seam (04 "Hot update/removal"): the store writes each lifecycle step and
 //! each committed generation before publishing it, so a restart can select the last fully
-//! committed package set and report half-staged versions without executing them.
+//! committed package set, keep removals and revocations, and report half-staged versions
+//! without executing them.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use thiserror::Error;
 
@@ -12,20 +13,27 @@ use crate::manifest::PackageKey;
 /// One journal record.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum JournalEntry {
-    /// A package version entered `state`.
+    /// A package version entered `state`. Retirements are written before the commit that
+    /// publishes them, activations after it.
     Transition {
         /// The package version.
         package: PackageKey,
         /// The state it entered.
         state: PackageState,
     },
-    /// A registry generation became current with exactly these active package versions.
-    /// Written before the generation is published; a failed write publishes nothing.
+    /// A registry generation became current. Each commit is a full checkpoint of the
+    /// store's durable identity state. Written before the generation is published; a failed
+    /// write publishes nothing.
     Committed {
         /// The process-local registry generation that became current.
         generation: u64,
         /// Every active package version in that generation, sorted.
         active: Vec<PackageKey>,
+        /// Every version ever published, with its content digest. Rollback never shrinks
+        /// it, so a version keeps its digest for good.
+        published: BTreeMap<PackageKey, String>,
+        /// Every revoked content digest.
+        revoked: BTreeSet<String>,
     },
 }
 
@@ -70,12 +78,19 @@ impl Journal for MemoryJournal {
     }
 }
 
-/// What a restart learns from a journal.
+/// What a restart learns from a journal; [`PackageStore::restore`](crate::PackageStore::restore)
+/// rebuilds a store from it.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Recovery {
     /// Active package versions of the last committed generation, or `None` if nothing was
     /// ever committed.
     pub committed: Option<Vec<PackageKey>>,
+    /// Every version ever published, with its content digest.
+    pub published: BTreeMap<PackageKey, String>,
+    /// Published versions that are neither active nor revoked: their tombstones.
+    pub removed: Vec<PackageKey>,
+    /// Revoked content digests.
+    pub revoked: BTreeSet<String>,
     /// Versions whose last step is an unfinished installation step and that the last commit
     /// does not include: their staged files are stale and must never be executed.
     pub abandoned: Vec<PackageKey>,
@@ -84,25 +99,46 @@ pub struct Recovery {
 impl Recovery {
     /// Replays `entries`, oldest first.
     pub fn from_entries(entries: &[JournalEntry]) -> Self {
-        let mut committed: Option<&[PackageKey]> = None;
+        let mut checkpoint = None;
         let mut last: BTreeMap<&PackageKey, PackageState> = BTreeMap::new();
         for entry in entries {
             match entry {
                 JournalEntry::Transition { package, state } => {
                     last.insert(package, *state);
                 }
-                JournalEntry::Committed { active, .. } => committed = Some(active),
+                JournalEntry::Committed {
+                    active,
+                    published,
+                    revoked,
+                    ..
+                } => checkpoint = Some((active, published, revoked)),
             }
         }
+        let Some((active, published, revoked)) = checkpoint else {
+            return Self {
+                abandoned: last
+                    .into_iter()
+                    .filter(|(_, state)| state.is_pending())
+                    .map(|(package, _)| package.clone())
+                    .collect(),
+                ..Self::default()
+            };
+        };
         let abandoned = last
             .into_iter()
-            .filter(|(package, state)| {
-                state.is_pending() && !committed.is_some_and(|active| active.contains(package))
-            })
+            .filter(|(package, state)| state.is_pending() && !active.contains(package))
             .map(|(package, _)| package.clone())
             .collect();
+        let removed = published
+            .iter()
+            .filter(|(key, digest)| !active.contains(key) && !revoked.contains(*digest))
+            .map(|(key, _)| key.clone())
+            .collect();
         Self {
-            committed: committed.map(<[PackageKey]>::to_vec),
+            committed: Some(active.clone()),
+            published: published.clone(),
+            removed,
+            revoked: revoked.clone(),
             abandoned,
         }
     }
