@@ -219,6 +219,19 @@ pub enum RegistryError {
         provider: Box<ProviderKey>,
         definition: DefinitionRef,
     },
+    /// A removal or replacement names a provider the builder does not have.
+    #[error("unknown provider `{}/{}`", .0.package, .0.id)]
+    UnknownProvider(Box<ProviderKey>),
+    /// One package version is published with two content digests.
+    #[error("package `{package}@{version}` is published with conflicting content digests")]
+    PackageDigestConflict { package: String, version: String },
+    /// A new-binding default names a provider that does not implement the definition's
+    /// registered config version.
+    #[error("default provider `{}/{}` does not implement `{}@{}`", .provider.package, .provider.id, .definition.id, .definition.version)]
+    DefaultNotProvided {
+        definition: DefinitionRef,
+        provider: Box<ProviderKey>,
+    },
 }
 
 /// Collects host metadata, then freezes it into a [`RegistrySnapshot`].
@@ -228,8 +241,11 @@ pub struct RegistryBuilder {
     types: Arc<TypeRegistry>,
     converters: Arc<ConverterRegistry>,
     /// Definitions with their intrinsic flag, in registration order.
-    definitions: Vec<(NodeDefinition, bool)>,
+    definitions: Vec<(Arc<NodeDefinition>, bool)>,
     providers: Vec<ProviderDescriptor>,
+    /// Providers dropped at [`build`](Self::build); each must be present.
+    removed: Vec<ProviderKey>,
+    new_binding_defaults: BTreeMap<DefinitionRef, ProviderKey>,
 }
 
 impl RegistryBuilder {
@@ -249,10 +265,32 @@ impl RegistryBuilder {
             converters,
             definitions: Vec::new(),
             providers: Vec::new(),
+            removed: Vec::new(),
+            new_binding_defaults: BTreeMap::new(),
         };
         intrinsic_definitions()
             .into_iter()
             .fold(builder, Self::intrinsic)
+    }
+
+    /// Starts the next generation from everything `snapshot` publishes: types, converters,
+    /// definitions, providers and new-binding defaults. `snapshot` stays unchanged and readable;
+    /// [`build`](Self::build) publishes a separate snapshot (04, 12 §8).
+    pub fn from_snapshot(snapshot: &RegistrySnapshot) -> Self {
+        Self {
+            origin: snapshot.origin.clone(),
+            types: Arc::clone(&snapshot.types),
+            converters: Arc::clone(&snapshot.converters),
+            definitions: snapshot
+                .definitions
+                .values()
+                .flat_map(BTreeMap::values)
+                .map(|registered| (Arc::clone(&registered.definition), registered.intrinsic))
+                .collect(),
+            providers: snapshot.providers.values().cloned().collect(),
+            removed: Vec::new(),
+            new_binding_defaults: snapshot.new_binding_defaults.clone(),
+        }
     }
 
     /// Replaces the type registry; converters restart empty over it.
@@ -271,21 +309,54 @@ impl RegistryBuilder {
 
     /// Registers a package definition.
     pub fn definition(mut self, definition: NodeDefinition) -> Self {
-        self.definitions.push((definition, false));
+        self.definitions.push((Arc::new(definition), false));
         self
     }
 
     /// Registers a host-owned intrinsic, which may use the `core` namespace and implicit ports.
     pub(crate) fn intrinsic(mut self, definition: NodeDefinition) -> Self {
-        self.definitions.push((definition, true));
+        self.definitions.push((Arc::new(definition), true));
         self
     }
 
+    /// Adds a provider; a key that is already registered is a
+    /// [`RegistryError::DuplicateProvider`].
     pub fn provider(mut self, provider: ProviderDescriptor) -> Self {
         self.providers.push(provider);
         self
     }
 
+    /// Removes a registered provider and any new-binding default that selects it. Document
+    /// locks and bindings naming it are untouched and resolve as unavailable.
+    pub fn remove_provider(mut self, key: ProviderKey) -> Self {
+        self.new_binding_defaults
+            .retain(|_, selected| *selected != key);
+        self.removed.push(key);
+        self
+    }
+
+    /// Replaces a registered provider, such as an older package version. New-binding defaults
+    /// that selected `old` select the replacement; existing bindings to `old` are untouched.
+    pub fn replace_provider(mut self, old: ProviderKey, provider: ProviderDescriptor) -> Self {
+        for selected in self.new_binding_defaults.values_mut() {
+            if *selected == old {
+                selected.clone_from(&provider.key);
+            }
+        }
+        self.removed.push(old);
+        self.providers.push(provider);
+        self
+    }
+
+    /// Selects the provider of `definition` for new bindings only (12 §8). It is never
+    /// applied to an existing document lock or binding.
+    pub fn new_binding_default(mut self, definition: DefinitionRef, provider: ProviderKey) -> Self {
+        self.new_binding_defaults.insert(definition, provider);
+        self
+    }
+
+    /// Validates and publishes an immutable snapshot whose generation is larger than that of
+    /// every snapshot built before it in this process.
     pub fn build(self) -> Result<Arc<RegistrySnapshot>, RegistryError> {
         let mut definitions: BTreeMap<DefinitionId, BTreeMap<u32, Registered>> = BTreeMap::new();
         for (definition, intrinsic) in self.definitions {
@@ -297,12 +368,25 @@ impl RegistryBuilder {
                 .entry(definition.definition.id.clone())
                 .or_default();
             if versions.contains_key(&definition.definition.version) {
-                return Err(RegistryError::DuplicateDefinition(definition.definition));
+                return Err(RegistryError::DuplicateDefinition(
+                    definition.definition.clone(),
+                ));
             }
-            versions.insert(definition.definition.version, Registered::new(definition));
+            versions.insert(
+                definition.definition.version,
+                Registered::new(definition, intrinsic),
+            );
         }
+        let mut registered = self.providers;
+        for key in self.removed {
+            let Some(at) = registered.iter().position(|provider| provider.key == key) else {
+                return Err(RegistryError::UnknownProvider(Box::new(key)));
+            };
+            registered.remove(at);
+        }
+        check_package_digests(&registered)?;
         let mut providers = BTreeMap::new();
-        for provider in self.providers {
+        for provider in registered {
             let named = provider
                 .implements
                 .iter()
@@ -324,6 +408,23 @@ impl RegistryBuilder {
             }
             providers.insert(provider.key.clone(), provider);
         }
+        for (definition, key) in &self.new_binding_defaults {
+            let implemented = definitions
+                .get(&definition.id)
+                .and_then(|versions| versions.get(&definition.version))
+                .zip(providers.get(key))
+                .is_some_and(|(registered, provider)| {
+                    provider
+                        .implements
+                        .contains(&(definition.clone(), registered.definition.config_version))
+                });
+            if !implemented {
+                return Err(RegistryError::DefaultNotProvided {
+                    definition: definition.clone(),
+                    provider: Box::new(key.clone()),
+                });
+            }
+        }
         Ok(Arc::new(RegistrySnapshot {
             generation: crate::id::process_unique(),
             origin: self.origin,
@@ -331,8 +432,26 @@ impl RegistryBuilder {
             converters: self.converters,
             definitions,
             providers,
+            new_binding_defaults: self.new_binding_defaults,
         }))
     }
+}
+
+/// A package version is immutable: every provider of it carries the same content digest.
+fn check_package_digests(providers: &[ProviderDescriptor]) -> Result<(), RegistryError> {
+    let mut digests: BTreeMap<(&str, &str), &str> = BTreeMap::new();
+    for ProviderDescriptor { key, .. } in providers {
+        let digest = *digests
+            .entry((&key.package, &key.version))
+            .or_insert(&key.content_digest);
+        if digest != key.content_digest {
+            return Err(RegistryError::PackageDigestConflict {
+                package: key.package.clone(),
+                version: key.version.clone(),
+            });
+        }
+    }
+    Ok(())
 }
 
 fn check_execution(definition: &NodeDefinition, intrinsic: bool) -> Result<(), RegistryError> {
@@ -770,17 +889,20 @@ pub struct RegistrySnapshot {
     /// By id, then version, so a lookup borrows the caller's id instead of cloning it.
     definitions: BTreeMap<DefinitionId, BTreeMap<u32, Registered>>,
     providers: BTreeMap<ProviderKey, ProviderDescriptor>,
+    new_binding_defaults: BTreeMap<DefinitionRef, ProviderKey>,
 }
 
 /// A registered definition and, for declared ports, its contract built once.
 #[derive(Debug)]
 struct Registered {
     definition: Arc<NodeDefinition>,
+    /// Registered through the host-only intrinsic path; carried into the next generation.
+    intrinsic: bool,
     declared: Option<NodeContract>,
 }
 
 impl Registered {
-    fn new(definition: NodeDefinition) -> Self {
+    fn new(definition: Arc<NodeDefinition>, intrinsic: bool) -> Self {
         let declared = match &definition.ports {
             Ports::Declared(ports) => Some(NodeContract {
                 kind: definition.kind,
@@ -791,7 +913,8 @@ impl Registered {
             Ports::Variable(_) | Ports::Event(_) | Ports::ForEach => None,
         };
         Self {
-            definition: Arc::new(definition),
+            definition,
+            intrinsic,
             declared,
         }
     }
@@ -810,9 +933,16 @@ impl RegistrySnapshot {
     }
 
     /// Process-unique identity of this snapshot. Plans record it, so one made against a
-    /// replaced snapshot is recognized as stale.
+    /// replaced snapshot is recognized as stale. A snapshot built from this one through
+    /// [`RegistryBuilder::from_snapshot`] has a larger generation.
     pub fn generation(&self) -> u64 {
         self.generation
+    }
+
+    /// The provider selected for new bindings of `definition`, if the host chose one.
+    /// Existing document bindings keep their locked provider whatever this returns.
+    pub fn new_binding_default(&self, definition: &DefinitionRef) -> Option<&ProviderKey> {
+        self.new_binding_defaults.get(definition)
     }
 
     pub fn origin(&self) -> &HostOrigin {
