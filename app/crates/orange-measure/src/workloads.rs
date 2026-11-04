@@ -1017,10 +1017,20 @@ pub enum W9Edit {
     CycleClose,
     /// Undoes the cycle-closing edit just before it.
     CycleOpen,
+    /// Adds an add that reads nothing and that nothing reads.
+    NodeAdd,
+    /// Adds an add reading a cluster's add, in one transaction.
+    NodeAddWired,
+    /// Removes one of the added adds, with its edge if it has one.
+    NodeRemove,
+    /// Removes a cluster's add, other than its last, with its edges.
+    ChainRemove,
+    /// Restores that add and its edges, as an undo would.
+    ChainRestore,
 }
 
 impl W9Edit {
-    pub const ALL: [Self; 8] = [
+    pub const ALL: [Self; 13] = [
         Self::Disconnect,
         Self::Connect,
         Self::Literal,
@@ -1029,6 +1039,11 @@ impl W9Edit {
         Self::FunctionLiteral,
         Self::CycleClose,
         Self::CycleOpen,
+        Self::NodeAdd,
+        Self::NodeAddWired,
+        Self::NodeRemove,
+        Self::ChainRemove,
+        Self::ChainRestore,
     ];
 
     pub fn name(self) -> &'static str {
@@ -1041,6 +1056,11 @@ impl W9Edit {
             Self::FunctionLiteral => "function-body literal",
             Self::CycleClose => "cycle close",
             Self::CycleOpen => "cycle open",
+            Self::NodeAdd => "node add",
+            Self::NodeAddWired => "node add with an edge",
+            Self::NodeRemove => "added node remove",
+            Self::ChainRemove => "chain node remove",
+            Self::ChainRestore => "chain node restore",
         }
     }
 }
@@ -1102,7 +1122,9 @@ pub struct W9Shape {
 /// of an add input (nearly always a disconnect). After them in turn, from a second seed: a
 /// function-body literal, a reconnection of a removed add input and an exec edge toggle,
 /// one each per four seeded edits; and after every 50th, closing a data cycle in a
-/// cluster and opening it again.
+/// cluster and opening it again. Per four seeded edits it also adds an add, alone or
+/// reading a cluster's add, removes one of the added adds, and removes a cluster's add
+/// with its edges and restores them.
 pub fn w9_session_edits(shape: W9Shape) -> W9 {
     use orange_model::DocCommand;
     use orange_model::document::{Edge, PortRef};
@@ -1204,6 +1226,8 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
     let mut wired = vec![true; edges.len()];
     let exec: Vec<Edge> = exec.into_iter().map(parse).collect();
     let mut exec_wired = vec![true; exec.len()];
+    // Adds the node edits added and have not removed yet.
+    let mut added: Vec<u32> = Vec::new();
     let random = |seed: &mut u64, bound: usize| {
         *seed = seed
             .wrapping_mul(6364136223846793005)
@@ -1226,15 +1250,16 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
     // Kind, latency, scoped, nodes re-resolved, and whether the edit is a seeded one.
     type Record = (W9Edit, Duration, bool, usize, bool);
     let mut records: Vec<Record> = Vec::new();
-    let mut timed = |commands: Vec<DocCommand>, kind: W9Edit, seeded: bool| {
-        let committed = document.apply(commands).expect("edit");
-        let start = Instant::now();
-        let stats = session.update(&document, &registry, &committed.change_set, options);
-        let elapsed = start.elapsed();
-        let scoped = stats.work == SessionWork::Scoped;
-        records.push((kind, elapsed, scoped, stats.input_nodes, seeded));
-        session.analysis().report().is_valid()
-    };
+    let mut timed =
+        |document: &mut GraphDocument, commands: Vec<DocCommand>, kind: W9Edit, seeded: bool| {
+            let committed = document.apply(commands).expect("edit");
+            let start = Instant::now();
+            let stats = session.update(document, &registry, &committed.change_set, options);
+            let elapsed = start.elapsed();
+            let scoped = stats.work == SessionWork::Scoped;
+            records.push((kind, elapsed, scoped, stats.input_nodes, seeded));
+            session.analysis().report().is_valid()
+        };
     for edit in 0..1000 {
         let add = add_of(next(CLUSTERS as usize) as u32, next(adds as usize) as u32);
         let (command, kind) = match next(4) {
@@ -1264,10 +1289,11 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
                 (DocCommand::SetTypeArgs { node, args }, W9Edit::TypeArgs)
             }
         };
-        assert!(timed(vec![command], kind, true));
+        assert!(timed(&mut document, vec![command], kind, true));
         if edit % 4 == 1 {
             let node = 60_000 + extra(FUNCTIONS as usize) as u32 * 20 + 2 + extra(8) as u32;
             assert!(timed(
+                &mut document,
                 vec![b_literal(node, extra(1000))],
                 W9Edit::FunctionLiteral,
                 false
@@ -1281,6 +1307,7 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
                 wired[at] = true;
                 let edge = edges[at].2.clone();
                 assert!(timed(
+                    &mut document,
                     vec![DocCommand::Connect { edge }],
                     W9Edit::Connect,
                     false
@@ -1297,7 +1324,75 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
             } else {
                 DocCommand::Disconnect { edge: exec[at].id }
             };
-            assert!(timed(vec![command], W9Edit::Exec, false));
+            assert!(timed(&mut document, vec![command], W9Edit::Exec, false));
+        }
+        if edit % 4 == 0 {
+            let node = 400_000 + edit;
+            let wired = extra(2) == 0;
+            let mut add = math(node, "add", 0, 1);
+            let mut commands = Vec::new();
+            if wired {
+                add["inputs"] = json!({"b": literal(1)});
+                let source = add_of(extra(CLUSTERS as usize) as u32, extra(adds as usize) as u32);
+                commands.push(DocCommand::Connect {
+                    edge: parse(edge(500_000 + edit, source, "sum", node, "a")),
+                });
+            }
+            let add = serde_json::from_value(add).expect("node");
+            commands.insert(
+                0,
+                DocCommand::AddNode {
+                    body: orange_model::BodyRef::Root,
+                    node: add,
+                },
+            );
+            let kind = if wired {
+                W9Edit::NodeAddWired
+            } else {
+                W9Edit::NodeAdd
+            };
+            assert!(timed(&mut document, commands, kind, false));
+            added.push(node);
+            // Remove a cluster's add with its edges, then restore them as an undo would.
+            let removed = node_id(add_of(
+                extra(CLUSTERS as usize) as u32,
+                extra(adds as usize - 1) as u32,
+            ));
+            let instance = document.root().nodes[&removed].clone();
+            let incident: Vec<Edge> = document
+                .root()
+                .edges
+                .values()
+                .filter(|edge| edge.from.node == removed || edge.to.node == removed)
+                .cloned()
+                .collect();
+            assert!(timed(
+                &mut document,
+                vec![DocCommand::RemoveNodes { ids: vec![removed] }],
+                W9Edit::ChainRemove,
+                false
+            ));
+            let mut restore = vec![DocCommand::AddNode {
+                body: orange_model::BodyRef::Root,
+                node: instance,
+            }];
+            restore.extend(
+                incident
+                    .into_iter()
+                    .map(|edge| DocCommand::Connect { edge }),
+            );
+            assert!(timed(&mut document, restore, W9Edit::ChainRestore, false));
+        }
+        if edit % 4 == 2 && !added.is_empty() {
+            let node = added.swap_remove(extra(added.len()));
+            assert!(timed(
+                &mut document,
+                vec![DocCommand::RemoveNodes {
+                    ids: vec![node_id(node)]
+                }],
+                W9Edit::NodeRemove,
+                false
+            ));
         }
         if edit % 50 == 49 {
             // Rewire a cluster's first add to read its last one, then undo it.
@@ -1328,8 +1423,8 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
                     edge: edges[at].2.clone(),
                 });
             }
-            assert!(!timed(close, W9Edit::CycleClose, false));
-            assert!(timed(open, W9Edit::CycleOpen, false));
+            assert!(!timed(&mut document, close, W9Edit::CycleClose, false));
+            assert!(timed(&mut document, open, W9Edit::CycleOpen, false));
         }
     }
     let released = |held: usize| held.saturating_sub(crate::counter::live_bytes());
