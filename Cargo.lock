@@ -295,6 +295,7 @@ version = "0.0.0"
 dependencies = [
  "orange-compiler",
  "orange-model",
+ "orange-packages",
  "orange-runtime",
  "proptest",
  "serde_json",
