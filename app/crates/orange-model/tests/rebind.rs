@@ -8,11 +8,12 @@ use orange_model::catalog::{
     RegistrySnapshot,
 };
 use orange_model::document::{DefinitionRef, NodeKind, ProviderBinding};
-use orange_model::edit::{
-    PlanApplyError, RebindError, RebindOutcome, RebindPlan, RebindRequest, RebindSelection,
-    apply_rebind, plan_rebind,
-};
+use orange_model::edit::PlanApplyError;
 use orange_model::id::NodeId;
+use orange_model::rebind::{
+    RebindError, RebindOutcome, RebindPlan, RebindRequest, RebindSelection, apply_rebind,
+    plan_rebind,
+};
 use orange_model::validation::{DiagnosticCode, HostOrigin};
 use orange_model::{DocCommand, GraphDocument, validate};
 use serde_json::json;

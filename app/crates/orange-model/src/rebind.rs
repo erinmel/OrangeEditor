@@ -11,11 +11,11 @@ use std::collections::BTreeSet;
 
 use thiserror::Error;
 
-use super::{Committed, DocCommand, PlanApplyError, Preconditions};
 use crate::catalog::{ProviderKey, RegistrySnapshot};
 use crate::document::{
     DefinitionRef, Extensions, GraphDocument, PackageLockEntry, ProviderBinding,
 };
+use crate::edit::{Committed, DocCommand, PlanApplyError, Preconditions};
 use crate::error::TxError;
 use crate::id::NodeId;
 use crate::validation::{Diagnostic, Severity, validate};
