@@ -222,6 +222,18 @@ Cycle edits (2026-11-04, development machine, not the R machine): closing a data
 
 Every cycle edit is now scoped, re-resolving at most 14 nodes, so no W9 edit of any kind runs the full analysis. No other kind's p95 rose; with no full analysis between edits, the seeded edits' p99 fell from 0.82–3.07 ms to 0.24–0.30 ms and every kind but exec edges (p95 0.91–1.05 ms, p99 at most 1.30 ms) stays under 0.8 ms p95. A cycle in a document with exports, in a function body or in an incomplete report still runs the full analysis.
 
+Visit counters (2026-11-04, development machine, not the R machine): `orange-measure w9` now prints, per graph and edit kind, the p50/p95/max nodes, edges, ports and bodies the session's passes visited per edit (`EditStats::visits`, [16 §3](16-incremental-validation.md)), and each graph's full analyses by `ScopeFallback` or rebuild reason. These replace the re-resolved-node proxy above. One `cargo run --release -p orange-measure -- w9` run; nodes visited per edit, p50 / p95 / max:
+
+| Shape (nodes / edges) | Seeded edits | Seeded edges p95 | Most nodes, any non-exec kind | Exec edge | Full analyses |
+|---|---:|---:|---:|---:|---:|
+| clustered (10,314 / 18,454) | 9 / 17 / 21 | 21 | 57 (cycle close) | 10,434 / 10,765 / 10,870 | none |
+| connected (10,314 / 18,454) | 11 / 19 / 25 | 22 | 69 (cycle close) | 10,434 / 10,765 / 10,870 | none |
+| clustered 20k (11,314 / 20,454) | 9 / 18 / 19 | 22 | 60 (cycle close) | 11,434 / 11,765 / 11,870 | none |
+| connected 20k (11,314 / 20,454) | 11 / 19 / 23 | 23 | 72 (cycle close) | 11,434 / 11,765 / 11,870 | none |
+| shared Get 20k (10,324 / 20,454) | 9 / 18 / 19 | 22 | 60 (cycle close) | 10,444 / 10,775 / 10,880 | none |
+
+Every edit worked in one body, except exec edges, whose state pass visits all five bodies. Literal and type-argument edits visit at most 8 nodes; every kind but exec edges stays under 75 nodes, under 1% of each graph. An exec edge edit is scoped, but its state pass still reruns over the whole document, which is nearly all of its count and the likeliest part of its p95 of about 0.9 ms (not profiled); the region, control-cycle and availability reruns over its activation add 120 to 560 node visits. Timing did not regress: against two runs of `origin/dev` in the same session, no kind's p95 rose by more than 0.005 ms over the slower one, and the largest p95 of any kind was 0.947 ms against 1.088 and 1.084 ms.
+
 **Qualification and remaining product gates**
 
 Host example and importer behavior are qualified by focused regressions, the combined debug/release workspace suites, warnings-denied Clippy/Rustdoc, dependency policy and exact-head platform/MSRV/security CI. Authoring newest-publication/cancellation scenarios also have small ordinary unit tests, so CI does not rely on executing a heavy performance profile. Exact final counts and source/CI identities are recorded in the correction PRs and 10.
