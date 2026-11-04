@@ -10,6 +10,7 @@ use orange_model::catalog::{
 use orange_model::document::{DefinitionRef, NodeKind, TypeParam};
 use orange_model::id::NodeId;
 use orange_model::inference::apply_inferred;
+use orange_model::signature::SubstitutionFailure;
 use orange_model::validation::{HostOrigin, Severity};
 use orange_model::{DocCommand, GraphDocument, TxError, validate};
 use serde_json::json;
@@ -164,6 +165,35 @@ fn pins_specialize_the_signature_and_inference_commits_with_the_edit() {
     let node = document.node(node_id()).unwrap();
     assert_eq!(node.type_args.get("T"), Some(&I64.parse().unwrap()));
     assert_eq!(errors(&document, &registry), Vec::<String>::new());
+}
+
+#[test]
+fn pins_must_name_a_declared_type_parameter() {
+    let registry = registry();
+    let mut node = placed("example/echo");
+    node.type_pins.insert("U".into(), I64.parse().unwrap());
+    assert_eq!(
+        new_node_edit(&empty(), &registry, node).unwrap_err(),
+        NewNodeError::UndeclaredPin
+    );
+}
+
+#[test]
+fn a_pin_that_cannot_be_substituted_is_refused() {
+    let registry = registry();
+    let mut node = placed("example/echo");
+    node.type_pins
+        .insert("T".into(), "not a type".parse().unwrap());
+    let error = new_node_edit(&empty(), &registry, node).unwrap_err();
+    assert_eq!(
+        error,
+        NewNodeError::Substitution {
+            port: "a".parse().unwrap(),
+            failure: SubstitutionFailure::InvalidReplacement,
+        }
+    );
+    let printed = format!("{error} {:?}", std::error::Error::source(&error));
+    assert!(!printed.contains("not a type"), "type text is redacted");
 }
 
 #[test]

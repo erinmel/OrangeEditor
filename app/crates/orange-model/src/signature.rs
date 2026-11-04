@@ -122,6 +122,32 @@ pub enum SignatureSubstitutionError {
     TooDeep,
 }
 
+/// Which step of a substitution failed, without the type text a
+/// [`SignatureSubstitutionError`] carries. Errors that hosts may present use this (13 §2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SubstitutionFailure {
+    /// The declared type is not a canonical type expression.
+    InvalidSource,
+    /// A substituted argument is not a canonical type expression.
+    InvalidReplacement,
+    /// The substituted result is not a valid type expression.
+    InvalidResult,
+    /// The result exceeds the type nesting limit.
+    TooDeep,
+}
+
+impl SignatureSubstitutionError {
+    /// The failure kind, with no type text.
+    pub const fn failure(&self) -> SubstitutionFailure {
+        match self {
+            Self::InvalidSource { .. } => SubstitutionFailure::InvalidSource,
+            Self::InvalidReplacement { .. } => SubstitutionFailure::InvalidReplacement,
+            Self::InvalidResult { .. } => SubstitutionFailure::InvalidResult,
+            Self::TooDeep => SubstitutionFailure::TooDeep,
+        }
+    }
+}
+
 fn substitute_term_at_depth(
     term: &TypeTerm,
     args: &BTreeMap<TypeParamName, TypeExpr>,

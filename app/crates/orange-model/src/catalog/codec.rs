@@ -3,9 +3,9 @@
 //! A package ships one definition per file in the 12 §4 wire shape. Decoding owns shape
 //! only: the importer's repeated-key, JSON-budget and nesting checks run first, then the
 //! implemented field subset is read with unknown fields rejected, so a declaration this
-//! core does not model yet is refused instead of silently dropped. Contract rules (ports,
-//! kinds, suspension, defaults) are checked when the definition is published through
-//! [`RegistryBuilder`](super::RegistryBuilder).
+//! core does not model yet is refused instead of silently dropped. Contract rules (versions,
+//! type parameters, ports, kinds, suspension, defaults) are checked when the definition is
+//! published through [`RegistryBuilder`](super::RegistryBuilder).
 
 use serde::Deserialize;
 use thiserror::Error;

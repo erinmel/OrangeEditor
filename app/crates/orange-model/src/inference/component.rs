@@ -32,10 +32,7 @@ use crate::error::IdError;
 use crate::id::{EdgeId, NodeId, TypeExpr};
 use crate::index::DocIndex;
 use crate::type_term::TypeTerm;
-use crate::types::{
-    CapabilityError, CapabilityRequest, Constraint, PackageConstraintId, TypeRegistry,
-    TypeResolveError,
-};
+use crate::types::{CapabilityError, CapabilityRequest, TypeRegistry, TypeResolveError};
 
 /// A typed inference outcome, mapped to its 11 §17 code by [`InferenceIssue::code`].
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
@@ -937,23 +934,13 @@ fn check_argument(
 
 /// Parses a declared constraint: a core name (`num`) or a package ID (`ns/name@1`).
 fn capability_request(constraint: &str) -> Option<CapabilityRequest> {
-    if let Some(core) = Constraint::from_id_name(constraint) {
-        return Some(CapabilityRequest::Constraint(core));
-    }
-    let TypeTerm::Named(named) = TypeTerm::parse(&constraint.parse().ok()?).ok()? else {
-        return None;
-    };
-    if !named.args.is_empty() {
-        return None;
-    }
-    PackageConstraintId::new(named.namespace, named.name, named.major)
-        .ok()
-        .map(CapabilityRequest::PackageConstraint)
+    CapabilityRequest::from_declared(constraint)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::types::Constraint;
     #[test]
     fn constraint_names_parse_as_core_or_package_requests() {
         assert_eq!(
