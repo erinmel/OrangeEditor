@@ -1,0 +1,16 @@
+[package]
+name = "orange-packages"
+description = "OrangeEditor package manifests, lifecycle state and registry transactions"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+
+[lints]
+workspace = true

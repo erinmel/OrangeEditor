@@ -8,6 +8,8 @@ const policy = {
   'orange-compiler': {core: true, normal: ['orange-model']},
   'orange-runtime': {core: true, normal: ['orange-model', 'orange-compiler']},
   'orange-bundled': {core: true, normal: ['orange-model', 'orange-compiler'], dev: ['orange-runtime']},
+  // Package store and registry transactions over model snapshots (02 boundaries); no runtime edge.
+  'orange-packages': {core: true, normal: ['orange-model']},
   // Development measurement binary; never part of an embedding host's dependency graph.
   'orange-measure': {core: false, normal: ['orange-model', 'orange-compiler', 'orange-runtime', 'orange-bundled']},
 };
@@ -186,6 +188,8 @@ function selfTest() {
   check('bundled may use the runtime in its tests', fixtureMetadata([...workspace, bundledDev], [...ids, bundledDev.id], {...allowedEdges, [bundledDev.id]: [core.id, compiler.id, `dev:${runtime.id}`]}), 0);
   const bundledNormal = first('bundled 0.0.0', 'orange-bundled', [['orange-model'], ['orange-compiler'], ['orange-runtime']]);
   check('bundled may not ship depending on the runtime', fixtureMetadata([...workspace, bundledNormal], [...ids, bundledNormal.id], {...allowedEdges, [bundledNormal.id]: [core.id, compiler.id, runtime.id]}), 1);
+  const packages = first('packages 0.0.0', 'orange-packages', [['orange-model'], ['orange-runtime']]);
+  check('packages may not depend on the runtime', fixtureMetadata([...workspace, packages], [...ids, packages.id], {...allowedEdges, [packages.id]: [core.id, runtime.id]}), 1);
   check('a core crate with a transitive async runtime is rejected', fixtureMetadata([core, transitive, tokio], [core.id], {[core.id]: [transitive.id], [transitive.id]: [tokio.id]}), 1);
   check('a service crate only in core tests is allowed', fixtureMetadata([core, tokio], [core.id], {[core.id]: [`dev:${tokio.id}`]}), 0);
   const host = makePackage('orange-app 0.0.0', 'orange-app', '0.0.0');

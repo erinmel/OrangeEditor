@@ -335,6 +335,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "orange-packages"
+version = "0.0.0"
+dependencies = [
+ "orange-model",
+ "serde",
+ "serde_json",
+ "thiserror",
+]
+
+[[package]]
 name = "orange-runtime"
 version = "0.0.0"
 dependencies = [

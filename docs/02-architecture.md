@@ -1,6 +1,6 @@
 # Architecture and ownership
 
-`orange-model`, `orange-compiler` (restricted pure/entropy data plans), `orange-bundled` (native scalar operations/conversions) and `orange-runtime` (root data epochs and entropy) are implemented Cargo packages; the remaining boundaries below are proposed. Separate a crate when dependency/lifetime/testing boundaries justify it; internal modules may start together to avoid unnecessary build overhead. Dependency arrows mean compile-time use. The project uses no game engine (ADR-02): the selected editor UI is egui, hosted by eframe in the desktop app, and core crates have no UI, window or engine dependency. Downstream products add engines, scenes and other domains in their own crates (ADR-21).
+`orange-model`, `orange-compiler` (restricted pure/entropy data plans), `orange-bundled` (native scalar operations/conversions), `orange-runtime` (root data epochs and entropy) and `orange-packages` (manifests, lifecycle state and registry transactions) are implemented Cargo packages; the remaining boundaries below are proposed. Separate a crate when dependency/lifetime/testing boundaries justify it; internal modules may start together to avoid unnecessary build overhead. Dependency arrows mean compile-time use. The project uses no game engine (ADR-02): the selected editor UI is egui, hosted by eframe in the desktop app, and core crates have no UI, window or engine dependency. Downstream products add engines, scenes and other domains in their own crates (ADR-21).
 
 Physical source placement follows [15](15-monorepo-layout.md): application libraries under `app/crates`, desktop/CLI under `app/apps`, installable expansions under `plugins`, and exported public SDK artifacts under `sdk`. These folders share one repository while preserving the dependency/runtime boundaries below. No Cargo members are created by the source-layout decision.
 
@@ -26,6 +26,8 @@ flowchart TD
 ```
 
 Implemented native prerequisite (N1a): `orange-bundled` depends on `orange-model` and publishes ordinary `org.orange.math` definition/provider metadata plus resolved scalar kernels. Resolution checks exact provider/build digest, definition/config version and specialization before execution. A resolved kernel retains its immutable registry snapshot and performs scalar dispatch without parsing or registry lookup. This is not the final compiler/runtime kernel ABI, package loader or service layer; the full crate graph above remains the target architecture.
+
+Implemented package prerequisite (2026-11-03): `orange-packages` depends on `orange-model` only. It validates format 1 manifests and publishes install, update, removal, revocation and rollback as immutable registry generations, journaled through a host-supplied seam. It performs no I/O and loads no code; archives, grants, component instances, `orange-contracts` and non-node slots remain later work.
 
 ## Foundation application and general capabilities
 
