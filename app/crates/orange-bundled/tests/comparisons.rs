@@ -835,3 +835,44 @@ fn runtime_comparisons_drive_branches_through_a_run() {
         run.dispose().unwrap();
     }
 }
+
+/// `depth` list wrappers around one i64 leaf: the leaf sits at nesting depth `depth`.
+fn nested(depth: usize, leaf: i64) -> (String, Value) {
+    let mut ty = "core/i64@1".to_owned();
+    let mut value = Value::I64(leaf);
+    for _ in 0..depth {
+        ty = format!("core/list@1<{ty}>");
+        value = list(vec![value]);
+    }
+    (ty, value)
+}
+
+#[test]
+fn nesting_at_the_limit_compares_and_one_past_is_refused() {
+    use orange_model::type_term::MAX_NESTING;
+    let (ty, a) = nested(MAX_NESTING, 7);
+    let (_, same) = nested(MAX_NESTING, 7);
+    let (_, other) = nested(MAX_NESTING, 8);
+    assert_equality(&ty, a.clone(), same, true);
+    assert_equality(&ty, a, other, false);
+    // Ordering is scalar only, at any depth.
+    assert_eq!(
+        bind(Comparison::Less, &ty).unwrap_err(),
+        BindingError::UnsupportedType
+    );
+    // A value deeper than its bound shape is a contract error, not a deeper walk.
+    let (_, deeper) = nested(MAX_NESTING + 1, 7);
+    assert_eq!(
+        eval(Comparison::Equal, &ty, &deeper, &deeper),
+        Err(KernelError::InputContract)
+    );
+
+    let (ty, _) = nested(MAX_NESTING + 1, 7);
+    for comparison in [Comparison::Equal, Comparison::NotEqual, Comparison::Less] {
+        assert_eq!(
+            bind(comparison, &ty).unwrap_err(),
+            BindingError::UnsupportedType,
+            "{comparison:?}"
+        );
+    }
+}
