@@ -150,6 +150,15 @@ pub(super) fn edge_crosses_activation(
     let Ok(port) = resolved.port(&edge.from) else {
         return false;
     };
+    // The whole check skips a zone begin's iteration projection wherever a cone reaches
+    // it, so an edge from one adds nothing to any cone (V12f).
+    if port.source == Some(OutputSource::Iteration)
+        && zones
+            .owner(edge.from.node)
+            .is_some_and(|pair| pair.begin == edge.from.node)
+    {
+        return false;
+    }
     let real = |node: NodeId| {
         index.incident(node).filter_map(move |id| {
             let edge = document.edge(id)?;

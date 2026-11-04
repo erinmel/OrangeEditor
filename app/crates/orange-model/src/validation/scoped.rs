@@ -70,6 +70,9 @@ pub(super) struct Retained {
     /// edge leaves it except into its end (V12c). Scoped edits keep it, as they never touch
     /// a marker.
     pub zones_checked: bool,
+    /// Each checked zone's body by its end marker, nested zones' nodes included, as the
+    /// region pass finds it ([`zone_bodies`]). Scoped structure edits keep it (V12f).
+    pub zone_bodies: BTreeMap<NodeId, BTreeSet<NodeId>>,
     /// No node may suspend, so stale-capture checks cannot read data edges. Data edges and
     /// nodes are checked locally only then; exec edges recompute the state pass anyway.
     pub quiet: bool,
@@ -397,7 +400,8 @@ fn has_error(list: &[Diagnostic]) -> bool {
 /// data ports; it reaches only node resolution, the connection checks of an added edge and
 /// its ports, its target's inputs, data cycles, availability and export cones, and each of
 /// those is checked for the edge alone. A removed edge or node in a clean report can only
-/// take requirements and cycles away.
+/// take requirements and cycles away. The zones whose bodies or markers the edit touches
+/// are re-checked alone ([`zone_update`]).
 #[expect(
     clippy::too_many_arguments,
     reason = "an exec edit reruns the state pass, which reads the host's leaf effects"
@@ -492,13 +496,6 @@ pub(super) fn structure_update(
             removed_charge = removed_charge.add(charge)?;
         }
     }
-    let removed_ids = edit.removed_nodes.keys();
-    if !outside_zones(
-        &analysis.report().regions.zones,
-        touched.iter().chain(removed_ids),
-    ) {
-        return None;
-    }
     let admitted = retained.admitted.replace(removed_charge, added_charge)?;
     if !options.fits(admitted) {
         return None;
@@ -535,6 +532,18 @@ pub(super) fn structure_update(
     for (id, (signature, _)) in &fresh {
         analysis.resolved_mut().insert(*id, signature.clone());
     }
+    let zone_change = {
+        let ports = super::ports::PortResolver::new(document, &analysis.report().resolved);
+        zone_update(
+            document,
+            &ports,
+            index,
+            &analysis.report().regions.zones,
+            &retained.zone_bodies,
+            touched.iter().chain(edit.removed_nodes.keys()),
+            added_nodes,
+        )
+    };
     // The full analysis builds the root body's order. A function body's first structure
     // edit builds its own from the edited document, which then already accounts for the
     // edit; later edits bring an order up to date.
@@ -579,7 +588,9 @@ pub(super) fn structure_update(
     });
     let mut function_updates = Vec::new();
     let mut state_override = None;
-    let checked = local
+    let checked = zone_change
+        .as_ref()
+        .and(local)
         .and_then(|kinds| {
             let inputs = recheck_inputs(document, registry, index, analysis, retained, &targets)?;
             let flow = if kinds.flow || flow_nodes {
@@ -722,11 +733,12 @@ pub(super) fn structure_update(
                         .iter()
                         .chain(&touched)
                         .chain(&targets)
-                        .chain(flow.iter().flat_map(|update| &update.component)),
+                        .chain(flow.iter().flat_map(|update| &update.component))
+                        .chain(zone_change.iter().flat_map(|change| &change.walked)),
                 )
         }
     });
-    let Some((inputs, flow, config)) = checked else {
+    let (Some((inputs, flow, config)), Some(zone_change)) = (checked, zone_change) else {
         for id in fresh.keys() {
             analysis.resolved_mut().remove(id);
         }
@@ -801,6 +813,8 @@ pub(super) fn structure_update(
         }
         state.get_or_insert(update.state);
     }
+    // After the flow update, whose region index may carry the zones from before the edit.
+    zone_change.apply(analysis.zones_mut(), &mut retained.zone_bodies);
     if let Some(state) = state {
         let old = std::mem::replace(&mut retained.state, state.clone());
         scoped.inputs.push((old, state));
@@ -838,23 +852,214 @@ pub(super) fn structure_update(
     Some(scoped)
 }
 
-/// Whether every node a structure edit touches (edge endpoints and added nodes) and every
-/// node it removes lies outside every checked zone: no zone body owns it and it is no end
-/// marker (a begin is owned by its own zone). Such an edit cannot change any zone (V12c).
+/// Each checked zone's body by its end marker, from the innermost owners the region pass
+/// keeps: a node belongs to its owner's body and to every enclosing zone's, except that a
+/// begin is owned by its own zone but lies only in the enclosing bodies.
+pub(super) fn zone_bodies(zones: &super::zones::ZoneIndex) -> BTreeMap<NodeId, BTreeSet<NodeId>> {
+    let mut bodies: BTreeMap<NodeId, BTreeSet<NodeId>> = zones
+        .pairs
+        .keys()
+        .map(|end| (*end, BTreeSet::new()))
+        .collect();
+    for (node, owner) in &zones.owners {
+        let mut zone = zones.pairs.get(owner);
+        if let Some(pair) = zone.filter(|pair| pair.begin == *node) {
+            zone = pair.parent.and_then(|end| zones.pairs.get(&end));
+        }
+        while let Some(pair) = zone {
+            bodies.entry(pair.end).or_default().insert(*node);
+            zone = pair.parent.and_then(|end| zones.pairs.get(&end));
+        }
+    }
+    bodies
+}
+
+/// How many nodes outside a zone's body a structure edit may bring into its begin's reach
+/// before only the whole region pass decides the zone (V12f).
+const ZONE_PULL_BUDGET: usize = 1024;
+
+/// The zone bodies a structure edit changed, by end marker, and every node its re-check
+/// walked.
+struct ZoneChange {
+    bodies: Vec<(NodeId, BTreeSet<NodeId>)>,
+    walked: Vec<NodeId>,
+}
+
+impl ZoneChange {
+    /// Moves the nodes that left or joined each changed body, which encloses and sits in
+    /// no other zone, so each is its own innermost owner.
+    fn apply(
+        self,
+        zones: &mut super::zones::ZoneIndex,
+        bodies: &mut BTreeMap<NodeId, BTreeSet<NodeId>>,
+    ) {
+        for (end, body) in self.bodies {
+            let old = bodies.insert(end, body.clone()).unwrap_or_default();
+            for node in old.difference(&body) {
+                zones.owners.remove(node);
+            }
+            for node in body.difference(&old) {
+                zones.owners.insert(*node, end);
+            }
+        }
+    }
+}
+
+/// Re-checks every zone a structure edit reaches, against the staged signatures, as the
+/// region pass checks it (V12c, V12f), or `None` when only the whole pass can decide.
 ///
 /// A zone body is what its begin reaches through data edges, stopping at its end, among
 /// the nodes that reach the end (11 §8.4). With every marker in a checked pair, no data
 /// edge leaves a body except into its end, so everything the begin reaches is the body or
-/// the end. An added edge whose source is outside cannot be reached from any begin, so it
-/// adds nothing the begin reaches; a removed edge with an outside source was never on such
-/// a path, and every path from a body node to the end stays inside the body. The body,
-/// its purity, closure, nesting, exports and paired types therefore stay as they were, and
-/// so do the data-cycle pass's begin-to-end dependencies, which the body order carries.
-fn outside_zones<'a>(
+/// the end. An edit none of whose touched (edge endpoints and added nodes) or removed nodes
+/// lies in a body, or is its begin or end, changes no zone: an added edge whose source is
+/// outside cannot be reached from any begin, so it adds nothing the begin reaches; a
+/// removed edge with an outside source was never on such a path, and every path from a
+/// body node to the end stays inside the body. So the zones reached are those whose body
+/// holds a touched or removed node, with every zone enclosing them, and those whose begin
+/// or end is touched.
+///
+/// For each, the begin's reach is walked again. A reached node that was neither in the
+/// body nor added is an escape, which the closure check below finds, or an existing node
+/// pulled into the body, as when an undo restores the begin's edge; the walk gives up on
+/// one owned by a zone or a marker, and after [`ZONE_PULL_BUDGET`] of them. The new body
+/// is the part of that reach which reaches the end within it, since every node on a path
+/// from a reached node to the end is reached too. It must be closed,
+/// pure, keep each marker inside with its partner and hold no export, as the region pass
+/// requires; then every other zone keeps its body, and no marker moves into or out of one.
+/// Paired types read the markers' signatures only, which the node resolution kept, and
+/// the data-cycle pass's begin-to-end dependencies, which the body order carries, read
+/// the pairs alone. A body that changed must enclose and sit in no other zone, so that
+/// its nodes' innermost owner is simply it or none.
+fn zone_update<'a>(
+    document: &GraphDocument,
+    ports: &super::ports::PortResolver<'_>,
+    index: &DocIndex,
     zones: &super::zones::ZoneIndex,
-    mut nodes: impl Iterator<Item = &'a NodeId>,
-) -> bool {
-    nodes.all(|id| !zones.owners.contains_key(id) && !zones.pairs.contains_key(id))
+    bodies: &BTreeMap<NodeId, BTreeSet<NodeId>>,
+    nodes: impl Iterator<Item = &'a NodeId>,
+    added: &BTreeSet<NodeId>,
+) -> Option<ZoneChange> {
+    let mut reached = BTreeSet::new();
+    for node in nodes {
+        if zones.pairs.contains_key(node) {
+            reached.insert(*node);
+        }
+        let mut zone = zones.owners.get(node).copied();
+        while let Some(end) = zone {
+            if !reached.insert(end) {
+                break;
+            }
+            zone = zones.pairs.get(&end)?.parent;
+        }
+    }
+    let marker = |node: &NodeId| {
+        zones.pairs.contains_key(node) || zones.owner(*node).is_some_and(|pair| pair.begin == *node)
+    };
+    let mut change = ZoneChange {
+        bodies: Vec::new(),
+        walked: Vec::new(),
+    };
+    for end in reached {
+        let pair = zones.pairs.get(&end)?;
+        let old = bodies.get(&end)?;
+        let begin = pair.begin;
+        let mut after = BTreeSet::from([begin]);
+        let mut edges = Vec::new();
+        let mut stack = vec![begin];
+        let mut pulled = 0;
+        while let Some(node) = stack.pop() {
+            if node == end {
+                continue;
+            }
+            for id in index.incident(node) {
+                let Some(edge) = document.edge(id).filter(|edge| edge.from.node == node) else {
+                    continue;
+                };
+                let data = matches!(
+                    (ports.port(&edge.from), ports.port(&edge.to)),
+                    (Ok(from), Ok(to)) if from.kind == PortKind::Data
+                        && to.kind == PortKind::Data
+                        && from.direction == PortDirection::Output
+                        && to.direction == PortDirection::Input
+                );
+                if !data {
+                    continue;
+                }
+                let target = edge.to.node;
+                edges.push((node, target));
+                if !after.insert(target) {
+                    continue;
+                }
+                if target != end && !old.contains(&target) && !added.contains(&target) {
+                    // Another zone's node or marker, this begin, or past the budget.
+                    pulled += 1;
+                    if zones.owners.contains_key(&target)
+                        || zones.pairs.contains_key(&target)
+                        || pulled > ZONE_PULL_BUDGET
+                    {
+                        return None;
+                    }
+                }
+                stack.push(target);
+            }
+        }
+        let mut sources: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+        for (from, to) in &edges {
+            sources.entry(*to).or_default().push(*from);
+        }
+        let mut before = BTreeSet::from([end]);
+        let mut stack = vec![end];
+        while let Some(node) = stack.pop() {
+            if node == begin {
+                continue;
+            }
+            for from in sources.get(&node).into_iter().flatten() {
+                if before.insert(*from) {
+                    stack.push(*from);
+                }
+            }
+        }
+        let body: BTreeSet<NodeId> = after
+            .intersection(&before)
+            .filter(|node| **node != begin && **node != end)
+            .copied()
+            .collect();
+        let closed = edges.iter().all(|(from, to)| {
+            (*from != begin && !body.contains(from)) || *to == end || body.contains(to)
+        });
+        let pure = body.iter().all(|node| {
+            ports.get(node).is_none_or(|signature| {
+                matches!(signature.kind, NodeKind::Pure | NodeKind::Volatile)
+            })
+        });
+        let nested = body.iter().all(|node| {
+            zones
+                .pairs
+                .get(node)
+                .is_none_or(|other| body.contains(&other.begin))
+                && zones
+                    .owner(*node)
+                    .filter(|other| other.begin == *node)
+                    .is_none_or(|other| body.contains(&other.end))
+        });
+        let exported = pair.function.is_none()
+            && document
+                .exports()
+                .iter()
+                .any(|export| export.node == begin || body.contains(&export.node));
+        if !closed || !pure || !nested || exported {
+            return None;
+        }
+        change.walked.extend(after);
+        if body != *old {
+            if pair.parent.is_some() || old.iter().chain(&body).any(marker) {
+                return None;
+            }
+            change.bodies.push((end, body));
+        }
+    }
+    Some(change)
 }
 
 /// A pure node whose ports are all typed data ports, outputs with a source: the data
