@@ -1,0 +1,23 @@
+{
+  "format": "orange.plugin",
+  "format_version": 1,
+  "id": "acme.math",
+  "version": "1.0.0",
+  "publisher": "acme",
+  "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+  "execution": {"kind": "native-worker", "entry": "acme-math-worker"},
+  "dependencies": [],
+  "contributions": {
+    "nodes": ["acme.math/triple"],
+    "providers": [
+      {"slot": "node:acme.math/triple@1", "id": "fast"},
+      {"slot": "node:org.orange.math/add@1", "id": "fast"}
+    ]
+  },
+  "permissions": [],
+  "integrity": {
+    "algorithm": "sha256",
+    "payload_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+  },
+  "license": "MIT"
+}
