@@ -1027,10 +1027,22 @@ pub enum W9Edit {
     ChainRemove,
     /// Restores that add and its edges, as an undo would.
     ChainRestore,
+    /// A new literal on the last body add's `b` in a Repeat zone.
+    ZoneLiteral,
+    /// Removes or restores a body edge between two body adds of a zone.
+    ZoneWire,
+    /// Adds an add inside a zone body, between two body adds, in one transaction.
+    ZoneNodeAdd,
+    /// Removes such an added body add with its edges.
+    ZoneNodeRemove,
+    /// Removes or restores a zone's capture: an edge from a cluster add into its body.
+    Capture,
+    /// Moves a zone's capture to another cluster's add, in one transaction.
+    CaptureRetarget,
 }
 
 impl W9Edit {
-    pub const ALL: [Self; 13] = [
+    pub const ALL: [Self; 19] = [
         Self::Disconnect,
         Self::Connect,
         Self::Literal,
@@ -1044,6 +1056,12 @@ impl W9Edit {
         Self::NodeRemove,
         Self::ChainRemove,
         Self::ChainRestore,
+        Self::ZoneLiteral,
+        Self::ZoneWire,
+        Self::ZoneNodeAdd,
+        Self::ZoneNodeRemove,
+        Self::Capture,
+        Self::CaptureRetarget,
     ];
 
     pub fn name(self) -> &'static str {
@@ -1061,6 +1079,12 @@ impl W9Edit {
             Self::NodeRemove => "added node remove",
             Self::ChainRemove => "chain node remove",
             Self::ChainRestore => "chain node restore",
+            Self::ZoneLiteral => "zone-body literal",
+            Self::ZoneWire => "zone-body wire",
+            Self::ZoneNodeAdd => "zone-body node add",
+            Self::ZoneNodeRemove => "zone-body node remove",
+            Self::Capture => "capture toggle",
+            Self::CaptureRetarget => "capture retarget",
         }
     }
 }
@@ -1124,7 +1148,10 @@ pub struct W9Shape {
 /// one each per four seeded edits; and after every 50th, closing a data cycle in a
 /// cluster and opening it again. Per four seeded edits it also adds an add, alone or
 /// reading a cluster's add, removes one of the added adds, and removes a cluster's add
-/// with its edges and restores them.
+/// with its edges and restores them. Fifty Repeat zones each iterate a cluster's last sum
+/// through four body adds, one capturing a cluster's last sum; from a third seed, per four
+/// seeded edits, a body literal, a body edge toggle, a capture toggle and a capture
+/// retarget, and an added or removed body add.
 pub fn w9_session_edits(shape: W9Shape) -> W9 {
     use orange_model::DocCommand;
     use orange_model::document::{Edge, PortRef};
@@ -1207,6 +1234,32 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
         nodes.push(call);
         edges.push(edge(310_000 + f, get, "value", 70_000 + f, "value"));
     }
+    // Zone `z`: begin, four body adds and end. The begin and the capture read a cluster's
+    // last add, which the chain node edits never remove.
+    const ZONES: u32 = 50;
+    let zone_node = |z: u32, k: u32| 80_000 + z * 10 + k;
+    let body = |z: u32, k: u32| zone_node(z, 1 + k);
+    let zone_edge = |z: u32, k: u32| 600_000 + z * 10 + k;
+    for z in 0..ZONES {
+        let last = add_of(z * (CLUSTERS / ZONES), adds - 1);
+        let (begin, end) = (zone_node(z, 0), zone_node(z, 5));
+        nodes.push(repeat_marker(begin, false, z));
+        nodes.push(repeat_marker(end, true, z));
+        for k in 0..4 {
+            nodes.push(math(body(z, k), "add", 0, 1));
+        }
+        edges.extend([
+            edge(zone_edge(z, 0), last, "sum", begin, "initial"),
+            edge(zone_edge(z, 1), begin, "carried", body(z, 0), "a"),
+            edge(zone_edge(z, 2), last, "sum", body(z, 0), "b"),
+            edge(zone_edge(z, 3), body(z, 0), "sum", body(z, 1), "a"),
+            edge(zone_edge(z, 4), begin, "carried", body(z, 1), "b"),
+            edge(zone_edge(z, 5), body(z, 1), "sum", body(z, 2), "a"),
+            edge(zone_edge(z, 6), body(z, 0), "sum", body(z, 2), "b"),
+            edge(zone_edge(z, 7), body(z, 2), "sum", body(z, 3), "a"),
+            edge(zone_edge(z, 8), body(z, 3), "sum", end, "next"),
+        ]);
+    }
     let mut source = Source::new(nodes, edges);
     source.variables = vec![run_variable(TOTAL, U64, Some(json!("0")))];
     source.functions = (0..FUNCTIONS).map(w9_function).collect();
@@ -1237,8 +1290,20 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
     // The four NFR-15 kinds draw from the original seed, so their sequence is unchanged;
     // the other kinds draw from their own.
     let (mut seed, mut extra_seed): (u64, u64) = (0x5eed_0009, 0x5eed_0f09);
+    let mut zone_seed: u64 = 0x5eed_2009;
     let mut next = |bound: usize| random(&mut seed, bound);
     let mut extra = |bound: usize| random(&mut extra_seed, bound);
+    let mut zoned = |bound: usize| random(&mut zone_seed, bound);
+    // Each zone's capture, whether its toggled body edge is in place, and its added body add.
+    let mut captures: Vec<Option<Edge>> = (0..ZONES)
+        .map(|z| {
+            let last = add_of(z * (CLUSTERS / ZONES), adds - 1);
+            Some(parse(edge(zone_edge(z, 2), last, "sum", body(z, 0), "b")))
+        })
+        .collect();
+    let mut body_wired = vec![true; ZONES as usize];
+    let mut slots: Vec<Option<u32>> = vec![None; ZONES as usize];
+    let mut zone_edges = 650_000;
     let node_id = |node: u32| id(node).parse().expect("node ID");
     let b_literal = |node: u32, value: usize| DocCommand::SetLiteral {
         port: PortRef {
@@ -1394,6 +1459,78 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
                 false
             ));
         }
+        if edit % 4 == 1 {
+            let z = zoned(ZONES as usize) as u32;
+            let literal = b_literal(body(z, 3), zoned(1000));
+            assert!(timed(
+                &mut document,
+                vec![literal],
+                W9Edit::ZoneLiteral,
+                false
+            ));
+            let z = zoned(ZONES as usize) as u32;
+            let at = z as usize;
+            body_wired[at] = !body_wired[at];
+            let wire = parse(edge(zone_edge(z, 6), body(z, 0), "sum", body(z, 2), "b"));
+            let command = if body_wired[at] {
+                DocCommand::Connect { edge: wire }
+            } else {
+                DocCommand::Disconnect { edge: wire.id }
+            };
+            assert!(timed(&mut document, vec![command], W9Edit::ZoneWire, false));
+        }
+        if edit % 4 == 3 {
+            for kind in [W9Edit::Capture, W9Edit::CaptureRetarget] {
+                let z = zoned(ZONES as usize);
+                let mut commands = Vec::new();
+                let old = captures[z].take();
+                if let Some(old) = &old {
+                    commands.push(DocCommand::Disconnect { edge: old.id });
+                }
+                if old.is_none() || kind == W9Edit::CaptureRetarget {
+                    zone_edges += 1;
+                    let source = add_of(zoned(CLUSTERS as usize) as u32, adds - 1);
+                    let capture = parse(edge(zone_edges, source, "sum", body(z as u32, 0), "b"));
+                    commands.push(DocCommand::Connect {
+                        edge: capture.clone(),
+                    });
+                    captures[z] = Some(capture);
+                }
+                assert!(timed(&mut document, commands, kind, false));
+            }
+        }
+        if edit % 4 == 0 {
+            let z = zoned(ZONES as usize) as u32;
+            let (commands, kind) = match slots[z as usize].take() {
+                Some(node) => (
+                    vec![DocCommand::RemoveNodes {
+                        ids: vec![node_id(node)],
+                    }],
+                    W9Edit::ZoneNodeRemove,
+                ),
+                None => {
+                    let node = 450_000 + edit;
+                    slots[z as usize] = Some(node);
+                    let add = serde_json::from_value(math(node, "add", 0, 1)).expect("node");
+                    zone_edges += 2;
+                    let wires = [
+                        edge(zone_edges - 1, body(z, 2), "sum", node, "a"),
+                        edge(zone_edges, node, "sum", body(z, 3), "b"),
+                    ];
+                    let mut commands = vec![DocCommand::AddNode {
+                        body: orange_model::BodyRef::Root,
+                        node: add,
+                    }];
+                    commands.extend(
+                        wires
+                            .into_iter()
+                            .map(|wire| DocCommand::Connect { edge: parse(wire) }),
+                    );
+                    (commands, W9Edit::ZoneNodeAdd)
+                }
+            };
+            assert!(timed(&mut document, commands, kind, false));
+        }
         if edit % 50 == 49 {
             // Rewire a cluster's first add to read its last one, then undo it.
             let cluster = extra(CLUSTERS as usize) as u32;
@@ -1471,6 +1608,21 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
             .map(|kind| (kind, bucket(&|record| record.0 == kind)))
             .collect(),
     }
+}
+
+/// A Repeat marker of zone `z{zone}` carrying `u64` values, three iterations.
+fn repeat_marker(n: u32, end: bool, zone: u32) -> Json {
+    let definition = if end {
+        "core/repeat-end"
+    } else {
+        "core/repeat-begin"
+    };
+    let mut node = json!({"id": id(n), "definition_id": definition, "definition_version": 1,
+        "config_version": 1, "config": {"zone": format!("z{zone}")}, "type_pins": {"A": U64}});
+    if !end {
+        node["inputs"] = json!({"count": {"type": "core/i64@1", "value": "3"}});
+    }
+    node
 }
 
 /// A W9 pure function: its argument through eight adds, each reading the one before it,
