@@ -168,102 +168,17 @@ pub(crate) fn validate_data_cycles_in(
     for (_, body) in scope.bodies(document) {
         let body_nodes: BTreeSet<_> = body.nodes.keys().copied().collect();
         let mut graph = DependencyGraph::default();
+        let mut incomplete = Vec::new();
 
         for node in body.nodes.values() {
-            let Some(signature) = resolved.get(&node.id) else {
-                mark_incomplete(node.id, origin, &mut result, &mut diagnosed_nodes);
-                continue;
-            };
-            for descriptor in &signature.ports {
-                if descriptor.kind != PortKind::Data {
-                    continue;
-                }
-                if descriptor.ty.is_none()
-                    || (descriptor.direction == PortDirection::Output
-                        && descriptor.source.is_none())
-                {
-                    mark_incomplete(node.id, origin, &mut result, &mut diagnosed_nodes);
-                }
-                for vertex in concrete_vertices(node.id, node, descriptor) {
-                    graph.vertex(vertex);
-                }
-            }
-
-            let inputs: Vec<_> = signature
-                .ports
-                .iter()
-                .filter(|port| {
-                    port.kind == PortKind::Data
-                        && port.direction == PortDirection::Input
-                        && port.ty.is_some()
-                })
-                .flat_map(|port| concrete_vertices(node.id, node, port))
-                .collect();
-            let outputs: Vec<_> = signature
-                .ports
-                .iter()
-                .filter(|port| {
-                    port.kind == PortKind::Data
-                        && port.direction == PortDirection::Output
-                        && port.source == Some(OutputSource::Computed)
-                        && port.ty.is_some()
-                })
-                .flat_map(|port| concrete_vertices(node.id, node, port))
-                .collect();
-            // A private hub represents the complete input-to-computed-output relation
-            // using O(inputs + outputs) edges rather than O(inputs * outputs).
-            if inputs.len().saturating_mul(outputs.len())
-                <= inputs.len().saturating_add(outputs.len())
-            {
-                // Narrow computations are already linear; avoid adding a hub there.
-                for &input in &inputs {
-                    for &output in &outputs {
-                        graph.edge(input, output);
-                    }
-                }
-            } else {
-                let hub = Vertex::Computation(node.id);
-                for input in inputs {
-                    graph.edge(input, hub);
-                }
-                for output in outputs {
-                    graph.edge(hub, output);
-                }
-            }
+            graph.node(resolved, node, &mut incomplete);
         }
 
         // A zone result also depends on its strict prefix (count/items/initial).
         // Begin iteration projections themselves remain independent of those
         // inputs: adding input-to-iteration edges would reject legal carry.
         for pair in super::zones::pair_zones(body, None).pairs {
-            let (Some(begin), Some(end)) = (resolved.get(&pair.begin), resolved.get(&pair.end))
-            else {
-                continue;
-            };
-            let inputs = begin.ports.iter().filter(|port| {
-                port.kind == PortKind::Data
-                    && port.direction == PortDirection::Input
-                    && port.ty.is_some()
-            });
-            let outputs: Vec<_> = end
-                .ports
-                .iter()
-                .filter(|port| {
-                    port.kind == PortKind::Data
-                        && port.direction == PortDirection::Output
-                        && port.source == Some(OutputSource::Computed)
-                        && port.ty.is_some()
-                })
-                .collect();
-            for input in inputs {
-                for from in concrete_vertices(pair.begin, &body.nodes[&pair.begin], input) {
-                    for output in &outputs {
-                        for to in concrete_vertices(pair.end, &body.nodes[&pair.end], output) {
-                            graph.edge(from, to);
-                        }
-                    }
-                }
-            }
+            graph.zone(resolved, body, pair.begin, pair.end);
         }
 
         let mut edges: Vec<_> = body.edges.values().collect();
@@ -275,35 +190,178 @@ pub(crate) fn validate_data_cycles_in(
             {
                 continue;
             }
-            if !resolved.contains_key(&edge.from.node) || !resolved.contains_key(&edge.to.node) {
-                mark_incomplete(edge.from.node, origin, &mut result, &mut diagnosed_nodes);
-                mark_incomplete(edge.to.node, origin, &mut result, &mut diagnosed_nodes);
+            graph.data_edge(resolved, edge, &mut incomplete);
+        }
+        for node in incomplete {
+            mark_incomplete(node, origin, &mut result, &mut diagnosed_nodes);
+        }
+
+        for (diagnostic, path) in graph.cycles(origin) {
+            result.diagnostics.push(diagnostic);
+            result.cycle_paths.push(path);
+        }
+    }
+
+    sort_diagnostics(&mut result.diagnostics);
+    sort_cycle_paths(&mut result.cycle_paths);
+    result
+}
+
+/// Orders witnesses by their first port, which no two cyclic components share, so the
+/// order does not depend on how the components were found (16 §5.3).
+pub(super) fn sort_cycle_paths(paths: &mut [Vec<PortRef>]) {
+    paths.sort_by(|a, b| {
+        let first = |path: &[PortRef]| path.first().map(|port| (port.node, port.port.clone()));
+        first(a).cmp(&first(b))
+    });
+}
+
+impl<'a> DependencyGraph<'a> {
+    /// A node's data port vertices and its input-to-computed-output dependencies; nodes
+    /// whose metadata cannot supply them are pushed to `incomplete`.
+    fn node(
+        &mut self,
+        resolved: &'a PortResolver<'_>,
+        node: &'a crate::document::NodeInstance,
+        incomplete: &mut Vec<NodeId>,
+    ) {
+        let Some(signature) = resolved.get(&node.id) else {
+            incomplete.push(node.id);
+            return;
+        };
+        for descriptor in &signature.ports {
+            if descriptor.kind != PortKind::Data {
                 continue;
             }
-            let from = resolved.port(&edge.from);
-            let to = resolved.port(&edge.to);
-            match (from, to) {
-                (Ok(from), Ok(to))
-                    if from.direction == PortDirection::Output
-                        && to.direction == PortDirection::Input
-                        && from.kind == PortKind::Data
-                        && to.kind == PortKind::Data
-                        && from.ty.is_some()
-                        && to.ty.is_some() =>
-                {
-                    graph.edge(Vertex::from(&edge.from), Vertex::from(&edge.to));
-                }
-                (Ok(from), Ok(to)) if from.kind != PortKind::Data || to.kind != PortKind::Data => {}
-                (Err(_), _) | (_, Err(_)) => {
-                    mark_incomplete(edge.from.node, origin, &mut result, &mut diagnosed_nodes);
-                    mark_incomplete(edge.to.node, origin, &mut result, &mut diagnosed_nodes);
-                }
-                _ => {}
+            if descriptor.ty.is_none()
+                || (descriptor.direction == PortDirection::Output && descriptor.source.is_none())
+            {
+                incomplete.push(node.id);
+            }
+            for vertex in concrete_vertices(node.id, node, descriptor) {
+                self.vertex(vertex);
             }
         }
 
-        let (vertices, adjacency) = graph.dense();
+        let inputs: Vec<_> = signature
+            .ports
+            .iter()
+            .filter(|port| {
+                port.kind == PortKind::Data
+                    && port.direction == PortDirection::Input
+                    && port.ty.is_some()
+            })
+            .flat_map(|port| concrete_vertices(node.id, node, port))
+            .collect();
+        let outputs: Vec<_> = signature
+            .ports
+            .iter()
+            .filter(|port| {
+                port.kind == PortKind::Data
+                    && port.direction == PortDirection::Output
+                    && port.source == Some(OutputSource::Computed)
+                    && port.ty.is_some()
+            })
+            .flat_map(|port| concrete_vertices(node.id, node, port))
+            .collect();
+        // A private hub represents the complete input-to-computed-output relation
+        // using O(inputs + outputs) edges rather than O(inputs * outputs).
+        if inputs.len().saturating_mul(outputs.len()) <= inputs.len().saturating_add(outputs.len())
+        {
+            // Narrow computations are already linear; avoid adding a hub there.
+            for &input in &inputs {
+                for &output in &outputs {
+                    self.edge(input, output);
+                }
+            }
+        } else {
+            let hub = Vertex::Computation(node.id);
+            for input in inputs {
+                self.edge(input, hub);
+            }
+            for output in outputs {
+                self.edge(hub, output);
+            }
+        }
+    }
+
+    /// A zone result's dependency on each begin input.
+    fn zone(
+        &mut self,
+        resolved: &'a PortResolver<'_>,
+        body: &'a crate::document::GraphBody,
+        begin: NodeId,
+        end: NodeId,
+    ) {
+        let (Some(begin_signature), Some(end_signature)) =
+            (resolved.get(&begin), resolved.get(&end))
+        else {
+            return;
+        };
+        let (Some(begin_node), Some(end_node)) = (body.nodes.get(&begin), body.nodes.get(&end))
+        else {
+            return;
+        };
+        let inputs = begin_signature.ports.iter().filter(|port| {
+            port.kind == PortKind::Data
+                && port.direction == PortDirection::Input
+                && port.ty.is_some()
+        });
+        let outputs: Vec<_> = end_signature
+            .ports
+            .iter()
+            .filter(|port| {
+                port.kind == PortKind::Data
+                    && port.direction == PortDirection::Output
+                    && port.source == Some(OutputSource::Computed)
+                    && port.ty.is_some()
+            })
+            .collect();
+        for input in inputs {
+            for from in concrete_vertices(begin, begin_node, input) {
+                for output in &outputs {
+                    for to in concrete_vertices(end, end_node, output) {
+                        self.edge(from, to);
+                    }
+                }
+            }
+        }
+    }
+
+    /// A body edge between two of the body's nodes, if it joins typed data ports; its
+    /// endpoints are pushed to `incomplete` if their ports do not resolve.
+    fn data_edge(
+        &mut self,
+        resolved: &'a PortResolver<'_>,
+        edge: &'a crate::document::Edge,
+        incomplete: &mut Vec<NodeId>,
+    ) {
+        if !resolved.contains_key(&edge.from.node) || !resolved.contains_key(&edge.to.node) {
+            incomplete.extend([edge.from.node, edge.to.node]);
+            return;
+        }
+        match (resolved.port(&edge.from), resolved.port(&edge.to)) {
+            (Ok(from), Ok(to))
+                if from.direction == PortDirection::Output
+                    && to.direction == PortDirection::Input
+                    && from.kind == PortKind::Data
+                    && to.kind == PortKind::Data
+                    && from.ty.is_some()
+                    && to.ty.is_some() =>
+            {
+                self.edge(Vertex::from(&edge.from), Vertex::from(&edge.to));
+            }
+            (Ok(from), Ok(to)) if from.kind != PortKind::Data || to.kind != PortKind::Data => {}
+            (Err(_), _) | (_, Err(_)) => incomplete.extend([edge.from.node, edge.to.node]),
+            _ => {}
+        }
+    }
+
+    /// Each cyclic strongly connected component's diagnostic and witness.
+    fn cycles(self, origin: &HostOrigin) -> impl Iterator<Item = (Diagnostic, Vec<PortRef>)> {
+        let (vertices, adjacency) = self.dense();
         let mut member = vec![usize::MAX; vertices.len()];
+        let mut found = Vec::new();
         for (index, component) in dense_strongly_connected_components(&adjacency)
             .into_iter()
             .enumerate()
@@ -325,15 +383,13 @@ pub(crate) fn validate_data_cycles_in(
                 || Subject::new(None, None, None),
                 |port| Subject::new(Some(port.node), Some(port.port.clone()), None),
             );
-            result
-                .diagnostics
-                .push(Diagnostic::new(DiagnosticCode::CycleData, subject, origin));
-            result.cycle_paths.push(path);
+            found.push((
+                Diagnostic::new(DiagnosticCode::CycleData, subject, origin),
+                path,
+            ));
         }
+        found.into_iter()
     }
-
-    sort_diagnostics(&mut result.diagnostics);
-    result
 }
 
 fn mark_incomplete(
