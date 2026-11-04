@@ -240,8 +240,9 @@ fn host_ord(shape: &ValueShape) -> bool {
 }
 
 /// Whether the host owns total equality for every level of `shape`: native Core
-/// equality, or a package enum whose `eq` is a declared structural derive. Json, error,
-/// result and floats have no executable Core equality yet.
+/// equality, or a package enum whose `eq` is a declared structural derive. Map keys are
+/// [`ValueShape::map_key`]s. Json, error, result and floats have no executable Core
+/// equality yet.
 fn host_eq(types: &TypeRegistry, shape: &ValueShape, depth: usize) -> bool {
     if depth > MAX_NESTING {
         return false;
@@ -257,7 +258,7 @@ fn host_eq(types: &TypeRegistry, shape: &ValueShape, depth: usize) -> bool {
         | ValueShape::Duration
         | ValueShape::Timestamp => true,
         ValueShape::Option(inner) | ValueShape::List(inner) => host_eq(types, inner, depth + 1),
-        ValueShape::Map(key, value) => key.native_hash() && host_eq(types, value, depth + 1),
+        ValueShape::Map(key, value) => key.map_key() && host_eq(types, value, depth + 1),
         ValueShape::Enum(schema) => {
             let derived = TypeTerm::parse(schema.ty()).ok().is_some_and(|term| {
                 matches!(
@@ -355,7 +356,13 @@ fn equal(shape: &ValueShape, a: &Value, b: &Value, depth: usize) -> Option<bool>
                 return None;
             };
             let (a, b) = (a.entries(), b.entries());
-            if !a.iter().chain(b).all(|(k, _)| leaf(key, k)) {
+            // Keys compare structurally: for Core keys and derived-key enums (`map_key`)
+            // that is their language equality.
+            if !a
+                .iter()
+                .chain(b)
+                .all(|(k, _)| leaf(key, k) || key.accepts(k))
+            {
                 return None;
             }
             if a.len() != b.len() {
