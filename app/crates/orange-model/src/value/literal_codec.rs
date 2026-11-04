@@ -44,6 +44,14 @@ pub trait Schemas {
             Ok(())
         }
     }
+
+    /// Whether a nominal type's `eq` and `hash` are both declared structural derives
+    /// (11 §5.4), so the host can key maps by its tag and payload identity. Codec-only
+    /// schema sets prove no constraint; registries override this.
+    fn derives_key(&self, ty: &NamedTerm) -> bool {
+        let _ = ty;
+        false
+    }
 }
 
 /// Field IDs in schema order (12 §5).

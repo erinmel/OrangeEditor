@@ -504,6 +504,19 @@ impl Schemas for TypeRegistry {
             })
         }
     }
+
+    fn derives_key(&self, ty: &NamedTerm) -> bool {
+        use super::constraints::{CapabilityEvidence, CapabilityRequest, Constraint};
+        let term = TypeTerm::Named(ty.clone());
+        [Constraint::Eq, Constraint::Hash]
+            .into_iter()
+            .all(|constraint| {
+                matches!(
+                    self.supports_term(&term, CapabilityRequest::Constraint(constraint)),
+                    Ok(Some(witness)) if witness.evidence == CapabilityEvidence::StructuralDerive
+                )
+            })
+    }
 }
 
 fn core_types() -> &'static [(&'static str, usize)] {
