@@ -18,17 +18,15 @@ use orange_compiler::{
     KernelBinding, KernelFault, PureKernel, PureKernelResolver, PurePlan, ResolveError,
     compile_pure,
 };
-use orange_model::catalog::{
-    NodeDefinition, Ports, ProviderKey, RegistryBuilder, RegistrySnapshot,
-};
-use orange_model::document::{BodyRef, DefinitionRef};
+use orange_model::binding::{NewNode, new_node_edit};
+use orange_model::catalog::{NodeDefinition, ProviderKey, RegistryBuilder, RegistrySnapshot};
+use orange_model::document::DefinitionRef;
 use orange_model::id::NodeId;
 use orange_model::rebind::{
     RebindOutcome, RebindRequest, RebindSelection, apply_rebind, plan_rebind,
 };
-use orange_model::signature::{project, semantic_key};
 use orange_model::validation::{DiagnosticCode, HostOrigin, Severity};
-use orange_model::{DocCommand, GraphDocument, Value, analyze, from_json, validate};
+use orange_model::{DocCommand, GraphDocument, Value, analyze, validate};
 use orange_packages::{
     HOST_API_VERSION, MemoryJournal, PackageContents, PackageKey, PackageManifest, PackageState,
     PackageStore,
@@ -96,23 +94,12 @@ fn fast(version: &str, hex: char) -> ProviderKey {
     }
 }
 
-fn empty_graph() -> GraphDocument {
-    from_json(
-        &json!({"format":"orange.graph","format_version":1,
-            "graph_id":"20000000-0000-4000-8000-000000000001","revision":0,
-            "package_lock":[],"signatures":{},"nodes":[],"edges":[],"exports":[]})
-        .to_string(),
-    )
-    .unwrap()
-}
-
 fn literal(value: i64) -> serde_json::Value {
     json!({"type": I64, "value": value.to_string()})
 }
 
-/// Authors one node as an editor would: the provider is the registry's new-binding default,
-/// locked with its exact package version and digest, and the signature is projected from the
-/// registered definition. Returns the provider the node was bound to.
+/// Places one node as an editor would, bound to the registry's new-binding default, with a
+/// generic definition pinned to i64. Returns the provider the node was bound to.
 fn author(
     document: &mut GraphDocument,
     registry: &RegistrySnapshot,
@@ -120,51 +107,24 @@ fn author(
     definition: &str,
     inputs: serde_json::Value,
 ) -> ProviderKey {
-    let definition = dref(definition);
-    let provider = registry
-        .new_binding_default(&definition)
-        .expect("the host selected a default for new bindings")
-        .clone();
-    let registered = registry.definition(&definition).unwrap();
-    let Ports::Declared(ports) = registered.ports.clone() else {
-        unreachable!("both definitions declare their ports")
-    };
-    let pins = if registered.type_params.is_empty() {
-        json!({})
-    } else {
-        json!({"T": I64})
-    };
-    let args = serde_json::from_value(pins.clone()).unwrap();
-    let snapshot = project(registered.kind, ports, &args);
-    let key = semantic_key(&snapshot);
-    let node = serde_json::from_value(json!({
-        "id": node_id(n), "definition_id": definition.id, "definition_version": 1,
-        "config_version": registered.config_version, "config": {}, "type_pins": pins,
-        "signature": key, "inputs": inputs,
-        "provider": {"package": provider.package, "version": provider.version, "id": provider.id}
-    }))
-    .unwrap();
-    let lock = serde_json::from_value(json!({
-        "id": provider.package, "version": provider.version,
-        "content_digest": provider.content_digest
-    }))
-    .unwrap();
-    let _ = document
-        .apply([
-            DocCommand::PutPackageLock(lock),
-            DocCommand::PutSignature { key, snapshot },
-            DocCommand::AddNode {
-                body: BodyRef::Root,
-                node,
-            },
-        ])
-        .unwrap();
-    provider
+    let mut node = NewNode::new(node_id(n), dref(definition));
+    node.inputs = serde_json::from_value(inputs).unwrap();
+    if !registry
+        .definition(&node.definition)
+        .unwrap()
+        .type_params
+        .is_empty()
+    {
+        node.type_pins.insert("T".into(), I64.parse().unwrap());
+    }
+    let edit = new_node_edit(document, registry, node).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    edit.provider
 }
 
 /// `add(20, 1) -> triple -> export`, every node bound through new-binding defaults.
 fn author_graph(registry: &RegistrySnapshot) -> (GraphDocument, Vec<ProviderKey>) {
-    let mut document = empty_graph();
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
     let bound = vec![
         author(
             &mut document,
