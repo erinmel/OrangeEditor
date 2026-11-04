@@ -136,6 +136,7 @@ pub(crate) fn binding_error(node: NodeId, error: ResolveError) -> CompileError {
     match error {
         ResolveError::Unavailable => CompileError::KernelUnavailable { node },
         ResolveError::Contract => CompileError::KernelContract { node },
+        ResolveError::UnsupportedType => CompileError::KernelUnsupportedType { node },
     }
 }
 /// The first fault among already folded slots, in order.
