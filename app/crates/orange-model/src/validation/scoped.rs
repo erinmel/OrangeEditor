@@ -518,7 +518,7 @@ pub(super) fn structure_update(
         &touched,
         added_nodes,
         (!retained.complete).then_some(&analysis.report().incomplete_nodes),
-        (added_nodes.is_empty() && edit.removed_nodes.is_empty()).then_some(&touched),
+        Some(&touched),
     )?;
     if fresh.values().any(|(signature, _)| !typed_data(signature)) {
         return None;
@@ -1355,8 +1355,9 @@ impl ArgUpdate {
 /// neighbour of that set available, and confirms each result equals the retained one.
 /// Nodes in `added` are new: each must resolve without errors, and its results are returned.
 /// With `incomplete`, every node the resolution reads must keep clear of those nodes.
-/// With `seeds`, the edit kept every node's contract, added or removed none and changed
-/// only equations over the variables of generic nodes among `seeds`: then a kept solution
+/// With `seeds`, the edit kept every remaining node's contract and changed only equations
+/// over the variables of generic nodes among `seeds`, which hold every added node and
+/// every remaining endpoint of a removed edge, and of removed nodes: then a kept solution
 /// ([`kept_resolution`]) is tried before the components are solved.
 #[expect(
     clippy::too_many_arguments,
@@ -1377,7 +1378,7 @@ fn resolution_unchanged(
         && retained.complete
         && retained.bounded
         && let Some(kept) = kept_resolution(
-            document, registry, index, analysis, retained, touched, seeds,
+            document, registry, index, analysis, retained, touched, added, seeds,
         )
     {
         return Some(kept);
@@ -1442,7 +1443,18 @@ fn resolution_unchanged(
 /// component. So resolving the touched nodes, the generic ones with their kept arguments
 /// and their neighbours available, decides every changed result. A non-generic endpoint,
 /// such as a Get Variable read by many clusters, is therefore resolved but not expanded.
+///
+/// Whole nodes may come and go (V12f): every `added` node is touched and takes the
+/// arguments `solution_kept` checked for it, and must resolve without errors. A removed
+/// node only takes away a member or neighbour, which cannot block a component; its
+/// remaining neighbours are touched, as endpoints of its removed edges. An added node's
+/// published types must stay within the unifier's budget, as [`Retained::bounded`]
+/// requires of every published type before a kept solution is trusted.
 /// `None` leaves the components to be solved.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "structure edits also pass their added nodes"
+)]
 fn kept_resolution(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -1450,22 +1462,26 @@ fn kept_resolution(
     analysis: &ValidationAnalysis,
     retained: &Retained,
     touched: &BTreeSet<NodeId>,
+    added: &BTreeSet<NodeId>,
     seeds: &BTreeSet<NodeId>,
 ) -> Option<Resolution> {
     use crate::inference::component::{KEPT_SOLUTION_BUDGET, solution_kept};
-    if !solution_kept(
+    let added_args = solution_kept(
         document,
         index,
         registry,
         seeds,
+        added,
         |id| retained.args.get(&id),
         KEPT_SOLUTION_BUDGET,
-    ) {
-        return None;
-    }
+    )?;
     // In a complete report every generic node has arguments, and no other node does.
-    let generic = |id: &NodeId| retained.args.contains_key(id);
-    let near: BTreeSet<NodeId> = touched.iter().copied().filter(generic).collect();
+    let args_of = |id: &NodeId| added_args.get(id).or_else(|| retained.args.get(id));
+    let near: BTreeSet<NodeId> = touched
+        .iter()
+        .copied()
+        .filter(|id| args_of(id).is_some())
+        .collect();
     let ids: Vec<NodeId> = with_neighbours(document, index, &near)
         .into_iter()
         .chain(touched.iter().copied())
@@ -1474,7 +1490,7 @@ fn kept_resolution(
         .collect();
     let type_args: BTreeMap<NodeId, TypeArgs> = near
         .iter()
-        .map(|id| (*id, retained.args[id].clone()))
+        .filter_map(|id| Some((*id, args_of(id)?.clone())))
         .collect();
     let known = crate::inference::ComponentInference {
         nodes: type_args.keys().copied().collect(),
@@ -1495,20 +1511,19 @@ fn kept_resolution(
         None,
     );
     let fresh = by_node(&nodes.diagnostics)?;
-    compare(
-        analysis,
-        retained,
-        &nodes,
-        &fresh,
-        touched,
-        &BTreeSet::new(),
-    )?;
+    let fresh = compare(analysis, retained, &nodes, &fresh, touched, added)?;
+    if !types_bounded(fresh.values().map(|(signature, _)| signature)) {
+        return None;
+    }
     Some(Resolution {
         resolved: ids.len(),
         components: 0,
-        fresh: Fresh::new(),
+        fresh,
         reach: ids,
-        args: ArgUpdate::default(),
+        args: ArgUpdate {
+            nodes: added.clone(),
+            args: added_args,
+        },
     })
 }
 
