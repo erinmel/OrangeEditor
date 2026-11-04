@@ -2522,6 +2522,83 @@ fn random_edits_of_a_connected_component_equal_the_full_analysis() {
 }
 
 #[test]
+fn function_body_node_edits_keep_the_body_solution() {
+    let (mut doc, registry) = called_function();
+    let mut session = session(&doc, &registry);
+    let body = BodyRef::Function(id(200).parse().unwrap());
+    // An add reading the body's add, grounded by its own literal, then its removal.
+    let mut node = math(206, "add", 0, 1);
+    node["inputs"] = json!({"b": {"type": "core/u64@1", "value": "1"}});
+    let pasted = vec![
+        DocCommand::AddNode {
+            body,
+            node: serde_json::from_value(node).unwrap(),
+        },
+        wire(206, 204, "sum", 206, "a"),
+    ];
+    kept_edit(&mut session, &mut doc, &registry, pasted, 4);
+    kept_edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![remove_nodes(&[206])],
+        3,
+    );
+    // An isolated add in the body and its removal.
+    let alone = vec![DocCommand::AddNode {
+        body,
+        node: serde_json::from_value(math(207, "add", 1, 2)).unwrap(),
+    }];
+    kept_edit(&mut session, &mut doc, &registry, alone, 1);
+    kept_edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![remove_nodes(&[207])],
+        0,
+    );
+    assert_eq!(session.stats().full_analysis_runs, 0);
+}
+
+#[test]
+fn removing_the_only_evidence_node_leaves_the_chain_ambiguous() {
+    // An added source feeding the first add shadows its literals, which are then cleared:
+    // the source is the chain's only evidence.
+    let (mut doc, registry) = connected_chain(40, false);
+    let mut session = session(&doc, &registry);
+    let source = DocCommand::AddNode {
+        body: BodyRef::Root,
+        node: serde_json::from_value(math(5000, "add", 0, 1)).unwrap(),
+    };
+    let pasted = vec![
+        source,
+        connect(5000, 5000, 10, "a"),
+        connect(5001, 5000, 10, "b"),
+    ];
+    kept_edit(&mut session, &mut doc, &registry, pasted, 4);
+    let cleared = vec![set(10, "a", None), set(10, "b", None)];
+    kept_edit(&mut session, &mut doc, &registry, cleared, 4);
+    assert!(session.analysis().report().is_valid());
+    let options = AnalysisOptions::default();
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![remove_nodes(&[5000])],
+    );
+    assert!(!kept(&session, work), "{work:?}");
+    assert!(
+        session
+            .analysis()
+            .report()
+            .diagnostics
+            .iter()
+            .any(|d| d.code == orange_model::validation::DiagnosticCode::TypeAmbiguous)
+    );
+}
+
+#[test]
 fn random_node_edits_of_a_connected_component_equal_the_full_analysis() {
     // Adds 10..70; add k reads k-1 into `a` and k-2 into `b`, all one component.
     let (package, registry) = catalog();
