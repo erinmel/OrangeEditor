@@ -186,13 +186,15 @@ For 1,000 Set nodes with nine-Add chains, exec-edge p95 is 5.628 ms with one act
 
 W9 keeps its fixed 1,000 seeded mixed edits, plus separate 250-edit exec/body/reconnection categories and 20-edit cycle categories. The reconnection category also includes reconnect operations paired with disconnects; category counts are not a disjoint partition of the 1,000 seeded edits. Times below are milliseconds:
 
-| Shape (nodes / edges) | Seeded p95 / p99 | Connect p95 | Exec-edge p95 | Body-literal p95 | Cycle-close / open p95 |
+| Shape (nodes / edges) | Seeded p95 / p99 | Connect p95 / p99 (2026-11-03) | Exec-edge p95 | Body-literal p95 | Cycle-close / open p95 |
 |---|---:|---:|---:|---:|---:|
-| clustered (10,014 / 18,004) | 0.284 / 0.781 | 0.293 | 1.002 | 0.244 | 194.578 / 194.050 |
-| connected (10,014 / 18,004) | 0.430 / 2.197 | 2.830 | 0.862 | 0.203 | 1,532.401 / 1,534.615 |
-| clustered (11,014 / 20,004) | 0.354 / 0.641 | 0.358 | 1.008 | 0.344 | 175.957 / 173.400 |
-| connected (11,014 / 20,004) | 0.488 / 2.325 | 6.749 | 0.927 | 0.196 | 1,799.361 / 1,749.163 |
-| shared Get (10,024 / 20,004) | 0.290 / 0.637 | 0.424 | 0.986 | 0.232 | 189.191 / 171.752 |
+| clustered (10,014 / 18,004) | 0.284 / 0.781 | 0.353 / 1.100 | 1.002 | 0.244 | 194.578 / 194.050 |
+| connected (10,014 / 18,004) | 0.430 / 2.197 | 0.540 / 1.497 | 0.862 | 0.203 | 1,532.401 / 1,534.615 |
+| clustered (11,014 / 20,004) | 0.354 / 0.641 | 0.400 / 1.072 | 1.008 | 0.344 | 175.957 / 173.400 |
+| connected (11,014 / 20,004) | 0.488 / 2.325 | 0.957 / 2.164 | 0.927 | 0.196 | 1,799.361 / 1,749.163 |
+| shared Get (10,024 / 20,004) | 0.290 / 0.637 | 0.440 / 1.260 | 0.986 | 0.232 | 189.191 / 171.752 |
+
+The connect column is from a later run with the two-way data-order repair ([10](10-tooling-and-sources.md)); the other columns are from the earlier run. That run's connect maximum on connected 20k is still 16.6 ms: one reconnect whose two sides each span about 5,000 nodes, one of which a kept total order must move.
 
 The seeded edits were scoped in all five shapes, with at most seven nodes re-resolved; every cycle close/open used full analysis. The connected cases' cycle tails reach about 1.8 seconds and need separate profiling before any latency guarantee. Work counters count re-resolved nodes rather than every validation visit, as documented in 16; zero re-resolved during a full rebuild does not mean zero work. These single-process breadth observations do not establish cross-run tail stability, pass NFR-05/15 or replace reference-machine and real-UI evidence.
 
