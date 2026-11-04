@@ -534,6 +534,76 @@ fn random_rewiring_equals_the_full_analysis() {
     assert!(scoped >= 30, "{scoped}");
 }
 
+/// One chain of adds 10..40, each `a` wired from the add before it except at the gaps.
+fn long_chain(gaps: &[u32]) -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (package, registry) = catalog();
+    let nodes = (10..40).map(|n| math(n, "add", 0, 1)).collect();
+    let edges = (11..40)
+        .filter(|n| !gaps.contains(n))
+        .map(|n| edge(n, n - 1, "sum", n, "a"))
+        .collect();
+    (graph(&package, nodes, edges, vec![]), registry)
+}
+
+#[test]
+fn reconnects_against_the_data_order_equal_the_full_analysis() {
+    // The full analysis may order a later segment of the chain first; closing the gap then
+    // moves the shorter side: the two adds before it at 12, the three after it at 37, and
+    // two gaps closed by one edit move twice. Each order must still see the cycle a later
+    // edge closes through the whole chain, and accept an edge along it.
+    for gaps in [vec![12], vec![37], vec![15, 30]] {
+        let (mut doc, registry) = long_chain(&gaps);
+        let mut session = session(&doc, &registry);
+        let options = AnalysisOptions::default();
+        let close = gaps.iter().map(|&n| connect(n, n - 1, n, "a")).collect();
+        let work = edit(&mut session, &mut doc, &registry, options, close);
+        assert_eq!(work, SessionWork::Scoped, "{gaps:?}");
+        let work = edit(
+            &mut session,
+            &mut doc,
+            &registry,
+            options,
+            vec![connect(90, 10, 39, "b")],
+        );
+        assert_eq!(work, SessionWork::Scoped, "{gaps:?}");
+        let work = edit(
+            &mut session,
+            &mut doc,
+            &registry,
+            options,
+            vec![connect(91, 39, 10, "b")],
+        );
+        assert_eq!(work, SessionWork::Recompute, "{gaps:?}");
+        assert!(!session.analysis().report().is_valid());
+    }
+}
+
+#[test]
+fn reconnects_after_each_rebuilt_order_equal_the_full_analysis() {
+    // A cycle closed and opened again rebuilds the order around the open gap, which the
+    // reconnect then runs against, at gaps across the chain.
+    let (mut doc, registry) = long_chain(&[]);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    for round in 0..12 {
+        let gap = 11 + (round * 7) % 29;
+        let mut run = |commands| edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(run(vec![disconnect(gap)]), SessionWork::Scoped);
+        // A cycle within the segment that does not hold the gap.
+        let (from, to) = if gap > 20 { (19, 10) } else { (39, 30) };
+        assert_eq!(
+            run(vec![connect(91, from, to, "b")]),
+            SessionWork::Recompute
+        );
+        run(vec![disconnect(91)]);
+        assert_eq!(
+            run(vec![connect(gap, gap - 1, gap, "a")]),
+            SessionWork::Scoped,
+            "{gap}"
+        );
+    }
+}
+
 #[test]
 fn an_edge_from_an_event_payload_runs_the_full_analysis() {
     let (package, registry) = catalog();
@@ -1256,6 +1326,39 @@ fn function_body_node_edits_are_scoped_while_acceptance_holds() {
         vec![set(204, "b", other)],
     );
     assert_eq!(work, SessionWork::Recompute);
+}
+
+#[test]
+fn an_exec_path_that_bypasses_a_producer_equals_the_full_analysis() {
+    let (mut doc, registry) = called_function();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // The Set also runs straight from On Start, where the Call has not produced its result.
+    edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![wire(10, 1, "then", 4, "in")],
+    );
+    assert!(!session.analysis().report().is_valid());
+    edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(10)],
+    );
+    assert!(session.analysis().report().is_valid());
+    // Moving the Set's only path past the Call leaves its value unproduced too.
+    edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(3), wire(10, 1, "then", 4, "in")],
+    );
+    assert!(!session.analysis().report().is_valid());
 }
 
 #[test]
