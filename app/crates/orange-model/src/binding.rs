@@ -21,7 +21,7 @@ use crate::document::{
 use crate::edit::DocCommand;
 use crate::id::{NodeId, PortId, PortKey, TypeExpr};
 use crate::signature::{
-    SignatureSubstitutionError, project_with_suspension, semantic_key, try_substitute_params,
+    SubstitutionFailure, project_with_suspension, semantic_key, try_substitute_params,
 };
 
 /// A node to place. The definition's registered config version is used.
@@ -73,15 +73,17 @@ pub enum NewNodeError {
     /// The definition's ports depend on document declarations that do not admit them.
     #[error(transparent)]
     Contract(#[from] ContractError),
-    /// A pin names a type parameter the node's contract does not declare.
-    #[error("type pin `${0}` names no declared type parameter")]
-    UndeclaredPin(TypeParamName),
-    /// A pinned type could not be substituted into a declared port type.
-    #[error("port `{port}` cannot take the pinned types")]
+    /// A pin names a type parameter the node's contract does not declare. Pin keys are
+    /// unvalidated caller text, so the error does not retain or print the key; compare the
+    /// pins with the contract's type parameters to find it.
+    #[error("a type pin names no declared type parameter")]
+    UndeclaredPin,
+    /// A pinned type could not be substituted into a declared port type. Only the port and
+    /// the failure kind are kept; no type text is retained (13 §2).
+    #[error("port `{port}` cannot take the pinned types ({failure:?})")]
     Substitution {
         port: PortId,
-        #[source]
-        source: SignatureSubstitutionError,
+        failure: SubstitutionFailure,
     },
 }
 
@@ -136,22 +138,22 @@ pub fn new_node_edit(
     let contract = registry
         .contract(document, &instance)?
         .ok_or(NewNodeError::UnknownDefinition(definition))?;
-    if let Some(pin) = instance
+    if instance
         .type_pins
         .keys()
-        .find(|pin| !contract.type_params.iter().any(|param| &param.name == *pin))
+        .any(|pin| !contract.type_params.iter().any(|param| &param.name == pin))
     {
-        return Err(NewNodeError::UndeclaredPin(pin.clone()));
+        return Err(NewNodeError::UndeclaredPin);
     }
     let mut ports = contract.ports.clone();
     // Without pins there is nothing to substitute; malformed declared types stay for the
     // validator to report, as for any unpinned node.
     for port in ports.iter_mut().filter(|_| !instance.type_pins.is_empty()) {
         if let Some(ty) = &port.ty {
-            let resolved = try_substitute_params(ty, &instance.type_pins).map_err(|source| {
+            let resolved = try_substitute_params(ty, &instance.type_pins).map_err(|error| {
                 NewNodeError::Substitution {
                     port: port.port_id.clone(),
-                    source,
+                    failure: error.failure(),
                 }
             })?;
             port.ty = Some(resolved);
