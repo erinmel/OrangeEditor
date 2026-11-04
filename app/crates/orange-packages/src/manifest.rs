@@ -219,6 +219,11 @@ pub struct HostApiVersion {
     pub minor: u32,
 }
 
+/// The host API this foundation build offers packages. Hosts pass it to
+/// [`PackageStore::new`](crate::PackageStore::new), which accepts a manifest only when its
+/// [`HostApiRange`] contains it. A minor release adds API; a major release breaks it.
+pub const HOST_API_VERSION: HostApiVersion = HostApiVersion { major: 1, minor: 0 };
+
 /// The host API versions a package supports: one major, an inclusive minor range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
 #[serde(deny_unknown_fields)]

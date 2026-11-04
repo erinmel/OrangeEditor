@@ -30,7 +30,7 @@ use orange_model::signature::{project, semantic_key};
 use orange_model::validation::{DiagnosticCode, HostOrigin, Severity};
 use orange_model::{DocCommand, GraphDocument, Value, analyze, from_json, validate};
 use orange_packages::{
-    HostApiVersion, MemoryJournal, PackageContents, PackageKey, PackageManifest, PackageState,
+    HOST_API_VERSION, MemoryJournal, PackageContents, PackageKey, PackageManifest, PackageState,
     PackageStore,
 };
 use serde_json::json;
@@ -41,8 +41,6 @@ const PACKAGE: &str = "acme.math";
 const TRIPLE: &str = "acme.math/triple";
 const ADD: &str = "org.orange.math/add";
 const I64: &str = "core/i64@1";
-/// The host API this host offers. The foundation publishes no host API constant yet.
-const HOST_API: HostApiVersion = HostApiVersion { major: 1, minor: 0 };
 
 fn digest(byte: char) -> String {
     format!("sha256:{}", byte.to_string().repeat(64))
@@ -342,7 +340,7 @@ fn third_party_package_installs_replaces_rebinds_and_rolls_back() {
         resolved: Mutex::new(Vec::new()),
     };
     let (v1, v2) = (fast("1.0.0", '1'), fast("2.0.0", '2'));
-    let mut store = PackageStore::new(Arc::clone(&base), HOST_API, MemoryJournal::new());
+    let mut store = PackageStore::new(Arc::clone(&base), HOST_API_VERSION, MemoryJournal::new());
 
     // 1. Install 1.0.0 from its manifest. Installing picks no default: the bundled native
     //    provider keeps nothing selected and acme gains nothing implicitly.

@@ -19,8 +19,8 @@ mod store;
 pub use journal::{Journal, JournalEntry, JournalError, MemoryJournal, Recovery};
 pub use lifecycle::PackageState;
 pub use manifest::{
-    Dependency, HostApiRange, HostApiVersion, MANIFEST_FORMAT, MANIFEST_FORMAT_VERSION,
-    MAX_MANIFEST_BYTES, ManifestError, PackageId, PackageKey, PackageManifest, PackageVersion,
-    ProviderContribution, ProviderSlot, SlotKind,
+    Dependency, HOST_API_VERSION, HostApiRange, HostApiVersion, MANIFEST_FORMAT,
+    MANIFEST_FORMAT_VERSION, MAX_MANIFEST_BYTES, ManifestError, PackageId, PackageKey,
+    PackageManifest, PackageVersion, ProviderContribution, ProviderSlot, SlotKind,
 };
 pub use store::{PackageContents, PackageRecord, PackageStore, TransactionError};
