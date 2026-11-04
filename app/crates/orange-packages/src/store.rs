@@ -6,7 +6,7 @@ use std::sync::Arc;
 
 use orange_model::catalog::{
     NodeDefinition, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistryError,
-    RegistrySnapshot,
+    RegistrySnapshot, TypeArgs,
 };
 use orange_model::document::DefinitionRef;
 use orange_model::id::DefinitionId;
@@ -18,12 +18,14 @@ use crate::manifest::{
     HostApiRange, HostApiVersion, PackageKey, PackageManifest, ProviderSlot, SlotKind,
 };
 
-/// A staged package: its validated manifest and the node definitions it ships. Archive
-/// unpacking and definition-file decoding are host work; this crate receives their result.
+/// A staged package: its validated manifest, the node definitions it ships and the argument
+/// sets its generic providers support. Archive unpacking is host work; definition files
+/// decode with [`NodeDefinition::from_json`].
 #[derive(Debug, Clone, PartialEq)]
 pub struct PackageContents {
     manifest: PackageManifest,
     definitions: Vec<NodeDefinition>,
+    specializations: BTreeMap<(String, DefinitionRef), Vec<TypeArgs>>,
 }
 
 impl PackageContents {
@@ -32,7 +34,34 @@ impl PackageContents {
         Self {
             manifest,
             definitions,
+            specializations: BTreeMap::new(),
         }
+    }
+
+    /// Restricts the package's `provider` for `definition` to the `supported` argument sets
+    /// (11 §5.5), replacing any earlier list for that pair. The pair must be a declared
+    /// `node:` provider contribution. Without a list the provider delegates to constraints;
+    /// an inferred instantiation outside a list is `E-NO-SPECIALIZATION`.
+    pub fn with_specializations(
+        mut self,
+        provider: impl Into<String>,
+        definition: DefinitionRef,
+        supported: Vec<TypeArgs>,
+    ) -> Self {
+        self.specializations
+            .insert((provider.into(), definition), supported);
+        self
+    }
+
+    /// The argument sets `provider` supports for `definition`, if the package lists them.
+    pub fn specializations(
+        &self,
+        provider: &str,
+        definition: &DefinitionRef,
+    ) -> Option<&[TypeArgs]> {
+        self.specializations
+            .get(&(provider.to_owned(), definition.clone()))
+            .map(Vec::as_slice)
     }
 
     /// The validated manifest.
@@ -134,6 +163,15 @@ pub enum TransactionError {
     /// A node slot names a definition that is neither shipped nor registered.
     #[error("provider slot names unknown definition `{}@{}`", .0.id, .0.version)]
     UnknownSlotDefinition(DefinitionRef),
+    /// Specializations name a provider and definition that no `node:` contribution of the
+    /// manifest pairs.
+    #[error("provider `{provider}` declares no slot for `{}@{}`", .definition.id, .definition.version)]
+    UndeclaredSpecialization {
+        /// The package-local provider ID.
+        provider: String,
+        /// The specialized definition.
+        definition: DefinitionRef,
+    },
     /// The registry does not publish this slot kind yet.
     #[error("slot kind {kind:?} (`{descriptor}`) is not publishable yet")]
     UnsupportedSlot {
@@ -579,7 +617,7 @@ impl<J: Journal> PackageStore<J> {
         self.transition(key, PackageState::Discovered)?;
         self.transition(key, PackageState::Staged)?;
         let manifest = Arc::new(contents.manifest);
-        let plan = self.validate(&manifest, contents.definitions)?;
+        let plan = self.validate(&manifest, contents.definitions, contents.specializations)?;
         self.transition(key, PackageState::Validated)?;
         // Permissions are not interpreted yet; the install request stands for approval.
         self.transition(key, PackageState::Granted)?;
@@ -590,10 +628,12 @@ impl<J: Journal> PackageStore<J> {
         for definition in plan.definitions {
             builder = builder.definition(definition);
         }
+        let mut specializations = plan.specializations;
         let descriptors: Vec<ProviderDescriptor> = plan
             .providers
             .into_iter()
             .map(|(id, implements)| ProviderDescriptor {
+                specializations: specializations.remove(&id).unwrap_or_default(),
                 key: ProviderKey {
                     package: key.id.as_str().to_owned(),
                     version: key.version.as_str().to_owned(),
@@ -601,7 +641,6 @@ impl<J: Journal> PackageStore<J> {
                     id,
                 },
                 implements,
-                specializations: BTreeMap::new(),
             })
             .collect();
         if let Some(from) = &from
@@ -636,11 +675,12 @@ impl<J: Journal> PackageStore<J> {
     }
 
     /// Contribution validation before any registry work: digest identity, host API,
-    /// dependencies, declared definitions and provider slots.
+    /// dependencies, declared definitions, provider slots and their specializations.
     fn validate(
         &self,
         manifest: &PackageManifest,
         definitions: Vec<NodeDefinition>,
+        specialized: BTreeMap<(String, DefinitionRef), Vec<TypeArgs>>,
     ) -> Result<Plan, TransactionError> {
         let key = manifest.key();
         if self.revoked.contains(manifest.content_digest()) {
@@ -731,9 +771,29 @@ impl<J: Journal> PackageStore<J> {
                 .or_default()
                 .insert((definition.clone(), config_version));
         }
+        let mut specializations: BTreeMap<String, BTreeMap<DefinitionRef, Vec<TypeArgs>>> =
+            BTreeMap::new();
+        for ((provider, definition), supported) in specialized {
+            let declared = providers.get(&provider).is_some_and(|implements| {
+                implements
+                    .iter()
+                    .any(|(implemented, _)| *implemented == definition)
+            });
+            if !declared {
+                return Err(TransactionError::UndeclaredSpecialization {
+                    provider,
+                    definition,
+                });
+            }
+            specializations
+                .entry(provider)
+                .or_default()
+                .insert(definition, supported);
+        }
         Ok(Plan {
             definitions: new_definitions,
             providers,
+            specializations,
         })
     }
 
@@ -794,6 +854,8 @@ struct Plan {
     definitions: Vec<NodeDefinition>,
     /// Implemented definitions per package-local provider ID.
     providers: BTreeMap<String, BTreeSet<(DefinitionRef, u32)>>,
+    /// Supported argument sets per provider ID and definition, where the package lists them.
+    specializations: BTreeMap<String, BTreeMap<DefinitionRef, Vec<TypeArgs>>>,
 }
 
 /// Moves new-binding defaults from providers of `old` to the same-ID providers in `new`

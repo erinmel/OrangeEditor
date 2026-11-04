@@ -3,7 +3,9 @@
 //! activation and override", "Hot update/removal"; 12 §8; ADR-07).
 //!
 //! `acme.math` ships its own node `acme.math/triple` and a provider `fast` that also fills
-//! the bundled slot `node:org.orange.math/add@1`. The host starts from the bundled registry,
+//! the bundled slot `node:org.orange.math/add@1`, specialized to i64. Definitions decode from
+//! the package's files and nodes bind through new-binding defaults with public helpers. The
+//! host starts from the bundled registry,
 //! installs version 1.0.0 from its manifest fixture, selects it for new bindings and authors
 //! a graph; the graph compiles and folds through the package's kernels. Version 2.0.0 moves
 //! new bindings only; the graph keeps its exact 1.0.0 lock until an explicit rebind. Removing
@@ -18,31 +20,30 @@ use orange_compiler::{
     KernelBinding, KernelFault, PureKernel, PureKernelResolver, PurePlan, ResolveError,
     compile_pure,
 };
+use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::catalog::{
-    Determinism, NodeDefinition, Ports, ProviderKey, RegistryBuilder, RegistrySnapshot,
+    NodeDefinition, ProviderKey, RegistryBuilder, RegistrySnapshot, TypeArgs,
 };
-use orange_model::document::{BodyRef, DefinitionRef, NodeKind, OutputSource, PortDescriptor};
+use orange_model::document::DefinitionRef;
 use orange_model::id::NodeId;
 use orange_model::rebind::{
     RebindOutcome, RebindRequest, RebindSelection, apply_rebind, plan_rebind,
 };
-use orange_model::signature::{project, semantic_key};
 use orange_model::validation::{DiagnosticCode, HostOrigin, Severity};
-use orange_model::{DocCommand, GraphDocument, Value, analyze, from_json, validate};
+use orange_model::{DocCommand, GraphDocument, Value, analyze, validate};
 use orange_packages::{
-    HostApiVersion, MemoryJournal, PackageContents, PackageKey, PackageManifest, PackageState,
+    HOST_API_VERSION, MemoryJournal, PackageContents, PackageKey, PackageManifest, PackageState,
     PackageStore,
 };
 use serde_json::json;
 
 const MANIFEST_1: &[u8] = include_bytes!("fixtures/acme.math/manifest-1.0.0.json");
 const MANIFEST_2: &[u8] = include_bytes!("fixtures/acme.math/manifest-2.0.0.json");
+const TRIPLE_DEFINITION: &str = include_str!("fixtures/acme.math/triple.json");
 const PACKAGE: &str = "acme.math";
 const TRIPLE: &str = "acme.math/triple";
 const ADD: &str = "org.orange.math/add";
 const I64: &str = "core/i64@1";
-/// The host API this host offers. The foundation publishes no host API constant yet.
-const HOST_API: HostApiVersion = HostApiVersion { major: 1, minor: 0 };
 
 fn digest(byte: char) -> String {
     format!("sha256:{}", byte.to_string().repeat(64))
@@ -72,33 +73,19 @@ fn bundled() -> (MathPackage, Arc<RegistrySnapshot>) {
     (package, snapshot)
 }
 
-/// The definition `acme.math/triple` ships: one i64 in, three times it out.
-fn triple_definition() -> NodeDefinition {
-    let ty: orange_model::id::TypeExpr = I64.parse().unwrap();
-    NodeDefinition {
-        definition: dref(TRIPLE),
-        config_version: 1,
-        kind: NodeKind::Pure,
-        volatility: None,
-        determinism: Determinism::Deterministic,
-        suspends: None,
-        type_params: vec![],
-        ports: Ports::Declared(vec![
-            PortDescriptor::data_in("value", ty.clone()),
-            PortDescriptor::data_out("result", ty, OutputSource::Computed),
-        ]),
-        references: vec![],
-        specializations: None,
-        config_schema: None,
-    }
+/// The argument sets acme's kernels implement for the generic bundled `add`: i64 only.
+fn i64_only() -> Vec<TypeArgs> {
+    vec![TypeArgs::from([("T".into(), I64.parse().unwrap())])]
 }
 
-/// A staged package version: the decoded manifest fixture and its shipped definition.
+/// A staged package version: the decoded manifest fixture, its shipped definition file
+/// `acme.math/triple` (one i64 in, three times it out), and `fast` restricted to i64 `add`.
 fn acme(manifest: &[u8]) -> PackageContents {
     PackageContents::new(
         PackageManifest::from_json(manifest).unwrap(),
-        vec![triple_definition()],
+        vec![NodeDefinition::from_json(TRIPLE_DEFINITION).unwrap()],
     )
+    .with_specializations("fast", dref(ADD), i64_only())
 }
 
 fn package_key(version: &str) -> PackageKey {
@@ -117,23 +104,12 @@ fn fast(version: &str, hex: char) -> ProviderKey {
     }
 }
 
-fn empty_graph() -> GraphDocument {
-    from_json(
-        &json!({"format":"orange.graph","format_version":1,
-            "graph_id":"20000000-0000-4000-8000-000000000001","revision":0,
-            "package_lock":[],"signatures":{},"nodes":[],"edges":[],"exports":[]})
-        .to_string(),
-    )
-    .unwrap()
-}
-
 fn literal(value: i64) -> serde_json::Value {
     json!({"type": I64, "value": value.to_string()})
 }
 
-/// Authors one node as an editor would: the provider is the registry's new-binding default,
-/// locked with its exact package version and digest, and the signature is projected from the
-/// registered definition. Returns the provider the node was bound to.
+/// Places one node as an editor would, bound to the registry's new-binding default, with a
+/// generic definition pinned to i64. Returns the provider the node was bound to.
 fn author(
     document: &mut GraphDocument,
     registry: &RegistrySnapshot,
@@ -141,51 +117,24 @@ fn author(
     definition: &str,
     inputs: serde_json::Value,
 ) -> ProviderKey {
-    let definition = dref(definition);
-    let provider = registry
-        .new_binding_default(&definition)
-        .expect("the host selected a default for new bindings")
-        .clone();
-    let registered = registry.definition(&definition).unwrap();
-    let Ports::Declared(ports) = registered.ports.clone() else {
-        unreachable!("both definitions declare their ports")
-    };
-    let pins = if registered.type_params.is_empty() {
-        json!({})
-    } else {
-        json!({"T": I64})
-    };
-    let args = serde_json::from_value(pins.clone()).unwrap();
-    let snapshot = project(registered.kind, ports, &args);
-    let key = semantic_key(&snapshot);
-    let node = serde_json::from_value(json!({
-        "id": node_id(n), "definition_id": definition.id, "definition_version": 1,
-        "config_version": registered.config_version, "config": {}, "type_pins": pins,
-        "signature": key, "inputs": inputs,
-        "provider": {"package": provider.package, "version": provider.version, "id": provider.id}
-    }))
-    .unwrap();
-    let lock = serde_json::from_value(json!({
-        "id": provider.package, "version": provider.version,
-        "content_digest": provider.content_digest
-    }))
-    .unwrap();
-    let _ = document
-        .apply([
-            DocCommand::PutPackageLock(lock),
-            DocCommand::PutSignature { key, snapshot },
-            DocCommand::AddNode {
-                body: BodyRef::Root,
-                node,
-            },
-        ])
-        .unwrap();
-    provider
+    let mut node = NewNode::new(node_id(n), dref(definition));
+    node.inputs = serde_json::from_value(inputs).unwrap();
+    if !registry
+        .definition(&node.definition)
+        .unwrap()
+        .type_params
+        .is_empty()
+    {
+        node.type_pins.insert("T".into(), I64.parse().unwrap());
+    }
+    let edit = new_node_edit(document, registry, node).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    edit.provider
 }
 
 /// `add(20, 1) -> triple -> export`, every node bound through new-binding defaults.
 fn author_graph(registry: &RegistrySnapshot) -> (GraphDocument, Vec<ProviderKey>) {
-    let mut document = empty_graph();
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
     let bound = vec![
         author(
             &mut document,
@@ -342,7 +291,7 @@ fn third_party_package_installs_replaces_rebinds_and_rolls_back() {
         resolved: Mutex::new(Vec::new()),
     };
     let (v1, v2) = (fast("1.0.0", '1'), fast("2.0.0", '2'));
-    let mut store = PackageStore::new(Arc::clone(&base), HOST_API, MemoryJournal::new());
+    let mut store = PackageStore::new(Arc::clone(&base), HOST_API_VERSION, MemoryJournal::new());
 
     // 1. Install 1.0.0 from its manifest. Installing picks no default: the bundled native
     //    provider keeps nothing selected and acme gains nothing implicitly.
@@ -356,6 +305,10 @@ fn third_party_package_installs_replaces_rebinds_and_rolls_back() {
     assert!(installed.provides(&dref(ADD), 1, native.provider_key()));
     assert!(installed.provides(&dref(ADD), 1, &v1));
     assert!(installed.provides(&dref(TRIPLE), 1, &v1));
+    assert_eq!(
+        installed.specializations(&dref(ADD), Some(&v1)),
+        Some(i64_only().as_slice())
+    );
 
     // 2. The user selects acme for new bindings of its node and of the bundled `add` slot.
     let _ = store.select_default(dref(ADD), v1.clone()).unwrap();

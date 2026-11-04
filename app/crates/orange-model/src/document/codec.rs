@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use crate::document::GraphDocument;
 use crate::document::graph::DocumentWire;
 use crate::document::nesting::MAX_NESTING;
-use crate::error::{CodecError, ImportResource};
+use crate::error::{CodecError, ImportResource, JsonError};
 
 pub const FORMAT: &str = "orange.graph";
 pub const FORMAT_VERSION: u32 = 1;
@@ -557,6 +557,52 @@ pub fn from_json_with_budget(
     let document = DocumentWire::deserialize(&mut json)?;
     json.end()?;
     admit(document)
+}
+
+/// What one streaming pass over a standalone JSON text found: the first repeated object key
+/// at any depth and the deepest container nesting, the root being 1.
+pub(crate) struct JsonScan {
+    pub(crate) duplicate: Option<String>,
+    pub(crate) nesting: usize,
+}
+
+/// Why [`scan_json`] stopped: a decoded-JSON budget, or malformed JSON.
+pub(crate) enum ScanError {
+    Limit {
+        resource: ImportResource,
+        max: usize,
+        actual: usize,
+    },
+    Json(JsonError),
+}
+
+/// Scans `text` without building values, charging `budget` as the document importer does.
+/// Other JSON files the model decodes, such as package node definitions, share this pass.
+pub(crate) fn scan_json(text: &str, budget: ImportBudget) -> Result<JsonScan, ScanError> {
+    let violation = Rc::new(Cell::new(None));
+    let mut counts = Counts::new(budget, Rc::clone(&violation));
+    let mut deserializer = serde_json::Deserializer::from_str(text);
+    let scanned = Scan {
+        place: Place::Other,
+        depth: 1,
+        counts: &mut counts,
+    }
+    .deserialize(&mut deserializer)
+    .and_then(|duplicate| deserializer.end().map(|()| duplicate));
+    match scanned {
+        Ok(duplicate) => Ok(JsonScan {
+            duplicate,
+            nesting: counts.nesting,
+        }),
+        Err(error) => Err(match violation.get() {
+            Some((resource, max, actual)) => ScanError::Limit {
+                resource,
+                max,
+                actual,
+            },
+            None => ScanError::Json(error.into()),
+        }),
+    }
 }
 
 /// The structural checks shared by every construction from serialized data, through

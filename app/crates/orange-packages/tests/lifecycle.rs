@@ -8,9 +8,9 @@ use orange_model::catalog::{Determinism, NodeDefinition, Ports, ProviderKey, Reg
 use orange_model::document::{DefinitionRef, NodeKind};
 use orange_model::validation::{DiagnosticCode, HostOrigin, validate_nodes};
 use orange_packages::{
-    HostApiVersion, Journal, JournalEntry, JournalError, ManifestError, MemoryJournal,
-    PackageContents, PackageKey, PackageManifest, PackageState, PackageStore, ProviderSlot,
-    Recovery, SlotKind, TransactionError,
+    HOST_API_VERSION, HostApiVersion, Journal, JournalEntry, JournalError, ManifestError,
+    MemoryJournal, PackageContents, PackageKey, PackageManifest, PackageState, PackageStore,
+    ProviderSlot, Recovery, SlotKind, TransactionError,
 };
 use serde_json::{Value, json};
 
@@ -19,7 +19,7 @@ const NODE: &str = "org.example.device/value";
 const SIG: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HEX_1: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const HEX_2: &str = "2222222222222222222222222222222222222222222222222222222222222222";
-const HOST: HostApiVersion = HostApiVersion { major: 1, minor: 0 };
+const HOST: HostApiVersion = HOST_API_VERSION;
 
 fn origin() -> HostOrigin {
     HostOrigin::new("0.1.0", format!("sha256:{}", "c".repeat(64))).unwrap()
@@ -286,6 +286,27 @@ fn install_publishes_a_new_generation_and_keeps_the_old_snapshot_readable() {
     let crashed = Recovery::from_entries(&entries[..commit]);
     assert_eq!(crashed.committed, None);
     assert_eq!(crashed.abandoned, vec![pkg("1.0.0")]);
+}
+
+#[test]
+fn the_published_host_api_version_gates_manifest_ranges() {
+    let HostApiVersion { major, minor } = HOST_API_VERSION;
+    let accepting = parse(&manifest_json("1.0.0", HEX_1)).unwrap().host_api();
+    assert!(accepting.accepts(HOST_API_VERSION));
+
+    let mut store = store();
+    let mut value = manifest_json("1.0.0", HEX_1);
+    value["host_api"] = json!({"major": major, "min_minor": minor + 1, "max_minor": minor + 1});
+    let newer = parse(&value).unwrap();
+    assert_eq!(
+        store
+            .install(PackageContents::new(newer.clone(), vec![definition(NODE)]))
+            .unwrap_err(),
+        TransactionError::HostApi {
+            required: newer.host_api(),
+            host: HOST_API_VERSION,
+        }
+    );
 }
 
 /// Fails every write of a committed generation.

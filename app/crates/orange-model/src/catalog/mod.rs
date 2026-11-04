@@ -3,6 +3,7 @@
 
 mod availability;
 mod call;
+mod codec;
 pub mod definition;
 pub mod intrinsic_id;
 pub(crate) mod intrinsics;
@@ -14,6 +15,7 @@ pub use call::{CallInterface, CallInterfaceError, call_interface};
 pub(crate) use call::{
     body_rigid_params, is_function_marker, marker_contract, project_interface, rigid_params,
 };
+pub use codec::{DefinitionError, DefinitionLimits};
 pub use definition::{
     ContractError, Determinism, EventAccess, NodeContract, NodeDefinition, Ports, ReferenceError,
     ReferenceField, ReferenceKind, TypeArgs, VariableAccess, Volatility,
