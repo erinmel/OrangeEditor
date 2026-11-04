@@ -642,7 +642,9 @@ pub(crate) fn data_edge_requires(
     index: &crate::index::DocIndex,
     from: &crate::document::PortRef,
     free: &mut BTreeSet<NodeId>,
+    visits: &mut super::visits::VisitCounts,
 ) -> bool {
+    visits.ports += 1;
     // A zone begin's iteration projection is pure, so no exec region owns it and
     // [`requirement`] finds none for it (V12c).
     let relevant = |at: &crate::document::PortRef| match resolved.port(at) {
@@ -674,10 +676,13 @@ pub(crate) fn data_edge_requires(
         if free.contains(&node) || !expanding(node) || !visited.insert(node) {
             continue;
         }
+        visits.nodes += 1;
         for id in index.incident(node) {
+            visits.edges += 1;
             let Some(edge) = document.edge(id).filter(|edge| edge.to.node == node) else {
                 continue;
             };
+            visits.ports += 2;
             let data = matches!(
                 (resolved.port(&edge.from), resolved.port(&edge.to)),
                 (Ok(from), Ok(to)) if from.kind == PortKind::Data && to.kind == PortKind::Data

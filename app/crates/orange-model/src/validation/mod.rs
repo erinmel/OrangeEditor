@@ -46,6 +46,7 @@ mod session;
 mod state;
 mod streams;
 mod variables;
+mod visits;
 mod worker;
 mod zones;
 
@@ -75,9 +76,10 @@ pub use report::{
     ValidationAnalysis, ValidationCheck, ValidationReport, analyze, analyze_with_effects,
     analyze_with_options, required_checks, validate, validate_with_effects,
 };
-pub use session::{AnalysisSession, EditStats, RebuildReason, SessionWork};
+pub use session::{AnalysisSession, EditStats, RebuildReason, ScopeFallback, SessionWork};
 pub use state::validate_state;
 pub use streams::validate_streams;
+pub use visits::{PassVisits, VisitCounts};
 pub use worker::{AnalysisRequestId, AnalysisWorker, AnalysisWorkerError};
 pub use zones::{ZoneIndex, ZoneKind, ZoneRegion};
 

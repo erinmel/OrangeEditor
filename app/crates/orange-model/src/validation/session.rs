@@ -1,6 +1,7 @@
 //! Headless edit analysis with private freshness evidence and conservative fallbacks.
 use super::local::{LocalValidation, LocalWork};
 use super::scoped::Retained;
+use super::visits::{PassVisits, VisitCounts};
 use super::{
     AnalysisLimits, AnalysisOptions, Diagnostic, LeafEffects, Subject, ValidationAnalysis,
 };
@@ -27,6 +28,71 @@ pub struct EditStats {
     pub index_rebuilt: bool,
     /// Actual node-local validation computations and reused results.
     pub local: LocalWork,
+    /// What each validation pass visited: counted by a scoped update, the whole document
+    /// per pass for a full analysis, nothing for a no-op.
+    pub visits: PassVisits,
+    /// Why a semantic edit could not be applied in place, exactly when `work` is
+    /// [`SessionWork::Recompute`]. A rebuild states its cause in [`RebuildReason`].
+    pub fallback: Option<ScopeFallback>,
+}
+
+impl EditStats {
+    /// Whether the update patched the retained report in place.
+    pub fn is_scoped(&self) -> bool {
+        self.work == SessionWork::Scoped
+    }
+}
+
+/// Why a committed semantic edit ran the full analysis instead of a scoped update
+/// (NFR-15 asks for full-scope cases to be reported). The first condition the scoped
+/// update found is reported; several may hold.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[non_exhaustive]
+pub enum ScopeFallback {
+    /// The last full analysis kept no scoped state or no index, as after a rejection.
+    NoRetainedAnalysis,
+    /// The change is neither a node-field edit nor an edit of whole nodes and edges, as a
+    /// declaration, export, function signature or mixed change is.
+    UnscopedChange,
+    /// The retained index does not describe the state the change started from.
+    IndexStale,
+    /// The request was cancelled during the scoped update.
+    Cancelled,
+    /// A core intrinsic's configuration changed; structural passes read it.
+    IntrinsicConfig,
+    /// The admission charge could not be updated or no longer fits the limits.
+    Admission,
+    /// A re-resolved node's signature, node diagnostics, completeness or inference
+    /// solution would change.
+    Resolution,
+    /// A node gained or lost an input or configuration error where other results read
+    /// its error status: in an incomplete report or inside a function body.
+    ErrorStatus,
+    /// The retained report holds errors a structure edit cannot be checked against.
+    ReportNotClean,
+    /// The edit spans more than one body, or names a node or edge outside its body.
+    MultipleBodies,
+    /// An added or removed node is exported, a zone marker or not a typed data node.
+    NodeKind,
+    /// An edge is not a clean data or exec connection, or a removed edge had diagnostics.
+    EdgeCheck,
+    /// A data cycle the scoped update cannot hold or recompute locally.
+    DataCycle,
+    /// A data edge may change what an export's cone reads.
+    Export,
+    /// A data edge brings an availability requirement or stale-capture read that only a
+    /// control-flow rerun accounts for, and the edit has none.
+    Availability,
+    /// The rerun control-flow passes found an error, an incomplete node or a cycle.
+    ControlFlow,
+    /// A zone's body or markers changed in a way only the whole region pass decides.
+    Zone,
+    /// A function's acceptance, summary or diagnostics would change what its callers read.
+    Function,
+    /// The rerun state pass found an error.
+    State,
+    /// The edit reaches an incomplete node, whose diagnostics are not recomputed.
+    Incomplete,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[non_exhaustive]
@@ -94,6 +160,14 @@ impl AnalysisSession {
         let (analysis, work, rebuilt, retained) = super::report::analyze_indexed(
             document, registry, &effects, options, &mut index, &mut local, None,
         );
+        let stats = full(
+            document,
+            &analysis,
+            SessionWork::Rebuild(RebuildReason::Created),
+            work,
+            rebuilt,
+            None,
+        );
         Self {
             stale: cancelled(&analysis),
             changed_subjects: changed_subjects(&[], &analysis.report().diagnostics),
@@ -106,12 +180,7 @@ impl AnalysisSession {
             index,
             local,
             retained,
-            stats: full(
-                document,
-                SessionWork::Rebuild(RebuildReason::Created),
-                work,
-                rebuilt,
-            ),
+            stats,
         }
     }
     pub fn update(
@@ -141,6 +210,7 @@ impl AnalysisSession {
                 options,
                 SessionWork::Rebuild(reason),
                 None,
+                None,
             );
         } else if change.layout_only() {
             if let Some(index) = &mut self.index {
@@ -156,33 +226,36 @@ impl AnalysisSession {
             self.revision = document.revision();
             self.content_state = document.state_id();
             self.no_work();
-        } else if !self.scoped(document, registry, change, options) {
+        } else if let Err(fallback) = self.scoped(document, registry, change, options) {
             self.rerun(
                 document,
                 registry,
                 options,
                 SessionWork::Recompute,
                 Some(change),
+                Some(fallback),
             );
         }
         &self.stats
     }
     /// Applies a literal edit without a full analysis when it provably changes nothing
-    /// but the edited nodes' input diagnostics. False leaves the session for a full run.
+    /// but the edited nodes' input diagnostics. An error says why the session is left for
+    /// a full run.
     fn scoped(
         &mut self,
         document: &GraphDocument,
         registry: &RegistrySnapshot,
         change: &ChangeSet,
         options: AnalysisOptions<'_>,
-    ) -> bool {
+    ) -> Result<(), ScopeFallback> {
         let (Some(retained), Some(index)) = (&mut self.retained, &mut self.index) else {
-            return false;
+            return Err(ScopeFallback::NoRetainedAnalysis);
         };
-        if (change.node_edit().is_none() && change.structure_edit().is_none())
-            || index.state_id() != change.from_state()
-        {
-            return false;
+        if change.node_edit().is_none() && change.structure_edit().is_none() {
+            return Err(ScopeFallback::UnscopedChange);
+        }
+        if index.state_id() != change.from_state() {
+            return Err(ScopeFallback::IndexStale);
         }
         index.update(document, change);
         let scoped = match (change.node_edit(), change.structure_edit()) {
@@ -205,11 +278,9 @@ impl AnalysisSession {
                 change,
                 &self.effects,
             ),
-            (None, None) => None,
+            (None, None) => Err(ScopeFallback::UnscopedChange),
         };
-        let Some(scoped) = scoped else {
-            return false;
-        };
+        let scoped = scoped?;
         self.local.advance_scoped(document, registry, change);
         self.changed_subjects =
             self.analysis
@@ -229,8 +300,10 @@ impl AnalysisSession {
                 components_computed: scoped.components,
                 ..LocalWork::default()
             },
+            visits: scoped.visits,
+            fallback: None,
         };
-        true
+        Ok(())
     }
     pub fn set_leaf_effects(
         &mut self,
@@ -255,6 +328,7 @@ impl AnalysisSession {
                 registry,
                 options,
                 SessionWork::Rebuild(reason),
+                None,
                 None,
             );
         } else {
@@ -286,6 +360,7 @@ impl AnalysisSession {
         options: AnalysisOptions<'_>,
         work: SessionWork,
         change: Option<&ChangeSet>,
+        fallback: Option<ScopeFallback>,
     ) {
         let (analysis, local, rebuilt, retained) = super::report::analyze_indexed(
             document,
@@ -307,11 +382,11 @@ impl AnalysisSession {
             PartialEq::eq,
         );
         self.stale = cancelled(&analysis);
+        self.stats = full(document, &analysis, work, local, rebuilt, fallback);
         self.analysis = analysis;
         self.limits = options.limits;
         self.revision = document.revision();
         self.content_state = document.state_id();
-        self.stats = full(document, work, local, rebuilt);
     }
     fn no_work(&mut self) {
         self.changed_subjects.clear();
@@ -323,6 +398,8 @@ impl AnalysisSession {
             full_analysis_runs: 0,
             index_rebuilt: false,
             local: LocalWork::default(),
+            visits: PassVisits::ZERO,
+            fallback: None,
         };
     }
     /// Trial planning through the retained index. No analysis is published on failure.
@@ -390,20 +467,28 @@ fn changed_subjects(old: &[Diagnostic], new: &[Diagnostic]) -> BTreeSet<Subject>
 }
 fn full(
     document: &GraphDocument,
+    analysis: &ValidationAnalysis,
     work: SessionWork,
     local: LocalWork,
     index_rebuilt: bool,
+    fallback: Option<ScopeFallback>,
 ) -> EditStats {
-    let (input_nodes, input_edges) = document.bodies().fold((0, 0), |(nodes, edges), body| {
-        (nodes + body.nodes.len(), edges + body.edges.len())
-    });
+    let ports = analysis
+        .report()
+        .resolved
+        .values()
+        .map(|signature| signature.ports.len())
+        .sum();
+    let whole = VisitCounts::whole(document, ports);
     EditStats {
         work,
-        input_nodes,
-        input_edges,
+        input_nodes: whole.nodes,
+        input_edges: whole.edges,
         full_analysis_runs: 1,
         index_rebuilt,
         local,
+        visits: PassVisits::full(whole),
+        fallback,
     }
 }
 fn cancelled(analysis: &ValidationAnalysis) -> bool {

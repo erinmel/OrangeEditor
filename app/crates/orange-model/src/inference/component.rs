@@ -187,6 +187,7 @@ pub(crate) fn component_nodes(
     index: &DocIndex,
     touched: impl IntoIterator<Item = NodeId>,
     registry: &RegistrySnapshot,
+    visits: &mut crate::validation::VisitCounts,
 ) -> Vec<BTreeSet<NodeId>> {
     let graph = Graph {
         document,
@@ -213,6 +214,7 @@ pub(crate) fn component_nodes(
         visited.extend(nodes.iter().copied());
         components.push(nodes);
     }
+    graph.charge(visits);
     components
 }
 
@@ -254,6 +256,11 @@ pub(crate) const KEPT_SOLUTION_BUDGET: usize = 512;
 /// binding that differs from `σ` ends the search. Anything else, an equation that does
 /// not build, a conflict, an unresolved parameter after the whole component, an added
 /// node's argument the solver would report, or more than `budget` nodes, returns `None`.
+/// The nodes and edges the search read are added to `visits`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the search's reads"
+)]
 pub(crate) fn solution_kept<'s>(
     document: &GraphDocument,
     index: &DocIndex,
@@ -262,6 +269,7 @@ pub(crate) fn solution_kept<'s>(
     added: &BTreeSet<NodeId>,
     solved: impl Fn(NodeId) -> Option<&'s TypeArgs>,
     budget: usize,
+    visits: &mut crate::validation::VisitCounts,
 ) -> Option<BTreeMap<NodeId, TypeArgs>> {
     let graph = Graph {
         document,
@@ -280,7 +288,7 @@ pub(crate) fn solution_kept<'s>(
     // Solve at radius 0, 1, 2, 4, ...: each solve costs about |W|, so the total stays
     // within a small multiple of the last one.
     let (mut radius, mut next_check) = (0usize, 0usize);
-    loop {
+    let kept = loop {
         let grown: BTreeSet<NodeId> = frontier
             .iter()
             .flat_map(|id| graph.generic_neighbours(*id))
@@ -288,20 +296,22 @@ pub(crate) fn solution_kept<'s>(
             .collect();
         if radius == next_check || grown.is_empty() {
             match graph.kept(&nodes, &seeds, added, &solved) {
-                Kept::Yes(args) => return Some(args),
-                Kept::No => return None,
-                Kept::Open if grown.is_empty() => return None,
+                Kept::Yes(args) => break Some(args),
+                Kept::No => break None,
+                Kept::Open if grown.is_empty() => break None,
                 Kept::Open => {}
             }
             next_check = (next_check * 2).max(1);
         }
         nodes.extend(grown.iter().copied());
         if nodes.len() > budget {
-            return None;
+            break None;
         }
         frontier = grown;
         radius += 1;
-    }
+    };
+    graph.charge(visits);
+    kept
 }
 
 /// [`Graph::kept`]'s outcome.
@@ -348,6 +358,13 @@ struct DataEdge {
 }
 
 impl Graph<'_> {
+    /// Charges `visits` with the nodes and edges this search read: each is resolved once
+    /// and cached, so the caches hold exactly those.
+    fn charge(&self, visits: &mut crate::validation::VisitCounts) {
+        visits.nodes += self.templates.borrow().len();
+        visits.edges += self.edges.borrow().len();
+    }
+
     fn node(&self, id: NodeId) -> Option<(&GraphBody, &NodeInstance)> {
         let body = self.document.body(self.index.body_of(id)?)?;
         Some((body, body.nodes.get(&id)?))

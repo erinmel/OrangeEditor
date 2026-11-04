@@ -16,6 +16,7 @@ use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 
 use super::ports::PortResolver;
+use super::visits::VisitCounts;
 
 /// The distance between neighbouring positions in a fresh order.
 const GAP: u64 = 1 << 32;
@@ -213,9 +214,12 @@ impl TopoOrder {
         document: &GraphDocument,
         ports: &PortResolver<'_>,
         index: &DocIndex,
+        visits: &mut VisitCounts,
     ) {
         for (edge, (from, to)) in std::mem::take(&mut self.held) {
-            if document.edge(edge).is_some() && !self.insert(document, ports, index, from, to) {
+            if document.edge(edge).is_some()
+                && !self.insert(document, ports, index, from, to, visits)
+            {
                 self.held.insert(edge, (from, to));
             }
         }
@@ -234,6 +238,7 @@ impl TopoOrder {
         document: &GraphDocument,
         ports: &PortResolver<'_>,
         index: &DocIndex,
+        visits: &mut VisitCounts,
     ) -> Option<BTreeSet<NodeId>> {
         let mut low = u64::MAX;
         let mut high = 0;
@@ -258,10 +263,13 @@ impl TopoOrder {
                     continue;
                 }
                 visited += 1;
+                visits.nodes += 1;
                 if visited > CYCLE_REGION_BUDGET {
                     return None;
                 }
+                let before = stack.len();
                 stack.extend(data_edges(document, ports, index, node, forward));
+                visits.edges += stack.len() - before;
                 let pair = if forward { &self.ends } else { &self.begins };
                 stack.extend(pair.get(&node).copied());
             }
@@ -317,7 +325,9 @@ impl TopoOrder {
         index: &DocIndex,
         from: NodeId,
         to: NodeId,
+        visits: &mut VisitCounts,
     ) -> bool {
+        visits.edges += 1;
         let (Some(upper), Some(lower)) = (self.position(from), self.position(to)) else {
             return false;
         };
@@ -335,7 +345,7 @@ impl TopoOrder {
         let mut walks = [Walk::new(to, from, true), Walk::new(from, to, false)];
         let moved = 'search: loop {
             for walk in &mut walks {
-                match walk.step(self, document, ports, index, lower..=upper) {
+                match walk.step(self, document, ports, index, lower..=upper, visits) {
                     Step::Going => {}
                     Step::Done => break 'search walk,
                     Step::Cycle => return false,
@@ -424,6 +434,7 @@ impl Walk {
         ports: &PortResolver<'_>,
         index: &DocIndex,
         interval: std::ops::RangeInclusive<u64>,
+        visits: &mut VisitCounts,
     ) -> Step {
         let Some(node) = self.stack.pop() else {
             return Step::Done;
@@ -436,8 +447,11 @@ impl Walk {
             .is_some_and(|at| interval.contains(&at))
             && self.seen.insert(node)
         {
+            visits.nodes += 1;
+            let before = self.stack.len();
             self.stack
                 .extend(data_edges(document, ports, index, node, self.forward));
+            visits.edges += self.stack.len() - before;
             let pair = if self.forward {
                 &order.ends
             } else {
