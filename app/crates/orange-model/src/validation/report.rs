@@ -282,6 +282,10 @@ impl ValidationAnalysis {
     pub(super) fn set_regions(&mut self, regions: super::regions::RegionIndex) {
         self.report.regions = regions;
     }
+    /// The checked zones, whose bodies a scoped structure edit re-checks.
+    pub(super) fn zones_mut(&mut self) -> &mut super::zones::ZoneIndex {
+        &mut self.report.regions.zones
+    }
     /// Replaces one function's summary after a scoped edit rechecked it.
     pub(super) fn set_summary(
         &mut self,
@@ -689,6 +693,7 @@ fn run_supported_analysis(
                 clean: false,
                 isolable: false,
                 zones_checked: false,
+                zone_bodies: BTreeMap::new(),
                 quiet: false,
                 orders: BTreeMap::new(),
                 args,
@@ -724,6 +729,7 @@ fn run_supported_analysis(
             .filter(|node| super::zones::ZoneKind::marker(node.definition.id.as_str()).is_some())
             .count();
         retained.zones_checked = markers == 2 * regions.index.zones.iter().len();
+        retained.zone_bodies = super::scoped::zone_bodies(&regions.index.zones);
         retained.clean = retained.complete
             && !super::scoped::blocking_error(retained, &BTreeSet::new())
             && retained.zones_checked;

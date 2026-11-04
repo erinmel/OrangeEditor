@@ -1714,6 +1714,14 @@ fn marker(n: u32, definition: &str, zone: &str) -> Json {
 /// add 8 reads its result, so only the data-cycle pass's begin-to-end dependency joins
 /// `16`, which feeds its begin, to 8.
 fn zoned() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    zoned_with(Vec::new(), Vec::new())
+}
+
+/// [`zoned`] with `more` nodes and edges.
+fn zoned_with(
+    more: Vec<Json>,
+    more_edges: Vec<Json>,
+) -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
     let (package, registry) = catalog();
     let mut nodes = Vec::new();
     let mut edges = Vec::new();
@@ -1748,6 +1756,8 @@ fn zoned() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
         edge(207, 19, "sum", 7, "next"),
         edge(208, 7, "result", 8, "a"),
     ]);
+    nodes.extend(more);
+    edges.extend(more_edges);
     (
         graph(&package, nodes, edges, vec![export(4, "sum")]),
         registry,
@@ -1781,38 +1791,95 @@ fn structure_edits_away_from_zones_are_scoped() {
     assert!(session.analysis().report().is_valid());
 }
 
+/// The end of the zone that owns `node`, if any.
+fn owner(session: &AnalysisSession, node: u32) -> Option<orange_model::id::NodeId> {
+    let zones = &session.analysis().report().regions.zones;
+    zones.owner(id(node).parse().unwrap()).map(|zone| zone.end)
+}
+
 #[test]
-fn edits_that_reach_a_zone_run_the_full_analysis() {
+fn zone_body_and_capture_edits_are_scoped() {
     let (mut doc, registry) = zoned();
     let mut session = session(&doc, &registry);
     let options = AnalysisOptions::default();
-    let body = |session: &AnalysisSession| {
-        let zones = &session.analysis().report().regions.zones;
-        let end: orange_model::id::NodeId = id(3).parse().unwrap();
-        (10..100)
-            .filter(|n| {
-                zones
-                    .owner(id(*n).parse().unwrap())
-                    .is_some_and(|zone| zone.end == end)
-            })
-            .count()
-    };
-    // A new node wired between two body nodes joins the body.
-    let pulled = vec![
-        add_node(95),
-        connect(95, 2, 95, "a"),
-        connect(96, 95, 5, "b"),
+    let z = Some(id(3).parse().unwrap());
+    let w = Some(id(7).parse().unwrap());
+    let edits = [
+        // A body literal, then body edges from the begin and from a body node.
+        vec![set(5, "b", u64_text("7"))],
+        vec![wire(90, 1, "carried", 5, "b")],
+        vec![disconnect(90)],
+        vec![connect(91, 2, 5, "b")],
+        vec![disconnect(91)],
+        // A new node wired between two body nodes joins the body.
+        vec![
+            add_node(92),
+            connect(93, 2, 92, "a"),
+            connect(94, 92, 5, "b"),
+        ],
     ];
-    let work = edit(&mut session, &mut doc, &registry, options, pulled);
+    for commands in edits {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(work, SessionWork::Scoped);
+    }
+    assert_eq!(owner(&session, 92), z);
+    let edits = [
+        vec![set(92, "b", u64_text("4"))],
+        vec![remove_nodes(&[92])],
+        // A capture removed, added again from another producer, and moved.
+        vec![disconnect(202)],
+        vec![connect(95, 22, 2, "b")],
+        vec![disconnect(95), connect(96, 25, 2, "b")],
+        // An empty body's end reading another value, and its begin's prefix moved.
+        vec![disconnect(207), connect(97, 22, 7, "next")],
+        vec![disconnect(206), connect(98, 25, 6, "initial")],
+        // The begin's only edge removed empties the body; restoring it pulls both body
+        // nodes back in.
+        vec![disconnect(201)],
+    ];
+    for commands in edits {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(work, SessionWork::Scoped);
+    }
+    assert_eq!((owner(&session, 92), owner(&session, 2)), (None, None));
+    assert_eq!(owner(&session, 6), w);
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![wire(201, 1, "carried", 2, "a")],
+    );
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!((owner(&session, 2), owner(&session, 5)), (z, z));
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    assert!(session.analysis().report().is_valid());
+}
+
+#[test]
+fn edits_that_break_a_zone_run_the_full_analysis() {
+    let (mut doc, registry) = zoned();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    // A body node fed back into its begin.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(200), connect(99, 2, 1, "initial")],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert!(!session.analysis().report().is_valid());
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![disconnect(99), connect(200, 10, 1, "initial")],
+    );
     assert_eq!(work, SessionWork::Recompute);
     assert!(session.analysis().report().is_valid());
-    assert_eq!(body(&session), 1);
-    // Removing a body node, or a capture's edge, touches a body node.
-    for commands in [vec![remove_nodes(&[95])], vec![disconnect(202)]] {
-        let work = edit(&mut session, &mut doc, &registry, options, commands);
-        assert_eq!(work, SessionWork::Recompute);
-        assert!(session.analysis().report().is_valid());
-    }
     // A value leaving the body.
     let work = edit(
         &mut session,
@@ -1843,6 +1910,134 @@ fn edits_that_reach_a_zone_run_the_full_analysis() {
     );
     assert_eq!(work, SessionWork::Recompute);
     assert!(!session.analysis().report().is_valid());
+}
+
+/// [`zoned`] with zone `y` (begin 40, end 41) nested in `z`'s body: body add 2 feeds its
+/// begin, its body add 42 iterates, and add 5 reads its result.
+fn nested_zones() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    zoned_with(
+        vec![
+            marker(40, "repeat-begin", "y"),
+            marker(41, "repeat-end", "y"),
+            math(42, "add", 0, 1),
+        ],
+        vec![
+            edge(210, 2, "sum", 40, "initial"),
+            edge(211, 40, "carried", 42, "a"),
+            edge(212, 42, "sum", 41, "next"),
+            edge(213, 41, "result", 5, "b"),
+        ],
+    )
+}
+
+#[test]
+fn nested_zone_edits_equal_the_full_analysis() {
+    let (mut doc, registry) = nested_zones();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let (z, y) = (Some(id(3).parse().unwrap()), Some(id(41).parse().unwrap()));
+    assert_eq!((owner(&session, 42), owner(&session, 40)), (y, y));
+    assert_eq!((owner(&session, 41), owner(&session, 2)), (z, z));
+    // Edits that keep both bodies: a literal, an inner body edge, captures into the inner
+    // body from the outer one and from outside both.
+    let edits = [
+        vec![set(42, "b", u64_text("6"))],
+        vec![wire(220, 40, "carried", 42, "b")],
+        vec![disconnect(220)],
+        vec![connect(221, 2, 42, "b")],
+        vec![disconnect(221), connect(222, 13, 42, "b")],
+    ];
+    for commands in edits {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(work, SessionWork::Scoped);
+    }
+    // A node joining the inner body changes the outer one too.
+    let work = edit(
+        &mut session,
+        &mut doc,
+        &registry,
+        options,
+        vec![
+            add_node(95),
+            disconnect(212),
+            connect(223, 42, 95, "a"),
+            connect(224, 95, 41, "next"),
+        ],
+    );
+    assert_eq!(work, SessionWork::Recompute);
+    assert_eq!(owner(&session, 95), y);
+    assert!(session.analysis().report().is_valid());
+}
+
+/// A pure function `300` whose Repeat zone `f` (begin 302, end 305) iterates its argument
+/// through body adds 303 and 304; the root calls it with a Get.
+fn zoned_function() -> (GraphDocument, std::sync::Arc<RegistrySnapshot>) {
+    let (package, registry) = catalog();
+    let total = id(100);
+    let core = |n: u32, name: &str, config: Json| {
+        json!({"id": id(n), "definition_id": format!("core/{name}"), "definition_version": 1,
+            "config_version": 1, "config": config})
+    };
+    let port = |name: &str, direction: &str| json!({"port_id": name, "direction": direction, "kind": "data", "type": "core/u64@1"});
+    let nodes = vec![
+        core(1, "get-variable", json!({"variable": total})),
+        core(2, "call", json!({"function": id(300)})),
+    ];
+    let base = graph(
+        &package,
+        nodes,
+        vec![edge(1, 1, "value", 2, "value")],
+        vec![],
+    );
+    let mut raw: Json = serde_json::from_str(&orange_model::to_json(&base).unwrap()).unwrap();
+    raw["functions"] = json!([{"id": id(300), "name": "iterate", "kind": "pure",
+        "inputs": [port("value", "input")], "outputs": [port("result", "output")],
+        "nodes": [core(301, "function-entry", json!({})),
+            core(310, "function-outputs", json!({})),
+            marker(302, "repeat-begin", "f"), math(303, "add", 0, 1), math(304, "add", 0, 1),
+            marker(305, "repeat-end", "f")],
+        "edges": [edge(301, 301, "value", 302, "initial"),
+            edge(302, 302, "carried", 303, "a"), edge(303, 303, "sum", 304, "a"),
+            edge(304, 304, "sum", 305, "next"), edge(305, 305, "result", 310, "result")]}]);
+    raw["variables"] = json!([{"id": total, "name": "total", "type": "core/u64@1",
+        "scope": "run", "init": {"type": "core/u64@1", "value": "0"}}]);
+    (orange_model::from_json(&raw.to_string()).unwrap(), registry)
+}
+
+#[test]
+fn zone_edits_in_a_function_body_are_scoped() {
+    let (mut doc, registry) = zoned_function();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let f = Some(id(305).parse().unwrap());
+    assert_eq!(owner(&session, 304), f);
+    let inside = DocCommand::AddNode {
+        body: BodyRef::Function(id(300).parse().unwrap()),
+        node: serde_json::from_value(math(306, "add", 1, 2)).unwrap(),
+    };
+    let edits = [
+        vec![set(304, "b", u64_text("5"))],
+        vec![wire(320, 302, "carried", 304, "b")],
+        // The function's argument captured into the body instead.
+        vec![disconnect(320), wire(321, 301, "value", 303, "b")],
+        vec![
+            inside,
+            wire(322, 303, "sum", 306, "a"),
+            wire(323, 306, "sum", 304, "b"),
+        ],
+    ];
+    for commands in edits {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(work, SessionWork::Scoped);
+    }
+    assert_eq!(owner(&session, 306), f);
+    for commands in [vec![remove_nodes(&[306])], vec![disconnect(321)]] {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(work, SessionWork::Scoped);
+    }
+    assert_eq!(owner(&session, 306), None);
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    assert!(session.analysis().report().is_valid());
 }
 
 #[test]
