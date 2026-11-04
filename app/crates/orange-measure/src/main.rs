@@ -157,6 +157,29 @@ fn main() {
                     bucket.edits - bucket.scoped,
                     bucket.max_resolved
                 );
+                println!(
+                    "    visited p50/p95/max: nodes {}, edges {}, ports {}, bodies {}",
+                    bucket.nodes, bucket.edges, bucket.ports, bucket.bodies
+                );
+                for (cause, count) in &bucket.full {
+                    println!("    full analysis, {cause}: {count}");
+                }
+            }
+            // Every edit has one kind, so the kinds' causes sum to the run's.
+            let mut full = std::collections::BTreeMap::<&str, usize>::new();
+            for (_, bucket) in &run.kinds {
+                for (cause, count) in &bucket.full {
+                    *full.entry(cause).or_default() += count;
+                }
+            }
+            if full.is_empty() {
+                println!("  full analyses by reason: none");
+            } else {
+                let causes: Vec<String> = full
+                    .iter()
+                    .map(|(cause, count)| format!("{cause} {count}"))
+                    .collect();
+                println!("  full analyses by reason: {}", causes.join(", "));
             }
         }
     }
