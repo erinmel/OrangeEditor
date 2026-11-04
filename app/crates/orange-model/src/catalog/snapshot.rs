@@ -174,6 +174,21 @@ pub enum RegistryError {
         kind: NodeKind,
         suspends: Suspends,
     },
+    /// Definition and config versions start at 1.
+    #[error("definition `{definition}` must have nonzero definition and config versions")]
+    InvalidVersion { definition: DefinitionId },
+    #[error("definition `{definition}` declares type parameter `${param}` twice")]
+    DuplicateTypeParam {
+        definition: DefinitionId,
+        param: String,
+    },
+    /// A constraint is neither a core constraint name nor a package constraint ID
+    /// (11 §5.4). The constraint text is not retained.
+    #[error("definition `{definition}` type parameter `${param}` declares an invalid constraint")]
+    InvalidConstraint {
+        definition: DefinitionId,
+        param: String,
+    },
     #[error("definition `{definition}` port `{port}` uses undeclared type parameter `${param}`")]
     UndeclaredTypeParam {
         definition: DefinitionId,
@@ -603,6 +618,12 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
     if !intrinsic && id.is_core() {
         return Err(RegistryError::CoreNamespace(id.clone()));
     }
+    if definition.definition.version == 0 || definition.config_version == 0 {
+        return Err(RegistryError::InvalidVersion {
+            definition: id.clone(),
+        });
+    }
+    check_type_params(definition)?;
     check_references(definition)?;
     if let Some(issue) = suspension_contract_issue(definition.kind, definition.suspends) {
         return Err(match issue {
@@ -672,6 +693,32 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
     // preserving their error precedence (including deferred type-expression parsing).
     for port in ports {
         check_input_metadata(id, port)?;
+    }
+    Ok(())
+}
+
+/// Type parameter names are unique and every constraint is a core constraint name or a
+/// package constraint ID (11 §5.4, §5.5). Package constraints need not be registered yet.
+fn check_type_params(definition: &NodeDefinition) -> Result<(), RegistryError> {
+    let id = &definition.definition.id;
+    let mut seen = BTreeSet::new();
+    for param in &definition.type_params {
+        if !seen.insert(param.name.as_str()) {
+            return Err(RegistryError::DuplicateTypeParam {
+                definition: id.clone(),
+                param: param.name.clone(),
+            });
+        }
+        if param
+            .constraints
+            .iter()
+            .any(|constraint| CapabilityRequest::from_declared(constraint).is_none())
+        {
+            return Err(RegistryError::InvalidConstraint {
+                definition: id.clone(),
+                param: param.name.clone(),
+            });
+        }
     }
     Ok(())
 }
@@ -1769,6 +1816,60 @@ mod tests {
             Err(RegistryError::UndeclaredTypeParam { ref param, .. }) if param == "T"
         ));
         assert!(build(builder().definition(definition("acme/add", &["T"], ports()))).is_ok());
+    }
+
+    #[test]
+    fn type_parameter_names_are_unique() {
+        let result = build(builder().definition(definition("acme/pair", &["T", "T"], vec![])));
+        assert_eq!(
+            result.unwrap_err(),
+            RegistryError::DuplicateTypeParam {
+                definition: dref("acme/pair").id,
+                param: "T".into(),
+            }
+        );
+    }
+
+    #[test]
+    fn type_parameter_constraints_must_name_a_known_constraint_form() {
+        let constrained = |constraints: &[&str]| {
+            let mut definition = definition("acme/sum", &["T"], vec![]);
+            definition.type_params[0].constraints =
+                constraints.iter().map(|&c| c.to_owned()).collect();
+            build(builder().definition(definition))
+        };
+        assert!(constrained(&["num", "org.example/smooth@1"]).is_ok());
+        for invalid in [
+            "numeric",
+            "$U",
+            "core/num@1",
+            "org.example/smooth@1<$T>",
+            "",
+        ] {
+            assert_eq!(
+                constrained(&["eq", invalid]).unwrap_err(),
+                RegistryError::InvalidConstraint {
+                    definition: dref("acme/sum").id,
+                    param: "T".into(),
+                },
+                "{invalid}"
+            );
+        }
+    }
+
+    #[test]
+    fn definition_and_config_versions_are_nonzero() {
+        for (version, config_version) in [(0, 1), (1, 0)] {
+            let mut zero = definition("acme/zero", &[], vec![]);
+            zero.definition.version = version;
+            zero.config_version = config_version;
+            assert_eq!(
+                build(builder().definition(zero)).unwrap_err(),
+                RegistryError::InvalidVersion {
+                    definition: dref("acme/zero").id,
+                }
+            );
+        }
     }
 
     fn with_references(pointers: &[&str]) -> NodeDefinition {

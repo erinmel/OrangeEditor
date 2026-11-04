@@ -88,6 +88,25 @@ pub enum CapabilityRequest {
     NumericOperation(NumericOperation),
 }
 
+impl CapabilityRequest {
+    /// Parses a constraint as declared on a type parameter: a core name (`num`) or a
+    /// package constraint ID (`ns/name@1`). Anything else is `None`.
+    pub(crate) fn from_declared(constraint: &str) -> Option<Self> {
+        if let Some(core) = Constraint::from_id_name(constraint) {
+            return Some(Self::Constraint(core));
+        }
+        let TypeTerm::Named(named) = TypeTerm::parse(&constraint.parse().ok()?).ok()? else {
+            return None;
+        };
+        if !named.args.is_empty() {
+            return None;
+        }
+        PackageConstraintId::new(named.namespace, named.name, named.major)
+            .ok()
+            .map(Self::PackageConstraint)
+    }
+}
+
 /// Evidence kind for a capability proof.
 /// A `serialize` witness describes declared type capability only: it does not serialize a
 /// value or prove that value-sensitive `core/error` details have been redacted.
