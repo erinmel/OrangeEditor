@@ -137,7 +137,8 @@ diagnostics! { subject;
                     .into()
             });
     SwitchCase => ("E-SWITCH-CASE", "core/graph-switch-case", Error, {
-                "Switch cases need distinct values of the key's kind.".into()
+                "Switch cases need distinct values of the key's kind; an enum switch covers every variant or connects default."
+                    .into()
             });
     ForEachMode => ("E-FOR-EACH-MODE", "core/graph-for-each-mode", Error, "For each mode must be list or map.".into());
     BusyLoop => ("W-BUSY-LOOP", "core/graph-busy-loop", Warning, "This control cycle only yields and keeps the CPU busy.".into());

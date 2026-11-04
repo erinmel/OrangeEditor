@@ -241,6 +241,85 @@ fn switch_cases_must_be_present_distinct_and_of_the_key_kind() {
     assert_eq!(switch_faults(json!({})), 1);
 }
 
+/// Enum cases name variants of the key's locked schema and cover it unless default is
+/// connected (11 §8.4).
+#[test]
+fn enum_switch_cases_name_known_variants_and_cover_the_schema_or_connect_default() {
+    use orange_model::catalog::RegistryBuilder;
+    use orange_model::types::{Constraint, TypeRegistryBuilder};
+    use orange_model::value::literal_codec::{EnumSchema, VariantSchema};
+    let light: orange_model::id::TypeExpr = "org.example/light@1".parse().unwrap();
+    let mut types = TypeRegistryBuilder::core();
+    let variants = ["red", "amber", "green"].map(|id| VariantSchema {
+        variant_id: id.into(),
+        payload: None,
+    });
+    types
+        .register_enum(
+            "org.example",
+            &light,
+            EnumSchema {
+                variants: variants.into(),
+            },
+        )
+        .unwrap();
+    types
+        .derive_constraint("org.example", &light, Constraint::Eq)
+        .unwrap();
+    let origin = HostOrigin::new("0.1.0", format!("sha256:{}", "b".repeat(64))).unwrap();
+    let registry = RegistryBuilder::core(origin)
+        .types(std::sync::Arc::new(types.build().unwrap()))
+        .build()
+        .unwrap();
+    let faults = |cases: Value, default: bool| {
+        let order: Vec<u16> = (0..cases.as_object().unwrap().len() as u16).collect();
+        let mut switch = node(
+            1,
+            "core/switch",
+            NodeKind::Action,
+            json!({"cases": cases}),
+            vec![
+                PortDescriptor::exec_in("in"),
+                PortDescriptor::data_in("key", light.clone()),
+                PortDescriptor::exec_out("case").variadic(1, None),
+                PortDescriptor::exec_out("default"),
+            ],
+        );
+        switch.json["variadic"] = json!({"case": {"order": order, "next": order.len()}});
+        let sink = node(
+            2,
+            "example/sink",
+            NodeKind::Action,
+            json!({}),
+            vec![PortDescriptor::exec_in("in")],
+        );
+        let edges = if default {
+            vec![wire(1, 1, "default", 2, "in")]
+        } else {
+            vec![]
+        };
+        let (doc, resolved) = fixture(vec![switch, sink], edges);
+        validate_regions(&doc, &resolved, &ConnectionValidation::default(), &registry)
+            .diagnostics
+            .iter()
+            .filter(|d| d.code == DiagnosticCode::SwitchCase)
+            .count()
+    };
+    let all = json!({"0": "green", "1": "red", "2": "amber"});
+    let partial = json!({"0": "green", "1": "red"});
+    assert_eq!(faults(all.clone(), false), 0);
+    assert_eq!(faults(all, true), 0);
+    assert_eq!(faults(partial.clone(), false), 1);
+    assert_eq!(faults(partial, true), 0);
+    for invalid in [
+        json!({"0": "green", "1": "blue"}),
+        json!({"0": "green", "1": "green"}),
+        json!({"0": "green", "1": 1}),
+    ] {
+        assert_eq!(faults(invalid.clone(), true), 1, "{invalid}");
+    }
+}
+
 #[test]
 fn zones_must_nest_properly() {
     // Zone b's end sits inside zone a's body while its begin is outside it.
