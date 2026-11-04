@@ -154,7 +154,7 @@ These are what keep propagation bounded. A missing reverse edge shows up as a br
 
 ### 5.3 Data cycles
 
-Per body, keep a dynamic topological order of the data port graph (Pearce–Kelly, as [12 §3.2](12-graph-data-structures.md) proposes). Inserting an edge updates only the affected order interval.
+Per body, keep a dynamic topological order of the data port graph (Pearce–Kelly, as [12 §3.2](12-graph-data-structures.md) proposes). Inserting an edge updates only the affected order interval. Its forward and backward searches advance in turn and only the side that finishes first moves, into a gap beside the other endpoint, so an edge against the order costs the smaller of the two affected sets (2026-11-03, V12f).
 
 An edge that would close a cycle is kept in a per-body cyclic set instead of the order. While that set is non-empty, strongly connected components are recomputed only over the vertices reachable both ways from the cyclic edges' endpoints. The witness is chosen exactly as the full pass chooses it, so paths stay equal. Removing an edge retries the body's cyclic edges; cycles are errors, so that set stays small.
 
