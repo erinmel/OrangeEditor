@@ -3,7 +3,11 @@
 //! A scoped structure edit must prove that its added data edges close no cycle. Walking
 //! everything downstream of each target visits the rest of a long chain; a kept order lets
 //! an edge that already runs forward in it pass at once, and searches only the nodes whose
-//! positions lie between its endpoints otherwise (Pearce and Kelly, 2006).
+//! positions lie between its endpoints otherwise (Pearce and Kelly, 2006). The forward and
+//! backward searches advance in turn and the first to finish is the side that moves, so an
+//! edge costs the smaller of the two affected sets rather than both; positions are sparse
+//! labels, so that side moves into the gap beside the other endpoint without renumbering the
+//! nodes between them (two-way search, Haeupler et al., 2012).
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -13,6 +17,9 @@ use crate::index::DocIndex;
 
 use super::ports::PortResolver;
 
+/// The distance between neighbouring positions in a fresh order.
+const GAP: u64 = 1 << 32;
+
 /// A topological order of one body's nodes under its data edges, where a data edge is any
 /// body edge leaving a data port, and each checked zone's begin to its end: the data-cycle
 /// pass makes a zone result depend on its begin's prefix inputs (V12c). Node-level order is
@@ -20,9 +27,9 @@ use super::ports::PortResolver;
 /// either.
 #[derive(Clone, Debug, Default)]
 pub(super) struct TopoOrder {
-    position: BTreeMap<NodeId, usize>,
-    /// The next free position; removed nodes leave holes.
-    next: usize,
+    position: BTreeMap<NodeId, u64>,
+    /// The nodes by position, which leaves gaps between them.
+    nodes: BTreeMap<u64, NodeId>,
     /// Each checked zone's end by its begin, and its begin by its end. Scoped edits never
     /// add, remove or reconfigure a marker, so the pairs hold while the order is kept.
     ends: BTreeMap<NodeId, NodeId>,
@@ -47,6 +54,21 @@ fn data_edges<'a>(
         (near == node && matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data))
             .then_some(far)
     })
+}
+
+/// One side of an insertion's two-way search: a depth-first walk over the nodes whose
+/// positions lie between the new edge's endpoints.
+struct Walk {
+    goal: NodeId,
+    forward: bool,
+    seen: BTreeSet<NodeId>,
+    stack: Vec<NodeId>,
+}
+
+enum Step {
+    Going,
+    Done,
+    Cycle,
 }
 
 impl TopoOrder {
@@ -87,9 +109,9 @@ impl TopoOrder {
             }
         }
         let mut ready: Vec<usize> = (0..ids.len()).filter(|at| indegree[*at] == 0).collect();
-        let mut placed = Vec::with_capacity(ids.len());
+        let mut nodes = BTreeMap::new();
         while let Some(node) = ready.pop() {
-            placed.push((ids[node], placed.len()));
+            nodes.insert(GAP * (nodes.len() as u64 + 1), ids[node]);
             for &to in &next[node] {
                 indegree[to] -= 1;
                 if indegree[to] == 0 {
@@ -97,30 +119,39 @@ impl TopoOrder {
                 }
             }
         }
-        if placed.len() != ids.len() {
+        if nodes.len() != ids.len() {
             return None;
         }
-        placed.sort_unstable();
         Some(Self {
-            position: placed.into_iter().collect(),
-            next: ids.len(),
+            position: nodes.iter().map(|(at, node)| (*node, *at)).collect(),
+            nodes,
             ends,
             begins,
         })
     }
 
-    pub(super) fn position(&self, node: NodeId) -> Option<usize> {
+    pub(super) fn position(&self, node: NodeId) -> Option<u64> {
         self.position.get(&node).copied()
     }
 
     /// Places a new node, which has no edges yet, last.
     pub(super) fn push(&mut self, node: NodeId) {
-        self.position.insert(node, self.next);
-        self.next += 1;
+        let at = self
+            .nodes
+            .last_key_value()
+            .map_or(GAP, |(last, _)| last.saturating_add(GAP));
+        if self.nodes.contains_key(&at) {
+            self.relabel(&[node], None);
+        } else {
+            self.position.insert(node, at);
+            self.nodes.insert(at, node);
+        }
     }
 
     pub(super) fn remove(&mut self, node: NodeId) {
-        self.position.remove(&node);
+        if let Some(at) = self.position.remove(&node) {
+            self.nodes.remove(&at);
+        }
     }
 
     /// Accounts for a data edge `from -> to` already in the document, or returns `false` if
@@ -148,44 +179,153 @@ impl TopoOrder {
             return false;
         }
         // Everything `to` reaches and everything reaching `from`, within the interval; only
-        // these can be out of order.
-        let within = |at: usize| (lower..=upper).contains(&at);
-        let mut forward = BTreeSet::new();
-        let mut stack = vec![to];
-        while let Some(node) = stack.pop() {
-            if node == from {
-                return false;
+        // these can be out of order. Either set, once complete, can move past the other
+        // endpoint on its own: what `to` reaches to just after `from`, or what reaches
+        // `from` to just before `to`. Every accounted edge leaving the first set ends in it
+        // or past `from`, and every one entering the second starts in it or before `to`.
+        let mut walks = [Walk::new(to, from, true), Walk::new(from, to, false)];
+        let moved = 'search: loop {
+            for walk in &mut walks {
+                match walk.step(self, document, ports, index, lower..=upper) {
+                    Step::Going => {}
+                    Step::Done => break 'search walk,
+                    Step::Cycle => return false,
+                }
             }
-            if self.position(node).is_some_and(within) && forward.insert(node) {
-                stack.extend(data_edges(document, ports, index, node, true));
-                stack.extend(self.ends.get(&node).copied());
-            }
-        }
-        let mut backward = BTreeSet::new();
-        let mut stack = vec![from];
-        while let Some(node) = stack.pop() {
-            if self.position(node).is_some_and(within) && backward.insert(node) {
-                stack.extend(data_edges(document, ports, index, node, false));
-                stack.extend(self.begins.get(&node).copied());
-            }
-        }
-        // Reuse the affected positions: the backward set first, then the forward set, each in
-        // its old relative order.
-        let by_position = |set: BTreeSet<NodeId>| {
-            let mut nodes: Vec<(usize, NodeId)> = set
-                .into_iter()
-                .map(|node| (self.position[&node], node))
-                .collect();
-            nodes.sort_unstable();
-            nodes
         };
-        let backward = by_position(backward);
-        let forward = by_position(forward);
-        let mut slots: Vec<usize> = backward.iter().chain(&forward).map(|(at, _)| *at).collect();
-        slots.sort_unstable();
-        for (at, (_, node)) in slots.into_iter().zip(backward.into_iter().chain(forward)) {
-            self.position.insert(node, at);
+        let mut nodes: Vec<(u64, NodeId)> = moved
+            .seen
+            .iter()
+            .map(|node| (self.position[node], *node))
+            .collect();
+        nodes.sort_unstable();
+        let nodes: Vec<NodeId> = nodes.into_iter().map(|(_, node)| node).collect();
+        for node in &nodes {
+            self.remove(*node);
+        }
+        if moved.forward {
+            let after = self.nodes.range(upper + 1..).next().map(|(at, _)| *at);
+            self.place(&nodes, upper, after, Some(from), true);
+        } else {
+            let before = self.nodes.range(..lower).next_back().map(|(at, _)| *at);
+            self.place(&nodes, before.unwrap_or(0), Some(lower), Some(to), false);
         }
         true
+    }
+
+    /// Places `nodes`, in this order, strictly between the positions `low` and `high` (or
+    /// anywhere past `low` without one), next to `anchor`, renumbering every node if the gap
+    /// is too narrow.
+    fn place(
+        &mut self,
+        nodes: &[NodeId],
+        low: u64,
+        high: Option<u64>,
+        anchor: Option<NodeId>,
+        after: bool,
+    ) {
+        let count = nodes.len() as u64;
+        let high = high.unwrap_or_else(|| low.saturating_add(GAP.saturating_mul(count + 1)));
+        let step = (high - low) / (count + 1);
+        if step == 0 {
+            self.relabel(nodes, anchor.map(|anchor| (anchor, after)));
+            return;
+        }
+        for (at, node) in (1..).map(|k| low + step * k).zip(nodes) {
+            self.position.insert(*node, at);
+            self.nodes.insert(at, *node);
+        }
+    }
+
+    /// Renumbers every node `GAP` apart, with `nodes` placed next to the anchor, after it
+    /// when the flag says so, or last without one.
+    fn relabel(&mut self, nodes: &[NodeId], anchor: Option<(NodeId, bool)>) {
+        let mut order: Vec<NodeId> = std::mem::take(&mut self.nodes).into_values().collect();
+        let at = anchor
+            .and_then(|(anchor, after)| {
+                let at = order.iter().position(|node| *node == anchor)?;
+                Some(at + usize::from(after))
+            })
+            .unwrap_or(order.len());
+        order.splice(at..at, nodes.iter().copied());
+        self.position.clear();
+        for (k, node) in order.into_iter().enumerate() {
+            let at = GAP * (k as u64 + 1);
+            self.position.insert(node, at);
+            self.nodes.insert(at, node);
+        }
+    }
+}
+
+impl Walk {
+    fn new(start: NodeId, goal: NodeId, forward: bool) -> Self {
+        Self {
+            goal,
+            forward,
+            seen: BTreeSet::new(),
+            stack: vec![start],
+        }
+    }
+
+    /// Visits the next node on the stack, if it lies within `interval`.
+    fn step(
+        &mut self,
+        order: &TopoOrder,
+        document: &GraphDocument,
+        ports: &PortResolver<'_>,
+        index: &DocIndex,
+        interval: std::ops::RangeInclusive<u64>,
+    ) -> Step {
+        let Some(node) = self.stack.pop() else {
+            return Step::Done;
+        };
+        if node == self.goal {
+            return Step::Cycle;
+        }
+        if order
+            .position(node)
+            .is_some_and(|at| interval.contains(&at))
+            && self.seen.insert(node)
+        {
+            self.stack
+                .extend(data_edges(document, ports, index, node, self.forward));
+            let pair = if self.forward {
+                &order.ends
+            } else {
+                &order.begins
+            };
+            self.stack.extend(pair.get(&node).copied());
+        }
+        Step::Going
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node(n: u32) -> NodeId {
+        format!("10000000-0000-4000-8000-{n:012x}").parse().unwrap()
+    }
+
+    #[test]
+    fn placing_into_a_full_gap_renumbers_around_the_anchor() {
+        let mut order = TopoOrder::default();
+        for n in 1..=3 {
+            order.push(node(n));
+        }
+        let one = order.position(node(1)).unwrap();
+        let sequence = |order: &TopoOrder| order.nodes.values().copied().collect::<Vec<_>>();
+        // A gap with one free position takes one node; a gap with none renumbers.
+        order.remove(node(3));
+        order.place(&[node(3)], one, Some(one + 2), Some(node(1)), true);
+        assert_eq!(sequence(&order), [node(1), node(3), node(2)]);
+        order.remove(node(2));
+        order.place(&[node(2)], one, Some(one + 1), Some(node(1)), true);
+        assert_eq!(sequence(&order), [node(1), node(2), node(3)]);
+        assert_eq!(order.position(node(3)), Some(3 * GAP));
+        for (at, node) in &order.nodes {
+            assert_eq!(order.position[node], *at);
+        }
     }
 }
