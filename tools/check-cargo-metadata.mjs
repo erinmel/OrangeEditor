@@ -7,7 +7,8 @@ const policy = {
   'orange-model': {core: true, normal: []},
   'orange-compiler': {core: true, normal: ['orange-model']},
   'orange-runtime': {core: true, normal: ['orange-model', 'orange-compiler']},
-  'orange-bundled': {core: true, normal: ['orange-model', 'orange-compiler'], dev: ['orange-runtime']},
+  // Tests may install synthetic third-party packages through the package store (G2).
+  'orange-bundled': {core: true, normal: ['orange-model', 'orange-compiler'], dev: ['orange-runtime', 'orange-packages']},
   // Package store and registry transactions over model snapshots (02 boundaries); no runtime edge.
   'orange-packages': {core: true, normal: ['orange-model']},
   // Development measurement binary; never part of an embedding host's dependency graph.

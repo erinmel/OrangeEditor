@@ -31,13 +31,14 @@ The core is **not complete**.
 - E3 prerequisites: owned cancellation, activation fuel, frame-scoped entropy and host input slots.
 - Checked Start/Stop, Branch, Sequence, Count/While, Break/Continue, Wait/Yield and Fork all/any/race/detach, with local/run Get/Set and a bounded headless actor on virtual time.
 - V12a analysis sessions and bounded V12b configuration/declaration-type reuse; retained-index planning and borrowed diagnostics/signatures.
+- Registry generations, explicit rebind planning and package-store transactions (install, update, remove, revoke, rollback), checked end to end with a synthetic third-party package through public APIs (2026-11-03; [06](06-quality-and-validation.md) G2 package evidence).
 
 **Open:**
 
 - Function lowering/execution and remaining controls, value types and kernel families.
 - General event ingress/reactivity, resources/services, workspace state and checkpoints (remaining R1–R7).
 - The remaining incremental validator (V12b–f) and NFR-15 measurements.
-- Installed-package lifecycle and migrations.
+- Package archives, grants, code loading, provider specializations, draining and migrations; package providers in the actor runtime.
 
 V12 does not depend on E3 or R1, and they do not depend on it. It can proceed in parallel, provided equivalence with the full pass is kept.
 
