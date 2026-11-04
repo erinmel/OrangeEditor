@@ -58,9 +58,33 @@ pub fn validate_state(
     summaries: &BTreeMap<FunctionId, FunctionSummary>,
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
 ) -> Vec<Diagnostic> {
+    validate_state_counted(
+        document,
+        registry,
+        resolved,
+        regions,
+        summaries,
+        leaf_effects,
+        &mut super::visits::VisitCounts::default(),
+    )
+}
+
+/// [`validate_state`], adding what it iterates to `visits`: the regions, every body, both
+/// loops over each body's nodes, the region members it collects and the stale-capture
+/// walks.
+pub(super) fn validate_state_counted(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    regions: &RegionIndex,
+    summaries: &BTreeMap<FunctionId, FunctionSummary>,
+    leaf_effects: &BTreeMap<NodeId, LeafEffects>,
+    visits: &mut super::visits::VisitCounts,
+) -> Vec<Diagnostic> {
     let origin = registry.origin();
     let mut children: BTreeMap<&RegionRoot, Vec<&RegionRoot>> = BTreeMap::new();
     let mut branches: BTreeMap<NodeId, Vec<&RegionRoot>> = BTreeMap::new();
+    visits.nodes += regions.regions.len();
     for (root, region) in &regions.regions {
         if let Some(parent) = &region.parent {
             children.entry(parent).or_default().push(root);
@@ -72,6 +96,9 @@ pub fn validate_state(
 
     let mut diagnostics = validate_declarations(document, registry);
     for (body_ref, body) in document.bodies_with_refs() {
+        // The register check and the loop below each iterate the body's nodes.
+        visits.bodies += 1;
+        visits.nodes += 2 * body.nodes.len();
         validate_registers(body_ref, body, registry, resolved, &mut diagnostics);
         for node in body.nodes.values() {
             if node
@@ -80,8 +107,9 @@ pub fn validate_state(
                 .is_some_and(|policy| policy.mode == ReentrancyMode::Parallel)
             {
                 let mut members = BTreeSet::new();
+                visits.nodes += regions.regions.len();
                 for root in regions.regions.keys().filter(|root| root.node == node.id) {
-                    members.extend(region_members(regions, &children, root));
+                    members.extend(region_members(regions, &children, root, visits));
                 }
                 stale_captures(
                     body_ref,
@@ -91,6 +119,7 @@ pub fn validate_state(
                     resolved,
                     &members,
                     &mut diagnostics,
+                    visits,
                 );
             }
             let Some(roots) = branches.get(&node.id).filter(|roots| roots.len() > 1) else {
@@ -99,7 +128,7 @@ pub fn validate_state(
             let mut per_branch = Vec::new();
             for root in roots {
                 let mut writes = Writes::new();
-                for member in region_members(regions, &children, root) {
+                for member in region_members(regions, &children, root, visits) {
                     if let Some(member) = body.nodes.get(&member) {
                         collect_writes(
                             document,
@@ -209,11 +238,13 @@ fn region_members(
     regions: &RegionIndex,
     children: &BTreeMap<&RegionRoot, Vec<&RegionRoot>>,
     root: &RegionRoot,
+    visits: &mut super::visits::VisitCounts,
 ) -> BTreeSet<NodeId> {
     let mut members = BTreeSet::new();
     let mut stack = vec![root];
     while let Some(current) = stack.pop() {
         if let Some(region) = regions.regions.get(current) {
+            visits.nodes += region.nodes.len();
             members.extend(region.nodes.iter().copied());
         }
         stack.extend(children.get(current).into_iter().flatten().copied());
@@ -380,6 +411,10 @@ pub(super) fn validate_declarations(
 /// of V whose value depends on a `get-variable` of V through the output of an earlier exec
 /// node (an action or async capture) warns. A direct Get-to-Set path and `update-variable`
 /// are atomic and never warn. Captures through other variables are not tracked.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the walk's reads"
+)]
 fn stale_captures(
     body_ref: BodyRef,
     body: &crate::document::GraphBody,
@@ -388,8 +423,10 @@ fn stale_captures(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     members: &BTreeSet<NodeId>,
     diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
 ) {
     use crate::document::{NodeKind, Suspends};
+    visits.nodes += members.len();
     let suspends = members.iter().any(|node| {
         resolved
             .get(node)
@@ -399,6 +436,8 @@ fn stale_captures(
         return;
     }
     let mut incoming: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
+    visits.edges += body.edges.len();
+    visits.nodes += members.len();
     for edge in body.edges.values() {
         incoming
             .entry(edge.to.node)
@@ -439,6 +478,7 @@ fn stale_captures(
             if !seen.insert((current, crossed)) {
                 continue;
             }
+            visits.nodes += 1;
             let Some(node) = body.nodes.get(&current) else {
                 continue;
             };

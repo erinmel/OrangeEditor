@@ -48,24 +48,45 @@ pub(super) struct TopoOrder {
 /// pass decides the body's cycles.
 const CYCLE_REGION_BUDGET: usize = 4096;
 
-/// The far ends of the data edges leaving `node`, or entering it unless `forward`.
-fn data_edges<'a>(
-    document: &'a GraphDocument,
-    ports: &'a PortResolver<'_>,
-    index: &'a DocIndex,
+/// Pushes onto `stack` the far ends of the data edges leaving `node`, or entering it
+/// unless `forward`, and its zone partner from `pair`, counting every incident edge it
+/// scans, each source port it looks up and the partner as an edge.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the scan"
+)]
+fn push_data_edges(
+    document: &GraphDocument,
+    ports: &PortResolver<'_>,
+    index: &DocIndex,
     node: NodeId,
     forward: bool,
-) -> impl Iterator<Item = NodeId> + 'a {
-    index.incident(node).filter_map(move |id| {
-        let edge = document.edge(id)?;
+    pair: &BTreeMap<NodeId, NodeId>,
+    stack: &mut Vec<NodeId>,
+    visits: &mut VisitCounts,
+) {
+    for id in index.incident(node) {
+        visits.edges += 1;
+        let Some(edge) = document.edge(id) else {
+            continue;
+        };
         let (near, far) = if forward {
             (edge.from.node, edge.to.node)
         } else {
             (edge.to.node, edge.from.node)
         };
-        (near == node && matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data))
-            .then_some(far)
-    })
+        if near != node {
+            continue;
+        }
+        visits.ports += 1;
+        if matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data) {
+            stack.push(far);
+        }
+    }
+    if let Some(partner) = pair.get(&node) {
+        visits.edges += 1;
+        stack.push(*partner);
+    }
 }
 
 /// One side of an insertion's two-way search: a depth-first walk over the nodes whose
@@ -95,8 +116,15 @@ impl TopoOrder {
         body: BodyRef,
         zones: &super::zones::ZoneIndex,
         hold: bool,
+        visits: &mut VisitCounts,
     ) -> Option<Self> {
         let body = document.body(body)?;
+        // The body's node list, then each edge with its source port, once more when the
+        // body is cyclic, and each node again as it is placed.
+        visits.bodies += 1;
+        visits.nodes += 2 * body.nodes.len();
+        visits.edges += body.edges.len();
+        visits.ports += body.edges.len();
         let ends: BTreeMap<NodeId, NodeId> =
             zones.iter().map(|pair| (pair.begin, pair.end)).collect();
         let begins: BTreeMap<NodeId, NodeId> =
@@ -153,6 +181,8 @@ impl TopoOrder {
                 return None;
             }
             if incoming.is_empty() {
+                visits.edges += body.edges.len();
+                visits.ports += body.edges.len();
                 incoming = vec![Vec::new(); ids.len()];
                 for edge in body.edges.values() {
                     let (Some(from), Some(to)) = (dense(edge.from.node), dense(edge.to.node))
@@ -267,17 +297,21 @@ impl TopoOrder {
                 if visited > CYCLE_REGION_BUDGET {
                     return None;
                 }
-                let before = stack.len();
-                stack.extend(data_edges(document, ports, index, node, forward));
-                visits.edges += stack.len() - before;
                 let pair = if forward { &self.ends } else { &self.begins };
-                stack.extend(pair.get(&node).copied());
+                push_data_edges(
+                    document, ports, index, node, forward, pair, &mut stack, visits,
+                );
             }
             Some(seen)
         };
         let after = reach(true)?;
         let before = reach(false)?;
         Some(after.intersection(&before).copied().collect())
+    }
+
+    /// How many checked zone pairs the order holds.
+    pub(super) fn zone_pairs(&self) -> usize {
+        self.ends.len()
     }
 
     /// The zone pairs (begin, end) with both markers among `nodes`.
@@ -448,16 +482,21 @@ impl Walk {
             && self.seen.insert(node)
         {
             visits.nodes += 1;
-            let before = self.stack.len();
-            self.stack
-                .extend(data_edges(document, ports, index, node, self.forward));
-            visits.edges += self.stack.len() - before;
             let pair = if self.forward {
                 &order.ends
             } else {
                 &order.begins
             };
-            self.stack.extend(pair.get(&node).copied());
+            push_data_edges(
+                document,
+                ports,
+                index,
+                node,
+                self.forward,
+                pair,
+                &mut self.stack,
+                visits,
+            );
         }
         Step::Going
     }

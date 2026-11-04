@@ -113,6 +113,7 @@ fn control_cycles_among(
             BodyRef::Root => None,
             BodyRef::Function(id) => Some(id),
         };
+        super::scope::count(only, |visits| visits.bodies += 1);
         let mut full = Graph::new();
         for edge in super::scope::edges_of(body, only) {
             if error_edges.contains(&edge.id)
@@ -122,6 +123,7 @@ fn control_cycles_among(
             {
                 continue;
             }
+            super::scope::count(only, |visits| visits.ports += 2);
             match (resolved.port(&edge.from), resolved.port(&edge.to)) {
                 (Ok(from), Ok(to))
                     if from.direction == PortDirection::Output
@@ -139,7 +141,25 @@ fn control_cycles_among(
                 _ => {}
             }
         }
+        // Each of the two filters reads the exec graph, and each cycle search the filtered
+        // graph it produced.
+        let size = |graph: &Graph| {
+            (
+                graph.len(),
+                graph.values().map(BTreeSet::len).sum::<usize>(),
+            )
+        };
+        let (nodes, edges) = size(&full);
+        super::scope::count(only, |visits| {
+            visits.nodes += 2 * nodes;
+            visits.edges += 2 * edges;
+        });
         let strict = filtered(&full, &certified);
+        let (nodes, edges) = size(&strict);
+        super::scope::count(only, |visits| {
+            visits.nodes += nodes;
+            visits.edges += edges;
+        });
         let mut errors = BTreeSet::new();
         for component in cyclic_components(&strict) {
             let path = cycle_witness(&strict, &component);
@@ -154,6 +174,11 @@ fn control_cycles_among(
         }
         // Cycles certified only by yields are legal but busy (11 §8.1).
         let lenient = filtered(&full, &|node| certified(node) && !is_yield(document, node));
+        let (nodes, edges) = size(&lenient);
+        super::scope::count(only, |visits| {
+            visits.nodes += nodes;
+            visits.edges += edges;
+        });
         for component in cyclic_components(&lenient) {
             if component.iter().any(|node| errors.contains(node)) {
                 continue;

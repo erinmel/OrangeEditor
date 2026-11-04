@@ -139,7 +139,14 @@ pub fn infer_components(
     touched: impl IntoIterator<Item = NodeId>,
     registry: &RegistrySnapshot,
 ) -> Vec<ComponentInference> {
-    infer_components_except(document, index, touched, registry, &BTreeSet::new())
+    infer_components_except(
+        document,
+        index,
+        touched,
+        registry,
+        &BTreeSet::new(),
+        &mut crate::validation::VisitCounts::default(),
+    )
 }
 
 /// [`infer_components`] without the components of `known` nodes, whose results the caller
@@ -150,6 +157,7 @@ pub(crate) fn infer_components_except(
     touched: impl IntoIterator<Item = NodeId>,
     registry: &RegistrySnapshot,
     known: &BTreeSet<NodeId>,
+    visits: &mut crate::validation::VisitCounts,
 ) -> Vec<ComponentInference> {
     let graph = Graph {
         document,
@@ -175,8 +183,11 @@ pub(crate) fn infer_components_except(
         }
         let nodes = graph.component(seed);
         visited.extend(nodes.iter().copied());
+        // The solve builds an equation from each member's template.
+        visits.nodes += nodes.len();
         components.push(graph.solve(nodes, registry.types()));
     }
+    graph.charge(visits);
     components
 }
 

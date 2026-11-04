@@ -70,12 +70,23 @@ pub enum ScopeFallback {
     ErrorStatus,
     /// The retained report holds errors a structure edit cannot be checked against.
     ReportNotClean,
-    /// The edit spans more than one body, or names a node or edge outside its body.
+    /// The edit spans more than one body: its nodes and edges lie in several bodies, or an
+    /// added edge joins a node of another body.
     MultipleBodies,
+    /// A node, edge or body the change names was not found in the document or its body,
+    /// as only an inconsistent change or document can cause.
+    MissingEntity,
     /// An added or removed node is exported, a zone marker or not a typed data node.
     NodeKind,
-    /// An edge is not a clean data or exec connection, or a removed edge had diagnostics.
-    EdgeCheck,
+    /// A removed edge carried published diagnostics, which only the full analysis
+    /// withdraws.
+    EdgeDiagnostics,
+    /// An edge does not join a data output to a data input or an exec or event output to
+    /// an exec input, or one of its ports does not resolve.
+    EdgeKind,
+    /// An added edge fails the connection checks: its endpoint, direction, kind or type
+    /// check, or the fan-in and fan-out rules.
+    ConnectionCheck,
     /// A data cycle the scoped update cannot hold or recompute locally.
     DataCycle,
     /// A data edge may change what an export's cone reads.
@@ -538,6 +549,46 @@ fn changed_keys<K: Ord + Clone, V>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node edit naming a node the document lacks, which no journal produces, is reported
+    /// as a failed lookup rather than as an edit spanning bodies.
+    #[test]
+    fn a_node_edit_naming_a_missing_node_reports_a_missing_entity() {
+        let document = GraphDocument::new("00000000-0000-4000-8000-000000000001".parse().unwrap());
+        let origin =
+            super::super::HostOrigin::new("1.0.0", format!("sha256:{}", "0".repeat(64))).unwrap();
+        let registry = crate::catalog::RegistryBuilder::core(origin)
+            .build()
+            .unwrap();
+        let options = AnalysisOptions::default();
+        let mut session = AnalysisSession::new(&document, &registry, BTreeMap::new(), options);
+        let missing: NodeId = "10000000-0000-4000-8000-000000000009".parse().unwrap();
+        let edit = crate::edit::NodeEdit {
+            before: BTreeMap::from([(
+                missing,
+                crate::edit::NodeFields {
+                    inputs: BTreeMap::new(),
+                    type_args: BTreeMap::new(),
+                    type_pins: BTreeMap::new(),
+                    config_version: 1,
+                    config: Default::default(),
+                },
+            )]),
+        };
+        let (Some(retained), Some(index)) = (&mut session.retained, &session.index) else {
+            panic!("an empty document keeps its scoped state");
+        };
+        let result = super::super::scoped::node_update(
+            &document,
+            &registry,
+            &options,
+            index,
+            &session.analysis,
+            retained,
+            &edit,
+        );
+        assert_eq!(result.err(), Some(ScopeFallback::MissingEntity));
+    }
 
     #[test]
     fn ordered_diff_compares_each_shared_value_once_and_reports_both_tails() {

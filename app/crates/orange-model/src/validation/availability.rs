@@ -395,6 +395,7 @@ fn availability_among(
             origin: registry.origin(),
             function,
         };
+        super::scope::count(only, |visits| visits.bodies += 1);
         check_body(&context, body, &mut result, only, free.as_deref_mut());
     }
     sort_diagnostics(&mut result.diagnostics);
@@ -495,6 +496,7 @@ fn check_body(
             skipped.insert(edge.to.node);
             continue;
         }
+        super::scope::count(only, |visits| visits.ports += 2);
         let (Ok(from), Ok(to)) = (resolved.port(&edge.from), resolved.port(&edge.to)) else {
             skipped.insert(edge.to.node);
             continue;
@@ -516,7 +518,8 @@ fn check_body(
         }
     }
 
-    // Top-level activation roots in this body.
+    // Top-level activation roots in this body, from every region of the document.
+    super::scope::count(only, |visits| visits.nodes += regions.regions.len());
     let roots: Vec<&RegionRoot> = regions
         .regions
         .iter()
@@ -560,7 +563,9 @@ fn check_body(
             let behind: &[&DataEdge] = if expands(context, producer) {
                 cones.entry(producer).or_insert_with(|| {
                     let mut reached = free.is_some().then(BTreeSet::new);
-                    let items = cone(context, &incoming, producer, reached.as_mut());
+                    let mut walked = 0;
+                    let items = cone(context, &incoming, producer, reached.as_mut(), &mut walked);
+                    super::scope::count(only, |visits| visits.edges += walked);
                     if let (Some(free), Some(reached)) = (free.as_deref_mut(), reached)
                         && items.is_empty()
                         && reached.iter().all(|node| !skipped.contains(node))
@@ -572,6 +577,7 @@ fn check_body(
             } else {
                 &[]
             };
+            super::scope::count(only, |visits| visits.edges += 1 + behind.len());
             for item in std::iter::once(item).chain(behind.iter().copied()) {
                 if !visited.insert(item.edge.id) {
                     continue;
@@ -606,6 +612,11 @@ fn check_body(
         }
     }
 
+    // The answers read the control-flow graph built over the subset, and each use is checked.
+    super::scope::count(only, |visits| {
+        visits.nodes += cfg.succ.len() + uses.values().map(BTreeSet::len).sum::<usize>();
+        visits.edges += cfg.succ.values().map(Vec::len).sum::<usize>();
+    });
     let mut answers = Answers::new(
         &cfg,
         uses.keys()
@@ -711,6 +722,7 @@ pub(crate) fn subset_edges<'a>(
     index: &crate::index::DocIndex,
     nodes: &BTreeSet<NodeId>,
     consumers: &BTreeSet<NodeId>,
+    visits: &mut super::visits::VisitCounts,
 ) -> Vec<&'a Edge> {
     let expanding = |node: NodeId| {
         matches!(
@@ -720,7 +732,9 @@ pub(crate) fn subset_edges<'a>(
     };
     let mut ids = BTreeSet::new();
     for &node in nodes {
+        visits.nodes += 1;
         ids.extend(index.incident(node).filter(|id| {
+            visits.edges += 1;
             document
                 .edge(*id)
                 .is_some_and(|edge| edge.from.node == node)
@@ -729,7 +743,9 @@ pub(crate) fn subset_edges<'a>(
     let mut needed = consumers.clone();
     let mut stack: Vec<NodeId> = consumers.iter().copied().collect();
     while let Some(node) = stack.pop() {
+        visits.nodes += 1;
         for id in index.incident(node) {
+            visits.edges += 1;
             let Some(edge) = document.edge(id) else {
                 continue;
             };
@@ -764,6 +780,7 @@ fn cone<'e, 'a>(
     incoming: &'e BTreeMap<NodeId, Vec<DataEdge<'a>>>,
     producer: NodeId,
     mut reached: Option<&mut BTreeSet<NodeId>>,
+    walked: &mut usize,
 ) -> Vec<&'e DataEdge<'a>> {
     let mut cone = Vec::new();
     let mut visited = BTreeSet::new();
@@ -775,6 +792,7 @@ fn cone<'e, 'a>(
         if !visited.insert(item.edge.id) {
             continue;
         }
+        *walked += 1;
         let upstream = item.edge.from.node;
         if expands(context, upstream) {
             if let Some(reached) = reached.as_deref_mut() {

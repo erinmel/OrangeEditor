@@ -1,23 +1,29 @@
 //! Per-update validation work counters for an [`AnalysisSession`](super::AnalysisSession)
 //! (NFR-15, 16 §3).
 //!
-//! A scoped update counts the units each pass actually reached: plain counters bumped where
-//! the walks visit, with no logging, allocation or global state. A full analysis is not
-//! instrumented per pass; every pass is charged the whole document, which bounds what
-//! cache hits save ([`LocalWork`](super::LocalWork) reports those).
+//! A scoped update counts the items each pass actually iterates: plain counters bumped in
+//! the loops and walks themselves, with no logging, allocation or global state. A full
+//! analysis is not instrumented per pass; every pass is charged the whole document, which
+//! bounds what cache hits save ([`LocalWork`](super::LocalWork) reports those).
 
-/// Units one validation pass visited during one session update.
+/// The items one validation pass iterated during one session update.
 ///
-/// `nodes` counts node visits (resolutions, checks or walk steps), `edges` the edges a pass
-/// read or followed, `ports` the port descriptors it checked and `bodies` the graph bodies
-/// it worked in. A unit reached twice by one pass may be counted twice: the counts measure
-/// work, not distinct units.
+/// - `nodes`: node items the pass took from a list, set, index lookup or walk stack and
+///   processed (resolved, checked, projected, compared or expanded).
+/// - `edges`: edges the pass read, including incident edges it scanned and skipped.
+/// - `ports`: port descriptors the pass looked up, projected or compared.
+/// - `diagnostics`: published diagnostics the pass scanned.
+/// - `bodies`: graph bodies (the root or a function's) the pass ran in, once per run in
+///   each body.
+///
+/// These measure work, not distinct units: an item a pass iterates twice counts twice.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct VisitCounts {
     pub nodes: usize,
     pub edges: usize,
     pub ports: usize,
+    pub diagnostics: usize,
     pub bodies: usize,
 }
 
@@ -27,6 +33,7 @@ impl VisitCounts {
         nodes: 0,
         edges: 0,
         ports: 0,
+        diagnostics: 0,
         bodies: 0,
     };
 
@@ -35,24 +42,24 @@ impl VisitCounts {
         *self == Self::ZERO
     }
 
-    /// The whole document, as a full pass visits it.
+    /// Every body, node and edge of `document`, with `ports` port descriptors: what a pass
+    /// that iterates every body's nodes and edges once reads.
     pub(super) fn whole(document: &crate::document::GraphDocument, ports: usize) -> Self {
-        let (nodes, edges, bodies) =
-            document
-                .bodies()
-                .fold((0, 0, 0), |(nodes, edges, bodies), body| {
-                    (
-                        nodes + body.nodes.len(),
-                        edges + body.edges.len(),
-                        bodies + 1,
-                    )
-                });
-        Self {
-            nodes,
-            edges,
+        let mut whole = Self {
             ports,
-            bodies,
+            ..Self::ZERO
+        };
+        for body in document.bodies() {
+            whole.add_body(body);
         }
+        whole
+    }
+
+    /// One body with its nodes and edges, as a pass iterating both lists once reads it.
+    pub(super) fn add_body(&mut self, body: &crate::document::GraphBody) {
+        self.nodes += body.nodes.len();
+        self.edges += body.edges.len();
+        self.bodies += 1;
     }
 }
 
@@ -64,6 +71,7 @@ impl std::ops::Add for VisitCounts {
             nodes: self.nodes + other.nodes,
             edges: self.edges + other.edges,
             ports: self.ports + other.ports,
+            diagnostics: self.diagnostics + other.diagnostics,
             bodies: self.bodies + other.bodies,
         }
     }
@@ -75,30 +83,37 @@ impl std::ops::AddAssign for VisitCounts {
     }
 }
 
-/// What each validation pass visited during one session update, reported in
+/// What each validation pass iterated during one session update, reported in
 /// [`EditStats::visits`](super::EditStats::visits).
 ///
-/// A layout-only or unchanged update visits nothing. A scoped update counts the units its
-/// walks reached; index maintenance and publishing the patched report are bookkeeping, not
-/// passes, and are not counted. A full analysis (`SessionWork::Recompute` or `Rebuild`)
-/// charges every pass the whole document.
+/// A layout-only or unchanged update visits nothing. A scoped update counts the items its
+/// passes iterate; index maintenance and patching the published report are bookkeeping, not
+/// passes, and are not counted. Where a scoped pass reruns over a whole set, it is charged
+/// what that run iterates: the state pass every body and both of its loops over each body's
+/// nodes, and a function check the function body once per body pass it reruns. A full
+/// analysis (`SessionWork::Recompute` or `Rebuild`) is not instrumented: every pass is
+/// charged every body, node and edge of the document and every resolved port.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct PassVisits {
-    /// Node resolution and type inference: re-resolved nodes with their ports, and the
-    /// nodes and edges the generic-component and kept-solution searches read.
+    /// Node resolution and type inference: contract preflight, the generic-component and
+    /// kept-solution searches, the incomplete-neighbour scan, projection, the comparison
+    /// with the retained result and the neighbour walks that choose the nodes.
     pub resolution: VisitCounts,
     /// Node input checks.
     pub inputs: VisitCounts,
     /// Node configuration checks.
     pub config: VisitCounts,
-    /// Connection checks of added and removed edges, with both endpoint ports.
+    /// Connection checks of added and removed edges: the published-diagnostic scan, both
+    /// endpoint ports and the fan-in and fan-out scans.
     pub connections: VisitCounts,
-    /// The data dependency order, data cycles, downstream and export cone walks.
+    /// The data dependency order (build, two-way search and cycle region), data cycles,
+    /// downstream and export cone walks.
     pub order: VisitCounts,
-    /// Availability: requirement cone walks, lazy readers and the consumers rechecked.
+    /// Availability: requirement cone walks, lazy readers, the subset edge walk and the
+    /// subset availability pass.
     pub availability: VisitCounts,
-    /// Region and control-cycle passes, with the exec component they run over.
+    /// The exec component walk and the region and control-cycle passes over it.
     pub control_flow: VisitCounts,
     /// The state pass.
     pub state: VisitCounts,
@@ -123,15 +138,12 @@ impl PassVisits {
         functions: VisitCounts::ZERO,
     };
 
-    /// Every pass's node, edge and port visits summed, with the most bodies any one pass
-    /// worked in: passes share bodies, so summing those would count one body per pass.
+    /// The update's work summed over every pass, field by field: an item, or a body, that
+    /// several passes iterate counts once per pass.
     pub fn total(&self) -> VisitCounts {
         self.each()
             .into_iter()
-            .fold(VisitCounts::ZERO, |sum, pass| VisitCounts {
-                bodies: sum.bodies.max(pass.bodies),
-                ..sum + pass
-            })
+            .fold(VisitCounts::ZERO, |sum, pass| sum + pass)
     }
 
     fn each(&self) -> [VisitCounts; 10] {
@@ -149,38 +161,19 @@ impl PassVisits {
         ]
     }
 
-    fn each_mut(&mut self) -> [&mut VisitCounts; 10] {
-        [
-            &mut self.resolution,
-            &mut self.inputs,
-            &mut self.config,
-            &mut self.connections,
-            &mut self.order,
-            &mut self.availability,
-            &mut self.control_flow,
-            &mut self.state,
-            &mut self.zones,
-            &mut self.functions,
-        ]
-    }
-
     /// Every pass charged `whole`, as a full analysis runs each over the document.
     pub(super) fn full(whole: VisitCounts) -> Self {
-        let mut visits = Self::ZERO;
-        for pass in visits.each_mut() {
-            *pass = whole;
+        Self {
+            resolution: whole,
+            inputs: whole,
+            config: whole,
+            connections: whole,
+            order: whole,
+            availability: whole,
+            control_flow: whole,
+            state: whole,
+            zones: whole,
+            functions: whole,
         }
-        visits
-    }
-
-    /// Charges `bodies` to each pass that visited something but recorded no body: the
-    /// scoped passes work inside the edit's own bodies.
-    pub(super) fn in_bodies(mut self, bodies: usize) -> Self {
-        for pass in self.each_mut() {
-            if pass.bodies == 0 && !pass.is_zero() {
-                pass.bodies = bodies;
-            }
-        }
-        self
     }
 }

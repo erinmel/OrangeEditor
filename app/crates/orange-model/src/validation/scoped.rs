@@ -171,11 +171,11 @@ pub(super) fn node_update(
         // A function-body node is scoped too (V12e): with its signature and error status
         // unchanged, its function's blocked set, summary and acceptance are unchanged, so
         // no caller can observe the edit.
-        let body = document.locate_node(*id).ok_or(Why::MultipleBodies)?;
+        let body = document.locate_node(*id).ok_or(Why::MissingEntity)?;
         if !bodies.contains(&body) {
             bodies.push(body);
         }
-        let node = document.node(*id).ok_or(Why::MultipleBodies)?;
+        let node = document.node(*id).ok_or(Why::MissingEntity)?;
         // Structural passes read configuration of core intrinsics only (Fork, Switch,
         // While, zones, variables, registers); a package node's reaches admission, its
         // configuration check and its contract.
@@ -207,7 +207,10 @@ pub(super) fn node_update(
         .filter(|admitted| options.fits(*admitted))
         .ok_or(Why::Admission)?;
     let touched: BTreeSet<NodeId> = edit.before.keys().copied().collect();
-    let seeds = equation_changes(document, registry, index, edit);
+    let seeds = equation_changes(document, registry, index, edit, &mut visits.resolution);
+    // Resolution and the input check each run once over nodes of these bodies.
+    visits.resolution.bodies += bodies.len();
+    visits.inputs.bodies += bodies.len();
     let resolution = resolution_unchanged(
         document,
         registry,
@@ -232,12 +235,14 @@ pub(super) fn node_update(
     let mut config = Vec::new();
     let mut schemas = super::config::ConfigSchemas::default();
     for (id, before) in &edit.before {
-        let node = document.node(*id).ok_or(Why::MultipleBodies)?;
+        let node = document.node(*id).ok_or(Why::MissingEntity)?;
         if before.config == node.config && before.config_version == node.config_version {
             continue;
         }
-        let body = document.locate_node(*id).ok_or(Why::MultipleBodies)?;
+        let body = document.locate_node(*id).ok_or(Why::MissingEntity)?;
+        // One configuration check of one node in its body.
         visits.config.nodes += 1;
+        visits.config.bodies += 1;
         let list: Vec<Diagnostic> =
             super::config::validate_node_config(body, node, registry, &mut schemas)
                 .into_iter()
@@ -259,7 +264,7 @@ pub(super) fn node_update(
         resolution.components,
     );
     scoped.checked_config = config.len();
-    scoped.visits = visits.in_bodies(bodies.len());
+    scoped.visits = visits;
     for (id, list) in config {
         let old = if list.is_empty() {
             retained.config.remove(&id)
@@ -281,9 +286,11 @@ fn equation_changes(
     registry: &RegistrySnapshot,
     index: &DocIndex,
     edit: &NodeEdit,
+    visits: &mut VisitCounts,
 ) -> Option<BTreeSet<NodeId>> {
     let mut changed = BTreeSet::new();
     for (id, before) in &edit.before {
+        visits.nodes += 1;
         let node = document.node(*id)?;
         if before.config != node.config || before.config_version != node.config_version {
             let mut old = node.clone();
@@ -297,8 +304,8 @@ fn equation_changes(
             }
         }
         let literals = before.inputs.keys().chain(node.inputs.keys()).any(|key| {
-            active_type(index, *id, &before.inputs, key)
-                != active_type(index, *id, &node.inputs, key)
+            active_type(index, *id, &before.inputs, key, visits)
+                != active_type(index, *id, &node.inputs, key, visits)
         });
         if literals || before.type_pins != node.type_pins {
             changed.insert(*id);
@@ -313,12 +320,15 @@ fn active_type<'a>(
     node: NodeId,
     inputs: &'a BTreeMap<crate::id::PortKey, crate::document::literal::Literal>,
     key: &crate::id::PortKey,
+    visits: &mut VisitCounts,
 ) -> Option<&'a crate::id::TypeExpr> {
     let port = crate::document::PortRef {
         node,
         port: key.clone(),
     };
+    visits.ports += 1;
     if index.incoming(&port).next().is_some() {
+        visits.edges += 1;
         return None;
     }
     inputs.get(key).map(|literal| &literal.ty)
@@ -392,10 +402,31 @@ fn isolated<'a>(
     })
 }
 
-/// Charges `visits` with every body, node and edge of `document`, as a whole-document scan
-/// visits them.
-fn charge_whole(document: &GraphDocument, visits: &mut VisitCounts) {
-    *visits += VisitCounts::whole(document, 0);
+/// Charges `visits` with what [`super::functions::call_graph`] iterates: every function
+/// body, and every node of each.
+fn charge_call_graph(document: &GraphDocument, visits: &mut VisitCounts) {
+    for function in document.functions().values() {
+        visits.nodes += function.body.nodes.len();
+        visits.bodies += 1;
+    }
+}
+
+/// Charges `visits` with what [`super::acceptance::check_function`] iterates for
+/// `function`: each loop of its body passes over the body's nodes (node resolution's
+/// preflight and projection, data cycles, the region pass's three loops, inputs, and the
+/// summary) or edges (the connection pass's two loops, data cycles, regions and control
+/// cycles), and the call graph. Each loop runs once over the whole list.
+fn charge_function_check(
+    document: &GraphDocument,
+    function: crate::id::FunctionId,
+    visits: &mut VisitCounts,
+) {
+    if let Some(body) = document.body(BodyRef::Function(function)) {
+        visits.nodes += 8 * body.nodes.len();
+        visits.edges += 5 * body.edges.len();
+        visits.bodies += 1;
+    }
+    charge_call_graph(document, visits);
 }
 
 /// Every function that calls `function`, directly or through other functions, callee first.
@@ -405,13 +436,13 @@ fn transitive_callers(
     function: crate::id::FunctionId,
     visits: &mut VisitCounts,
 ) -> Vec<crate::id::FunctionId> {
-    // The call graph reads every body's nodes.
-    charge_whole(document, visits);
+    charge_call_graph(document, visits);
     let mut analysis = super::functions::FunctionAnalysis::default();
     let graph = super::functions::call_graph(document, registry, &mut analysis);
     let mut callers = BTreeSet::new();
     let mut stack = vec![function];
     while let Some(callee) = stack.pop() {
+        visits.nodes += graph.len();
         for (caller, calls) in &graph {
             if calls.values().any(|target| *target == callee) && callers.insert(*caller) {
                 stack.push(*caller);
@@ -431,13 +462,11 @@ fn is_called(
     function: crate::id::FunctionId,
     visits: &mut VisitCounts,
 ) -> bool {
-    // A miss scans every body's nodes; a hit stops early, which this does not credit.
-    let whole = VisitCounts::whole(document, 0);
-    visits.nodes += whole.nodes;
-    visits.bodies += whole.bodies;
     let target = function.to_string();
     document.bodies().any(|body| {
+        visits.bodies += 1;
         body.nodes.values().any(|node| {
+            visits.nodes += 1;
             node.definition.id.as_str() == crate::catalog::intrinsic_id::CALL
                 && node
                     .config
@@ -486,10 +515,10 @@ pub(super) fn structure_update(
     // The edit stays in one body: the root, or one function's body (V12e).
     let mut homes = Vec::new();
     for id in &change.nodes().added {
-        homes.push(document.locate_node(*id).ok_or(Why::MultipleBodies)?);
+        homes.push(document.locate_node(*id).ok_or(Why::MissingEntity)?);
     }
     for id in &change.edges().added {
-        homes.push(document.locate_edge(*id).ok_or(Why::MultipleBodies)?);
+        homes.push(document.locate_edge(*id).ok_or(Why::MissingEntity)?);
     }
     homes.extend(edit.removed_nodes.values().map(|(body, _)| *body));
     homes.extend(edit.removed_edges.values().map(|(body, _)| *body));
@@ -504,7 +533,7 @@ pub(super) fn structure_update(
     if root_cycles && (!hold || !matches!(retained.orders.get(&home), Some(Some(_)))) {
         return Err(Why::DataCycle);
     }
-    let root = document.body(home).ok_or(Why::MultipleBodies)?;
+    let root = document.body(home).ok_or(Why::MissingEntity)?;
     let added_nodes = &change.nodes().added;
     let exported = |id: &NodeId| document.exports().iter().any(|export| export.node == *id);
     let mut removed_charge = Admitted::default();
@@ -517,7 +546,7 @@ pub(super) fn structure_update(
     // Intrinsics and nodes with exec or untyped ports reach the control-flow passes.
     let mut flow_nodes = false;
     for id in added_nodes {
-        let node = root.nodes.get(id).ok_or(Why::MultipleBodies)?;
+        let node = root.nodes.get(id).ok_or(Why::MissingEntity)?;
         if exported(id) || zoned(node) {
             return Err(Why::NodeKind);
         }
@@ -547,7 +576,7 @@ pub(super) fn structure_update(
     let mut edges: Vec<(&Edge, bool)> =
         Vec::with_capacity(added_edges.len() + edit.removed_edges.len());
     for id in added_edges {
-        edges.push((root.edges.get(id).ok_or(Why::MultipleBodies)?, true));
+        edges.push((root.edges.get(id).ok_or(Why::MissingEntity)?, true));
     }
     for (_, edge) in edit.removed_edges.values() {
         edges.push((edge, false));
@@ -577,6 +606,7 @@ pub(super) fn structure_update(
         .replace(removed_charge, added_charge)
         .filter(|admitted| options.fits(*admitted))
         .ok_or(Why::Admission)?;
+    visits.resolution.bodies += 1;
     let Resolution {
         resolved,
         components,
@@ -628,11 +658,10 @@ pub(super) fn structure_update(
     // edit; later edits bring an order up to date.
     let built = !retained.orders.contains_key(&home);
     if built {
-        visits.order.nodes += root.nodes.len();
-        visits.order.edges += root.edges.len();
         let ports = super::ports::PortResolver::new(document, &analysis.report().resolved);
         let zones = &analysis.report().regions.zones;
-        let order = super::order::TopoOrder::build(document, &ports, home, zones, hold);
+        let order =
+            super::order::TopoOrder::build(document, &ports, home, zones, hold, &mut visits.order);
         retained.orders.insert(home, order);
     }
     let mut order = retained.orders.get_mut(&home).and_then(Option::as_mut);
@@ -715,6 +744,7 @@ pub(super) fn structure_update(
         .ok_or(Why::Zone)
         .and(local)
         .and_then(|kinds| {
+            visits.inputs.bodies += usize::from(!targets.is_empty());
             let inputs = recheck_inputs(
                 document,
                 registry,
@@ -767,9 +797,10 @@ pub(super) fn structure_update(
             let mut config = Vec::new();
             for id in added_nodes {
                 visits.config.nodes += 1;
+                visits.config.bodies += 1;
                 let list: Vec<Diagnostic> = super::config::validate_node_config(
                     home,
-                    document.node(*id).ok_or(Why::MultipleBodies)?,
+                    document.node(*id).ok_or(Why::MissingEntity)?,
                     registry,
                     &mut schemas,
                 )
@@ -781,14 +812,7 @@ pub(super) fn structure_update(
             // acceptance, summary and own diagnostics, which its callers read, hold.
             if let BodyRef::Function(function) = home {
                 let report = analysis.report();
-                let charge_body = |function, visits: &mut VisitCounts| {
-                    if let Some(body) = document.body(BodyRef::Function(function)) {
-                        visits.nodes += body.nodes.len();
-                        visits.edges += body.edges.len();
-                        visits.bodies += 1;
-                    }
-                };
-                charge_body(function, &mut visits.functions);
+                charge_function_check(document, function, &mut visits.functions);
                 let check = super::acceptance::check_function(
                     document,
                     registry,
@@ -820,7 +844,7 @@ pub(super) fn structure_update(
                     for caller in
                         transitive_callers(document, registry, function, &mut visits.functions)
                     {
-                        charge_body(caller, &mut visits.functions);
+                        charge_function_check(document, caller, &mut visits.functions);
                         let check = super::acceptance::check_function(
                             document,
                             registry,
@@ -851,14 +875,14 @@ pub(super) fn structure_update(
                     let regions = flow
                         .as_ref()
                         .map_or(&report.regions, |update: &FlowUpdate| &update.regions);
-                    charge_whole(document, &mut visits.state);
-                    let mut state = super::state::validate_state(
+                    let mut state = super::state::validate_state_counted(
                         document,
                         registry,
                         &report.resolved,
                         regions,
                         &summaries,
                         effects,
+                        &mut visits.state,
                     );
                     if has_error(&state) {
                         return Err(Why::State);
@@ -922,7 +946,7 @@ pub(super) fn structure_update(
     retained.free = free;
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
     scoped.checked_config = config.len();
-    scoped.visits = visits.in_bodies(1);
+    scoped.visits = visits;
     if let Ok(Some(CycleUpdate { diagnostics, paths })) = cycles {
         // The root cycles' diagnostics live in `base`; swap them there, then publish. Their
         // witnesses replace the root body's, which are those not in a function body.
@@ -1071,6 +1095,7 @@ fn cycle_update(
     if order.is_cyclic() && !document.exports().is_empty() {
         return None;
     }
+    visits.bodies += 1;
     let ports = super::ports::PortResolver::new(document, &analysis.report().resolved);
     if removed && order.is_cyclic() {
         order.retry(document, &ports, index, visits);
@@ -1096,6 +1121,8 @@ fn cycle_update(
             }
         }
     }
+    // Choosing the region's zones scans every zone pair of the order.
+    visits.edges += order.zone_pairs();
     let found = super::data_cycles::cycles_among(
         &ports,
         document.root(),
@@ -1103,6 +1130,7 @@ fn cycle_update(
         order.zones_among(&region),
         edges.into_values(),
         registry.origin(),
+        visits,
     )?;
     for (diagnostic, path) in found {
         update.diagnostics.push(diagnostic);
@@ -1207,6 +1235,8 @@ fn zone_update<'a>(
 ) -> Option<ZoneChange> {
     let mut reached = BTreeSet::new();
     for node in nodes {
+        // Each touched or removed node's zone owner is looked up.
+        visits.nodes += 1;
         if zones.pairs.contains_key(node) {
             reached.insert(*node);
         }
@@ -1225,6 +1255,7 @@ fn zone_update<'a>(
         bodies: Vec::new(),
         walked: Vec::new(),
     };
+    visits.bodies += usize::from(!reached.is_empty());
     for end in reached {
         let pair = zones.pairs.get(&end)?;
         let old = bodies.get(&end)?;
@@ -1282,7 +1313,9 @@ fn zone_update<'a>(
             if node == begin {
                 continue;
             }
+            visits.nodes += 1;
             for from in sources.get(&node).into_iter().flatten() {
+                visits.edges += 1;
                 if before.insert(*from) {
                     stack.push(*from);
                 }
@@ -1293,6 +1326,9 @@ fn zone_update<'a>(
             .filter(|node| **node != begin && **node != end)
             .copied()
             .collect();
+        // The closure, purity and nesting checks read the walked edges and the body twice.
+        visits.edges += edges.len();
+        visits.nodes += 2 * body.len();
         let closed = edges.iter().all(|(from, to)| {
             (*from != begin && !body.contains(from)) || *to == end || body.contains(to)
         });
@@ -1392,21 +1428,27 @@ fn classify_edges(
     let ports = super::ports::PortResolver::new(document, &report.resolved);
     let origin = registry.origin();
     let mut kinds = EdgeKinds::default();
-    let mut why = Why::EdgeCheck;
+    let mut why = Why::EdgeKind;
+    let (mut read_order, mut read_cones) = (false, false);
     let local = edges.iter().all(|(edge, is_added)| {
         visits.connections.edges += 1;
-        visits.connections.ports += 2;
-        let published = report
+        // Whether the edge carries a published diagnostic: a scan of the report up to the
+        // first one that does.
+        let scanned = report
             .diagnostics
             .iter()
-            .any(|diagnostic| diagnostic.subject.edge == Some(edge.id));
+            .position(|diagnostic| diagnostic.subject.edge == Some(edge.id));
+        visits.connections.diagnostics += scanned.map_or(report.diagnostics.len(), |at| at + 1);
+        let published = scanned.is_some();
         if !is_added
             && (document.node(edge.from.node).is_none() || document.node(edge.to.node).is_none())
         {
             // The edge went with a removed node, which was pure and clean.
             kinds.data = true;
+            why = Why::EdgeDiagnostics;
             return !published;
         }
+        visits.connections.ports += 2;
         let exec = matches!(
             (ports.port(&edge.from), ports.port(&edge.to)),
             (Ok(from), Ok(to)) if matches!(from.kind, PortKind::Exec | PortKind::Event)
@@ -1417,8 +1459,17 @@ fn classify_edges(
         if exec {
             kinds.flow = true;
             return if *is_added {
-                super::connections::added_edge_is_clean(document, &ports, index, edge, origin)
+                why = Why::ConnectionCheck;
+                super::connections::added_edge_is_clean(
+                    document,
+                    &ports,
+                    index,
+                    edge,
+                    origin,
+                    &mut visits.connections,
+                )
             } else {
+                why = Why::EdgeDiagnostics;
                 !published
             };
         }
@@ -1431,8 +1482,10 @@ fn classify_edges(
                 && to.direction == PortDirection::Input
         );
         if !data {
+            why = Why::EdgeKind;
             return false;
         }
+        read_cones = true;
         kinds.requires |= super::availability::data_edge_requires(
             document,
             &ports,
@@ -1442,9 +1495,11 @@ fn classify_edges(
             free,
             &mut visits.availability,
         );
+        read_order = true;
         if let Some(order) = order.as_deref_mut() {
             if !*is_added {
                 // A removed edge only shrinks cones, and closes no cycle.
+                why = Why::EdgeDiagnostics;
                 return !published;
             }
             if !order.insert(
@@ -1485,7 +1540,15 @@ fn classify_edges(
                 why = Why::Export;
                 return false;
             }
-            return super::connections::added_edge_is_clean(document, &ports, index, edge, origin);
+            why = Why::ConnectionCheck;
+            return super::connections::added_edge_is_clean(
+                document,
+                &ports,
+                index,
+                edge,
+                origin,
+                &mut visits.connections,
+            );
         }
         let downstream = data_downstream(
             document,
@@ -1509,11 +1572,24 @@ fn classify_edges(
                 why = Why::DataCycle;
                 return false;
             }
-            super::connections::added_edge_is_clean(document, &ports, index, edge, origin)
+            why = Why::ConnectionCheck;
+            super::connections::added_edge_is_clean(
+                document,
+                &ports,
+                index,
+                edge,
+                origin,
+                &mut visits.connections,
+            )
         } else {
+            why = Why::EdgeDiagnostics;
             !published
         }
     });
+    // Each of these passes ran in the edit's one body.
+    visits.connections.bodies += usize::from(!edges.is_empty());
+    visits.availability.bodies += usize::from(read_cones);
+    visits.order.bodies += usize::from(read_order);
     if local { Ok(kinds) } else { Err(why) }
 }
 
@@ -1583,10 +1659,9 @@ fn recompute_flow(
             }
             ids.into_iter().filter_map(|id| document.edge(id)).collect()
         },
+        visits: std::cell::Cell::default(),
     };
-    // The region and control-cycle passes each run over the component and its edges.
-    visits.control_flow.nodes += 2 * component.len();
-    visits.control_flow.edges += 2 * outgoing.edges.len();
+    // The region and control-cycle passes count what they iterate into the subset.
     let regions =
         super::regions::validate_regions_among(document, &ports, &connections, registry, &outgoing);
     let control = super::control_cycles::validate_control_cycles_among(
@@ -1596,6 +1671,7 @@ fn recompute_flow(
         registry,
         &outgoing,
     );
+    visits.control_flow += outgoing.visits.get();
     if !regions.incomplete_nodes.is_empty()
         || !control.incomplete_nodes.is_empty()
         || !control.cycle_paths.is_empty()
@@ -1603,6 +1679,10 @@ fn recompute_flow(
         return None;
     }
     let old = &report.regions;
+    // Merging scans the document's whole region index: its regions, owners and
+    // unreachable nodes, then compares each component node's lineage before and after.
+    visits.control_flow.nodes +=
+        old.regions.len() + old.owners.len() + old.unreachable.len() + 2 * component.len();
     let mut merged = old.clone();
     merged
         .regions
@@ -1681,31 +1761,39 @@ fn recompute_flow(
     } else {
         // The set's exec edges and the data cones of those consumers.
         let cones = super::availability::subset_edges(
-            document, &ports, &merged, index, &component, &consumers,
+            document,
+            &ports,
+            &merged,
+            index,
+            &component,
+            &consumers,
+            &mut visits.availability,
         );
-        visits.availability.nodes += consumers.len();
-        visits.availability.edges += cones.len();
-        super::availability::validate_availability_among(
+        let subset = NodeSubset {
+            nodes: &component,
+            consumers: &consumers,
+            edges: cones,
+            visits: std::cell::Cell::default(),
+        };
+        let availability = super::availability::validate_availability_among(
             document,
             &ports,
             &connections,
             &merged,
             registry,
-            &NodeSubset {
-                nodes: &component,
-                consumers: &consumers,
-                edges: cones,
-            },
-        )
+            &subset,
+        );
+        visits.availability += subset.visits.get();
+        availability
     };
-    charge_whole(document, &mut visits.state);
-    let state = super::state::validate_state(
+    let state = super::state::validate_state_counted(
         document,
         registry,
         &report.resolved,
         &merged,
         &report.functions,
         effects,
+        &mut visits.state,
     );
     let mut fresh = regions.diagnostics;
     fresh.extend(control.diagnostics);
@@ -1715,11 +1803,12 @@ fn recompute_flow(
             .node
             .is_some_and(|node| component.contains(&node))
     };
-    if !fresh.iter().all(local)
-        || retained.flow.iter().any(|item| item.subject.node.is_none())
-        || has_error(&fresh)
-        || has_error(&state)
-    {
+    let unattached = retained
+        .flow
+        .iter()
+        .position(|item| item.subject.node.is_none());
+    visits.control_flow.diagnostics += unattached.map_or(retained.flow.len(), |at| at + 1);
+    if !fresh.iter().all(local) || unattached.is_some() || has_error(&fresh) || has_error(&state) {
         return whole_flow(document, registry, analysis, effects, &ports, free, visits);
     }
     let mut flow = fresh;
@@ -1747,12 +1836,20 @@ fn whole_flow(
     free: &mut BTreeSet<NodeId>,
     visits: &mut PassVisits,
 ) -> Option<FlowUpdate> {
-    // Regions and control cycles, availability and state each run over the document.
-    let mut whole = VisitCounts::ZERO;
-    charge_whole(document, &mut whole);
-    visits.control_flow += whole + whole;
-    visits.availability += whole;
-    visits.state += whole;
+    // The whole-document region, control-cycle and availability passes are charged their
+    // loops over every body's lists, as for a full analysis: regions three over the nodes
+    // and one over the edges, control cycles one over the edges, availability two over the
+    // nodes and one over the edges. Their walks are not counted. The state pass counts
+    // itself.
+    for body in document.bodies() {
+        let (nodes, edges) = (body.nodes.len(), body.edges.len());
+        visits.control_flow.nodes += 3 * nodes;
+        visits.control_flow.edges += 2 * edges;
+        visits.control_flow.bodies += 2;
+        visits.availability.nodes += 2 * nodes;
+        visits.availability.edges += edges;
+        visits.availability.bodies += 1;
+    }
     let report = analysis.report();
     let connections = super::connections::ConnectionValidation::default();
     let regions =
@@ -1779,13 +1876,14 @@ fn whole_flow(
         free,
     )
     .diagnostics;
-    let mut state = super::state::validate_state(
+    let mut state = super::state::validate_state_counted(
         document,
         registry,
         &report.resolved,
         &regions.index,
         &report.functions,
         effects,
+        &mut visits.state,
     );
     flow.extend(regions.diagnostics);
     flow.extend(control.diagnostics);
@@ -1840,6 +1938,7 @@ fn exec_component(
     seeds: &BTreeSet<NodeId>,
     visits: &mut VisitCounts,
 ) -> BTreeSet<NodeId> {
+    visits.bodies += 1;
     let mut seen = BTreeSet::new();
     let mut stack: Vec<NodeId> = seeds.iter().copied().collect();
     while let Some(node) = stack.pop() {
@@ -1966,10 +2065,11 @@ fn resolution_unchanged(
         index,
         Inference::Solve(None),
         Some(&mut args),
+        visits,
     );
-    charge_resolved(&nodes, ids.len(), visits);
+    visits.diagnostics += nodes.diagnostics.len();
     let fresh = by_node(&nodes.diagnostics).ok_or(ScopeFallback::Resolution)?;
-    let fresh_added = compare(analysis, retained, &nodes, &fresh, &affected, added)
+    let fresh_added = compare(analysis, retained, &nodes, &fresh, &affected, added, visits)
         .ok_or(ScopeFallback::Resolution)?;
     Ok(Resolution {
         resolved: ids.len(),
@@ -2065,10 +2165,11 @@ fn kept_resolution(
         index,
         Inference::Known(known),
         None,
+        visits,
     );
-    charge_resolved(&nodes, ids.len(), visits);
+    visits.diagnostics += nodes.diagnostics.len();
     let fresh = by_node(&nodes.diagnostics)?;
-    let fresh = compare(analysis, retained, &nodes, &fresh, touched, added)?;
+    let fresh = compare(analysis, retained, &nodes, &fresh, touched, added, visits)?;
     if !types_bounded(fresh.values().map(|(signature, _)| signature)) {
         return None;
     }
@@ -2085,7 +2186,8 @@ fn kept_resolution(
 }
 
 /// Checks that every node of `nodes` but `added` resolved as retained, and that each added
-/// node resolved without errors; returns the added nodes' results.
+/// node resolved without errors; returns the added nodes' results. Each node compared, its
+/// signature's ports and its diagnostics are added to `visits`.
 fn compare(
     analysis: &ValidationAnalysis,
     retained: &Retained,
@@ -2093,11 +2195,18 @@ fn compare(
     fresh: &BTreeMap<NodeId, Vec<Diagnostic>>,
     nodes: &BTreeSet<NodeId>,
     added: &BTreeSet<NodeId>,
+    visits: &mut VisitCounts,
 ) -> Option<Fresh> {
     let report = analysis.report();
     let empty = Vec::new();
     let mut fresh_added = Fresh::new();
     for id in nodes {
+        visits.nodes += 1;
+        visits.ports += resolution
+            .resolved
+            .get(id)
+            .map_or(0, |signature| signature.ports.len());
+        visits.diagnostics += fresh.get(id).map_or(0, Vec::len);
         if added.contains(id) {
             // A new node has nothing to compare with: it must resolve without errors.
             let list = fresh.get(id).cloned().unwrap_or_default();
@@ -2123,16 +2232,6 @@ fn compare(
 
 /// Each added node's new signature and node diagnostics.
 type Fresh = BTreeMap<NodeId, (SignatureSnapshot, Vec<Diagnostic>)>;
-
-/// Charges a resolution of `nodes` node IDs with the ports of the signatures it resolved.
-fn charge_resolved(resolution: &super::NodeValidation, nodes: usize, visits: &mut VisitCounts) {
-    visits.nodes += nodes;
-    visits.ports += resolution
-        .resolved
-        .values()
-        .map(|signature| signature.ports.len())
-        .sum::<usize>();
-}
 
 /// The current input diagnostics of `nodes`, whose signatures are unchanged. A node that
 /// [`strict`] binds runs in full when it gains or loses an input error.
@@ -2283,6 +2382,7 @@ fn with_neighbours(
 ) -> BTreeSet<NodeId> {
     let mut out = nodes.clone();
     for &node in nodes {
+        visits.nodes += 1;
         for edge in index.incident(node) {
             visits.edges += 1;
             if let Some(edge) = document.edge(edge) {

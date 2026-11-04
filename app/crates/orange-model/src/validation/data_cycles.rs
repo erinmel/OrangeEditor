@@ -231,16 +231,23 @@ pub(super) fn cycles_among<'a>(
     zones: impl IntoIterator<Item = (NodeId, NodeId)>,
     edges: impl IntoIterator<Item = &'a crate::document::Edge>,
     origin: &HostOrigin,
+    visits: &mut super::visits::VisitCounts,
 ) -> Option<Vec<(Diagnostic, Vec<PortRef>)>> {
     let mut graph = DependencyGraph::default();
     let mut incomplete = Vec::new();
     for id in nodes {
+        visits.nodes += 1;
+        visits.ports += resolved
+            .get(id)
+            .map_or(0, |signature| signature.ports.len());
         graph.node(resolved, body.nodes.get(id)?, &mut incomplete);
     }
     for (begin, end) in zones {
+        visits.edges += 1;
         graph.zone(resolved, body, begin, end);
     }
     for edge in edges {
+        visits.edges += 1;
         graph.data_edge(resolved, edge, &mut incomplete);
     }
     incomplete

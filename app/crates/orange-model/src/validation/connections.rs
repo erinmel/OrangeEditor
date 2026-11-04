@@ -198,7 +198,12 @@ pub(crate) fn added_edge_is_clean(
     index: &DocIndex,
     edge: &Edge,
     origin: &HostOrigin,
+    visits: &mut super::visits::VisitCounts,
 ) -> bool {
+    // The edge check reads the edge and both endpoint ports; the fan scans below read at
+    // most two edges each, and the source port once more.
+    visits.edges += 1;
+    visits.ports += 3;
     let mut report = ConnectionValidation::default();
     let mut diagnostics = Vec::new();
     check_edge(
@@ -215,14 +220,18 @@ pub(crate) fn added_edge_is_clean(
     let Ok(from) = resolved.port(&edge.from) else {
         return false;
     };
+    // Whether a port has more than one edge, reading at most two.
+    let mut fan = |edges: &mut dyn Iterator<Item = EdgeId>| {
+        edges.take(2).inspect(|_| visits.edges += 1).count() > 1
+    };
     if from.kind != PortKind::Data {
         // An exec or event output takes one connection; exec inputs take any number.
-        return index.outgoing(&edge.from).nth(1).is_none();
+        return !fan(&mut index.outgoing(&edge.from));
     }
-    if index.incoming(&edge.to).nth(1).is_some() {
+    if fan(&mut index.incoming(&edge.to)) {
         return false;
     }
-    if index.outgoing(&edge.from).nth(1).is_some() {
+    if fan(&mut index.outgoing(&edge.from)) {
         return stream_status(&from, rigid_params(document, edge.from.node)) == Some(false);
     }
     true

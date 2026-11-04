@@ -179,6 +179,7 @@ fn regions_among(
             BodyRef::Root => None,
             BodyRef::Function(id) => Some(id),
         };
+        super::scope::count(only, |visits| visits.bodies += 1);
         check_body(
             document,
             resolved,
@@ -260,6 +261,7 @@ fn check_body(
             continue;
         }
         raw.entry(edge.from.node).or_default().push(edge.to.node);
+        super::scope::count(only, |visits| visits.ports += 2);
         let (from, to) = (resolved.port(&edge.from), resolved.port(&edge.to));
         match (from, to) {
             (Ok(from), Ok(to))
@@ -339,6 +341,11 @@ fn check_body(
             }
             membership.entry(node).or_default().insert(index);
             let kind = kind_of(node).unwrap_or(NodeKind::Action);
+            let followed = out.get(&node).map_or(0, Vec::len);
+            super::scope::count(only, |visits| {
+                visits.nodes += 1;
+                visits.edges += followed;
+            });
             for edge in out.get(&node).into_iter().flatten() {
                 if let Some(child) = child_kind(definition_of(node), kind, &edge.from_port) {
                     let child_root = RegionRoot {
@@ -396,6 +403,7 @@ fn check_body(
     // Conflicts: report only where an edge first brings a node into more regions than its
     // source belongs to, so downstream nodes do not repeat the same fault.
     let no_edges = BTreeMap::new();
+    super::scope::count(only, |visits| visits.nodes += membership.len());
     for (node, regions) in &membership {
         if regions.len() < 2 {
             continue;
@@ -501,6 +509,7 @@ fn check_body(
     let mut stack: Vec<_> = local_incomplete.iter().copied().collect();
     while let Some(node) = stack.pop() {
         if maybe.insert(node) {
+            super::scope::count(only, |visits| visits.nodes += 1);
             stack.extend(raw.get(&node).into_iter().flatten().copied());
         }
     }
@@ -530,6 +539,10 @@ fn check_body(
 
     // Publish the index; nodes reached by several regions have no owner.
     let roots: Vec<_> = walks.iter().map(|walk| walk.root.clone()).collect();
+    // Each region scans the whole membership, and ownership scans it once more.
+    super::scope::count(only, |visits| {
+        visits.nodes += (walks.len() + 1) * membership.len();
+    });
     for (position, walk) in walks.iter().enumerate() {
         result.index.regions.insert(
             walk.root.clone(),

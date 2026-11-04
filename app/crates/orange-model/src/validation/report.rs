@@ -776,6 +776,7 @@ fn run_supported_analysis(
                 crate::BodyRef::Root,
                 &regions.index.zones,
                 retained.complete,
+                &mut super::visits::VisitCounts::default(),
             );
             retained.orders.insert(crate::BodyRef::Root, order);
         }
