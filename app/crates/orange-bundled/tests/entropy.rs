@@ -224,7 +224,12 @@ fn changed_metadata(
         ports[0].ty = Some("core/i64@1".parse().unwrap());
     }
     let mut builder = RegistryBuilder::core(original.origin().clone());
-    for definition in math_definitions().unwrap().into_iter().chain([definition]) {
+    for definition in math_definitions()
+        .unwrap()
+        .into_iter()
+        .chain([definition])
+        .chain(orange_bundled::comparison_definitions().unwrap())
+    {
         builder = builder.definition(definition);
     }
     builder

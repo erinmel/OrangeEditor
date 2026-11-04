@@ -1,5 +1,8 @@
 //! Trusted native adapter. The compiler itself has no bundled-provider dependency.
-use crate::{MathPackage, Operation, ResolvedConversion, ResolvedKernel, resolve_core_conversion};
+use crate::{
+    BindingError, Comparison, MathPackage, Operation, ResolvedComparison, ResolvedConversion,
+    ResolvedKernel, resolve_core_conversion,
+};
 use orange_compiler::{
     BindingRequest, KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError,
 };
@@ -43,6 +46,40 @@ impl PureKernelResolver for MathPackage {
             });
         }
         let provider = request.provider().ok_or(ResolveError::Unavailable)?;
+        if let Some(comparison) = Comparison::from_definition_id(definition.id.as_str()) {
+            let [a, b] = comparison.input_ports() else {
+                return Err(ResolveError::Contract);
+            };
+            let ty = |name: &str| {
+                request
+                    .signature()
+                    .ports
+                    .iter()
+                    .find(|port| port.port_id.as_str() == name)
+                    .and_then(|port| port.ty.clone())
+            };
+            let ty = ty(a)
+                .filter(|ty_a| ty(b).as_ref() == Some(ty_a))
+                .ok_or(ResolveError::Contract)?;
+            let resolved = self
+                .resolve_comparison(
+                    request.snapshot().clone(),
+                    provider,
+                    definition,
+                    request.config_version(),
+                    &ty,
+                    request.config(),
+                )
+                .map_err(|error| match error {
+                    BindingError::UnsupportedType => ResolveError::UnsupportedType,
+                    _ => ResolveError::Unavailable,
+                })?;
+            return Ok(KernelBinding {
+                inputs: ports(comparison.input_ports())?,
+                outputs: ports(&[comparison.output_port()])?,
+                kernel: Arc::new(Native::Comparison(resolved)),
+            });
+        }
         let operation = Operation::from_definition_id(definition.id.as_str())
             .ok_or(ResolveError::Unavailable)?;
         let inputs = operation.input_ports();
@@ -79,6 +116,7 @@ impl PureKernelResolver for MathPackage {
 #[derive(Debug)]
 enum Native {
     Math(ResolvedKernel),
+    Comparison(ResolvedComparison),
     Conversion(ResolvedConversion),
 }
 const CONTRACT: KernelFault = KernelFault {
@@ -101,6 +139,12 @@ impl PureKernel for Native {
                         other => other.message(),
                     },
                 })?;
+            }
+            Self::Comparison(comparison) => {
+                let ([a, b], [output]) = (inputs, outputs) else {
+                    return Err(CONTRACT);
+                };
+                *output = Value::Bool(comparison.evaluate(a, b).map_err(|_| CONTRACT)?);
             }
             Self::Conversion(conversion) => {
                 let [input] = inputs else {

@@ -602,6 +602,7 @@ fn concrete_generic_provider_support_is_checked_before_any_binding() {
         .unwrap()
         .into_iter()
         .chain([orange_bundled::random_u64_definition().unwrap()])
+        .chain(orange_bundled::comparison_definitions().unwrap())
     {
         builder = builder.definition(definition);
     }
