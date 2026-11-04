@@ -395,17 +395,6 @@ fn edges_that_may_change_more_run_the_full_analysis() {
     );
     assert_eq!(work, SessionWork::Recompute);
     assert!(session.analysis().report().is_valid());
-
-    // An edge closing a cycle.
-    let work = edit(
-        &mut session,
-        &mut doc,
-        &registry,
-        options,
-        vec![connect(92, 12, 10, "a")],
-    );
-    assert_eq!(work, SessionWork::Recompute);
-    assert!(!session.analysis().report().is_valid());
 }
 
 #[test]
@@ -435,7 +424,7 @@ fn edges_feeding_an_export_are_scoped() {
 }
 
 #[test]
-fn edges_that_close_a_cycle_after_reordering_run_the_full_analysis() {
+fn edges_that_close_a_cycle_after_reordering_are_diagnosed_in_place() {
     let (mut doc, registry) = chains();
     let mut session = session(&doc, &registry);
     let options = AnalysisOptions::default();
@@ -459,12 +448,12 @@ fn edges_that_close_a_cycle_after_reordering_run_the_full_analysis() {
         options,
         vec![connect(94, 18, 13, "a")],
     );
-    assert_eq!(work, SessionWork::Recompute);
-    assert!(!session.analysis().report().is_valid());
+    assert_eq!(work, SessionWork::Scoped);
+    assert_eq!(session.analysis().report().data_cycle_paths.len(), 1);
 }
 
 #[test]
-fn a_cycle_in_a_body_listed_out_of_id_order_runs_the_full_analysis() {
+fn a_cycle_in_a_body_listed_out_of_id_order_is_diagnosed_in_place() {
     // A body keeps its nodes in insertion order, which the data order must not rely on.
     let (package, registry) = catalog();
     let nodes = (10..13).chain(1..6).map(|n| math(n, "add", 0, 1)).collect();
@@ -478,7 +467,7 @@ fn a_cycle_in_a_body_listed_out_of_id_order_runs_the_full_analysis() {
         AnalysisOptions::default(),
         vec![connect(13, 12, 10, "a")],
     );
-    assert_eq!(work, SessionWork::Recompute);
+    assert_eq!(work, SessionWork::Scoped);
     assert!(!session.analysis().report().is_valid());
 }
 
@@ -573,15 +562,15 @@ fn reconnects_against_the_data_order_equal_the_full_analysis() {
             options,
             vec![connect(91, 39, 10, "b")],
         );
-        assert_eq!(work, SessionWork::Recompute, "{gaps:?}");
+        assert_eq!(work, SessionWork::Scoped, "{gaps:?}");
         assert!(!session.analysis().report().is_valid());
     }
 }
 
 #[test]
-fn reconnects_after_each_rebuilt_order_equal_the_full_analysis() {
-    // A cycle closed and opened again rebuilds the order around the open gap, which the
-    // reconnect then runs against, at gaps across the chain.
+fn reconnects_after_each_held_cycle_equal_the_full_analysis() {
+    // A cycle closed and opened again holds and releases its edge in the kept order, which
+    // the reconnect then runs against, at gaps across the chain.
     let (mut doc, registry) = long_chain(&[]);
     let mut session = session(&doc, &registry);
     let options = AnalysisOptions::default();
@@ -591,17 +580,285 @@ fn reconnects_after_each_rebuilt_order_equal_the_full_analysis() {
         assert_eq!(run(vec![disconnect(gap)]), SessionWork::Scoped);
         // A cycle within the segment that does not hold the gap.
         let (from, to) = if gap > 20 { (19, 10) } else { (39, 30) };
-        assert_eq!(
-            run(vec![connect(91, from, to, "b")]),
-            SessionWork::Recompute
-        );
-        run(vec![disconnect(91)]);
+        assert_eq!(run(vec![connect(91, from, to, "b")]), SessionWork::Scoped);
+        assert_eq!(run(vec![disconnect(91)]), SessionWork::Scoped);
         assert_eq!(
             run(vec![connect(gap, gap - 1, gap, "a")]),
             SessionWork::Scoped,
             "{gap}"
         );
     }
+}
+
+/// The number of data cycles the session reports.
+fn cycles(session: &AnalysisSession) -> usize {
+    session.analysis().report().data_cycle_paths.len()
+}
+
+#[test]
+fn a_cycle_closed_and_reopened_is_diagnosed_in_place() {
+    let (mut doc, registry) = chains();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let mut run = |commands| edit(&mut session, &mut doc, &registry, options, commands);
+    // 12 -> 10 closes chain 10..12; removing that edge opens it again.
+    assert_eq!(run(vec![connect(90, 12, 10, "a")]), SessionWork::Scoped);
+    assert_eq!(run(vec![disconnect(90)]), SessionWork::Scoped);
+    assert_eq!(run(vec![connect(90, 12, 10, "a")]), SessionWork::Scoped);
+    // Removing another edge of the cycle opens it too, and the held edge is placed again;
+    // restoring that edge closes it once more, now held there.
+    assert_eq!(run(vec![disconnect(11)]), SessionWork::Scoped);
+    assert_eq!(run(vec![connect(11, 10, 11, "a")]), SessionWork::Scoped);
+    // Rewirings that keep a cycle but change its members and witness.
+    assert_eq!(
+        run(vec![
+            disconnect(12),
+            connect(93, 10, 12, "a"),
+            connect(94, 11, 12, "b")
+        ]),
+        SessionWork::Scoped
+    );
+    assert_eq!(run(vec![disconnect(94)]), SessionWork::Scoped);
+    assert_eq!(run(vec![disconnect(90)]), SessionWork::Scoped);
+    assert_eq!(session.stats().full_analysis_runs, 0);
+    assert!(session.analysis().report().is_valid());
+
+    // Undo and redo of a closing edit are structure edits too.
+    let committed = doc.apply([connect(95, 15, 13, "a")]).unwrap();
+    session.update(&doc, &registry, &committed.change_set, options);
+    assert_eq!(session.stats().work, SessionWork::Scoped);
+    assert_eq!(cycles(&session), 1);
+    let undone = doc.revert(committed.inverse).unwrap();
+    session.update(&doc, &registry, &undone.change_set, options);
+    assert_eq!(session.stats().work, SessionWork::Scoped);
+    assert_eq!(
+        session.analysis(),
+        &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+    );
+}
+
+#[test]
+fn two_cycles_sharing_a_node_are_diagnosed_in_place() {
+    let (mut doc, registry) = chains();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let mut counts = Vec::new();
+    for commands in [
+        // 10 -> 11 -> 12 -> 10.
+        vec![connect(90, 12, 10, "a")],
+        // 11 -> 13 -> 14 -> 15 -> 11 shares 11's sum, so the two are one component.
+        vec![connect(91, 11, 13, "a")],
+        vec![connect(92, 15, 11, "b")],
+        // Opening either leaves the other; closing it again merges them.
+        vec![disconnect(90)],
+        vec![connect(90, 12, 10, "a")],
+        vec![disconnect(92)],
+        vec![connect(92, 15, 11, "b")],
+        // A separate cycle in chain 16..18.
+        vec![connect(93, 18, 16, "a")],
+        // Removing the shared node opens both of its cycles.
+        vec![remove_nodes(&[11])],
+        vec![disconnect(93)],
+    ] {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(work, SessionWork::Scoped);
+        counts.push(cycles(&session));
+    }
+    assert_eq!(counts, [1, 1, 1, 1, 1, 1, 1, 2, 1, 0]);
+    assert_eq!(session.stats().full_analysis_runs, 0);
+}
+
+#[test]
+fn a_cycle_through_a_zone_prefix_is_diagnosed_in_place() {
+    // Zone `w` (begin 6, end 7) has an empty body: its begin takes 13's sum, its end 12's,
+    // and add 8 reads its result. 8 -> 13 closes a cycle only through the end's dependency
+    // on the begin's prefix.
+    let (package, registry) = catalog();
+    let mut nodes: Vec<Json> = (10..16).map(|n| math(n, "add", 0, 1)).collect();
+    nodes.extend([
+        marker(6, "repeat-begin", "w"),
+        marker(7, "repeat-end", "w"),
+        math(8, "add", 0, 1),
+    ]);
+    let mut edges: Vec<Json> = [11, 12, 14, 15]
+        .into_iter()
+        .map(|n| edge(n, n - 1, "sum", n, "a"))
+        .collect();
+    edges.extend([
+        edge(206, 13, "sum", 6, "initial"),
+        edge(207, 12, "sum", 7, "next"),
+        edge(208, 7, "result", 8, "a"),
+    ]);
+    let mut doc = graph(&package, nodes, edges, vec![]);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    for (commands, count) in [
+        (vec![connect(90, 8, 13, "a")], 1),
+        (vec![disconnect(90)], 0),
+    ] {
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        assert_eq!(work, SessionWork::Scoped);
+        assert_eq!(cycles(&session), count);
+    }
+}
+
+#[test]
+fn a_cycle_beside_an_export_runs_the_full_analysis() {
+    // An export's cone may reach an edge held against the order, so a cycle in a document
+    // with exports runs in full; opening it leaves no held edge, and is scoped.
+    let (package, registry) = catalog();
+    let nodes = (0..3).map(|link| math(10 + link, "add", 0, 1)).collect();
+    let edges = vec![edge(11, 10, "sum", 11, "a"), edge(12, 11, "sum", 12, "a")];
+    let mut doc = graph(&package, nodes, edges, vec![export(12, "sum")]);
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let mut run = |commands| edit(&mut session, &mut doc, &registry, options, commands);
+    assert_eq!(run(vec![connect(90, 12, 10, "a")]), SessionWork::Recompute);
+    assert_eq!(run(vec![disconnect(90)]), SessionWork::Scoped);
+    assert!(session.analysis().report().is_valid());
+}
+
+#[test]
+fn random_cycle_edits_equal_the_full_analysis() {
+    // Seeded edits that close cycles against the chains' order, open them by removing any
+    // edge or node of them, and do other edits in between, each checked against the full
+    // analysis by `edit`.
+    let (mut doc, registry) = chains();
+    let mut session = session(&doc, &registry);
+    let options = AnalysisOptions::default();
+    let mut seed: u64 = 0x5eed_c1c1;
+    let mut next = |bound: u32| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) as u32 % bound
+    };
+    // Each wired input's edge and source, and the nodes present.
+    let mut wired: BTreeMap<(u32, &str), (u32, u32)> = BTreeMap::new();
+    for chain in 0..10 {
+        for link in 1..3 {
+            let to = 10 + chain * 3 + link;
+            wired.insert((to, "a"), (to, to - 1));
+        }
+    }
+    let mut present: Vec<u32> = (10..40).collect();
+    let (mut n, mut node) = (100, 200);
+    let (mut cyclic, mut changed, mut closed, mut opened) = (0, 0, 0, 0);
+    let mut edits = 0;
+    while edits < 600 {
+        let before = session.analysis().report().data_cycle_paths.clone();
+        let pick = |next: &mut dyn FnMut(u32) -> u32, present: &[u32]| {
+            present[next(present.len() as u32) as usize]
+        };
+        let commands = match next(8) {
+            // Close a chain, if both its ends are present.
+            0 => {
+                let first = 10 + 3 * next(10);
+                let input = if next(2) == 0 { "a" } else { "b" };
+                let last = first + 2;
+                if !present.contains(&first)
+                    || !present.contains(&last)
+                    || wired.contains_key(&(first, input))
+                {
+                    continue;
+                }
+                n += 1;
+                wired.insert((first, input), (n, last));
+                vec![connect(n, last, first, input)]
+            }
+            // Open a reported cycle by removing an edge into one of its witness's ports.
+            1 => {
+                let Some(path) = before.first() else {
+                    continue;
+                };
+                let on: Vec<(u32, &str)> = wired
+                    .keys()
+                    .copied()
+                    .filter(|(to, input)| {
+                        path.contains(&PortRef {
+                            node: id(*to).parse().unwrap(),
+                            port: input.parse().unwrap(),
+                        })
+                    })
+                    .collect();
+                let key = on[next(on.len() as u32) as usize];
+                vec![disconnect(wired.remove(&key).unwrap().0)]
+            }
+            // Wire an input from a node after it, which may close a cycle; few enough that
+            // removals open them again.
+            2 => {
+                let to = pick(&mut next, &present);
+                let later: Vec<u32> = present.iter().copied().filter(|&p| p > to).collect();
+                let input = if next(2) == 0 { "a" } else { "b" };
+                if wired.len() >= 28 || later.is_empty() || wired.contains_key(&(to, input)) {
+                    continue;
+                }
+                let from = later[next(later.len() as u32) as usize];
+                n += 1;
+                wired.insert((to, input), (n, from));
+                vec![connect(n, from, to, input)]
+            }
+            // Remove an edge.
+            3 => {
+                let keys: Vec<(u32, &str)> = wired.keys().copied().collect();
+                if keys.is_empty() {
+                    continue;
+                }
+                let key = keys[next(keys.len() as u32) as usize];
+                vec![disconnect(wired.remove(&key).unwrap().0)]
+            }
+            // Restore a chain edge.
+            4 => {
+                let to = 11 + 3 * next(10) + next(2);
+                if !present.contains(&to)
+                    || !present.contains(&(to - 1))
+                    || wired.contains_key(&(to, "a"))
+                {
+                    continue;
+                }
+                wired.insert((to, "a"), (to, to - 1));
+                vec![connect(to, to - 1, to, "a")]
+            }
+            // Add a node reading another, or remove a node with its edges.
+            5 | 6 => {
+                if next(2) == 0 || present.len() < 10 {
+                    let from = pick(&mut next, &present);
+                    node += 1;
+                    n += 1;
+                    present.push(node);
+                    wired.insert((node, "a"), (n, from));
+                    vec![add_node(node), connect(n, from, node, "a")]
+                } else {
+                    // Mostly added nodes, so that most chains stay to be closed.
+                    let at = next(present.len() as u32) as usize;
+                    if present[at] < 200 && next(4) != 0 {
+                        continue;
+                    }
+                    let gone = present.swap_remove(at);
+                    wired.retain(|(to, _), (_, from)| *to != gone && *from != gone);
+                    vec![remove_nodes(&[gone])]
+                }
+            }
+            // A literal.
+            _ => {
+                let at = pick(&mut next, &present);
+                vec![set(at, "b", u64_text(&next(100).to_string()))]
+            }
+        };
+        edits += 1;
+        let work = edit(&mut session, &mut doc, &registry, options, commands);
+        let after = &session.analysis().report().data_cycle_paths;
+        // Every edit that has or had a cycle is scoped in this export-free document.
+        if !before.is_empty() || !after.is_empty() {
+            assert_eq!(work, SessionWork::Scoped);
+            cyclic += 1;
+        }
+        changed += usize::from(before != *after);
+        closed += usize::from(before.is_empty() && !after.is_empty());
+        opened += usize::from(!before.is_empty() && after.is_empty());
+    }
+    assert!(closed >= 10 && opened >= 10, "{closed} {opened}");
+    assert!(changed >= 50 && cyclic >= 150, "{changed} {cyclic}");
 }
 
 #[test]

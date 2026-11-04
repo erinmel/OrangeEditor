@@ -12,7 +12,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::document::{BodyRef, GraphDocument, PortKind};
-use crate::id::NodeId;
+use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 
 use super::ports::PortResolver;
@@ -25,6 +25,11 @@ const GAP: u64 = 1 << 32;
 /// pass makes a zone result depend on its begin's prefix inputs (V12c). Node-level order is
 /// coarser than that pass's port-level graph, so an edge it accepts closes no cycle there
 /// either.
+///
+/// A body with data cycles keeps its order over the acyclic rest (V12d): the data edges
+/// that could not be placed are held apart, and the order runs every other data edge and
+/// zone pair forward. So every cycle of the body, at node or port level, runs through a
+/// held edge.
 #[derive(Clone, Debug, Default)]
 pub(super) struct TopoOrder {
     position: BTreeMap<NodeId, u64>,
@@ -34,7 +39,13 @@ pub(super) struct TopoOrder {
     /// add, remove or reconfigure a marker, so the pairs hold while the order is kept.
     ends: BTreeMap<NodeId, NodeId>,
     begins: BTreeMap<NodeId, NodeId>,
+    /// The data edges held out of the order, by ID, with their source and target nodes.
+    held: BTreeMap<EdgeId, (NodeId, NodeId)>,
 }
+
+/// How many nodes [`TopoOrder::cyclic_region`] visits before only the whole data-cycle
+/// pass decides the body's cycles.
+const CYCLE_REGION_BUDGET: usize = 4096;
 
 /// The far ends of the data edges leaving `node`, or entering it unless `forward`.
 fn data_edges<'a>(
@@ -72,14 +83,17 @@ enum Step {
 }
 
 impl TopoOrder {
-    /// The order of `body`'s nodes, or `None` if its data edges join nodes in a cycle, which
-    /// a port-level acyclic graph may still do through a node whose outputs do not read
-    /// every input.
+    /// The order of `body`'s nodes. If its data edges join nodes in a cycle, which a
+    /// port-level acyclic graph may still do through a node whose outputs do not read every
+    /// input, it is `None` unless `hold`; then, whenever no node is free to place next, the
+    /// lowest unplaced node is placed and its data edges from unplaced nodes are held. It
+    /// is `None` too if a zone pair would have to be held.
     pub(super) fn build(
         document: &GraphDocument,
         ports: &PortResolver<'_>,
         body: BodyRef,
         zones: &super::zones::ZoneIndex,
+        hold: bool,
     ) -> Option<Self> {
         let body = document.body(body)?;
         let ends: BTreeMap<NodeId, NodeId> =
@@ -93,6 +107,9 @@ impl TopoOrder {
         let dense = |node: NodeId| ids.binary_search(&node).ok();
         let mut next: Vec<Vec<usize>> = vec![Vec::new(); ids.len()];
         let mut indegree = vec![0_usize; ids.len()];
+        // Each node's incoming data edges, with `None` for a zone pair; only a cyclic
+        // body needs them.
+        let mut incoming: Vec<Vec<(usize, Option<EdgeId>)>> = Vec::new();
         for edge in body.edges.values() {
             let (Some(from), Some(to)) = (dense(edge.from.node), dense(edge.to.node)) else {
                 continue;
@@ -109,29 +126,161 @@ impl TopoOrder {
             }
         }
         let mut ready: Vec<usize> = (0..ids.len()).filter(|at| indegree[*at] == 0).collect();
+        let mut placed = vec![false; ids.len()];
         let mut nodes = BTreeMap::new();
-        while let Some(node) = ready.pop() {
-            nodes.insert(GAP * (nodes.len() as u64 + 1), ids[node]);
-            for &to in &next[node] {
-                indegree[to] -= 1;
-                if indegree[to] == 0 {
-                    ready.push(to);
+        let mut held = BTreeMap::new();
+        let mut lowest = 0;
+        loop {
+            while let Some(node) = ready.pop() {
+                placed[node] = true;
+                nodes.insert(GAP * (nodes.len() as u64 + 1), ids[node]);
+                for &to in &next[node] {
+                    // A node placed with edges held still counts them.
+                    if placed[to] {
+                        continue;
+                    }
+                    indegree[to] -= 1;
+                    if indegree[to] == 0 {
+                        ready.push(to);
+                    }
                 }
             }
-        }
-        if nodes.len() != ids.len() {
-            return None;
+            if nodes.len() == ids.len() {
+                break;
+            }
+            if !hold {
+                return None;
+            }
+            if incoming.is_empty() {
+                incoming = vec![Vec::new(); ids.len()];
+                for edge in body.edges.values() {
+                    let (Some(from), Some(to)) = (dense(edge.from.node), dense(edge.to.node))
+                    else {
+                        continue;
+                    };
+                    if matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data) {
+                        incoming[to].push((from, Some(edge.id)));
+                    }
+                }
+                for (begin, end) in &ends {
+                    if let (Some(from), Some(to)) = (dense(*begin), dense(*end)) {
+                        incoming[to].push((from, None));
+                    }
+                }
+            }
+            while placed[lowest] {
+                lowest += 1;
+            }
+            for &(from, edge) in &incoming[lowest] {
+                if !placed[from] {
+                    held.insert(edge?, (ids[from], ids[lowest]));
+                }
+            }
+            ready.push(lowest);
         }
         Some(Self {
             position: nodes.iter().map(|(at, node)| (*node, *at)).collect(),
             nodes,
             ends,
             begins,
+            held,
         })
     }
 
     pub(super) fn position(&self, node: NodeId) -> Option<u64> {
         self.position.get(&node).copied()
+    }
+
+    /// Whether some data edge is held out of the order, so the body may have a cycle.
+    pub(super) fn is_cyclic(&self) -> bool {
+        !self.held.is_empty()
+    }
+
+    /// Holds a data edge `from -> to` that [`Self::insert`] could not place.
+    pub(super) fn hold(&mut self, edge: EdgeId, from: NodeId, to: NodeId) {
+        self.held.insert(edge, (from, to));
+    }
+
+    /// Forgets a removed edge, if it was held.
+    pub(super) fn release(&mut self, edge: EdgeId) {
+        self.held.remove(&edge);
+    }
+
+    /// Places every held edge that no longer closes a cycle, after an edit removed edges
+    /// or nodes, and forgets held edges the document no longer has.
+    pub(super) fn retry(
+        &mut self,
+        document: &GraphDocument,
+        ports: &PortResolver<'_>,
+        index: &DocIndex,
+    ) {
+        for (edge, (from, to)) in std::mem::take(&mut self.held) {
+            if document.edge(edge).is_some() && !self.insert(document, ports, index, from, to) {
+                self.held.insert(edge, (from, to));
+            }
+        }
+    }
+
+    /// Every node that can lie on a data cycle of the body, or `None` past the budget.
+    ///
+    /// Each cycle runs through a held edge, and every other edge runs forward in the
+    /// order, so a cycle is a chain of forward paths, each from a held edge's target to a
+    /// held edge's source. Its nodes therefore lie at or after the lowest held target and
+    /// at or before the highest held source, and each is reached forward from a held
+    /// target and backward from a held source without leaving that interval. Data edges
+    /// are followed as the order counts them, which is coarser than the port-level graph.
+    pub(super) fn cyclic_region(
+        &self,
+        document: &GraphDocument,
+        ports: &PortResolver<'_>,
+        index: &DocIndex,
+    ) -> Option<BTreeSet<NodeId>> {
+        let mut low = u64::MAX;
+        let mut high = 0;
+        for (from, to) in self.held.values() {
+            low = low.min(self.position(*to)?);
+            high = high.max(self.position(*from)?);
+        }
+        let mut visited = 0;
+        let mut reach = |forward: bool| -> Option<BTreeSet<NodeId>> {
+            let mut seen = BTreeSet::new();
+            let mut stack: Vec<NodeId> = self
+                .held
+                .values()
+                .map(|(from, to)| if forward { *to } else { *from })
+                .collect();
+            while let Some(node) = stack.pop() {
+                if !self
+                    .position(node)
+                    .is_some_and(|at| (low..=high).contains(&at))
+                    || !seen.insert(node)
+                {
+                    continue;
+                }
+                visited += 1;
+                if visited > CYCLE_REGION_BUDGET {
+                    return None;
+                }
+                stack.extend(data_edges(document, ports, index, node, forward));
+                let pair = if forward { &self.ends } else { &self.begins };
+                stack.extend(pair.get(&node).copied());
+            }
+            Some(seen)
+        };
+        let after = reach(true)?;
+        let before = reach(false)?;
+        Some(after.intersection(&before).copied().collect())
+    }
+
+    /// The zone pairs (begin, end) with both markers among `nodes`.
+    pub(super) fn zones_among<'a>(
+        &'a self,
+        nodes: &'a BTreeSet<NodeId>,
+    ) -> impl Iterator<Item = (NodeId, NodeId)> + 'a {
+        self.ends
+            .iter()
+            .filter(|(begin, end)| nodes.contains(begin) && nodes.contains(end))
+            .map(|(begin, end)| (*begin, *end))
     }
 
     /// Places a new node, which has no edges yet, last.

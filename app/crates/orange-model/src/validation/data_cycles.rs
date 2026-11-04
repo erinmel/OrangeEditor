@@ -216,6 +216,38 @@ pub(super) fn sort_cycle_paths(paths: &mut [Vec<PortRef>]) {
     });
 }
 
+/// The data cycles among `nodes` of `body` alone, each with its diagnostic and witness,
+/// built and chosen exactly as [`validate_data_cycles`] builds and chooses them for the
+/// whole body: from the nodes' data ports and computations, the prefix dependencies of
+/// the `zones` (begin, end) pairs, and the body edges joining two of the nodes. Every
+/// strongly connected component the whole body's graph has inside these nodes is found
+/// with the same vertices, edges and vertex order, so its witness is the same, provided
+/// each cycle of the body lies wholly among them. `None` if a node, its ports or one of
+/// the edges would be incomplete there, which only the whole pass reports.
+pub(super) fn cycles_among<'a>(
+    resolved: &'a PortResolver<'_>,
+    body: &'a crate::document::GraphBody,
+    nodes: &BTreeSet<NodeId>,
+    zones: impl IntoIterator<Item = (NodeId, NodeId)>,
+    edges: impl IntoIterator<Item = &'a crate::document::Edge>,
+    origin: &HostOrigin,
+) -> Option<Vec<(Diagnostic, Vec<PortRef>)>> {
+    let mut graph = DependencyGraph::default();
+    let mut incomplete = Vec::new();
+    for id in nodes {
+        graph.node(resolved, body.nodes.get(id)?, &mut incomplete);
+    }
+    for (begin, end) in zones {
+        graph.zone(resolved, body, begin, end);
+    }
+    for edge in edges {
+        graph.data_edge(resolved, edge, &mut incomplete);
+    }
+    incomplete
+        .is_empty()
+        .then(|| graph.cycles(origin).collect())
+}
+
 impl<'a> DependencyGraph<'a> {
     /// A node's data port vertices and its input-to-computed-output dependencies; nodes
     /// whose metadata cannot supply them are pushed to `incomplete`.

@@ -76,10 +76,14 @@ pub(super) struct Retained {
     /// No node may suspend, so stale-capture checks cannot read data edges. Data edges and
     /// nodes are checked locally only then; exec edges recompute the state pass anyway.
     pub quiet: bool,
-    /// Each body's data dependency order, kept by scoped structure edits; `None` when its
-    /// nodes form a data cycle (V12d). The root's is built with the report, a function
-    /// body's by the first structure edit there.
+    /// Each body's data dependency order, kept by scoped structure edits (V12d). The root's
+    /// is built with the report, and holds the edges its cycles run through when the report
+    /// is complete; a function body's is built by the first structure edit there. `None`
+    /// when the body's nodes form a data cycle that the order does not hold.
     pub orders: BTreeMap<BodyRef, Option<super::order::TopoOrder>>,
+    /// The root body's data-cycle diagnostics, sorted. A root structure edit in a complete
+    /// report recomputes them from its order's held edges, so they block no scoped edit.
+    pub cycles: Vec<Diagnostic>,
     /// Each generic node's solved type arguments, as the full analysis would solve them for
     /// the current document: scoped updates replace the entries of the nodes they re-solve
     /// and drop removed nodes'. Complete only while the report is.
@@ -304,7 +308,9 @@ fn strict(document: &GraphDocument, retained: &Retained, node: NodeId) -> bool {
 /// Errors in the per-node lists are allowed: the session replaces those lists itself. So are
 /// a function's own function-pass and conformance errors in a complete report: a called
 /// function with such an error would leave its call sites incomplete, so the function is
-/// uncalled and nothing but its own diagnostics reads its acceptance.
+/// uncalled and nothing but its own diagnostics reads its acceptance. The root body's data
+/// cycles are allowed too: no other pass reads them, and root structure edits recompute
+/// them, or run in full where they cannot (V12d).
 pub(super) fn blocking_error(retained: &Retained, incomplete: &BTreeSet<NodeId>) -> bool {
     let own = |item: &&Diagnostic| {
         item.subject.function.is_some_and(|function| {
@@ -320,6 +326,13 @@ pub(super) fn blocking_error(retained: &Retained, incomplete: &BTreeSet<NodeId>)
         .filter(|item| !own(item))
         .chain(&retained.flow)
         .chain(&retained.state)
+        .filter(|item| {
+            item.code != super::DiagnosticCode::CycleData
+                || retained
+                    .cycles
+                    .binary_search_by(|probe| super::diagnostic::diagnostic_order(probe, item))
+                    .is_err()
+        })
         .filter(|item| {
             // An incomplete node's own dependency diagnostic, which an isolated edit cannot
             // reach.
@@ -435,6 +448,13 @@ pub(super) fn structure_update(
     let [home] = homes[..] else {
         return None;
     };
+    // A complete report's root body keeps its data cycles with its order (V12d); an edit
+    // that would leave a cycle anywhere else runs in full.
+    let hold = home == BodyRef::Root && retained.complete;
+    let root_cycles = home == BodyRef::Root && !retained.cycles.is_empty();
+    if root_cycles && (!hold || !matches!(retained.orders.get(&home), Some(Some(_)))) {
+        return None;
+    }
     let root = document.body(home)?;
     let added_nodes = &change.nodes().added;
     let exported = |id: &NodeId| document.exports().iter().any(|export| export.node == *id);
@@ -551,13 +571,16 @@ pub(super) fn structure_update(
     if built {
         let ports = super::ports::PortResolver::new(document, &analysis.report().resolved);
         let zones = &analysis.report().regions.zones;
-        let order = super::order::TopoOrder::build(document, &ports, home, zones);
+        let order = super::order::TopoOrder::build(document, &ports, home, zones, hold);
         retained.orders.insert(home, order);
     }
     let mut order = retained.orders.get_mut(&home).and_then(Option::as_mut);
     if let Some(order) = order.as_deref_mut().filter(|_| !built) {
         for id in edit.removed_nodes.keys() {
             order.remove(*id);
+        }
+        for (_, edge) in edit.removed_edges.values() {
+            order.release(edge.id);
         }
         for id in added_nodes {
             order.push(*id);
@@ -573,8 +596,31 @@ pub(super) fn structure_update(
         free.remove(id);
     }
     let kinds = classify_edges(
-        document, registry, index, analysis, &edges, order, zones, &mut free,
+        document,
+        registry,
+        index,
+        analysis,
+        &edges,
+        order.as_deref_mut(),
+        zones,
+        &mut free,
+        hold,
     );
+    // With an edge held, or cycles before the edit, the root body's cycles are recomputed
+    // from the order; otherwise the body is acyclic before and after.
+    let cyclic = root_cycles
+        || order
+            .as_deref()
+            .is_some_and(super::order::TopoOrder::is_cyclic);
+    let cycles = match kinds {
+        Some(_) if cyclic => {
+            let removed = !edit.removed_edges.is_empty() || !edit.removed_nodes.is_empty();
+            cycle_update(document, registry, index, analysis, order, removed).map(Some)
+        }
+        Some(_) => Some(None),
+        None => None,
+    };
+    let kinds = kinds.filter(|_| cycles.is_some());
     if kinds.is_some_and(|kinds| kinds.requires) {
         free.clear();
     }
@@ -751,6 +797,21 @@ pub(super) fn structure_update(
     retained.free = free;
     let mut scoped = commit(retained, admitted, inputs, resolved, components);
     scoped.checked_config = config.len();
+    if let Some(Some(CycleUpdate { diagnostics, paths })) = cycles {
+        // The root cycles' diagnostics live in `base`; swap them there, then publish. Their
+        // witnesses replace the root body's, which are those not in a function body.
+        let old = std::mem::replace(&mut retained.cycles, diagnostics.clone());
+        swap_base(&mut retained.base, &old, &diagnostics);
+        analysis.replace_cycle_paths(
+            |path| {
+                path.first().is_some_and(|port| {
+                    matches!(document.locate_node(port.node), Some(BodyRef::Function(_)))
+                })
+            },
+            paths,
+        );
+        scoped.inputs.push((old, diagnostics));
+    }
     for (function, check) in function_updates {
         match check.accepted {
             Some(accepted) => retained.calls.insert(function, accepted),
@@ -759,22 +820,7 @@ pub(super) fn structure_update(
         analysis.set_summary(function, check.summary);
         // The function's diagnostics live in `base`; swap them there, then publish.
         let old = retained.functions.remove(&function).unwrap_or_default();
-        for item in &old {
-            if let Ok(at) = retained
-                .base
-                .binary_search_by(|probe| super::diagnostic::diagnostic_order(probe, item))
-            {
-                retained.base.remove(at);
-            }
-        }
-        for item in &check.diagnostics {
-            if let Err(at) = retained
-                .base
-                .binary_search_by(|probe| super::diagnostic::diagnostic_order(probe, item))
-            {
-                retained.base.insert(at, item.clone());
-            }
-        }
+        swap_base(&mut retained.base, &old, &check.diagnostics);
         if !check.diagnostics.is_empty() {
             retained
                 .functions
@@ -850,6 +896,91 @@ pub(super) fn structure_update(
         .copied()
         .collect();
     Some(scoped)
+}
+
+/// Replaces `old` with `new` in the sorted `base`.
+fn swap_base(base: &mut Vec<Diagnostic>, old: &[Diagnostic], new: &[Diagnostic]) {
+    for item in old {
+        if let Ok(at) =
+            base.binary_search_by(|probe| super::diagnostic::diagnostic_order(probe, item))
+        {
+            base.remove(at);
+        }
+    }
+    for item in new {
+        if let Err(at) =
+            base.binary_search_by(|probe| super::diagnostic::diagnostic_order(probe, item))
+        {
+            base.insert(at, item.clone());
+        }
+    }
+}
+
+/// The root body's data cycles after a structure edit: their sorted diagnostics, and
+/// their witnesses.
+struct CycleUpdate {
+    diagnostics: Vec<Diagnostic>,
+    paths: Vec<Vec<crate::document::PortRef>>,
+}
+
+/// Recomputes the root body's data cycles after a structure edit that held an edge, or
+/// in a body that had cycles, against the staged signatures (V12d, 16 §5.3). After an edit
+/// that removed edges or nodes, held edges that no longer close a cycle are placed. Every
+/// cycle then runs through a held edge, so the cycles are those of the data-cycle pass
+/// over the nodes [`TopoOrder::cyclic_region`](super::order::TopoOrder::cyclic_region)
+/// finds, which it builds and chooses as it does for the whole body. `None` past that
+/// region's budget, and in a document with exports while the order holds an edge: an
+/// export's cone may then reach the edit's edges against the order, which the per-edge
+/// export check left alone.
+fn cycle_update(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    index: &DocIndex,
+    analysis: &ValidationAnalysis,
+    order: Option<&mut super::order::TopoOrder>,
+    removed: bool,
+) -> Option<CycleUpdate> {
+    let order = order?;
+    if order.is_cyclic() && !document.exports().is_empty() {
+        return None;
+    }
+    let ports = super::ports::PortResolver::new(document, &analysis.report().resolved);
+    if removed && order.is_cyclic() {
+        order.retry(document, &ports, index);
+    }
+    let mut update = CycleUpdate {
+        diagnostics: Vec::new(),
+        paths: Vec::new(),
+    };
+    if !order.is_cyclic() {
+        return Some(update);
+    }
+    let region = order.cyclic_region(document, &ports, index)?;
+    let mut edges = BTreeMap::new();
+    for node in &region {
+        for id in index.incident(*node) {
+            if let Some(edge) = document
+                .edge(id)
+                .filter(|edge| region.contains(&edge.from.node) && region.contains(&edge.to.node))
+            {
+                edges.insert(id, edge);
+            }
+        }
+    }
+    let found = super::data_cycles::cycles_among(
+        &ports,
+        document.root(),
+        &region,
+        order.zones_among(&region),
+        edges.into_values(),
+        registry.origin(),
+    )?;
+    for (diagnostic, path) in found {
+        update.diagnostics.push(diagnostic);
+        update.paths.push(path);
+    }
+    sort_diagnostics(&mut update.diagnostics);
+    Some(update)
 }
 
 /// Each checked zone's body by its end marker, from the innermost owners the region pass
@@ -1100,7 +1231,9 @@ struct EdgeKinds {
 /// Classifies each edge with the staged signatures, or `None` when one may change more than
 /// its target's inputs and, for exec edges, the control-flow passes. With the body's data
 /// order, an added data edge is checked for cycles within its order interval and for
-/// exports by its producer's cone; without one, by walking everything it feeds.
+/// exports by its producer's cone; without one, by walking everything it feeds. With
+/// `hold`, an edge that closes a cycle is held by the order, for [`cycle_update`] to
+/// diagnose, and the export check is left to it while the order holds an edge.
 #[expect(
     clippy::too_many_arguments,
     reason = "the availability check also reads and extends the known requirement-free cones"
@@ -1114,6 +1247,7 @@ fn classify_edges(
     mut order: Option<&mut super::order::TopoOrder>,
     zones: &super::zones::ZoneIndex,
     free: &mut BTreeSet<NodeId>,
+    hold: bool,
 ) -> Option<EdgeKinds> {
     let report = analysis.report();
     let ports = super::ports::PortResolver::new(document, &report.resolved);
@@ -1171,17 +1305,22 @@ fn classify_edges(
                 return !published;
             }
             if !order.insert(document, &ports, index, edge.from.node, edge.to.node) {
-                return false;
+                if !hold {
+                    return false;
+                }
+                order.hold(edge.id, edge.from.node, edge.to.node);
             }
             // Before the edge, no export's cone crossed an activation, and the edge adds
             // its producer's cone to those of the exports it can reach, which lie at or
-            // after its target in the order. The availability requirement already covers
-            // producers reached through pure nodes; this covers any other computed output.
+            // after its target in the order while it holds no edge. The availability
+            // requirement already covers producers reached through pure nodes; this covers
+            // any other computed output.
             let at = order.position(edge.to.node);
-            let reaches_export = document
-                .exports()
-                .iter()
-                .any(|export| order.position(export.node) >= at);
+            let reaches_export = !order.is_cyclic()
+                && document
+                    .exports()
+                    .iter()
+                    .any(|export| order.position(export.node) >= at);
             return !(reaches_export
                 && super::exports::edge_crosses_activation(document, &ports, index, edge, zones))
                 && super::connections::added_edge_is_clean(document, &ports, index, edge, origin);
