@@ -2,13 +2,17 @@ use crate::{ExecTarget, ValueShape};
 use orange_model::Value;
 use std::sync::Arc;
 
-/// Language-owned exact scalar keys; nominal Eq needs separate lowering.
+/// Language-owned exact scalar keys and enum variant tags. Enum switches route by tag
+/// alone (11 §8.4): payloads and package equality are never consulted.
 #[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[non_exhaustive]
 pub enum SwitchKey {
     Bool(bool),
     Signed(i64),
     Unsigned(u64),
     String(Arc<String>),
+    /// The variant's index in its locked schema, as [`Value::Enum`] carries it.
+    Variant(u32),
 }
 impl std::fmt::Debug for SwitchKey {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -17,6 +21,7 @@ impl std::fmt::Debug for SwitchKey {
             Self::Signed(_) => "Signed(..)",
             Self::Unsigned(_) => "Unsigned(..)",
             Self::String(_) => "String(..)",
+            Self::Variant(_) => "Variant(..)",
         })
     }
 }
@@ -29,6 +34,7 @@ impl SwitchKey {
             Value::U32(v) => Self::Unsigned(u64::from(*v)),
             Value::U64(v) => Self::Unsigned(*v),
             Value::Str(v) => Self::String(v.clone()),
+            Value::Enum { tag, .. } => Self::Variant(*tag),
             _ => return None,
         })
     }
@@ -58,6 +64,7 @@ pub(super) fn case_key(ty: &ValueShape, value: &serde_json::Value) -> Option<Swi
         ValueShape::U32 => SwitchKey::Unsigned(u64::from(u32::try_from(value.as_u64()?).ok()?)),
         ValueShape::U64 => SwitchKey::Unsigned(value.as_u64()?),
         ValueShape::String => SwitchKey::String(Arc::new(value.as_str()?.to_owned())),
+        ValueShape::Enum(shape) => SwitchKey::Variant(shape.tag(value.as_str()?)?),
         _ => return None,
     })
 }

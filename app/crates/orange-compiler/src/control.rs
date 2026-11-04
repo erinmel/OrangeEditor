@@ -774,7 +774,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
             }
             controls.insert((scope, node.id));
             for port in sig.ports.iter().filter(|p| p.kind == PortKind::Data) {
-                port_type(node.id, port)?;
+                port_type(cx.snapshot, node.id, port)?;
             }
         }
     }
@@ -1010,7 +1010,7 @@ fn collect_states(
             }
             ids::REGISTER => {
                 let port = cx.port(*key, "current")?;
-                let ty = port_type(key.1, port)?;
+                let ty = port_type(cx.snapshot, key.1, port)?;
                 let scope = match node.config.get("scope").and_then(|s| s.as_str()) {
                     None | Some("run") => VarScope::Run,
                     Some("activation") => VarScope::Local,
@@ -1268,7 +1268,7 @@ impl NodeLowering<'_, '_> {
             }
             ids::MATCH_RESULT => {
                 let port = cx.port(key, "result")?;
-                let ValueShape::Result(inner) = port_type(id, port)? else {
+                let ValueShape::Result(inner) = port_type(cx.snapshot, id, port)? else {
                     return Err(CompileError::ValidationIncomplete);
                 };
                 ControlOperation::MatchResult {
@@ -1356,7 +1356,7 @@ impl NodeLowering<'_, '_> {
         let id = key.1;
         let node = cx.node(key);
         let port = cx.port(key, "key")?;
-        let ty = port_type(id, port)?;
+        let ty = port_type(cx.snapshot, id, port)?;
         let invalid = || CompileError::InvalidLiteral {
             node: id,
             port: port_key(port),
@@ -1369,6 +1369,7 @@ impl NodeLowering<'_, '_> {
                 | ValueShape::U32
                 | ValueShape::U64
                 | ValueShape::String
+                | ValueShape::Enum(_)
         ) {
             return Err(CompileError::UnsupportedPort {
                 node: id,
@@ -1412,10 +1413,19 @@ impl NodeLowering<'_, '_> {
         if cases.windows(2).any(|p| p[0].key == p[1].key) {
             return Err(CompileError::ValidationIncomplete);
         }
+        let default = self.target(key, "default");
+        // Checked values carry only locked-schema tags, so an exhaustive enum switch
+        // always matches; a partial one must route the rest to a connected default.
+        if let ValueShape::Enum(shape) = &ty
+            && cases.len() < shape.len()
+            && default.is_none()
+        {
+            return Err(CompileError::ValidationIncomplete);
+        }
         Ok(ControlOperation::Switch {
             key: self.input(key, orange_model::port_id!("key")),
             cases: cases.into(),
-            default: self.target(key, "default"),
+            default,
         })
     }
 }

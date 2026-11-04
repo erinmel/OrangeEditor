@@ -248,6 +248,7 @@ impl<'a> Calls<'a> {
                         || (!marker && matches!(sig.kind, NodeKind::Pure | NodeKind::Volatile))
                     {
                         admit_data_ports(
+                            snapshot,
                             node.id,
                             sig,
                             lazy,

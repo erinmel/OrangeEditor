@@ -80,7 +80,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         }
         let index =
             u32::try_from(self.plan.initial.len()).map_err(|_| CompileError::ResourceLimit)?;
-        let ty = port_type(node, port)?;
+        let ty = port_type(&self.plan.snapshot, node, port)?;
         if let Some(value) = &value {
             let size = match value {
                 FoldedValue::Value(value) => value_bytes(&ty, value)?,
@@ -130,7 +130,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 node,
                 port: port_key.clone(),
             })?;
-        let ty = port_type(node, port)?;
+        let ty = port_type(&self.plan.snapshot, node, port)?;
         let value = decode(
             literal,
             &ty,
@@ -491,10 +491,10 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                 Lazy::And => DataOperation::And,
                 Lazy::Or => DataOperation::Or,
                 Lazy::Coalesce => DataOperation::Coalesce {
-                    boxed: port_type(node_id, &sig.ports[1])?.unboxed_none(),
+                    boxed: port_type(&self.plan.snapshot, node_id, &sig.ports[1])?.unboxed_none(),
                 },
                 Lazy::Try => DataOperation::Try {
-                    boxed: port_type(node_id, &sig.ports[0])?.unboxed_error(),
+                    boxed: port_type(&self.plan.snapshot, node_id, &sig.ports[0])?.unboxed_error(),
                 },
             }
         } else if is_state_read(&self.plan.snapshot, node) {

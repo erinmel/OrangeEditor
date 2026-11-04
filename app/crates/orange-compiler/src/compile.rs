@@ -60,10 +60,16 @@ impl CompileOptions<'_> {
 pub(crate) fn key(port: &PortDescriptor) -> PortKey {
     PortKey::new(port.port_id.clone(), None)
 }
-pub(crate) fn port_type(node: NodeId, port: &PortDescriptor) -> Result<ValueShape, CompileError> {
+/// The executable shape of a port's resolved type; nominal enums resolve through the
+/// snapshot's locked schemas.
+pub(crate) fn port_type(
+    snapshot: &RegistrySnapshot,
+    node: NodeId,
+    port: &PortDescriptor,
+) -> Result<ValueShape, CompileError> {
     port.ty
         .as_ref()
-        .and_then(ValueShape::of)
+        .and_then(|ty| ValueShape::of_in(ty, snapshot.types().as_ref()))
         .ok_or_else(|| CompileError::UnsupportedPort {
             node,
             port: key(port),
@@ -71,6 +77,7 @@ pub(crate) fn port_type(node: NodeId, port: &PortDescriptor) -> Result<ValueShap
 }
 /// Shared executable port policy for root and function-body admission.
 pub(crate) fn admit_data_ports(
+    snapshot: &RegistrySnapshot,
     node: NodeId,
     sig: &orange_model::document::SignatureSnapshot,
     lazy: bool,
@@ -90,7 +97,7 @@ pub(crate) fn admit_data_ports(
                 port: key(port),
             });
         }
-        port_type(node, port)?;
+        port_type(snapshot, node, port)?;
     }
     Ok(())
 }
@@ -170,7 +177,7 @@ pub(crate) fn decode(
     snapshot: &RegistrySnapshot,
     remaining: usize,
 ) -> Result<Option<Value>, CompileError> {
-    if ValueShape::of(&literal.ty).as_ref() != Some(ty) {
+    if ValueShape::of_in(&literal.ty, snapshot.types().as_ref()).as_ref() != Some(ty) {
         return Ok(None);
     }
     let cost = literal_bytes(&literal.payload, ty, remaining).ok_or(CompileError::ResourceLimit)?;
@@ -185,6 +192,15 @@ fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Opt
     fn visit(value: &serde_json::Value, ty: &ValueShape, remaining: &mut usize) -> Option<()> {
         *remaining = remaining.checked_sub(VALUE_CHARGE)?;
         match ty {
+            ValueShape::Enum(shape) => {
+                let object = value.as_object()?;
+                let tag = shape.tag(object.get("variant")?.as_str()?)?;
+                match (shape.payload(tag)?, object.get("payload")) {
+                    (Some(inner), Some(payload)) => visit(payload, inner, remaining),
+                    (None, None) => Some(()),
+                    _ => None,
+                }
+            }
             ValueShape::Option(inner) => {
                 let object = value.as_object().filter(|o| o.len() == 1)?;
                 if object.get("none") == Some(&serde_json::Value::Bool(true)) {
@@ -284,7 +300,7 @@ impl InputContext<'_> {
                 .get(&port_key)
                 .or(port.default.as_ref())
                 .ok_or_else(bad)?;
-            let ty = port_type(node, port)?;
+            let ty = port_type(self.snapshot, node, port)?;
             let value = decode(
                 literal,
                 &ty,
@@ -555,7 +571,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     if let Some(fault) = &fault {
                         slot = push_slot(
                             plan,
-                            port_type(result, port)?,
+                            port_type(snapshot, result, port)?,
                             SlotSource {
                                 node: result,
                                 port: key(port),
@@ -677,7 +693,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     for port in output_ports {
                         let slot = push_slot(
                             plan,
-                            port_type(node_id, port)?,
+                            port_type(snapshot, node_id, port)?,
                             SlotSource {
                                 node: node_id,
                                 port: key(port),
@@ -729,11 +745,11 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     {
                         crate::lazy::Lazy::Coalesce if choice.selected.is_none() => {
                             crate::lazy::ProjectionMode::Option {
-                                boxed: port_type(node_id, &sig.ports[1])?.unboxed_none(),
+                                boxed: port_type(snapshot, node_id, &sig.ports[1])?.unboxed_none(),
                             }
                         }
                         crate::lazy::Lazy::Try => crate::lazy::ProjectionMode::Result {
-                            boxed: port_type(node_id, &sig.ports[0])?.unboxed_error(),
+                            boxed: port_type(snapshot, node_id, &sig.ports[0])?.unboxed_error(),
                         },
                         _ => crate::lazy::ProjectionMode::Value,
                     },
@@ -806,7 +822,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             };
             let mut slots = Vec::new();
             for (port, value) in output_ports.into_iter().zip(output_values.drain(..)) {
-                let ty = port_type(node_id, port)?;
+                let ty = port_type(snapshot, node_id, port)?;
                 let value = if let Some(fault) = &fault {
                     FoldedValue::Fault(fault.clone())
                 } else {
@@ -995,6 +1011,7 @@ pub(crate) fn admit_roots<'a>(
         };
         charge(&mut ports, sig.ports.len(), options.limits.max_graph_items)?;
         admit_data_ports(
+            snapshot,
             *node,
             sig,
             lazy_nodes.contains_key(node),

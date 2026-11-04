@@ -2,14 +2,15 @@
 //! [`Value`] against it (12 §7). Shapes come from the parsed [`TypeTerm`], never from
 //! type-expression text, and own the option/result boxing rule and nominal byte charges.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 use thiserror::Error;
 
+use super::literal_codec::Schemas;
 use super::{ListRepr, SMALL_MAP, Value};
 use crate::id::TypeExpr;
-use crate::type_term::{MAX_NESTING, TypeTerm};
+use crate::type_term::{MAX_NESTING, NamedTerm, TypeTerm};
 
 /// Nominal retained bytes of one value or list element, before any payload.
 pub const VALUE_CHARGE: usize = 16;
@@ -40,6 +41,63 @@ pub enum ValueShape {
     Error,
     Option(Box<ValueShape>),
     Result(Box<ValueShape>),
+    /// A nominal enum resolved from its registered schema ([`ValueShape::of_in`]).
+    Enum(Arc<EnumShape>),
+}
+
+/// A package enum's identity, variant IDs and payload shapes in schema (tag) order.
+/// Only schema resolution builds one, so its payloads are within the nesting limit and
+/// never cyclic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumShape {
+    ty: TypeExpr,
+    variants: Box<[(String, Option<ValueShape>)]>,
+}
+
+impl EnumShape {
+    /// The canonical nominal type.
+    pub fn ty(&self) -> &TypeExpr {
+        &self.ty
+    }
+
+    /// Number of variants in the resolved schema.
+    pub fn len(&self) -> usize {
+        self.variants.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.variants.is_empty()
+    }
+
+    /// The tag of a stable variant ID, as [`Value::Enum`] carries it.
+    pub fn tag(&self, variant_id: &str) -> Option<u32> {
+        let index = self.variants.iter().position(|(id, _)| id == variant_id)?;
+        u32::try_from(index).ok()
+    }
+
+    /// The stable variant ID of a tag.
+    pub fn variant_id(&self, tag: u32) -> Option<&str> {
+        Some(self.variant(tag)?.0.as_str())
+    }
+
+    /// The payload shape of a tag: `Some(None)` for a variant without payload.
+    pub fn payload(&self, tag: u32) -> Option<Option<&ValueShape>> {
+        Some(self.variant(tag)?.1.as_ref())
+    }
+
+    fn variant(&self, tag: u32) -> Option<&(String, Option<ValueShape>)> {
+        self.variants.get(usize::try_from(tag).ok()?)
+    }
+}
+
+/// Schema-aware resolution state for one top-level type. Each nominal enum resolves
+/// once, keeping its height; any failure ends the whole resolution, so only successes
+/// are memoized. A type reached again through its own payloads is refused: recursive
+/// schemas have no executable shape.
+struct Nominal<'a> {
+    schemas: &'a dyn Schemas,
+    resolved: HashMap<NamedTerm, (ValueShape, usize)>,
+    active: HashSet<NamedTerm>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
@@ -98,10 +156,32 @@ impl ValueShape {
 
     /// Shape of an already parsed term.
     pub fn resolve(term: &TypeTerm) -> Option<Self> {
-        Self::resolve_at(term, 0)
+        Self::resolve_at(term, 0, None).map(|(shape, _)| shape)
     }
 
-    fn resolve_at(term: &TypeTerm, depth: usize) -> Option<Self> {
+    /// Shape of a canonical type expression whose nominal enums resolve through `schemas`
+    /// (12 §5). Records, parameterized nominal types and recursive enums stay unsupported.
+    pub fn of_in(expr: &TypeExpr, schemas: &dyn Schemas) -> Option<Self> {
+        Self::resolve_in(&TypeTerm::parse(expr).ok()?, schemas)
+    }
+
+    /// [`ValueShape::of_in`] for an already parsed term.
+    pub fn resolve_in(term: &TypeTerm, schemas: &dyn Schemas) -> Option<Self> {
+        let mut nominal = Nominal {
+            schemas,
+            resolved: HashMap::new(),
+            active: HashSet::new(),
+        };
+        Self::resolve_at(term, 0, Some(&mut nominal)).map(|(shape, _)| shape)
+    }
+
+    /// The shape and its height (1 for a leaf), so a memoized nominal shape reused at
+    /// another depth still respects [`MAX_NESTING`].
+    fn resolve_at(
+        term: &TypeTerm,
+        depth: usize,
+        mut nominal: Option<&mut Nominal<'_>>,
+    ) -> Option<(Self, usize)> {
         if depth > MAX_NESTING {
             return None;
         }
@@ -109,10 +189,15 @@ impl ValueShape {
             return None;
         };
         if named.namespace != "core" || named.major != 1 {
-            return None;
+            return Self::enumeration(named, depth, nominal?);
         }
-        let inner = |i: usize| Self::resolve_at(&named.args[i], depth + 1).map(Box::new);
-        Some(match (named.name.as_str(), named.args.len()) {
+        let mut height = 1;
+        let mut inner = |i: usize| {
+            let (shape, h) = Self::resolve_at(&named.args[i], depth + 1, nominal.as_deref_mut())?;
+            height = height.max(h + 1);
+            Some(Box::new(shape))
+        };
+        let shape = match (named.name.as_str(), named.args.len()) {
             ("bool", 0) => Self::Bool,
             ("i32", 0) => Self::I32,
             ("i64", 0) => Self::I64,
@@ -137,7 +222,44 @@ impl ValueShape {
                 Self::Map(key, inner(1)?)
             }
             _ => return None,
-        })
+        };
+        Some((shape, height))
+    }
+
+    fn enumeration(
+        named: &NamedTerm,
+        depth: usize,
+        nominal: &mut Nominal<'_>,
+    ) -> Option<(Self, usize)> {
+        if let Some((shape, height)) = nominal.resolved.get(named) {
+            return (depth + height <= MAX_NESTING + 1).then(|| (shape.clone(), *height));
+        }
+        if !named.args.is_empty() || !nominal.active.insert(named.clone()) {
+            return None;
+        }
+        let schema = nominal.schemas.enumeration(named)?;
+        let mut height = 1;
+        let mut variants = Vec::with_capacity(schema.variants.len());
+        for variant in &schema.variants {
+            let payload = match &variant.payload {
+                None => None,
+                Some(term) => {
+                    let (shape, h) = Self::resolve_at(term, depth + 1, Some(nominal))?;
+                    height = height.max(h + 1);
+                    Some(shape)
+                }
+            };
+            variants.push((variant.variant_id.clone(), payload));
+        }
+        nominal.active.remove(named);
+        let shape = Self::Enum(Arc::new(EnumShape {
+            ty: TypeTerm::Named(named.clone()).to_type_expr(),
+            variants: variants.into(),
+        }));
+        nominal
+            .resolved
+            .insert(named.clone(), (shape.clone(), height));
+        Some((shape, height))
     }
 
     pub fn native_hash(&self) -> bool {
@@ -147,7 +269,8 @@ impl ValueShape {
         )
     }
 
-    /// Whether the host implements this exact Core type's total equality.
+    /// Whether the host implements this exact Core type's total equality. Nominal enum
+    /// equality belongs to the owning package, so it is never native.
     pub fn native_eq(&self) -> bool {
         self.native_eq_at(0)
     }
@@ -288,6 +411,14 @@ impl ValueShape {
                 }
                 Ok(())
             }
+            // Tags index the resolved schema; an unknown tag has no executable shape.
+            (Self::Enum(shape), Value::Enum { tag, payload }) => {
+                match (shape.payload(*tag).ok_or(InvalidType)?, payload) {
+                    (None, None) => Ok(()),
+                    (Some(ty), Some(value)) => ty.check(value, left, depth + 1),
+                    _ => Err(InvalidType),
+                }
+            }
             (Self::String, Value::Str(text)) => charge(left, text.len()),
             (Self::Bytes, Value::Bytes(bytes)) => charge(left, bytes.len()),
             (Self::Json, Value::Json(text)) => charge(left, text.as_str().len()),
@@ -411,6 +542,94 @@ mod tests {
         ] {
             assert!(shape(invalid).is_none(), "{invalid}");
         }
+    }
+
+    #[test]
+    fn enums_resolve_through_schemas_and_check_tags_and_payloads() {
+        use crate::value::literal_codec::{EnumSchema, SchemaSet, VariantSchema};
+        let term = |text: &str| TypeTerm::parse(&text.parse().unwrap()).unwrap();
+        let variant = |id: &str, payload: Option<&str>| VariantSchema {
+            variant_id: id.into(),
+            payload: payload.map(term),
+        };
+        let enumeration = |variants| EnumSchema { variants };
+        let schemas = SchemaSet::default()
+            .with_enum(
+                "org.example/state@1",
+                enumeration(vec![
+                    variant("idle", None),
+                    variant("count", Some("core/i64@1")),
+                ]),
+            )
+            .with_enum(
+                "org.example/other@1",
+                enumeration(vec![
+                    variant("idle", None),
+                    variant("count", Some("core/i64@1")),
+                ]),
+            )
+            .with_enum(
+                "org.example/loop@1",
+                enumeration(vec![variant(
+                    "next",
+                    Some("core/list@1<org.example/loop@1>"),
+                )]),
+            );
+        let of = |text: &str| ValueShape::of_in(&text.parse().unwrap(), &schemas);
+        // Without schemas a nominal type has no shape; with them its identity is kept.
+        assert!(shape("org.example/state@1").is_none());
+        let state = of("org.example/state@1").unwrap();
+        assert_ne!(Some(&state), of("org.example/other@1").as_ref());
+        let ValueShape::Enum(layout) = &state else {
+            panic!("{state:?}");
+        };
+        assert_eq!((layout.len(), layout.tag("count")), (2, Some(1)));
+        assert_eq!(layout.variant_id(0), Some("idle"));
+        let value = |tag, payload: Option<Value>| Value::Enum {
+            tag,
+            payload: payload.map(Arc::new),
+        };
+        assert!(state.accepts(&value(0, None)));
+        assert!(state.accepts(&value(1, Some(Value::I64(3)))));
+        for invalid in [
+            value(2, None),
+            value(0, Some(Value::I64(3))),
+            value(1, None),
+            value(1, Some(Value::Bool(true))),
+        ] {
+            assert!(!state.accepts(&invalid), "{invalid:?}");
+        }
+        assert!(!state.native_eq() && !state.native_hash());
+        // Option over an enum stays unboxed: None is not a variant.
+        let optional = of("core/option@1<org.example/state@1>").unwrap();
+        assert!(optional.accepts(&Value::None) && optional.accepts(&value(0, None)));
+        for unsupported in [
+            "org.example/loop@1",
+            "org.example/missing@1",
+            "core/map@1<org.example/state@1,core/i64@1>",
+        ] {
+            assert!(of(unsupported).is_none(), "{unsupported}");
+        }
+        // A memoized enum reused deeper still respects the nesting limit: `state` has
+        // height 2, first resolved at depth 1, then reused below `n` options.
+        let wrap = |n| {
+            format!(
+                "{}org.example/state@1{}",
+                "core/option@1<".repeat(n),
+                ">".repeat(n)
+            )
+        };
+        for (n, fits) in [(MAX_NESTING - 2, true), (MAX_NESTING - 1, false)] {
+            let pair = enumeration(vec![
+                variant("near", Some("org.example/state@1")),
+                variant("far", Some(wrap(n).as_str())),
+            ]);
+            let schemas = schemas.clone().with_enum("org.example/pair@1", pair);
+            let pair = ValueShape::of_in(&"org.example/pair@1".parse().unwrap(), &schemas);
+            assert_eq!(pair.is_some(), fits, "{n}");
+        }
+        assert!(of(&wrap(MAX_NESTING - 1)).is_some());
+        assert!(of(&wrap(MAX_NESTING)).is_none());
     }
 
     #[test]

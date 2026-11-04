@@ -8,6 +8,9 @@ use crate::document::{
     BodyRef, GraphBody, GraphDocument, NodeKind, PortDirection, PortKind, SignatureSnapshot,
 };
 use crate::id::{EdgeId, FunctionId, NodeId, PortKey};
+use crate::type_term::TypeTerm;
+use crate::types::TypeRegistry;
+use crate::value::literal_codec::Schemas;
 
 use super::connections::ConnectionValidation;
 use super::diagnostic::{
@@ -161,7 +164,6 @@ fn regions_among(
     scope: Scope,
     only: Option<&NodeSubset<'_>>,
 ) -> RegionValidation {
-    let origin = registry.origin();
     let mut result = RegionValidation {
         incomplete_nodes: connections.incomplete_nodes.clone(),
         ..RegionValidation::default()
@@ -183,7 +185,7 @@ fn regions_among(
             body,
             function,
             &error_edges,
-            origin,
+            registry,
             &mut result,
             only,
         );
@@ -234,10 +236,11 @@ fn check_body(
     body: &GraphBody,
     function: Option<FunctionId>,
     error_edges: &BTreeSet<EdgeId>,
-    origin: &HostOrigin,
+    registry: &RegistrySnapshot,
     result: &mut RegionValidation,
     only: Option<&NodeSubset<'_>>,
 ) {
+    let origin = registry.origin();
     let mut local_incomplete = BTreeSet::new();
     for node in nodes_of(body, only) {
         if !resolved.contains_key(&node.id) {
@@ -450,10 +453,18 @@ fn check_body(
         {
             report(DiagnosticCode::LoopUnbounded, at(node.id));
         }
+        // An exhaustive enum switch needs no default; an unconnected default never counts.
+        let default = || {
+            out.get(&node.id).is_some_and(|edges| {
+                edges
+                    .iter()
+                    .any(|e| e.from_port.port().as_str() == "default")
+            })
+        };
         if definition == ids::SWITCH
-            && resolved
-                .get(&node.id)
-                .is_some_and(|signature| !switch_cases_valid(node, signature))
+            && resolved.get(&node.id).is_some_and(|signature| {
+                !switch_cases_valid(node, signature, registry.types(), default)
+            })
         {
             report(DiagnosticCode::SwitchCase, at(node.id));
         }
@@ -545,7 +556,14 @@ fn check_body(
 /// `config.cases` of a `core/switch` (11 §8.4): one value for every `case` instance and no
 /// other entries, all distinct, of the JSON kind of the key type (integers, `bool` and
 /// `string`; other key types are only checked for presence and uniqueness).
-fn switch_cases_valid(node: &crate::document::NodeInstance, signature: &SignatureSnapshot) -> bool {
+/// Distinct case values of the key's kind (11 §8.4). Enum cases name variants of the
+/// key's registered schema and must cover all of them unless `default` is connected.
+fn switch_cases_valid(
+    node: &crate::document::NodeInstance,
+    signature: &SignatureSnapshot,
+    types: &TypeRegistry,
+    default: impl FnOnce() -> bool,
+) -> bool {
     let case = crate::port_id!("case");
     let order: &[u16] = node
         .variadic
@@ -566,27 +584,40 @@ fn switch_cases_valid(node: &crate::document::NodeInstance, signature: &Signatur
         .ports
         .iter()
         .find(|port| port.port_id.as_str() == "key")
-        .and_then(|port| port.ty.as_ref())
-        .map(|ty| ty.as_str());
+        .and_then(|port| port.ty.as_ref());
+    let variants: Option<HashSet<&str>> = key
+        .and_then(|ty| match TypeTerm::parse(ty).ok()? {
+            TypeTerm::Named(named) => types.enumeration(&named),
+            TypeTerm::Param(_) => None,
+        })
+        .map(|schema| {
+            schema
+                .variants
+                .iter()
+                .map(|variant| variant.variant_id.as_str())
+                .collect()
+        });
+    let key = key.map(|ty| ty.as_str());
     let mut seen = HashSet::new();
     for instance in order {
         let Some(value) = cases.get(&instance.to_string()) else {
             return false;
         };
-        let kind_ok = match key {
-            Some("core/i32@1") => value.as_i64().is_some_and(|n| i32::try_from(n).is_ok()),
-            Some("core/i64@1") => value.as_i64().is_some(),
-            Some("core/u32@1") => value.as_u64().is_some_and(|n| u32::try_from(n).is_ok()),
-            Some("core/u64@1") => value.as_u64().is_some(),
-            Some("core/bool@1") => value.is_boolean(),
-            Some("core/string@1") => value.is_string(),
+        let kind_ok = match (key, &variants) {
+            (_, Some(variants)) => value.as_str().is_some_and(|id| variants.contains(id)),
+            (Some("core/i32@1"), _) => value.as_i64().is_some_and(|n| i32::try_from(n).is_ok()),
+            (Some("core/i64@1"), _) => value.as_i64().is_some(),
+            (Some("core/u32@1"), _) => value.as_u64().is_some_and(|n| u32::try_from(n).is_ok()),
+            (Some("core/u64@1"), _) => value.as_u64().is_some(),
+            (Some("core/bool@1"), _) => value.is_boolean(),
+            (Some("core/string@1"), _) => value.is_string(),
             _ => true,
         };
         if !kind_ok || !seen.insert(value) {
             return false;
         }
     }
-    true
+    variants.is_none_or(|variants| seen.len() == variants.len() || default())
 }
 
 /// A data edge: id, source node and port, target node.
