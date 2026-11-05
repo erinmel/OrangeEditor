@@ -338,9 +338,21 @@ impl<J: Journal> PackageStore<J> {
     /// Rebuilds a store after a restart from `recovery` and the staged contents of exactly
     /// the versions its last commit made active. Published digests and revocations are
     /// restored, so removed versions keep their identity and revoked digests stay blocked;
-    /// removed versions have no record, since their manifests are not reloaded. Active
-    /// versions are reinstalled in dependency order and journaled to `journal`. The rebuilt
+    /// removed versions have no record, since their manifests are not reloaded. The rebuilt
     /// store has no rollback history.
+    ///
+    /// Restoration is atomic with respect to `journal`. The complete candidate is built and
+    /// validated against a private in-memory journal, with active versions installed in
+    /// dependency order; `journal` is not touched until that succeeds. Then exactly one
+    /// complete [`JournalEntry::Committed`] checkpoint is appended. Any earlier failure
+    /// appends nothing, so the last complete commit stays authoritative for the next
+    /// [`Recovery::from_entries`]. If that single append fails,
+    /// [`TransactionError::Journal`] is returned and no store is produced; the journal
+    /// contract ("an error means the entry is not durable") keeps the prior commit
+    /// authoritative, and the host may retry. A crash during the append leaves either the
+    /// prior commit or the complete new one, provided the host appends an entry atomically.
+    /// The checkpoint repeats the recovered active set, so both outcomes describe the same
+    /// package set.
     pub fn restore(
         base: Arc<RegistrySnapshot>,
         host_api: HostApiVersion,
@@ -348,14 +360,14 @@ impl<J: Journal> PackageStore<J> {
         recovery: &Recovery,
         contents: Vec<PackageContents>,
     ) -> Result<Self, TransactionError> {
-        let mut store = Self::new(base, host_api, journal);
-        store.published = recovery.published.clone();
-        store.revoked = recovery.revoked.clone();
+        let mut staging = PackageStore::new(base, host_api, MemoryJournal::new());
+        staging.published = recovery.published.clone();
+        staging.revoked = recovery.revoked.clone();
         let active = recovery.committed.as_deref().unwrap_or_default();
         let mut pending = Vec::with_capacity(contents.len());
         for item in contents {
             let key = item.manifest.key();
-            let expected = store.published.get(key).map(String::as_str);
+            let expected = staging.published.get(key).map(String::as_str);
             if !active.contains(key) || expected != Some(item.manifest.content_digest()) {
                 return Err(TransactionError::RecoveryMismatch(key.clone()));
             }
@@ -370,7 +382,7 @@ impl<J: Journal> PackageStore<J> {
         while !pending.is_empty() {
             let ready = pending.iter().position(|item| {
                 item.manifest.dependencies().iter().all(|dependency| {
-                    store
+                    staging
                         .current
                         .packages
                         .keys()
@@ -379,9 +391,19 @@ impl<J: Journal> PackageStore<J> {
             });
             // With no installable version left, install the first to report its error.
             let item = pending.remove(ready.unwrap_or(0));
-            store.install(item)?;
+            staging.install(item)?;
         }
-        store.history.clear();
+        let mut store = Self {
+            host_api,
+            current: staging.current,
+            history: Vec::new(),
+            quarantined: BTreeMap::new(),
+            published: staging.published,
+            revoked: staging.revoked,
+            journal,
+        };
+        let checkpoint = store.current.clone();
+        store.journal_commit(&checkpoint, None)?;
         Ok(store)
     }
 
