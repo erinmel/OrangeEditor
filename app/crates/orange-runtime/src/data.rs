@@ -507,15 +507,28 @@ impl DataActivation {
             return Err(invalid);
         }
         let charge = match &value {
-            FoldedValue::Value(value) => Some(
-                value_charge(
-                    &self.plan,
-                    *slot,
-                    value,
-                    self.state.limits.max_retained_bytes,
-                )
-                .map_err(value_check(invalid))?,
-            ),
+            FoldedValue::Value(value) => Some({
+                let cached = if matches!(value, Value::Map(_) | Value::List(_)) {
+                    self.state.prepared.dynamic_slots[slot.index()].and_then(|register| {
+                        self.state
+                            .registers
+                            .retained_container_charge(register, value)
+                    })
+                } else {
+                    None
+                };
+                match cached {
+                    Some(charge) if charge <= self.state.limits.max_retained_bytes => charge,
+                    Some(_) => return Err(DataError::ResourceLimit),
+                    None => value_charge(
+                        &self.plan,
+                        *slot,
+                        value,
+                        self.state.limits.max_retained_bytes,
+                    )
+                    .map_err(value_check(invalid))?,
+                }
+            }),
             FoldedValue::Fault(fault) => self.plan.fault_charge(fault),
         }
         .ok_or(invalid)?;
@@ -1184,7 +1197,7 @@ mod tests {
     const NODE: &str = "10000000-0000-4000-8000-000000000001";
 
     /// One run-variable read exported directly: a single host input slot.
-    fn input_activation() -> DataActivation {
+    fn input_activation_of(ty: &str) -> DataActivation {
         let digest = format!("sha256:{}", "a".repeat(64));
         let snapshot = RegistrySnapshot::core(HostOrigin::new("0.0.0", digest).unwrap());
         let variable = "10000000-0000-4000-8000-000000000014";
@@ -1195,7 +1208,7 @@ mod tests {
             "nodes":[{{"id":"{NODE}","definition_id":"core/get-variable",
                 "definition_version":1,"config_version":1,"config":{{"variable":"{variable}"}}}}],
             "exports":[{{"id":"out","node":"{NODE}","port":"value"}}],
-            "variables":[{{"id":"{variable}","name":"v","type":"core/u64@1","scope":"run"}}]}}"#
+            "variables":[{{"id":"{variable}","name":"v","type":"{ty}","scope":"run"}}]}}"#
         ))
         .unwrap();
         let analysis = orange_model::analyze(&doc, &snapshot);
@@ -1217,6 +1230,116 @@ mod tests {
             DataOptions::default(),
         )
         .unwrap()
+    }
+
+    fn input_activation() -> DataActivation {
+        input_activation_of("core/u64@1")
+    }
+
+    #[test]
+    fn retained_host_containers_reuse_only_the_same_checked_storage() {
+        use orange_model::value::{ListRepr, MapRepr};
+        let cases = [
+            (
+                "core/map@1<core/string@1,core/u64@1>",
+                Value::Map(Arc::new(
+                    MapRepr::new(vec![(Value::Str(Arc::new("key".into())), Value::U64(7))])
+                        .unwrap(),
+                )),
+                Value::Map(Arc::new(
+                    MapRepr::new(vec![(
+                        Value::Str(Arc::new("key".into())),
+                        Value::Bool(true),
+                    )])
+                    .unwrap(),
+                )),
+            ),
+            (
+                "core/list@1<core/u64@1>",
+                Value::List(Arc::new(ListRepr::U64(vec![7].into()))),
+                Value::List(Arc::new(ListRepr::Bool(vec![true].into()))),
+            ),
+        ];
+        for (ty, value, invalid) in cases {
+            let mut frame = input_activation_of(ty);
+            frame.begin_epoch().unwrap();
+            VALUE_CHECKS.with(|count| count.set(0));
+            frame.set_input(0, value.clone()).unwrap();
+            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+            let retained = frame.state.retained.get();
+            frame.begin_epoch().unwrap();
+            VALUE_CHECKS.with(|count| count.set(0));
+            // An invalid replacement does not change the retained check or stamp.
+            assert_eq!(
+                frame.set_input(0, invalid),
+                Err(DataError::InvalidInput { index: 0 })
+            );
+            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+            frame.set_input(0, value.clone()).unwrap();
+            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+            assert_eq!(frame.export(0).unwrap().unwrap().outcome, Ok(&value));
+            assert_eq!(frame.state.retained.get(), retained);
+            // Equal contents in a different allocation are not identity evidence.
+            let fresh = match &value {
+                Value::Map(map) => Value::Map(Arc::new((**map).clone())),
+                Value::List(list) => Value::List(Arc::new((**list).clone())),
+                _ => unreachable!(),
+            };
+            frame.begin_epoch().unwrap();
+            VALUE_CHECKS.with(|count| count.set(0));
+            frame.set_input(0, fresh).unwrap();
+            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+            frame.begin_epoch().unwrap();
+            frame.set_input(0, value.clone()).unwrap();
+            assert_eq!(VALUE_CHECKS.with(Cell::get), 2);
+            // Reuse never bypasses a tighter current resource limit.
+            frame.begin_epoch().unwrap();
+            frame.state.limits.max_retained_bytes = retained - 1;
+            assert_eq!(
+                frame.set_input(0, value.clone()),
+                Err(DataError::ResourceLimit)
+            );
+            assert_eq!(frame.state.retained.get(), retained);
+            frame.state.limits.max_retained_bytes = retained;
+            frame.set_input(0, value.clone()).unwrap();
+            // Replacing a value with a fault invalidates the prior value evidence.
+            frame.state.limits.max_retained_bytes = DataLimits::default().max_retained_bytes;
+            frame.begin_epoch().unwrap();
+            frame
+                .set_input_outcome(
+                    0,
+                    FoldedValue::Fault(ConstantFault {
+                        source: NODE.parse().unwrap(),
+                        fault: KernelFault::NEGATIVE_COUNT,
+                    }),
+                )
+                .unwrap();
+            frame.begin_epoch().unwrap();
+            VALUE_CHECKS.with(|count| count.set(0));
+            frame.set_input(0, value).unwrap();
+            assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+        }
+    }
+
+    #[test]
+    fn copy_on_write_host_list_cannot_reuse_the_old_validation() {
+        use orange_model::value::ListRepr;
+        let mut frame = input_activation_of("core/list@1<core/u64@1>");
+        let mut storage = Arc::new(ListRepr::U64(vec![7].into()));
+        frame.begin_epoch().unwrap();
+        frame.set_input(0, Value::List(storage.clone())).unwrap();
+        *Arc::make_mut(&mut storage) = ListRepr::Bool(vec![true].into());
+        frame.begin_epoch().unwrap();
+        VALUE_CHECKS.with(|count| count.set(0));
+        assert_eq!(
+            frame.set_input(0, Value::List(storage)),
+            Err(DataError::InvalidInput { index: 0 })
+        );
+        assert_eq!(VALUE_CHECKS.with(Cell::get), 1);
+        assert!(matches!(
+            frame.export(0),
+            Err(DataError::MissingInput { .. })
+        ));
     }
 
     #[test]

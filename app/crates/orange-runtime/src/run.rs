@@ -623,6 +623,8 @@ pub struct Run {
     /// Reused cancellation traversal buffers; empty between calls.
     cancel_regions: Vec<RegionId>,
     cancel_timers: Vec<TimerKey>,
+    /// Temporary Fork children, drained before any child can execute.
+    fork_children: Vec<Strand>,
     /// Set while `pump` runs. Still set on the next call only if a trusted callback
     /// panicked through a pump, which can leave work taken out of the run's stores.
     pump_open: bool,
@@ -874,6 +876,7 @@ impl Run {
             segment: SegmentWrites::new(variable_count, state_count),
             cancel_regions: vec![],
             cancel_timers: vec![],
+            fork_children: vec![],
             pump_open: false,
         })
     }
@@ -1715,6 +1718,7 @@ impl Run {
         self.trace.release();
         self.cancel_regions = Vec::new();
         self.cancel_timers = Vec::new();
+        self.fork_children = Vec::new();
         self.transition(RunState::Disposed);
         Ok(())
     }

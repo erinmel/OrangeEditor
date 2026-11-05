@@ -127,6 +127,9 @@ runner can enforce the resulting threshold; hosted VMs remain trend/evidence run
 No older-machine result or universal sub-1 ms result is claimed here. Improving the
 executor's data structures/ownership costs is a separate measured runtime change.
 
+Implemented runtime optimization evidence, including paired comparisons, allocation
+costs, research and rejected alternatives, is recorded in [19](19-runtime-performance.md).
+
 Sources checked 2026-11-05: [GitHub native runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),
 [Cargo test profiles/debug settings](https://doc.rust-lang.org/cargo/reference/profiles.html),
 [pinned rust-cache behavior](https://github.com/Swatinem/rust-cache/blob/d1527c8f67ef9af357290475d4af4b0fab8f12e0/README.md).

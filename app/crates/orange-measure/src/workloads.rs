@@ -1754,7 +1754,7 @@ mod tests {
     /// A 256-branch race once spawned and cancelled all its strands inside one pump of
     /// budget 64; ownership work now spends the budget, so each pump stops after it.
     #[test]
-    fn wide_fork_ownership_work_spends_the_pump_budget() {
+    fn wide_fork_reuses_storage_and_spends_the_pump_budget() {
         let _measuring = exclusive();
         let config = crate::harness::Config {
             budget: 64,
@@ -1765,6 +1765,13 @@ mod tests {
         let row = super::fork_fanout_256(config);
         // At least one pump for each spawn and each cancellation of the 100 iterations.
         assert!(row.pumps >= 200, "{} pumps", row.pumps);
+        // The former region tree plus a fresh children buffer per iteration
+        // requested about 33 MB. Keep a broad deterministic regression bound.
+        assert!(
+            row.counts.allocated_bytes < 8 * 1024 * 1024,
+            "wide Fork requested {} bytes",
+            row.counts.allocated_bytes,
+        );
     }
 
     /// Before disposal released its pools, a disposed function-call run held about 6 KiB.
@@ -1775,6 +1782,32 @@ mod tests {
         assert!(
             retained < 1024,
             "a disposed run still holds {retained} bytes"
+        );
+    }
+
+    #[test]
+    fn disposal_releases_wide_fork_slots_and_temporary_children() {
+        let _measuring = exclusive();
+        let mut fork = super::core(2, "fork");
+        fork["config"] = serde_json::json!({"join":"all"});
+        fork["variadic"] =
+            serde_json::json!({"branch":{"next":256,"order":(0..256).collect::<Vec<_>>()}});
+        let source = super::Source::new(
+            vec![super::core(1, "on-start"), fork],
+            vec![super::edge(1, 1, "then", 2, "in")],
+        );
+        let (document, plan) = source.control();
+        let mut session = super::RunSession::start(&plan, &document, super::total(), 64);
+        while crate::harness::Session::step(&mut session) {}
+        let mut run = session.into_run();
+        run.stop().unwrap();
+        run.dispose().unwrap();
+        let held = crate::counter::live_bytes();
+        drop(run);
+        let retained = held.saturating_sub(crate::counter::live_bytes());
+        assert!(
+            retained < 1024,
+            "disposed wide Fork retains {retained} bytes"
         );
     }
 }

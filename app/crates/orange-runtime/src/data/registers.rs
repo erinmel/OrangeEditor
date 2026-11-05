@@ -10,6 +10,7 @@
 use orange_compiler::{ConstantFault, FoldedValue};
 use orange_model::Value;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 
 /// A borrowed slot outcome, shaped like `EvaluatedExport::outcome`.
 pub(super) type Outcome<'a> = Result<&'a Value, &'a ConstantFault>;
@@ -58,6 +59,20 @@ impl Registers {
     }
     pub(super) fn charge(&self, index: usize) -> usize {
         self.charges[index]
+    }
+    /// Reuse a check only for the exact immutable container still retained in
+    /// this typed register. Keeping the old Arc alive prevents mutation through
+    /// `Arc::get_mut` and prevents a recycled address from being a cache hit.
+    pub(super) fn retained_container_charge(&self, index: usize, value: &Value) -> Option<usize> {
+        let Ok(previous) = self.get(index)? else {
+            return None;
+        };
+        let same = match (previous, value) {
+            (Value::Map(a), Value::Map(b)) => Arc::ptr_eq(a, b),
+            (Value::List(a), Value::List(b)) => Arc::ptr_eq(a, b),
+            _ => false,
+        };
+        same.then_some(self.charges[index])
     }
     /// Retain a value; a stale fault entry of this register is released.
     pub(super) fn set_value(&mut self, index: usize, value: Value, charge: usize) {

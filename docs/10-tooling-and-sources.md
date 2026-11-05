@@ -3102,3 +3102,33 @@ Review: ignored `.artifacts/engineering-review-2026-11-05/` (F1–F4, M1, G1); b
 - **Commands (repo root):** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`. all pass, 1,202 tests passed and 15 timing tests ignored; `node tools/check-cargo-metadata.mjs` and `git diff --check` pass. MSRV, Linux/macOS and remote CI were not rerun locally.
 - **G1 aggregate run budget:** `RunLimits::max_run_retained_bytes` (default 512 MiB), private RAII `budget` leases shared by all activations, `RunError`/`DataError::AggregateLimit` and `Run::retention()` (03). Regressions: `orange-runtime` budget unit tests; `orange-bundled` `support/budget_*.rs` across roots, growing cells, pending pulls, iterations, function frames/results, event handlers, stop and disposal. Limits: nominal accounting only, no RSS measurement; mid-step counter state after a fault is observed only through unit tests because cleanup releases every lease.
 - **Limits:** a base-registry default overridden by a package default and later removed returns after restart (`RegistryBuilder` cannot clear a default); `JournalError.reason` is host text still shown by `TransactionError::Journal`; `RegistryError` and `JournalError` share one generic key each; the rollback default is not measured; durable journal implementations, archives, grants, code loading and draining remain open.
+
+### Runtime storage and retained input admission — 2026-11-05
+
+Baseline dev `fdec574c1b7ab43fa48f88c2a02b065dbcfb9268`; Rust/Cargo 1.99.1,
+Windows x86_64 MSVC, unchanged lock SHA256
+`8BB91CAAFF5A7106E5752D49D9AB285D4566A1B69B55AD1CA81E10E1D70BB068`.
+
+- **Change:** hybrid small-tree/directory lookup over reusable physical region slots,
+  admitted Fork batch reservation, drained temporary child storage reuse, and exact
+  same-register immutable map/list admission reuse. No public interface, dependency,
+  provider, graph-language or quota changes; FR-12/14/16, NFR-01/05, ADR-16/21.
+- **Local checks:** workspace debug 1,209 passed/15 ignored; selected release
+  runtime/measure/bundled 485 passed/6 ignored; measurement no-default-features release
+  9 passed. All-target/all-feature Clippy, formatting, warnings-denied rustdoc and
+  whitespace passed. Six new focused regressions plus the strengthened existing
+  Fork allocation/budget check. Full optimized workspace/native/MSRV runs are not
+  claimed as local checks.
+- **Measurements:** three independent reversed-order pairs, all twelve unchanged
+  workloads, portable release platform allocator, ten-second warmup and 100 complete
+  sessions per workload/process. Median of per-process p50: Fork 4,000 x100 from
+  130.4533 to 86.8900 ms; map CAS 1,000 x1,000 from 11.6206 to 8.4849 ms; repeated host map
+  1,000 entries x1,000 epochs from 3.7202 to 0.0436 ms. Host chains/map zones stay within
+  about 0.2% at the median. Separate counting builds: large Fork requested bytes
+  517,020,701 to 16,385,197 and peak incremental live bytes 7,696,525 to 6,319,021.
+- **Evidence and limits:** [19](19-runtime-performance.md) records all twelve p50/p95
+  comparisons, allocator counts, exact binary/compiler/lock/machine provenance,
+  safety invariants, rejected memory/serial-performance tradeoffs and primary
+  research. Raw local evidence is ignored, not committed. Normal desktop scheduling
+  and layout bias are uncontrolled; no qualified tail, older-machine, RSS, arbitrary
+  sub-1 ms or product NFR gate is claimed. Native CI is recorded in the optimization PR.

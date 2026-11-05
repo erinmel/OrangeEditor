@@ -431,8 +431,10 @@ impl Run {
         }
         // Each branch beyond the first is extra ownership work for the pump budget.
         self.regions.charge(n.saturating_sub(1));
+        self.regions.reserve(n + 1);
         let group = self.regions.mint_region()?;
-        let mut children = Vec::with_capacity(n);
+        let mut children = std::mem::take(&mut self.fork_children);
+        children.reserve(n);
         for target in branches {
             let region = self.regions.mint_region()?;
             let mut child = self.child_strand(&caller, region)?;
@@ -489,9 +491,10 @@ impl Run {
                 },
             )?;
         }
-        for child in children.into_iter().rev() {
+        for child in children.drain(..).rev() {
             self.ready.push_front(child.id, child);
         }
+        self.fork_children = children;
         self.segment_owner = None;
         Ok(())
     }
