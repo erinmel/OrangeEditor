@@ -222,22 +222,22 @@ Cycle edits (2026-11-04, development machine, not the R machine): closing a data
 
 Every cycle edit is now scoped, re-resolving at most 14 nodes, so no W9 edit of any kind runs the full analysis. No other kind's p95 rose; with no full analysis between edits, the seeded edits' p99 fell from 0.82–3.07 ms to 0.24–0.30 ms and every kind but exec edges (p95 0.91–1.05 ms, p99 at most 1.30 ms) stays under 0.8 ms p95. A cycle in a document with exports, in a function body or in an incomplete report still runs the full analysis.
 
-Visit counters (2026-11-04, development machine, not the R machine): `orange-measure w9` now prints, per graph and edit kind, the p50/p95/max nodes, edges, ports, diagnostics and bodies the session's passes iterated per edit, summed over the passes (`EditStats::visits.total()`, defined per pass in [16 §3](16-incremental-validation.md)), and each graph's full analyses by `ScopeFallback` or rebuild reason. These replace the re-resolved-node proxy above. One `cargo run --release -p orange-measure -- w9` run; nodes iterated per edit, p50 / p95 / max, and diagnostics scanned per seeded edit at p95:
+Visit counters (2026-11-05, development machine, not the R machine): `orange-measure w9` now prints, per graph and edit kind, the p50/p95/max nodes, edges, ports, diagnostics and bodies the session's passes iterated per edit, counted inside the passes' loops and summed over the passes (`EditStats::visits.total()`, defined per pass in [16 §3](16-incremental-validation.md)), and each graph's full analyses by `ScopeFallback` or rebuild reason. These replace the re-resolved-node proxy above. One `cargo run --release -p orange-measure -- w9` run; nodes iterated per edit, p50 / p95 / max, and diagnostics scanned per seeded edit at p95:
 
 | Shape (nodes / edges) | Seeded edits | Seeded edges p95 | Most nodes, any non-exec kind | Exec edge | Seeded diagnostics p95 | Full analyses |
 |---|---:|---:|---:|---:|---:|---:|
-| clustered (10,314 / 18,454) | 19 / 32 / 37 | 27 | 83 (cycle close) | 22,167 / 24,223 / 24,572 | 17,152 | none |
-| connected (10,314 / 18,454) | 22 / 34 / 42 | 29 | 103 (cycle close) | 22,167 / 24,223 / 24,572 | 17,152 | none |
-| clustered 20k (11,314 / 20,454) | 19 / 33 / 34 | 28 | 87 (cycle close) | 24,167 / 26,223 / 26,572 | 19,150 | none |
-| connected 20k (11,314 / 20,454) | 22 / 34 / 39 | 29 | 107 (cycle close) | 24,167 / 26,223 / 26,572 | 19,150 | none |
-| shared Get 20k (10,324 / 20,454) | 19 / 33 / 34 | 28 | 87 (cycle close) | 22,187 / 24,243 / 24,592 | 19,150 | none |
+| clustered (10,314 / 18,454) | 20 / 41 / 46 | 74 | 133 (cycle close) | 22,171 / 24,391 / 24,681 | 17,152 | none |
+| connected (10,314 / 18,454) | 23 / 42 / 52 | 76 | 154 (cycle close) | 22,171 / 24,391 / 24,681 | 17,152 | none |
+| clustered 20k (11,314 / 20,454) | 20 / 42 / 43 | 76 | 143 (cycle close) | 24,171 / 26,391 / 26,681 | 19,150 | none |
+| connected 20k (11,314 / 20,454) | 23 / 43 / 48 | 78 | 164 (cycle close) | 24,171 / 26,391 / 26,681 | 19,150 | none |
+| shared Get 20k (10,324 / 20,454) | 20 / 42 / 43 | 76 | 143 (cycle close) | 22,191 / 24,411 / 24,701 | 19,150 | none |
 
-Literal and type-argument edits iterate at most 19 nodes and scan no diagnostics; every kind but exec edges stays at or under 107 nodes and 299 edges, about 1% of each graph or less. Summed over passes, every non-exec kind ran in two to seven body-runs, all in the edit's own body. Two kinds of work still scale with the graph:
+Literal and type-argument edits iterate at most 19 nodes and scan no diagnostics; every kind but exec edges stays at or under 164 nodes and 477 edges, about 1.5% of each graph or less. A cycle close is the largest, as it counts the data-cycle search over the cycle's port vertices. Summed over passes, every non-exec kind ran in two to seven body-runs, all in the edit's own body. Two kinds of work still scale with the graph:
 
 - Every edit that adds or removes an edge checks whether it carries a published diagnostic by scanning the published list, which on W9 holds about 17,000 to 19,000 warnings, so a seeded wire edit scans all of them and a chain-node removal with four edges scans up to 76,664.
-- An exec edge edit reruns the state pass in full: it iterates all five bodies and every body's nodes twice, about 20,600 to 22,600 of its nodes. The rest, 1,500 to 4,000, is the activation's region, control-cycle and availability reruns and the merge with the retained region index, which scans the whole index. Its 19 body-runs are the state pass's five, five each for the region and control-cycle passes, which run over the exec subset once in every body, and one each for the exec walk, the edge check, resolution and inputs.
+- An exec edge edit reruns the state pass in full: it iterates all five bodies and every body's nodes twice, about 20,600 to 22,600 of its nodes. The rest, about 1,500 to 4,000, is the activation's region, control-cycle and availability reruns and the merge with the retained region index, which scans its regions, owners and unreachable nodes. Its 19 body-runs are the state pass's five, five each for the region and control-cycle passes, which run over the exec subset once in every body, and one each for the exec walk, the edge check, resolution and inputs.
 
-Neither cost has been profiled against the edits' time. Timing did not regress: in one session, `origin/dev`, this branch and `origin/dev` again ran W9 back to back, and no kind's p95 rose by more than 0.007 ms over the slower dev run; the largest p95 of any kind was 0.965 ms against 1.091 ms on dev.
+Neither cost has been profiled against the edits' time. Timing did not regress beyond noise: in one session, `origin/dev`, this branch and `origin/dev` again ran W9 back to back. The largest p95 rise over the slower dev run was 0.028 ms, on the connected graph's 20 cycle closes, and every other kind rose by at most 0.012 ms; the largest p95 of any kind was 1.072 ms against 1.183 ms on dev.
 
 **Qualification and remaining product gates**
 

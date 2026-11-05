@@ -87,12 +87,11 @@ impl std::ops::AddAssign for VisitCounts {
 /// [`EditStats::visits`](super::EditStats::visits).
 ///
 /// A layout-only or unchanged update visits nothing. A scoped update counts the items its
-/// passes iterate; index maintenance and patching the published report are bookkeeping, not
-/// passes, and are not counted. Where a scoped pass reruns over a whole set, it is charged
-/// what that run iterates: the state pass every body and both of its loops over each body's
-/// nodes, and a function check the function body once per body pass it reruns. A full
-/// analysis (`SessionWork::Recompute` or `Rebuild`) is not instrumented: every pass is
-/// charged every body, node and edge of the document and every resolved port.
+/// passes iterate, inside their loops, including the passes it reruns over a whole set (the
+/// state pass, a function check's body passes); index maintenance and patching the
+/// published report are bookkeeping, not passes, and are not counted. A full analysis
+/// (`SessionWork::Recompute` or `Rebuild`) is not instrumented: every pass is charged every
+/// body, node and edge of the document and every resolved port.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Hash)]
 #[non_exhaustive]
 pub struct PassVisits {
