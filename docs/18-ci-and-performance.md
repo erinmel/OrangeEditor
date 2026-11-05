@@ -12,14 +12,19 @@ contract or a passed product performance gate. Branch and release policy remains
 | Repository rules | Every PR, merge group, dev/main push, manual, weekly; reusable by CD | Format; first-party/core dependency policy and its fixtures; actionlint 1.7.12 including shellcheck on Linux; zizmor 1.30.1; platform-selection and release-contract tests; disabled-release check |
 | Rust quality | Same | All-target/all-feature Clippy; rustdoc with warnings denied; measurement binary Clippy without allocator instrumentation |
 | Dependencies | Same | Pinned cargo-deny 0.20.2; refreshed advisories, bans, licenses and sources |
-| Native behavior | After repository rules | Workspace unit/integration/property/doctests on Linux x64, Windows x64 and macOS ARM64; Linux additionally runs optimized workspace tests, example tests and all three headless example programs |
+| Native behavior | After repository rules | Workspace unit/integration/property/doctests on Linux x64, Windows x64 and macOS ARM64 |
+| Optimized behavior | After repository rules, parallel with native tests | Linux release runtime/measurement regressions, both measurement feature modes, twelve execution workloads, example tests and all three headless example programs; release builds reused throughout. Extended weekly/manual runs also execute the full optimized workspace suite |
 | Compatibility | After repository rules | MSRV 1.97.1, all workspace targets; weekly and extended manual native tests also cover Linux ARM64 and macOS Intel x64 |
 | Required result | After all required jobs | Existing `rust` context fails on failure, cancellation or skipping, including any failed native matrix member |
 
 The selected compiler remains 1.99.1 from `rust-toolchain.toml`. Builds use the committed
 lockfile. No dependency or compiler update is part of this change. Ordinary PR validation
-has eight jobs rather than ten: format shares the rules runner, Clippy/rustdoc share a
-quality runner. Tests wait for rules, allowing them to overlap quality checks. Full
+has nine jobs rather than ten: format shares the rules runner, Clippy/rustdoc share a
+quality runner, and optimized behavior gets a parallel job. Tests wait for rules,
+allowing them to overlap quality checks. PRs avoid compiling every integration test twice:
+they retain full debug workspace coverage on three native platforms and exercise the
+runtime, twelve real execution fixtures and embedding examples in release mode. Full
+optimized workspace tests run on extended weekly/manual validation. Full
 test debug symbols are replaced with `line-tables-only` in native CI; debug assertions
 and overflow checks remain enabled. Dependency caches retain their architecture/toolchain
 boundaries and save only on dev. Clean release builds still do not restore build caches.
@@ -31,6 +36,8 @@ development machine does not test ARM64; native macOS ARM64 already belongs to t
 matrix. Additional Linux ARM64/macOS Intel checks expand compatibility evidence without
 adding shipping targets. Windows ARM64 and other target combinations remain unqualified.
 Manual validation's **extended** option defaults to true; ordinary PRs keep three platforms.
+Reusable validation defaults to ordinary coverage; Release CD explicitly requests extended
+coverage, including the full optimized workspace suite, before building shipping artifacts.
 
 Release CD groups identity/qualification, reusable validation, clean builds, native
 signing/install checks and attestation/publication in order. Read-only validation,

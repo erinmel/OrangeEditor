@@ -41,6 +41,8 @@ jobs:
     name: 2 · validate exact release source
     needs: preflight
     uses: ./.github/workflows/checks.yml
+    with:
+      extended: true
 
   build:
     name: 3 · build / ${{ matrix.target }}

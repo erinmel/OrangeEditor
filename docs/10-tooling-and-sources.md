@@ -13,6 +13,7 @@ measurement crate adds default `allocation-counting` and an uninstrumented execu
 - `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=line-tables-only cargo test --workspace --locked --offline`: PASS, 1,203 passed, 15 ignored, 111 result groups. Ignored qualifications remain unexecuted.
 - `cargo test -p orange-measure --no-default-features --locked --offline`: PASS, 8 tests; the test binary retains the counting allocator so memory regressions are real checks.
 - `cargo test -p orange-measure --release --locked --offline`: PASS, 8 tests, including construction/teardown measurement boundaries.
+- Follow-up optimized lane: `cargo test -p orange-runtime -p orange-measure --release --locked --offline`; `cargo test -p orange-measure --no-default-features --release --locked --offline`; `cargo test --workspace --examples --release --locked --offline`, plus the three release-mode headless examples: PASS. These commands reuse release builds; the full optimized workspace suite is selected for weekly/extended manual/CD validation.
 - `cargo test --workspace --examples --locked --offline`: PASS, 10 tests in 3 examples. `cargo run -p orange-bundled --example` for `headless_control`, `headless_fork`, `headless_authoring` with `--locked --offline`: PASS.
 - `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings`; `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings`; `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features --locked --offline`: PASS.
 - `node --test tools/*.test.mjs`: PASS, 10 tests (7 release contracts, 3 platform-selection/invalid-input checks). `node tools/check-cargo-metadata.mjs --self-test`: PASS, 19 fixtures; ordinary policy check and `node tools/release.mjs check`: PASS, release remains disabled.
@@ -24,8 +25,27 @@ Observed previous CI baseline: run [42100025087](https://github.com/erinmel/Oran
 on dev `bf6ea82e3c2aa3e63d1f20fb6fee8737f38ff54e` took 311 seconds including scheduling;
 Windows's job took 271 seconds, including 233 seconds in the test command and approximately
 170 seconds compiling. The prior PR run 42099102248 took 304 seconds. These are observations,
-not expected savings. Grouping reduces ordinary validation from ten to eight jobs and test
-line-table symbols target compilation cost; exact-head CI must establish the resulting time.
+not expected savings. Grouping reduces ordinary validation from ten to nine jobs, test
+line-table symbols target compilation cost, and optimized behavior runs in parallel;
+exact-head CI must establish the resulting time.
+
+First updated remote evidence at `4932e2769afe6f55cabf842a4b2cb42c005164c6`:
+Windows [job 127527204916](https://github.com/erinmel/OrangeEditor/actions/runs/42107748431/job/127527204916)
+passed in 165 seconds (91 seconds compiling), versus the earlier 271-second job;
+macOS ARM64 passed in 139 seconds versus 185. These are individual hosted observations
+across changed source/cache state, not a controlled before/after experiment. Full release
+integration-test compilation dominates the extended lane, so ordinary PRs run focused
+optimized runtime/measurement/real-graph/example behavior in parallel with native tests;
+full optimized workspace coverage remains in extended weekly/manual/CD validation.
+
+[Execution measurements run 42107748520](https://github.com/erinmel/OrangeEditor/actions/runs/42107748520)
+passed: portable Linux x64, 4-vCPU VM exposing AMD EPYC 7763, ten-second per-workload warmup,
+30 samples, separate timing/allocation binaries. Complete-session p50/p95 observations:
+16-add chain ×1,000 iterations 3.099/3.118 ms; nested 32×32 For-each 0.765/0.771 ms;
+4,000-way Fork ×100 iterations 230.507/231.830 ms. The last session requested 517,020,701
+allocator bytes with 7,696,525 peak incremental live bytes. These are different-sized
+whole sessions, not per-node/per-pump timings, RSS or older-machine qualification. The
+artifact contains all twelve workloads, raw samples and provenance; the method is in 18.
 
 Local MSRV/Linux/macOS/ARM64 execution, full optimized workspace execution, refreshed
 cargo-deny and the scheduled ten-second-warmup measurement workflow are NOT RUN locally;
