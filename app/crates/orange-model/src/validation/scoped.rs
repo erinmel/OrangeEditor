@@ -2201,25 +2201,40 @@ fn compare(
     let mut fresh_added = Fresh::new();
     for id in nodes {
         visits.nodes += 1;
-        visits.ports += resolution
-            .resolved
-            .get(id)
-            .map_or(0, |signature| signature.ports.len());
-        visits.diagnostics += fresh.get(id).map_or(0, Vec::len);
         if added.contains(id) {
             // A new node has nothing to compare with: it must resolve without errors.
             let list = fresh.get(id).cloned().unwrap_or_default();
-            if resolution.incomplete_nodes.contains(id) || has_error(&list) {
+            if resolution.incomplete_nodes.contains(id) {
+                return None;
+            }
+            // The error scan stops at the first error.
+            let error = list.iter().position(|d| d.severity == Severity::Error);
+            visits.diagnostics += error.map_or(list.len(), |at| at + 1);
+            if error.is_some() {
                 return None;
             }
             fresh_added.insert(*id, (resolution.resolved.get(id)?.clone(), list));
             continue;
         }
-        if resolution.resolved.get(id) != report.resolved.get(id)
+        let (new, old) = (resolution.resolved.get(id), report.resolved.get(id));
+        let same = new == old;
+        visits.ports += match (new, old) {
+            (Some(new), Some(_)) if same => new.ports.len(),
+            (Some(new), Some(old)) => compared(&new.ports, &old.ports),
+            _ => 0,
+        };
+        if !same
             || resolution.incomplete_nodes.contains(id) != retained.node_incomplete.contains(id)
-            || fresh.get(id).unwrap_or(&empty)
-                != retained.node_diagnostics.get(id).unwrap_or(&empty)
         {
+            return None;
+        }
+        let (new, old) = (
+            fresh.get(id).unwrap_or(&empty),
+            retained.node_diagnostics.get(id).unwrap_or(&empty),
+        );
+        let same = new == old;
+        visits.diagnostics += if same { new.len() } else { compared(new, old) };
+        if !same {
             return None;
         }
     }
@@ -2227,6 +2242,17 @@ fn compare(
         return None;
     }
     Some(fresh_added)
+}
+
+/// How many items comparing the unequal lists `a` and `b` read: none when the lengths
+/// differ, else the equal prefix and the first difference. Only a failed comparison
+/// recounts, so equal lists are compared once.
+fn compared<T: PartialEq>(a: &[T], b: &[T]) -> usize {
+    if a.len() != b.len() {
+        return 0;
+    }
+    let equal = a.iter().zip(b).take_while(|(a, b)| a == b).count();
+    (equal + 1).min(a.len())
 }
 
 /// Each added node's new signature and node diagnostics.

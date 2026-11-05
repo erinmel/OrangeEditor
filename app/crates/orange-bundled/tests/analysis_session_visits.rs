@@ -11,7 +11,7 @@ use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{Edge, PortRef};
 use orange_model::validation::{
     AnalysisOptions, AnalysisSession, EditStats, PassVisits, RebuildReason, ScopeFallback,
-    SessionWork, VisitCounts, analyze_with_options,
+    SessionWork, analyze_with_options,
 };
 use orange_model::{DocCommand, GraphDocument, LayoutCommand};
 use serde_json::{Value as Json, json};
@@ -192,40 +192,6 @@ fn scoped(
     stats
 }
 
-/// Every pass but those listed visited nothing.
-fn only(visits: &PassVisits, passes: &[&str]) {
-    let all = [
-        ("resolution", visits.resolution),
-        ("inputs", visits.inputs),
-        ("config", visits.config),
-        ("connections", visits.connections),
-        ("order", visits.order),
-        ("availability", visits.availability),
-        ("control_flow", visits.control_flow),
-        ("state", visits.state),
-        ("zones", visits.zones),
-        ("functions", visits.functions),
-    ];
-    for (name, pass) in all {
-        assert_eq!(
-            passes.contains(&name),
-            !pass.is_zero(),
-            "{name}: {visits:#?}"
-        );
-    }
-}
-
-/// A pass's counts as [nodes, edges, ports, diagnostics, bodies].
-fn counts(visits: VisitCounts) -> [usize; 5] {
-    [
-        visits.nodes,
-        visits.edges,
-        visits.ports,
-        visits.diagnostics,
-        visits.bodies,
-    ]
-}
-
 /// Every body, node and edge of `doc`.
 fn whole(doc: &GraphDocument) -> (usize, usize, usize) {
     let mut sizes = (0, 0, 0);
@@ -236,6 +202,51 @@ fn whole(doc: &GraphDocument) -> (usize, usize, usize) {
     }
     sizes
 }
+
+/// Every pass's counts, in [`PassVisits`] field order (resolution, inputs, config,
+/// connections, order, availability, control flow, state, zones, functions), each as
+/// [nodes, edges, ports, diagnostics, bodies]. Tests compare them exactly, so that a
+/// counter that stops counting, or starts counting elsewhere, fails.
+type Matrix = [[usize; 5]; 10];
+
+fn matrix(visits: &PassVisits) -> Matrix {
+    [
+        visits.resolution,
+        visits.inputs,
+        visits.config,
+        visits.connections,
+        visits.order,
+        visits.availability,
+        visits.control_flow,
+        visits.state,
+        visits.zones,
+        visits.functions,
+    ]
+    .map(|pass| {
+        [
+            pass.nodes,
+            pass.edges,
+            pass.ports,
+            pass.diagnostics,
+            pass.bodies,
+        ]
+    })
+}
+
+/// Applies each edit in turn, checks it stays in place, and compares its counts exactly.
+fn expect_counts(
+    session: &mut AnalysisSession,
+    doc: &mut GraphDocument,
+    registry: &RegistrySnapshot,
+    edits: Vec<(Vec<DocCommand>, Matrix)>,
+) {
+    for (commands, expected) in edits {
+        let stats = scoped(session, doc, registry, commands);
+        assert_eq!(matrix(&stats.visits), expected, "{:#?}", stats.visits);
+    }
+}
+
+const NONE: [usize; 5] = [0; 5];
 
 #[test]
 fn a_scoped_literal_edit_visits_its_cone_and_a_fallback_says_why() {
@@ -251,25 +262,29 @@ fn a_scoped_literal_edit_visits_its_cone_and_a_fallback_says_why() {
     assert_eq!(created.visits.resolution.nodes, total);
     assert_eq!(created.visits.resolution.bodies, 1);
 
-    // A literal in the middle of one chain re-checks only around that add.
+    // A literal in the middle of one chain re-checks only around that add. Resolution: the
+    // edit's equation check and its literal ports, the kept-solution search, the node pass
+    // over the add and its two neighbours, and the comparison; inputs: the add's three
+    // ports and its wired `a`.
     let middle = 10 + (CHAINS / 2) * LENGTH + LENGTH / 2;
-    let stats = scoped(
+    let literal_edit = [
+        [10, 8, 14, 0, 1],
+        [1, 1, 3, 0, 1],
+        NONE,
+        NONE,
+        NONE,
+        NONE,
+        NONE,
+        NONE,
+        NONE,
+        NONE,
+    ];
+    expect_counts(
         &mut session,
         &mut doc,
         &registry,
-        vec![set_b(middle, literal(7))],
+        vec![(vec![set_b(middle, literal(7))], literal_edit)],
     );
-    only(&stats.visits, &["resolution", "inputs"]);
-    let visits = stats.visits.total();
-    assert_eq!(visits.bodies, 2, "resolution and inputs, in the root");
-    assert!(visits.nodes <= 2 * LENGTH as usize, "{visits:?}");
-    assert!(visits.edges <= 2 * LENGTH as usize, "{visits:?}");
-    // Exact, so that a counter that stops counting fails here. Resolution: the edit's
-    // equation check and its literal ports, the kept-solution search, the node pass over
-    // the add and its two neighbours, and the comparison; inputs: the add's three ports
-    // and its wired `a`.
-    assert_eq!(counts(stats.visits.resolution), [10, 8, 14, 0, 1]);
-    assert_eq!(counts(stats.visits.inputs), [1, 1, 3, 0, 1]);
 
     // An i64 literal conflicts with the chain's u64 values: the inference result changes,
     // which only the full analysis publishes.
@@ -303,68 +318,48 @@ fn a_data_edge_edit_visits_its_cone() {
     let (mut doc, registry) = chains();
     let mut session = session(&doc, &registry);
     let middle = 10 + (CHAINS / 2) * LENGTH + LENGTH / 2;
-    // Exact counts per pass, [nodes, edges, ports, diagnostics, bodies], for the removal
-    // and then the restoration of one chain edge. Restoring searches the data order once
-    // and runs the added edge's connection check and fan scans; removing walks the
-    // requirement cone behind the edge's producer.
-    let expected = [
-        [
-            [20, 9, 13, 0, 1],
-            [1, 0, 3, 0, 1],
-            [0, 1, 2, 4500, 1],
-            [0, 0, 0, 0, 1],
-            [5, 8, 9, 0, 1],
-            [2, 0, 0, 0, 0],
+    // Removing one chain edge walks the requirement cone behind its producer; restoring it
+    // searches the data order once and runs the added edge's connection check and fan
+    // scans. Each scans the published diagnostics for one on the edge: every wired `a`
+    // shadows its literal with a warning, so there are 4,500, then 4,499. The zone
+    // re-check looks up both endpoints' owners and finds no zone.
+    expect_counts(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![
+            (
+                vec![unwire(middle)],
+                [
+                    [20, 9, 13, 0, 1],
+                    [1, 0, 3, 0, 1],
+                    NONE,
+                    [0, 1, 2, 4500, 1],
+                    [0, 0, 0, 0, 1],
+                    [5, 8, 9, 0, 1],
+                    NONE,
+                    NONE,
+                    [2, 0, 0, 0, 0],
+                    NONE,
+                ],
+            ),
+            (
+                vec![wire(middle, middle - 1, "sum", middle, "a")],
+                [
+                    [20, 17, 13, 0, 1],
+                    [1, 1, 3, 0, 1],
+                    NONE,
+                    [0, 4, 5, 4499, 1],
+                    [0, 1, 0, 0, 1],
+                    [0, 0, 1, 0, 1],
+                    NONE,
+                    NONE,
+                    [2, 0, 0, 0, 0],
+                    NONE,
+                ],
+            ),
         ],
-        [
-            [20, 17, 13, 0, 1],
-            [1, 1, 3, 0, 1],
-            [0, 4, 5, 4499, 1],
-            [0, 1, 0, 0, 1],
-            [0, 0, 1, 0, 1],
-            [2, 0, 0, 0, 0],
-        ],
-    ];
-    for (commands, expected) in [
-        vec![unwire(middle)],
-        vec![wire(middle, middle - 1, "sum", middle, "a")],
-    ]
-    .into_iter()
-    .zip(expected)
-    {
-        let published = session.diagnostics().len();
-        let stats = scoped(&mut session, &mut doc, &registry, commands);
-        // The zone re-check looks up the endpoints' owners and finds no zone.
-        only(
-            &stats.visits,
-            &[
-                "resolution",
-                "inputs",
-                "connections",
-                "order",
-                "availability",
-                "zones",
-            ],
-        );
-        assert_eq!(stats.visits.zones.bodies, 0);
-        // Whether the edge carries a diagnostic is a scan of every published diagnostic:
-        // here each wired `a` shadows its literal with a warning.
-        assert_eq!(stats.visits.connections.diagnostics, published);
-        let visits: VisitCounts = stats.visits.total();
-        assert!(visits.nodes <= 3 * LENGTH as usize, "{visits:?}");
-        assert!(visits.edges <= 4 * LENGTH as usize, "{visits:?}");
-        let v = stats.visits;
-        let actual = [
-            v.resolution,
-            v.inputs,
-            v.connections,
-            v.order,
-            v.availability,
-            v.zones,
-        ]
-        .map(counts);
-        assert_eq!(actual, expected, "{v:#?}");
-    }
+    );
 }
 
 #[test]
@@ -375,11 +370,28 @@ fn an_added_node_is_configured_and_resolved_alone() {
         body: orange_model::BodyRef::Root,
         node: serde_json::from_value(math(90_001, "add", 1, 2)).unwrap(),
     };
-    let stats = scoped(&mut session, &mut doc, &registry, vec![added]);
-    // One configuration check of the new add, in the root.
-    assert_eq!(counts(stats.visits.config), [1, 0, 0, 0, 1]);
-    assert!(stats.visits.resolution.nodes >= 1 && stats.visits.resolution.nodes <= 10);
-    assert!(stats.visits.total().nodes <= 20, "{:?}", stats.visits);
+    // The new add alone is resolved, its inputs and configuration checked once each, and
+    // its zone owner looked up.
+    expect_counts(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![(
+            vec![added],
+            [
+                [7, 0, 5, 0, 1],
+                [1, 0, 3, 0, 1],
+                [1, 0, 0, 0, 1],
+                NONE,
+                NONE,
+                NONE,
+                NONE,
+                NONE,
+                [1, 0, 0, 0, 0],
+                NONE,
+            ],
+        )],
+    );
 }
 
 #[test]
@@ -388,30 +400,47 @@ fn closing_and_opening_a_cycle_visits_the_cycle() {
     let mut session = session(&doc, &registry);
     let first = 10 + (CHAINS / 2) * LENGTH;
     let last = first + LENGTH - 1;
-    // Closing the cycle searches the order between its endpoints, then gathers and
-    // diagnoses the cycle's region: the chain's adds.
-    let stats = scoped(
+    // Closing the cycle searches the order between its endpoints, holds the edge, then
+    // gathers the cycle's region, the chain's ten adds, and searches its port graph for the
+    // cycle. Removing the held edge releases it, so the order is acyclic again without a
+    // search.
+    expect_counts(
         &mut session,
         &mut doc,
         &registry,
-        vec![wire(90_000, last, "sum", first, "a")],
+        vec![
+            (
+                vec![wire(90_000, last, "sum", first, "a")],
+                [
+                    [20, 17, 13, 0, 1],
+                    [1, 1, 3, 0, 1],
+                    NONE,
+                    [0, 4, 5, 4500, 1],
+                    [118, 247, 68, 0, 2],
+                    [10, 20, 21, 0, 1],
+                    NONE,
+                    NONE,
+                    [2, 0, 0, 0, 0],
+                    NONE,
+                ],
+            ),
+            (
+                vec![unwire(90_000)],
+                [
+                    [20, 9, 13, 0, 1],
+                    [1, 0, 3, 0, 1],
+                    NONE,
+                    [0, 1, 2, 4502, 1],
+                    [0, 0, 0, 0, 2],
+                    [0, 0, 1, 0, 1],
+                    NONE,
+                    NONE,
+                    [2, 0, 0, 0, 0],
+                    NONE,
+                ],
+            ),
+        ],
     );
-    // The data-cycle search runs over the region's port vertices, a few per add.
-    let visits = stats.visits.total();
-    assert!(visits.nodes <= 20 * LENGTH as usize, "{visits:?}");
-    assert!(visits.edges <= 40 * LENGTH as usize, "{visits:?}");
-    // The order search and the cycle region each reach every add of the chain.
-    assert!(
-        stats.visits.order.nodes >= 2 * LENGTH as usize,
-        "{:?}",
-        stats.visits
-    );
-    assert!(stats.visits.order.edges >= 2 * LENGTH as usize);
-    // Removing the held edge releases it: the order is acyclic again without a search.
-    let stats = scoped(&mut session, &mut doc, &registry, vec![unwire(90_000)]);
-    let visits = stats.visits.total();
-    assert!(visits.nodes <= 3 * LENGTH as usize, "{visits:?}");
-    assert_eq!(stats.visits.order.nodes, 0);
 }
 
 #[test]
@@ -419,50 +448,94 @@ fn an_exec_edge_edit_visits_its_activation_and_the_state_pass_reruns_in_full() {
     let (mut doc, registry) = activations();
     let mut session = session(&doc, &registry);
     let (nodes, _, bodies) = whole(&doc);
-    // The control-flow passes, exactly: the exec walk, the region and control-cycle passes
-    // over the activation and the merge with the region index.
-    let expected = [[35, 18, 12, 0, 3], [45, 33, 20, 1, 3]];
-    for (commands, expected) in [vec![unwire(5)], vec![wire(5, 5, "then", 6, "in")]]
-        .into_iter()
-        .zip(expected)
-    {
-        let stats = scoped(&mut session, &mut doc, &registry, commands);
-        // The state pass iterates the two activation regions, every body, and each body's
-        // nodes twice: once for registers and once for the forks and parallel entries.
-        let state = stats.visits.state;
-        assert_eq!(counts(state), [2 * nodes + 2, 0, 0, 0, bodies]);
-        assert_eq!(counts(stats.visits.control_flow), expected);
-        // Everything else stays within the activation and the region index.
-        let mut rest = stats.visits;
-        rest.state = VisitCounts::ZERO;
-        let rest = rest.total();
-        assert!(rest.nodes <= 70, "{rest:?}");
-        assert!(rest.edges <= 60, "{rest:?}");
-    }
+    // The state pass iterates the two activation regions, every body, and each body's
+    // nodes twice: once for registers and once for the forks and parallel entries.
+    let state = [2 * nodes + 2, 0, 0, 0, bodies];
+    // The control-flow passes run over the activation: the exec walk, the region and
+    // control-cycle passes and the merge with the region index.
+    expect_counts(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![
+            (
+                vec![unwire(5)],
+                [
+                    [8, 0, 4, 0, 1],
+                    [1, 1, 1, 0, 1],
+                    NONE,
+                    [0, 1, 2, 0, 1],
+                    NONE,
+                    [2, 3, 5, 0, 0],
+                    [35, 19, 12, 0, 3],
+                    state,
+                    [2, 0, 0, 0, 0],
+                    NONE,
+                ],
+            ),
+            (
+                vec![wire(5, 5, "then", 6, "in")],
+                [
+                    [8, 0, 4, 0, 1],
+                    [1, 1, 1, 0, 1],
+                    NONE,
+                    [0, 3, 5, 1, 1],
+                    NONE,
+                    [3, 7, 10, 0, 0],
+                    [45, 34, 20, 1, 3],
+                    state,
+                    [2, 0, 0, 0, 0],
+                    NONE,
+                ],
+            ),
+        ],
+    );
 }
 
 #[test]
 fn a_function_body_edit_visits_that_body_and_the_call_sites() {
     let (mut doc, registry) = called_function();
     let mut session = session(&doc, &registry);
-    for commands in [vec![unwire(204)], vec![wire(204, 203, "value", 204, "a")]] {
-        let stats = scoped(&mut session, &mut doc, &registry, commands);
-        // The function check reruns the body passes over its five nodes and edges: node
-        // resolution's preflight and projection, data cycles, the region pass's three
-        // loops, inputs and the summary each iterate the nodes, and the connection pass
-        // twice, data cycles, regions and control cycles the edges. Looking for its call
-        // sites scans the root only up to the call, not its 2,000 padding adds.
-        let functions = stats.visits.functions;
-        assert!(functions.nodes >= 8 * 5, "{functions:?}");
-        assert!(functions.edges >= 5 * 5, "{functions:?}");
-        assert!(functions.bodies >= 3, "{functions:?}");
-        assert!(functions.nodes <= 200, "{functions:?}");
-        let mut rest = stats.visits;
-        rest.functions = VisitCounts::ZERO;
-        let rest = rest.total();
-        assert!(rest.nodes <= 40, "{rest:?}");
-        assert!(rest.edges <= 40, "{rest:?}");
-    }
+    // The function check reruns the body passes over the function's five nodes and edges,
+    // its call graph and its summary; looking for its call sites scans the root only up to
+    // the call, not its 2,000 padding adds.
+    expect_counts(
+        &mut session,
+        &mut doc,
+        &registry,
+        vec![
+            (
+                vec![unwire(204)],
+                [
+                    [14, 4, 12, 0, 1],
+                    [1, 0, 3, 0, 1],
+                    NONE,
+                    [0, 1, 2, 1, 1],
+                    [10, 6, 4, 0, 2],
+                    [0, 0, 1, 0, 1],
+                    NONE,
+                    NONE,
+                    [2, 0, 0, 0, 0],
+                    [94, 68, 50, 0, 8],
+                ],
+            ),
+            (
+                vec![wire(204, 203, "value", 204, "a")],
+                [
+                    [14, 9, 12, 0, 1],
+                    [1, 1, 3, 0, 1],
+                    NONE,
+                    [0, 4, 5, 0, 1],
+                    [3, 6, 1, 0, 1],
+                    [0, 0, 1, 0, 1],
+                    NONE,
+                    NONE,
+                    [2, 0, 0, 0, 0],
+                    [94, 83, 58, 0, 8],
+                ],
+            ),
+        ],
+    );
 }
 
 #[test]

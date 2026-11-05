@@ -347,7 +347,9 @@ fn check_body(
         let root = walks[index].root.clone();
         let mut visited = BTreeSet::new();
         let mut stack = Vec::new();
+        // The root node's exec edges, scanned for those leaving the root's port.
         for edge in out.get(&root.node).into_iter().flatten() {
+            tally.add(|visits| visits.edges += 1);
             if edge.from_port == root.port {
                 incoming
                     .entry(edge.to)
