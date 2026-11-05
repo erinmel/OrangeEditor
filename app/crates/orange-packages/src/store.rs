@@ -1,7 +1,7 @@
 //! The package store: install, update, remove, revoke and roll back as registry transactions
 //! over immutable [`RegistrySnapshot`] generations (04, ADR-07, 12 §8).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::sync::Arc;
 
@@ -193,6 +193,10 @@ pub enum TransactionError {
     /// No earlier generation is available to restore.
     #[error("no earlier registry generation to roll back to")]
     NothingToRollBack,
+    /// Earlier generations were retired by the [`RetentionPolicy`]; rollback reaches only the
+    /// retained window.
+    #[error("the earlier registry generation was retired by the history retention policy")]
+    RollbackWindowExceeded,
     /// Restored contents do not match the recovered committed set: a version is missing,
     /// not committed active, or has another digest.
     #[error("restored package `{0}` does not match the last committed generation")]
@@ -237,12 +241,40 @@ impl TransactionError {
             Self::UnsupportedSlot { .. } => "packages/transaction-unsupported-slot",
             Self::DependedOn { .. } => "packages/transaction-depended-on",
             Self::NothingToRollBack => "packages/transaction-nothing-to-roll-back",
+            Self::RollbackWindowExceeded => "packages/transaction-rollback-window-exceeded",
             Self::RecoveryMismatch(_) => "packages/transaction-recovery-mismatch",
             Self::RecoveryDefaultUnavailable { .. } => {
                 "packages/transaction-recovery-default-unavailable"
             }
             Self::Registry(_) => "packages/transaction-registry",
             Self::Journal(_) => "packages/transaction-journal",
+        }
+    }
+}
+
+/// How much rollback history a [`PackageStore`] keeps in memory.
+///
+/// Each retained generation owns a registry snapshot and the package-record directory, so the
+/// bound caps that cost. Retirement only releases the store's reference: a snapshot a plan or
+/// reader still holds stays alive and usable until they release it. Published digests and
+/// revocations are identity state, not rollback state, and are never retired.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RetentionPolicy {
+    /// How many earlier generations [`PackageStore::rollback`] can still reach, beyond the
+    /// current one. `0` disables rollback.
+    pub max_rollback_generations: usize,
+}
+
+impl RetentionPolicy {
+    /// The default window: enough for an operator to undo a short run of recent changes.
+    /// This is a starting point, not a measured optimum.
+    pub const DEFAULT_ROLLBACK_GENERATIONS: usize = 16;
+}
+
+impl Default for RetentionPolicy {
+    fn default() -> Self {
+        Self {
+            max_rollback_generations: Self::DEFAULT_ROLLBACK_GENERATIONS,
         }
     }
 }
@@ -275,7 +307,11 @@ pub struct PackageStore<J = MemoryJournal> {
     host_api: HostApiVersion,
     current: Committed,
     /// Earlier committed states, oldest first; [`rollback`](Self::rollback) restores the last.
-    history: Vec<Committed>,
+    /// At most [`RetentionPolicy::max_rollback_generations`] long.
+    history: VecDeque<Committed>,
+    retention: RetentionPolicy,
+    /// Whether retention dropped a generation that rollback could otherwise have reached.
+    retired: bool,
     /// The last failed attempt per version; never kept for a version that is active.
     quarantined: BTreeMap<PackageKey, TransactionError>,
     /// The content digest of every version ever published. Rollback never removes an entry:
@@ -344,7 +380,9 @@ impl<J: Journal> PackageStore<J> {
                 snapshot: base,
                 packages: BTreeMap::new(),
             },
-            history: Vec::new(),
+            history: VecDeque::new(),
+            retention: RetentionPolicy::default(),
+            retired: false,
             quarantined: BTreeMap::new(),
             published: BTreeMap::new(),
             revoked: BTreeSet::new(),
@@ -420,7 +458,9 @@ impl<J: Journal> PackageStore<J> {
         let mut store = Self {
             host_api,
             current,
-            history: Vec::new(),
+            history: VecDeque::new(),
+            retention: RetentionPolicy::default(),
+            retired: false,
             quarantined: BTreeMap::new(),
             published: staging.published,
             revoked: staging.revoked,
@@ -467,6 +507,59 @@ impl<J: Journal> PackageStore<J> {
         !self.history.is_empty()
     }
 
+    /// The rollback-history policy in force.
+    pub fn retention(&self) -> RetentionPolicy {
+        self.retention
+    }
+
+    /// Sets the rollback-history policy and drops generations beyond its bound now. Dropped
+    /// generations are released by the store only: a snapshot, plan or reader that still
+    /// holds one keeps it alive and usable.
+    pub fn set_retention(&mut self, policy: RetentionPolicy) {
+        self.retention = policy;
+        self.trim_history();
+    }
+
+    /// [`set_retention`](Self::set_retention) for construction chains.
+    pub fn with_retention(mut self, policy: RetentionPolicy) -> Self {
+        self.set_retention(policy);
+        self
+    }
+
+    /// Replaces the journal's earlier entries with one checkpoint of the current state
+    /// through [`Journal::compact`]: the active set, every published digest, every
+    /// revocation and the exact defaults. A restart after compaction recovers the same
+    /// committed state, published identities and revocations as before. Rollback history is
+    /// in memory and unaffected. Per-step transitions are dropped, so a half-staged version
+    /// that was not committed is no longer reported as abandoned; compact when no
+    /// transaction is in flight. A journal whose `compact` fails keeps its entries.
+    pub fn compact_journal(&mut self) -> Result<(), JournalError> {
+        let entry = self.checkpoint(&self.current, &self.published, &self.revoked);
+        self.journal.compact(entry)
+    }
+
+    fn trim_history(&mut self) {
+        while self.history.len() > self.retention.max_rollback_generations {
+            self.history.pop_front();
+            self.retired = true;
+        }
+    }
+
+    fn checkpoint(
+        &self,
+        next: &Committed,
+        published: &BTreeMap<PackageKey, String>,
+        revoked: &BTreeSet<String>,
+    ) -> JournalEntry {
+        JournalEntry::Committed {
+            generation: next.snapshot.generation(),
+            active: next.active(),
+            published: published.clone(),
+            revoked: revoked.clone(),
+            defaults: Some(self.defaults_of(next)),
+        }
+    }
+
     /// The journal.
     pub fn journal(&self) -> &J {
         &self.journal
@@ -504,12 +597,19 @@ impl<J: Journal> PackageStore<J> {
     }
 
     /// Selects `provider` for new bindings of `definition` (12 §8). Existing document locks
-    /// are never changed.
+    /// are never changed. The choice is recorded in the recovery checkpoint. Selecting what
+    /// is already the default for a registered provider publishes nothing: no generation is
+    /// created and the current snapshot is returned.
     pub fn select_default(
         &mut self,
         definition: DefinitionRef,
         provider: ProviderKey,
     ) -> Result<Arc<RegistrySnapshot>, TransactionError> {
+        if self.current.snapshot.new_binding_default(&definition) == Some(&provider)
+            && self.current.snapshot.provider(&provider).is_some()
+        {
+            return Ok(Arc::clone(&self.current.snapshot));
+        }
         let snapshot = RegistryBuilder::from_snapshot(&self.current.snapshot)
             .new_binding_default(definition.clone(), provider)
             .build()?;
@@ -572,6 +672,7 @@ impl<J: Journal> PackageStore<J> {
             .collect();
         let snapshot = self.retire(&targets, PackageState::Revoked, Some(&digest))?;
         self.history.clear();
+        self.retired = false;
         Ok(snapshot)
     }
 
@@ -582,10 +683,13 @@ impl<J: Journal> PackageStore<J> {
     /// with its digest, and a quarantine entry is dropped for any version made active again.
     /// Already committed external effects are not undone.
     pub fn rollback(&mut self) -> Result<Arc<RegistrySnapshot>, TransactionError> {
-        let mut previous = self
-            .history
-            .pop()
-            .ok_or(TransactionError::NothingToRollBack)?;
+        let Some(mut previous) = self.history.pop_back() else {
+            return Err(if self.retired {
+                TransactionError::RollbackWindowExceeded
+            } else {
+                TransactionError::NothingToRollBack
+            });
+        };
         let generation = previous.snapshot.generation();
         let mut retired = Vec::new();
         let mut kept = Vec::new();
@@ -626,7 +730,7 @@ impl<J: Journal> PackageStore<J> {
             .and_then(|()| self.journal_commit(&previous, None));
         if let Err(error) = journaled {
             previous.packages.retain(|key, _| !kept.contains(key));
-            self.history.push(previous);
+            self.history.push_back(previous);
             return Err(error.into());
         }
         self.current = previous;
@@ -701,13 +805,8 @@ impl<J: Journal> PackageStore<J> {
         }
         let mut revoked = self.revoked.clone();
         revoked.extend(revoke.map(str::to_owned));
-        self.journal.append(JournalEntry::Committed {
-            generation: next.snapshot.generation(),
-            active: next.active(),
-            published: published.clone(),
-            revoked: revoked.clone(),
-            defaults: Some(self.defaults_of(next)),
-        })?;
+        let entry = self.checkpoint(next, &published, &revoked);
+        self.journal.append(entry)?;
         self.published = published;
         self.revoked = revoked;
         Ok(())
@@ -723,7 +822,8 @@ impl<J: Journal> PackageStore<J> {
         let next = Committed { snapshot, packages };
         self.journal_commit(&next, revoke)?;
         let previous = std::mem::replace(&mut self.current, next);
-        self.history.push(previous);
+        self.history.push_back(previous);
+        self.trim_history();
         Ok(Arc::clone(&self.current.snapshot))
     }
 

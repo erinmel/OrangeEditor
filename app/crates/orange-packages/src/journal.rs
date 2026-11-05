@@ -67,6 +67,17 @@ pub trait Journal {
     /// Appends `entry`. An error means the entry is not durable and the store abandons the
     /// step that needed it.
     fn append(&mut self, entry: JournalEntry) -> Result<(), JournalError>;
+
+    /// Replaces every earlier entry with `checkpoint`, a complete
+    /// [`JournalEntry::Committed`] of the store's current state, so a durable journal stays
+    /// bounded. Must be atomic: after an error, or a crash, the journal holds either all its
+    /// earlier entries or exactly `checkpoint`, and both recover the same committed set,
+    /// published digests and revocations. The default does nothing, which suits journals
+    /// that never compact.
+    fn compact(&mut self, checkpoint: JournalEntry) -> Result<(), JournalError> {
+        let _ = checkpoint;
+        Ok(())
+    }
 }
 
 /// An in-memory journal for tests and hosts without persistence. It never fails.
@@ -90,6 +101,11 @@ impl MemoryJournal {
 impl Journal for MemoryJournal {
     fn append(&mut self, entry: JournalEntry) -> Result<(), JournalError> {
         self.entries.push(entry);
+        Ok(())
+    }
+
+    fn compact(&mut self, checkpoint: JournalEntry) -> Result<(), JournalError> {
+        self.entries = vec![checkpoint];
         Ok(())
     }
 }
