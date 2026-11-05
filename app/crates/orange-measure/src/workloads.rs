@@ -1759,6 +1759,7 @@ mod tests {
         let config = crate::harness::Config {
             budget: 64,
             warmup: 0,
+            warmup_seconds: 0,
             runs: 1,
         };
         let row = super::fork_fanout_256(config);

@@ -1,5 +1,39 @@
 # Tooling, environment and research register
 
+## CI/CD grouping, native compatibility and execution evidence — 2026-11-05
+
+Work: CI/CD update in PR [126](https://github.com/erinmel/OrangeEditor/pull/126), continuing
+`fix/engineering-review-2026-11-05` from `423b5cc9ef92a6e5525b971bf83e84ab7fc9515b`.
+Selected local Rust/Cargo 1.99.1, Windows x86_64 MSVC; Node 24.18.0. Workspace MSRV remains
+1.97.1. Cargo.lock SHA-256 remains
+`8bb91caaff5a7106e5752d49d9ab285d4566a1b69b55ad1ca81e10e1d70bb068`.
+Production dependencies/features and public core interfaces are unchanged; the development
+measurement crate adds default `allocation-counting` and an uninstrumented execution mode.
+
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=line-tables-only cargo test --workspace --locked --offline`: PASS, 1,203 passed, 15 ignored, 111 result groups. Ignored qualifications remain unexecuted.
+- `cargo test -p orange-measure --no-default-features --locked --offline`: PASS, 8 tests; the test binary retains the counting allocator so memory regressions are real checks.
+- `cargo test -p orange-measure --release --locked --offline`: PASS, 8 tests, including construction/teardown measurement boundaries.
+- `cargo test --workspace --examples --locked --offline`: PASS, 10 tests in 3 examples. `cargo run -p orange-bundled --example` for `headless_control`, `headless_fork`, `headless_authoring` with `--locked --offline`: PASS.
+- `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings`; `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings`; `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features --locked --offline`: PASS.
+- `node --test tools/*.test.mjs`: PASS, 10 tests (7 release contracts, 3 platform-selection/invalid-input checks). `node tools/check-cargo-metadata.mjs --self-test`: PASS, 19 fixtures; ordinary policy check and `node tools/release.mjs check`: PASS, release remains disabled.
+- Official checksum-verified Windows actionlint 1.7.12, `-shellcheck= -pyflakes=` on all three workflows: PASS for syntax/expressions. Shellcheck is unavailable locally and remains enabled in Linux CI. Official checksum-verified zizmor 1.30.1, `--offline --format plain .github/workflows`: PASS, no unsuppressed findings. Existing self-repository suppression remains.
+- Both locked release builds of `orange-measure`, default and `--no-default-features`, then `--execution --warmup 1 --runs 2`: PASS across all 12 workloads; JSON parses, raw sample lengths and pump counts agree, timing allocation fields are null, memory counters are populated. Invalid filters and uninstrumented memory profiles fail. These are functional smoke checks, not performance qualification.
+- `git diff --check`: PASS. The unrelated untracked foundation review remains unchanged.
+
+Observed previous CI baseline: run [42100025087](https://github.com/erinmel/OrangeEditor/actions/runs/42100025087)
+on dev `bf6ea82e3c2aa3e63d1f20fb6fee8737f38ff54e` took 311 seconds including scheduling;
+Windows's job took 271 seconds, including 233 seconds in the test command and approximately
+170 seconds compiling. The prior PR run 42099102248 took 304 seconds. These are observations,
+not expected savings. Grouping reduces ordinary validation from ten to eight jobs and test
+line-table symbols target compilation cost; exact-head CI must establish the resulting time.
+
+Local MSRV/Linux/macOS/ARM64 execution, full optimized workspace execution, refreshed
+cargo-deny and the scheduled ten-second-warmup measurement workflow are NOT RUN locally;
+remote exact-head checks supply that evidence. Extended manual validation is the intended
+pre-merge exercise for the additional native architecture labels. No signing, older-machine,
+W1/W2, NFR-01/NFR-05 or universal sub-1 ms gate is passed. Commands, retention, measurement
+boundaries and the fixed older-machine procedure are in [18](18-ci-and-performance.md).
+
 Current implementation checkpoint (2026-10-23): supported control documents run six covered categories (body domains, node resolution, input values, connections, function summaries and data cycles); nine required categories remain missing. Unsupported domains stop combined control analysis after the domain prerequisite, so that invocation records one covered category and fourteen unexecuted checks. Compiler readiness remains false. Earlier coverage counts below are historical results at their recorded commits; the latest verification entries supersede their status statements.
 
 ## Foundation review reassessment (2026-10-23)

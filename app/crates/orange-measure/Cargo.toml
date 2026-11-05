@@ -6,8 +6,12 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
-# A binary, so the harness never runs under `cargo test --workspace`:
-# cargo run --release -p orange-measure --locked
+# Unit regressions run under workspace tests; heavy profiles require an explicit run.
+[features]
+default = ["allocation-counting"]
+# Disable for whole-run latency measurements so allocations use the platform allocator.
+allocation-counting = []
+
 [dependencies]
 orange-bundled = { path = "../orange-bundled", version = "=0.0.0" }
 orange-compiler = { path = "../orange-compiler", version = "=0.0.0" }

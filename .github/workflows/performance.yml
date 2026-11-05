@@ -1,0 +1,89 @@
+name: Execution measurements
+
+# Collect evidence when the harness changes; normal graph PRs keep the fast required lane.
+# Hosted timings are observations, never an absolute latency gate.
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/performance.yml'
+      - 'app/crates/orange-measure/**'
+  workflow_dispatch:
+  schedule:
+    - cron: '30 8 * * 1'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: performance-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  RUST_BACKTRACE: 1
+  # Portable x64 code, including on the development X3D machine; no native CPU tuning.
+  RUSTFLAGS: -C target-cpu=x86-64
+
+jobs:
+  execution:
+    name: evidence / complete execution · Linux x64
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Record source, machine, compiler and lockfile
+        shell: bash
+        run: |
+          mkdir -p measurements
+          git rev-parse HEAD > measurements/commit.txt
+          sha256sum Cargo.lock > measurements/lockfile.sha256
+          rustc -vV > measurements/rustc.txt
+          cargo -V > measurements/cargo.txt
+          lscpu > measurements/cpu.txt
+          free -b > measurements/memory.txt
+          uname -a > measurements/os.txt
+          printf 'RUSTFLAGS=%s\nCARGO_INCREMENTAL=%s\n' "$RUSTFLAGS" "$CARGO_INCREMENTAL" > measurements/build-env.txt
+          test "$(rustc -vV | sed -n 's/^host: //p')" = x86_64-unknown-linux-gnu
+      - name: Cache release dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: execution-measurements
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      - name: Build and measure complete execution without allocator instrumentation
+        shell: bash
+        run: |
+          cargo build --release -p orange-measure --no-default-features --locked
+          sha256sum target/release/orange-measure > measurements/timing-binary.sha256
+          target/release/orange-measure --execution --warmup-seconds 10 --runs 30 > measurements/timing.json
+      - name: Build and measure allocations separately
+        shell: bash
+        run: |
+          cargo build --release -p orange-measure --locked
+          sha256sum target/release/orange-measure > measurements/allocation-binary.sha256
+          target/release/orange-measure --execution --warmup-seconds 10 --runs 30 > measurements/allocations.json
+      - name: Publish timing and allocation tables
+        shell: bash
+        run: |
+          {
+            echo '## Complete execution evidence · Linux x64'
+            echo 'Start, all pumps, stop/dispose/drop are measured; document/plan construction is excluded. Timers advance virtually.'
+            echo 'Timing uses the platform allocator; allocation counters run in a separate binary. Hosted-runner results do not qualify a 1 ms target.'
+            echo '| Workload | Total p50 ms | Total p95 ms | Total p99 ms | Max ms |'
+            echo '|---|---:|---:|---:|---:|'
+            jq -r '.workloads[] | "| \(.workload) | \(.total_ms.p50) | \(.total_ms.p95) | \(.total_ms.p99) | \(.total_ms.max) |"' measurements/timing.json
+            echo '| Workload | Allocations/run | Requested bytes/run | Peak incremental live heap bytes |'
+            echo '|---|---:|---:|---:|'
+            jq -r '.workloads[] | "| \(.workload) | \(.allocation_counts.allocations) | \(.allocation_counts.allocated_bytes) | \(.allocation_counts.peak_live_bytes) |"' measurements/allocations.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: Retain raw samples and provenance
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: execution-measurements-linux-x64
+          path: measurements/
+          if-no-files-found: error
+          retention-days: 30
