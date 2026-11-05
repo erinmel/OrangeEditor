@@ -1751,3 +1751,10 @@ fn a_panicking_provider_faults_the_run_until_it_is_stopped() {
     assert_eq!(run.ownership().strands, 0);
     run.dispose().unwrap();
 }
+
+#[path = "support/run_budget.rs"]
+mod run_budget;
+
+#[path = "support/budget_drive.rs"]
+#[allow(dead_code)]
+mod budget_drive;
