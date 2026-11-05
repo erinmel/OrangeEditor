@@ -120,3 +120,44 @@ impl Tally {
         fits
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn refusal_changes_nothing_and_drop_returns_capacity() {
+        let budget = Budget::new(10);
+        let mut a = Tally::new(Some(budget.clone()), 0);
+        let mut b = Tally::new(Some(budget.clone()), 0);
+        assert!(a.try_set(6));
+        assert!(!b.try_set(5));
+        assert_eq!((b.get(), budget.used()), (0, 6));
+        // Replacing credits what the counter already holds.
+        assert!(a.try_set(10));
+        assert!(a.try_set(4));
+        assert!(b.try_set(6));
+        assert_eq!(budget.used(), 10);
+        drop(a);
+        assert_eq!(budget.used(), 6);
+        drop(b);
+        assert_eq!((budget.used(), budget.headroom()), (0, 10));
+    }
+
+    #[test]
+    fn the_shared_base_is_not_charged() {
+        let budget = Budget::new(4);
+        let mut tally = Tally::new(Some(budget.clone()), 100);
+        assert_eq!((tally.get(), budget.used()), (100, 0));
+        assert!(tally.try_set(104));
+        assert!(!tally.try_set(105));
+        assert_eq!((tally.get(), budget.used()), (104, 4));
+    }
+
+    #[test]
+    fn without_a_budget_every_request_is_admitted() {
+        let mut tally = Tally::new(None, 0);
+        assert!(tally.try_set(usize::MAX));
+        assert_eq!(tally.headroom(), usize::MAX);
+    }
+}
