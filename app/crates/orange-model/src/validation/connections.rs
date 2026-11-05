@@ -46,7 +46,15 @@ pub fn validate_connections(
     let index = DocIndex::build(document);
     let ports = PortResolver::new(document, resolved);
 
-    validate_connections_in(document, &ports, registry, Scope::All, &index, None)
+    validate_connections_in(
+        document,
+        &ports,
+        registry,
+        Scope::All,
+        &index,
+        None,
+        &mut super::visits::VisitCounts::default(),
+    )
 }
 
 /// [`validate_connections`] over the bodies in `scope`, with a current `index` of `document`.
@@ -57,6 +65,7 @@ pub(crate) fn validate_connections_in(
     scope: Scope,
     index: &DocIndex,
     mut cache: Option<&mut EdgeCache>,
+    visits: &mut super::visits::VisitCounts,
 ) -> ConnectionValidation {
     let origin = registry.origin();
     let mut report = ConnectionValidation::default();
@@ -64,7 +73,10 @@ pub(crate) fn validate_connections_in(
     let mut edges: Vec<_> = scope
         .bodies(document)
         .into_iter()
-        .flat_map(|(body_ref, body)| body.edges.values().map(move |edge| (body_ref, edge)))
+        .flat_map(|(body_ref, body)| {
+            visits.bodies += 1;
+            body.edges.values().map(move |edge| (body_ref, edge))
+        })
         .collect();
     edges.sort_by_key(|(_, edge)| edge.id);
 
@@ -72,6 +84,7 @@ pub(crate) fn validate_connections_in(
     let mut incoming: BTreeMap<(NodeId, crate::id::PortKey), Vec<EdgeId>> = BTreeMap::new();
     let mut outgoing: BTreeMap<(NodeId, crate::id::PortKey), Vec<EdgeId>> = BTreeMap::new();
     for (_, edge) in &edges {
+        visits.edges += 1;
         incoming
             .entry((edge.to.node, edge.to.port.clone()))
             .or_default()
@@ -84,6 +97,7 @@ pub(crate) fn validate_connections_in(
 
     let mut scoped_out = BTreeSet::new();
     for (stored_body, edge) in &edges {
+        visits.edges += 1;
         let from_body = index.body_of(edge.from.node);
         let to_body = index.body_of(edge.to.node);
         if matches!((from_body, to_body), (Some(from), Some(to)) if from != to)
@@ -99,6 +113,8 @@ pub(crate) fn validate_connections_in(
             continue;
         }
 
+        // The check reads both endpoint ports.
+        visits.ports += 2;
         if let Some(cache) = cache.as_deref_mut() {
             cache.edge(
                 document,
@@ -122,9 +138,13 @@ pub(crate) fn validate_connections_in(
 
     for ((node, port), edge_ids) in incoming {
         let port_ref = PortRef { node, port };
+        visits.ports += 1;
         let edge_ids: Vec<_> = edge_ids
             .into_iter()
-            .filter(|edge| !scoped_out.contains(edge))
+            .filter(|edge| {
+                visits.edges += 1;
+                !scoped_out.contains(edge)
+            })
             .collect();
         if edge_ids.len() <= 1 {
             continue;
@@ -147,9 +167,13 @@ pub(crate) fn validate_connections_in(
 
     for ((node, port), edge_ids) in outgoing {
         let port_ref = PortRef { node, port };
+        visits.ports += 1;
         let edge_ids: Vec<_> = edge_ids
             .into_iter()
-            .filter(|edge| !scoped_out.contains(edge))
+            .filter(|edge| {
+                visits.edges += 1;
+                !scoped_out.contains(edge)
+            })
             .collect();
         if edge_ids.len() <= 1 {
             continue;
@@ -198,7 +222,12 @@ pub(crate) fn added_edge_is_clean(
     index: &DocIndex,
     edge: &Edge,
     origin: &HostOrigin,
+    visits: &mut super::visits::VisitCounts,
 ) -> bool {
+    // The edge check reads the edge and both endpoint ports; the fan scans below read at
+    // most two edges each, and the source port once more.
+    visits.edges += 1;
+    visits.ports += 3;
     let mut report = ConnectionValidation::default();
     let mut diagnostics = Vec::new();
     check_edge(
@@ -215,14 +244,18 @@ pub(crate) fn added_edge_is_clean(
     let Ok(from) = resolved.port(&edge.from) else {
         return false;
     };
+    // Whether a port has more than one edge, reading at most two.
+    let mut fan = |edges: &mut dyn Iterator<Item = EdgeId>| {
+        edges.take(2).inspect(|_| visits.edges += 1).count() > 1
+    };
     if from.kind != PortKind::Data {
         // An exec or event output takes one connection; exec inputs take any number.
-        return index.outgoing(&edge.from).nth(1).is_none();
+        return !fan(&mut index.outgoing(&edge.from));
     }
-    if index.incoming(&edge.to).nth(1).is_some() {
+    if fan(&mut index.incoming(&edge.to)) {
         return false;
     }
-    if index.outgoing(&edge.from).nth(1).is_some() {
+    if fan(&mut index.outgoing(&edge.from)) {
         return stream_status(&from, rigid_params(document, edge.from.node)) == Some(false);
     }
     true

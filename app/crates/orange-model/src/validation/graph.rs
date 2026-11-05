@@ -4,6 +4,15 @@ use std::collections::{BTreeMap, BTreeSet};
 pub(super) fn strongly_connected_components<T: Ord + Clone>(
     graph: &BTreeMap<T, BTreeSet<T>>,
 ) -> Vec<BTreeSet<T>> {
+    strongly_connected_components_counted(graph, &mut super::visits::VisitCounts::default())
+}
+
+/// [`strongly_connected_components`], adding to `visits` each vertex the two searches
+/// visit and each edge they follow, and each edge the reversal reads.
+pub(super) fn strongly_connected_components_counted<T: Ord + Clone>(
+    graph: &BTreeMap<T, BTreeSet<T>>,
+    visits: &mut super::visits::VisitCounts,
+) -> Vec<BTreeSet<T>> {
     let mut visited = BTreeSet::new();
     let mut finish = Vec::with_capacity(graph.len());
     for start in graph.keys() {
@@ -11,6 +20,7 @@ pub(super) fn strongly_connected_components<T: Ord + Clone>(
             continue;
         }
         visited.insert(start.clone());
+        visits.nodes += 1;
         let neighbors: Vec<_> = graph
             .get(start)
             .into_iter()
@@ -25,7 +35,9 @@ pub(super) fn strongly_connected_components<T: Ord + Clone>(
             }
             let next = neighbors[*cursor].clone();
             *cursor += 1;
+            visits.edges += 1;
             if visited.insert(next.clone()) {
+                visits.nodes += 1;
                 let next_neighbors: Vec<_> = graph
                     .get(&next)
                     .into_iter()
@@ -40,6 +52,7 @@ pub(super) fn strongly_connected_components<T: Ord + Clone>(
     for (from, neighbors) in graph {
         reverse.entry(from.clone()).or_default();
         for to in neighbors {
+            visits.edges += 1;
             reverse.entry(to.clone()).or_default().insert(from.clone());
         }
     }
@@ -53,9 +66,11 @@ pub(super) fn strongly_connected_components<T: Ord + Clone>(
         let mut component = BTreeSet::new();
         let mut stack = vec![start];
         while let Some(vertex) = stack.pop() {
+            visits.nodes += 1;
             component.insert(vertex.clone());
             if let Some(neighbors) = reverse.get(&vertex) {
                 for neighbor in neighbors.iter().rev() {
+                    visits.edges += 1;
                     if visited.insert(neighbor.clone()) {
                         stack.push(neighbor.clone());
                     }
@@ -70,7 +85,20 @@ pub(super) fn strongly_connected_components<T: Ord + Clone>(
 /// [`strongly_connected_components`] over dense vertices `0..adjacency.len()` whose neighbour
 /// lists ascend: the same components in the same order, each ascending, without cloning or
 /// ordered-set lookups per vertex.
+#[cfg(test)]
 pub(super) fn dense_strongly_connected_components(adjacency: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    dense_strongly_connected_components_counted(
+        adjacency,
+        &mut super::visits::VisitCounts::default(),
+    )
+}
+
+/// [`dense_strongly_connected_components`], adding to `visits` each vertex the two searches
+/// visit and each edge they follow, and each edge the reversal reads.
+pub(super) fn dense_strongly_connected_components_counted(
+    adjacency: &[Vec<usize>],
+    visits: &mut super::visits::VisitCounts,
+) -> Vec<Vec<usize>> {
     let count = adjacency.len();
     let mut visited = vec![false; count];
     let mut finish = Vec::with_capacity(count);
@@ -80,6 +108,7 @@ pub(super) fn dense_strongly_connected_components(adjacency: &[Vec<usize>]) -> V
             continue;
         }
         visited[start] = true;
+        visits.nodes += 1;
         stack.push((start, 0));
         while let Some((vertex, cursor)) = stack.last_mut() {
             let Some(&next) = adjacency[*vertex].get(*cursor) else {
@@ -88,7 +117,9 @@ pub(super) fn dense_strongly_connected_components(adjacency: &[Vec<usize>]) -> V
                 continue;
             };
             *cursor += 1;
+            visits.edges += 1;
             if !visited[next] {
+                visits.nodes += 1;
                 visited[next] = true;
                 stack.push((next, 0));
             }
@@ -99,6 +130,7 @@ pub(super) fn dense_strongly_connected_components(adjacency: &[Vec<usize>]) -> V
     let mut reverse = vec![Vec::new(); count];
     for (from, neighbors) in adjacency.iter().enumerate() {
         for &to in neighbors {
+            visits.edges += 1;
             reverse[to].push(from);
         }
     }
@@ -114,8 +146,10 @@ pub(super) fn dense_strongly_connected_components(adjacency: &[Vec<usize>]) -> V
         let mut component = Vec::new();
         pending.push(start);
         while let Some(vertex) = pending.pop() {
+            visits.nodes += 1;
             component.push(vertex);
             for &neighbor in reverse[vertex].iter().rev() {
+                visits.edges += 1;
                 if !visited[neighbor] {
                     visited[neighbor] = true;
                     pending.push(neighbor);

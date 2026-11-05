@@ -7,6 +7,8 @@ mod patch;
 mod transaction;
 
 pub(crate) use change_set::NodeEdit;
+#[cfg(test)]
+pub(crate) use change_set::NodeFields;
 pub use change_set::{ChangeSet, DeclId, Delta};
 pub use freshness::PlanApplyError;
 pub(crate) use freshness::Preconditions;

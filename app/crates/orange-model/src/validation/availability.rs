@@ -23,7 +23,7 @@ use super::diagnostic::{
 use super::dominators::DomTree;
 use super::ports::PortResolver;
 use super::regions::{RegionIndex, RegionKind, RegionRoot};
-use super::scope::{NodeSubset, edges_of, nodes_of};
+use super::scope::{NodeSubset, Tally, edges_of, nodes_of};
 
 /// Result of the availability pass.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -109,6 +109,7 @@ impl Cfg {
         start: &Vertex,
         producer: NodeId,
         outcomes: &BTreeSet<PortId>,
+        tally: Tally<'_>,
     ) -> BTreeSet<Vertex> {
         let mut seen = BTreeSet::new();
         let mut hits: BTreeMap<NodeId, BTreeSet<Vertex>> = BTreeMap::new();
@@ -117,6 +118,7 @@ impl Cfg {
             if !seen.insert(vertex.clone()) {
                 continue;
             }
+            tally.add(|visits| visits.nodes += 1);
             if let Some(fork) = self.fork_exit.get(&vertex) {
                 let reached = hits.entry(*fork).or_default();
                 reached.insert(vertex.clone());
@@ -126,6 +128,7 @@ impl Cfg {
                 }
             }
             for (next, label) in self.succ.get(&vertex).into_iter().flatten() {
+                tally.add(|visits| visits.edges += 1);
                 let blocked = label
                     .as_ref()
                     .is_some_and(|(node, port)| *node == producer && outcomes.contains(port));
@@ -159,10 +162,15 @@ struct Answers<'a> {
     and_joins: bool,
     trees: BTreeMap<Vertex, DomTree>,
     walks: BTreeMap<(Vertex, NodeId, Outcomes), BTreeSet<Vertex>>,
+    tally: Tally<'a>,
 }
 
 impl<'a> Answers<'a> {
-    fn new(cfg: &'a Cfg, queries: impl IntoIterator<Item = (NodeId, &'a Outcomes)>) -> Self {
+    fn new(
+        cfg: &'a Cfg,
+        queries: impl IntoIterator<Item = (NodeId, &'a Outcomes)>,
+        tally: Tally<'a>,
+    ) -> Self {
         let mut sets: BTreeMap<NodeId, Vec<&'a Outcomes>> = BTreeMap::new();
         for (producer, outcomes) in queries {
             let entry = sets.entry(producer).or_default();
@@ -174,7 +182,11 @@ impl<'a> Answers<'a> {
         // sequence step) cannot route all of it through one vertex.
         let mut foreign = BTreeSet::new();
         for (from, edges) in &cfg.succ {
-            for (node, _) in edges.iter().filter_map(|(_, label)| label.as_ref()) {
+            tally.add(|visits| visits.nodes += 1);
+            for (node, _) in edges.iter().filter_map(|(_, label)| {
+                tally.add(|visits| visits.edges += 1);
+                label.as_ref()
+            }) {
                 if *from != Vertex::Node(*node) {
                     foreign.insert(*node);
                 }
@@ -191,6 +203,7 @@ impl<'a> Answers<'a> {
                 .any(|fork| fork.all && !fork.exits.is_empty()),
             trees: BTreeMap::new(),
             walks: BTreeMap::new(),
+            tally,
         };
         let mut port_group: BTreeMap<(NodeId, &PortId), u32> = BTreeMap::new();
         for (producer, sets) in sets {
@@ -214,9 +227,11 @@ impl<'a> Answers<'a> {
             }
         }
         for (from, edges) in &cfg.succ {
+            tally.add(|visits| visits.nodes += 1);
             let from = answers.intern(from);
             let mut linked = BTreeSet::new();
             for (to, label) in edges {
+                tally.add(|visits| visits.edges += 1);
                 let to = answers.intern(to);
                 match label
                     .as_ref()
@@ -271,10 +286,15 @@ impl<'a> Answers<'a> {
             .and_then(|sets| sets.iter().find(|(set, _)| *set == outcomes))
             .map(|(_, group)| *group);
         if let (Some(group), Some(begin)) = (group, self.ids.get(start).copied()) {
-            let Self { succ, trees, .. } = self;
-            let tree = trees
-                .entry(start.clone())
-                .or_insert_with(|| DomTree::new(succ, begin));
+            let Self {
+                succ, trees, tally, ..
+            } = self;
+            let tree = trees.entry(start.clone()).or_insert_with(|| {
+                let mut built = super::visits::VisitCounts::default();
+                let tree = DomTree::new(succ, begin, &mut built);
+                tally.add(|visits| *visits += built);
+                tree
+            });
             let Some(target) = self.ids.get(&Vertex::Node(consumer)).copied() else {
                 return false;
             };
@@ -287,7 +307,10 @@ impl<'a> Answers<'a> {
         }
         self.walks
             .entry((start.clone(), producer, outcomes.clone()))
-            .or_insert_with(|| self.cfg.reach_avoiding(start, producer, outcomes))
+            .or_insert_with(|| {
+                self.cfg
+                    .reach_avoiding(start, producer, outcomes, self.tally)
+            })
             .contains(&Vertex::Node(consumer))
     }
 }
@@ -319,6 +342,7 @@ pub(crate) fn validate_availability_with_ports(
         registry,
         None,
         None,
+        Tally::NONE,
     )
 }
 
@@ -331,6 +355,7 @@ pub(crate) fn validate_availability_noting_free(
     regions: &RegionIndex,
     registry: &RegistrySnapshot,
     free: &mut BTreeSet<NodeId>,
+    tally: Tally<'_>,
 ) -> AvailabilityValidation {
     availability_among(
         document,
@@ -340,6 +365,7 @@ pub(crate) fn validate_availability_noting_free(
         registry,
         None,
         Some(free),
+        tally,
     )
 }
 
@@ -354,6 +380,7 @@ pub(crate) fn validate_availability_among(
     regions: &RegionIndex,
     registry: &RegistrySnapshot,
     only: &NodeSubset<'_>,
+    tally: Tally<'_>,
 ) -> AvailabilityValidation {
     availability_among(
         document,
@@ -363,9 +390,14 @@ pub(crate) fn validate_availability_among(
         registry,
         Some(only),
         None,
+        tally,
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "a subset, the free cones and the visit counters join the pass's inputs"
+)]
 fn availability_among(
     document: &GraphDocument,
     resolved: &PortResolver<'_>,
@@ -374,6 +406,7 @@ fn availability_among(
     registry: &RegistrySnapshot,
     only: Option<&NodeSubset<'_>>,
     mut free: Option<&mut BTreeSet<NodeId>>,
+    tally: Tally<'_>,
 ) -> AvailabilityValidation {
     let error_edges: BTreeSet<_> = connections
         .diagnostics
@@ -395,7 +428,15 @@ fn availability_among(
             origin: registry.origin(),
             function,
         };
-        check_body(&context, body, &mut result, only, free.as_deref_mut());
+        tally.add(|visits| visits.bodies += 1);
+        check_body(
+            &context,
+            body,
+            &mut result,
+            only,
+            free.as_deref_mut(),
+            tally,
+        );
     }
     sort_diagnostics(&mut result.diagnostics);
     result.diagnostics.dedup();
@@ -478,6 +519,7 @@ fn check_body(
     result: &mut AvailabilityValidation,
     only: Option<&NodeSubset<'_>>,
     mut free: Option<&mut BTreeSet<NodeId>>,
+    tally: Tally<'_>,
 ) {
     let Context {
         resolved, regions, ..
@@ -487,7 +529,7 @@ fn check_body(
     // Nodes with an incoming edge this pass skips, which [`data_edge_requires`] would still
     // read: a cone through one of them is not known to be free.
     let mut skipped = BTreeSet::new();
-    for edge in edges_of(body, only) {
+    for edge in edges_of(body, only, tally) {
         if context.error_edges.contains(&edge.id)
             || !body.nodes.contains_key(&edge.from.node)
             || !body.nodes.contains_key(&edge.to.node)
@@ -495,6 +537,7 @@ fn check_body(
             skipped.insert(edge.to.node);
             continue;
         }
+        tally.add(|visits| visits.ports += 2);
         let (Ok(from), Ok(to)) = (resolved.port(&edge.from), resolved.port(&edge.to)) else {
             skipped.insert(edge.to.node);
             continue;
@@ -516,11 +559,12 @@ fn check_body(
         }
     }
 
-    // Top-level activation roots in this body.
+    // Top-level activation roots in this body, from every region of the document.
     let roots: Vec<&RegionRoot> = regions
         .regions
         .iter()
         .filter(|(root, region)| {
+            tally.add(|visits| visits.nodes += 1);
             region.kind == RegionKind::Entry
                 && body.nodes.contains_key(&root.node)
                 && only.is_none_or(|only| only.nodes.contains(&root.node))
@@ -534,7 +578,7 @@ fn check_body(
         let exit = Vertex::Exit(root.node, root.port.clone());
         cfg.goto(&entry, &targets, root.node, &root.port, Some(exit));
     }
-    for node in nodes_of(body, only) {
+    for node in nodes_of(body, only, tally) {
         build_node(context, &mut cfg, &targets, node.id);
     }
 
@@ -543,7 +587,7 @@ fn check_body(
     // the consumer-dependent requirement is evaluated per consumer.
     let mut cones: BTreeMap<NodeId, Vec<&DataEdge>> = BTreeMap::new();
     let mut uses = AvailabilityUses::new();
-    for consumer in nodes_of(body, only).into_iter().map(|node| &node.id) {
+    for consumer in nodes_of(body, only, tally).into_iter().map(|node| &node.id) {
         if only.is_some_and(|only| !only.consumers.contains(consumer)) {
             continue;
         }
@@ -560,7 +604,9 @@ fn check_body(
             let behind: &[&DataEdge] = if expands(context, producer) {
                 cones.entry(producer).or_insert_with(|| {
                     let mut reached = free.is_some().then(BTreeSet::new);
-                    let items = cone(context, &incoming, producer, reached.as_mut());
+                    let mut walked = 0;
+                    let items = cone(context, &incoming, producer, reached.as_mut(), &mut walked);
+                    tally.add(|visits| visits.edges += walked);
                     if let (Some(free), Some(reached)) = (free.as_deref_mut(), reached)
                         && items.is_empty()
                         && reached.iter().all(|node| !skipped.contains(node))
@@ -573,6 +619,7 @@ fn check_body(
                 &[]
             };
             for item in std::iter::once(item).chain(behind.iter().copied()) {
+                tally.add(|visits| visits.edges += 1);
                 if !visited.insert(item.edge.id) {
                     continue;
                 }
@@ -610,10 +657,12 @@ fn check_body(
         &cfg,
         uses.keys()
             .map(|(_, producer, outcomes)| (*producer, outcomes)),
+        tally,
     );
     for ((top, producer, outcomes), consumers) in &uses {
         let start = Vertex::Entry(top.node, top.port.clone());
         for (consumer, subject) in consumers {
+            tally.add(|visits| visits.nodes += 1);
             if answers.unavailable(&start, *producer, outcomes, *consumer) {
                 result.diagnostics.push(Diagnostic::new(
                     DiagnosticCode::UnavailableValue,
@@ -642,7 +691,9 @@ pub(crate) fn data_edge_requires(
     index: &crate::index::DocIndex,
     from: &crate::document::PortRef,
     free: &mut BTreeSet<NodeId>,
+    visits: &mut super::visits::VisitCounts,
 ) -> bool {
+    visits.ports += 1;
     // A zone begin's iteration projection is pure, so no exec region owns it and
     // [`requirement`] finds none for it (V12c).
     let relevant = |at: &crate::document::PortRef| match resolved.port(at) {
@@ -674,10 +725,13 @@ pub(crate) fn data_edge_requires(
         if free.contains(&node) || !expanding(node) || !visited.insert(node) {
             continue;
         }
+        visits.nodes += 1;
         for id in index.incident(node) {
+            visits.edges += 1;
             let Some(edge) = document.edge(id).filter(|edge| edge.to.node == node) else {
                 continue;
             };
+            visits.ports += 2;
             let data = matches!(
                 (resolved.port(&edge.from), resolved.port(&edge.to)),
                 (Ok(from), Ok(to)) if from.kind == PortKind::Data && to.kind == PortKind::Data
@@ -706,6 +760,7 @@ pub(crate) fn subset_edges<'a>(
     index: &crate::index::DocIndex,
     nodes: &BTreeSet<NodeId>,
     consumers: &BTreeSet<NodeId>,
+    visits: &mut super::visits::VisitCounts,
 ) -> Vec<&'a Edge> {
     let expanding = |node: NodeId| {
         matches!(
@@ -715,7 +770,9 @@ pub(crate) fn subset_edges<'a>(
     };
     let mut ids = BTreeSet::new();
     for &node in nodes {
+        visits.nodes += 1;
         ids.extend(index.incident(node).filter(|id| {
+            visits.edges += 1;
             document
                 .edge(*id)
                 .is_some_and(|edge| edge.from.node == node)
@@ -724,7 +781,9 @@ pub(crate) fn subset_edges<'a>(
     let mut needed = consumers.clone();
     let mut stack: Vec<NodeId> = consumers.iter().copied().collect();
     while let Some(node) = stack.pop() {
+        visits.nodes += 1;
         for id in index.incident(node) {
+            visits.edges += 1;
             let Some(edge) = document.edge(id) else {
                 continue;
             };
@@ -759,6 +818,7 @@ fn cone<'e, 'a>(
     incoming: &'e BTreeMap<NodeId, Vec<DataEdge<'a>>>,
     producer: NodeId,
     mut reached: Option<&mut BTreeSet<NodeId>>,
+    walked: &mut usize,
 ) -> Vec<&'e DataEdge<'a>> {
     let mut cone = Vec::new();
     let mut visited = BTreeSet::new();
@@ -770,6 +830,7 @@ fn cone<'e, 'a>(
         if !visited.insert(item.edge.id) {
             continue;
         }
+        *walked += 1;
         let upstream = item.edge.from.node;
         if expands(context, upstream) {
             if let Some(reached) = reached.as_deref_mut() {
@@ -1034,9 +1095,9 @@ mod tests {
             let queries: Vec<(NodeId, &Outcomes)> = (0..nodes)
                 .flat_map(|n| families[choice[n as usize]].iter().map(move |set| (node(n), set)))
                 .collect();
-            let mut answers = Answers::new(&cfg, queries.iter().map(|(p, set)| (*p, *set)));
+            let mut answers = Answers::new(&cfg, queries.iter().map(|(p, set)| (*p, *set)), Tally::NONE);
             for (producer, outcomes) in &queries {
-                let reference = cfg.reach_avoiding(&start, *producer, outcomes);
+                let reference = cfg.reach_avoiding(&start, *producer, outcomes, Tally::NONE);
                 for consumer in (0..nodes).map(node) {
                     prop_assert_eq!(
                         answers.unavailable(&start, *producer, outcomes, consumer),
@@ -1057,11 +1118,11 @@ mod tests {
         );
         let then = families()[0][0].clone();
         let both = families()[3][0].clone();
-        let answers = Answers::new(&cfg, [(node(0), &then), (node(1), &then)]);
+        let answers = Answers::new(&cfg, [(node(0), &then), (node(1), &then)], Tally::NONE);
         // Node 0 labels only its own edges; node 2 carries an edge labeled for node 1.
         assert!(answers.groups.contains_key(&node(0)));
         assert!(!answers.groups.contains_key(&node(1)));
-        let overlapping = Answers::new(&cfg, [(node(0), &then), (node(0), &both)]);
+        let overlapping = Answers::new(&cfg, [(node(0), &then), (node(0), &both)], Tally::NONE);
         assert!(overlapping.groups.is_empty());
     }
 }

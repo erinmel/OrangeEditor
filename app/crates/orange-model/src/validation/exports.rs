@@ -146,10 +146,14 @@ pub(super) fn edge_crosses_activation(
     index: &crate::index::DocIndex,
     edge: &crate::document::Edge,
     zones: &super::zones::ZoneIndex,
+    visits: &mut super::visits::VisitCounts,
 ) -> bool {
     let Ok(port) = resolved.port(&edge.from) else {
         return false;
     };
+    // The cone walk below reads each producer's incoming edges.
+    let nodes = std::cell::Cell::new(0);
+    let edges = std::cell::Cell::new(0);
     // The whole check skips a zone begin's iteration projection wherever a cone reaches
     // it, so an edge from one adds nothing to any cone (V12f).
     if port.source == Some(OutputSource::Iteration)
@@ -160,7 +164,10 @@ pub(super) fn edge_crosses_activation(
         return false;
     }
     let real = |node: NodeId| {
+        nodes.set(nodes.get() + 1);
+        let edges = &edges;
         index.incident(node).filter_map(move |id| {
+            edges.set(edges.get() + 1);
             let edge = document.edge(id)?;
             if edge.to.node != node || !document.root().nodes.contains_key(&edge.from.node) {
                 return None;
@@ -181,7 +188,10 @@ pub(super) fn edge_crosses_activation(
         let begin = zones.get(node).map(|pair| pair.begin);
         real(node).chain(begin.into_iter().flat_map(real))
     };
-    crosses_activation(producers, edge.from.node, port.source, zones)
+    let crosses = crosses_activation(producers, edge.from.node, port.source, zones);
+    visits.nodes += nodes.get();
+    visits.edges += edges.get();
+    crosses
 }
 
 /// Whether the exported value, or anything in its pure/volatile cone, belongs to an

@@ -578,6 +578,7 @@ fn run_supported_analysis(
             &regions.index,
             registry,
             &mut free,
+            super::scope::Tally::NONE,
         )
     } else {
         super::availability::validate_availability_with_ports(
@@ -776,6 +777,7 @@ fn run_supported_analysis(
                 crate::BodyRef::Root,
                 &regions.index.zones,
                 retained.complete,
+                &mut super::visits::VisitCounts::default(),
             );
             retained.orders.insert(crate::BodyRef::Root, order);
         }

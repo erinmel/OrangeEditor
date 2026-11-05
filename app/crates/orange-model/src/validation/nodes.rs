@@ -18,7 +18,7 @@ use crate::document::{
 use crate::error::IdError;
 use crate::id::{FunctionId, NodeId, PortId, PortKey, SignatureKey};
 use crate::index::DocIndex;
-use crate::inference::{InferenceIssue, infer_components};
+use crate::inference::InferenceIssue;
 use crate::signature;
 use crate::type_term::TypeTerm;
 use crate::types::{TypeRegistry, TypeResolveError};
@@ -81,9 +81,14 @@ pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> 
         &index,
         None,
         None,
+        &mut super::visits::VisitCounts::default(),
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the pass's reads"
+)]
 pub(crate) fn validate_nodes_with(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -92,6 +97,7 @@ pub(crate) fn validate_nodes_with(
     index: &DocIndex,
     components: Option<&mut ComponentCache>,
     kept: Option<&mut BTreeMap<NodeId, TypeArgs>>,
+    visits: &mut super::visits::VisitCounts,
 ) -> NodeValidation {
     validate_node_ids(
         document,
@@ -101,6 +107,7 @@ pub(crate) fn validate_nodes_with(
         index,
         Inference::Solve(components),
         kept,
+        visits,
     )
 }
 
@@ -116,7 +123,13 @@ pub(crate) enum Inference<'c> {
 
 /// Node resolution of `ids` (ascending) alone. A node's result equals the whole-scope
 /// result when `ids` holds its generic component and every data neighbour of it. With
-/// `kept`, each generic node's solved arguments are recorded there.
+/// `kept`, each generic node's solved arguments are recorded there. What the pass iterates
+/// is added to `visits`: each ID's preflight and projection, the component search and
+/// solve, the neighbour scan and the projected ports.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the pass's reads"
+)]
 pub(crate) fn validate_node_ids(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -125,6 +138,7 @@ pub(crate) fn validate_node_ids(
     index: &DocIndex,
     inference: Inference<'_>,
     kept: Option<&mut BTreeMap<NodeId, TypeArgs>>,
+    visits: &mut super::visits::VisitCounts,
 ) -> NodeValidation {
     let origin = registry.origin();
     let mut report = NodeValidation::default();
@@ -137,6 +151,7 @@ pub(crate) fn validate_node_ids(
         origin,
         &mut report,
         &mut diagnostics,
+        visits,
     );
     let pass = NodePass {
         calls,
@@ -147,8 +162,15 @@ pub(crate) fn validate_node_ids(
         ids,
         origin,
     };
-    let fresh_args = infer_fresh_args(&pass, inference, &mut report, &mut diagnostics);
-    project_nodes(&pass, fresh_args, kept, &mut report, &mut diagnostics);
+    let fresh_args = infer_fresh_args(&pass, inference, &mut report, &mut diagnostics, visits);
+    project_nodes(
+        &pass,
+        fresh_args,
+        kept,
+        &mut report,
+        &mut diagnostics,
+        visits,
+    );
 
     sort_diagnostics(&mut diagnostics);
     report.diagnostics = diagnostics;
@@ -165,6 +187,10 @@ fn node_ids(document: &GraphDocument, scope: Scope) -> Vec<NodeId> {
     ids
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the preflight"
+)]
 fn resolve_contracts(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -173,9 +199,11 @@ fn resolve_contracts(
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
 ) -> BTreeSet<NodeId> {
     let mut eligible = BTreeSet::new();
     for id in ids {
+        visits.nodes += 1;
         let Some(node) = document.node(*id) else {
             continue;
         };
@@ -416,22 +444,26 @@ fn infer_fresh_args(
     inference: Inference<'_>,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
 ) -> BTreeMap<NodeId, TypeArgs> {
     let components = match inference {
         Inference::Known(component) => vec![component],
         Inference::Solve(Some(cache)) => {
             cache.infer(pass.document, pass.index, pass.ids, pass.registry)
         }
-        Inference::Solve(None) => infer_components(
+        Inference::Solve(None) => crate::inference::component::infer_components_except(
             pass.document,
             pass.index,
             pass.ids.iter().copied(),
             pass.registry,
+            &BTreeSet::new(),
+            visits,
         ),
     };
     let mut fresh_args = BTreeMap::new();
     for component in components {
         let incomplete = component.nodes.iter().any(|node| {
+            visits.nodes += 1;
             !pass.eligible.contains(node)
                 || touches_unresolved_data_neighbor(
                     pass.document,
@@ -439,6 +471,7 @@ fn infer_fresh_args(
                     pass.registry,
                     pass.eligible,
                     *node,
+                    visits,
                 )
         });
         if incomplete {
@@ -555,11 +588,13 @@ fn project_nodes(
     mut kept: Option<&mut BTreeMap<NodeId, TypeArgs>>,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
 ) {
     let mut cache = ProjectionCache::new();
     // Semantic keys of stored snapshots, by document key: many nodes share one snapshot.
     let mut stored_keys = BTreeMap::new();
     for id in pass.ids {
+        visits.nodes += 1;
         if !pass.eligible.contains(id) || report.incomplete_nodes.contains(id) {
             continue;
         }
@@ -590,7 +625,10 @@ fn project_nodes(
                 let (projection, key) = cache
                     .entry((node.definition.clone(), args, body))
                     .or_insert_with_key(|(_, args, body)| {
-                        (project_contract(pass, shared, args, *body), OnceCell::new())
+                        (
+                            project_contract(pass, shared, args, *body, visits),
+                            OnceCell::new(),
+                        )
                     });
                 let drifted = projection.as_ref().is_ok_and(|projected| {
                     drifted(&mut stored_keys, stored, || {
@@ -601,7 +639,7 @@ fn project_nodes(
                 (projection.clone(), drifted)
             }
             Cow::Owned(contextual) => {
-                let projection = project_contract(pass, contextual, &args, body);
+                let projection = project_contract(pass, contextual, &args, body, visits);
                 let drifted = projection.as_ref().is_ok_and(|projected| {
                     drifted(&mut stored_keys, stored, || {
                         signature::semantic_key(projected)
@@ -634,9 +672,11 @@ fn project_contract(
     contract: &NodeContract,
     args: &TypeArgs,
     body: Option<BodyRef>,
+    visits: &mut super::visits::VisitCounts,
 ) -> Projection {
     let mut ports = contract.ports.clone();
     for port in &mut ports {
+        visits.ports += 1;
         let Some(ty) = &port.ty else { continue };
         match signature::try_substitute_params(ty, args) {
             Ok(resolved) => port.ty = Some(resolved),
@@ -771,8 +811,10 @@ fn touches_unresolved_data_neighbor(
     registry: &RegistrySnapshot,
     eligible: &BTreeSet<NodeId>,
     node: NodeId,
+    visits: &mut super::visits::VisitCounts,
 ) -> bool {
     index.incident(node).any(|edge_id| {
+        visits.edges += 1;
         let Some(edge) = document.edge(edge_id) else {
             return false;
         };
@@ -1031,6 +1073,7 @@ impl ComponentCache {
             ids.iter().copied().filter(|id| !known.contains(id)),
             registry,
             &known,
+            &mut super::visits::VisitCounts::default(),
         );
         for component in &solved {
             self.computed += 1;

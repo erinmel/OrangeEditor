@@ -16,20 +16,27 @@ pub(crate) struct DomTree {
 
 impl DomTree {
     /// `succ[v]` lists the successors of vertex `v`; every listed vertex must be in range.
-    pub(crate) fn new(succ: &[Vec<u32>], start: u32) -> Self {
-        let rpo = reverse_postorder(succ, start);
+    /// Each vertex and edge every phase iterates is added to `visits`.
+    pub(crate) fn new(
+        succ: &[Vec<u32>],
+        start: u32,
+        visits: &mut super::visits::VisitCounts,
+    ) -> Self {
+        let rpo = reverse_postorder(succ, start, visits);
         let mut order = vec![UNDEFINED; succ.len()];
         for (position, vertex) in rpo.iter().enumerate() {
             order[*vertex as usize] = position as u32;
         }
         let mut preds = vec![Vec::new(); rpo.len()];
         for (position, vertex) in rpo.iter().enumerate() {
+            visits.nodes += 1;
             for next in &succ[*vertex as usize] {
+                visits.edges += 1;
                 preds[order[*next as usize] as usize].push(position as u32);
             }
         }
-        let idom = immediate_dominators(&preds);
-        let (enter, leave) = intervals(&idom);
+        let idom = immediate_dominators(&preds, visits);
+        let (enter, leave) = intervals(&idom, visits);
         Self {
             order,
             enter,
@@ -52,7 +59,11 @@ impl DomTree {
     }
 }
 
-fn reverse_postorder(succ: &[Vec<u32>], start: u32) -> Vec<u32> {
+fn reverse_postorder(
+    succ: &[Vec<u32>],
+    start: u32,
+    visits: &mut super::visits::VisitCounts,
+) -> Vec<u32> {
     let mut visited = vec![false; succ.len()];
     let mut post = Vec::new();
     let mut stack = vec![(start, 0usize)];
@@ -60,7 +71,9 @@ fn reverse_postorder(succ: &[Vec<u32>], start: u32) -> Vec<u32> {
     while let Some((vertex, next)) = stack.last_mut() {
         if let Some(child) = succ[*vertex as usize].get(*next).copied() {
             *next += 1;
+            visits.edges += 1;
             if !visited[child as usize] {
+                visits.nodes += 1;
                 visited[child as usize] = true;
                 stack.push((child, 0));
             }
@@ -74,7 +87,7 @@ fn reverse_postorder(succ: &[Vec<u32>], start: u32) -> Vec<u32> {
 }
 
 /// `preds` is indexed by reverse-postorder position, with the start at position 0.
-fn immediate_dominators(preds: &[Vec<u32>]) -> Vec<u32> {
+fn immediate_dominators(preds: &[Vec<u32>], visits: &mut super::visits::VisitCounts) -> Vec<u32> {
     let mut idom = vec![UNDEFINED; preds.len()];
     idom[0] = 0;
     let intersect = |idom: &[u32], mut a: u32, mut b: u32| {
@@ -92,10 +105,12 @@ fn immediate_dominators(preds: &[Vec<u32>]) -> Vec<u32> {
     while changed {
         changed = false;
         for block in 1..preds.len() {
+            visits.nodes += 1;
             // The DFS parent precedes `block` in reverse postorder, so one pred is known.
             let mut known = preds[block]
                 .iter()
                 .copied()
+                .inspect(|_| visits.edges += 1)
                 .filter(|pred| idom[*pred as usize] != UNDEFINED);
             let Some(first) = known.next() else { continue };
             let new = known.fold(first, |acc, pred| intersect(&idom, pred, acc));
@@ -109,9 +124,10 @@ fn immediate_dominators(preds: &[Vec<u32>]) -> Vec<u32> {
 }
 
 /// Preorder entry and exit stamps of the dominator tree, for constant-time ancestry.
-fn intervals(idom: &[u32]) -> (Vec<u32>, Vec<u32>) {
+fn intervals(idom: &[u32], visits: &mut super::visits::VisitCounts) -> (Vec<u32>, Vec<u32>) {
     let mut children = vec![Vec::new(); idom.len()];
     for (block, parent) in idom.iter().enumerate().skip(1) {
+        visits.nodes += 1;
         children[*parent as usize].push(block as u32);
     }
     let (mut enter, mut leave) = (vec![0; idom.len()], vec![0; idom.len()]);
@@ -169,20 +185,28 @@ mod tests {
 
     #[test]
     fn diamond_loop_and_irreducible_shapes() {
-        let diamond = DomTree::new(&graph(4, &[(0, 1), (0, 2), (1, 3), (2, 3)]), 0);
+        let diamond = DomTree::new(
+            &graph(4, &[(0, 1), (0, 2), (1, 3), (2, 3)]),
+            0,
+            &mut Default::default(),
+        );
         assert!(diamond.dominates(0, 3));
         assert!(!diamond.dominates(1, 3) && !diamond.dominates(2, 3));
-        let looped = DomTree::new(&graph(4, &[(0, 1), (1, 2), (2, 1), (2, 3)]), 0);
+        let looped = DomTree::new(
+            &graph(4, &[(0, 1), (1, 2), (2, 1), (2, 3)]),
+            0,
+            &mut Default::default(),
+        );
         assert!(looped.dominates(1, 3) && looped.dominates(2, 3) && !looped.dominates(3, 2));
         // Two entries into the 1↔2 cycle: only 1 guards 3.
         let irreducible = graph(4, &[(0, 1), (0, 2), (1, 2), (2, 1), (1, 3)]);
-        let tree = DomTree::new(&irreducible, 0);
+        let tree = DomTree::new(&irreducible, 0, &mut Default::default());
         assert!(tree.dominates(1, 3) && !tree.dominates(2, 3) && !tree.dominates(2, 1));
     }
 
     #[test]
     fn unreachable_vertices_neither_dominate_nor_are_dominated() {
-        let tree = DomTree::new(&graph(3, &[(0, 1), (0, 0)]), 0);
+        let tree = DomTree::new(&graph(3, &[(0, 1), (0, 0)]), 0, &mut Default::default());
         assert!(tree.reachable(1) && !tree.reachable(2));
         assert!(!tree.dominates(2, 1) && !tree.dominates(0, 2) && !tree.dominates(2, 2));
         assert!(tree.dominates(1, 1) && tree.dominates(0, 1));
@@ -199,7 +223,7 @@ mod tests {
                 .filter(|(a, b)| (*a as usize) < vertices && (*b as usize) < vertices)
                 .collect();
             let succ = graph(vertices, &edges);
-            let tree = DomTree::new(&succ, 0);
+            let tree = DomTree::new(&succ, 0, &mut Default::default());
             for a in 0..vertices as u32 {
                 for b in 0..vertices as u32 {
                     prop_assert_eq!(tree.dominates(a, b), brute(&succ, 0, a, b), "{} dom {}", a, b);

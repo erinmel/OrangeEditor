@@ -17,7 +17,7 @@ use super::diagnostic::{
     Diagnostic, DiagnosticCode, HostOrigin, Severity, Subject, sort_diagnostics,
 };
 use super::ports::PortResolver;
-use super::scope::{NodeSubset, Scope, edges_of, nodes_of};
+use super::scope::{NodeSubset, Scope, Tally, edges_of, nodes_of};
 
 /// The exec output port whose targets start a region.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -123,7 +123,14 @@ pub fn validate_regions(
 ) -> RegionValidation {
     let ports = PortResolver::new(document, resolved);
 
-    validate_regions_in(document, &ports, connections, registry, Scope::All)
+    validate_regions_in(
+        document,
+        &ports,
+        connections,
+        registry,
+        Scope::All,
+        Tally::NONE,
+    )
 }
 
 /// [`validate_regions`] over the bodies in `scope`.
@@ -133,8 +140,17 @@ pub(crate) fn validate_regions_in(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     scope: Scope,
+    tally: Tally<'_>,
 ) -> RegionValidation {
-    regions_among(document, resolved, connections, registry, scope, None)
+    regions_among(
+        document,
+        resolved,
+        connections,
+        registry,
+        scope,
+        None,
+        tally,
+    )
 }
 
 /// The same pass for the root-body nodes in `only` alone: an exec-connected set, whose
@@ -145,6 +161,7 @@ pub(crate) fn validate_regions_among(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     only: &NodeSubset<'_>,
+    tally: Tally<'_>,
 ) -> RegionValidation {
     regions_among(
         document,
@@ -153,6 +170,7 @@ pub(crate) fn validate_regions_among(
         registry,
         Scope::All,
         Some(only),
+        tally,
     )
 }
 
@@ -163,6 +181,7 @@ fn regions_among(
     registry: &RegistrySnapshot,
     scope: Scope,
     only: Option<&NodeSubset<'_>>,
+    tally: Tally<'_>,
 ) -> RegionValidation {
     let mut result = RegionValidation {
         incomplete_nodes: connections.incomplete_nodes.clone(),
@@ -179,6 +198,7 @@ fn regions_among(
             BodyRef::Root => None,
             BodyRef::Function(id) => Some(id),
         };
+        tally.add(|visits| visits.bodies += 1);
         check_body(
             document,
             resolved,
@@ -188,6 +208,7 @@ fn regions_among(
             registry,
             &mut result,
             only,
+            tally,
         );
     }
     sort_diagnostics(&mut result.diagnostics);
@@ -239,10 +260,11 @@ fn check_body(
     registry: &RegistrySnapshot,
     result: &mut RegionValidation,
     only: Option<&NodeSubset<'_>>,
+    tally: Tally<'_>,
 ) {
     let origin = registry.origin();
     let mut local_incomplete = BTreeSet::new();
-    for node in nodes_of(body, only) {
+    for node in nodes_of(body, only, tally) {
         if !resolved.contains_key(&node.id) {
             local_incomplete.insert(node.id);
         }
@@ -251,7 +273,7 @@ fn check_body(
     // Exec adjacency from valid same-body edges.
     let mut out: BTreeMap<NodeId, Vec<ExecEdge>> = BTreeMap::new();
     let mut raw: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
-    for edge in edges_of(body, only) {
+    for edge in edges_of(body, only, tally) {
         if error_edges.contains(&edge.id)
             || only.is_some_and(|only| !only.nodes.contains(&edge.from.node))
             || !body.nodes.contains_key(&edge.from.node)
@@ -260,6 +282,7 @@ fn check_body(
             continue;
         }
         raw.entry(edge.from.node).or_default().push(edge.to.node);
+        tally.add(|visits| visits.ports += 2);
         let (from, to) = (resolved.port(&edge.from), resolved.port(&edge.to));
         match (from, to) {
             (Ok(from), Ok(to))
@@ -324,7 +347,9 @@ fn check_body(
         let root = walks[index].root.clone();
         let mut visited = BTreeSet::new();
         let mut stack = Vec::new();
+        // The root node's exec edges, scanned for those leaving the root's port.
         for edge in out.get(&root.node).into_iter().flatten() {
+            tally.add(|visits| visits.edges += 1);
             if edge.from_port == root.port {
                 incoming
                     .entry(edge.to)
@@ -339,7 +364,9 @@ fn check_body(
             }
             membership.entry(node).or_default().insert(index);
             let kind = kind_of(node).unwrap_or(NodeKind::Action);
+            tally.add(|visits| visits.nodes += 1);
             for edge in out.get(&node).into_iter().flatten() {
+                tally.add(|visits| visits.edges += 1);
                 if let Some(child) = child_kind(definition_of(node), kind, &edge.from_port) {
                     let child_root = RegionRoot {
                         node,
@@ -397,6 +424,7 @@ fn check_body(
     // source belongs to, so downstream nodes do not repeat the same fault.
     let no_edges = BTreeMap::new();
     for (node, regions) in &membership {
+        tally.add(|visits| visits.nodes += 1);
         if regions.len() < 2 {
             continue;
         }
@@ -442,7 +470,7 @@ fn check_body(
     }
 
     // Structured boundaries and loop bounds.
-    for node in nodes_of(body, only) {
+    for node in nodes_of(body, only, tally) {
         let definition = node.definition.id.as_str();
         if definition == ids::WHILE
             && !node
@@ -501,10 +529,11 @@ fn check_body(
     let mut stack: Vec<_> = local_incomplete.iter().copied().collect();
     while let Some(node) = stack.pop() {
         if maybe.insert(node) {
+            tally.add(|visits| visits.nodes += 1);
             stack.extend(raw.get(&node).into_iter().flatten().copied());
         }
     }
-    for node in nodes_of(body, only) {
+    for node in nodes_of(body, only, tally) {
         if let Some(signature) = resolved.get(&node.id)
             && is_exec_node(signature)
             && !membership.contains_key(&node.id)
@@ -540,13 +569,17 @@ fn check_body(
                 loop_depth: walk.loop_depth,
                 nodes: membership
                     .iter()
-                    .filter(|(_, set)| set.len() == 1 && set.contains(&position))
+                    .filter(|(_, set)| {
+                        tally.add(|visits| visits.nodes += 1);
+                        set.len() == 1 && set.contains(&position)
+                    })
                     .map(|(node, _)| *node)
                     .collect(),
             },
         );
     }
     for (node, set) in &membership {
+        tally.add(|visits| visits.nodes += 1);
         if let [only] = set.iter().copied().collect::<Vec<_>>()[..] {
             result.index.owners.insert(*node, roots[only].clone());
         }

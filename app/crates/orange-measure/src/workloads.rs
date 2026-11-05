@@ -1100,6 +1100,46 @@ pub struct W9Bucket {
     pub scoped: usize,
     /// The most nodes one scoped edit re-resolved (`EditStats::input_nodes`).
     pub max_resolved: usize,
+    /// Items iterated per edit, summed over every pass (`EditStats::visits.total()`).
+    pub nodes: W9Spread,
+    pub edges: W9Spread,
+    pub ports: W9Spread,
+    pub diagnostics: W9Spread,
+    pub bodies: W9Spread,
+    /// Edits that ran the full analysis, by cause: the scoped update's fallback reason, or
+    /// the rebuild reason.
+    pub full: std::collections::BTreeMap<String, usize>,
+}
+
+/// The p50, p95 and largest of one per-edit count.
+#[derive(Clone, Copy, Default)]
+pub struct W9Spread {
+    pub p50: usize,
+    pub p95: usize,
+    pub max: usize,
+}
+
+impl W9Spread {
+    fn of(mut values: Vec<usize>) -> Self {
+        values.sort_unstable();
+        let at = |q: usize| {
+            values
+                .get((values.len() * q / 100).min(values.len().saturating_sub(1)))
+                .copied()
+                .unwrap_or(0)
+        };
+        Self {
+            p50: at(50),
+            p95: at(95),
+            max: values.last().copied().unwrap_or(0),
+        }
+    }
+}
+
+impl std::fmt::Display for W9Spread {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}/{}/{}", self.p50, self.p95, self.max)
+    }
 }
 
 /// Heap bytes counted by the global allocator during one W9 run.
@@ -1155,7 +1195,7 @@ pub struct W9Shape {
 pub fn w9_session_edits(shape: W9Shape) -> W9 {
     use orange_model::DocCommand;
     use orange_model::document::{Edge, PortRef};
-    use orange_model::validation::{AnalysisOptions, AnalysisSession, SessionWork};
+    use orange_model::validation::{AnalysisOptions, AnalysisSession, SessionWork, VisitCounts};
     use std::collections::BTreeMap;
     use std::time::{Duration, Instant};
     const CLUSTERS: u32 = 1000;
@@ -1312,17 +1352,41 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
         },
         literal: Some(serde_json::from_value(literal(value as u64)).expect("literal")),
     };
-    // Kind, latency, scoped, nodes re-resolved, and whether the edit is a seeded one.
-    type Record = (W9Edit, Duration, bool, usize, bool);
+    // Kind, latency, scoped, nodes re-resolved, whether the edit is a seeded one, the units
+    // every pass visited, and why a full analysis ran.
+    type Record = (
+        W9Edit,
+        Duration,
+        bool,
+        usize,
+        bool,
+        VisitCounts,
+        Option<String>,
+    );
     let mut records: Vec<Record> = Vec::new();
     let mut timed =
         |document: &mut GraphDocument, commands: Vec<DocCommand>, kind: W9Edit, seeded: bool| {
             let committed = document.apply(commands).expect("edit");
             let start = Instant::now();
-            let stats = session.update(document, &registry, &committed.change_set, options);
+            let stats = *session.update(document, &registry, &committed.change_set, options);
             let elapsed = start.elapsed();
-            let scoped = stats.work == SessionWork::Scoped;
-            records.push((kind, elapsed, scoped, stats.input_nodes, seeded));
+            let full = match stats.work {
+                SessionWork::Recompute => Some(match stats.fallback {
+                    Some(fallback) => format!("fallback {fallback:?}"),
+                    None => "fallback unknown".to_owned(),
+                }),
+                SessionWork::Rebuild(reason) => Some(format!("rebuild {reason:?}")),
+                _ => None,
+            };
+            records.push((
+                kind,
+                elapsed,
+                stats.is_scoped(),
+                stats.input_nodes,
+                seeded,
+                stats.visits.total(),
+                full,
+            ));
             session.analysis().report().is_valid()
         };
     for edit in 0..1000 {
@@ -1596,6 +1660,18 @@ pub fn w9_session_edits(shape: W9Shape) -> W9 {
                 .map(|record| record.3)
                 .max()
                 .unwrap_or(0),
+            nodes: W9Spread::of(kept.iter().map(|record| record.5.nodes).collect()),
+            edges: W9Spread::of(kept.iter().map(|record| record.5.edges).collect()),
+            ports: W9Spread::of(kept.iter().map(|record| record.5.ports).collect()),
+            diagnostics: W9Spread::of(kept.iter().map(|record| record.5.diagnostics).collect()),
+            bodies: W9Spread::of(kept.iter().map(|record| record.5.bodies).collect()),
+            full: kept.iter().filter_map(|record| record.6.clone()).fold(
+                BTreeMap::new(),
+                |mut full, cause| {
+                    *full.entry(cause).or_default() += 1;
+                    full
+                },
+            ),
         }
     };
     W9 {

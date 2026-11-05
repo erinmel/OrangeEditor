@@ -58,10 +58,34 @@ pub fn validate_state(
     summaries: &BTreeMap<FunctionId, FunctionSummary>,
     leaf_effects: &BTreeMap<NodeId, LeafEffects>,
 ) -> Vec<Diagnostic> {
+    validate_state_counted(
+        document,
+        registry,
+        resolved,
+        regions,
+        summaries,
+        leaf_effects,
+        &mut super::visits::VisitCounts::default(),
+    )
+}
+
+/// [`validate_state`], adding what it iterates to `visits`: the regions, every body, both
+/// loops over each body's nodes, the region members it collects and the stale-capture
+/// walks.
+pub(super) fn validate_state_counted(
+    document: &GraphDocument,
+    registry: &RegistrySnapshot,
+    resolved: &BTreeMap<NodeId, SignatureSnapshot>,
+    regions: &RegionIndex,
+    summaries: &BTreeMap<FunctionId, FunctionSummary>,
+    leaf_effects: &BTreeMap<NodeId, LeafEffects>,
+    visits: &mut super::visits::VisitCounts,
+) -> Vec<Diagnostic> {
     let origin = registry.origin();
     let mut children: BTreeMap<&RegionRoot, Vec<&RegionRoot>> = BTreeMap::new();
     let mut branches: BTreeMap<NodeId, Vec<&RegionRoot>> = BTreeMap::new();
     for (root, region) in &regions.regions {
+        visits.nodes += 1;
         if let Some(parent) = &region.parent {
             children.entry(parent).or_default().push(root);
         }
@@ -72,17 +96,24 @@ pub fn validate_state(
 
     let mut diagnostics = validate_declarations(document, registry);
     for (body_ref, body) in document.bodies_with_refs() {
-        validate_registers(body_ref, body, registry, resolved, &mut diagnostics);
+        visits.bodies += 1;
+        validate_registers(body_ref, body, registry, resolved, &mut diagnostics, visits);
         for node in body.nodes.values() {
+            visits.nodes += 1;
             if node
                 .activation
                 .as_ref()
                 .is_some_and(|policy| policy.mode == ReentrancyMode::Parallel)
             {
                 let mut members = BTreeSet::new();
-                for root in regions.regions.keys().filter(|root| root.node == node.id) {
-                    members.extend(region_members(regions, &children, root));
+                let mut scanned = 0;
+                for root in regions.regions.keys().filter(|root| {
+                    scanned += 1;
+                    root.node == node.id
+                }) {
+                    members.extend(region_members(regions, &children, root, visits));
                 }
+                visits.nodes += scanned;
                 stale_captures(
                     body_ref,
                     body,
@@ -91,6 +122,7 @@ pub fn validate_state(
                     resolved,
                     &members,
                     &mut diagnostics,
+                    visits,
                 );
             }
             let Some(roots) = branches.get(&node.id).filter(|roots| roots.len() > 1) else {
@@ -99,7 +131,7 @@ pub fn validate_state(
             let mut per_branch = Vec::new();
             for root in roots {
                 let mut writes = Writes::new();
-                for member in region_members(regions, &children, root) {
+                for member in region_members(regions, &children, root, visits) {
                     if let Some(member) = body.nodes.get(&member) {
                         collect_writes(
                             document,
@@ -152,9 +184,11 @@ fn validate_registers(
     registry: &RegistrySnapshot,
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
 ) {
     let (origin, types) = (registry.origin(), registry.types().as_ref());
     for node in body.nodes.values() {
+        visits.nodes += 1;
         if node.definition.id.as_str() != ids::REGISTER
             || node.provider.is_some()
             || node.definition.version != 1
@@ -209,12 +243,13 @@ fn region_members(
     regions: &RegionIndex,
     children: &BTreeMap<&RegionRoot, Vec<&RegionRoot>>,
     root: &RegionRoot,
+    visits: &mut super::visits::VisitCounts,
 ) -> BTreeSet<NodeId> {
     let mut members = BTreeSet::new();
     let mut stack = vec![root];
     while let Some(current) = stack.pop() {
         if let Some(region) = regions.regions.get(current) {
-            members.extend(region.nodes.iter().copied());
+            members.extend(region.nodes.iter().inspect(|_| visits.nodes += 1).copied());
         }
         stack.extend(children.get(current).into_iter().flatten().copied());
     }
@@ -380,6 +415,10 @@ pub(super) fn validate_declarations(
 /// of V whose value depends on a `get-variable` of V through the output of an earlier exec
 /// node (an action or async capture) warns. A direct Get-to-Set path and `update-variable`
 /// are atomic and never warn. Captures through other variables are not tracked.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the walk's reads"
+)]
 fn stale_captures(
     body_ref: BodyRef,
     body: &crate::document::GraphBody,
@@ -388,9 +427,11 @@ fn stale_captures(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     members: &BTreeSet<NodeId>,
     diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
 ) {
     use crate::document::{NodeKind, Suspends};
     let suspends = members.iter().any(|node| {
+        visits.nodes += 1;
         resolved
             .get(node)
             .is_some_and(|s| s.suspension() != Some(Suspends::Never))
@@ -400,6 +441,7 @@ fn stale_captures(
     }
     let mut incoming: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
     for edge in body.edges.values() {
+        visits.edges += 1;
         incoming
             .entry(edge.to.node)
             .or_default()
@@ -411,6 +453,7 @@ fn stale_captures(
             .flatten()
     };
     for id in members {
+        visits.nodes += 1;
         let Some(write) = body.nodes.get(id) else {
             continue;
         };
@@ -439,6 +482,7 @@ fn stale_captures(
             if !seen.insert((current, crossed)) {
                 continue;
             }
+            visits.nodes += 1;
             let Some(node) = body.nodes.get(&current) else {
                 continue;
             };

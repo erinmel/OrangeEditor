@@ -139,7 +139,14 @@ pub fn infer_components(
     touched: impl IntoIterator<Item = NodeId>,
     registry: &RegistrySnapshot,
 ) -> Vec<ComponentInference> {
-    infer_components_except(document, index, touched, registry, &BTreeSet::new())
+    infer_components_except(
+        document,
+        index,
+        touched,
+        registry,
+        &BTreeSet::new(),
+        &mut crate::validation::VisitCounts::default(),
+    )
 }
 
 /// [`infer_components`] without the components of `known` nodes, whose results the caller
@@ -150,6 +157,7 @@ pub(crate) fn infer_components_except(
     touched: impl IntoIterator<Item = NodeId>,
     registry: &RegistrySnapshot,
     known: &BTreeSet<NodeId>,
+    visits: &mut crate::validation::VisitCounts,
 ) -> Vec<ComponentInference> {
     let graph = Graph {
         document,
@@ -157,6 +165,7 @@ pub(crate) fn infer_components_except(
         registry,
         templates: RefCell::default(),
         edges: RefCell::default(),
+        counted: std::cell::Cell::default(),
     };
     let mut seeds = BTreeSet::new();
     for node in touched {
@@ -177,6 +186,7 @@ pub(crate) fn infer_components_except(
         visited.extend(nodes.iter().copied());
         components.push(graph.solve(nodes, registry.types()));
     }
+    graph.charge(visits);
     components
 }
 
@@ -187,6 +197,7 @@ pub(crate) fn component_nodes(
     index: &DocIndex,
     touched: impl IntoIterator<Item = NodeId>,
     registry: &RegistrySnapshot,
+    visits: &mut crate::validation::VisitCounts,
 ) -> Vec<BTreeSet<NodeId>> {
     let graph = Graph {
         document,
@@ -194,6 +205,7 @@ pub(crate) fn component_nodes(
         registry,
         templates: RefCell::default(),
         edges: RefCell::default(),
+        counted: std::cell::Cell::default(),
     };
     let mut seeds = BTreeSet::new();
     for node in touched {
@@ -213,6 +225,7 @@ pub(crate) fn component_nodes(
         visited.extend(nodes.iter().copied());
         components.push(nodes);
     }
+    graph.charge(visits);
     components
 }
 
@@ -254,6 +267,11 @@ pub(crate) const KEPT_SOLUTION_BUDGET: usize = 512;
 /// binding that differs from `σ` ends the search. Anything else, an equation that does
 /// not build, a conflict, an unresolved parameter after the whole component, an added
 /// node's argument the solver would report, or more than `budget` nodes, returns `None`.
+/// The nodes and edges the search read are added to `visits`.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the search's reads"
+)]
 pub(crate) fn solution_kept<'s>(
     document: &GraphDocument,
     index: &DocIndex,
@@ -262,6 +280,7 @@ pub(crate) fn solution_kept<'s>(
     added: &BTreeSet<NodeId>,
     solved: impl Fn(NodeId) -> Option<&'s TypeArgs>,
     budget: usize,
+    visits: &mut crate::validation::VisitCounts,
 ) -> Option<BTreeMap<NodeId, TypeArgs>> {
     let graph = Graph {
         document,
@@ -269,6 +288,7 @@ pub(crate) fn solution_kept<'s>(
         registry,
         templates: RefCell::default(),
         edges: RefCell::default(),
+        counted: std::cell::Cell::default(),
     };
     let seeds: BTreeSet<NodeId> = touched
         .iter()
@@ -280,7 +300,7 @@ pub(crate) fn solution_kept<'s>(
     // Solve at radius 0, 1, 2, 4, ...: each solve costs about |W|, so the total stays
     // within a small multiple of the last one.
     let (mut radius, mut next_check) = (0usize, 0usize);
-    loop {
+    let kept = loop {
         let grown: BTreeSet<NodeId> = frontier
             .iter()
             .flat_map(|id| graph.generic_neighbours(*id))
@@ -288,20 +308,22 @@ pub(crate) fn solution_kept<'s>(
             .collect();
         if radius == next_check || grown.is_empty() {
             match graph.kept(&nodes, &seeds, added, &solved) {
-                Kept::Yes(args) => return Some(args),
-                Kept::No => return None,
-                Kept::Open if grown.is_empty() => return None,
+                Kept::Yes(args) => break Some(args),
+                Kept::No => break None,
+                Kept::Open if grown.is_empty() => break None,
                 Kept::Open => {}
             }
             next_check = (next_check * 2).max(1);
         }
         nodes.extend(grown.iter().copied());
         if nodes.len() > budget {
-            return None;
+            break None;
         }
         frontier = grown;
         radius += 1;
-    }
+    };
+    graph.charge(visits);
+    kept
 }
 
 /// [`Graph::kept`]'s outcome.
@@ -331,6 +353,8 @@ struct Graph<'a> {
     templates: RefCell<HashMap<NodeId, Option<Rc<GenericTemplate>>>>,
     /// `None` records an incident edge that does not join two data ports.
     edges: RefCell<HashMap<EdgeId, Option<Rc<DataEdge>>>>,
+    /// What equation building and argument checks iterated, for the session's counters.
+    counted: std::cell::Cell<crate::validation::VisitCounts>,
 }
 
 /// A port's type as seen by inference: scoped to its node when generic, concrete otherwise.
@@ -348,6 +372,21 @@ struct DataEdge {
 }
 
 impl Graph<'_> {
+    /// Charges `visits` with the nodes and edges this search resolved, each exactly once
+    /// into its cache, and with what equation building and argument checks iterated.
+    fn charge(&self, visits: &mut crate::validation::VisitCounts) {
+        visits.nodes += self.templates.borrow().len();
+        visits.edges += self.edges.borrow().len();
+        *visits += self.counted.get();
+    }
+
+    /// Adds to the counts of what equation building and argument checks iterate.
+    fn count(&self, add: impl FnOnce(&mut crate::validation::VisitCounts)) {
+        let mut counted = self.counted.get();
+        add(&mut counted);
+        self.counted.set(counted);
+    }
+
     fn node(&self, id: NodeId) -> Option<(&GraphBody, &NodeInstance)> {
         let body = self.document.body(self.index.body_of(id)?)?;
         Some((body, body.nodes.get(&id)?))
@@ -541,6 +580,7 @@ impl Graph<'_> {
         // rigid parameters, never on the node, so equal checks across nodes run once.
         let mut checked = ArgChecks::new();
         for &id in &result.nodes {
+            self.count(|visits| visits.nodes += 1);
             let args = self.node_args(id, &unification, types, &mut checked, &mut result.issues);
             if !args.is_empty() {
                 result.type_args.insert(id, args);
@@ -720,6 +760,7 @@ impl Graph<'_> {
         let mut equations = Vec::new();
         let mut seen_edges = BTreeSet::new();
         for &id in nodes {
+            self.count(|visits| visits.nodes += 1);
             let Some((_, node)) = self.node(id) else {
                 continue;
             };
@@ -748,7 +789,9 @@ impl Graph<'_> {
                     node: id,
                     port: key.clone(),
                 };
+                self.count(|visits| visits.ports += 1);
                 if self.index.incoming(&port).next().is_some() {
+                    self.count(|visits| visits.edges += 1);
                     continue; // shadowed by a connected edge (11 §4.4)
                 }
                 if let Some(term) = self.port_term(&port)?
@@ -762,6 +805,7 @@ impl Graph<'_> {
                 }
             }
             for edge in self.data_edges(id) {
+                self.count(|visits| visits.edges += 1);
                 if !seen_edges.insert(edge.id) {
                     continue;
                 }
