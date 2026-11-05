@@ -85,6 +85,23 @@ impl Run {
     }
 }
 impl Cells<'_> {
+    /// Store the admitted cell total. Run-scope cells keep their single counter;
+    /// activation-local cells also reserve from the run budget, which may refuse.
+    fn reserve(
+        local: bool,
+        run: &mut usize,
+        tally: &mut Tally,
+        bytes: usize,
+    ) -> Result<(), RunError> {
+        if !local {
+            *run = bytes;
+            Ok(())
+        } else if tally.try_set(bytes) {
+            Ok(())
+        } else {
+            Err(RunError::AggregateLimit)
+        }
+    }
     /// Gate, Do Once, Flip Flop, Register and Set. `value` is the consumed
     /// demand: Register's store and Set have one, the others act without.
     pub(super) fn step(
@@ -166,10 +183,16 @@ impl Cells<'_> {
         value: Option<Value>,
     ) -> Result<(), RunError> {
         let metadata = &plan.states()[index];
-        let (store, retained) = if metadata.scope() == VarScope::Local {
-            (shared.states.as_mut_slice(), &mut shared.local_bytes)
+        let local = metadata.scope() == VarScope::Local;
+        let store = if local {
+            shared.states.as_mut_slice()
         } else {
-            (&mut *self.states, &mut *self.bytes)
+            &mut *self.states
+        };
+        let retained = if local {
+            shared.local_bytes.get()
+        } else {
+            *self.bytes
         };
         let cell = self.layout.states[index];
         let old = store[cell]
@@ -189,6 +212,7 @@ impl Cells<'_> {
                 b.checked_add(if metadata.scope() == VarScope::Local {
                     shared
                         .retained_bytes
+                        .get()
                         .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
                 } else {
                     0
@@ -196,7 +220,7 @@ impl Cells<'_> {
                 .is_some_and(|total| total <= self.limit)
             })
             .ok_or(RunError::ResourceLimit)?;
-        *retained = bytes;
+        Self::reserve(local, &mut *self.bytes, &mut shared.local_bytes, bytes)?;
         store[cell] = value;
         self.segment
             .state(self.layout.state_sources[index], metadata.id());
@@ -217,10 +241,16 @@ impl Cells<'_> {
             let frame = find_frame(self.frames, function, node.scope())?;
             return self.write_frame_local(plan, shared, frame, variable, value);
         }
-        let (store, retained) = if var.scope() == VarScope::Local {
-            (shared.locals.as_mut_slice(), &mut shared.local_bytes)
+        let local = var.scope() == VarScope::Local;
+        let store = if local {
+            shared.locals.as_mut_slice()
         } else {
-            (&mut *self.variables, &mut *self.bytes)
+            &mut *self.variables
+        };
+        let retained = if local {
+            shared.local_bytes.get()
+        } else {
+            *self.bytes
         };
         let cell = self.layout.variables[variable];
         let old = store[cell]
@@ -237,6 +267,7 @@ impl Cells<'_> {
                 b.checked_add(if var.scope() == VarScope::Local {
                     shared
                         .retained_bytes
+                        .get()
                         .saturating_add(shared.owned_bytes.load(Ordering::Relaxed))
                 } else {
                     0
@@ -247,7 +278,7 @@ impl Cells<'_> {
         let version = self.versions[variable]
             .checked_add(1)
             .ok_or(RunError::ResourceLimit)?;
-        *retained = bytes;
+        Self::reserve(local, &mut *self.bytes, &mut shared.local_bytes, bytes)?;
         store[cell] = Some(value);
         self.versions[variable] = version;
         self.segment.variable(variable, var.id());

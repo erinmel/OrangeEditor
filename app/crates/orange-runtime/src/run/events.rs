@@ -386,9 +386,14 @@ impl Run {
         let envelope = queue.pending.front().ok_or(RunError::InvalidState)?;
         let template = self.event_template.as_ref().ok_or(RunError::InvalidState)?;
         let (sequence, strand_id, region) = self.regions.mint_root()?;
+        let mut local_bytes = Tally::new(Some(self.budget.clone()), 0);
+        if !local_bytes.try_set(template.local_bytes) {
+            return Err(RunError::AggregateLimit);
+        }
         let mut frame = Box::new(ActivationState {
             cause_depth: envelope.metadata.cause_depth,
-            retained_bytes: 0,
+            budget: self.budget.clone(),
+            retained_bytes: Tally::new(Some(self.budget.clone()), 0),
             owned_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
             cleanup_scope: None,
             cleanup_remaining: self.options.max_cleanup_operations,
@@ -399,10 +404,11 @@ impl Run {
                 self.seed,
                 sequence,
                 self.options.data.clone(),
+                Some(self.budget.clone()),
             )?,
             locals: template.locals.clone(),
             states: template.states.clone(),
-            local_bytes: template.local_bytes,
+            local_bytes,
             outputs: vec![None; self.layout.output_count],
         });
         Self::publish_match_value(

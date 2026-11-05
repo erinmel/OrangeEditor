@@ -1,4 +1,5 @@
 //! A host-driven logical actor. No worker thread, OS clock or editor dependency.
+use crate::budget::{Budget, Tally};
 use crate::data::{CleanupScope, HostPoll, PreparedData};
 use crate::{DataActivation, DataError, DataOptions};
 use orange_compiler::{
@@ -128,6 +129,29 @@ pub struct RunLimits {
     pub max_pending_event_bytes: usize,
     /// Nominal event-payload charge across queues and live handler roots together.
     pub max_live_event_payload_bytes: usize,
+    /// Aggregate nominal reservation budget for the whole run, distinct from the
+    /// per-activation limits (`max_state_bytes`, `DataLimits::max_retained_bytes`),
+    /// frame storage and event ingress. Every activation (roots, On Stop frames,
+    /// event handlers) reserves from it for its whole life:
+    ///
+    /// - its dynamic data-cache charge (published slot values and live zone machines);
+    /// - its local and local-state cell charge, including the initial copy;
+    /// - its retained outputs (event payloads, update projections, call results);
+    /// - its function-frame and iteration holds (arguments, locals, collections).
+    ///
+    /// Charges are nominal and per holder: a payload shared by several activations
+    /// through `Arc` is charged by each one that retains it, matching the
+    /// per-activation counters. Immutable plan constants and the data plan's initial
+    /// slot charge are shared by every activation and are not charged; neither are the
+    /// event template's initial cells or run-scope cells, which keep their single
+    /// `max_state_bytes` counter. Exceeding the budget refuses the whole publication
+    /// with `RunError::AggregateLimit` (`DataError::AggregateLimit` during data
+    /// evaluation) and leaves values and counters unchanged. It is a nominal counter,
+    /// not an allocator or resident-set measurement.
+    ///
+    /// The default exceeds the default per-activation limits together, so a single
+    /// activation is unaffected, but is far below `max_activations` times them.
+    pub max_run_retained_bytes: usize,
 }
 impl Default for RunLimits {
     fn default() -> Self {
@@ -145,6 +169,7 @@ impl Default for RunLimits {
             max_pending_events: 1024,
             max_pending_event_bytes: 16 * 1024 * 1024,
             max_live_event_payload_bytes: 16 * 1024 * 1024,
+            max_run_retained_bytes: 512 * 1024 * 1024,
         }
     }
 }
@@ -175,6 +200,13 @@ pub struct RunProgress {
     pub ready: bool,
     pub next_wakeup: Option<u64>,
 }
+/// Nominal aggregate reservation of a run against `RunLimits::max_run_retained_bytes`.
+/// These are the same byte charges as the per-activation counters, not resident memory.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RunRetention {
+    pub reserved_bytes: usize,
+    pub limit_bytes: usize,
+}
 /// Retained owner counts, including reserved On Stop frames. No graph values.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RunOwnership {
@@ -191,6 +223,8 @@ pub enum RunError {
     InvalidState,
     #[error("The run exceeds a host resource limit.")]
     ResourceLimit,
+    #[error("The run exceeds its aggregate retained-value budget.")]
+    AggregateLimit,
     #[error("The process run identity space is exhausted.")]
     IdentityExhausted,
     #[error("Virtual monotonic time cannot move backwards.")]
@@ -204,6 +238,7 @@ impl RunError {
             Self::Data(e) => e.message_key(),
             Self::InvalidState => "core/run-invalid-state",
             Self::ResourceLimit => "core/run-resource-limit",
+            Self::AggregateLimit => "core/run-aggregate-limit",
             Self::IdentityExhausted => "core/run-identity-exhausted",
             Self::ClockWentBackwards => "core/run-clock-went-backwards",
             Self::Interrupted => "core/run-interrupted",
@@ -412,10 +447,13 @@ struct Strand {
 /// One activation tree's evaluator, local cells and execution outputs. `pump`
 /// checks it out of `Run::activations` for one strand step and restores it
 /// before any error or transfer is handled, so ownership code never sees a gap.
-/// `retained_bytes`, `local_bytes` and `owned_bytes` share `max_state_bytes`.
+/// `retained_bytes`, `local_bytes` and `owned_bytes` share `max_state_bytes`. The
+/// first two are tallies that also reserve from the run's aggregate budget and holds
+/// reserve their own bytes there; dropping this state releases all of it.
 struct ActivationState {
     cause_depth: u16,
-    retained_bytes: usize,
+    budget: Arc<Budget>,
+    retained_bytes: Tally,
     owned_bytes: Arc<std::sync::atomic::AtomicUsize>,
     cleanup_scope: Option<CleanupScope>,
     cleanup_remaining: usize,
@@ -423,7 +461,7 @@ struct ActivationState {
     data: DataActivation,
     locals: Vec<Option<Value>>,
     states: Vec<Option<Value>>,
-    local_bytes: usize,
+    local_bytes: Tally,
     outputs: Vec<Option<FoldedValue>>,
 }
 struct Timer {
@@ -567,6 +605,7 @@ pub struct Run {
     operations: usize,
     variables: Vec<Option<Value>>,
     states: Vec<Option<Value>>,
+    budget: Arc<Budget>,
     layout: StateLayout,
     state_bytes: usize,
     versions: Vec<u64>,
@@ -638,6 +677,7 @@ impl Run {
         let mut activations = Vec::with_capacity(capacity);
         let mut stop_ready = VecDeque::with_capacity(plan.stops().len());
         let layout = StateLayout::new(&plan);
+        let budget = Budget::new(options.limits.max_run_retained_bytes);
         let mut state_bytes = 0usize;
         let mut local_bytes = 0usize;
         struct InitialCells {
@@ -707,9 +747,14 @@ impl Run {
             .copied()
             .enumerate()
         {
+            let mut local = Tally::new(Some(budget.clone()), 0);
+            if !local.try_set(local_bytes) {
+                return Err(RunError::AggregateLimit);
+            }
             activations.push(Some(Box::new(ActivationState {
                 cause_depth: 0,
-                retained_bytes: 0,
+                budget: budget.clone(),
+                retained_bytes: Tally::new(Some(budget.clone()), 0),
                 owned_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
                 cleanup_scope: None,
                 cleanup_remaining: options.max_cleanup_operations,
@@ -720,10 +765,11 @@ impl Run {
                     seed,
                     sequence as u64,
                     options.data.clone(),
+                    Some(budget.clone()),
                 )?,
                 locals: locals.clone(),
                 states: local_states.clone(),
-                local_bytes,
+                local_bytes: local,
                 outputs: vec![None; layout.output_count],
             })));
             regions.open(
@@ -810,6 +856,7 @@ impl Run {
             trace: Trace::default(),
             operations: 0,
             versions: vec![0; variable_count],
+            budget,
             layout,
             variables,
             states,
@@ -856,6 +903,14 @@ impl Run {
     }
     pub fn pending_continuations(&self) -> usize {
         self.timers.len()
+    }
+    /// Aggregate nominal reservation held by live activations. Retiring an activation,
+    /// refusing a publication or disposing the run returns capacity.
+    pub fn retention(&self) -> RunRetention {
+        RunRetention {
+            reserved_bytes: self.budget.used(),
+            limit_bytes: self.budget.limit(),
+        }
     }
     pub fn ownership(&self) -> RunOwnership {
         RunOwnership {
@@ -1535,15 +1590,16 @@ impl Run {
         }
         let retained = shared
             .retained_bytes
+            .get()
             .checked_sub(old)
             .and_then(|n| n.checked_add(new))
             .filter(|n| {
-                n.checked_add(shared.local_bytes)
+                n.checked_add(shared.local_bytes.get())
                     .and_then(|n| n.checked_add(shared.owned_bytes.load(Ordering::Relaxed)))
                     .is_some_and(|total| total <= limit)
             })
             .ok_or(RunError::ResourceLimit)?;
-        shared.retained_bytes = retained;
+        shared.retained(retained)?;
         for &i in plan.value_targets(owner) {
             shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
                 value.clone().map(FoldedValue::Value);
@@ -1661,5 +1717,16 @@ impl Run {
         self.cancel_timers = Vec::new();
         self.transition(RunState::Disposed);
         Ok(())
+    }
+}
+impl ActivationState {
+    /// Change the retained-output tally after the per-activation limit admitted it.
+    /// Refuses, changing nothing, when the run budget cannot hold the growth.
+    fn retained(&mut self, bytes: usize) -> Result<(), RunError> {
+        if self.retained_bytes.try_set(bytes) {
+            Ok(())
+        } else {
+            Err(RunError::AggregateLimit)
+        }
     }
 }

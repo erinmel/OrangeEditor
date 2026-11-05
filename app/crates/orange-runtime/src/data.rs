@@ -3,6 +3,7 @@ mod zone;
 use registers::{Outcome, Registers, SLOT_BYTES};
 use zone::ZoneCell;
 
+use crate::budget::{Budget, Tally};
 use crate::{
     ActivationEntropy, CancelToken, EntropyError, EntropyLayout, EntropySlot, EntropyStream,
     FrameId,
@@ -67,6 +68,8 @@ pub enum DataError {
     Interrupted,
     #[error("Data evaluation exceeds a host resource limit.")]
     ResourceLimit,
+    #[error("Data evaluation exceeds the run's aggregate retained-value budget.")]
+    AggregateLimit,
     #[error("Data evaluation was cancelled.")]
     Cancelled,
     #[error("No data consumption epoch has begun.")]
@@ -91,6 +94,7 @@ impl DataError {
             Self::StaleRegistry => "core/data-stale-registry",
             Self::Interrupted => "core/data-interrupted",
             Self::ResourceLimit => "core/data-resource-limit",
+            Self::AggregateLimit => "core/data-aggregate-limit",
             Self::Cancelled => "core/data-cancelled",
             Self::NoEpoch => "core/data-no-epoch",
             Self::FuelExhausted => "core/data-fuel-exhausted",
@@ -342,6 +346,7 @@ impl DataActivation {
             seed,
             activation_sequence,
             options,
+            None,
         )
     }
     pub(crate) fn from_prepared(
@@ -350,6 +355,7 @@ impl DataActivation {
         seed: u64,
         activation_sequence: u64,
         options: DataOptions,
+        budget: Option<Arc<Budget>>,
     ) -> Result<Self, DataError> {
         checkpoint(options.cancel.as_ref())?;
         prepared.check_limits(options.limits)?;
@@ -371,11 +377,11 @@ impl DataActivation {
             zones: (0..plan.zones().len())
                 .map(|_| ZoneCell::default())
                 .collect(),
-            zone_bytes: 0,
+            zone_bytes: Tally::new(budget.clone(), 0),
             scopes,
             registers: Registers::new(prepared.dynamic_count),
             prepared,
-            retained,
+            retained: Tally::new(budget, retained),
             memo: vec![None; resources.nodes],
             epoch: None,
             operations: 0,
@@ -642,12 +648,14 @@ pub(crate) fn activation_storage(plan: &DataPlan) -> Option<usize> {
 }
 struct Frame {
     zones: Vec<ZoneCell>,
-    zone_bytes: usize,
+    zone_bytes: Tally,
     scopes: ActivationEntropy,
     prepared: Arc<PreparedData>,
     /// Outcomes and charges of dynamic slots, indexed by `dynamic_slots`.
     registers: Registers,
-    retained: usize,
+    /// Dynamic charge on top of the shared plan constants, which only the
+    /// per-activation limit counts and the run budget does not.
+    retained: Tally,
     memo: Vec<Option<u64>>,
     epoch: Option<u64>,
     operations: usize,
@@ -764,16 +772,20 @@ impl Frame {
     fn replace_charge(&mut self, old: usize, new: usize) -> Result<(), DataError> {
         let retained = self
             .retained
+            .get()
             .checked_sub(old)
             .and_then(|value| value.checked_add(new))
             .ok_or(DataError::ResourceLimit)?;
         if retained
-            .checked_add(self.zone_bytes)
+            .checked_add(self.zone_bytes.get())
             .is_none_or(|sum| sum > self.limits.max_retained_bytes)
         {
             return Err(DataError::ResourceLimit);
         }
-        self.retained = retained;
+        // The per-activation limit refuses first; the run budget refuses the rest.
+        if !self.retained.try_set(retained) {
+            return Err(DataError::AggregateLimit);
+        }
         Ok(())
     }
     fn publish_fault(

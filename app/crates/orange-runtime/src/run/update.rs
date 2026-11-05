@@ -173,7 +173,7 @@ impl Cells<'_> {
             // Function-frame bytes are reserved with the complete output delta below.
             old_charge
         } else if local {
-            shared.local_bytes
+            shared.local_bytes.get()
         } else {
             *self.bytes
         }
@@ -210,13 +210,14 @@ impl Cells<'_> {
         }
         let retained = shared
             .retained_bytes
+            .get()
             .checked_sub(removed)
             .and_then(|n| n.checked_add(added))
             .ok_or(RunError::ResourceLimit)?;
         let locals = if local && frame.is_none() {
             bytes
         } else {
-            shared.local_bytes
+            shared.local_bytes.get()
         };
         if frame.is_none()
             && ((!local && bytes > self.limit)
@@ -232,6 +233,19 @@ impl Cells<'_> {
                     .is_none_or(|n| n > self.limit))
         {
             return Err(RunError::ResourceLimit);
+        }
+        if frame.is_none() {
+            // Frame writes admit this growth with their hold below.
+            let growth = retained
+                .saturating_sub(shared.retained_bytes.get())
+                .saturating_add(if local {
+                    bytes.saturating_sub(shared.local_bytes.get())
+                } else {
+                    0
+                });
+            if !shared.budget.admits(growth) {
+                return Err(RunError::AggregateLimit);
+            }
         }
         let frame_write = if let Some(frame) = frame {
             // Also check unchanged CAS so projections cannot bypass the combined budget.
@@ -263,14 +277,14 @@ impl Cells<'_> {
             shared.outputs[self.layout.outputs[i].ok_or(RunError::InvalidState)?] =
                 Some(FoldedValue::Value(value));
         }
-        shared.retained_bytes = retained;
+        shared.retained_bytes.set(retained);
         if write {
             let cell = self.layout.variables[variable];
             if let Some((frame, reservation)) = frame_write {
                 self.commit_frame_write(plan, frame, variable, new, reservation);
             } else if local {
                 shared.locals[cell] = Some(new);
-                shared.local_bytes = bytes;
+                shared.local_bytes.set(bytes);
             } else {
                 self.variables[cell] = Some(new);
                 *self.bytes = bytes;
