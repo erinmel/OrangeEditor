@@ -6,6 +6,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use orange_model::document::DefinitionRef;
+use orange_model::error::{JsonError, Rejected};
 use orange_model::id::DefinitionId;
 use serde::Deserialize;
 use serde_json::Value;
@@ -20,7 +21,10 @@ pub const MAX_MANIFEST_BYTES: usize = 1 << 20;
 /// Longest accepted package ID, version, publisher or provider ID, in bytes.
 const MAX_NAME_BYTES: usize = 128;
 
-/// Why a manifest is rejected. Messages name the offending field, not payload contents.
+/// Why a manifest is rejected. Messages name the offending field, not payload contents:
+/// text that failed a check is held as [`Rejected`], which formats as its length only, and
+/// a host that chooses to show it calls [`Rejected::reveal`] (13 §2). Hosts present a
+/// failure through [`message_key`](Self::message_key), never through `Display`.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ManifestError {
     /// The manifest is larger than [`MAX_MANIFEST_BYTES`].
@@ -30,26 +34,27 @@ pub enum ManifestError {
         bytes: usize,
     },
     /// The JSON is malformed, a field has the wrong shape or an unknown field is present.
-    #[error("manifest is not a valid format 1 document: {reason}")]
+    #[error("manifest is not a valid format 1 document: {error}")]
     Decode {
-        /// The decoder's description of the first problem.
-        reason: String,
+        /// The decoder failure reduced to its kind and position; the decoder's own message,
+        /// which can quote input or name unknown fields, is only `Rejected` detail.
+        error: JsonError,
     },
     /// `format` is not [`MANIFEST_FORMAT`].
-    #[error("unsupported manifest format `{0}`")]
-    Format(String),
+    #[error("unsupported manifest format {0}")]
+    Format(Rejected),
     /// `format_version` is not [`MANIFEST_FORMAT_VERSION`].
     #[error("unsupported manifest format version {0}")]
     FormatVersion(u64),
     /// The package ID is not a dotted lowercase namespace.
-    #[error("invalid package id `{0}`")]
-    PackageId(String),
+    #[error("invalid package id {0}")]
+    PackageId(Rejected),
     /// The version is not an exact `MAJOR.MINOR.PATCH[-PRE]` version.
-    #[error("invalid exact version `{0}`")]
-    Version(String),
+    #[error("invalid exact version {0}")]
+    Version(Rejected),
     /// The publisher is not a dotted lowercase namespace.
-    #[error("invalid publisher `{0}`")]
-    Publisher(String),
+    #[error("invalid publisher {0}")]
+    Publisher(Rejected),
     /// The package ID lies outside its publisher's namespace.
     #[error("package `{package}` is outside publisher namespace `{publisher}`")]
     PublisherNamespace {
@@ -69,8 +74,8 @@ pub enum ManifestError {
         max_minor: u32,
     },
     /// The integrity algorithm is not `sha256`.
-    #[error("unsupported integrity algorithm `{0}`")]
-    DigestAlgorithm(String),
+    #[error("unsupported integrity algorithm {0}")]
+    DigestAlgorithm(Rejected),
     /// The payload digest is not 64 lowercase hexadecimal digits.
     #[error("payload digest must be 64 lowercase hexadecimal digits")]
     Digest,
@@ -81,8 +86,8 @@ pub enum ManifestError {
     #[error("package `{0}` is listed as a dependency twice")]
     DuplicateDependency(String),
     /// A contributed node ID is not a valid definition ID.
-    #[error("invalid node definition id `{0}`")]
-    NodeId(String),
+    #[error("invalid node definition id {0}")]
+    NodeId(Rejected),
     /// A contributed node lies outside the package's own namespace.
     #[error("node `{node}` is outside package namespace `{package}`")]
     NodeNamespace {
@@ -95,19 +100,46 @@ pub enum ManifestError {
     #[error("node `{0}` is listed twice")]
     DuplicateNode(String),
     /// A provider slot is malformed or names an unknown slot kind.
-    #[error("invalid provider slot `{0}`")]
-    Slot(String),
+    #[error("invalid provider slot {0}")]
+    Slot(Rejected),
     /// A provider ID is empty or uses characters outside `[a-z0-9._-]`.
-    #[error("invalid provider id `{0}`")]
-    ProviderId(String),
+    #[error("invalid provider id {0}")]
+    ProviderId(Rejected),
     /// One provider ID is declared twice for one slot.
-    #[error("provider `{id}` is declared twice for slot `{slot}`")]
+    #[error("provider `{id}` is declared twice for slot {slot}")]
     DuplicateProvider {
         /// The slot as written.
-        slot: String,
+        slot: Rejected,
         /// The repeated provider ID.
         id: String,
     },
+}
+
+impl ManifestError {
+    /// Stable message key for host presentation (13 §2).
+    pub const fn message_key(&self) -> &'static str {
+        match self {
+            Self::TooLarge { .. } => "packages/manifest-too-large",
+            Self::Decode { .. } => "packages/manifest-decode",
+            Self::Format(_) => "packages/manifest-format",
+            Self::FormatVersion(_) => "packages/manifest-format-version",
+            Self::PackageId(_) => "packages/manifest-package-id",
+            Self::Version(_) => "packages/manifest-version",
+            Self::Publisher(_) => "packages/manifest-publisher",
+            Self::PublisherNamespace { .. } => "packages/manifest-publisher-namespace",
+            Self::HostApiRange { .. } => "packages/manifest-host-api-range",
+            Self::DigestAlgorithm(_) => "packages/manifest-digest-algorithm",
+            Self::Digest => "packages/manifest-digest",
+            Self::SelfDependency => "packages/manifest-self-dependency",
+            Self::DuplicateDependency(_) => "packages/manifest-duplicate-dependency",
+            Self::NodeId(_) => "packages/manifest-node-id",
+            Self::NodeNamespace { .. } => "packages/manifest-node-namespace",
+            Self::DuplicateNode(_) => "packages/manifest-duplicate-node",
+            Self::Slot(_) => "packages/manifest-slot",
+            Self::ProviderId(_) => "packages/manifest-provider-id",
+            Self::DuplicateProvider { .. } => "packages/manifest-duplicate-provider",
+        }
+    }
 }
 
 /// A package ID: a dotted namespace of lowercase identifiers, such as `org.example.device`.
@@ -133,7 +165,7 @@ impl FromStr for PackageId {
         if is_namespace(text) {
             Ok(Self(text.to_owned()))
         } else {
-            Err(ManifestError::PackageId(text.to_owned()))
+            Err(ManifestError::PackageId(text.into()))
         }
     }
 }
@@ -184,7 +216,7 @@ impl FromStr for PackageVersion {
         if numeric && pre_ok && text.len() <= MAX_NAME_BYTES {
             Ok(Self(text.to_owned()))
         } else {
-            Err(ManifestError::Version(text.to_owned()))
+            Err(ManifestError::Version(text.into()))
         }
     }
 }
@@ -267,7 +299,7 @@ pub enum SlotKind {
 }
 
 /// A replaceable slot a provider fills.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ProviderSlot {
     /// `node:<definition>@<version>`: an implementation of one definition version.
     Node(DefinitionRef),
@@ -284,7 +316,7 @@ impl FromStr for ProviderSlot {
     type Err = ManifestError;
 
     fn from_str(text: &str) -> Result<Self, ManifestError> {
-        let invalid = || ManifestError::Slot(text.to_owned());
+        let invalid = || ManifestError::Slot(text.into());
         let (kind, descriptor) = text.split_once(':').ok_or_else(invalid)?;
         if descriptor.is_empty()
             || descriptor.len() > MAX_NAME_BYTES * 2
@@ -331,7 +363,7 @@ pub struct ProviderContribution {
 ///
 /// `execution`, `permissions`, `localization`, `panels` and `license` are retained as
 /// written but not interpreted yet; granting authority and loading code are later work.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PackageManifest {
     key: PackageKey,
     publisher: PackageId,
@@ -344,13 +376,77 @@ pub struct PackageManifest {
 }
 
 /// Manifest sections retained but not interpreted by this version.
-#[derive(Debug, Clone, PartialEq, Default)]
+#[derive(Clone, PartialEq, Default)]
 struct Opaque {
     execution: Option<Value>,
     permissions: Option<Value>,
     localization: Option<Value>,
     panels: Option<Value>,
     license: Option<String>,
+}
+
+/// Shows the slot kind and the descriptor's length only: a non-node descriptor is
+/// uninterpreted manifest text (13 §2). [`ProviderSlot::Other`] fields are public for
+/// authorized inspection.
+impl fmt::Debug for ProviderSlot {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Node(definition) => f.debug_tuple("Node").field(definition).finish(),
+            Self::Other { kind, descriptor } => f
+                .debug_struct("Other")
+                .field("kind", kind)
+                .field("descriptor", &Rejected::from(descriptor.as_str()))
+                .finish(),
+        }
+    }
+}
+
+/// A bounded summary: identity, host API range, counts and the presence of each opaque
+/// section, never its content. Read content through the accessors.
+impl fmt::Debug for PackageManifest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PackageManifest")
+            .field("key", &self.key)
+            .field("publisher", &self.publisher)
+            .field("host_api", &self.host_api)
+            .field("dependencies", &self.dependencies.len())
+            .field("nodes", &self.nodes.len())
+            .field("providers", &self.providers.len())
+            .field("opaque", &self.opaque)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Which opaque sections exist and how large they are, never their content.
+impl fmt::Debug for Opaque {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let section = |value: &Option<Value>| match value {
+            None => "absent".to_owned(),
+            Some(Value::Null) => "null".to_owned(),
+            Some(Value::Bool(_)) => "bool".to_owned(),
+            Some(Value::Number(_)) => "number".to_owned(),
+            Some(Value::String(text)) => format!("string({} chars)", text.chars().count()),
+            Some(Value::Array(items)) => format!("array({} items)", items.len()),
+            Some(Value::Object(fields)) => format!("object({} fields)", fields.len()),
+        };
+        let license = self.license.as_deref().map_or_else(
+            || "absent".to_owned(),
+            |text| Rejected::from(text).to_string(),
+        );
+        f.debug_struct("Opaque")
+            .field("execution", &format_args!("{}", section(&self.execution)))
+            .field(
+                "permissions",
+                &format_args!("{}", section(&self.permissions)),
+            )
+            .field(
+                "localization",
+                &format_args!("{}", section(&self.localization)),
+            )
+            .field("panels", &format_args!("{}", section(&self.panels)))
+            .field("license", &format_args!("{license}"))
+            .finish()
+    }
 }
 
 impl PackageManifest {
@@ -363,7 +459,7 @@ impl PackageManifest {
         let value: Value = serde_json::from_slice(bytes).map_err(decode)?;
         let format = value.get("format").and_then(Value::as_str);
         if format != Some(MANIFEST_FORMAT) {
-            return Err(ManifestError::Format(format.unwrap_or_default().to_owned()));
+            return Err(ManifestError::Format(format.unwrap_or_default().into()));
         }
         let format_version = value.get("format_version").and_then(Value::as_u64);
         if format_version != Some(u64::from(MANIFEST_FORMAT_VERSION)) {
@@ -438,7 +534,7 @@ impl PackageManifest {
 
 fn decode(error: serde_json::Error) -> ManifestError {
     ManifestError::Decode {
-        reason: error.to_string(),
+        error: error.into(),
     }
 }
 
@@ -506,7 +602,7 @@ impl WireManifest {
         let publisher: PackageId = self
             .publisher
             .parse()
-            .map_err(|_| ManifestError::Publisher(self.publisher.clone()))?;
+            .map_err(|_| ManifestError::Publisher(self.publisher.as_str().into()))?;
         let within_publisher = id.as_str() == publisher.as_str()
             || id
                 .as_str()
@@ -527,7 +623,9 @@ impl WireManifest {
             });
         }
         if self.integrity.algorithm != "sha256" {
-            return Err(ManifestError::DigestAlgorithm(self.integrity.algorithm));
+            return Err(ManifestError::DigestAlgorithm(
+                self.integrity.algorithm.into(),
+            ));
         }
         let digest = &self.integrity.payload_digest;
         if digest.len() != 64
@@ -561,7 +659,7 @@ impl WireManifest {
         for node in self.contributions.nodes {
             let parsed: DefinitionId = node
                 .parse()
-                .map_err(|_| ManifestError::NodeId(node.clone()))?;
+                .map_err(|_| ManifestError::NodeId(node.as_str().into()))?;
             if !id.owns(parsed.namespace()) {
                 return Err(ManifestError::NodeNamespace {
                     node,
@@ -579,7 +677,7 @@ impl WireManifest {
         for provider in self.contributions.providers {
             let slot: ProviderSlot = provider.slot.parse()?;
             if !is_provider_id(&provider.id) {
-                return Err(ManifestError::ProviderId(provider.id));
+                return Err(ManifestError::ProviderId(provider.id.into()));
             }
             let contribution = ProviderContribution {
                 slot,
@@ -587,7 +685,7 @@ impl WireManifest {
             };
             if !seen.insert(contribution.clone()) {
                 return Err(ManifestError::DuplicateProvider {
-                    slot: provider.slot,
+                    slot: provider.slot.into(),
                     id: contribution.id,
                 });
             }

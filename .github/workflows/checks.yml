@@ -1,15 +1,26 @@
 name: PR validation
 
-# Stage 1 (fast, Linux): lint, repository policy, supply chain.
-# Stage 2 (after lint/policy pass): native tests on every OS and MSRV compilation.
+# Stage 1 (fast, Linux): repository rules, Rust quality, supply chain.
+# Stage 2 (after repository rules pass): native tests and MSRV, parallel with quality.
 # Stage 3: the single required `rust` status with a results table in the run summary.
 
 on:
   push:
     branches: [dev, main]
   pull_request:
+  merge_group:
   workflow_dispatch:
+    inputs:
+      extended:
+        description: Also test Linux ARM64 and macOS Intel
+        type: boolean
+        default: true
   workflow_call:
+    inputs:
+      extended:
+        description: Include additional native architectures and the full optimized suite
+        type: boolean
+        default: false
   schedule:
     - cron: '0 8 * * 1'
 
@@ -26,18 +37,8 @@ env:
   RUST_BACKTRACE: 1
 
 jobs:
-  lint:
-    name: lint / ${{ matrix.check }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - check: format
-            command: cargo fmt --all --check
-          - check: clippy
-            command: cargo clippy --workspace --all-targets --locked -- -D warnings
-          - check: rustdoc
-            command: cargo doc --workspace --no-deps --locked
+  quality:
+    name: 1 · quality / clippy + docs
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     env:
@@ -49,19 +50,24 @@ jobs:
       # The runner's preinstalled rustup installs the toolchain pinned in rust-toolchain.toml.
       - run: rustup show active-toolchain
       - name: Cache compiled dependencies
-        if: matrix.check != 'format'
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
-          key: ${{ matrix.check }}
+          key: quality
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/dev' }}
-      - name: ${{ matrix.check }}
-        run: ${{ matrix.command }}
+      - name: Clippy on every target
+        run: cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
+      - name: Rustdoc with warnings denied
+        run: cargo doc --workspace --no-deps --all-features --locked
+      - name: Check measurement tooling without allocator instrumentation
+        run: cargo clippy -p orange-measure --no-default-features --locked -- -D warnings
 
   policy:
-    name: policy / architecture + workflows
+    name: 1 · rules / repository + workflows
     outputs:
       msrv: ${{ steps.msrv.outputs.version }}
+      matrix: ${{ steps.platforms.outputs.matrix }}
+      extended: ${{ steps.platforms.outputs.extended }}
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -72,6 +78,17 @@ jobs:
         with:
           node-version: 24.18.0
           package-manager-cache: false
+      - name: Rust formatting
+        run: cargo fmt --all --check
+      - id: platforms
+        name: Select explicit native architecture coverage
+        env:
+          EXTENDED: ${{ github.event_name == 'schedule' || inputs.extended == true }}
+        shell: bash
+        run: |
+          matrix=$(node tools/ci-platforms.mjs)
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
+          echo "extended=$EXTENDED" >> "$GITHUB_OUTPUT"
       - name: Core crates stay free of UI and engine frameworks
         run: |
           node tools/check-cargo-metadata.mjs --self-test
@@ -102,11 +119,11 @@ jobs:
           "$RUNNER_TEMP/zizmor/zizmor" --offline --format=github .github/workflows
       - name: Release contract
         run: |
-          node --test tools/release.test.mjs
+          node --test tools/*.test.mjs
           node tools/release.mjs check
 
   supply_chain:
-    name: supply-chain / cargo-deny
+    name: 1 · dependencies / cargo-deny
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -136,20 +153,28 @@ jobs:
         run: cargo deny --locked check advisories bans licenses sources
 
   test:
-    name: test / ${{ matrix.os }}
-    needs: [lint, policy]
+    name: 2 · test / ${{ matrix.label }}
+    needs: policy
     strategy:
       fail-fast: false
-      matrix:
-        os: [ubuntu-24.04, windows-2022, macos-15]
+      matrix: ${{ fromJSON(needs.policy.outputs.matrix) }}
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
+    env:
+      # Keep file/line backtraces and debug assertions; avoid full local-variable symbols.
+      CARGO_PROFILE_TEST_DEBUG: line-tables-only
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       # rustup reads the shared pin on Linux x64, Windows x64 and macOS arm64.
-      - run: rustc --version --verbose
+      - name: Verify native Rust host matches the declared architecture
+        shell: bash
+        env:
+          EXPECTED_HOST: ${{ matrix.host }}
+        run: |
+          rustc --version --verbose
+          test "$(rustc -vV | sed -n 's/^host: //p' | tr -d '\r')" = "$EXPECTED_HOST"
       - name: Cache native dependencies
         uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
@@ -163,22 +188,57 @@ jobs:
         if: ${{ !cancelled() }}
         shell: bash
         env:
-          OS: ${{ matrix.os }}
+          OS: ${{ matrix.label }}
         run: |
           grep -E '^test result:' "$RUNNER_TEMP/test.log" | awk -v os="$OS" '
             { passed += $4; failed += $6; ignored += $8 }
             END { printf "| %s | %d | %d | %d |\n", os, passed, failed, ignored }' > "$RUNNER_TEMP/row.md" || true
           {
-            echo "### Tests on $OS"
+            echo "### Debug workspace tests on $OS"
             echo "| OS | Passed | Failed | Ignored |"
             echo "|---|---|---|---|"
             cat "$RUNNER_TEMP/row.md"
             grep -E '^test .* FAILED$' "$RUNNER_TEMP/test.log" | sed 's/^/- /' || true
           } >> "$GITHUB_STEP_SUMMARY"
 
+  optimized:
+    name: 2 · behavior / release + examples
+    needs: policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: rustc --version --verbose
+      - name: Cache optimized dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: optimized-linux-x64
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      - name: Optimized runtime and measurement regressions
+        run: cargo test -p orange-runtime -p orange-measure --release --locked
+      - name: Measurement regressions without the default feature
+        run: cargo test -p orange-measure --no-default-features --release --locked
+      - name: Embedding example behavior
+        run: cargo test --workspace --examples --release --locked
+      - name: Headless embedding smoke runs
+        shell: bash
+        run: |
+          for example in headless_control headless_fork headless_authoring; do
+            cargo run -p orange-bundled --example "$example" --release --locked
+          done
+      - name: Check all twelve optimized execution workloads
+        shell: bash
+        run: cargo run -p orange-measure --release --locked -- --execution --warmup 1 --runs 1 > "$RUNNER_TEMP/execution-smoke.json"
+      - name: Full optimized workspace qualification on extended runs
+        if: needs.policy.outputs.extended == 'true'
+        run: cargo test --workspace --release --locked
+
   msrv:
-    name: msrv / ${{ needs.policy.outputs.msrv }}
-    needs: [lint, policy]
+    name: 2 · compatibility / MSRV ${{ needs.policy.outputs.msrv }}
+    needs: policy
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     env:
@@ -198,12 +258,14 @@ jobs:
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/dev' }}
       - name: Check every target on declared MSRV
-        run: cargo check --workspace --all-targets --locked
+        run: |
+          cargo check --workspace --all-targets --all-features --locked
+          cargo check -p orange-measure --no-default-features --locked
 
   rust:
     name: rust
     if: ${{ always() }}
-    needs: [lint, policy, supply_chain, test, msrv]
+    needs: [quality, policy, supply_chain, test, optimized, msrv]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -217,7 +279,7 @@ jobs:
             echo "| Stage | Job | Result |"
             echo "|---|---|---|"
             jq -r '
-              {lint: "1 lint", policy: "1 lint", supply_chain: "1 lint", test: "2 test", msrv: "2 test"} as $stage
+              {quality: "1 quality", policy: "1 rules", supply_chain: "1 dependencies", test: "2 native behavior", optimized: "2 optimized behavior", msrv: "2 compatibility"} as $stage
               | to_entries[]
               | "| \($stage[.key]) | \(.key) | \(if .value.result == "success" then "✅" else "❌" end) \(.value.result) |"' <<< "$NEEDS"
           } >> "$GITHUB_STEP_SUMMARY"

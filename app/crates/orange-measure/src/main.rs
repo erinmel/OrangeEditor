@@ -9,7 +9,9 @@
 //! on; they are evidence for choosing optimizations, not acceptance thresholds.
 
 mod authoring;
+#[cfg_attr(not(any(feature = "allocation-counting", test)), allow(dead_code))]
 mod counter;
+mod execution;
 mod graph;
 mod harness;
 mod import_measure;
@@ -19,6 +21,7 @@ mod workloads;
 
 use harness::{Config, Row};
 
+#[cfg(any(feature = "allocation-counting", test))]
 #[global_allocator]
 static ALLOCATOR: counter::CountingAllocator = counter::CountingAllocator;
 
@@ -43,9 +46,11 @@ fn main() {
     let mut config = Config {
         budget: 64,
         warmup: 3,
+        warmup_seconds: 0,
         runs: 15,
     };
     let mut filter = String::new();
+    let mut execution = false;
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         let mut number = |name: &str| -> usize {
@@ -57,9 +62,20 @@ fn main() {
         match arg.as_str() {
             "--budget" => config.budget = number("--budget"),
             "--warmup" => config.warmup = number("--warmup"),
+            "--warmup-seconds" => config.warmup_seconds = number("--warmup-seconds") as u64,
             "--runs" => config.runs = number("--runs"),
+            "--execution" => execution = true,
+            _ if arg.starts_with('-') => panic!("unknown option: {arg}"),
             _ => filter = arg,
         }
+    }
+    assert!(
+        execution || cfg!(feature = "allocation-counting"),
+        "profiles without allocation-counting require --execution; memory profiles need the default features"
+    );
+    if execution {
+        execution::run(config, &filter);
+        return;
     }
     let profile = if cfg!(debug_assertions) {
         "debug (not representative; use --release)"

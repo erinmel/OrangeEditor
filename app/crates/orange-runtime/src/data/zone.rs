@@ -241,6 +241,14 @@ fn zone_operation(node: &DataNode) -> Result<(ZoneIx, usize), DataError> {
         _ => Err(DataError::KernelContract { node: node.node() }),
     }
 }
+/// A machine refusal under a capacity the run budget tightened is the run budget's.
+fn retag(error: DataError, aggregate: bool) -> DataError {
+    if aggregate && error == DataError::ResourceLimit {
+        DataError::AggregateLimit
+    } else {
+        error
+    }
+}
 fn machine_error(node: NodeId, error: MachineError) -> DataError {
     match error {
         MachineError::Limit => DataError::ResourceLimit,
@@ -254,7 +262,7 @@ impl Frame {
             zone.machine = None;
             zone.live = false;
         }
-        self.zone_bytes = 0;
+        self.zone_bytes.set(0);
     }
     /// Collect the strict begin prefix (count/items/initial), then start the zone.
     pub(super) fn zone_prefix(
@@ -332,12 +340,27 @@ impl Frame {
         })?;
         self.pull_input(node, next)
     }
-    fn zone_capacity(&self, credit: usize) -> Result<usize, DataError> {
-        self.limits
+    /// Bytes the machine may total, crediting `credit` it already holds, and whether the
+    /// run budget rather than the per-activation limit is the tighter bound. The machine
+    /// validates against this before it changes any state, so the reservation that
+    /// follows is already admitted.
+    /// Live machine bytes. Growth was bounded by `zone_capacity`; shrinking never fails.
+    fn set_zone_bytes(&mut self, total: usize) -> Result<(), DataError> {
+        if self.zone_bytes.try_set(total) {
+            Ok(())
+        } else {
+            Err(DataError::AggregateLimit)
+        }
+    }
+    fn zone_capacity(&self, credit: usize) -> Result<(usize, bool), DataError> {
+        let local = self
+            .limits
             .max_retained_bytes
-            .checked_sub(self.retained)
-            .and_then(|free| free.checked_sub(self.zone_bytes.checked_sub(credit)?))
-            .ok_or(DataError::ResourceLimit)
+            .checked_sub(self.retained.get())
+            .and_then(|free| free.checked_sub(self.zone_bytes.get().checked_sub(credit)?))
+            .ok_or(DataError::ResourceLimit)?;
+        let run = self.zone_bytes.headroom().saturating_add(credit);
+        Ok((local.min(run), run < local))
     }
     /// Copy already demanded, fault-free operand values into the scratch inputs.
     fn collect_inputs(
@@ -369,19 +392,22 @@ impl Frame {
             .outputs()
             .first()
             .ok_or(DataError::KernelContract { node: node.node() })?;
+        let (capacity, aggregate) = self.zone_capacity(0)?;
         let machine = ZoneMachine::new(
             plan.zones()[zone.index()].kind(),
             &self.inputs,
             &plan.slot_types()[result.index()],
-            self.zone_capacity(0)?,
+            capacity,
         );
         self.inputs.clear();
         match machine {
             Ok(machine) => {
-                self.zone_bytes = self
+                let total = self
                     .zone_bytes
+                    .get()
                     .checked_add(machine.bytes().map_err(|e| machine_error(node.node(), e))?)
                     .ok_or(DataError::ResourceLimit)?;
+                self.set_zone_bytes(total)?;
                 self.zones[zone.index()].machine = Some(Box::new(machine));
                 self.push(Work::ZoneNext(node.index()))
             }
@@ -393,7 +419,7 @@ impl Frame {
                     fault,
                 },
             ),
-            Err(error) => Err(machine_error(node.node(), error)),
+            Err(error) => Err(retag(machine_error(node.node(), error), aggregate)),
         }
     }
     fn advance_zone(
@@ -411,7 +437,7 @@ impl Frame {
             .ok_or(missing)?
             .bytes()
             .map_err(|e| machine_error(node.node(), e))?;
-        let capacity = self.zone_capacity(old)?;
+        let (capacity, aggregate) = self.zone_capacity(old)?;
         // The machine stays in its cell, so zone_bytes remains exact on failure;
         // advance validates and reserves before it changes any state.
         let machine = self.zones[zone.index()].machine.as_mut().ok_or(missing)?;
@@ -422,14 +448,15 @@ impl Frame {
                 capacity,
             )
             .and_then(|()| machine.bytes())
-            .map_err(|e| machine_error(node.node(), e))?;
+            .map_err(|e| retag(machine_error(node.node(), e), aggregate))?;
         self.inputs.clear();
-        self.zone_bytes = self
+        let total = self
             .zone_bytes
+            .get()
             .checked_sub(old)
             .and_then(|n| n.checked_add(new))
             .ok_or(DataError::ResourceLimit)?;
-        Ok(())
+        self.set_zone_bytes(total)
     }
     fn retire_zone(&mut self, zone: ZoneIx, node: NodeId) -> Result<Box<ZoneMachine>, DataError> {
         let cell = &mut self.zones[zone.index()];
@@ -438,10 +465,12 @@ impl Frame {
             .machine
             .take()
             .ok_or(DataError::KernelContract { node })?;
-        self.zone_bytes = self
+        let total = self
             .zone_bytes
+            .get()
             .checked_sub(machine.bytes().map_err(|e| machine_error(node, e))?)
             .ok_or(DataError::ResourceLimit)?;
+        self.set_zone_bytes(total)?;
         Ok(machine)
     }
     fn finish_zone(&mut self, node: &DataNode, zone: ZoneIx) -> Result<(), DataError> {

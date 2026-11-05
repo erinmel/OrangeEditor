@@ -479,6 +479,78 @@ fn values_outside_the_bound_shape_are_contract_errors() {
     );
 }
 
+/// Equal and NotEqual refuse `bad` in either position, even where a comparison could
+/// stop early against `other`.
+fn assert_refused_both_ways(ty: &str, bad: &Value, other: &Value) {
+    for comparison in [Comparison::Equal, Comparison::NotEqual] {
+        for (a, b) in [(bad, other), (other, bad)] {
+            assert_eq!(
+                eval(comparison, ty, a, b),
+                Err(KernelError::InputContract),
+                "{comparison:?} {ty} {a:?} {b:?}"
+            );
+        }
+    }
+}
+
+#[test]
+fn equality_validates_both_values_before_any_shortcut() {
+    let strings = "core/list@1<core/string@1>";
+    // Different lengths and an earlier unequal element both hide a bad element.
+    assert_refused_both_ways(strings, &list(vec![s("a"), Value::I64(1)]), &list(vec![]));
+    assert_refused_both_ways(
+        strings,
+        &list(vec![s("a"), Value::I64(1)]),
+        &list(vec![s("b"), s("c")]),
+    );
+    assert_refused_both_ways(strings, &Value::I64(1), &list(vec![]));
+
+    // None against a present value that is itself wrongly typed.
+    let option = "core/option@1<core/string@1>";
+    assert_refused_both_ways(option, &Value::Some(Arc::new(Value::I64(1))), &Value::None);
+    let nested = "core/option@1<core/option@1<core/i64@1>>";
+    assert_refused_both_ways(nested, &Value::Some(Arc::new(s("x"))), &Value::None);
+
+    // Maps of different sizes, absent keys or unequal earlier values hide bad entries.
+    let ty = "core/map@1<core/string@1,core/i64@1>";
+    let bad_value = map(vec![(s("a"), s("x"))]);
+    let bad_key = map(vec![(Value::I64(1), Value::I64(1))]);
+    let valid = map(vec![(s("a"), Value::I64(1)), (s("b"), Value::I64(2))]);
+    for bad in [&bad_value, &bad_key] {
+        assert_refused_both_ways(ty, bad, &valid);
+        assert_refused_both_ways(ty, bad, &map(vec![]));
+        assert_refused_both_ways(ty, bad, &map(vec![(s("z"), Value::I64(1))]));
+    }
+    assert_refused_both_ways(
+        ty,
+        &map(vec![(s("a"), Value::I64(5)), (s("q"), s("x"))]),
+        &map(vec![(s("a"), Value::I64(6)), (s("r"), Value::I64(1))]),
+    );
+
+    // Enums with different tags, and a bad payload inside a differing variant.
+    let bad_payload = variant(1, Some(Value::I64(1)));
+    assert_refused_both_ways(LIGHT, &bad_payload, &variant(0, None));
+    assert_refused_both_ways(LIGHT, &bad_payload, &amber(1));
+    let lights = variant(1, Some(list(vec![variant(0, None), variant(9, None)])));
+    assert_refused_both_ways(PALETTE, &lights, &variant(0, None));
+}
+
+#[test]
+fn ordering_refuses_wrongly_typed_inputs_in_either_position() {
+    for comparison in [Comparison::Less, Comparison::GreaterOrEqual] {
+        for (a, b) in [
+            (Value::I64(1), Value::U64(1)),
+            (Value::U64(1), Value::I64(1)),
+            (Value::I64(1), Value::None),
+        ] {
+            assert_eq!(
+                eval(comparison, "core/i64@1", &a, &b),
+                Err(KernelError::InputContract)
+            );
+        }
+    }
+}
+
 // Graph-level helpers.
 
 fn id(n: u32) -> String {

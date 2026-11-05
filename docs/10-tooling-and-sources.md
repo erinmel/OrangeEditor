@@ -1,5 +1,59 @@
 # Tooling, environment and research register
 
+## CI/CD grouping, native compatibility and execution evidence — 2026-11-05
+
+Work: CI/CD update in PR [126](https://github.com/erinmel/OrangeEditor/pull/126), continuing
+`fix/engineering-review-2026-11-05` from `423b5cc9ef92a6e5525b971bf83e84ab7fc9515b`.
+Selected local Rust/Cargo 1.99.1, Windows x86_64 MSVC; Node 24.18.0. Workspace MSRV remains
+1.97.1. Cargo.lock SHA-256 remains
+`8bb91caaff5a7106e5752d49d9ab285d4566a1b69b55ad1ca81e10e1d70bb068`.
+Production dependencies/features and public core interfaces are unchanged; the development
+measurement crate adds default `allocation-counting` and an uninstrumented execution mode.
+
+- `CARGO_INCREMENTAL=0 CARGO_PROFILE_TEST_DEBUG=line-tables-only cargo test --workspace --locked --offline`: PASS, 1,203 passed, 15 ignored, 111 result groups. Ignored qualifications remain unexecuted.
+- `cargo test -p orange-measure --no-default-features --locked --offline`: PASS, 8 tests; the test binary retains the counting allocator so memory regressions are real checks.
+- `cargo test -p orange-measure --release --locked --offline`: PASS, 8 tests, including construction/teardown measurement boundaries.
+- Follow-up optimized lane: `cargo test -p orange-runtime -p orange-measure --release --locked --offline`; `cargo test -p orange-measure --no-default-features --release --locked --offline`; `cargo test --workspace --examples --release --locked --offline`, plus the three release-mode headless examples: PASS. These commands reuse release builds; the full optimized workspace suite is selected for weekly/extended manual/CD validation.
+- `cargo test --workspace --examples --locked --offline`: PASS, 10 tests in 3 examples. `cargo run -p orange-bundled --example` for `headless_control`, `headless_fork`, `headless_authoring` with `--locked --offline`: PASS.
+- `cargo fmt --all --check`; `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings`; `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings`; `RUSTDOCFLAGS='-D warnings' cargo doc --workspace --no-deps --all-features --locked --offline`: PASS.
+- `node --test tools/*.test.mjs`: PASS, 10 tests (7 release contracts, 3 platform-selection/invalid-input checks). `node tools/check-cargo-metadata.mjs --self-test`: PASS, 19 fixtures; ordinary policy check and `node tools/release.mjs check`: PASS, release remains disabled.
+- Official checksum-verified Windows actionlint 1.7.12, `-shellcheck= -pyflakes=` on all three workflows: PASS for syntax/expressions. Shellcheck is unavailable locally and remains enabled in Linux CI. Official checksum-verified zizmor 1.30.1, `--offline --format plain .github/workflows`: PASS, no unsuppressed findings. Existing self-repository suppression remains.
+- Both locked release builds of `orange-measure`, default and `--no-default-features`, then `--execution --warmup 1 --runs 2`: PASS across all 12 workloads; JSON parses, raw sample lengths and pump counts agree, timing allocation fields are null, memory counters are populated. Invalid filters and uninstrumented memory profiles fail. These are functional smoke checks, not performance qualification.
+- `git diff --check`: PASS. The unrelated untracked foundation review remains unchanged.
+
+Observed previous CI baseline: run [42100025087](https://github.com/erinmel/OrangeEditor/actions/runs/42100025087)
+on dev `bf6ea82e3c2aa3e63d1f20fb6fee8737f38ff54e` took 311 seconds including scheduling;
+Windows's job took 271 seconds, including 233 seconds in the test command and approximately
+170 seconds compiling. The prior PR run 42099102248 took 304 seconds. These are observations,
+not expected savings. Grouping reduces ordinary validation from ten to nine jobs, test
+line-table symbols target compilation cost, and optimized behavior runs in parallel;
+exact-head CI must establish the resulting time.
+
+First updated remote evidence at `4932e2769afe6f55cabf842a4b2cb42c005164c6`:
+Windows [job 127527204916](https://github.com/erinmel/OrangeEditor/actions/runs/42107748431/job/127527204916)
+passed in 165 seconds (91 seconds compiling), versus the earlier 271-second job;
+macOS ARM64 passed in 139 seconds versus 185. These are individual hosted observations
+across changed source/cache state, not a controlled before/after experiment. Full release
+integration-test compilation dominates the extended lane, so ordinary PRs run focused
+optimized runtime/measurement/real-graph/example behavior in parallel with native tests;
+full optimized workspace coverage remains in extended weekly/manual/CD validation.
+
+[Execution measurements run 42107748520](https://github.com/erinmel/OrangeEditor/actions/runs/42107748520)
+passed: portable Linux x64, 4-vCPU VM exposing AMD EPYC 7763, ten-second per-workload warmup,
+30 samples, separate timing/allocation binaries. Complete-session p50/p95 observations:
+16-add chain ×1,000 iterations 3.099/3.118 ms; nested 32×32 For-each 0.765/0.771 ms;
+4,000-way Fork ×100 iterations 230.507/231.830 ms. The last session requested 517,020,701
+allocator bytes with 7,696,525 peak incremental live bytes. These are different-sized
+whole sessions, not per-node/per-pump timings, RSS or older-machine qualification. The
+artifact contains all twelve workloads, raw samples and provenance; the method is in 18.
+
+Local MSRV/Linux/macOS/ARM64 execution, full optimized workspace execution, refreshed
+cargo-deny and the scheduled ten-second-warmup measurement workflow are NOT RUN locally;
+remote exact-head checks supply that evidence. Extended manual validation is the intended
+pre-merge exercise for the additional native architecture labels. No signing, older-machine,
+W1/W2, NFR-01/NFR-05 or universal sub-1 ms gate is passed. Commands, retention, measurement
+boundaries and the fixed older-machine procedure are in [18](18-ci-and-performance.md).
+
 Current implementation checkpoint (2026-10-23): supported control documents run six covered categories (body domains, node resolution, input values, connections, function summaries and data cycles); nine required categories remain missing. Unsupported domains stop combined control analysis after the domain prerequisite, so that invocation records one covered category and fourteen unexecuted checks. Compiler readiness remains false. Earlier coverage counts below are historical results at their recorded commits; the latest verification entries supersede their status statements.
 
 ## Foundation review reassessment (2026-10-23)
@@ -3038,3 +3092,13 @@ Base dev `c1c43f1`; Rust/Cargo 1.99.1 Windows x86_64 MSVC, default features, Car
 - **Regressions:** `orange-model` shape unit test (derived-key enums key maps; a list payload, or a payload enum without the derive, does not; tags and payloads are checked; duplicate keys are rejected) and `tests/validation_enum_declarations.rs` (enum and option-of-enum initializers decode or report `E-LITERAL-TYPE` for unknown variants, missing, extra or mistyped payloads; enum-keyed map initializers and event payloads validate; duplicate keys are `E-LITERAL-TYPE`; an `eq`-only key is `E-DECLARATION-TYPE`; a stored initializer before and after a variant is added). `orange-bundled` `tests/enum_declarations.rs`, through `Run::start`: initialized and assigned enum variables route a Switch; initializers compile and run against the old and grown schemas, with a new variant's tag and refusal on the old snapshot; enum and enum-keyed map event payloads reach On Event; an enum-keyed map variable keeps insertion order and payload-distinct keys when copied. Refusals: a package-`hash` key and enum Compare-and-set. `tests/comparisons.rs`: equality of enum-keyed maps in either order, and binding refusal for keys without `hash` or with package `eq`.
 - **Commands (repo root):** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings` and `cargo test -p orange-model -p orange-compiler -p orange-bundled` passed.
 - **Limits:** Compare-and-set on enum variables needs a runtime equality that applies derived enum `eq` through payloads, including order-independent maps inside them. The runtime's CAS compares structurally and falls back only for Core maps. Package-implemented `hash`/`eq` keys, enum order, records and workspace-scope events remain unsupported.
+
+### Engineering review remediation — 2026-11-05
+
+Review: ignored `.artifacts/engineering-review-2026-11-05/` (F1–F4, M1, G1); base `bf6ea82`; Rust/Cargo 1.99.1 Windows x86_64 MSVC, default features, Cargo.lock unchanged.
+
+- **Change:** `PackageStore::restore` stages in memory and makes one atomic `Committed` journal append (failure writes nothing and may be retried); `JournalEntry::Committed` records exact new-binding `defaults` and `JournalEntry` is `#[non_exhaustive]`; a missing selected provider is `RecoveryDefaultUnavailable`; `RetentionPolicy { max_rollback_generations }` (default 16, unmeasured), `RollbackWindowExceeded`, `Journal::compact` and `PackageStore::compact_journal`; package errors hold rejected text as `Rejected`, `PackageManifest`/`ProviderSlot`/`PackageContents`/`PackageRecord`/`PackageStore` have bounded `Debug` summaries, and `ManifestError`/`TransactionError` expose `packages/*` message keys; `ResolvedComparison::evaluate` validates both equality inputs before comparing. Contracts: [04](04-expansion-plugins.md), [12 §8](12-graph-data-structures.md), [13](13-internationalization.md), [03](03-data-and-execution.md), [11 §5.4](11-graph-language.md).
+- **Regressions:** `orange-packages` `tests/recovery.rs` (failed or interrupted restore leaves the last complete commit), `tests/defaults.rs`, `tests/retention.rs`, `tests/redaction.rs` (canaries across rejection paths and package objects); `orange-bundled` `tests/comparisons.rs` (wrongly typed equality inputs behind unequal lengths, tags and presence).
+- **Commands (repo root):** `cargo fmt --all --check`, `cargo clippy --workspace --all-targets -- -D warnings`, `cargo test --workspace`, `RUSTDOCFLAGS="-D warnings" cargo doc --workspace --no-deps`. all pass, 1,202 tests passed and 15 timing tests ignored; `node tools/check-cargo-metadata.mjs` and `git diff --check` pass. MSRV, Linux/macOS and remote CI were not rerun locally.
+- **G1 aggregate run budget:** `RunLimits::max_run_retained_bytes` (default 512 MiB), private RAII `budget` leases shared by all activations, `RunError`/`DataError::AggregateLimit` and `Run::retention()` (03). Regressions: `orange-runtime` budget unit tests; `orange-bundled` `support/budget_*.rs` across roots, growing cells, pending pulls, iterations, function frames/results, event handlers, stop and disposal. Limits: nominal accounting only, no RSS measurement; mid-step counter state after a fault is observed only through unit tests because cleanup releases every lease.
+- **Limits:** a base-registry default overridden by a package default and later removed returns after restart (`RegistryBuilder` cannot clear a default); `JournalError.reason` is host text still shown by `TransactionError::Journal`; `RegistryError` and `JournalError` share one generic key each; the rollback default is not measured; durable journal implementations, archives, grants, code loading and draining remain open.

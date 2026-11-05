@@ -1,5 +1,9 @@
 # Development measurements
 
+For complete-execution latency/allocation JSON, CI architecture coverage and the older
+reference-machine procedure, see [CI and performance](../docs/18-ci-and-performance.md).
+Use separate feature-mode binaries for latency and allocation measurements.
+
 The Rust `orange-measure` binary is development tooling. It is not a core dependency, and heavy measurement profiles are not invoked by ordinary workspace tests.
 
 Build the exact locked source before timing:

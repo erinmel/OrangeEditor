@@ -23,4 +23,4 @@ pub use manifest::{
     MANIFEST_FORMAT_VERSION, MAX_MANIFEST_BYTES, ManifestError, PackageId, PackageKey,
     PackageManifest, PackageVersion, ProviderContribution, ProviderSlot, SlotKind,
 };
-pub use store::{PackageContents, PackageRecord, PackageStore, TransactionError};
+pub use store::{PackageContents, PackageRecord, PackageStore, RetentionPolicy, TransactionError};

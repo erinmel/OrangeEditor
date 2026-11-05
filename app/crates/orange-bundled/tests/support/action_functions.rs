@@ -1,33 +1,33 @@
 use super::*;
-fn start() -> Json {
+pub(super) fn start() -> Json {
     let mut n = core(1, "on-start");
     n["activation"] = json!({"mode":"queue","capacity":4,"overflow":"drop-newest","on_fault":"continue","order":0});
     n
 }
-fn action_call(n: u32, f: u32, value: u64) -> Json {
+pub(super) fn action_call(n: u32, f: u32, value: u64) -> Json {
     let mut n = core(n, "call");
     n["config"] = json!({"function":id(f)});
     n["inputs"] = json!({"value":literal(value)});
     n
 }
-fn set(n: u32, v: u32, value: u64) -> Json {
+pub(super) fn set(n: u32, v: u32, value: u64) -> Json {
     let mut n = core(n, "set-variable");
     n["config"] = json!({"variable":id(v)});
     n["inputs"] = json!({"value":literal(value)});
     n
 }
-fn initialized(n: u32, scope: &str, value: u64) -> Json {
+pub(super) fn initialized(n: u32, scope: &str, value: u64) -> Json {
     let mut v = variable(n, "core/u64@1");
     v["scope"] = json!(scope);
     v["init"] = literal(value);
     v
 }
-fn local_function(f: u32, v: u32) -> Json {
+pub(super) fn local_function(f: u32, v: u32) -> Json {
     json!({"id":id(f),"name":"local","kind":"action","inputs":[port("value","input","core/u64@1")],"outputs":[port("result","output","core/u64@1")],
         "nodes":[core(f+1,"function-entry"),set(f+3,v,0),get(f+4,v),core(f+5,"return")],
         "edges":[edge(f+1,f+1,"then",f+3,"in"),edge(f+2,f+1,"value",f+3,"value"),edge(f+3,f+3,"then",f+5,"in"),edge(f+4,f+4,"value",f+5,"result")]})
 }
-fn compile_plan(
+pub(super) fn compile_plan(
     doc: &GraphDocument,
     snapshot: Arc<orange_model::catalog::RegistrySnapshot>,
     package: &orange_bundled::MathPackage,

@@ -175,12 +175,13 @@ impl Frames {
         }
         let retained = shared
             .retained_bytes
+            .get()
             .checked_sub(removed)
             .ok_or(RunError::InvalidState)?;
         for &input in layout.projections() {
             shared.outputs[cells.outputs[input].ok_or(RunError::InvalidState)?] = None;
         }
-        shared.retained_bytes = retained;
+        shared.retained_bytes.set(retained);
         let FunctionFrame {
             mut arguments,
             mut locals,
@@ -326,7 +327,7 @@ impl Cells<'_> {
                 frame,
                 variable,
                 value: &value,
-                retained: shared.retained_bytes,
+                retained: shared.retained_bytes.get(),
                 write: true,
             },
         )?;
@@ -505,16 +506,18 @@ fn publish_call_results(
     }
     let retained = shared
         .retained_bytes
+        .get()
         .checked_sub(removed)
         .and_then(|n| n.checked_add(added))
         .ok_or(RunError::ResourceLimit)?;
     if retained
-        .checked_add(shared.local_bytes)
+        .checked_add(shared.local_bytes.get())
         .and_then(|n| n.checked_add(shared.owned_bytes.load(Ordering::Relaxed)))
         .is_none_or(|n| n > limit)
     {
         return Err(RunError::ResourceLimit);
     }
+    shared.retained(retained)?;
     for &input in plan.value_targets(owner) {
         let HostSource::CallOutput(_, index) = plan.host_sources()[input] else {
             unreachable!("checked call projection")
@@ -522,6 +525,5 @@ fn publish_call_results(
         shared.outputs[layout.outputs[input].ok_or(RunError::InvalidState)?] =
             values.map(|values| FoldedValue::Value(values[index].clone()));
     }
-    shared.retained_bytes = retained;
     Ok(())
 }

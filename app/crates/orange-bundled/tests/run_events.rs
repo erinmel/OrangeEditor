@@ -1578,3 +1578,9 @@ fn queued_handler_blocked_by_activation_limit_waits_for_timer_without_losing_wor
         Some(&Value::U64(42))
     );
 }
+
+#[path = "support/budget_drive.rs"]
+#[allow(dead_code)]
+mod budget_drive;
+#[path = "support/budget_events.rs"]
+mod budget_events;

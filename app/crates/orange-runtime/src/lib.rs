@@ -10,6 +10,7 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod budget;
 mod cancel;
 mod data;
 mod entropy;
@@ -22,5 +23,5 @@ pub use entropy::{
 };
 pub use run::{
     ControlOutcome, EventMetadata, Run, RunError, RunEvent, RunEventStats, RunLimits, RunOptions,
-    RunOwnership, RunProgress, RunState, StopMode,
+    RunOwnership, RunProgress, RunRetention, RunState, StopMode,
 };

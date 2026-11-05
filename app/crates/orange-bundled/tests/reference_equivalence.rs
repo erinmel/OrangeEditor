@@ -82,8 +82,9 @@ fn document(
         );
     }
     let key = package.provider_key();
-    // Export/lock authoring commands do not exist yet: use the actual versioned JSON
-    // boundary to assemble product documents, not an alternative behavioral test DSL.
+    // Assemble product documents through the actual versioned JSON boundary, not an
+    // alternative behavioral test DSL. Export and package-lock edit commands exist
+    // (`UpsertExport`, `PutPackageLock`); this suite keeps the wire format in its path.
     from_json(&json!({"format":"orange.graph","format_version":1,"graph_id":id(2,1),"revision":0,
         "package_lock":[{"id":key.package,"version":key.version,"content_digest":key.content_digest}],
         "signatures":signatures,"nodes":nodes,"edges":edges,"exports":exports}).to_string()).unwrap()

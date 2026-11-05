@@ -163,10 +163,16 @@ impl ResolvedComparison {
     }
 
     /// Compares `a` with `b` (declared order). A value that does not match the bound
-    /// shape is a contract error, never coerced.
+    /// shape is a contract error, never coerced. Equality validates both complete
+    /// values before it compares, so a mismatch is reported even where the comparison
+    /// would otherwise stop early (differing lengths, tags or presence, an earlier
+    /// unequal element). Total orders are scalar and have no such shortcut.
     pub fn evaluate(&self, a: &Value, b: &Value) -> Result<bool, KernelError> {
         let order = match self.comparison.constraint() {
             Constraint::Eq => {
+                if !self.shape.accepts(a) || !self.shape.accepts(b) {
+                    return Err(KernelError::InputContract);
+                }
                 if equal(&self.shape, a, b, 0).ok_or(KernelError::InputContract)? {
                     Ordering::Equal
                 } else {

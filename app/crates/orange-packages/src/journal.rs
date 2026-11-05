@@ -5,13 +5,23 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
+use orange_model::catalog::ProviderKey;
+use orange_model::document::DefinitionRef;
 use thiserror::Error;
 
 use crate::lifecycle::PackageState;
 use crate::manifest::PackageKey;
 
 /// One journal record.
+///
+/// The enum is `#[non_exhaustive]` so later checkpoint representations are additive. The
+/// recovery checkpoint grew a `defaults` field in place rather than a second variant: a host
+/// that stores entries in its own format keeps one checkpoint shape, and reads an older
+/// record that lacks defaults as `defaults: None` (see [`Committed`](Self::Committed)).
+/// Hosts that construct or destructure `Committed` must handle the new field; hosts that
+/// only store and replay entries need no change.
 #[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum JournalEntry {
     /// A package version entered `state`. Retirements are written before the commit that
     /// publishes them, activations after it.
@@ -34,6 +44,12 @@ pub enum JournalEntry {
         published: BTreeMap<PackageKey, String>,
         /// Every revoked content digest.
         revoked: BTreeSet<String>,
+        /// The exact new-binding provider default of each definition the store tracks, such
+        /// as every definition an active package implements or a host selected a default
+        /// for. `None` marks a checkpoint written before defaults were recorded: restoring
+        /// it applies none. `Some` is authoritative: a restart applies exactly these
+        /// choices after every referenced provider exists, never install order.
+        defaults: Option<BTreeMap<DefinitionRef, ProviderKey>>,
     },
 }
 
@@ -51,6 +67,17 @@ pub trait Journal {
     /// Appends `entry`. An error means the entry is not durable and the store abandons the
     /// step that needed it.
     fn append(&mut self, entry: JournalEntry) -> Result<(), JournalError>;
+
+    /// Replaces every earlier entry with `checkpoint`, a complete
+    /// [`JournalEntry::Committed`] of the store's current state, so a durable journal stays
+    /// bounded. Must be atomic: after an error, or a crash, the journal holds either all its
+    /// earlier entries or exactly `checkpoint`, and both recover the same committed set,
+    /// published digests and revocations. The default does nothing, which suits journals
+    /// that never compact.
+    fn compact(&mut self, checkpoint: JournalEntry) -> Result<(), JournalError> {
+        let _ = checkpoint;
+        Ok(())
+    }
 }
 
 /// An in-memory journal for tests and hosts without persistence. It never fails.
@@ -76,6 +103,11 @@ impl Journal for MemoryJournal {
         self.entries.push(entry);
         Ok(())
     }
+
+    fn compact(&mut self, checkpoint: JournalEntry) -> Result<(), JournalError> {
+        self.entries = vec![checkpoint];
+        Ok(())
+    }
 }
 
 /// What a restart learns from a journal; [`PackageStore::restore`](crate::PackageStore::restore)
@@ -94,6 +126,9 @@ pub struct Recovery {
     /// Versions whose last step is an unfinished installation step and that the last commit
     /// does not include: their staged files are stale and must never be executed.
     pub abandoned: Vec<PackageKey>,
+    /// The new-binding defaults of the last commit, or `None` if nothing was committed or
+    /// that checkpoint predates recorded defaults. See [`JournalEntry::Committed`].
+    pub defaults: Option<BTreeMap<DefinitionRef, ProviderKey>>,
 }
 
 impl Recovery {
@@ -110,11 +145,12 @@ impl Recovery {
                     active,
                     published,
                     revoked,
+                    defaults,
                     ..
-                } => checkpoint = Some((active, published, revoked)),
+                } => checkpoint = Some((active, published, revoked, defaults)),
             }
         }
-        let Some((active, published, revoked)) = checkpoint else {
+        let Some((active, published, revoked, defaults)) = checkpoint else {
             return Self {
                 abandoned: last
                     .into_iter()
@@ -140,6 +176,7 @@ impl Recovery {
             removed,
             revoked: revoked.clone(),
             abandoned,
+            defaults: defaults.clone(),
         }
     }
 }

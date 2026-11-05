@@ -20,6 +20,8 @@ use std::time::{Duration, Instant};
 pub struct Config {
     pub budget: usize,
     pub warmup: usize,
+    /// Minimum warmup wall time for each execution workload, in addition to `warmup` runs.
+    pub warmup_seconds: u64,
     pub runs: usize,
 }
 
@@ -45,6 +47,10 @@ pub struct Row {
     /// The slowest single pump observed.
     pub pump_max: Duration,
     pub total_p50: Duration,
+    pub total_p95: Duration,
+    pub total_p99: Duration,
+    pub total_max: Duration,
+    pub total_samples: Vec<Duration>,
 }
 
 pub fn measure<S: Session>(
@@ -56,29 +62,38 @@ pub fn measure<S: Session>(
     mut check: impl FnMut(S::Outcome),
 ) -> Row {
     let mut pumps = 0;
-    for _ in 0..config.warmup.max(1) {
+    let warming = Instant::now();
+    let mut warmed = 0;
+    while warmed < config.warmup.max(1)
+        || warming.elapsed() < Duration::from_secs(config.warmup_seconds)
+    {
         let mut session = start();
         pumps = 1;
         while session.step() {
             pumps += 1;
         }
         check(session.finish());
+        warmed += 1;
     }
     // Reserved up front so recording a pump never allocates inside the window.
-    let mut durations = Vec::with_capacity(pumps * config.runs);
+    let sample_pumps = cfg!(any(feature = "allocation-counting", test));
+    let mut durations = Vec::with_capacity(if sample_pumps { pumps * config.runs } else { 0 });
     let mut totals = Vec::with_capacity(config.runs);
     let mut first: Option<Counts> = None;
     let mut counts_vary = false;
     for _ in 0..config.runs {
         let capacity = durations.capacity();
-        let before = durations.len();
+        let mut observed_pumps = 0;
         let window = Snapshot::start();
         let begin = Instant::now();
         let mut session = start();
         loop {
-            let pump = Instant::now();
+            let pump = sample_pumps.then(Instant::now);
             let more = session.step();
-            durations.push(pump.elapsed());
+            observed_pumps += 1;
+            if let Some(pump) = pump {
+                durations.push(pump.elapsed());
+            }
             if !more {
                 break;
             }
@@ -87,11 +102,7 @@ pub fn measure<S: Session>(
         let total = begin.elapsed();
         let counts = window.finish();
         assert_eq!(capacity, durations.capacity(), "{name}: pump count changed");
-        assert_eq!(
-            pumps,
-            durations.len() - before,
-            "{name}: pump count changed"
-        );
+        assert_eq!(pumps, observed_pumps, "{name}: pump count changed");
         check(outcome);
         totals.push(total);
         match first {
@@ -100,6 +111,7 @@ pub fn measure<S: Session>(
         }
     }
     durations.sort_unstable();
+    let total_samples = totals.clone();
     totals.sort_unstable();
     Row {
         name,
@@ -108,11 +120,23 @@ pub fn measure<S: Session>(
         pumps,
         counts: first.expect("at least one measured run"),
         counts_vary,
-        pump_p50: percentile(&durations, 50),
-        pump_p95: percentile(&durations, 95),
-        pump_p99: percentile(&durations, 99),
+        pump_p50: pump_percentile(&durations, 50),
+        pump_p95: pump_percentile(&durations, 95),
+        pump_p99: pump_percentile(&durations, 99),
         pump_max: durations.last().copied().unwrap_or_default(),
         total_p50: percentile(&totals, 50),
+        total_p95: percentile(&totals, 95),
+        total_p99: percentile(&totals, 99),
+        total_max: *totals.last().expect("at least one measured run"),
+        total_samples,
+    }
+}
+
+fn pump_percentile(sorted: &[Duration], percent: usize) -> Duration {
+    if sorted.is_empty() {
+        Duration::ZERO
+    } else {
+        percentile(sorted, percent)
     }
 }
 
@@ -306,5 +330,42 @@ mod tests {
         assert_eq!(percentile(&sample, 50), Duration::from_nanos(10));
         assert_eq!(percentile(&sample, 95), Duration::from_nanos(19));
         assert_eq!(percentile(&sample[..1], 95), Duration::from_nanos(1));
+        assert_eq!(percentile(&sample, 99), Duration::from_nanos(20));
+    }
+
+    #[test]
+    fn complete_session_window_includes_construction_and_teardown_allocations() {
+        let _measuring = crate::counter::exclusive();
+        struct Work(Vec<u8>);
+        impl Session for Work {
+            type Outcome = usize;
+            fn step(&mut self) -> bool {
+                false
+            }
+            fn finish(mut self) -> usize {
+                self.0.resize(8192, 1);
+                std::hint::black_box(self.0.len())
+            }
+        }
+        let row = measure(
+            "boundary regression".into(),
+            1,
+            "session",
+            Config {
+                budget: 64,
+                warmup: 1,
+                warmup_seconds: 0,
+                runs: 3,
+            },
+            || Work(vec![1; 4096]),
+            |length| assert_eq!(length, 8192),
+        );
+        assert!(
+            row.counts.allocations >= 2,
+            "start and finish must both be measured"
+        );
+        assert!(row.counts.peak_live_bytes >= 8192);
+        assert_eq!(row.total_samples.len(), 3);
+        assert_eq!(row.pumps, 1);
     }
 }
