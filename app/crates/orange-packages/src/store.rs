@@ -2,6 +2,7 @@
 //! over immutable [`RegistrySnapshot`] generations (04, ADR-07, 12 §8).
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::fmt;
 use std::sync::Arc;
 
 use orange_model::catalog::{
@@ -9,6 +10,7 @@ use orange_model::catalog::{
     RegistrySnapshot, TypeArgs,
 };
 use orange_model::document::DefinitionRef;
+use orange_model::error::Rejected;
 use orange_model::id::DefinitionId;
 use thiserror::Error;
 
@@ -21,7 +23,7 @@ use crate::manifest::{
 /// A staged package: its validated manifest, the node definitions it ships and the argument
 /// sets its generic providers support. Archive unpacking is host work; definition files
 /// decode with [`NodeDefinition::from_json`].
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PackageContents {
     manifest: PackageManifest,
     definitions: Vec<NodeDefinition>,
@@ -78,7 +80,7 @@ impl PackageContents {
 /// What the store knows about one package version. A removed or revoked record is the
 /// version's tombstone: it keeps the manifest and exact provider keys so a reinstall with a
 /// different digest is refused and diagnostics can name what existing locks refer to.
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Clone, PartialEq)]
 pub struct PackageRecord {
     manifest: Arc<PackageManifest>,
     state: PackageState,
@@ -165,20 +167,20 @@ pub enum TransactionError {
     UnknownSlotDefinition(DefinitionRef),
     /// Specializations name a provider and definition that no `node:` contribution of the
     /// manifest pairs.
-    #[error("provider `{provider}` declares no slot for `{}@{}`", .definition.id, .definition.version)]
+    #[error("provider {provider} declares no slot for `{}@{}`", .definition.id, .definition.version)]
     UndeclaredSpecialization {
-        /// The package-local provider ID.
-        provider: String,
+        /// The package-local provider ID as the host supplied it.
+        provider: Rejected,
         /// The specialized definition.
         definition: DefinitionRef,
     },
     /// The registry does not publish this slot kind yet.
-    #[error("slot kind {kind:?} (`{descriptor}`) is not publishable yet")]
+    #[error("slot kind {kind:?} ({descriptor}) is not publishable yet")]
     UnsupportedSlot {
         /// The slot kind.
         kind: SlotKind,
-        /// The slot descriptor.
-        descriptor: String,
+        /// The slot descriptor as written in the manifest.
+        descriptor: Rejected,
     },
     /// Another active version depends on the one being removed.
     #[error("package `{package}` is required by `{dependent}`")]
@@ -201,6 +203,35 @@ pub enum TransactionError {
     /// The journal could not record a step.
     #[error(transparent)]
     Journal(#[from] JournalError),
+}
+
+impl TransactionError {
+    /// Stable message key for host presentation (13 §2).
+    pub const fn message_key(&self) -> &'static str {
+        match self {
+            Self::AlreadyActive(_) => "packages/transaction-already-active",
+            Self::NotInstalled(_) => "packages/transaction-not-installed",
+            Self::WrongState { .. } => "packages/transaction-wrong-state",
+            Self::UpdateTarget { .. } => "packages/transaction-update-target",
+            Self::Revoked(_) => "packages/transaction-revoked",
+            Self::DigestConflict(_) => "packages/transaction-digest-conflict",
+            Self::HostApi { .. } => "packages/transaction-host-api",
+            Self::MissingDependency(_) => "packages/transaction-missing-dependency",
+            Self::UndeclaredDefinition(_) => "packages/transaction-undeclared-definition",
+            Self::MissingDefinition(_) => "packages/transaction-missing-definition",
+            Self::DefinitionChanged(_) => "packages/transaction-definition-changed",
+            Self::UnknownSlotDefinition(_) => "packages/transaction-unknown-slot-definition",
+            Self::UndeclaredSpecialization { .. } => {
+                "packages/transaction-undeclared-specialization"
+            }
+            Self::UnsupportedSlot { .. } => "packages/transaction-unsupported-slot",
+            Self::DependedOn { .. } => "packages/transaction-depended-on",
+            Self::NothingToRollBack => "packages/transaction-nothing-to-roll-back",
+            Self::RecoveryMismatch(_) => "packages/transaction-recovery-mismatch",
+            Self::Registry(_) => "packages/transaction-registry",
+            Self::Journal(_) => "packages/transaction-journal",
+        }
+    }
 }
 
 /// One committed state: a published registry generation and the package records it implies.
@@ -227,7 +258,6 @@ impl Committed {
 /// failed transaction publishes nothing: the previous snapshot stays current and readers
 /// holding any earlier snapshot keep a complete view. The store never edits a document:
 /// existing locks keep their exact provider, and a removed one resolves as unavailable.
-#[derive(Debug)]
 pub struct PackageStore<J = MemoryJournal> {
     host_api: HostApiVersion,
     current: Committed,
@@ -241,6 +271,51 @@ pub struct PackageStore<J = MemoryJournal> {
     /// Revoked content digests, which no transaction or rollback can reinstate.
     revoked: BTreeSet<String>,
     journal: J,
+}
+
+/// A bounded summary: the manifest summary and counts. Definitions and argument sets are
+/// untrusted package content; read them through the accessors.
+impl fmt::Debug for PackageContents {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PackageContents")
+            .field("manifest", &self.manifest)
+            .field("definitions", &self.definitions.len())
+            .field("specializations", &self.specializations.len())
+            .finish()
+    }
+}
+
+/// A bounded summary: the manifest summary, state, provider count and generation.
+impl fmt::Debug for PackageRecord {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PackageRecord")
+            .field("manifest", &self.manifest)
+            .field("state", &self.state)
+            .field("providers", &self.providers.len())
+            .field("generation", &self.generation)
+            .finish()
+    }
+}
+
+/// A bounded summary: counts, plus the version and message key of each quarantined attempt.
+/// The registry, records, digests and journal are read through the accessors.
+impl<J> fmt::Debug for PackageStore<J> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let quarantined: BTreeMap<String, &'static str> = self
+            .quarantined
+            .iter()
+            .map(|(key, error)| (key.to_string(), error.message_key()))
+            .collect();
+        f.debug_struct("PackageStore")
+            .field("host_api", &self.host_api)
+            .field("generation", &self.current.snapshot.generation())
+            .field("packages", &self.current.packages.len())
+            .field("history", &self.history.len())
+            .field("quarantined", &quarantined)
+            .field("published", &self.published.len())
+            .field("revoked", &self.revoked.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<J: Journal> PackageStore<J> {
@@ -753,7 +828,7 @@ impl<J: Journal> PackageStore<J> {
                 ProviderSlot::Other { kind, descriptor } => {
                     return Err(TransactionError::UnsupportedSlot {
                         kind: *kind,
-                        descriptor: descriptor.clone(),
+                        descriptor: descriptor.as_str().into(),
                     });
                 }
             };
@@ -781,7 +856,7 @@ impl<J: Journal> PackageStore<J> {
             });
             if !declared {
                 return Err(TransactionError::UndeclaredSpecialization {
-                    provider,
+                    provider: provider.into(),
                     definition,
                 });
             }

@@ -231,7 +231,7 @@ fn manifest_validation_accepts_the_sample_and_rejects_bad_inputs() {
             v["contributions"]["providers"] = json!([first.clone(), first]);
         },
         ManifestError::DuplicateProvider {
-            slot: format!("node:{NODE}@1"),
+            slot: format!("node:{NODE}@1").into(),
             id: "impl".into(),
         },
     );
