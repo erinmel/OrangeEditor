@@ -27,7 +27,7 @@ use super::inputs::validate_inputs_in;
 use super::local::PassCaches;
 use super::nodes::{CallEvidence, NodeValidation, validate_nodes_with};
 use super::regions::{RegionValidation, validate_regions_in};
-use super::scope::Scope;
+use super::scope::{Scope, Tally};
 use super::{AnalysisOptions, Diagnostic, DiagnosticCode, Severity};
 
 pub(crate) type Accepted = BTreeMap<FunctionId, (NodeKind, Suspends)>;
@@ -46,6 +46,10 @@ pub(crate) struct BodyPasses {
 }
 
 impl BodyPasses {
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "a scoped function check also counts what the passes iterate"
+    )]
     pub(crate) fn run(
         document: &GraphDocument,
         registry: &RegistrySnapshot,
@@ -54,9 +58,11 @@ impl BodyPasses {
         index: &DocIndex,
         mut caches: Option<&mut PassCaches>,
         options: &AnalysisOptions<'_>,
+        tally: Tally<'_>,
     ) -> Result<Self, DiagnosticCode> {
         options.checkpoint()?;
         let mut args = BTreeMap::new();
+        let mut counted = super::visits::VisitCounts::default();
         let keep = caches.is_some();
         let nodes = validate_nodes_with(
             document,
@@ -66,6 +72,7 @@ impl BodyPasses {
             index,
             caches.as_deref_mut().map(|caches| &mut caches.components),
             keep.then_some(&mut args),
+            &mut counted,
         );
         options.checkpoint()?;
         let ports = super::ports::PortResolver::new(document, &nodes.resolved);
@@ -77,14 +84,22 @@ impl BodyPasses {
             scope,
             index,
             caches.as_deref_mut().map(|caches| &mut caches.edges),
+            &mut counted,
         );
         options.checkpoint()?;
-        let data_cycles =
-            validate_data_cycles_in(document, resolved, &connections, registry, scope);
+        let data_cycles = validate_data_cycles_in(
+            document,
+            resolved,
+            &connections,
+            registry,
+            scope,
+            &mut counted,
+        );
         options.checkpoint()?;
-        let regions = validate_regions_in(document, resolved, &connections, registry, scope);
+        let regions = validate_regions_in(document, resolved, &connections, registry, scope, tally);
         options.checkpoint()?;
-        let control = validate_control_cycles_in(document, resolved, &connections, registry, scope);
+        let control =
+            validate_control_cycles_in(document, resolved, &connections, registry, scope, tally);
         options.checkpoint()?;
         let input_diagnostics = validate_inputs_in(
             document,
@@ -93,7 +108,9 @@ impl BodyPasses {
             scope,
             Some(index),
             caches.map(|caches| &mut caches.inputs),
+            &mut counted,
         );
+        tally.add(|visits| *visits += counted);
         options.checkpoint()?;
         let projections = ports.retain();
         drop(ports);
@@ -174,6 +191,7 @@ pub(crate) fn settle(
             index,
             caches.as_deref_mut(),
             options,
+            Tally::NONE,
         )?;
         let evidence = FunctionEvidence::from_nodes(document, &passes.nodes, leaf_effects.clone());
         let functions = analyze_functions(document, &evidence, registry);
@@ -224,7 +242,12 @@ pub(crate) fn accept_functions(
 ) -> Result<Accepted, DiagnosticCode> {
     options.checkpoint()?;
     let mut functions = FunctionAnalysis::default();
-    let graph = call_graph(document, registry, &mut functions);
+    let graph = call_graph(
+        document,
+        registry,
+        &mut functions,
+        &mut super::visits::VisitCounts::default(),
+    );
     let (_, cyclic) = find_cycles(&graph);
     let mut errors = function_errors(&functions.diagnostics);
     let mut calls = CallEvidence {
@@ -240,6 +263,7 @@ pub(crate) fn accept_functions(
             index,
             caches.as_deref_mut(),
             options,
+            Tally::NONE,
         )?;
         let context = SummaryContext {
             document,
@@ -250,7 +274,12 @@ pub(crate) fn accept_functions(
             cyclic: &cyclic,
         };
         let known = functions.diagnostics.len();
-        summarize_function(&context, id, &mut functions);
+        summarize_function(
+            &context,
+            id,
+            &mut functions,
+            &mut super::visits::VisitCounts::default(),
+        );
         options.checkpoint()?;
         errors.extend(function_errors(&functions.diagnostics[known..]));
         let Some(summary) = functions.summaries.get(&id) else {
@@ -302,11 +331,13 @@ pub(crate) fn check_function(
     summaries: &BTreeMap<FunctionId, super::functions::FunctionSummary>,
     id: FunctionId,
     options: &AnalysisOptions<'_>,
+    visits: &mut super::visits::VisitCounts,
 ) -> Result<FunctionCheck, DiagnosticCode> {
     let evidence = CallEvidence {
         accepted: calls.clone(),
         pipeline: true,
     };
+    let counted = std::cell::Cell::default();
     let passes = BodyPasses::run(
         document,
         registry,
@@ -315,9 +346,11 @@ pub(crate) fn check_function(
         index,
         None,
         options,
+        Tally::new(&counted),
     )?;
+    *visits += counted.get();
     let mut functions = FunctionAnalysis::default();
-    let graph = call_graph(document, registry, &mut functions);
+    let graph = call_graph(document, registry, &mut functions, visits);
     let (cycles, cyclic) = find_cycles(&graph);
     for path in &cycles {
         let mut diagnostic = Diagnostic::new(
@@ -341,7 +374,7 @@ pub(crate) fn check_function(
         calls: &graph,
         cyclic: &cyclic,
     };
-    summarize_function(&context, id, &mut functions);
+    summarize_function(&context, id, &mut functions, visits);
     let errors = function_errors(&functions.diagnostics);
     let summary = functions.summaries.get(&id).cloned();
     let blocked = passes.blocked();

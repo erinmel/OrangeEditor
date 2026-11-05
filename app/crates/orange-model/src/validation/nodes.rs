@@ -81,9 +81,14 @@ pub fn validate_nodes(document: &GraphDocument, registry: &RegistrySnapshot) -> 
         &index,
         None,
         None,
+        &mut super::visits::VisitCounts::default(),
     )
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the pass's reads"
+)]
 pub(crate) fn validate_nodes_with(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -92,6 +97,7 @@ pub(crate) fn validate_nodes_with(
     index: &DocIndex,
     components: Option<&mut ComponentCache>,
     kept: Option<&mut BTreeMap<NodeId, TypeArgs>>,
+    visits: &mut super::visits::VisitCounts,
 ) -> NodeValidation {
     validate_node_ids(
         document,
@@ -101,7 +107,7 @@ pub(crate) fn validate_nodes_with(
         index,
         Inference::Solve(components),
         kept,
-        &mut super::visits::VisitCounts::default(),
+        visits,
     )
 }
 
@@ -137,7 +143,6 @@ pub(crate) fn validate_node_ids(
     let origin = registry.origin();
     let mut report = NodeValidation::default();
     let mut diagnostics = Vec::new();
-    visits.nodes += ids.len();
     let eligible = resolve_contracts(
         document,
         registry,
@@ -146,6 +151,7 @@ pub(crate) fn validate_node_ids(
         origin,
         &mut report,
         &mut diagnostics,
+        visits,
     );
     let pass = NodePass {
         calls,
@@ -181,6 +187,10 @@ fn node_ids(document: &GraphDocument, scope: Scope) -> Vec<NodeId> {
     ids
 }
 
+#[expect(
+    clippy::too_many_arguments,
+    reason = "the session's visit counters are charged with the preflight"
+)]
 fn resolve_contracts(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
@@ -189,9 +199,11 @@ fn resolve_contracts(
     origin: &HostOrigin,
     report: &mut NodeValidation,
     diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
 ) -> BTreeSet<NodeId> {
     let mut eligible = BTreeSet::new();
     for id in ids {
+        visits.nodes += 1;
         let Some(node) = document.node(*id) else {
             continue;
         };
@@ -613,7 +625,10 @@ fn project_nodes(
                 let (projection, key) = cache
                     .entry((node.definition.clone(), args, body))
                     .or_insert_with_key(|(_, args, body)| {
-                        (project_contract(pass, shared, args, *body), OnceCell::new())
+                        (
+                            project_contract(pass, shared, args, *body, visits),
+                            OnceCell::new(),
+                        )
                     });
                 let drifted = projection.as_ref().is_ok_and(|projected| {
                     drifted(&mut stored_keys, stored, || {
@@ -624,7 +639,7 @@ fn project_nodes(
                 (projection.clone(), drifted)
             }
             Cow::Owned(contextual) => {
-                let projection = project_contract(pass, contextual, &args, body);
+                let projection = project_contract(pass, contextual, &args, body, visits);
                 let drifted = projection.as_ref().is_ok_and(|projected| {
                     drifted(&mut stored_keys, stored, || {
                         signature::semantic_key(projected)
@@ -638,7 +653,6 @@ fn project_nodes(
                 if drifted {
                     report_drift(pass, *id, report, diagnostics);
                 }
-                visits.ports += projected.ports.len();
                 report.resolved.insert(*id, projected);
             }
             Err(failures) => {
@@ -658,9 +672,11 @@ fn project_contract(
     contract: &NodeContract,
     args: &TypeArgs,
     body: Option<BodyRef>,
+    visits: &mut super::visits::VisitCounts,
 ) -> Projection {
     let mut ports = contract.ports.clone();
     for port in &mut ports {
+        visits.ports += 1;
         let Some(ty) = &port.ty else { continue };
         match signature::try_substitute_params(ty, args) {
             Ok(resolved) => port.ty = Some(resolved),

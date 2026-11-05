@@ -24,7 +24,15 @@ pub fn validate_inputs(
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     registry: &RegistrySnapshot,
 ) -> Vec<Diagnostic> {
-    let mut diagnostics = validate_inputs_in(document, resolved, registry, Scope::All, None, None);
+    let mut diagnostics = validate_inputs_in(
+        document,
+        resolved,
+        registry,
+        Scope::All,
+        None,
+        None,
+        &mut super::visits::VisitCounts::default(),
+    );
     diagnostics.extend(validate_type_locks(document, registry));
     sort_diagnostics(&mut diagnostics);
     diagnostics
@@ -62,6 +70,7 @@ pub(crate) fn validate_inputs_in(
     scope: Scope,
     index: Option<&DocIndex>,
     mut cache: Option<&mut InputCache>,
+    visits: &mut super::visits::VisitCounts,
 ) -> Vec<Diagnostic> {
     let mut connected = BTreeMap::<NodeId, BTreeSet<PortKey>>::new();
     let mut nodes = BTreeMap::new();
@@ -70,6 +79,7 @@ pub(crate) fn validate_inputs_in(
         Scope::Function(id) => document.body(crate::document::BodyRef::Function(id)),
     };
     for (_, body) in scope.bodies(document) {
+        visits.bodies += 1;
         for node in body.nodes.values() {
             nodes.insert(node.id, node);
         }
@@ -85,6 +95,7 @@ pub(crate) fn validate_inputs_in(
     let empty = BTreeSet::new();
     let mut diagnostics = Vec::new();
     for (node_id, node) in nodes {
+        visits.nodes += 1;
         let Some(snapshot) = resolved.get(&node_id) else {
             continue;
         };
@@ -113,6 +124,7 @@ pub(crate) fn validate_inputs_in(
                 is_connected,
                 registry,
                 &mut diagnostics,
+                visits,
             ),
         }
     }
@@ -130,9 +142,16 @@ pub(crate) fn node_input_diagnostics(
     snapshot: &SignatureSnapshot,
     registry: &RegistrySnapshot,
     index: &DocIndex,
+    visits: &mut super::visits::VisitCounts,
 ) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
-    let is_connected = |port: &PortRef| index.incoming(port).next().is_some();
+    // Whether a wire shadows the port: at most its first incoming edge is read.
+    let mut read = 0;
+    let is_connected = |port: &PortRef| {
+        let wired = index.incoming(port).next().is_some();
+        read += usize::from(wired);
+        wired
+    };
     append_node_inputs(
         document,
         node,
@@ -140,7 +159,9 @@ pub(crate) fn node_input_diagnostics(
         is_connected,
         registry,
         &mut diagnostics,
+        visits,
     );
+    visits.edges += read;
     diagnostics
 }
 
@@ -151,6 +172,7 @@ fn append_node_inputs(
     mut is_connected: impl FnMut(&PortRef) -> bool,
     registry: &RegistrySnapshot,
     diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
 ) {
     let (types, origin) = (registry.types().as_ref(), registry.origin());
     let node_id = node.id;
@@ -174,6 +196,7 @@ fn append_node_inputs(
     }
 
     for descriptor in &snapshot.ports {
+        visits.ports += 1;
         if let Some(bounds) = descriptor.variadic {
             let count = node
                 .variadic
@@ -383,6 +406,7 @@ impl InputCache {
             },
             registry,
             &mut own,
+            &mut super::visits::VisitCounts::default(),
         );
         diagnostics.extend(own.iter().cloned());
         self.entries.insert(
@@ -471,7 +495,15 @@ mod tests {
         let scope = Scope::Function(function_id);
         // One cache across both states: moving the wire must not reuse the first result.
         let mut cache = InputCache::default();
-        let standalone = validate_inputs_in(&document, &resolved, &registry, scope, None, None);
+        let standalone = validate_inputs_in(
+            &document,
+            &resolved,
+            &registry,
+            scope,
+            None,
+            None,
+            &mut Default::default(),
+        );
         assert!(standalone.is_empty());
         assert_eq!(
             standalone,
@@ -481,7 +513,8 @@ mod tests {
                 &registry,
                 scope,
                 Some(&DocIndex::build(&document)),
-                Some(&mut cache)
+                Some(&mut cache),
+                &mut Default::default(),
             )
         );
         // An invalid source on a wire in this body still shadows the literal.
@@ -493,7 +526,15 @@ mod tests {
             .body
             .edges
             .insert(edge.id, edge);
-        let standalone = validate_inputs_in(&document, &resolved, &registry, scope, None, None);
+        let standalone = validate_inputs_in(
+            &document,
+            &resolved,
+            &registry,
+            scope,
+            None,
+            None,
+            &mut Default::default(),
+        );
         assert_eq!(standalone.len(), 1);
         assert_eq!(standalone[0].code, DiagnosticCode::LiteralShadowed);
         assert_eq!(
@@ -504,7 +545,8 @@ mod tests {
                 &registry,
                 scope,
                 Some(&DocIndex::build(&document)),
-                Some(&mut cache)
+                Some(&mut cache),
+                &mut Default::default(),
             )
         );
         assert_eq!((cache.computed, cache.hits), (2, 0));

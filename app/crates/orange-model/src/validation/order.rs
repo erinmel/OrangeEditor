@@ -119,19 +119,19 @@ impl TopoOrder {
         visits: &mut VisitCounts,
     ) -> Option<Self> {
         let body = document.body(body)?;
-        // The body's node list, then each edge with its source port, once more when the
-        // body is cyclic, and each node again as it is placed.
         visits.bodies += 1;
-        visits.nodes += 2 * body.nodes.len();
-        visits.edges += body.edges.len();
-        visits.ports += body.edges.len();
         let ends: BTreeMap<NodeId, NodeId> =
             zones.iter().map(|pair| (pair.begin, pair.end)).collect();
         let begins: BTreeMap<NodeId, NodeId> =
             zones.iter().map(|pair| (pair.end, pair.begin)).collect();
         // Dense indices over the sorted node IDs, and each data edge resolved once. A body
         // keeps its nodes in insertion order, so the IDs are sorted here.
-        let mut ids: Vec<NodeId> = body.nodes.keys().copied().collect();
+        let mut ids: Vec<NodeId> = body
+            .nodes
+            .keys()
+            .inspect(|_| visits.nodes += 1)
+            .copied()
+            .collect();
         ids.sort_unstable();
         let dense = |node: NodeId| ids.binary_search(&node).ok();
         let mut next: Vec<Vec<usize>> = vec![Vec::new(); ids.len()];
@@ -140,9 +140,11 @@ impl TopoOrder {
         // body needs them.
         let mut incoming: Vec<Vec<(usize, Option<EdgeId>)>> = Vec::new();
         for edge in body.edges.values() {
+            visits.edges += 1;
             let (Some(from), Some(to)) = (dense(edge.from.node), dense(edge.to.node)) else {
                 continue;
             };
+            visits.ports += 1;
             if matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data) {
                 next[from].push(to);
                 indegree[to] += 1;
@@ -161,9 +163,11 @@ impl TopoOrder {
         let mut lowest = 0;
         loop {
             while let Some(node) = ready.pop() {
+                visits.nodes += 1;
                 placed[node] = true;
                 nodes.insert(GAP * (nodes.len() as u64 + 1), ids[node]);
                 for &to in &next[node] {
+                    visits.edges += 1;
                     // A node placed with edges held still counts them.
                     if placed[to] {
                         continue;
@@ -181,14 +185,14 @@ impl TopoOrder {
                 return None;
             }
             if incoming.is_empty() {
-                visits.edges += body.edges.len();
-                visits.ports += body.edges.len();
                 incoming = vec![Vec::new(); ids.len()];
                 for edge in body.edges.values() {
+                    visits.edges += 1;
                     let (Some(from), Some(to)) = (dense(edge.from.node), dense(edge.to.node))
                     else {
                         continue;
                     };
+                    visits.ports += 1;
                     if matches!(ports.port(&edge.from), Ok(port) if port.kind == PortKind::Data) {
                         incoming[to].push((from, Some(edge.id)));
                     }

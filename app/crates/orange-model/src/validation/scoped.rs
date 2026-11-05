@@ -174,6 +174,10 @@ pub(super) fn node_update(
         let body = document.locate_node(*id).ok_or(Why::MissingEntity)?;
         if !bodies.contains(&body) {
             bodies.push(body);
+            // Resolution and the input check each run once over the nodes of every body
+            // the edit touches.
+            visits.resolution.bodies += 1;
+            visits.inputs.bodies += 1;
         }
         let node = document.node(*id).ok_or(Why::MissingEntity)?;
         // Structural passes read configuration of core intrinsics only (Fork, Switch,
@@ -208,9 +212,6 @@ pub(super) fn node_update(
         .ok_or(Why::Admission)?;
     let touched: BTreeSet<NodeId> = edit.before.keys().copied().collect();
     let seeds = equation_changes(document, registry, index, edit, &mut visits.resolution);
-    // Resolution and the input check each run once over nodes of these bodies.
-    visits.resolution.bodies += bodies.len();
-    visits.inputs.bodies += bodies.len();
     let resolution = resolution_unchanged(
         document,
         registry,
@@ -402,33 +403,6 @@ fn isolated<'a>(
     })
 }
 
-/// Charges `visits` with what [`super::functions::call_graph`] iterates: every function
-/// body, and every node of each.
-fn charge_call_graph(document: &GraphDocument, visits: &mut VisitCounts) {
-    for function in document.functions().values() {
-        visits.nodes += function.body.nodes.len();
-        visits.bodies += 1;
-    }
-}
-
-/// Charges `visits` with what [`super::acceptance::check_function`] iterates for
-/// `function`: each loop of its body passes over the body's nodes (node resolution's
-/// preflight and projection, data cycles, the region pass's three loops, inputs, and the
-/// summary) or edges (the connection pass's two loops, data cycles, regions and control
-/// cycles), and the call graph. Each loop runs once over the whole list.
-fn charge_function_check(
-    document: &GraphDocument,
-    function: crate::id::FunctionId,
-    visits: &mut VisitCounts,
-) {
-    if let Some(body) = document.body(BodyRef::Function(function)) {
-        visits.nodes += 8 * body.nodes.len();
-        visits.edges += 5 * body.edges.len();
-        visits.bodies += 1;
-    }
-    charge_call_graph(document, visits);
-}
-
 /// Every function that calls `function`, directly or through other functions, callee first.
 fn transitive_callers(
     document: &GraphDocument,
@@ -436,14 +410,14 @@ fn transitive_callers(
     function: crate::id::FunctionId,
     visits: &mut VisitCounts,
 ) -> Vec<crate::id::FunctionId> {
-    charge_call_graph(document, visits);
     let mut analysis = super::functions::FunctionAnalysis::default();
-    let graph = super::functions::call_graph(document, registry, &mut analysis);
+    let graph = super::functions::call_graph(document, registry, &mut analysis, visits);
     let mut callers = BTreeSet::new();
     let mut stack = vec![function];
     while let Some(callee) = stack.pop() {
-        visits.nodes += graph.len();
         for (caller, calls) in &graph {
+            // Each function's call sites, read for one callee.
+            visits.nodes += 1;
             if calls.values().any(|target| *target == callee) && callers.insert(*caller) {
                 stack.push(*caller);
             }
@@ -812,7 +786,6 @@ pub(super) fn structure_update(
             // acceptance, summary and own diagnostics, which its callers read, hold.
             if let BodyRef::Function(function) = home {
                 let report = analysis.report();
-                charge_function_check(document, function, &mut visits.functions);
                 let check = super::acceptance::check_function(
                     document,
                     registry,
@@ -822,6 +795,7 @@ pub(super) fn structure_update(
                     &report.functions,
                     function,
                     options,
+                    &mut visits.functions,
                 )
                 .map_err(|_| Why::Cancelled)?;
                 // Call nodes read a function's acceptance, so a called function must keep
@@ -844,7 +818,6 @@ pub(super) fn structure_update(
                     for caller in
                         transitive_callers(document, registry, function, &mut visits.functions)
                     {
-                        charge_function_check(document, caller, &mut visits.functions);
                         let check = super::acceptance::check_function(
                             document,
                             registry,
@@ -854,6 +827,7 @@ pub(super) fn structure_update(
                             &summaries,
                             caller,
                             options,
+                            &mut visits.functions,
                         )
                         .map_err(|_| Why::Cancelled)?;
                         if check.incomplete
@@ -1326,18 +1300,18 @@ fn zone_update<'a>(
             .filter(|node| **node != begin && **node != end)
             .copied()
             .collect();
-        // The closure, purity and nesting checks read the walked edges and the body twice.
-        visits.edges += edges.len();
-        visits.nodes += 2 * body.len();
         let closed = edges.iter().all(|(from, to)| {
+            visits.edges += 1;
             (*from != begin && !body.contains(from)) || *to == end || body.contains(to)
         });
         let pure = body.iter().all(|node| {
+            visits.nodes += 1;
             ports.get(node).is_none_or(|signature| {
                 matches!(signature.kind, NodeKind::Pure | NodeKind::Volatile)
             })
         });
         let nested = body.iter().all(|node| {
+            visits.nodes += 1;
             zones
                 .pairs
                 .get(node)
@@ -1659,19 +1633,27 @@ fn recompute_flow(
             }
             ids.into_iter().filter_map(|id| document.edge(id)).collect()
         },
-        visits: std::cell::Cell::default(),
     };
-    // The region and control-cycle passes count what they iterate into the subset.
-    let regions =
-        super::regions::validate_regions_among(document, &ports, &connections, registry, &outgoing);
+    // The region and control-cycle passes count what they iterate as they go.
+    let counted = std::cell::Cell::default();
+    let tally = super::scope::Tally::new(&counted);
+    let regions = super::regions::validate_regions_among(
+        document,
+        &ports,
+        &connections,
+        registry,
+        &outgoing,
+        tally,
+    );
     let control = super::control_cycles::validate_control_cycles_among(
         document,
         &ports,
         &connections,
         registry,
         &outgoing,
+        tally,
     );
-    visits.control_flow += outgoing.visits.get();
+    visits.control_flow += counted.get();
     if !regions.incomplete_nodes.is_empty()
         || !control.incomplete_nodes.is_empty()
         || !control.cycle_paths.is_empty()
@@ -1680,15 +1662,21 @@ fn recompute_flow(
     }
     let old = &report.regions;
     // Merging scans the document's whole region index: its regions, owners and
-    // unreachable nodes, then compares each component node's lineage before and after.
-    visits.control_flow.nodes +=
-        old.regions.len() + old.owners.len() + old.unreachable.len() + 2 * component.len();
+    // unreachable nodes.
+    let merging = &mut visits.control_flow;
     let mut merged = old.clone();
-    merged
-        .regions
-        .retain(|root, _| !component.contains(&root.node));
-    merged.owners.retain(|node, _| !component.contains(node));
-    merged.unreachable.retain(|node| !component.contains(node));
+    merged.regions.retain(|root, _| {
+        merging.nodes += 1;
+        !component.contains(&root.node)
+    });
+    merged.owners.retain(|node, _| {
+        merging.nodes += 1;
+        !component.contains(node)
+    });
+    merged.unreachable.retain(|node| {
+        merging.nodes += 1;
+        !component.contains(node)
+    });
     merged.regions.extend(regions.index.regions);
     merged.owners.extend(regions.index.owners);
     merged.unreachable.extend(regions.index.unreachable);
@@ -1700,10 +1688,15 @@ fn recompute_flow(
         &'i RegionRoot,
         Option<(RegionKind, &'i Option<RegionRoot>, usize)>,
     );
-    fn region_of<'i>(index: &'i super::regions::RegionIndex, node: &NodeId) -> Vec<Lineage<'i>> {
+    fn region_of<'i>(
+        index: &'i super::regions::RegionIndex,
+        node: &NodeId,
+        visits: &mut VisitCounts,
+    ) -> Vec<Lineage<'i>> {
         let mut lineage = Vec::new();
         let mut current = index.owners.get(node);
         while let Some(root) = current {
+            visits.nodes += 1;
             let region = index.regions.get(root);
             lineage.push((
                 root,
@@ -1715,7 +1708,10 @@ fn recompute_flow(
     }
     let moved: Vec<NodeId> = component
         .iter()
-        .filter(|node| region_of(old, node) != region_of(&merged, node))
+        .filter(|node| {
+            region_of(old, node, &mut visits.control_flow)
+                != region_of(&merged, node, &mut visits.control_flow)
+        })
         .copied()
         .collect();
     let crosses = moved.iter().any(|node| {
@@ -1773,8 +1769,8 @@ fn recompute_flow(
             nodes: &component,
             consumers: &consumers,
             edges: cones,
-            visits: std::cell::Cell::default(),
         };
+        let counted = std::cell::Cell::default();
         let availability = super::availability::validate_availability_among(
             document,
             &ports,
@@ -1782,8 +1778,9 @@ fn recompute_flow(
             &merged,
             registry,
             &subset,
+            super::scope::Tally::new(&counted),
         );
-        visits.availability += subset.visits.get();
+        visits.availability += counted.get();
         availability
     };
     let state = super::state::validate_state_counted(
@@ -1836,31 +1833,29 @@ fn whole_flow(
     free: &mut BTreeSet<NodeId>,
     visits: &mut PassVisits,
 ) -> Option<FlowUpdate> {
-    // The whole-document region, control-cycle and availability passes are charged their
-    // loops over every body's lists, as for a full analysis: regions three over the nodes
-    // and one over the edges, control cycles one over the edges, availability two over the
-    // nodes and one over the edges. Their walks are not counted. The state pass counts
-    // itself.
-    for body in document.bodies() {
-        let (nodes, edges) = (body.nodes.len(), body.edges.len());
-        visits.control_flow.nodes += 3 * nodes;
-        visits.control_flow.edges += 2 * edges;
-        visits.control_flow.bodies += 2;
-        visits.availability.nodes += 2 * nodes;
-        visits.availability.edges += edges;
-        visits.availability.bodies += 1;
-    }
     let report = analysis.report();
     let connections = super::connections::ConnectionValidation::default();
-    let regions =
-        super::regions::validate_regions_in(document, ports, &connections, registry, Scope::All);
+    // The whole-document passes count what they iterate as they go.
+    let (flow_counted, available_counted) =
+        (std::cell::Cell::default(), std::cell::Cell::default());
+    let tally = super::scope::Tally::new(&flow_counted);
+    let regions = super::regions::validate_regions_in(
+        document,
+        ports,
+        &connections,
+        registry,
+        Scope::All,
+        tally,
+    );
     let control = super::control_cycles::validate_control_cycles_in(
         document,
         ports,
         &connections,
         registry,
         Scope::All,
+        tally,
     );
+    visits.control_flow += flow_counted.get();
     if !regions.incomplete_nodes.is_empty()
         || !control.incomplete_nodes.is_empty()
         || !control.cycle_paths.is_empty()
@@ -1874,8 +1869,10 @@ fn whole_flow(
         &regions.index,
         registry,
         free,
+        super::scope::Tally::new(&available_counted),
     )
     .diagnostics;
+    visits.availability += available_counted.get();
     let mut state = super::state::validate_state_counted(
         document,
         registry,
@@ -2067,6 +2064,7 @@ fn resolution_unchanged(
         Some(&mut args),
         visits,
     );
+    // Grouping the resolution diagnostics by node reads each of them once.
     visits.diagnostics += nodes.diagnostics.len();
     let fresh = by_node(&nodes.diagnostics).ok_or(ScopeFallback::Resolution)?;
     let fresh_added = compare(analysis, retained, &nodes, &fresh, &affected, added, visits)
@@ -2167,6 +2165,7 @@ fn kept_resolution(
         None,
         visits,
     );
+    // Grouping the resolution diagnostics by node reads each of them once.
     visits.diagnostics += nodes.diagnostics.len();
     let fresh = by_node(&nodes.diagnostics)?;
     let fresh = compare(analysis, retained, &nodes, &fresh, touched, added, visits)?;
@@ -2248,12 +2247,11 @@ fn recheck_inputs(
     let empty = Vec::new();
     let mut inputs = Vec::with_capacity(nodes.len());
     for id in nodes {
-        let node = document.node(*id).ok_or(ScopeFallback::MultipleBodies)?;
+        let node = document.node(*id).ok_or(ScopeFallback::MissingEntity)?;
         visits.nodes += 1;
         let mut list = match report.resolved.get(id) {
             Some(snapshot) => {
-                visits.ports += snapshot.ports.len();
-                node_input_diagnostics(document, node, snapshot, registry, index)
+                node_input_diagnostics(document, node, snapshot, registry, index, visits)
             }
             None => Vec::new(),
         };

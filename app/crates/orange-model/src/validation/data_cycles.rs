@@ -1,6 +1,5 @@
 //! Port-level data-dependency cycle validation (11 §8.2).
 
-use super::graph::dense_strongly_connected_components;
 use std::collections::{BTreeMap, BTreeSet};
 
 use crate::catalog::RegistrySnapshot;
@@ -97,14 +96,20 @@ impl<'a> DependencyGraph<'a> {
     }
 
     /// Ascending vertices and each one's ascending, distinct neighbour indices.
-    fn dense(mut self) -> (Vec<Vertex<'a>>, Vec<Vec<usize>>) {
+    fn dense(
+        mut self,
+        visits: &mut super::visits::VisitCounts,
+    ) -> (Vec<Vertex<'a>>, Vec<Vec<usize>>) {
         self.vertices.sort_unstable();
         self.vertices.dedup();
         let index = |vertex: &Vertex<'a>| self.vertices.binary_search(vertex).unwrap_or(0);
         let mut edges: Vec<(usize, usize)> = self
             .edges
             .iter()
-            .map(|(from, to)| (index(from), index(to)))
+            .map(|(from, to)| {
+                visits.edges += 1;
+                (index(from), index(to))
+            })
             .collect();
         edges.sort_unstable();
         edges.dedup();
@@ -127,7 +132,14 @@ pub fn validate_data_cycles(
 ) -> DataCycleValidation {
     let ports = PortResolver::new(document, resolved);
 
-    validate_data_cycles_in(document, &ports, connections, registry, Scope::All)
+    validate_data_cycles_in(
+        document,
+        &ports,
+        connections,
+        registry,
+        Scope::All,
+        &mut super::visits::VisitCounts::default(),
+    )
 }
 
 /// [`validate_data_cycles`] over the bodies in `scope`.
@@ -137,6 +149,7 @@ pub(crate) fn validate_data_cycles_in(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     scope: Scope,
+    visits: &mut super::visits::VisitCounts,
 ) -> DataCycleValidation {
     let origin = registry.origin();
     let mut result = DataCycleValidation {
@@ -166,11 +179,13 @@ pub(crate) fn validate_data_cycles_in(
     }
 
     for (_, body) in scope.bodies(document) {
+        visits.bodies += 1;
         let body_nodes: BTreeSet<_> = body.nodes.keys().copied().collect();
         let mut graph = DependencyGraph::default();
         let mut incomplete = Vec::new();
 
         for node in body.nodes.values() {
+            visits.nodes += 1;
             graph.node(resolved, node, &mut incomplete);
         }
 
@@ -184,6 +199,7 @@ pub(crate) fn validate_data_cycles_in(
         let mut edges: Vec<_> = body.edges.values().collect();
         edges.sort_by_key(|edge| edge.id);
         for edge in edges {
+            visits.edges += 1;
             if error_edges.contains(&edge.id)
                 || !body_nodes.contains(&edge.from.node)
                 || !body_nodes.contains(&edge.to.node)
@@ -196,7 +212,7 @@ pub(crate) fn validate_data_cycles_in(
             mark_incomplete(node, origin, &mut result, &mut diagnosed_nodes);
         }
 
-        for (diagnostic, path) in graph.cycles(origin) {
+        for (diagnostic, path) in graph.cycles(origin, visits) {
             result.diagnostics.push(diagnostic);
             result.cycle_paths.push(path);
         }
@@ -252,7 +268,7 @@ pub(super) fn cycles_among<'a>(
     }
     incomplete
         .is_empty()
-        .then(|| graph.cycles(origin).collect())
+        .then(|| graph.cycles(origin, visits).collect())
 }
 
 impl<'a> DependencyGraph<'a> {
@@ -397,13 +413,18 @@ impl<'a> DependencyGraph<'a> {
     }
 
     /// Each cyclic strongly connected component's diagnostic and witness.
-    fn cycles(self, origin: &HostOrigin) -> impl Iterator<Item = (Diagnostic, Vec<PortRef>)> {
-        let (vertices, adjacency) = self.dense();
+    fn cycles(
+        self,
+        origin: &HostOrigin,
+        visits: &mut super::visits::VisitCounts,
+    ) -> impl Iterator<Item = (Diagnostic, Vec<PortRef>)> {
+        let (vertices, adjacency) = self.dense(visits);
         let mut member = vec![usize::MAX; vertices.len()];
         let mut found = Vec::new();
-        for (index, component) in dense_strongly_connected_components(&adjacency)
-            .into_iter()
-            .enumerate()
+        for (index, component) in
+            super::graph::dense_strongly_connected_components_counted(&adjacency, visits)
+                .into_iter()
+                .enumerate()
         {
             // A single vertex is cyclic only through an edge to itself.
             if let [vertex] = component[..]
@@ -414,7 +435,8 @@ impl<'a> DependencyGraph<'a> {
             for &vertex in &component {
                 member[vertex] = index;
             }
-            let Some(path) = cycle_witness(&vertices, &adjacency, &component, &member, index)
+            let Some(path) =
+                cycle_witness(&vertices, &adjacency, &component, &member, index, visits)
             else {
                 continue;
             };
@@ -481,6 +503,7 @@ fn cycle_witness(
     component: &[usize],
     member: &[usize],
     index: usize,
+    visits: &mut super::visits::VisitCounts,
 ) -> Option<Vec<PortRef>> {
     #[derive(Clone, Copy, PartialEq, Eq)]
     enum Color {
@@ -500,7 +523,10 @@ fn cycle_witness(
         while let Some((vertex, cursor)) = stack.last_mut() {
             let vertex = *vertex;
             let rest = &adjacency[vertex][*cursor..];
-            let Some(offset) = rest.iter().position(|&item| member[item] == index) else {
+            let Some(offset) = rest.iter().position(|&item| {
+                visits.edges += 1;
+                member[item] == index
+            }) else {
                 colors[vertex] = Color::Black;
                 stack.pop();
                 continue;

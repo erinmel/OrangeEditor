@@ -578,6 +578,7 @@ fn run_supported_analysis(
             &regions.index,
             registry,
             &mut free,
+            super::scope::Tally::NONE,
         )
     } else {
         super::availability::validate_availability_with_ports(

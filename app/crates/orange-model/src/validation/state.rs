@@ -84,8 +84,8 @@ pub(super) fn validate_state_counted(
     let origin = registry.origin();
     let mut children: BTreeMap<&RegionRoot, Vec<&RegionRoot>> = BTreeMap::new();
     let mut branches: BTreeMap<NodeId, Vec<&RegionRoot>> = BTreeMap::new();
-    visits.nodes += regions.regions.len();
     for (root, region) in &regions.regions {
+        visits.nodes += 1;
         if let Some(parent) = &region.parent {
             children.entry(parent).or_default().push(root);
         }
@@ -96,21 +96,24 @@ pub(super) fn validate_state_counted(
 
     let mut diagnostics = validate_declarations(document, registry);
     for (body_ref, body) in document.bodies_with_refs() {
-        // The register check and the loop below each iterate the body's nodes.
         visits.bodies += 1;
-        visits.nodes += 2 * body.nodes.len();
-        validate_registers(body_ref, body, registry, resolved, &mut diagnostics);
+        validate_registers(body_ref, body, registry, resolved, &mut diagnostics, visits);
         for node in body.nodes.values() {
+            visits.nodes += 1;
             if node
                 .activation
                 .as_ref()
                 .is_some_and(|policy| policy.mode == ReentrancyMode::Parallel)
             {
                 let mut members = BTreeSet::new();
-                visits.nodes += regions.regions.len();
-                for root in regions.regions.keys().filter(|root| root.node == node.id) {
+                let mut scanned = 0;
+                for root in regions.regions.keys().filter(|root| {
+                    scanned += 1;
+                    root.node == node.id
+                }) {
                     members.extend(region_members(regions, &children, root, visits));
                 }
+                visits.nodes += scanned;
                 stale_captures(
                     body_ref,
                     body,
@@ -181,9 +184,11 @@ fn validate_registers(
     registry: &RegistrySnapshot,
     resolved: &BTreeMap<NodeId, SignatureSnapshot>,
     diagnostics: &mut Vec<Diagnostic>,
+    visits: &mut super::visits::VisitCounts,
 ) {
     let (origin, types) = (registry.origin(), registry.types().as_ref());
     for node in body.nodes.values() {
+        visits.nodes += 1;
         if node.definition.id.as_str() != ids::REGISTER
             || node.provider.is_some()
             || node.definition.version != 1
@@ -244,8 +249,7 @@ fn region_members(
     let mut stack = vec![root];
     while let Some(current) = stack.pop() {
         if let Some(region) = regions.regions.get(current) {
-            visits.nodes += region.nodes.len();
-            members.extend(region.nodes.iter().copied());
+            members.extend(region.nodes.iter().inspect(|_| visits.nodes += 1).copied());
         }
         stack.extend(children.get(current).into_iter().flatten().copied());
     }
@@ -426,8 +430,8 @@ fn stale_captures(
     visits: &mut super::visits::VisitCounts,
 ) {
     use crate::document::{NodeKind, Suspends};
-    visits.nodes += members.len();
     let suspends = members.iter().any(|node| {
+        visits.nodes += 1;
         resolved
             .get(node)
             .is_some_and(|s| s.suspension() != Some(Suspends::Never))
@@ -436,9 +440,8 @@ fn stale_captures(
         return;
     }
     let mut incoming: BTreeMap<NodeId, Vec<NodeId>> = BTreeMap::new();
-    visits.edges += body.edges.len();
-    visits.nodes += members.len();
     for edge in body.edges.values() {
+        visits.edges += 1;
         incoming
             .entry(edge.to.node)
             .or_default()
@@ -450,6 +453,7 @@ fn stale_captures(
             .flatten()
     };
     for id in members {
+        visits.nodes += 1;
         let Some(write) = body.nodes.get(id) else {
             continue;
         };

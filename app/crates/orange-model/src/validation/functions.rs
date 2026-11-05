@@ -145,7 +145,12 @@ pub fn analyze_functions(
         return result;
     }
 
-    let calls = call_graph(document, registry, &mut result);
+    let calls = call_graph(
+        document,
+        registry,
+        &mut result,
+        &mut super::visits::VisitCounts::default(),
+    );
     let (cycles, cyclic) = find_cycles(&calls);
     for path in &cycles {
         let mut diagnostic = Diagnostic::new(
@@ -169,7 +174,12 @@ pub fn analyze_functions(
         cyclic: &cyclic,
     };
     for function_id in order {
-        summarize_function(&context, function_id, &mut result);
+        summarize_function(
+            &context,
+            function_id,
+            &mut result,
+            &mut super::visits::VisitCounts::default(),
+        );
     }
     result.incomplete_functions.extend(cyclic.iter().copied());
     result.diagnostics = sort_diagnostics_owned(result.diagnostics);
@@ -192,10 +202,12 @@ pub(crate) fn summarize_function(
     context: &SummaryContext<'_>,
     function_id: FunctionId,
     result: &mut FunctionAnalysis,
+    visits: &mut super::visits::VisitCounts,
 ) {
     let Some(function) = context.document.functions().get(&function_id) else {
         return;
     };
+    visits.bodies += 1;
     let mut summarizer = Summarizer {
         context,
         function_id,
@@ -210,6 +222,7 @@ pub(crate) fn summarize_function(
         .incomplete_functions
         .contains(&function_id);
     for node in function.body.nodes.values() {
+        visits.nodes += 1;
         match summarizer.node(node) {
             Ok(Some((kind, suspends))) => {
                 rank = rank.max(rank_of(kind));
@@ -460,17 +473,17 @@ pub(crate) fn call_graph(
     document: &GraphDocument,
     registry: &RegistrySnapshot,
     result: &mut FunctionAnalysis,
+    visits: &mut super::visits::VisitCounts,
 ) -> CallGraph {
     let origin = registry.origin();
     let mut graph = BTreeMap::new();
     for (id, function) in document.functions() {
+        visits.bodies += 1;
         let mut edges = BTreeMap::new();
-        for node in function
-            .body
-            .nodes
-            .values()
-            .filter(|n| n.definition.id.as_str() == ids::CALL)
-        {
+        for node in function.body.nodes.values().filter(|n| {
+            visits.nodes += 1;
+            n.definition.id.as_str() == ids::CALL
+        }) {
             if node.provider.is_some() || node.definition.version != 1 || node.config_version != 1 {
                 emit_at(
                     result,

@@ -165,6 +165,7 @@ pub(crate) fn infer_components_except(
         registry,
         templates: RefCell::default(),
         edges: RefCell::default(),
+        counted: std::cell::Cell::default(),
     };
     let mut seeds = BTreeSet::new();
     for node in touched {
@@ -183,8 +184,6 @@ pub(crate) fn infer_components_except(
         }
         let nodes = graph.component(seed);
         visited.extend(nodes.iter().copied());
-        // The solve builds an equation from each member's template.
-        visits.nodes += nodes.len();
         components.push(graph.solve(nodes, registry.types()));
     }
     graph.charge(visits);
@@ -206,6 +205,7 @@ pub(crate) fn component_nodes(
         registry,
         templates: RefCell::default(),
         edges: RefCell::default(),
+        counted: std::cell::Cell::default(),
     };
     let mut seeds = BTreeSet::new();
     for node in touched {
@@ -288,6 +288,7 @@ pub(crate) fn solution_kept<'s>(
         registry,
         templates: RefCell::default(),
         edges: RefCell::default(),
+        counted: std::cell::Cell::default(),
     };
     let seeds: BTreeSet<NodeId> = touched
         .iter()
@@ -352,6 +353,8 @@ struct Graph<'a> {
     templates: RefCell<HashMap<NodeId, Option<Rc<GenericTemplate>>>>,
     /// `None` records an incident edge that does not join two data ports.
     edges: RefCell<HashMap<EdgeId, Option<Rc<DataEdge>>>>,
+    /// What equation building and argument checks iterated, for the session's counters.
+    counted: std::cell::Cell<crate::validation::VisitCounts>,
 }
 
 /// A port's type as seen by inference: scoped to its node when generic, concrete otherwise.
@@ -369,11 +372,19 @@ struct DataEdge {
 }
 
 impl Graph<'_> {
-    /// Charges `visits` with the nodes and edges this search read: each is resolved once
-    /// and cached, so the caches hold exactly those.
+    /// Charges `visits` with the nodes and edges this search resolved, each exactly once
+    /// into its cache, and with what equation building and argument checks iterated.
     fn charge(&self, visits: &mut crate::validation::VisitCounts) {
         visits.nodes += self.templates.borrow().len();
         visits.edges += self.edges.borrow().len();
+        *visits += self.counted.get();
+    }
+
+    /// Adds to the counts of what equation building and argument checks iterate.
+    fn count(&self, add: impl FnOnce(&mut crate::validation::VisitCounts)) {
+        let mut counted = self.counted.get();
+        add(&mut counted);
+        self.counted.set(counted);
     }
 
     fn node(&self, id: NodeId) -> Option<(&GraphBody, &NodeInstance)> {
@@ -569,6 +580,7 @@ impl Graph<'_> {
         // rigid parameters, never on the node, so equal checks across nodes run once.
         let mut checked = ArgChecks::new();
         for &id in &result.nodes {
+            self.count(|visits| visits.nodes += 1);
             let args = self.node_args(id, &unification, types, &mut checked, &mut result.issues);
             if !args.is_empty() {
                 result.type_args.insert(id, args);
@@ -748,6 +760,7 @@ impl Graph<'_> {
         let mut equations = Vec::new();
         let mut seen_edges = BTreeSet::new();
         for &id in nodes {
+            self.count(|visits| visits.nodes += 1);
             let Some((_, node)) = self.node(id) else {
                 continue;
             };
@@ -776,7 +789,9 @@ impl Graph<'_> {
                     node: id,
                     port: key.clone(),
                 };
+                self.count(|visits| visits.ports += 1);
                 if self.index.incoming(&port).next().is_some() {
+                    self.count(|visits| visits.edges += 1);
                     continue; // shadowed by a connected edge (11 §4.4)
                 }
                 if let Some(term) = self.port_term(&port)?
@@ -790,6 +805,7 @@ impl Graph<'_> {
                 }
             }
             for edge in self.data_edges(id) {
+                self.count(|visits| visits.edges += 1);
                 if !seen_edges.insert(edge.id) {
                     continue;
                 }

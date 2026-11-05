@@ -12,7 +12,7 @@ use crate::id::NodeId;
 use super::connections::ConnectionValidation;
 use super::diagnostic::{Diagnostic, DiagnosticCode, Severity, Subject, sort_diagnostics};
 use super::ports::{PortLookupError, PortResolver};
-use super::scope::{NodeSubset, Scope};
+use super::scope::{NodeSubset, Scope, Tally};
 
 /// Result of checking explicit exec-edge cycles for guaranteed suspension.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -51,7 +51,14 @@ pub fn validate_control_cycles(
 ) -> ControlCycleValidation {
     let ports = PortResolver::new(document, resolved);
 
-    validate_control_cycles_in(document, &ports, connections, registry, Scope::All)
+    validate_control_cycles_in(
+        document,
+        &ports,
+        connections,
+        registry,
+        Scope::All,
+        Tally::NONE,
+    )
 }
 
 /// [`validate_control_cycles`] over the bodies in `scope`.
@@ -61,8 +68,17 @@ pub(crate) fn validate_control_cycles_in(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     scope: Scope,
+    tally: Tally<'_>,
 ) -> ControlCycleValidation {
-    control_cycles_among(document, resolved, connections, registry, scope, None)
+    control_cycles_among(
+        document,
+        resolved,
+        connections,
+        registry,
+        scope,
+        None,
+        tally,
+    )
 }
 
 /// The same pass for the root-body nodes in `only` alone: an exec-connected set, whose
@@ -73,6 +89,7 @@ pub(crate) fn validate_control_cycles_among(
     connections: &ConnectionValidation,
     registry: &RegistrySnapshot,
     only: &NodeSubset<'_>,
+    tally: Tally<'_>,
 ) -> ControlCycleValidation {
     control_cycles_among(
         document,
@@ -81,6 +98,7 @@ pub(crate) fn validate_control_cycles_among(
         registry,
         Scope::All,
         Some(only),
+        tally,
     )
 }
 
@@ -91,6 +109,7 @@ fn control_cycles_among(
     registry: &RegistrySnapshot,
     scope: Scope,
     only: Option<&NodeSubset<'_>>,
+    tally: Tally<'_>,
 ) -> ControlCycleValidation {
     let origin = registry.origin();
     let mut result = ControlCycleValidation {
@@ -113,9 +132,9 @@ fn control_cycles_among(
             BodyRef::Root => None,
             BodyRef::Function(id) => Some(id),
         };
-        super::scope::count(only, |visits| visits.bodies += 1);
+        tally.add(|visits| visits.bodies += 1);
         let mut full = Graph::new();
-        for edge in super::scope::edges_of(body, only) {
+        for edge in super::scope::edges_of(body, only, tally) {
             if error_edges.contains(&edge.id)
                 || only.is_some_and(|only| !only.nodes.contains(&edge.from.node))
                 || !body.nodes.contains_key(&edge.from.node)
@@ -123,7 +142,7 @@ fn control_cycles_among(
             {
                 continue;
             }
-            super::scope::count(only, |visits| visits.ports += 2);
+            tally.add(|visits| visits.ports += 2);
             match (resolved.port(&edge.from), resolved.port(&edge.to)) {
                 (Ok(from), Ok(to))
                     if from.direction == PortDirection::Output
@@ -141,28 +160,10 @@ fn control_cycles_among(
                 _ => {}
             }
         }
-        // Each of the two filters reads the exec graph, and each cycle search the filtered
-        // graph it produced.
-        let size = |graph: &Graph| {
-            (
-                graph.len(),
-                graph.values().map(BTreeSet::len).sum::<usize>(),
-            )
-        };
-        let (nodes, edges) = size(&full);
-        super::scope::count(only, |visits| {
-            visits.nodes += 2 * nodes;
-            visits.edges += 2 * edges;
-        });
-        let strict = filtered(&full, &certified);
-        let (nodes, edges) = size(&strict);
-        super::scope::count(only, |visits| {
-            visits.nodes += nodes;
-            visits.edges += edges;
-        });
+        let strict = filtered(&full, &certified, tally);
         let mut errors = BTreeSet::new();
-        for component in cyclic_components(&strict) {
-            let path = cycle_witness(&strict, &component);
+        for component in cyclic_components(&strict, tally) {
+            let path = cycle_witness(&strict, &component, tally);
             errors.extend(component);
             let subject = cycle_subject(function, &path);
             result.diagnostics.push(Diagnostic::new(
@@ -173,17 +174,16 @@ fn control_cycles_among(
             result.cycle_paths.push(path);
         }
         // Cycles certified only by yields are legal but busy (11 §8.1).
-        let lenient = filtered(&full, &|node| certified(node) && !is_yield(document, node));
-        let (nodes, edges) = size(&lenient);
-        super::scope::count(only, |visits| {
-            visits.nodes += nodes;
-            visits.edges += edges;
-        });
-        for component in cyclic_components(&lenient) {
+        let lenient = filtered(
+            &full,
+            &|node| certified(node) && !is_yield(document, node),
+            tally,
+        );
+        for component in cyclic_components(&lenient, tally) {
             if component.iter().any(|node| errors.contains(node)) {
                 continue;
             }
-            let path = cycle_witness(&lenient, &component);
+            let path = cycle_witness(&lenient, &component, tally);
             let subject = cycle_subject(function, &path);
             result
                 .diagnostics
@@ -209,13 +209,17 @@ fn cycle_subject(function: Option<crate::id::FunctionId>, path: &[NodeId]) -> Su
 }
 
 /// `graph` without the nodes `removed` selects.
-fn filtered(graph: &Graph, removed: &dyn Fn(NodeId) -> bool) -> Graph {
+fn filtered(graph: &Graph, removed: &dyn Fn(NodeId) -> bool, tally: Tally<'_>) -> Graph {
     let mut result = Graph::new();
     for (from, targets) in graph {
+        tally.add(|visits| visits.nodes += 1);
         if removed(*from) {
             continue;
         }
-        for to in targets.iter().filter(|to| !removed(**to)) {
+        for to in targets.iter().filter(|to| {
+            tally.add(|visits| visits.edges += 1);
+            !removed(**to)
+        }) {
             result.entry(*from).or_default().insert(*to);
         }
     }
@@ -227,8 +231,11 @@ fn successors(graph: &Graph, node: NodeId) -> Vec<NodeId> {
 }
 
 /// Ordered cyclic components; suspension filtering remains control-specific.
-fn cyclic_components(graph: &Graph) -> Vec<BTreeSet<NodeId>> {
-    let mut components: Vec<_> = super::graph::strongly_connected_components(graph)
+fn cyclic_components(graph: &Graph, tally: Tally<'_>) -> Vec<BTreeSet<NodeId>> {
+    let mut searched = super::visits::VisitCounts::default();
+    let components = super::graph::strongly_connected_components_counted(graph, &mut searched);
+    tally.add(|visits| *visits += searched);
+    let mut components: Vec<_> = components
         .into_iter()
         .filter(|component| {
             component.len() > 1
@@ -243,16 +250,21 @@ fn cyclic_components(graph: &Graph) -> Vec<BTreeSet<NodeId>> {
 
 /// Closed path through `component`, starting at its lowest node, found by depth-first search
 /// over ordered successors so the result is deterministic.
-fn cycle_witness(graph: &Graph, component: &BTreeSet<NodeId>) -> Vec<NodeId> {
+fn cycle_witness(graph: &Graph, component: &BTreeSet<NodeId>, tally: Tally<'_>) -> Vec<NodeId> {
     #[expect(
         clippy::expect_used,
         reason = "strongly connected components are never empty"
     )]
     let start = *component.first().expect("components are non-empty");
+    // Each node the search enters, with each of its successors read.
     let inside = |node: NodeId| -> Vec<NodeId> {
+        tally.add(|visits| visits.nodes += 1);
         successors(graph, node)
             .into_iter()
-            .filter(|next| component.contains(next))
+            .filter(|next| {
+                tally.add(|visits| visits.edges += 1);
+                component.contains(next)
+            })
             .collect()
     };
     let mut visited = BTreeSet::from([start]);
