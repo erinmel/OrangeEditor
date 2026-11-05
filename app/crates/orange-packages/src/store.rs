@@ -197,6 +197,16 @@ pub enum TransactionError {
     /// not committed active, or has another digest.
     #[error("restored package `{0}` does not match the last committed generation")]
     RecoveryMismatch(PackageKey),
+    /// The recovered checkpoint selected a new-binding default whose provider is not
+    /// available after restoring the active packages. Defaults are never chosen by install
+    /// order instead.
+    #[error("recovered default for `{}@{}` names an unavailable provider", .definition.id, .definition.version)]
+    RecoveryDefaultUnavailable {
+        /// The definition whose default was recorded.
+        definition: DefinitionRef,
+        /// The recorded provider.
+        provider: Box<ProviderKey>,
+    },
     /// Registry publication rejected the next generation.
     #[error(transparent)]
     Registry(#[from] RegistryError),
@@ -228,6 +238,9 @@ impl TransactionError {
             Self::DependedOn { .. } => "packages/transaction-depended-on",
             Self::NothingToRollBack => "packages/transaction-nothing-to-roll-back",
             Self::RecoveryMismatch(_) => "packages/transaction-recovery-mismatch",
+            Self::RecoveryDefaultUnavailable { .. } => {
+                "packages/transaction-recovery-default-unavailable"
+            }
             Self::Registry(_) => "packages/transaction-registry",
             Self::Journal(_) => "packages/transaction-journal",
         }
@@ -270,6 +283,10 @@ pub struct PackageStore<J = MemoryJournal> {
     published: BTreeMap<PackageKey, String>,
     /// Revoked content digests, which no transaction or rollback can reinstate.
     revoked: BTreeSet<String>,
+    /// Definitions a host selected a default for, now or before a restart. Their current
+    /// default, together with those of definitions active packages implement, is what a
+    /// checkpoint records.
+    tracked: BTreeSet<DefinitionRef>,
     journal: J,
 }
 
@@ -331,6 +348,7 @@ impl<J: Journal> PackageStore<J> {
             quarantined: BTreeMap::new(),
             published: BTreeMap::new(),
             revoked: BTreeSet::new(),
+            tracked: BTreeSet::new(),
             journal,
         }
     }
@@ -393,13 +411,20 @@ impl<J: Journal> PackageStore<J> {
             let item = pending.remove(ready.unwrap_or(0));
             staging.install(item)?;
         }
+        let mut current = staging.current;
+        let mut tracked = BTreeSet::new();
+        if let Some(defaults) = &recovery.defaults {
+            current = apply_recovered_defaults(current, defaults)?;
+            tracked.extend(defaults.keys().cloned());
+        }
         let mut store = Self {
             host_api,
-            current: staging.current,
+            current,
             history: Vec::new(),
             quarantined: BTreeMap::new(),
             published: staging.published,
             revoked: staging.revoked,
+            tracked,
             journal,
         };
         let checkpoint = store.current.clone();
@@ -486,8 +511,9 @@ impl<J: Journal> PackageStore<J> {
         provider: ProviderKey,
     ) -> Result<Arc<RegistrySnapshot>, TransactionError> {
         let snapshot = RegistryBuilder::from_snapshot(&self.current.snapshot)
-            .new_binding_default(definition, provider)
+            .new_binding_default(definition.clone(), provider)
             .build()?;
+        self.tracked.insert(definition);
         let packages = self.current.packages.clone();
         self.commit(snapshot, packages, None)
     }
@@ -639,6 +665,26 @@ impl<J: Journal> PackageStore<J> {
         })
     }
 
+    /// The exact new-binding defaults a checkpoint of `next` records: those of every tracked
+    /// definition and of every definition an active package provider implements.
+    fn defaults_of(&self, next: &Committed) -> BTreeMap<DefinitionRef, ProviderKey> {
+        let mut definitions: BTreeSet<&DefinitionRef> = self.tracked.iter().collect();
+        for record in next.packages.values().filter(|r| r.state.is_active()) {
+            for key in &record.providers {
+                if let Some(descriptor) = next.snapshot.provider(key) {
+                    definitions.extend(descriptor.implements.iter().map(|(d, _)| d));
+                }
+            }
+        }
+        definitions
+            .into_iter()
+            .filter_map(|definition| {
+                let selected = next.snapshot.new_binding_default(definition)?;
+                Some((definition.clone(), selected.clone()))
+            })
+            .collect()
+    }
+
     /// Journals `next` as committed: its active set plus the store's identity state, with
     /// `next`'s versions published and `revoke` added to the revoked digests. On success the
     /// store adopts that identity state.
@@ -660,6 +706,7 @@ impl<J: Journal> PackageStore<J> {
             active: next.active(),
             published: published.clone(),
             revoked: revoked.clone(),
+            defaults: Some(self.defaults_of(next)),
         })?;
         self.published = published;
         self.revoked = revoked;
@@ -953,6 +1000,33 @@ struct Plan {
     providers: BTreeMap<String, BTreeSet<(DefinitionRef, u32)>>,
     /// Supported argument sets per provider ID and definition, where the package lists them.
     specializations: BTreeMap<String, BTreeMap<DefinitionRef, Vec<TypeArgs>>>,
+}
+
+/// Applies the recorded defaults to a restored state once every active package is installed.
+/// A recorded provider that is not registered is an explicit error.
+fn apply_recovered_defaults(
+    mut state: Committed,
+    defaults: &BTreeMap<DefinitionRef, ProviderKey>,
+) -> Result<Committed, TransactionError> {
+    let mut builder = RegistryBuilder::from_snapshot(&state.snapshot);
+    let mut changed = false;
+    for (definition, provider) in defaults {
+        if state.snapshot.provider(provider).is_none() {
+            return Err(TransactionError::RecoveryDefaultUnavailable {
+                definition: definition.clone(),
+                provider: Box::new(provider.clone()),
+            });
+        }
+        changed |= state.snapshot.new_binding_default(definition) != Some(provider);
+        builder = builder.new_binding_default(definition.clone(), provider.clone());
+    }
+    if changed {
+        state.snapshot = builder.build()?;
+        for record in state.packages.values_mut() {
+            record.generation = state.snapshot.generation();
+        }
+    }
+    Ok(state)
 }
 
 /// Moves new-binding defaults from providers of `old` to the same-ID providers in `new`

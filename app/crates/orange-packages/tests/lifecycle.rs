@@ -595,6 +595,7 @@ fn recovery_reports_a_clean_rollback_as_removed_not_abandoned() {
             ]
             .into(),
             revoked: Default::default(),
+            defaults: Some(Default::default()),
         })
     );
 }
