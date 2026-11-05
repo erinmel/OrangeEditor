@@ -33,8 +33,8 @@ fn term(ty: &str) -> TypeTerm {
 }
 
 /// The math package plus package types:
-/// - `light` (red, amber(u32), green) and `palette` (empty, lights(list<light>),
-///   named(map<string, light>)) deriving `eq`;
+/// - `light` (red, amber(u32), green) deriving `eq` and `hash`, and `palette` (empty,
+///   lights(list<light>), named(map<string, light>)) deriving `eq`;
 /// - `opaque` (one, two) with a package-implemented `eq`, and `wrapper(opaque)` deriving it;
 /// - records `point {x, y: i64}` and `segment {from, to: point}` deriving `eq`.
 fn catalog() -> (MathPackage, Arc<RegistrySnapshot>) {
@@ -110,6 +110,9 @@ fn catalog() -> (MathPackage, Arc<RegistrySnapshot>) {
             .derive_constraint("org.example", &ty.parse().unwrap(), Constraint::Eq)
             .unwrap();
     }
+    types
+        .derive_constraint("org.example", &LIGHT.parse().unwrap(), Constraint::Hash)
+        .unwrap();
     let digest = format!("sha256:{}", "a".repeat(64));
     let package = MathPackage::new(digest.clone()).unwrap();
     let builder = RegistryBuilder::core(HostOrigin::new("0.0.0", digest).unwrap())
@@ -343,6 +346,32 @@ fn derived_enum_equality_compares_tags_then_payloads() {
     // A list of derived enums is itself comparable.
     let ty = "core/list@1<org.example/light@1>";
     assert_equality(ty, list(vec![amber(4)]), list(vec![amber(4)]), true);
+
+    // Derived `eq` + `hash` enums key maps; equality still ignores insertion order and
+    // tells keys apart by payload.
+    let ty = "core/map@1<org.example/light@1,core/i64@1>";
+    let keyed = |second: Value| map(vec![(red.clone(), Value::I64(0)), (second, Value::I64(1))]);
+    assert_equality(
+        ty,
+        keyed(amber(1)),
+        map(vec![
+            (amber(1), Value::I64(1)),
+            (red.clone(), Value::I64(0)),
+        ]),
+        true,
+    );
+    assert_equality(ty, keyed(amber(1)), keyed(amber(2)), false);
+    // `palette` derives no `hash`, and `opaque`'s `eq` is package code.
+    for ty in [
+        "core/map@1<org.example/palette@1,core/i64@1>",
+        "core/map@1<org.example/opaque@1,core/i64@1>",
+    ] {
+        assert_eq!(
+            bind(Comparison::Equal, ty).unwrap_err(),
+            BindingError::UnsupportedType,
+            "{ty}"
+        );
+    }
 }
 
 #[test]

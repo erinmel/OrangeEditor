@@ -809,11 +809,11 @@ fn prepare_events(
         if declaration.scope != EventScope::Run {
             return Err(CompileError::UnsupportedNode { node: node_id });
         }
-        let payload_type = ValueShape::of(&declaration.payload)
+        let payload_type = ValueShape::of_in(&declaration.payload, cx.snapshot.types().as_ref())
             .ok_or(CompileError::UnsupportedNode { node: node_id })?;
         payload_types.entry(event_id).or_insert(payload_type);
         // Charge before retaining executable event metadata. The type is a bounded
-        // recursive shape (ValueShape::of enforces the language nesting limit).
+        // recursive shape (ValueShape::of_in enforces the language nesting limit).
         charge(graph_items, 1, cx.options.limits.max_graph_items)?;
         if is_handler {
             if scope != 0 {
@@ -909,7 +909,7 @@ fn collect_variables(
             return Err(CompileError::UnsupportedNode { node: node.id });
         }
         if let std::collections::btree_map::Entry::Vacant(entry) = variable_ids.entry(id) {
-            let ty = ValueShape::of(&declaration.ty)
+            let ty = ValueShape::of_in(&declaration.ty, cx.snapshot.types().as_ref())
                 .ok_or(CompileError::UnsupportedNode { node: node.id })?;
             let initial = match &declaration.init {
                 Some(literal) => Some(

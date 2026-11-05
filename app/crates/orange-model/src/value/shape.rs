@@ -52,6 +52,8 @@ pub enum ValueShape {
 pub struct EnumShape {
     ty: TypeExpr,
     variants: Box<[(String, Option<ValueShape>)]>,
+    /// `eq` and `hash` are structural derives and every payload is a map key itself.
+    key: bool,
 }
 
 impl EnumShape {
@@ -87,6 +89,12 @@ impl EnumShape {
 
     fn variant(&self, tag: u32) -> Option<&(String, Option<ValueShape>)> {
         self.variants.get(usize::try_from(tag).ok()?)
+    }
+
+    /// Whether the enum's `eq` and `hash` are declared structural derives over payloads
+    /// that are map keys themselves ([`ValueShape::map_key`]).
+    pub fn derives_key(&self) -> bool {
+        self.key
     }
 }
 
@@ -149,7 +157,7 @@ fn minimum(left: usize, len: usize, per: usize) -> Result<(), ValueCheckError> {
 
 impl ValueShape {
     /// Shape of a canonical type expression; None for parameters, unsupported or
-    /// unknown types, wrong arities and non-hashable map keys.
+    /// unknown types, wrong arities and keys that are not [`ValueShape::map_key`].
     pub fn of(expr: &TypeExpr) -> Option<Self> {
         Self::resolve(&TypeTerm::parse(expr).ok()?)
     }
@@ -216,7 +224,7 @@ impl ValueShape {
             ("list", 1) => Self::List(inner(0)?),
             ("map", 2) => {
                 let key = inner(0)?;
-                if !key.native_hash() {
+                if !key.map_key() {
                     return None;
                 }
                 Self::Map(key, inner(1)?)
@@ -239,6 +247,7 @@ impl ValueShape {
         }
         let schema = nominal.schemas.enumeration(named)?;
         let mut height = 1;
+        let mut key = nominal.schemas.derives_key(named);
         let mut variants = Vec::with_capacity(schema.variants.len());
         for variant in &schema.variants {
             let payload = match &variant.payload {
@@ -246,6 +255,7 @@ impl ValueShape {
                 Some(term) => {
                     let (shape, h) = Self::resolve_at(term, depth + 1, Some(nominal))?;
                     height = height.max(h + 1);
+                    key &= shape.map_key();
                     Some(shape)
                 }
             };
@@ -255,6 +265,7 @@ impl ValueShape {
         let shape = Self::Enum(Arc::new(EnumShape {
             ty: TypeTerm::Named(named.clone()).to_type_expr(),
             variants: variants.into(),
+            key,
         }));
         nominal
             .resolved
@@ -262,11 +273,23 @@ impl ValueShape {
         Some((shape, height))
     }
 
+    /// Whether the host implements this exact Core type's `hash`.
     pub fn native_hash(&self) -> bool {
         matches!(
             self,
             Self::Bool | Self::I32 | Self::I64 | Self::U32 | Self::U64 | Self::String | Self::Bytes
         )
+    }
+
+    /// Whether values of this type key an executable map (11 §5.2): a native Core `hash`
+    /// type, or a package enum whose `eq` and `hash` are structural derives over such
+    /// keys. Equal keys are then exactly equal tags and payloads, `Value`'s structural
+    /// identity, so map storage and lookup run no package code.
+    pub fn map_key(&self) -> bool {
+        match self {
+            Self::Enum(shape) => shape.key,
+            _ => self.native_hash(),
+        }
     }
 
     /// Whether the host implements this exact Core type's total equality. Nominal enum
@@ -338,7 +361,7 @@ impl ValueShape {
             Self::Option(inner) | Self::Result(inner) | Self::List(inner) => {
                 inner.valid_shape(depth + 1)
             }
-            Self::Map(key, value) => key.native_hash() && value.valid_shape(depth + 1),
+            Self::Map(key, value) => key.map_key() && value.valid_shape(depth + 1),
             _ => true,
         }
     }
@@ -401,7 +424,7 @@ impl ValueShape {
                 }
                 Ok(())
             }
-            (Self::Map(key, ty), Value::Map(map)) if key.native_hash() => {
+            (Self::Map(key, ty), Value::Map(map)) if key.map_key() => {
                 // Keys are unique by construction (`MapRepr::new`).
                 let entries = map.entries();
                 minimum(*left, entries.len(), MAP_ENTRY_CHARGE)?;
@@ -630,6 +653,94 @@ mod tests {
         }
         assert!(of(&wrap(MAX_NESTING - 1)).is_some());
         assert!(of(&wrap(MAX_NESTING)).is_none());
+    }
+
+    /// An enum keys maps only when its schemas prove derived `eq` + `hash` for it and
+    /// for every enum among its payloads; keys then check tags and payloads.
+    #[test]
+    fn derived_key_enums_key_maps_and_others_do_not() {
+        use crate::value::MapRepr;
+        use crate::value::literal_codec::{EnumSchema, RecordSchema, SchemaSet, VariantSchema};
+        struct Derived(SchemaSet, &'static [&'static str]);
+        impl Schemas for Derived {
+            fn record(&self, ty: &NamedTerm) -> Option<&RecordSchema> {
+                self.0.record(ty)
+            }
+            fn enumeration(&self, ty: &NamedTerm) -> Option<&EnumSchema> {
+                self.0.enumeration(ty)
+            }
+            fn derives_key(&self, ty: &NamedTerm) -> bool {
+                self.1.contains(&ty.name.as_str())
+            }
+        }
+        let term = |text: &str| TypeTerm::parse(&text.parse().unwrap()).unwrap();
+        let variant = |id: &str, payload: Option<&str>| VariantSchema {
+            variant_id: id.into(),
+            payload: payload.map(term),
+        };
+        let set = SchemaSet::default()
+            .with_enum(
+                "org.example/key@1",
+                EnumSchema {
+                    variants: vec![variant("a", None), variant("b", Some("core/string@1"))],
+                },
+            )
+            .with_enum(
+                "org.example/outer@1",
+                EnumSchema {
+                    variants: vec![variant("wrap", Some("org.example/key@1"))],
+                },
+            )
+            .with_enum(
+                "org.example/listed@1",
+                EnumSchema {
+                    variants: vec![variant("many", Some("core/list@1<core/i64@1>"))],
+                },
+            );
+        let map = |key: &str| format!("core/map@1<{key},core/u32@1>");
+        let of = |schemas: &Derived, text: &str| ValueShape::of_in(&text.parse().unwrap(), schemas);
+        let all = Derived(set.clone(), &["key", "outer", "listed"]);
+        let keyed = of(&all, &map("org.example/key@1")).unwrap();
+        assert!(of(&all, &map("org.example/outer@1")).is_some());
+        // A list payload is no map key, whatever the schemas claim.
+        assert!(of(&all, &map("org.example/listed@1")).is_none());
+        // An outer derive does not cover a payload enum without one.
+        let outer_only = Derived(set.clone(), &["outer"]);
+        assert!(of(&outer_only, &map("org.example/outer@1")).is_none());
+        assert!(of(&outer_only, &map("org.example/key@1")).is_none());
+        let ValueShape::Map(key, _) = &keyed else {
+            panic!("{keyed:?}");
+        };
+        assert!(key.map_key() && !key.native_hash() && !key.native_eq());
+        assert!(!keyed.native_eq());
+        let b = |text: &str| Value::Enum {
+            tag: 1,
+            payload: Some(Arc::new(Value::Str(Arc::new(text.into())))),
+        };
+        let a = Value::Enum {
+            tag: 0,
+            payload: None,
+        };
+        let entries = |keys: Vec<Value>| {
+            Value::Map(Arc::new(
+                MapRepr::new(
+                    keys.into_iter()
+                        .map(|k| (k, Value::U32(1)))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            ))
+        };
+        assert!(keyed.accepts(&entries(vec![a.clone(), b("x"), b("y")])));
+        assert_eq!(
+            MapRepr::new(vec![(b("x"), Value::U32(1)), (b("x"), Value::U32(2))]),
+            Err(crate::value::DuplicateKey)
+        );
+        let unknown = Value::Enum {
+            tag: 2,
+            payload: None,
+        };
+        assert!(!keyed.accepts(&entries(vec![a, unknown])));
     }
 
     #[test]
