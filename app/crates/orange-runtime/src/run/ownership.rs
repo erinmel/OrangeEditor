@@ -219,8 +219,33 @@ pub(super) struct Region {
     pub depth: usize,
     pub live: IdSet<StrandId>,
     pub children: IdSet<RegionId>,
-    pub continuation: Option<Strand>,
+    pub continuation: Option<Held>,
     pub kind: RegionKind,
+}
+
+/// A waiting continuation kept out of line. Most regions (Fork branches, joins in
+/// detach mode) never hold one, so a 336-byte strand inline would triple every region.
+/// The box comes from and returns to [`Regions`]' spare pool, so warm serial calls
+/// and loop bodies still do not allocate; the pool follows peak held continuations.
+pub(super) struct Held(pub(super) Box<Option<Strand>>);
+#[expect(
+    clippy::expect_used,
+    reason = "a held box always contains its strand until resumed"
+)]
+impl std::ops::Deref for Held {
+    type Target = Strand;
+    fn deref(&self) -> &Strand {
+        self.0.as_ref().as_ref().expect("held strand")
+    }
+}
+#[expect(
+    clippy::expect_used,
+    reason = "a held box always contains its strand until resumed"
+)]
+impl std::ops::DerefMut for Held {
+    fn deref_mut(&mut self) -> &mut Strand {
+        self.0.as_mut().as_mut().expect("held strand")
+    }
 }
 impl Run {
     pub(super) fn enter_body(
@@ -247,6 +272,7 @@ impl Run {
         child.id = caller.id;
         child.pull = caller.pull.lend();
         caller.pc = None;
+        let caller = self.regions.hold(caller);
         self.regions.open(
             region,
             Region {
@@ -348,6 +374,7 @@ impl Run {
         child.pc = entry;
         caller.pc = None;
         self.frames.insert(FrameId::of_region(region), frame);
+        let caller = self.regions.hold(caller);
         self.regions.open(
             region,
             Region {
@@ -500,6 +527,7 @@ impl Run {
                 });
             }
             if let Some(caller) = r.continuation {
+                let caller = self.regions.resume(caller);
                 self.ready.push_front(caller.id, caller);
             }
             if let Some(parent) = r.parent {
@@ -563,7 +591,7 @@ impl Run {
             self.ready.push_front(caller.id, caller);
             None
         } else {
-            Some(caller)
+            Some(self.regions.hold(caller))
         };
         self.regions.open(
             group,
@@ -631,6 +659,7 @@ impl Run {
             self.cancel_region(id)?;
         }
         if let Some(caller) = caller {
+            let caller = self.regions.resume(caller);
             self.ready.push_front(caller.id, caller);
         }
         Ok(())

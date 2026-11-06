@@ -4,9 +4,10 @@
 //! and the live count equals the strands that regions hold.
 use super::RunError;
 use super::RunLimits;
+use super::Strand;
 use super::ids::IdMap;
 use super::ids::{FrameId, OwnerIds, RegionId, StrandId};
-use super::ownership::{IdSet, Region, RegionKind};
+use super::ownership::{Held, IdSet, Region, RegionKind};
 use orange_compiler::ControlIx;
 
 pub(super) struct Regions {
@@ -15,6 +16,12 @@ pub(super) struct Regions {
     live_strands: usize,
     /// Ownership work beyond one unit per step, not yet spent from a pump budget.
     work: usize,
+    /// Empty continuation boxes, reused by [`hold`](Self::hold).
+    #[expect(
+        clippy::vec_box,
+        reason = "the pool keeps the boxes themselves so held continuations reuse them"
+    )]
+    spare: Vec<Box<Option<Strand>>>,
 }
 
 /// Recycle physical slots without recycling logical identities. The directory
@@ -122,6 +129,7 @@ impl Regions {
             ids: OwnerIds::after_roots(activations),
             live_strands: 0,
             work: 0,
+            spare: Vec::new(),
         }
     }
     pub fn len(&self) -> usize {
@@ -161,6 +169,20 @@ impl Regions {
     /// The ownership work recorded since the last call.
     pub fn take_work(&mut self) -> usize {
         std::mem::take(&mut self.work)
+    }
+    /// Keeps `strand` out of line as a region continuation, reusing a spare box.
+    pub fn hold(&mut self, strand: Strand) -> Held {
+        let mut slot = self.spare.pop().unwrap_or_default();
+        *slot = Some(strand);
+        Held(slot)
+    }
+    /// Returns a held continuation and keeps its box for the next [`hold`](Self::hold).
+    #[expect(clippy::expect_used, reason = "a held box always contains its strand")]
+    pub fn resume(&mut self, held: Held) -> Strand {
+        let mut slot = held.0;
+        let strand = slot.take().expect("held strand");
+        self.spare.push(slot);
+        strand
     }
     pub fn mint_strand(&mut self) -> Result<StrandId, RunError> {
         self.ids.strand()
@@ -314,6 +336,7 @@ impl Regions {
     /// Drops every region and releases the map's storage.
     pub fn release(&mut self) {
         self.map = RegionStore::default();
+        self.spare = Vec::new();
         self.live_strands = 0;
     }
 }
