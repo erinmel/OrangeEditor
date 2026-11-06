@@ -187,3 +187,134 @@ Remaining investigation areas include ordered child-set allocation, repeated
 variable/projection charge walks in large-map CAS, and capacity growth when live
 ownership peaks repeatedly increase. This cohort does not claim those paths are
 optimal or that every graph benefits equally.
+
+## Second cohort: storage traded for repeated work
+
+Implemented 2026-11-05 on top of the cohort above. FR-12/14/16 and NFR-01/05; no
+public API, saved graph, provider, quota, replay or graph-language rule changes.
+The user-supplied CI timing for the first cohort (same EPYC VM class) still showed
+the 1000-entry map CAS at 12.3 ms against 0.68 ms for 16 entries and the 4,000-branch
+Fork at 109 ms, so these two paths were selected.
+
+- **Map check memo.** Each `MapRepr` allocation remembers its first complete shape
+  check as two words: an exact preorder code of the key and value shapes with the
+  depth in its top byte, and the entry charge (12 §6.1). Every five-bit tag is
+  non-zero and fixes its arity, so equal codes are equal shapes, not a hash match.
+  Entries are immutable, so the same shapes at the same or a smaller depth must reach
+  the same verdict; the memo answers those checks and still applies the caller's byte
+  limit. Failed or partial checks are never stored, other shapes walk again, and
+  equality, hashing and debug output ignore the memo. Enum shapes and shapes over
+  eleven nodes are not coded and keep walking. A map CAS update previously walked the
+  whole map for the cell charge, both operands, projections and publication; now each
+  allocation is walked once. This generalizes the first cohort's per-register reuse to
+  every checked boundary, including nested maps, without address-keyed caches.
+- **Tombstoned ownership spill.** Multi-member `IdSet`s (Fork children, multi-strand
+  regions, retained frames) replaced the boxed `BTreeSet` with an ascending identity
+  vector plus one removal bit per slot. Minted children append, removal is a binary
+  search that sets the bit, and the vector compacts when fewer than half its slots are
+  live, so it holds at most twice the live set. Bulk construction sorts once. An
+  identity older than the newest member compacts and shifts the tail; ownership code
+  inserts minted identities, so that path is rare. Iteration stays ascending.
+- **Identity hasher.** Region slots, ready links and the timer directory are keyed by
+  sequential run-minted identities that never come from graph, host or network input.
+  They now use a fixed multiplicative hasher instead of SipHash. Flooding resistance
+  is not needed for keys the run mints itself; external-input maps keep the standard
+  hasher.
+- **Out-of-line continuations.** A region's waiting continuation (a whole `Strand`,
+  336 bytes) moved into a box drawn from a spare pool owned by the region tree.
+  Branch, cleanup and detached-join regions never hold one, so every `Region` shrinks
+  from 496 to 168 bytes. Resumed continuations return their box to the pool, so warm
+  calls and loop bodies still make no allocation; the pool follows the peak number of
+  simultaneously held continuations and is released on disposal.
+
+An earlier draft of the memo cloned both `ValueShape`s (72 inline bytes per map and an
+allocation for nested shapes); the exact code keeps the same reuse in 24 bytes without
+allocating, at about 20 ns per hit for recomputing the probe's code. The first spill
+draft stored `(id, bool)` pairs at 16 bytes per slot; the bitset halves that.
+
+Rejected: moving timers into reusable slots so the B-tree stores indices. It did not
+change the Fork workloads (the winning branch completes before losers park, so
+cancellation only unlinks ready strands) and was reverted rather than kept unmeasured.
+Container memos for lists were not attempted: `ListRepr` is a public enum used across
+the workspace, and packed scalar lists already charge in O(1).
+
+### Memory cost at expected graph sizes
+
+Target sizes: ordinary graphs of about 30 nodes and 50–100 connections; the largest
+expected graphs of about 10,000 nodes and 30,000 connections. NFR-05 allows 750 MiB in
+total for the W4 editor case (10,000 nodes / 20,000 edges); the analysis session holds
+about 124–129 MiB of heap there today (06). Runtime ownership is bounded by run limits
+(default 4,096 strands, 8,192 regions, depth 1,024), not by node count.
+
+| Change | Memory it adds or removes | 30 nodes / 100 connections | 10,000 nodes / 30,000 connections | Speed it buys |
+|---|---|---:|---:|---|
+| Map check memo | +24 bytes per map allocation (16 → 40) | under 1 KiB | ~240 KiB even with one map literal per node | map admission O(entries) → O(1) per repeat |
+| Ownership spill | ~8 bytes per slot, at most 2 slots per live member | none (serial sets stay inline) | bounded by run limits: ≤ ~128 KiB | no per-node tree allocations; Fork 4,000 allocations −98% |
+| Identity hasher | 0 | 0 | 0 | 5–9 cheaper lookups per strand |
+| Out-of-line continuations | −328 bytes per region; spare boxes ≤ peak held continuations | net reduction | up to −2.6 MiB at 8,192 regions | smaller moves per region open/close |
+
+All four trades are valid for these sizes: the only additive cost (24 bytes per map) is
+proportional to live map values, not to history, and stays under 0.1% of the W4 budget
+even in the largest expected graph; the other three reduce or bound memory.
+
+Rule for later trades: memory that grows with live data by a few words per node, edge
+or value (10,000 × 64 bytes = 640 KiB) is acceptable when it removes a repeated walk;
+memory that grows with history (edits, epochs, minted identities) must be bounded or
+released; quadratic storage is acceptable only as bits for the largest graphs
+(10,000² bits ≈ 12 MiB), never as words (≈ 800 MB).
+
+### Second cohort verification
+
+Same local machine, toolchain, flags, lockfile and commands as above. PASS: workspace
+debug tests, release tests for `orange-runtime`, `orange-measure`, `orange-bundled` and
+`orange-model`, uninstrumented measure tests, Clippy with warnings denied, formatting
+and whitespace. New tests cover memo reuse only after complete checks, limit
+enforcement on a memo hit, shape and depth misses, exact shape codes, uncoded large
+shapes, memo-blind equality/hashing, and spill compaction past the inline 64 bits,
+re-insertion and sorted bulk construction against a `BTreeSet` oracle. Clippy
+expectations are scoped to the duplicate-key set in `MapRepr::new` (the memo is
+outside `Hash` and `Eq`), the held-continuation deref and the spare box pool.
+
+Paired exploratory timing: baseline is commit `461ca53`, candidate is this working
+tree, six independent processes in base/candidate/candidate/base/base/candidate order,
+each `--execution --warmup-seconds 5 --runs 30`. Values are medians of the three
+per-process percentiles; all outputs and pump counts match.
+
+| Complete workload | Before p50 ms | After p50 ms | Before p95 ms | After p95 ms | p50 change |
+|---|---:|---:|---:|---:|---:|
+| scalar chain (16 adds) | 1.3798 | 1.3985 | 1.3942 | 1.4373 | 1.4% |
+| host inputs (384 gets per pull) | 4.6351 | 4.6046 | 4.6876 | 4.6495 | -0.7% |
+| function call + return | 1.0967 | 1.1275 | 1.1392 | 1.1519 | 2.8% |
+| nested for-each (32x32) | 0.3605 | 0.3798 | 0.3655 | 0.3962 | 5.4% |
+| fork race + cancel region | 1.0373 | 0.9477 | 1.0554 | 0.9724 | -8.6% |
+| fork race fan-out 256 | 5.2911 | 2.8071 | 5.3788 | 2.8731 | -46.9% |
+| fork race fan-out 4000 | 91.2978 | 44.4408 | 92.9606 | 45.5734 | -51.3% |
+| map CAS (16 entries) | 0.4893 | 0.3912 | 0.4955 | 0.4124 | -20.0% |
+| map CAS (1000 entries) | 8.5368 | 0.3783 | 8.5944 | 0.3897 | -95.6% |
+| host map input (16 entries) | 0.0398 | 0.0400 | 0.0400 | 0.0402 | 0.5% |
+| host map input (1000 entries) | 0.0437 | 0.0400 | 0.0438 | 0.0402 | -8.5% |
+| map zone (10000 items) | 14.6560 | 14.5488 | 14.8865 | 15.0945 | -0.7% |
+
+Serial workloads move by a few percent in either direction; earlier single-workload
+reruns showed host-input differences inside process-to-process spread. These are
+pre-v1 exploratory observations, not gated regressions.
+
+Allocator windows (first session; counting build):
+
+| Workload | Allocations before → after | Requested bytes before → after | Peak incremental live bytes before → after |
+|---|---:|---:|---:|
+| Scalar chain | 37 → 39 | 10,586 → 9,642 | 7,134 → 6,190 |
+| Function calls | 44 → 47 | 7,648 → 7,040 | 6,820 → 6,212 |
+| Nested for-each | 133 → 136 | 15,711 → 15,103 | 5,523 → 4,915 |
+| Fork race/cancel | 2,038 → 2,041 | 141,961 → 91,713 | 11,693 → 10,709 |
+| Fork 256 | 4,371 → 1,077 | 1,075,245 → 877,621 | 405,853 → 292,653 |
+| Fork 4,000 | 66,589 → 1,899 | 16,385,197 → 13,404,789 | 6,319,021 → 4,545,037 |
+| Map CAS (either size) | 33 → 35 | 4,466 → 3,522 | 4,150 → 3,206 |
+| Host map, map zone | unchanged | unchanged | unchanged |
+
+The two or three extra allocations in serial sessions are the one-time spare
+continuation boxes and pool; warm iterations add none. Smaller regions lower requested
+and peak live bytes in every Fork and serial workload; Fork 4,000 peaks 28% lower and
+allocates 97% less often. Map memos are created when the plan checks its literals,
+outside the measured window. These are requested/live allocator measurements, not
+resident-set measurements, and no reference-machine or tail qualification is claimed.
