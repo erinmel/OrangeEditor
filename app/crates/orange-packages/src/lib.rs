@@ -11,6 +11,7 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 #![warn(missing_docs)]
 
+mod file_journal;
 mod journal;
 mod json;
 mod lifecycle;
@@ -19,6 +20,9 @@ mod path;
 mod sections;
 mod store;
 
+pub use file_journal::{
+    FileJournal, JOURNAL_FILE, JOURNAL_TEMP_FILE, MAX_JOURNAL_RECORD_BYTES, OpenedJournal,
+};
 pub use journal::{Journal, JournalEntry, JournalError, MemoryJournal, Recovery};
 pub use lifecycle::PackageState;
 pub use manifest::{

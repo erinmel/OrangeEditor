@@ -4,6 +4,7 @@
 mod common;
 
 mod defaults;
+mod durable;
 mod lifecycle;
 mod recovery;
 mod redaction;
