@@ -52,6 +52,14 @@ pub trait Schemas {
         let _ = ty;
         false
     }
+
+    /// Whether a nominal type's `eq` is a declared structural derive (11 §5.4), so the
+    /// host compares it by tags/fields and members. Codec-only schema sets prove no
+    /// constraint; registries override this.
+    fn derives_eq(&self, ty: &NamedTerm) -> bool {
+        let _ = ty;
+        false
+    }
 }
 
 /// Field IDs in schema order (12 §5).

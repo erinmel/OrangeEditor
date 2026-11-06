@@ -9,8 +9,9 @@ mod data_graph;
 
 use orange_bundled::MathPackage;
 use orange_compiler::{CompileOptions, ControlPlan, DataPlan, compile_control, compile_data};
-use orange_model::catalog::RegistrySnapshot;
-use orange_model::validation::ValidationAnalysis;
+use orange_model::catalog::{RegistryBuilder, RegistrySnapshot};
+use orange_model::types::TypeRegistry;
+use orange_model::validation::{HostOrigin, ValidationAnalysis};
 use orange_model::{GraphDocument, analyze, from_json, to_json};
 use serde_json::{Value as Json, json};
 use std::sync::Arc;
@@ -66,6 +67,8 @@ pub struct Source {
     pub exports: Vec<Json>,
     pub variables: Vec<Json>,
     pub functions: Vec<Json>,
+    /// Package types for the registry; None keeps the Core-only catalog.
+    pub types: Option<TypeRegistry>,
 }
 
 impl Source {
@@ -76,6 +79,7 @@ impl Source {
             exports: vec![],
             variables: vec![],
             functions: vec![],
+            types: None,
         }
     }
 
@@ -94,7 +98,17 @@ impl Source {
         GraphDocument,
         ValidationAnalysis,
     ) {
-        let (package, snapshot) = data_graph::catalog();
+        let (package, snapshot) = match self.types {
+            None => data_graph::catalog(),
+            Some(types) => {
+                let digest = format!("sha256:{}", "a".repeat(64));
+                let package = MathPackage::new(digest.clone()).expect("math package");
+                let origin = HostOrigin::new("0.0.0", digest).expect("host origin");
+                let builder = RegistryBuilder::core(origin).types(Arc::new(types));
+                let snapshot = package.register(builder).expect("register").build();
+                (package, snapshot.expect("registry snapshot"))
+            }
+        };
         let base = data_graph::graph(&package, self.nodes, self.edges, self.exports);
         let mut raw: Json =
             serde_json::from_str(&to_json(&base).expect("saved graph")).expect("saved graph JSON");

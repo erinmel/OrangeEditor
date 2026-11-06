@@ -506,16 +506,28 @@ impl Schemas for TypeRegistry {
     }
 
     fn derives_key(&self, ty: &NamedTerm) -> bool {
-        use super::constraints::{CapabilityEvidence, CapabilityRequest, Constraint};
-        let term = TypeTerm::Named(ty.clone());
+        use super::constraints::Constraint;
         [Constraint::Eq, Constraint::Hash]
             .into_iter()
-            .all(|constraint| {
-                matches!(
-                    self.supports_term(&term, CapabilityRequest::Constraint(constraint)),
-                    Ok(Some(witness)) if witness.evidence == CapabilityEvidence::StructuralDerive
-                )
-            })
+            .all(|constraint| self.derives(ty, constraint))
+    }
+
+    fn derives_eq(&self, ty: &NamedTerm) -> bool {
+        self.derives(ty, super::constraints::Constraint::Eq)
+    }
+}
+
+impl TypeRegistry {
+    /// Whether `constraint` on the nominal type is proven by a declared structural derive.
+    fn derives(&self, ty: &NamedTerm, constraint: super::constraints::Constraint) -> bool {
+        use super::constraints::{CapabilityEvidence, CapabilityRequest};
+        matches!(
+            self.supports_term(
+                &TypeTerm::Named(ty.clone()),
+                CapabilityRequest::Constraint(constraint)
+            ),
+            Ok(Some(witness)) if witness.evidence == CapabilityEvidence::StructuralDerive
+        )
     }
 }
 

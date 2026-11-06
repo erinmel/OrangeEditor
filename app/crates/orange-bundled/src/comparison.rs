@@ -2,12 +2,12 @@
 //!
 //! Binding proves that the host itself owns the exact equality or total order of the
 //! resolved type: Core rules for Core types, and a package's declared structural `eq`
-//! derive for its enums. A package-implemented constraint needs package code, so it never
-//! selects these kernels. Evaluation walks the bound shape only; it performs no registry
-//! lookup, parsing or I/O and never panics on a contract violation.
+//! derive for its records and enums ([`ValueShape::host_eq`]). A package-implemented
+//! constraint needs package code, so it never selects these kernels. Equality is the
+//! model's checked [`ValueShape::equal_values`]; evaluation walks the bound shape only,
+//! performs no registry lookup, parsing or I/O and never panics on a contract violation.
 
 use std::cmp::Ordering;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 use orange_model::Value;
@@ -16,8 +16,7 @@ use orange_model::document::{
     ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor, TypeParam,
 };
 use orange_model::id::TypeExpr;
-use orange_model::type_term::{MAX_NESTING, TypeTerm};
-use orange_model::types::{CapabilityEvidence, CapabilityRequest, Constraint, TypeRegistry};
+use orange_model::types::Constraint;
 use orange_model::value::shape::ValueShape;
 use serde_json::json;
 
@@ -170,10 +169,11 @@ impl ResolvedComparison {
     pub fn evaluate(&self, a: &Value, b: &Value) -> Result<bool, KernelError> {
         let order = match self.comparison.constraint() {
             Constraint::Eq => {
-                if !self.shape.accepts(a) || !self.shape.accepts(b) {
-                    return Err(KernelError::InputContract);
-                }
-                if equal(&self.shape, a, b, 0).ok_or(KernelError::InputContract)? {
+                if self
+                    .shape
+                    .equal_values(a, b)
+                    .ok_or(KernelError::InputContract)?
+                {
                     Ordering::Equal
                 } else {
                     Ordering::Less
@@ -210,10 +210,10 @@ impl MathPackage {
         if !config.is_empty() {
             return Err(BindingError::InvalidConfig);
         }
-        let types = snapshot.types().as_ref();
-        let shape = ValueShape::of_in(ty, types).ok_or(BindingError::UnsupportedType)?;
+        let shape = ValueShape::of_in(ty, snapshot.types().as_ref())
+            .ok_or(BindingError::UnsupportedType)?;
         let supported = match comparison.constraint() {
-            Constraint::Eq => host_eq(types, &shape, 0),
+            Constraint::Eq => shape.host_eq(),
             _ => host_ord(&shape),
         };
         if !supported {
@@ -245,47 +245,6 @@ fn host_ord(shape: &ValueShape) -> bool {
     )
 }
 
-/// Whether the host owns total equality for every level of `shape`: native Core
-/// equality, or a package enum whose `eq` is a declared structural derive. Map keys are
-/// [`ValueShape::map_key`]s. Json, error, result and floats have no executable Core
-/// equality yet.
-fn host_eq(types: &TypeRegistry, shape: &ValueShape, depth: usize) -> bool {
-    if depth > MAX_NESTING {
-        return false;
-    }
-    match shape {
-        ValueShape::Bool
-        | ValueShape::I32
-        | ValueShape::I64
-        | ValueShape::U32
-        | ValueShape::U64
-        | ValueShape::String
-        | ValueShape::Bytes
-        | ValueShape::Duration
-        | ValueShape::Timestamp => true,
-        ValueShape::Option(inner) | ValueShape::List(inner) => host_eq(types, inner, depth + 1),
-        ValueShape::Map(key, value) => key.map_key() && host_eq(types, value, depth + 1),
-        ValueShape::Enum(schema) => {
-            let derived = TypeTerm::parse(schema.ty()).ok().is_some_and(|term| {
-                matches!(
-                    types.supports_term(&term, CapabilityRequest::Constraint(Constraint::Eq)),
-                    Ok(Some(witness)) if witness.evidence == CapabilityEvidence::StructuralDerive
-                )
-            });
-            derived
-                && (0..schema.len()).all(|tag| {
-                    u32::try_from(tag)
-                        .ok()
-                        .and_then(|tag| schema.payload(tag))
-                        .is_some_and(|payload| {
-                            payload.is_none_or(|inner| host_eq(types, inner, depth + 1))
-                        })
-                })
-        }
-        _ => false,
-    }
-}
-
 fn total_order(shape: &ValueShape, a: &Value, b: &Value) -> Option<Ordering> {
     Some(match (shape, a, b) {
         (ValueShape::Bool, Value::Bool(a), Value::Bool(b)) => a.cmp(b),
@@ -299,139 +258,6 @@ fn total_order(shape: &ValueShape, a: &Value, b: &Value) -> Option<Ordering> {
         | (ValueShape::Timestamp, Value::Timestamp(a), Value::Timestamp(b)) => a.cmp(b),
         _ => return None,
     })
-}
-
-/// Maps up to this size match keys pairwise; larger ones build one presized index.
-const SMALL_MAP: usize = 16;
-
-/// Language equality of two values of `shape` (11 §5.2, §5.4); `None` when a visited
-/// value does not match the shape. Map equality ignores insertion order. Enum values are
-/// equal when their tags are equal and so are their payloads.
-fn equal(shape: &ValueShape, a: &Value, b: &Value, depth: usize) -> Option<bool> {
-    if depth > MAX_NESTING {
-        return None;
-    }
-    let leaf = |shape: &ValueShape, value: &Value| {
-        matches!(
-            (shape, value),
-            (ValueShape::Bool, Value::Bool(_))
-                | (ValueShape::I32, Value::I32(_))
-                | (ValueShape::I64, Value::I64(_))
-                | (ValueShape::U32, Value::U32(_))
-                | (ValueShape::U64, Value::U64(_))
-                | (ValueShape::String, Value::Str(_))
-                | (ValueShape::Bytes, Value::Bytes(_))
-                | (ValueShape::Duration, Value::Duration(_))
-                | (ValueShape::Timestamp, Value::Timestamp(_))
-        )
-    };
-    match shape {
-        ValueShape::Option(inner) => match (a, b) {
-            (Value::None, Value::None) => Some(true),
-            (Value::None, other) | (other, Value::None) => {
-                // The present side must still be a valid present value.
-                let valid = if inner.unboxed_none() {
-                    matches!(other, Value::Some(_))
-                } else {
-                    !matches!(other, Value::Some(_))
-                };
-                valid.then_some(false)
-            }
-            (Value::Some(a), Value::Some(b)) if inner.unboxed_none() => {
-                equal(inner, a, b, depth + 1)
-            }
-            _ if inner.unboxed_none() => None,
-            _ => equal(inner, a, b, depth + 1),
-        },
-        ValueShape::List(inner) => {
-            let (Value::List(a), Value::List(b)) = (a, b) else {
-                return None;
-            };
-            if a.len() != b.len() {
-                return Some(false);
-            }
-            for (a, b) in a.iter().zip(b.iter()) {
-                if !equal(inner, &a, &b, depth + 1)? {
-                    return Some(false);
-                }
-            }
-            Some(true)
-        }
-        ValueShape::Map(key, inner) => {
-            let (Value::Map(a), Value::Map(b)) = (a, b) else {
-                return None;
-            };
-            let (a, b) = (a.entries(), b.entries());
-            // Keys compare structurally: for Core keys and derived-key enums (`map_key`)
-            // that is their language equality.
-            if !a
-                .iter()
-                .chain(b)
-                .all(|(k, _)| leaf(key, k) || key.accepts(k))
-            {
-                return None;
-            }
-            if a.len() != b.len() {
-                return Some(false);
-            }
-            // Equal maps usually share insertion order: walk both while keys agree.
-            let mut same = 0;
-            for ((ka, va), (kb, vb)) in a.iter().zip(b) {
-                if ka != kb {
-                    break;
-                }
-                if !equal(inner, va, vb, depth + 1)? {
-                    return Some(false);
-                }
-                same += 1;
-            }
-            let (a, b) = (&a[same..], &b[same..]);
-            let index = (b.len() > SMALL_MAP)
-                .then(|| b.iter().map(|(k, v)| (k, v)).collect::<HashMap<_, _>>());
-            for (k, v) in a {
-                let other = match &index {
-                    Some(index) => index.get(k).copied(),
-                    None => b.iter().find(|(other, _)| other == k).map(|(_, v)| v),
-                };
-                match other {
-                    Some(other) if equal(inner, v, other, depth + 1)? => {}
-                    _ => return Some(false),
-                }
-            }
-            Some(true)
-        }
-        ValueShape::Enum(schema) => {
-            let (
-                Value::Enum {
-                    tag: ta,
-                    payload: pa,
-                },
-                Value::Enum {
-                    tag: tb,
-                    payload: pb,
-                },
-            ) = (a, b)
-            else {
-                return None;
-            };
-            let (sa, sb) = (schema.payload(*ta)?, schema.payload(*tb)?);
-            let valid = |payload: Option<&ValueShape>, value: &Option<Arc<Value>>| {
-                payload.is_some() == value.is_some()
-            };
-            if !valid(sa, pa) || !valid(sb, pb) {
-                return None;
-            }
-            if ta != tb {
-                return Some(false);
-            }
-            match (sa, pa, pb) {
-                (Some(inner), Some(a), Some(b)) => equal(inner, a, b, depth + 1),
-                _ => Some(true),
-            }
-        }
-        _ if leaf(shape, a) && leaf(shape, b) => Some(a == b),
-        _ => None,
-    }
 }
 
 #[cfg(test)]

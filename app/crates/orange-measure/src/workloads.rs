@@ -360,6 +360,111 @@ pub fn map_cas_1000(config: Config) -> Row {
     map_cas(config, 1000)
 }
 
+const BAG: &str = "org.example/bag@1";
+
+/// `bag { empty, items(map<string,u64>) }` deriving `eq`.
+fn bag_types() -> orange_model::types::TypeRegistry {
+    use orange_model::type_term::TypeTerm;
+    use orange_model::types::{Constraint, TypeRegistryBuilder};
+    use orange_model::value::literal_codec::{EnumSchema, VariantSchema};
+    let mut types = TypeRegistryBuilder::core();
+    let bag = BAG.parse().expect("type expression");
+    let items = TypeTerm::parse(&STRING_MAP.parse().expect("type expression")).expect("term");
+    let variants = vec![
+        VariantSchema {
+            variant_id: "empty".into(),
+            payload: None,
+        },
+        VariantSchema {
+            variant_id: "items".into(),
+            payload: Some(items),
+        },
+    ];
+    types
+        .register_enum("org.example", &bag, EnumSchema { variants })
+        .expect("enum");
+    types
+        .derive_constraint("org.example", &bag, Constraint::Eq)
+        .expect("derive");
+    types.build().expect("types")
+}
+
+/// Count(1000) whose body compare-and-sets a variable holding the `entries` map, bare
+/// or as a `bag` payload, against a literal of the same map in reverse insertion order,
+/// with the replacement read from the variable. Structural identity differs, so every
+/// update takes the order-independent equality walk and exchanges an equal value.
+fn reordered_cas(config: Config, entries: u64, payload: bool) -> Row {
+    let reversed = || {
+        let mut pairs = map_entries(entries);
+        if let Json::Array(items) = &mut pairs {
+            items.reverse();
+        }
+        pairs
+    };
+    let wrap = |map: Json| {
+        if payload {
+            json!({"variant":"items","payload":map})
+        } else {
+            map
+        }
+    };
+    let ty = if payload { BAG } else { STRING_MAP };
+    let mut cas = update(3, TOTAL, "compare-and-set", ty, json!(null));
+    cas["inputs"] = json!({"expected":{"type":ty,"value":wrap(reversed())}});
+    let mut source = Source::new(
+        vec![
+            core(1, "on-start"),
+            count(2, ITERATIONS),
+            cas,
+            var_node(4, "get-variable", TOTAL),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "body", 3, "in"),
+            edge(3, 4, "value", 3, "value"),
+        ],
+    );
+    source.variables = vec![run_variable(TOTAL, ty, Some(wrap(map_entries(entries))))];
+    source.types = payload.then(bag_types);
+    let (document, plan) = source.control();
+    let expected = if payload {
+        Value::Enum {
+            tag: 1,
+            payload: Some(Arc::new(map_value(entries))),
+        }
+    } else {
+        map_value(entries)
+    };
+    let kind = if payload { "enum-payload" } else { "map" };
+    measure(
+        format!("reordered {kind} CAS ({entries} entries)"),
+        ITERATIONS,
+        "updates",
+        config,
+        || RunSession::start(&plan, &document, total(), config.budget),
+        |(value, wakeups)| {
+            assert_eq!(value.as_ref(), Some(&expected));
+            assert_eq!(wakeups, 0);
+        },
+    )
+}
+
+pub fn map_cas_reordered_16(config: Config) -> Row {
+    reordered_cas(config, 16, false)
+}
+
+pub fn map_cas_reordered_1000(config: Config) -> Row {
+    reordered_cas(config, 1000, false)
+}
+
+pub fn enum_map_cas_16(config: Config) -> Row {
+    reordered_cas(config, 16, true)
+}
+
+pub fn enum_map_cas_1000(config: Config) -> Row {
+    reordered_cas(config, 1000, true)
+}
+
 /// A data plan that exports a map host input; every epoch publishes the same shared map
 /// value, so the cost is input admission and export, not building the map.
 fn host_map(config: Config, entries: u64) -> Row {

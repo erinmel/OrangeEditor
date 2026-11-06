@@ -30,6 +30,7 @@ mod data_epochs;
 mod entropy;
 mod enum_declarations;
 mod function_epochs;
+mod record_declarations;
 mod reference_equivalence;
 mod run_events;
 mod scalars;

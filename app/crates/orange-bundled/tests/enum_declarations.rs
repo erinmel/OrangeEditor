@@ -23,10 +23,15 @@ use support::{edge, graph, id};
 
 const LIGHT: &str = "org.example/light@1";
 const TAGGED: &str = "org.example/tagged@1";
+const BAG: &str = "org.example/bag@1";
+const SEALED: &str = "org.example/sealed@1";
+const WRAP: &str = "org.example/wrap@1";
 const EVENT: &str = "40000000-0000-4000-8000-000000000001";
 
 /// The math package plus `light` (red, amber(u32), green, then `extra`) deriving `eq`
-/// and `hash`, and `tagged` (one, two) deriving `eq` with a package-implemented `hash`.
+/// and `hash`; `tagged` (one, two) deriving `eq` with a package-implemented `hash`;
+/// `bag` (empty, items(map<string,u32>)) deriving `eq`; `sealed` (one) with a
+/// package-implemented `eq`; and `wrap` (wrap(sealed)) deriving `eq`.
 fn catalog(extra: &[&str]) -> (MathPackage, Arc<RegistrySnapshot>) {
     let mut types = TypeRegistryBuilder::core();
     let variant = |id: &str, payload: Option<&str>| VariantSchema {
@@ -40,11 +45,45 @@ fn catalog(extra: &[&str]) -> (MathPackage, Arc<RegistrySnapshot>) {
     ];
     lights.extend(extra.iter().map(|id| variant(id, None)));
     let tags = vec![variant("one", None), variant("two", None)];
-    for (ty, variants) in [(LIGHT, lights), (TAGGED, tags)] {
+    let bags = vec![
+        variant("empty", None),
+        variant("items", Some("core/map@1<core/string@1,core/u32@1>")),
+    ];
+    let sealed = vec![variant("one", None)];
+    let wrapped = vec![variant("wrap", Some(SEALED))];
+    for (ty, variants) in [
+        (LIGHT, lights),
+        (TAGGED, tags),
+        (BAG, bags),
+        (SEALED, sealed),
+        (WRAP, wrapped),
+    ] {
         types
             .register_enum("org.example", &ty.parse().unwrap(), EnumSchema { variants })
             .unwrap();
     }
+    for ty in [BAG, WRAP] {
+        types
+            .derive_constraint("org.example", &ty.parse().unwrap(), Constraint::Eq)
+            .unwrap();
+    }
+    types
+        .register_constraint_implementation(
+            "org.example",
+            &TypeTerm::parse(&SEALED.parse().unwrap()).unwrap(),
+            ConstraintId::Core(Constraint::Eq),
+            ConstraintImplementationRef {
+                provider: ProviderBinding {
+                    package: "org.example".into(),
+                    version: "1.0.0".into(),
+                    id: "types".into(),
+                    extensions: Default::default(),
+                },
+                content_digest: format!("sha256:{}", "b".repeat(64)),
+                implementation_id: "sealed-eq".into(),
+            },
+        )
+        .unwrap();
     let light = LIGHT.parse().unwrap();
     for constraint in [Constraint::Eq, Constraint::Hash] {
         types
@@ -377,12 +416,11 @@ fn enum_keyed_map_variables_initialize_copy_and_keep_order() {
     }
 }
 
-/// Validation accepts these, but the host owns no executable semantics for them, so
+/// `tagged`'s hash is package code: a map keyed by it has no executable shape, so
 /// lowering refuses with the existing typed reason instead of inventing one.
 #[test]
-fn package_hash_keys_and_enum_compare_and_set_are_refused_at_lowering() {
+fn package_hash_keys_are_refused_at_lowering() {
     let (package, snapshot) = catalog(&[]);
-    // `tagged`'s hash is package code: the map has no executable shape.
     let ty = format!("core/map@1<{TAGGED},core/u32@1>");
     let doc = document(
         &package,
@@ -397,24 +435,128 @@ fn package_hash_keys_and_enum_compare_and_set_are_refused_at_lowering() {
             node: id(2).parse().unwrap()
         }
     );
-    // Derived enum `eq` has no Compare-and-set kernel in the runtime yet.
-    let mut cas = var_node(2, "update-variable", 100);
-    cas["config"]["operation"] = json!("compare-and-set");
-    cas["inputs"] = json!({
-        "expected": {"type": LIGHT, "value": {"variant": "red"}},
-        "value": {"type": LIGHT, "value": {"variant": "green"}}
+}
+
+fn cas(n: u32, var: u32, ty: &str, expected: Json, value: Json) -> Json {
+    let mut node = var_node(n, "update-variable", var);
+    node["config"]["operation"] = json!("compare-and-set");
+    node["inputs"] = json!({
+        "expected": {"type": ty, "value": expected},
+        "value": {"type": ty, "value": value}
     });
-    let doc = document(
-        &package,
-        vec![core(1, "on-start"), cas],
-        vec![edge(1, 1, "then", 2, "in")],
-        vec![variable(100, LIGHT, Some(json!({"variant": "red"})))],
+    node
+}
+
+/// on-start -> CAS(first) -> set 101 = exchanged -> CAS(second) -> set 102 = exchanged.
+fn two_compare_and_sets(
+    package: &MathPackage,
+    ty: &str,
+    init: Json,
+    first: (Json, Json),
+    second: (Json, Json),
+) -> GraphDocument {
+    document(
+        package,
+        vec![
+            core(1, "on-start"),
+            cas(2, 100, ty, first.0, first.1),
+            var_node(3, "set-variable", 101),
+            cas(4, 100, ty, second.0, second.1),
+            var_node(5, "set-variable", 102),
+        ],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then", 3, "in"),
+            edge(3, 2, "exchanged", 3, "value"),
+            edge(4, 3, "then", 4, "in"),
+            edge(5, 4, "then", 5, "in"),
+            edge(6, 4, "exchanged", 5, "value"),
+        ],
+        vec![
+            variable(100, ty, Some(init)),
+            variable(101, "core/bool@1", None),
+            variable(102, "core/bool@1", None),
+        ],
         vec![],
+    )
+}
+
+/// Compare-and-set on a derived-`eq` enum compares tags, then payloads by language
+/// equality: a map payload in another insertion order is equal, a different tag or
+/// payload is not, and a mismatch leaves the variable unchanged.
+#[test]
+fn enum_compare_and_set_applies_derived_equality_through_payloads() {
+    let (package, snapshot) = catalog(&[]);
+    let items = |entries: Json| json!({"variant": "items", "payload": entries});
+    let doc = two_compare_and_sets(
+        &package,
+        BAG,
+        items(json!([["a", 1], ["b", 2]])),
+        (
+            items(json!([["b", 2], ["a", 1]])),
+            json!({"variant": "empty"}),
+        ),
+        (items(json!([["a", 1], ["b", 2]])), items(json!([]))),
     );
-    assert_eq!(
-        compile(&doc, &package, &snapshot).unwrap_err(),
-        CompileError::UnsupportedNode {
-            node: id(2).parse().unwrap()
-        }
+    let run = run_to_idle(&doc, compile(&doc, &package, &snapshot).unwrap());
+    let stored = |var: u32| run.variable(id(var).parse().unwrap()).cloned();
+    let empty = Value::Enum {
+        tag: 0,
+        payload: None,
+    };
+    assert_eq!(stored(100), Some(empty));
+    assert_eq!(stored(101), Some(Value::Bool(true)));
+    assert_eq!(stored(102), Some(Value::Bool(false)));
+    assert!(!run.trace().iter().any(|e| e.fault.is_some()));
+
+    let doc = two_compare_and_sets(
+        &package,
+        LIGHT,
+        json!({"variant": "amber", "payload": 3}),
+        (
+            json!({"variant": "amber", "payload": 4}),
+            json!({"variant": "red"}),
+        ),
+        (
+            json!({"variant": "amber", "payload": 3}),
+            json!({"variant": "green"}),
+        ),
     );
+    let run = run_to_idle(&doc, compile(&doc, &package, &snapshot).unwrap());
+    let stored = |var: u32| run.variable(id(var).parse().unwrap()).cloned();
+    assert_eq!(stored(100), Some(light(2, None)));
+    assert_eq!(stored(101), Some(Value::Bool(false)));
+    assert_eq!(stored(102), Some(Value::Bool(true)));
+}
+
+/// Validation accepts a package-implemented `eq` (also nested in a derive), but its
+/// code cannot run, so Compare-and-set over it is refused at lowering.
+#[test]
+fn compare_and_set_over_package_equality_is_refused_at_lowering() {
+    let (package, snapshot) = catalog(&[]);
+    for (ty, value) in [
+        (SEALED, json!({"variant": "one"})),
+        (
+            WRAP,
+            json!({"variant": "wrap", "payload": {"variant": "one"}}),
+        ),
+    ] {
+        let doc = document(
+            &package,
+            vec![
+                core(1, "on-start"),
+                cas(2, 100, ty, value.clone(), value.clone()),
+            ],
+            vec![edge(1, 1, "then", 2, "in")],
+            vec![variable(100, ty, Some(value))],
+            vec![],
+        );
+        assert_eq!(
+            compile(&doc, &package, &snapshot).unwrap_err(),
+            CompileError::UnsupportedNode {
+                node: id(2).parse().unwrap()
+            },
+            "{ty}"
+        );
+    }
 }
