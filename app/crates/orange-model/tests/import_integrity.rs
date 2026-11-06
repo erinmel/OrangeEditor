@@ -1,6 +1,6 @@
 //! Structural import bounds, ambiguous-lock rejection and the checked Serde boundary.
 
-mod common;
+use crate::common;
 
 use common::{branch_node, minimal_document};
 use orange_model::document::codec::{

@@ -1,9 +1,7 @@
 //! Enum-typed variables, event payloads and enum map keys from declaration to run
 //! (11 §5.2, §5.4, §10.2, §11.1): declarations lower through the plan snapshot's locked
 //! schemas, and the runtime handles the checked values generically.
-#[path = "support/data_graph.rs"]
-#[allow(dead_code)]
-mod support;
+use crate::data_graph as support;
 
 use std::sync::Arc;
 

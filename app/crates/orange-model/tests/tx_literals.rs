@@ -1,6 +1,6 @@
 //! G-30: a literal shadowed by an edge stays in the document; disconnecting restores it.
 
-mod common;
+use crate::common;
 
 use common::{content, eid, empty_document, i64_literal, node, port, typed_edge};
 use orange_model::{BodyRef, DocCommand, TxError};

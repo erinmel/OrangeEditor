@@ -85,3 +85,30 @@ impl RegionId {
         Self(frame.0)
     }
 }
+
+/// Hasher for the run's own minted identities. They are sequential integers that never
+/// come from graph, host or network input, so the standard SipHash's flooding resistance
+/// buys nothing on these internal directories while costing most of each lookup. One odd
+/// multiplication is a bijection on the low bits, so consecutive identities fill distinct
+/// buckets, and it spreads them into the high bits the table's control bytes read.
+#[derive(Default, Clone, Copy)]
+pub(super) struct IdHasher(u64);
+
+impl std::hash::Hasher for IdHasher {
+    fn finish(&self) -> u64 {
+        self.0
+    }
+    fn write_u64(&mut self, id: u64) {
+        self.0 = (self.0 ^ id).wrapping_mul(0x9E37_79B9_7F4A_7C15);
+    }
+    /// Identities hash through `write_u64`; other input still mixes every byte.
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.write_u64(u64::from(byte));
+        }
+    }
+}
+
+/// A directory keyed by run-minted identities (see [`IdHasher`]).
+pub(super) type IdMap<K, V> =
+    std::collections::HashMap<K, V, std::hash::BuildHasherDefault<IdHasher>>;

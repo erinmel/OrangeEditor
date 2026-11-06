@@ -1,9 +1,7 @@
 //! V12b: a literal or data-edge edit is re-checked only where it can reach and patched into
 //! the retained report; every case that might change more falls back to the full analysis
 //! (16 §3).
-#[path = "support/data_graph.rs"]
-#[allow(dead_code)]
-mod support;
+use crate::data_graph as support;
 
 use std::collections::BTreeMap;
 

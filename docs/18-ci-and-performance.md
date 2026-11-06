@@ -12,7 +12,7 @@ contract or a passed product performance gate. Branch and release policy remains
 | Repository rules | Every PR, merge group, dev/main push, manual, weekly; reusable by CD | Format; first-party/core dependency policy and its fixtures; actionlint 1.7.12 including shellcheck on Linux; zizmor 1.30.1; platform-selection and release-contract tests; disabled-release check |
 | Rust quality | Same | All-target/all-feature Clippy; rustdoc with warnings denied; measurement binary Clippy without allocator instrumentation |
 | Dependencies | Same | Pinned cargo-deny 0.20.2; refreshed advisories, bans, licenses and sources |
-| Native behavior | After repository rules | Workspace unit/integration/property/doctests on Linux x64, Windows x64 and macOS ARM64 |
+| Native behavior | After repository rules | Workspace unit/integration/property/doctests on Linux x64, Windows x64 and macOS ARM64; extended runs raise default proptest cases from 256 to 1,024 |
 | Optimized behavior | After repository rules, parallel with native tests | Linux release runtime/measurement regressions, both measurement feature modes, twelve execution workloads, example tests and all three headless example programs; release builds reused throughout. Extended weekly/manual runs also execute the full optimized workspace suite |
 | Compatibility | After repository rules | MSRV 1.97.1, all workspace targets; weekly and extended manual native tests also cover Linux ARM64 and macOS Intel x64 |
 | Required result | After all required jobs | Existing `rust` context fails on failure, cancellation or skipping, including any failed native matrix member |
@@ -28,6 +28,14 @@ optimized workspace tests run on extended weekly/manual validation. Full
 test debug symbols are replaced with `line-tables-only` in native CI; debug assertions
 and overflow checks remain enabled. Dependency caches retain their architecture/toolchain
 boundaries and save only on dev. Clean release builds still do not restore build caches.
+
+Each crate's integration tests build as one binary (`tests/main.rs`, `autotests = false`),
+with every former test file as a module and shared helpers such as `common` declared
+once. 99 separately linked test executables became three, and the harness runs their
+tests on one thread pool instead of one binary after another. Locally, with dependencies
+built, the workspace test build fell from 19 s to 15 s and the run from about 18–33 s to
+9–10 s, with the same 1,211 passing and 15 ignored tests. A new test file must be added as
+a `mod` in its crate's `tests/main.rs`; Cargo no longer discovers it on its own.
 
 `tools/ci-platforms.mjs` selects explicit runner labels and Rust host triples. Native jobs
 assert the compiler host before testing, so a runner-label architecture change fails
@@ -55,13 +63,22 @@ sample or a coverage percentage. Named rule boundaries, property tests and regre
 remain the coverage policy; unimplemented services/UI and ignored tests are not covered
 merely because this workflow succeeds.
 
-`Execution measurements` runs weekly, manually, and on PR changes to its workflow or
-the measurement crate. It builds and runs the existing twelve execution workloads in
-release mode on Linux x64. Each workload warms for at least ten seconds and three runs,
-then records thirty complete sessions. Assertions still check expected results after
-each session. A failed workload fails the measurement job. This workflow is evidence
-separate from the required `rust` gate; it has path-filtered PR triggers and must not be
-made a required check for every PR without changing that selection.
+`Execution measurements` runs weekly, manually, and on PRs that change executable Rust
+(any crate's `src/` or manifest, the lockfile, toolchain, workflow or comparison tool).
+It builds the twelve execution workloads in release mode on Linux x64. On a PR it also
+builds the PR's base commit and measures both on the same runner in six alternating
+processes (base, head, head, base, base, head), each warming for five seconds and
+recording thirty complete sessions per workload. Hosted runners change CPU model between
+runs (a 2026-11-06 PR run moved from an EPYC 9V45 to a slower 9V74, about 1.8× on
+unchanged workloads), so only this same-runner pairing supports a speed comparison.
+`tools/compare-measurements.mjs` reports per-workload medians and a verdict: `faster` or
+`slower` only when the change is at least 5% and every head process lies on one side of
+every base process, otherwise `same` or `noisy`. Slowdowns become warning annotations,
+not failures. Allocation counts from both sides appear in the same table. A base that
+cannot build the execution profile drops to head-only evidence. Scheduled and manual runs
+measure head only with ten seconds of warmup. Assertions still check expected results
+after each session; a failed head workload fails the job. This workflow is evidence
+separate from the required `rust` gate and must not become a required check.
 
 The measured interval includes session construction, all budget-64 pumps, stop/dispose
 and session destruction. Documents and compiled plans are prepared beforehand; returned
@@ -99,8 +116,10 @@ before the window. Neither is process RSS or a hard resident-memory bound. Thirt
 samples make nearest-rank p99 equal to the maximum; this is descriptive evidence, not
 a qualified tail-latency estimate.
 
-The workflow uploads both JSON files, exact checked-out commit, compiler/Cargo versions,
-lockfile digest, each binary digest, CPU/OS/RAM and build flags for thirty days. Code uses
+The workflow uploads every JSON report (`head-timing-N.json`, `base-timing-N.json`,
+`head-allocations.json`, `base-allocations.json`), the exact checked-out and base commits,
+compiler/Cargo versions, lockfile digest, each binary digest, CPU/OS/RAM and build flags
+for thirty days. Code uses
 portable x64 instructions, not `target-cpu=native`. Partial provenance is retained after
 a failure. Cache/toolchain/build changes and differing machines invalidate direct
 absolute comparisons; compilation occurs before measurement.
@@ -126,6 +145,9 @@ allowed memory budget, then measure normal run-to-run variation. A dedicated con
 runner can enforce the resulting threshold; hosted VMs remain trend/evidence runners.
 No older-machine result or universal sub-1 ms result is claimed here. Improving the
 executor's data structures/ownership costs is a separate measured runtime change.
+
+Implemented runtime optimization evidence, including paired comparisons, allocation
+costs, research and rejected alternatives, is recorded in [19](19-runtime-performance.md).
 
 Sources checked 2026-11-05: [GitHub native runner labels](https://docs.github.com/en/actions/reference/runners/github-hosted-runners),
 [Cargo test profiles/debug settings](https://doc.rust-lang.org/cargo/reference/profiles.html),

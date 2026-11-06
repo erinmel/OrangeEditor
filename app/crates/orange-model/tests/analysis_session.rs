@@ -1,7 +1,7 @@
 //! V12a: an `AnalysisSession` always equals the full analysis of its document, and says
 //! what each update did (16 §3).
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::AtomicBool;

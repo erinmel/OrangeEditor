@@ -1,6 +1,6 @@
 //! G-36: layout-only edits are flagged so no validation, compile or preview work runs.
 
-mod common;
+use crate::common;
 
 use common::{content, empty_document, i64_literal, node, node_id, port};
 use orange_model::{BodyRef, DocCommand, LayoutCommand, TxError};

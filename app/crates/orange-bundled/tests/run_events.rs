@@ -2,9 +2,7 @@
 //!
 //! Expected values are asserted at the public model/compiler/runtime boundary. In
 //! particular, Emit must publish only an envelope; an On Event root is a later pump turn.
-#[path = "support/data_graph.rs"]
-#[allow(dead_code)]
-mod support;
+use crate::data_graph as support;
 
 use orange_compiler::{CompileOptions, compile_control};
 use orange_model::{GraphDocument, Value, analyze, from_json, to_json};
@@ -1579,8 +1577,5 @@ fn queued_handler_blocked_by_activation_limit_waits_for_timer_without_losing_wor
     );
 }
 
-#[path = "support/budget_drive.rs"]
-#[allow(dead_code)]
-mod budget_drive;
 #[path = "support/budget_events.rs"]
 mod budget_events;

@@ -1,7 +1,7 @@
 //! Property: any structurally valid document survives save→load unchanged and saves to
 //! the same bytes again.
 
-mod common;
+use crate::common;
 
 use common::strategies::document;
 use orange_model::{from_json, to_json};

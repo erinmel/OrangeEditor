@@ -1,8 +1,9 @@
 //! Waiting strands, ordered by wake time and then by arrival. The one owner of the timer
 //! order and of the strand-to-timer directory, which must change together.
 use super::Timer;
+use super::ids::IdMap;
 use super::ids::StrandId;
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 
 /// Wake time, then a sequence that keeps equal wake times in arrival order.
 pub(super) type TimerKey = (u64, u64);
@@ -10,7 +11,7 @@ pub(super) type TimerKey = (u64, u64);
 #[derive(Default)]
 pub(super) struct Timers {
     next: u64,
-    by_strand: HashMap<StrandId, TimerKey>,
+    by_strand: IdMap<StrandId, TimerKey>,
     order: BTreeMap<TimerKey, Timer>,
 }
 

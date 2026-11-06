@@ -4,7 +4,7 @@
 //! Run with `cargo test --release -p orange-model --test perf_edit_baseline -- --ignored
 //! --nocapture`. It asserts nothing: it prints timings for the machine it runs on.
 
-mod common;
+use crate::common;
 
 use std::time::{Duration, Instant};
 

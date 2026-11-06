@@ -1,10 +1,7 @@
 //! Independent source demand across epochs; SHA stream primitive alone is shared.
-#[path = "support/reference.rs"]
-mod reference;
-#[path = "support/seeded_provider.rs"]
-mod seeded_provider;
-#[path = "support/data_graph.rs"]
-mod support;
+use crate::data_graph as support;
+use crate::reference;
+use crate::seeded_provider;
 
 use orange_bundled::Operation;
 use orange_model::{Value, analyze, from_json, to_json};

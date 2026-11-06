@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::{minimal_document, nid, node_id};
 use orange_model::catalog::{

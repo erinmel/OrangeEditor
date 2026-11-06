@@ -1,6 +1,6 @@
 //! 00c.7a: resolve → infer → select → insert → save/load → undo/redo through the public API.
 
-mod common;
+use crate::common;
 
 use common::generic::{
     add, document, package_digest, package_registry, ready_plan, typed_sink, typed_source,

@@ -1,6 +1,6 @@
 //! 00c.4b: inference results persisted in the same transaction as the edit (11 §5.5).
 
-mod common;
+use crate::common;
 
 use common::generic::{add, data_edge, document, registry, source, typed_source};
 use common::{body, content, eid, function, function_id, minimal_document, nid, node_id, saved};

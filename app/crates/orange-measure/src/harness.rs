@@ -336,6 +336,11 @@ mod tests {
     #[test]
     fn complete_session_window_includes_construction_and_teardown_allocations() {
         let _measuring = crate::counter::exclusive();
+        // The counter is process-wide, and the test harness's own threads allocate and
+        // free while this window is open. Sizes in MiB with a half-MiB margin keep the
+        // peak check about this session, not exact to the byte.
+        const START: usize = 1 << 20;
+        const GROWN: usize = 2 << 20;
         struct Work(Vec<u8>);
         impl Session for Work {
             type Outcome = usize;
@@ -343,7 +348,7 @@ mod tests {
                 false
             }
             fn finish(mut self) -> usize {
-                self.0.resize(8192, 1);
+                self.0.resize(GROWN, 1);
                 std::hint::black_box(self.0.len())
             }
         }
@@ -357,14 +362,19 @@ mod tests {
                 warmup_seconds: 0,
                 runs: 3,
             },
-            || Work(vec![1; 4096]),
-            |length| assert_eq!(length, 8192),
+            || Work(vec![1; START]),
+            |length| assert_eq!(length, GROWN),
         );
         assert!(
             row.counts.allocations >= 2,
             "start and finish must both be measured"
         );
-        assert!(row.counts.peak_live_bytes >= 8192);
+        // Only teardown's growth can lift the peak past the constructed buffer.
+        assert!(
+            row.counts.peak_live_bytes >= START + START / 2,
+            "teardown must be inside the window: {} bytes",
+            row.counts.peak_live_bytes
+        );
         assert_eq!(row.total_samples.len(), 3);
         assert_eq!(row.pumps, 1);
     }

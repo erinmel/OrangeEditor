@@ -1,5 +1,5 @@
 //! Journal-owned change identities and stale-index recovery.
-mod common;
+use crate::common;
 
 use common::{empty_document, node};
 use orange_model::document::{PackageLockEntry, SignatureSnapshot};

@@ -1,6 +1,6 @@
 //! 00c.6a: read-only connection plans (11 §6): direct wire, replacement or converter node.
 
-mod common;
+use crate::common;
 
 use common::generic::{add, data_edge, document, registry, source, typed_sink, typed_source};
 use common::{content, eid, id_source, nid, port};

@@ -1,7 +1,7 @@
 //! Structural transaction rules: atomicity, ID uniqueness, body membership, ordered undo,
 //! stale inverses and change-set deltas.
 
-mod common;
+use crate::common;
 
 use common::{
     add, body, chain, connect, content, eid, empty_document, function, function_id, nid, node,

@@ -1,7 +1,5 @@
 //! A headless editor controller uses the public session, compiler and runtime APIs.
-#[path = "support/data_graph.rs"]
-#[allow(dead_code)]
-mod support;
+use crate::data_graph as support;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

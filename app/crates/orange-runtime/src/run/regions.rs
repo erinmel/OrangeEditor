@@ -4,27 +4,132 @@
 //! and the live count equals the strands that regions hold.
 use super::RunError;
 use super::RunLimits;
+use super::Strand;
+use super::ids::IdMap;
 use super::ids::{FrameId, OwnerIds, RegionId, StrandId};
-use super::ownership::{IdSet, Region, RegionKind};
+use super::ownership::{Held, IdSet, Region, RegionKind};
 use orange_compiler::ControlIx;
-use std::collections::BTreeMap;
 
 pub(super) struct Regions {
-    map: BTreeMap<RegionId, Region>,
+    map: RegionStore,
     ids: OwnerIds,
     live_strands: usize,
     /// Ownership work beyond one unit per step, not yet spent from a pump budget.
     work: usize,
+    /// Empty continuation boxes, reused by [`hold`](Self::hold).
+    #[expect(
+        clippy::vec_box,
+        reason = "the pool keeps the boxes themselves so held continuations reuse them"
+    )]
+    spare: Vec<Box<Option<Strand>>>,
+}
+
+/// Recycle physical slots without recycling logical identities. The directory
+/// stores only small indices, so its spare buckets do not retain full regions.
+/// Storage follows peak live ownership rather than the run's total minted IDs.
+#[derive(Default)]
+struct RegionStore {
+    index: IdMap<RegionId, usize>,
+    slots: Vec<Option<(RegionId, Region)>>,
+    free: Vec<usize>,
+    indexed: bool,
+}
+
+impl RegionStore {
+    fn len(&self) -> usize {
+        self.slots.len() - self.free.len()
+    }
+    fn promote(&mut self, additional: usize) {
+        self.index.reserve(self.len() + additional);
+        for (slot, entry) in self.slots.iter().enumerate() {
+            if let Some((id, _)) = entry {
+                self.index.insert(*id, slot);
+            }
+        }
+        self.indexed = true;
+    }
+    fn reserve(&mut self, additional: usize) {
+        // Tiny serial ownership trees avoid hashing entirely. Once wide, retain
+        // the directory so sparse retired slots never require linear searches.
+        if !self.indexed && self.len().saturating_add(additional) > 8 {
+            self.promote(additional);
+        } else if self.indexed {
+            self.index.reserve(additional);
+        }
+        self.slots
+            .reserve_exact(additional.saturating_sub(self.free.len()));
+    }
+    fn slot(&self, id: &RegionId) -> Option<usize> {
+        if self.indexed {
+            self.index.get(id).copied()
+        } else {
+            self.slots
+                .iter()
+                .position(|entry| entry.as_ref().is_some_and(|(key, _)| key == id))
+        }
+    }
+    fn contains_key(&self, id: &RegionId) -> bool {
+        self.slot(id).is_some()
+    }
+    fn get(&self, id: &RegionId) -> Option<&Region> {
+        self.slots
+            .get(self.slot(id)?)?
+            .as_ref()
+            .map(|(_, region)| region)
+    }
+    fn get_mut(&mut self, id: &RegionId) -> Option<&mut Region> {
+        let slot = self.slot(id)?;
+        self.slots.get_mut(slot)?.as_mut().map(|(_, region)| region)
+    }
+    fn insert(&mut self, id: RegionId, region: Region) {
+        if let Some(slot) = self.slot(&id) {
+            self.slots[slot] = Some((id, region));
+            return;
+        }
+        if !self.indexed && self.len() == 8 {
+            self.promote(1);
+        }
+        let slot = match self.free.pop() {
+            Some(slot) => {
+                self.slots[slot] = Some((id, region));
+                slot
+            }
+            None => {
+                self.slots.push(Some((id, region)));
+                self.slots.len() - 1
+            }
+        };
+        if self.indexed {
+            self.index.insert(id, slot);
+        }
+    }
+    fn remove(&mut self, id: &RegionId) -> Option<Region> {
+        let slot = if self.indexed {
+            self.index.remove(id)?
+        } else {
+            self.slot(id)?
+        };
+        let (_, region) = self.slots[slot].take()?;
+        self.free.push(slot);
+        Some(region)
+    }
+    fn clear(&mut self) {
+        self.index.clear();
+        self.slots.clear();
+        self.free.clear();
+        self.indexed = false;
+    }
 }
 
 impl Regions {
     /// An empty tree whose minted identities start above `activations` root identities.
     pub fn after_roots(activations: u64) -> Self {
         Self {
-            map: BTreeMap::new(),
+            map: RegionStore::default(),
             ids: OwnerIds::after_roots(activations),
             live_strands: 0,
             work: 0,
+            spare: Vec::new(),
         }
     }
     pub fn len(&self) -> usize {
@@ -32,6 +137,11 @@ impl Regions {
     }
     pub fn live_strands(&self) -> usize {
         self.live_strands
+    }
+    /// Reserve one admitted batch, avoiding geometric over-allocation of large
+    /// region values. Existing vacant slots are reused before growing storage.
+    pub fn reserve(&mut self, additional: usize) {
+        self.map.reserve(additional);
     }
     pub fn contains(&self, id: RegionId) -> bool {
         self.map.contains_key(&id)
@@ -59,6 +169,20 @@ impl Regions {
     /// The ownership work recorded since the last call.
     pub fn take_work(&mut self) -> usize {
         std::mem::take(&mut self.work)
+    }
+    /// Keeps `strand` out of line as a region continuation, reusing a spare box.
+    pub fn hold(&mut self, strand: Strand) -> Held {
+        let mut slot = self.spare.pop().unwrap_or_default();
+        *slot = Some(strand);
+        Held(slot)
+    }
+    /// Returns a held continuation and keeps its box for the next [`hold`](Self::hold).
+    #[expect(clippy::expect_used, reason = "a held box always contains its strand")]
+    pub fn resume(&mut self, held: Held) -> Strand {
+        let mut slot = held.0;
+        let strand = slot.take().expect("held strand");
+        self.spare.push(slot);
+        strand
     }
     pub fn mint_strand(&mut self) -> Result<StrandId, RunError> {
         self.ids.strand()
@@ -117,11 +241,16 @@ impl Regions {
     }
     /// Every root region, in identity order.
     pub fn roots(&self) -> Vec<RegionId> {
-        self.map
+        let mut roots: Vec<_> = self
+            .map
+            .slots
             .iter()
+            .flatten()
             .filter(|(_, r)| r.parent.is_none())
             .map(|(id, _)| *id)
-            .collect()
+            .collect();
+        roots.sort_unstable();
+        roots
     }
     /// The root region above `id`.
     pub fn root_of(&self, mut id: RegionId) -> Result<RegionId, RunError> {
@@ -206,7 +335,8 @@ impl Regions {
     }
     /// Drops every region and releases the map's storage.
     pub fn release(&mut self) {
-        self.map = BTreeMap::new();
+        self.map = RegionStore::default();
+        self.spare = Vec::new();
         self.live_strands = 0;
     }
 }
@@ -214,6 +344,88 @@ impl Regions {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn physical_slot_reuse_keeps_old_ids_invalid_and_storage_bounded() {
+        let mut regions = Regions::after_roots(1);
+        let root = RegionId::root(0);
+        regions.open(root, region(None, IdSet::default())).unwrap();
+        let mut previous = None;
+        for _ in 0..10_000 {
+            let child = regions.mint_region().unwrap();
+            regions
+                .open(child, region(Some(root), IdSet::default()))
+                .unwrap();
+            if let Some(old) = previous {
+                assert!(child > old);
+                assert!(!regions.contains(old));
+                assert!(regions.get(old).is_err());
+            }
+            assert!(regions.take_if_done(child).unwrap().is_some());
+            regions.detach(root, child).unwrap();
+            assert_eq!(regions.len(), 1);
+            assert_eq!(regions.map.slots.len(), 2);
+            previous = Some(child);
+        }
+        regions.release();
+        assert_eq!(regions.map.slots.capacity(), 0);
+        assert_eq!(regions.map.index.capacity(), 0);
+        assert_eq!(regions.map.free.capacity(), 0);
+        assert!(regions.mint_region().unwrap() > previous.unwrap());
+    }
+
+    #[test]
+    fn root_enumeration_is_sorted_after_insertions_removals_and_slot_reuse() {
+        let mut regions = Regions::after_roots(32);
+        for id in [9, 2, 7, 0, 19] {
+            regions
+                .open(RegionId::root(id), region(None, IdSet::default()))
+                .unwrap();
+        }
+        assert!(regions.take_if_done(RegionId::root(7)).unwrap().is_some());
+        regions
+            .open(RegionId::root(5), region(None, IdSet::default()))
+            .unwrap();
+        assert_eq!(regions.roots(), [0, 2, 5, 9, 19].map(RegionId::root));
+    }
+
+    #[test]
+    fn wide_directory_reuses_slots_without_aliasing_retired_owners() {
+        let mut regions = Regions::after_roots(1);
+        let root = RegionId::root(0);
+        regions.open(root, region(None, IdSet::default())).unwrap();
+        let mut previous = Vec::new();
+        for _ in 0..1000 {
+            regions.reserve(16);
+            let mut current = Vec::new();
+            for _ in 0..16 {
+                let id = regions.mint_region().unwrap();
+                regions
+                    .open(id, region(Some(root), IdSet::default()))
+                    .unwrap();
+                current.push(id);
+            }
+            assert!(regions.map.indexed);
+            for old in previous {
+                assert!(regions.get(old).is_err());
+                assert!(regions.get_mut(old).is_err());
+            }
+            for &id in &current {
+                assert!(regions.take_if_done(id).unwrap().is_some());
+                regions.detach(root, id).unwrap();
+            }
+            assert_eq!(regions.len(), 1);
+            assert_eq!(regions.map.slots.len(), 17);
+            assert_eq!(regions.roots(), [root]);
+            previous = current;
+        }
+        regions.clear();
+        assert_eq!(regions.len(), 0);
+        assert!(regions.roots().is_empty());
+        regions.open(root, region(None, IdSet::default())).unwrap();
+        assert!(!regions.map.indexed);
+        assert_eq!(regions.roots(), [root]);
+    }
 
     fn region(parent: Option<RegionId>, live: IdSet<StrandId>) -> Region {
         Region {

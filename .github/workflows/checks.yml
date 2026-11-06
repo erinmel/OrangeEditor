@@ -163,6 +163,9 @@ jobs:
     env:
       # Keep file/line backtraces and debug assertions; avoid full local-variable symbols.
       CARGO_PROFILE_TEST_DEBUG: line-tables-only
+      # Weekly/extended runs search four times deeper; PRs keep proptest's default 256.
+      # Suites that pin their own case count are unchanged.
+      PROPTEST_CASES: ${{ needs.policy.outputs.extended == 'true' && '1024' || '256' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

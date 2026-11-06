@@ -1,7 +1,7 @@
 //! Bounded rollback history and journal compaction: retirement frees only the store's own
 //! references and never identity state (04 "Hot update/removal").
 
-mod common;
+use crate::common;
 
 use std::sync::{Arc, Weak};
 

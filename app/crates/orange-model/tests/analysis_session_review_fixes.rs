@@ -1,5 +1,5 @@
 //! Regressions for deterministic rejection freshness and early resource rejection.
-mod common;
+use crate::common;
 
 use orange_model::catalog::RegistryBuilder;
 use orange_model::validation::{

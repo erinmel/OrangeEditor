@@ -1,7 +1,5 @@
 //! Regressions for malformed saved state, transaction failure and plan freshness.
-#[path = "support/data_graph.rs"]
-#[allow(dead_code)]
-mod support;
+use crate::data_graph as support;
 use support::*;
 
 use orange_model::document::{FunctionDecl, NodeInstance};

@@ -1,7 +1,7 @@
 //! The authoring orphan projection and the validator agree on which edges have no port,
 //! including variadic instances (11 §4.5).
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 

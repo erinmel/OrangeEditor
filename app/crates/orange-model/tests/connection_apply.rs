@@ -1,6 +1,6 @@
 //! 00c.6b: applying a connection plan in one transaction, with undo and redo.
 
-mod common;
+use crate::common;
 
 use common::generic::{
     add, data_edge, document, origin, package_converters, package_digest, package_registry,

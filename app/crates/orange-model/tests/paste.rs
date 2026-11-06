@@ -1,7 +1,7 @@
 //! FR-02: copy/paste keeps internal edges and remaps every ID and reference without
 //! aliasing the originals.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeSet, HashSet};
 

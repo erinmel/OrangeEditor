@@ -1,6 +1,6 @@
 //! Structurally invalid documents fail to load with a specific error.
 
-mod common;
+use crate::common;
 
 use common::{GRAPH_ID, branch_node, edge, minimal_document, node_id};
 use orange_model::{CodecError, from_json};

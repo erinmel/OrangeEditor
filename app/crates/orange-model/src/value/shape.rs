@@ -108,6 +108,89 @@ struct Nominal<'a> {
     active: HashSet<NamedTerm>,
 }
 
+/// A map's first complete check: an exact code of its key and value shapes and the
+/// nesting depth it was checked at, plus the bytes its entries charged (the map's own
+/// value charge excluded). Checks only fail at a greater depth, so the same shapes at
+/// the same or a smaller depth reach the same verdict and charge; any other check walks
+/// the entries again. Two words, no allocation (see [`MapCheck::code`]).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MapCheck {
+    code: u64,
+    entries: usize,
+}
+
+/// Five-bit node tags of [`MapCheck::code`]; zero ends the code.
+const SHAPE_TAG_BITS: u32 = 5;
+/// Shape bits below the depth byte: eleven nodes.
+const SHAPE_CODE_BITS: u32 = 55;
+
+impl MapCheck {
+    /// Preorder tags of the key then the value shape. Every tag is non-zero and fixes its
+    /// arity, so the code is injective: equal codes are equal shapes, never a hash
+    /// collision. The depth fills the top byte. Enums and shapes over eleven nodes have
+    /// no code and are simply not remembered.
+    fn code(key: &ValueShape, value: &ValueShape, depth: usize) -> Option<u64> {
+        fn push(shape: &ValueShape, code: &mut u64, used: &mut u32) -> Option<()> {
+            use ValueShape as S;
+            let (tag, children): (u64, [Option<&ValueShape>; 2]) = match shape {
+                S::Bool => (1, [None, None]),
+                S::I32 => (2, [None, None]),
+                S::I64 => (3, [None, None]),
+                S::U32 => (4, [None, None]),
+                S::U64 => (5, [None, None]),
+                S::F32 => (6, [None, None]),
+                S::F64 => (7, [None, None]),
+                S::Json => (8, [None, None]),
+                S::String => (9, [None, None]),
+                S::Duration => (10, [None, None]),
+                S::Timestamp => (11, [None, None]),
+                S::Bytes => (12, [None, None]),
+                S::Error => (13, [None, None]),
+                S::List(inner) => (14, [Some(inner), None]),
+                S::Option(inner) => (15, [Some(inner), None]),
+                S::Result(inner) => (16, [Some(inner), None]),
+                S::Map(k, v) => (17, [Some(k), Some(v)]),
+                S::Enum(_) => return None,
+            };
+            if *used + SHAPE_TAG_BITS > SHAPE_CODE_BITS {
+                return None;
+            }
+            *code |= tag << *used;
+            *used += SHAPE_TAG_BITS;
+            children
+                .into_iter()
+                .flatten()
+                .try_for_each(|child| push(child, code, used))
+        }
+        let (mut code, mut used) = (0, 0);
+        push(key, &mut code, &mut used)?;
+        push(value, &mut code, &mut used)?;
+        Some(code | (u64::try_from(depth).ok().filter(|d| *d <= 0xFF)? << 56))
+    }
+    pub(crate) fn new(
+        key: &ValueShape,
+        value: &ValueShape,
+        depth: usize,
+        entries: usize,
+    ) -> Option<Self> {
+        Some(Self {
+            code: Self::code(key, value, depth)?,
+            entries,
+        })
+    }
+    pub(crate) fn charge(
+        &self,
+        key: &ValueShape,
+        value: &ValueShape,
+        depth: usize,
+    ) -> Option<usize> {
+        let stored = self.code >> 56;
+        let code = Self::code(key, value, 0)?;
+        (u64::try_from(depth).ok()? <= stored && code == self.code & ((1 << 56) - 1))
+            .then_some(self.entries)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 #[non_exhaustive]
 pub enum ValueCheckError {
@@ -425,12 +508,21 @@ impl ValueShape {
                 Ok(())
             }
             (Self::Map(key, ty), Value::Map(map)) if key.map_key() => {
+                let memo = map.checked();
+                if let Some(entries) = memo.get().and_then(|m| m.charge(key, ty, depth)) {
+                    return charge(left, entries);
+                }
                 // Keys are unique by construction (`MapRepr::new`).
                 let entries = map.entries();
                 minimum(*left, entries.len(), MAP_ENTRY_CHARGE)?;
+                let before = *left;
                 for (k, v) in entries {
                     key.check(k, left, depth + 1)?;
                     ty.check(v, left, depth + 1)?;
+                }
+                // Only a complete success is remembered; a concurrent first check may win.
+                if let Some(check) = MapCheck::new(key, ty, depth, before - *left) {
+                    let _ = memo.set(check);
                 }
                 Ok(())
             }
@@ -939,6 +1031,73 @@ mod tests {
         assert_ne!(a, b);
         assert_eq!(ty.equal_values(&a, &b), Some(true));
         assert_eq!(ty.equal_values(&a, &c), Some(false));
+    }
+
+    #[test]
+    fn a_map_remembers_only_complete_checks_for_its_exact_shapes() {
+        use std::hash::BuildHasher;
+        let ty = ValueShape::Map(Box::new(ValueShape::String), Box::new(ValueShape::U64));
+        let entries = || {
+            (0..3u64)
+                .map(|i| (Value::Str(Arc::new(format!("k{i}"))), Value::U64(i)))
+                .collect::<Vec<_>>()
+        };
+        let repr = Arc::new(MapRepr::new(entries()).unwrap());
+        let map = Value::Map(repr.clone());
+        let full = 3 * (VALUE_CHARGE + 2 + VALUE_CHARGE) + VALUE_CHARGE;
+        // A refused check leaves nothing behind; the next complete one is remembered.
+        assert_eq!(ty.checked_charge(&map, full - 1), Err(ResourceLimit));
+        assert!(repr.checked().get().is_none());
+        assert_eq!(ty.checked_charge(&map, usize::MAX), Ok(full));
+        assert!(repr.checked().get().is_some());
+        // The remembered charge still answers to every later limit.
+        assert_eq!(ty.checked_charge(&map, full), Ok(full));
+        assert_eq!(ty.checked_charge(&map, full - 1), Err(ResourceLimit));
+        // Other shapes walk the entries again and reach their own verdict.
+        let other = ValueShape::Map(Box::new(ValueShape::String), Box::new(ValueShape::I64));
+        assert_eq!(other.checked_charge(&map, usize::MAX), Err(InvalidType));
+        let wrapped = ValueShape::Option(Box::new(ty.clone()));
+        assert_eq!(wrapped.checked_charge(&map, usize::MAX), Ok(full));
+        // Verdicts only tighten with depth, so a deeper check is never answered from memo.
+        let memo = repr.checked().get().unwrap();
+        let (key, value) = (&ValueShape::String, &ValueShape::U64);
+        assert_eq!(memo.charge(key, value, 0), Some(full - VALUE_CHARGE));
+        assert_eq!(memo.charge(key, value, 1), None);
+        // Codes are exact: rearranged or re-nested shapes never share one.
+        let list = |s| ValueShape::List(Box::new(s));
+        let option = |s| ValueShape::Option(Box::new(s));
+        let shapes = [
+            (list(ValueShape::U64), ValueShape::U64),
+            (ValueShape::U64, list(ValueShape::U64)),
+            (option(list(ValueShape::U64)), ValueShape::Bool),
+            (list(option(ValueShape::U64)), ValueShape::Bool),
+            (list(ValueShape::U64), option(ValueShape::Bool)),
+        ];
+        let codes: HashSet<_> = shapes
+            .iter()
+            .map(|(k, v)| MapCheck::code(k, v, 0).unwrap())
+            .collect();
+        assert_eq!(codes.len(), shapes.len());
+        // Shapes too large to code are walked every time, never misremembered.
+        let mut deep = ValueShape::U64;
+        for _ in 0..11 {
+            deep = list(deep);
+        }
+        assert_eq!(MapCheck::code(&ValueShape::String, &deep, 0), None);
+        let nested = Value::Map(Arc::new(
+            MapRepr::new(vec![(
+                Value::Str(Arc::new("k".into())),
+                Value::List(Arc::new(ListRepr::Values(vec![].into()))),
+            )])
+            .unwrap(),
+        ));
+        let wide = ValueShape::Map(Box::new(ValueShape::String), Box::new(deep));
+        assert!(wide.accepts(&nested) && wide.accepts(&nested));
+        // The memo is derived: equality and hashing see only the entries.
+        let fresh = MapRepr::new(entries()).unwrap();
+        let hasher = std::hash::RandomState::new();
+        assert_eq!(*repr, fresh);
+        assert_eq!(hasher.hash_one(&*repr), hasher.hash_one(&fresh));
     }
 
     #[test]

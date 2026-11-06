@@ -1,6 +1,5 @@
 //! Actor-owned region lifetimes. Identities are never reused within a run.
 use super::*;
-use std::collections::BTreeSet;
 
 /// Region ownership is usually a singleton. Keep that case allocation-free;
 /// only Fork/cleanup fan-out needs an ordered spill set.
@@ -11,12 +10,111 @@ pub(super) enum IdSet<T> {
     One(T),
     // Only the uncommon spill is boxed, keeping every serial region header
     // compact. Inlining the collection enlarges both ownership fields.
-    #[expect(
-        clippy::box_collection,
-        reason = "boxed spill keeps the common singleton representation compact"
-    )]
-    Many(Box<BTreeSet<T>>),
+    Many(Box<Spill<T>>),
 }
+
+/// Ordered spill storage: ascending identities plus one removal bit each. Identities
+/// are minted in increasing order, so a new child is an append, and removal is a binary
+/// search that only sets its bit. Removed identities stay until fewer than half are
+/// live, then one pass compacts them. Each slot costs one identity and one bit, so even
+/// at the compaction bound the spill holds about 16 bytes per live member (a B-tree
+/// holds a similar amount in partly filled nodes) while insertion is amortized O(1),
+/// removal O(log n) and nothing allocates per member. An identity older than the newest
+/// compacts and shifts the tail once; bulk construction sorts instead.
+pub(super) struct Spill<T> {
+    ids: Vec<T>,
+    /// Removal bits of the first 64 slots, inline so a small spill allocates only `ids`.
+    first: u64,
+    /// Removal bits of every later slot.
+    rest: Vec<u64>,
+    live: usize,
+}
+
+impl<T: Copy + Ord> Spill<T> {
+    fn sorted(ids: Vec<T>) -> Self {
+        Self {
+            live: ids.len(),
+            first: 0,
+            rest: vec![0; ids.len().saturating_sub(64).div_ceil(64)],
+            ids,
+        }
+    }
+    fn word(&mut self, i: usize) -> &mut u64 {
+        match i.checked_sub(64) {
+            None => &mut self.first,
+            Some(later) => &mut self.rest[later / 64],
+        }
+    }
+    fn is_removed(&self, i: usize) -> bool {
+        let word = match i.checked_sub(64) {
+            None => self.first,
+            Some(later) => self.rest[later / 64],
+        };
+        word >> (i % 64) & 1 == 1
+    }
+    fn fit_bits(&mut self) {
+        self.rest
+            .resize(self.ids.len().saturating_sub(64).div_ceil(64), 0);
+    }
+    fn iter(&self) -> impl Iterator<Item = T> + '_ {
+        self.ids
+            .iter()
+            .enumerate()
+            .filter(|&(i, _)| !self.is_removed(i))
+            .map(|(_, id)| *id)
+    }
+    fn compact(&mut self) {
+        let mut kept = 0;
+        for i in 0..self.ids.len() {
+            if !self.is_removed(i) {
+                self.ids[kept] = self.ids[i];
+                kept += 1;
+            }
+        }
+        self.ids.truncate(kept);
+        self.first = 0;
+        self.rest.clear();
+        self.fit_bits();
+    }
+    fn insert(&mut self, id: T) -> bool {
+        if self.ids.last().is_none_or(|last| *last < id) {
+            self.ids.push(id);
+            if self.ids.len() > 64 * (1 + self.rest.len()) {
+                self.rest.push(0);
+            }
+        } else {
+            match self.ids.binary_search(&id) {
+                Ok(i) if !self.is_removed(i) => return false,
+                Ok(i) => *self.word(i) &= !(1 << (i % 64)),
+                Err(_) => {
+                    if self.live < self.ids.len() {
+                        self.compact();
+                    }
+                    let i = self.ids.binary_search(&id).unwrap_or_else(|i| i);
+                    self.ids.insert(i, id);
+                    self.fit_bits();
+                }
+            }
+        }
+        self.live += 1;
+        true
+    }
+    fn remove(&mut self, id: &T) -> bool {
+        let Ok(i) = self.ids.binary_search(id) else {
+            return false;
+        };
+        if self.is_removed(i) {
+            return false;
+        }
+        *self.word(i) |= 1 << (i % 64);
+        self.live -= 1;
+        if self.live * 2 < self.ids.len() {
+            self.compact();
+        }
+        true
+    }
+}
+
 impl<T: Copy + Ord> IdSet<T> {
     pub fn one(id: T) -> Self {
         Self::One(id)
@@ -25,7 +123,7 @@ impl<T: Copy + Ord> IdSet<T> {
         match self {
             Self::Empty => 0,
             Self::One(_) => 1,
-            Self::Many(ids) => ids.len(),
+            Self::Many(ids) => ids.live,
         }
     }
     pub fn is_empty(&self) -> bool {
@@ -38,7 +136,7 @@ impl<T: Copy + Ord> IdSet<T> {
             Self::Many(ids) => (None, Some(ids.as_ref())),
         };
         one.into_iter()
-            .chain(many.into_iter().flat_map(|ids| ids.iter().copied()))
+            .chain(many.into_iter().flat_map(|ids| ids.iter()))
     }
     pub fn clear(&mut self) {
         *self = Self::Empty;
@@ -51,7 +149,8 @@ impl<T: Copy + Ord> IdSet<T> {
             }
             Self::One(old) if *old == id => false,
             Self::One(old) => {
-                *self = Self::Many(Box::new(BTreeSet::from([*old, id])));
+                let (a, b) = if *old < id { (*old, id) } else { (id, *old) };
+                *self = Self::Many(Box::new(Spill::sorted(vec![a, b])));
                 true
             }
             Self::Many(ids) => ids.insert(id),
@@ -67,9 +166,8 @@ impl<T: Copy + Ord> IdSet<T> {
             Self::One(_) => false,
             Self::Many(ids) => {
                 let removed = ids.remove(id);
-                if ids.len() == 1
-                    && let Some(&only) = ids.first()
-                {
+                let only = (ids.live == 1).then(|| ids.iter().next()).flatten();
+                if let Some(only) = only {
                     *self = Self::One(only);
                 }
                 removed
@@ -78,12 +176,22 @@ impl<T: Copy + Ord> IdSet<T> {
     }
 }
 impl<T: Copy + Ord> FromIterator<T> for IdSet<T> {
+    /// Sorts once, so identities arriving in any order never shift a large spill.
     fn from_iter<I: IntoIterator<Item = T>>(values: I) -> Self {
-        let mut out = Self::default();
-        for id in values {
-            out.insert(id);
+        let mut values = values.into_iter();
+        let Some(first) = values.next() else {
+            return Self::Empty;
+        };
+        let Some(second) = values.next() else {
+            return Self::One(first);
+        };
+        let mut ids: Vec<T> = [first, second].into_iter().chain(values).collect();
+        ids.sort_unstable();
+        ids.dedup();
+        match ids.as_slice() {
+            [only] => Self::One(*only),
+            _ => Self::Many(Box::new(Spill::sorted(ids))),
         }
-        out
     }
 }
 
@@ -111,8 +219,33 @@ pub(super) struct Region {
     pub depth: usize,
     pub live: IdSet<StrandId>,
     pub children: IdSet<RegionId>,
-    pub continuation: Option<Strand>,
+    pub continuation: Option<Held>,
     pub kind: RegionKind,
+}
+
+/// A waiting continuation kept out of line. Most regions (Fork branches, joins in
+/// detach mode) never hold one, so a 336-byte strand inline would triple every region.
+/// The box comes from and returns to [`Regions`]' spare pool, so warm serial calls
+/// and loop bodies still do not allocate; the pool follows peak held continuations.
+pub(super) struct Held(pub(super) Box<Option<Strand>>);
+#[expect(
+    clippy::expect_used,
+    reason = "a held box always contains its strand until resumed"
+)]
+impl std::ops::Deref for Held {
+    type Target = Strand;
+    fn deref(&self) -> &Strand {
+        self.0.as_ref().as_ref().expect("held strand")
+    }
+}
+#[expect(
+    clippy::expect_used,
+    reason = "a held box always contains its strand until resumed"
+)]
+impl std::ops::DerefMut for Held {
+    fn deref_mut(&mut self) -> &mut Strand {
+        self.0.as_mut().as_mut().expect("held strand")
+    }
 }
 impl Run {
     pub(super) fn enter_body(
@@ -139,6 +272,7 @@ impl Run {
         child.id = caller.id;
         child.pull = caller.pull.lend();
         caller.pc = None;
+        let caller = self.regions.hold(caller);
         self.regions.open(
             region,
             Region {
@@ -240,6 +374,7 @@ impl Run {
         child.pc = entry;
         caller.pc = None;
         self.frames.insert(FrameId::of_region(region), frame);
+        let caller = self.regions.hold(caller);
         self.regions.open(
             region,
             Region {
@@ -392,6 +527,7 @@ impl Run {
                 });
             }
             if let Some(caller) = r.continuation {
+                let caller = self.regions.resume(caller);
                 self.ready.push_front(caller.id, caller);
             }
             if let Some(parent) = r.parent {
@@ -431,8 +567,10 @@ impl Run {
         }
         // Each branch beyond the first is extra ownership work for the pump budget.
         self.regions.charge(n.saturating_sub(1));
+        self.regions.reserve(n + 1);
         let group = self.regions.mint_region()?;
-        let mut children = Vec::with_capacity(n);
+        let mut children = std::mem::take(&mut self.fork_children);
+        children.reserve(n);
         for target in branches {
             let region = self.regions.mint_region()?;
             let mut child = self.child_strand(&caller, region)?;
@@ -453,7 +591,7 @@ impl Run {
             self.ready.push_front(caller.id, caller);
             None
         } else {
-            Some(caller)
+            Some(self.regions.hold(caller))
         };
         self.regions.open(
             group,
@@ -489,9 +627,10 @@ impl Run {
                 },
             )?;
         }
-        for child in children.into_iter().rev() {
+        for child in children.drain(..).rev() {
             self.ready.push_front(child.id, child);
         }
+        self.fork_children = children;
         self.segment_owner = None;
         Ok(())
     }
@@ -520,6 +659,7 @@ impl Run {
             self.cancel_region(id)?;
         }
         if let Some(caller) = caller {
+            let caller = self.regions.resume(caller);
             self.ready.push_front(caller.id, caller);
         }
         Ok(())
@@ -658,6 +798,41 @@ impl Run {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::BTreeSet;
+
+    #[test]
+    fn wide_spills_compact_tombstones_and_keep_appends_ordered() {
+        let mut actual = IdSet::<u64>::default();
+        let mut expected = BTreeSet::new();
+        // Fork-shaped: minted children append, then complete in arbitrary order.
+        for id in 0..4_000 {
+            assert!(actual.insert(id));
+            expected.insert(id);
+        }
+        let mut random = 7u64;
+        for _ in 0..3_990 {
+            random = random.wrapping_mul(6364136223846793005).wrapping_add(1);
+            let id = (random >> 33) % 4_000;
+            assert_eq!(actual.remove(&id), expected.remove(&id));
+            if let IdSet::Many(spill) = &actual {
+                assert!(
+                    spill.ids.len() <= 2 * spill.live.max(1),
+                    "tombstones compact"
+                );
+            }
+        }
+        // Re-inserting older identities, live or removed, keeps one ordered copy.
+        for id in [3_999, 0, 2_000, 1, 3_999] {
+            assert_eq!(actual.insert(id), expected.insert(id));
+        }
+        assert!(actual.iter().eq(expected.iter().copied()));
+        assert_eq!(actual.len(), expected.len());
+        let collected: IdSet<u64> = [9, 3, 9, 1, 3].into_iter().collect();
+        assert!(collected.iter().eq([1, 3, 9]));
+        let single: IdSet<u64> = [5, 5].into_iter().collect();
+        assert!(matches!(single, IdSet::One(5)));
+    }
+
     #[test]
     fn inline_ownership_ids_preserve_order_through_spill_and_removal() {
         assert!(std::mem::size_of::<IdSet<u64>>() <= 2 * std::mem::size_of::<u64>());
