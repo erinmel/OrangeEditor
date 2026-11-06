@@ -251,9 +251,38 @@ impl ListBuilder {
 /// floats included. Key eligibility (11 §5.2: no floats, language `hash` and `eq`) is
 /// enforced at the typed boundaries, by the registry-aware literal codec and by value shape
 /// checks before execution.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash)]
+///
+/// Each map also keeps the result of its first successful shape check (see
+/// [`shape::ValueShape::checked_charge`]): the immutable entries can only ever check the
+/// same way against the same shapes, so repeated admission of one allocation is O(1)
+/// instead of a walk. The memo is derived data; equality, hashing and debug output
+/// ignore it, and a clone carries it because the entries are identical.
+#[derive(Clone, Default)]
 pub struct MapRepr {
     entries: Box<[(Value, Value)]>,
+    checked: std::sync::OnceLock<shape::MapCheck>,
+}
+
+impl PartialEq for MapRepr {
+    fn eq(&self, other: &Self) -> bool {
+        self.entries == other.entries
+    }
+}
+
+impl Eq for MapRepr {}
+
+impl Hash for MapRepr {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.entries.hash(state);
+    }
+}
+
+impl std::fmt::Debug for MapRepr {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("MapRepr")
+            .field("entries", &self.entries)
+            .finish()
+    }
 }
 
 /// [`MapRepr::new`] was given the same key twice.
@@ -277,14 +306,27 @@ impl MapRepr {
                 .enumerate()
                 .all(|(i, (k, _))| entries[..i].iter().all(|(other, _)| other != k))
         } else {
+            #[expect(
+                clippy::mutable_key_type,
+                reason = "a nested map's check memo is excluded from Hash and Eq"
+            )]
             let mut seen = HashSet::with_capacity(entries.len());
             entries.iter().all(|(k, _)| seen.insert(k))
         };
-        unique.then_some(Self { entries }).ok_or(DuplicateKey)
+        unique
+            .then(|| Self {
+                entries,
+                checked: std::sync::OnceLock::new(),
+            })
+            .ok_or(DuplicateKey)
     }
 
     pub fn entries(&self) -> &[(Value, Value)] {
         &self.entries
+    }
+
+    pub(crate) fn checked(&self) -> &std::sync::OnceLock<shape::MapCheck> {
+        &self.checked
     }
 }
 
