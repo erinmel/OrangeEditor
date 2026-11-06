@@ -3,6 +3,7 @@
 
 mod common;
 
+mod archive;
 mod defaults;
 mod durable;
 mod lifecycle;

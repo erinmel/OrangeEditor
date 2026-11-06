@@ -42,3 +42,7 @@ That command creates a new ignored source copy under `.artifacts`, records sourc
 For the pre-membership index comparator, create an owned worktree at the checkout containing this harness, restore only `app/crates/orange-model/src/index.rs` from `e9aead5` in that worktree, then build its binary and run the same `index-update` command. For pre-budget import, restore only `codec.rs`, `error.rs` and `lib.rs` from `6854560` in the isolated comparator. Never restore over unrelated work.
 
 Method, measured results, selected ownership direction and limitations are in [the verification record](../docs/17-authoring-verification.md). These profiles do not declare UI, security-isolation or reference-machine NFR gates passed.
+
+## Package archive vectors
+
+`package-archive.mjs` is an independent Node encoder for the canonical `.orangeplug` archive and its content digest ([04](../docs/04-expansion-plugins.md), "Canonical archive"). `node tools/package-archive.mjs` prints the vector set; `package-archive.test.mjs` checks that it equals `app/crates/orange-packages/tests/fixtures/archive-v1.json`, which the Rust reader's tests also reproduce. Regenerate the fixture only for an intentional format change.

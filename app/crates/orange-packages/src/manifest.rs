@@ -616,7 +616,7 @@ impl PackageManifest {
 
     /// The declared content digest in lock form, `sha256:<64 hex>`, as document and
     /// dependency locks record it. It covers the canonical manifest body and every other
-    /// archive file.
+    /// archive file; [`read_archive`](crate::read_archive) verifies it.
     pub fn content_digest(&self) -> &str {
         &self.content_digest
     }
