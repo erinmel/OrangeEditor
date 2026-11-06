@@ -318,9 +318,9 @@ fn a_data_edge_edit_visits_its_cone() {
     let middle = 10 + (CHAINS / 2) * LENGTH + LENGTH / 2;
     // Removing one chain edge walks the requirement cone behind its producer; restoring it
     // searches the data order once and runs the added edge's connection check and fan
-    // scans. Each scans the published diagnostics for one on the edge: every wired `a`
-    // shadows its literal with a warning, so there are 4,500, then 4,499. The zone
-    // re-check looks up both endpoints' owners and finds no zone.
+    // scans. Each looks its edge up in the kept per-edge diagnostic counts and reads none
+    // of the 4,500 shadowed-literal warnings, which name no edge (A01). The zone re-check
+    // looks up both endpoints' owners and finds no zone.
     expect_counts(
         &mut session,
         &mut doc,
@@ -332,7 +332,7 @@ fn a_data_edge_edit_visits_its_cone() {
                     [20, 9, 13, 0, 1],
                     [1, 0, 3, 0, 1],
                     NONE,
-                    [0, 1, 2, 4500, 1],
+                    [0, 1, 2, 0, 1],
                     [0, 0, 0, 0, 1],
                     [5, 8, 9, 0, 1],
                     NONE,
@@ -347,7 +347,7 @@ fn a_data_edge_edit_visits_its_cone() {
                     [20, 17, 13, 0, 1],
                     [1, 1, 3, 0, 1],
                     NONE,
-                    [0, 4, 5, 4499, 1],
+                    [0, 4, 5, 0, 1],
                     [0, 1, 0, 0, 1],
                     [0, 0, 1, 0, 1],
                     NONE,
@@ -358,6 +358,100 @@ fn a_data_edge_edit_visits_its_cone() {
             ),
         ],
     );
+}
+
+/// Edge edits and node removals read only their own edges' diagnostic buckets, and stay
+/// equal to the full analysis, on a graph with warnings (every wired `a` shadows its
+/// literal), a clean one (no wired input has a literal) and one with errors: an input
+/// error, and an unresolvable node whose edge carries dependency-unavailable errors.
+#[test]
+fn edge_edits_and_node_removals_read_only_their_edges_diagnostics() {
+    let options = AnalysisOptions::default();
+    let clean = || {
+        let (mut doc, registry) = chains();
+        let mut raw: Json = serde_json::from_str(&orange_model::to_json(&doc).unwrap()).unwrap();
+        for edge in raw["edges"].clone().as_array().unwrap() {
+            let target = edge["to"]["node"].as_str().unwrap();
+            for node in raw["nodes"].as_array_mut().unwrap() {
+                if node["id"] == target {
+                    node["inputs"].as_object_mut().unwrap().remove("a");
+                }
+            }
+        }
+        doc = orange_model::from_json(&raw.to_string()).unwrap();
+        (doc, registry)
+    };
+    let errors = || {
+        let (mut doc, registry) = chains();
+        let mut unknown = math(90_100, "add", 0, 1);
+        unknown["definition_id"] = json!("org.orange.math/unknown");
+        let broken = vec![
+            DocCommand::AddNode {
+                body: orange_model::BodyRef::Root,
+                node: serde_json::from_value(unknown).unwrap(),
+            },
+            wire(90_100, 90_100, "sum", 10, "a"),
+            DocCommand::SetLiteral {
+                port: PortRef {
+                    node: id(20).parse().unwrap(),
+                    port: "b".parse().unwrap(),
+                },
+                literal: Some(
+                    serde_json::from_value(json!({"type": "core/u64@1", "value": "x"})).unwrap(),
+                ),
+            },
+        ];
+        let _ = doc.apply(broken).unwrap();
+        (doc, registry)
+    };
+    let middle = 10 + (CHAINS / 2) * LENGTH + LENGTH / 2;
+    for (name, (mut doc, registry)) in [
+        ("warnings", chains()),
+        ("clean", clean()),
+        ("errors", errors()),
+    ] {
+        let mut session = AnalysisSession::new(&doc, &registry, BTreeMap::new(), options);
+        let report = session.analysis().report();
+        match name {
+            "warnings" => assert!(report.is_valid() && !report.diagnostics.is_empty()),
+            "clean" => assert!(report.diagnostics.is_empty(), "{:#?}", report.diagnostics),
+            _ => assert!(!report.is_valid() && !report.incomplete_nodes.is_empty()),
+        }
+        let only_edges = |stats: &EditStats| {
+            let visits = &stats.visits;
+            assert_eq!(visits.connections.diagnostics, 0, "{name}: {visits:#?}");
+            assert_eq!(visits.control_flow.diagnostics, 0, "{name}: {visits:#?}");
+        };
+        only_edges(&scoped(
+            &mut session,
+            &mut doc,
+            &registry,
+            vec![unwire(middle)],
+        ));
+        only_edges(&scoped(
+            &mut session,
+            &mut doc,
+            &registry,
+            vec![wire(middle, middle - 1, "sum", middle, "a")],
+        ));
+        // Removing a chain node removes its two edges with it; undoing restores all three.
+        let removed = doc
+            .apply([DocCommand::RemoveNodes {
+                ids: vec![id(middle).parse().unwrap()],
+            }])
+            .unwrap();
+        let stats = *session.update(&doc, &registry, &removed.change_set, options);
+        assert!(stats.is_scoped(), "{name}: {stats:?}");
+        only_edges(&stats);
+        let restored = doc.revert(removed.inverse).unwrap();
+        let stats = *session.update(&doc, &registry, &restored.change_set, options);
+        assert!(stats.is_scoped(), "{name}: {stats:?}");
+        only_edges(&stats);
+        assert_eq!(
+            session.analysis(),
+            &analyze_with_options(&doc, &registry, BTreeMap::new(), options)
+        );
+    }
 }
 
 #[test]
@@ -413,7 +507,7 @@ fn closing_and_opening_a_cycle_visits_the_cycle() {
                     [20, 17, 13, 0, 1],
                     [1, 1, 3, 0, 1],
                     NONE,
-                    [0, 4, 5, 4500, 1],
+                    [0, 4, 5, 0, 1],
                     [118, 247, 68, 0, 2],
                     [10, 20, 21, 0, 1],
                     NONE,
@@ -428,7 +522,7 @@ fn closing_and_opening_a_cycle_visits_the_cycle() {
                     [20, 9, 13, 0, 1],
                     [1, 0, 3, 0, 1],
                     NONE,
-                    [0, 1, 2, 4502, 1],
+                    [0, 1, 2, 0, 1],
                     [0, 0, 0, 0, 2],
                     [0, 0, 1, 0, 1],
                     NONE,
@@ -477,10 +571,10 @@ fn an_exec_edge_edit_visits_its_activation_and_the_state_pass_reruns_in_full() {
                     [8, 0, 4, 0, 1],
                     [1, 1, 1, 0, 1],
                     NONE,
-                    [0, 3, 5, 1, 1],
+                    [0, 3, 5, 0, 1],
                     NONE,
                     [3, 7, 10, 0, 0],
-                    [45, 34, 20, 1, 3],
+                    [45, 34, 20, 0, 3],
                     state,
                     [2, 0, 0, 0, 0],
                     NONE,
@@ -508,7 +602,7 @@ fn a_function_body_edit_visits_that_body_and_the_call_sites() {
                     [14, 4, 12, 0, 1],
                     [1, 0, 3, 0, 1],
                     NONE,
-                    [0, 1, 2, 1, 1],
+                    [0, 1, 2, 0, 1],
                     [10, 6, 4, 0, 2],
                     [0, 0, 1, 0, 1],
                     NONE,
