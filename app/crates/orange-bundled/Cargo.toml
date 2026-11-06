@@ -5,6 +5,8 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+# Integration tests build as one binary (tests/main.rs).
+autotests = false
 
 [dependencies]
 orange-compiler = { path = "../orange-compiler", version = "=0.0.0" }
@@ -23,3 +25,7 @@ workspace = true
 [[example]]
 name = "headless_authoring"
 test = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"

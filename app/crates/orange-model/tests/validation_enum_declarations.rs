@@ -2,7 +2,7 @@
 //! §10.2, §11.1): declarations resolve through the registry's schemas, initializers decode
 //! against the current schema, and map keys need `hash` + `eq`.
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

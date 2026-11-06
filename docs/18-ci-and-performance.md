@@ -29,6 +29,14 @@ test debug symbols are replaced with `line-tables-only` in native CI; debug asse
 and overflow checks remain enabled. Dependency caches retain their architecture/toolchain
 boundaries and save only on dev. Clean release builds still do not restore build caches.
 
+Each crate's integration tests build as one binary (`tests/main.rs`, `autotests = false`),
+with every former test file as a module and shared helpers such as `common` declared
+once. 99 separately linked test executables became three, and the harness runs their
+tests on one thread pool instead of one binary after another. Locally, with dependencies
+built, the workspace test build fell from 19 s to 15 s and the run from about 18–33 s to
+9–10 s, with the same 1,211 passing and 15 ignored tests. A new test file must be added as
+a `mod` in its crate's `tests/main.rs`; Cargo no longer discovers it on its own.
+
 `tools/ci-platforms.mjs` selects explicit runner labels and Rust host triples. Native jobs
 assert the compiler host before testing, so a runner-label architecture change fails
 visibly. A successful cross-compilation alone is not execution evidence. Using x64 on the

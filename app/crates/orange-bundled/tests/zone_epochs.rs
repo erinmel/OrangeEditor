@@ -1,6 +1,5 @@
 //! Checked zone lowering and, as runtime support lands, source-level execution regressions.
-#[path = "support/data_graph.rs"]
-mod support;
+use crate::data_graph as support;
 use orange_compiler::{
     CompileError, CompileLimits, CompileOptions, DataOperation, compile_data, compile_pure,
 };

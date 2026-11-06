@@ -1,7 +1,7 @@
 //! One nesting budget for editing, saving and loading: whatever an edit commits can be
 //! saved and read back, and the deepest accepted edit reaches the budget exactly.
 
-mod common;
+use crate::common;
 
 use common::{body, content, empty_document, function, function_id, minimal_document, node};
 use orange_model::document::nesting::MAX_NESTING;

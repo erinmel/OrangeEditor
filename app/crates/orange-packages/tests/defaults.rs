@@ -2,7 +2,7 @@
 //! reproduces the exact selection, never an install-order guess, and never rebinds saved
 //! document locks.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 use std::sync::Arc;

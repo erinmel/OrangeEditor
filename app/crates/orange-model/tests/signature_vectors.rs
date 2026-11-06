@@ -1,7 +1,7 @@
 //! G-39 (presentation never changes semantic signatures) and G-29 (missing package and
 //! snapshot drift lose no data) vectors, plus implicit kind ports.
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 

@@ -1,5 +1,4 @@
-#[path = "support/data_graph.rs"]
-mod support;
+use crate::data_graph as support;
 use orange_compiler::{
     CompileError, CompileOptions, DataOperation, DataStability, FoldedValue, compile_data,
     compile_pure,

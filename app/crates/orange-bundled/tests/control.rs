@@ -6,14 +6,10 @@ mod control_regressions;
 mod fork;
 #[path = "support/fork_reference.rs"]
 mod fork_reference;
-#[path = "support/reference.rs"]
-#[allow(dead_code)]
-mod reference;
+use crate::reference;
 #[path = "support/control_review_fixes.rs"]
 mod review_fixes;
-#[path = "support/data_graph.rs"]
-#[allow(dead_code)]
-mod support;
+use crate::data_graph as support;
 use orange_compiler::{CompileError, CompileOptions, ControlOperation, compile_control};
 use orange_model::{analyze, from_json};
 use serde_json::{Value as Json, json};
@@ -1754,7 +1750,3 @@ fn a_panicking_provider_faults_the_run_until_it_is_stopped() {
 
 #[path = "support/run_budget.rs"]
 mod run_budget;
-
-#[path = "support/budget_drive.rs"]
-#[allow(dead_code)]
-mod budget_drive;

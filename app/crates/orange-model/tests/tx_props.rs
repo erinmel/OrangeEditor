@@ -2,7 +2,7 @@
 //! and redoing all of them reproduces the edited content (FR-03 document state). A
 //! rejected edit leaves the document byte-identical.
 
-mod common;
+use crate::common;
 
 use common::edits::{command, op};
 use common::{content, empty_document, saved};

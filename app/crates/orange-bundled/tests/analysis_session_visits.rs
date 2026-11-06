@@ -1,9 +1,7 @@
 //! NFR-15 visit counters: a scoped edit reports the work its passes iterate, which stays
 //! within its cone rather than the graph, and an edit that falls back to the full analysis
 //! says why (16 §3).
-#[path = "support/data_graph.rs"]
-#[allow(dead_code)]
-mod support;
+use crate::data_graph as support;
 
 use std::collections::BTreeMap;
 

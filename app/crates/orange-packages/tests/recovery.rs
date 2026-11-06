@@ -1,7 +1,7 @@
 //! Restart recovery: restoring a store publishes one complete checkpoint or nothing, and
 //! keeps the recovered identity state (04 "Hot update/removal").
 
-mod common;
+use crate::common;
 
 use common::*;
 use orange_packages::{

@@ -1,7 +1,7 @@
 //! Derived index queries, and the property that an incrementally updated index always
 //! equals a fresh build (through edits, rollbacks, function body rescans and undo).
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeSet;
 

@@ -1,5 +1,5 @@
 //! Public-consumer qualification for the bounded node-local session cache.
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

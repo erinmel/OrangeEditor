@@ -1,6 +1,6 @@
 //! Structural authoring primitive: splice one node into an established connection.
 //! Type/port compatibility remains the planner/validator's responsibility.
-mod common;
+use crate::common;
 
 use common::{add, connect, eid, empty_document, nid};
 use orange_model::{DocCommand, TxError};

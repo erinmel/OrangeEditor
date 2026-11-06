@@ -1,6 +1,6 @@
 //! Contextual node contracts are computed from the node's declarations, never cached.
 
-mod common;
+use crate::common;
 
 use common::generic::{add, core_converters, data_edge, registry_builder};
 use common::{minimal_document, node_id};

@@ -1,5 +1,5 @@
 //! C1: persisted converter nodes resolve their exact entry and implementation.
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

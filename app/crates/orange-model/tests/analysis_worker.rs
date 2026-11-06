@@ -2,7 +2,7 @@
 //! current content, retains a bounded number of snapshots and stops when the host says
 //! (16 §3).
 
-mod common;
+use crate::common;
 
 use std::sync::Arc;
 

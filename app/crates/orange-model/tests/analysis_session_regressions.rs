@@ -1,6 +1,6 @@
 //! Session behavior across host edits, stale requests and cancellation. The full validator
 //! is the oracle; these assertions do not depend on the session's cache representation.
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::sync::atomic::{AtomicBool, Ordering};

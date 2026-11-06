@@ -1,6 +1,6 @@
 //! Type-only generic inference for graph-local function calls.
 
-mod common;
+use crate::common;
 
 use common::generic::{add, data_edge, registry, typed_sink, typed_source};
 use common::{content, function_id, minimal_document, nid, node_id};

@@ -1,5 +1,4 @@
-#[path = "support/data_graph.rs"]
-mod support;
+use crate::data_graph as support;
 use orange_compiler::{
     CompileError, CompileLimits, CompileOptions, ConstantFault, DataOperation, FoldedValue,
     KernelFault, compile_control, compile_data,
@@ -622,10 +621,6 @@ mod state_functions;
 
 #[path = "support/action_functions.rs"]
 mod action_functions;
-
-#[path = "support/budget_drive.rs"]
-#[allow(dead_code)]
-mod budget_drive;
 
 #[path = "support/budget_functions.rs"]
 mod budget_functions;

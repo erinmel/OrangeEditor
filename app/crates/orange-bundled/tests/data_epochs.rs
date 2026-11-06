@@ -1,8 +1,5 @@
-#[path = "support/seeded_provider.rs"]
-mod seeded_provider;
-use seeded_provider::*;
-#[path = "support/data_graph.rs"]
-mod support;
+use crate::data_graph as support;
+use crate::seeded_provider;
 use orange_compiler::{
     CompileOptions, DataOperation, DataPlan, DataStability, EntropyBinding, EntropyKernel,
     EntropyKernelResolver, EntropySource, KernelBinding, KernelFault, PureKernelResolver,
@@ -14,6 +11,7 @@ use orange_model::{GraphDocument, Value, analyze, from_json, to_json};
 use orange_runtime::{
     CancelToken, DataActivation, DataError, DataLimits, DataOptions, EntropyKey, EntropyStream,
 };
+use seeded_provider::*;
 use serde_json::json;
 use std::sync::{Arc, OnceLock, Weak, atomic::Ordering};
 use support::*;

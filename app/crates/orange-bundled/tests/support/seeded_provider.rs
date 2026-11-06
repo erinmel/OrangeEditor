@@ -1,4 +1,4 @@
-use super::support::*;
+use crate::data_graph::*;
 use orange_compiler::{
     CompileOptions, DataPlan, EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource,
     KernelBinding, KernelFault, PureKernelResolver, ResolveError, compile_data,

@@ -1,6 +1,6 @@
 //! G-31: variadic instance ports keep stable `port#k` keys; counters are never reused.
 
-mod common;
+use crate::common;
 
 use common::{content, eid, empty_document, i64_literal, nid, node, port, saved, typed_edge};
 use orange_model::document::VariadicState;

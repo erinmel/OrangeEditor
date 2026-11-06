@@ -1,7 +1,6 @@
 //! Independent graph demand evaluation versus compiled constant exports (E2a).
 //! The oracle shares the model's literal codec and metadata, not executable arithmetic.
-#[path = "support/reference.rs"]
-mod reference;
+use crate::reference;
 
 use orange_bundled::{MathPackage, Operation, math_definitions};
 use orange_compiler::{CompileOptions, EvaluationOptions, compile_pure};

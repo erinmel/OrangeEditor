@@ -2,7 +2,7 @@
 //! Regenerate the canonical file after an intended format change with
 //! `ORANGE_BLESS=1 cargo test -p orange-model --test codec_golden`, then review its diff.
 
-mod common;
+use crate::common;
 
 use common::{edge_id, node_id, parse_json, read_fixture};
 use orange_model::document::literal::LiteralPayload;

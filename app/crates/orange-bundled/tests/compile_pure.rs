@@ -15,8 +15,7 @@ use std::sync::{
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
-#[path = "support/reference.rs"]
-mod reference;
+use crate::reference;
 
 #[path = "support/pure_functions.rs"]
 mod pure_functions;

@@ -1,6 +1,6 @@
 //! 00c.4a: read-only inference over the generic component an edit touches (11 §5.5).
 
-mod common;
+use crate::common;
 
 use common::generic::{
     add, data_edge, document, only, registry, registry_with_provider_specializations, source,

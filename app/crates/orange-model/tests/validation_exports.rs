@@ -1,4 +1,4 @@
-mod common;
+use crate::common;
 
 use common::registry::Facts;
 use common::{minimal_document, node_id};
