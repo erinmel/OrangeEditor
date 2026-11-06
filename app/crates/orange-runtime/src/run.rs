@@ -34,6 +34,7 @@ mod events;
 mod ids;
 use activations::Activations;
 pub use events::{EventMetadata, RunEventStats};
+pub use events::{EventOrigin, HostSourceId, IngressError, RunEventSource};
 mod ready;
 mod regions;
 mod timers;
@@ -131,6 +132,8 @@ pub struct RunLimits {
     pub max_pending_event_bytes: usize,
     /// Nominal event-payload charge across queues and live handler roots together.
     pub max_live_event_payload_bytes: usize,
+    /// Active, run-local registered host event sources.
+    pub max_host_sources: usize,
     /// Aggregate nominal reservation budget for the whole run, distinct from the
     /// per-activation limits (`max_state_bytes`, `DataLimits::max_retained_bytes`),
     /// frame storage and event ingress. Every activation (roots, On Stop frames,
@@ -171,6 +174,7 @@ impl Default for RunLimits {
             max_pending_events: 1024,
             max_pending_event_bytes: 16 * 1024 * 1024,
             max_live_event_payload_bytes: 16 * 1024 * 1024,
+            max_host_sources: 64,
             max_run_retained_bytes: 512 * 1024 * 1024,
         }
     }
@@ -218,6 +222,8 @@ pub struct RunOwnership {
     pub timers: usize,
     /// Strands parked on an event and still observing future emissions.
     pub event_waiters: usize,
+    /// Active registered host event sources.
+    pub host_sources: usize,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
@@ -974,6 +980,7 @@ impl Run {
             regions: self.regions.len(),
             timers: self.timers.len(),
             event_waiters: self.waiter_count(),
+            host_sources: self.host_source_count(),
         }
     }
     /// IDs written by the last/current segment, once each. No equality comparison,
@@ -1089,6 +1096,7 @@ impl Run {
         self.pump_open = false;
         self.last_error = Some(RunError::Interrupted);
         self.transition(RunState::Faulted);
+        self.close_host_sources();
         true
     }
 
@@ -1130,6 +1138,16 @@ impl Run {
             self.observe_cancellation()?;
             if self.state == RunState::Stopped {
                 break;
+            }
+            // Host-side Replace admission records intent only. Drain it at the
+            // next actor boundary, ahead of timers and all dispatch/node work.
+            if self.has_replace_cancellation() {
+                if let Err(error) = self.cancel_replaced_roots() {
+                    return self.fail(error);
+                }
+                let charged = self.regions.take_work().saturating_add(1);
+                remaining = remaining.saturating_sub(charged);
+                continue;
             }
             if let Some(timer) = self.timers.pop_due(self.now) {
                 remaining -= 1;
@@ -1390,7 +1408,8 @@ impl Run {
             && (!self.ready.is_empty()
                 || !self.timers.is_empty()
                 || self.events.pending() > 0
-                || self.pending_await_completions())
+                || self.pending_await_completions()
+                || self.has_replace_cancellation())
         {
             return self.fail(RunError::ResourceLimit);
         }
@@ -1416,6 +1435,7 @@ impl Run {
             ready: !self.ready.is_empty()
                 || self.timers.is_due(self.now)
                 || self.pending_await_completions()
+                || self.has_replace_cancellation()
                 || self.event_dispatchable(),
             next_wakeup,
         })
@@ -1436,6 +1456,7 @@ impl Run {
     fn fail<T>(&mut self, error: RunError) -> Result<T, RunError> {
         self.last_error = Some(error);
         self.transition(RunState::Faulted);
+        self.close_host_sources();
         if self.cancel_owned().is_err() {
             self.abort_cleanup();
         }
@@ -1451,6 +1472,7 @@ impl Run {
         {
             self.deadline = None;
             self.transition(RunState::Stopped);
+            self.close_host_sources();
         }
     }
     fn abort_cleanup(&mut self) {
@@ -1464,6 +1486,7 @@ impl Run {
         self.frames.clear();
         self.activations.clear();
         self.events.abort();
+        self.close_host_sources();
         self.deadline = None;
         self.transition(RunState::Stopped);
     }
@@ -1836,6 +1859,7 @@ impl Run {
                     .checked_add(self.options.drain_timeout_ns)
                     .ok_or(RunError::ResourceLimit)?;
                 self.transition(RunState::Draining);
+                self.close_host_sources();
                 self.deadline = Some(deadline);
                 while let Some(strand) = self.stop_ready.pop_front() {
                     self.ready.push_back(strand.id, strand);

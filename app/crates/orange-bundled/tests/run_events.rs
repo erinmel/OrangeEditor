@@ -245,7 +245,13 @@ fn emit_enqueues_typed_payload_and_handler_starts_on_a_later_pump_turn() {
     assert_eq!((stats.accepted, stats.delivered, stats.pending), (1, 0, 1));
     let metadata = run.last_event().unwrap();
     assert_eq!(metadata.ingestion_seq, 1);
-    assert_eq!(metadata.source.to_string(), id(2));
+    assert_eq!(
+        metadata.origin,
+        orange_runtime::EventOrigin::Graph {
+            node: id(2).parse().unwrap(),
+            scope: 0,
+        }
+    );
     assert_eq!(metadata.source_seq, 1);
     assert_eq!(metadata.cause_depth, 1);
 
@@ -911,13 +917,11 @@ fn event_payload_forwarded_through_action_function_emits_with_callee_cause_metad
         .activation;
     let metadata = run.last_event().expect("callee Emit should be ingested");
     assert_eq!(metadata.ingestion_seq, 2);
-    assert_eq!(metadata.source.to_string(), id(102));
     assert!(
-        metadata.source_scope > 0,
-        "source must retain function scope"
+        matches!(metadata.origin, orange_runtime::EventOrigin::Graph { node, scope } if node.to_string() == id(102) && scope > 0)
     );
     assert_eq!(metadata.source_seq, 1);
-    assert_eq!(metadata.cause, cause_activation);
+    assert_eq!(metadata.cause, Some(cause_activation));
     assert_eq!(metadata.cause_depth, 2);
 }
 
@@ -1003,7 +1007,13 @@ fn async_action_wait_retains_event_argument_and_emits_with_callee_provenance() {
     assert_eq!(run.variable(id(1000).parse().unwrap()), None);
     let incoming = run.last_event().expect("incoming event should be recorded");
     assert_eq!(incoming.ingestion_seq, 1);
-    assert_eq!(incoming.source.to_string(), id(2));
+    assert_eq!(
+        incoming.origin,
+        orange_runtime::EventOrigin::Graph {
+            node: id(2).parse().unwrap(),
+            scope: 0,
+        }
+    );
     assert_eq!(incoming.monotonic_ns, 0);
 
     run.advance_to(5).unwrap();
@@ -1037,10 +1047,11 @@ fn async_action_wait_retains_event_argument_and_emits_with_callee_provenance() {
         .activation;
     let metadata = run.last_event().expect("callee Emit should be ingested");
     assert_eq!(metadata.ingestion_seq, 2);
-    assert_eq!(metadata.source.to_string(), id(103));
-    assert!(metadata.source_scope > 0);
+    assert!(
+        matches!(metadata.origin, orange_runtime::EventOrigin::Graph { node, scope } if node.to_string() == id(103) && scope > 0)
+    );
     assert_eq!(metadata.source_seq, 1);
-    assert_eq!(metadata.cause, cause_activation);
+    assert_eq!(metadata.cause, Some(cause_activation));
     assert_eq!(metadata.cause_depth, 2);
     assert_eq!(metadata.monotonic_ns, 5);
 }
@@ -1171,9 +1182,19 @@ fn panicking_provider_retires_checked_out_event_activation_on_stop_and_dispose()
         .unwrap(),
     );
     let mut run = Run::start(plan, &doc, &registry, 29, RunOptions::default()).unwrap();
+    let host_source = run.register_event_source(EVENT.parse().unwrap()).unwrap();
 
     let unwound = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| run.pump(1024)));
     assert!(unwound.is_err());
+    assert_eq!(
+        run.ingest_event(&host_source, 1, &Value::U64(5), None),
+        Err(orange_runtime::IngressError::NotRunning),
+        "an unwound run rejects host input before explicit cleanup"
+    );
+    assert_eq!(
+        run.register_event_source(EVENT.parse().unwrap()),
+        Err(orange_runtime::IngressError::NotRunning)
+    );
     assert_eq!(run.state(), RunState::Faulted);
     assert_eq!(
         run.last_error(),
@@ -1185,10 +1206,11 @@ fn panicking_provider_retires_checked_out_event_activation_on_stop_and_dispose()
     ));
     let stats = run.event_stats();
     assert_eq!((stats.accepted, stats.delivered, stats.pending), (1, 1, 0));
-    assert!(
-        run.last_event()
-            .is_some_and(|event| event.source == id(2).parse().unwrap())
-    );
+    assert!(run.last_event().is_some_and(|event| matches!(
+        event.origin,
+        orange_runtime::EventOrigin::Graph { node, scope: 0 }
+            if node == id(2).parse().unwrap()
+    )));
     assert!(
         !run.trace()
             .iter()
@@ -1220,6 +1242,7 @@ fn panicking_provider_retires_checked_out_event_activation_on_stop_and_dispose()
             regions: 0,
             timers: 0,
             event_waiters: 0,
+            host_sources: 0,
         }
     );
     assert_eq!(run.event_stats().live_payload_bytes, 0);
@@ -1598,3 +1621,6 @@ mod event_replace_owned;
 
 #[path = "support/event_await.rs"]
 mod event_await;
+
+#[path = "support/event_ingress.rs"]
+mod event_ingress;

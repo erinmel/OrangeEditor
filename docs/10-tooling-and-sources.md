@@ -3317,3 +3317,48 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   this is no graph-liveness proof. Other ingress, replay/reactivity, services/adapters,
   UI, release and physical NFR qualification remain open. No timing probe ran, and
   the removal of hosted CI/CD performance runs remains in place.
+
+### C04a — bounded host event ingress — 2026-11-06
+
+Base dev `319b9ca878cae5ff8ab5dd304a280bb93f55ae85` (PR130 integrated).
+Rust 1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo 1.99.1 (`5f94df478`,
+2026-08-27), Windows x64 MSVC, edition 2024, default workspace test features.
+MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
+`8BB91CAAFF5A7106E5752D49D9AB285D4566A1B69B55AD1CA81E10E1D70BB068`.
+
+- `Run::register_event_source`, `Run::ingest_event` and `Run::revoke_event_source`
+  admit typed host events for run-scope events already in the checked plan.
+  Registrations are bounded by `RunLimits::max_host_sources` (default 64), bound to
+  the existing unique `Run::id()`, never reuse IDs and close on stop, fault cleanup
+  and disposal. Source sequences must be nonzero and strictly increasing (gaps are
+  accepted; a refused call does not advance). Host and graph emits share one
+  admission path, so handler and Await fanout stay atomic under existing quotas.
+  `EventMetadata` now carries the `EventDeclId`, a tagged graph/host origin,
+  optional cause and optional host wall time. `IngressError` is a typed,
+  payload-free refusal with a message key.
+- Ingress runs no graph work inline. A host Replace records intent only; the next
+  positive-budget pump drains the cancellation before timers, dispatch and nodes,
+  and `pump(0)` reports it ready. An accepted host event wins over an unprocessed
+  Await deadline by call order. A refused host call is read-only: after a provider
+  unwind it returns `NotRunning` without consuming the `Interrupted` result that the
+  next `pump`/`advance_to` reports.
+- Ten focused regressions pass in `run_events::event_ingress`: typed handler and
+  Await delivery with host metadata; wrong-run, revoked, unknown, type and sequence
+  refusals; source cap, reopen, gaps and `u64::MAX`; exact/one-under item, byte and
+  live payload limits with retry after refusal; atomic fanout; host Replace intent,
+  `pump(0)`, timers and cleanup; host call versus due Await timeout order; stop and
+  dispose release; provider unwind rejects input. The existing provider-panic case
+  also checks that ingress leaves the one-time `Interrupted` report in place.
+- Final-source PASS: `cargo fmt --all --check`;
+  `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings`;
+  `cargo test --workspace --locked --offline` and the same with `--release`;
+  `cargo doc --workspace --no-deps --all-features --locked --offline` with
+  `RUSTDOCFLAGS=-D warnings`. Debug and release each report **1,261 passed,
+  zero failed, 15 opt-in measurements ignored**. Tests used `CARGO_INCREMENTAL=0`
+  and `CARGO_PROFILE_TEST_DEBUG=line-tables-only`.
+- Integration verification found that ingress consumed the one-time pump
+  interruption report and that one test fixture failed Clippy; both were corrected
+  before the results above. The `core/on-manual` intrinsic, timer entries and
+  missed-tick policies, clock-reader inputs, replay, OS adapters and services remain
+  later increments. No timing probe ran; required exact-head CI still precedes
+  integration.

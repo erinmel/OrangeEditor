@@ -461,6 +461,7 @@ fn shutdown_cleans_every_wait_in_one_activation_and_deadline_or_second_stop_abor
                     regions: 0,
                     timers: 0,
                     event_waiters: 0,
+                    host_sources: 0,
                 }
             );
             // Graceful expiry has no remaining cleanup deadline.
@@ -688,6 +689,7 @@ fn repeated_forks_retire_owners_without_growing_live_capacity() {
             regions: 0,
             timers: 0,
             event_waiters: 0,
+            host_sources: 0,
         }
     );
 }
