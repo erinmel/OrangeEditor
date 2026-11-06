@@ -1,6 +1,8 @@
-# CI coverage and complete-execution measurements
+# CI coverage and local performance measurements
 
-Selected policy, 2026-11-05. This implements development checks, not a new graph/runtime
+Selected policy, revised 2026-11-06: timing and performance measurements run locally
+on named controlled machines, never in CI/CD. Hosted processor variation is unsuitable
+for this project's quantitative performance evidence. This changes development checks, not a new graph/runtime
 contract or a passed product performance gate. Branch and release policy remains in
 [14](14-git-workflow.md); NFR-01/NFR-05 and reference workloads remain in
 [06](06-quality-and-validation.md).
@@ -13,7 +15,7 @@ contract or a passed product performance gate. Branch and release policy remains
 | Rust quality | Same | All-target/all-feature Clippy; rustdoc with warnings denied; measurement binary Clippy without allocator instrumentation |
 | Dependencies | Same | Pinned cargo-deny 0.20.2; refreshed advisories, bans, licenses and sources |
 | Native behavior | After repository rules | Workspace unit/integration/property/doctests on Linux x64, Windows x64 and macOS ARM64; extended runs raise default proptest cases from 256 to 1,024 |
-| Optimized behavior | After repository rules, parallel with native tests | Linux release runtime/measurement regressions, both measurement feature modes, twelve execution workloads, example tests and all three headless example programs; release builds reused throughout. Extended weekly/manual runs also execute the full optimized workspace suite |
+| Optimized behavior | After repository rules, parallel with native tests | Linux release runtime/measurement correctness and resource-bound regressions, both measurement feature modes, example tests and all three headless example programs; release builds reused throughout. Extended weekly/manual runs also execute the full optimized workspace suite. No execution benchmark or timing runner |
 | Compatibility | After repository rules | MSRV 1.97.1, all workspace targets; weekly and extended manual native tests also cover Linux ARM64 and macOS Intel x64 |
 | Required result | After all required jobs | Existing `rust` context fails on failure, cancellation or skipping, including any failed native matrix member |
 
@@ -23,7 +25,7 @@ has nine jobs rather than ten: format shares the rules runner, Clippy/rustdoc sh
 quality runner, and optimized behavior gets a parallel job. Tests wait for rules,
 allowing them to overlap quality checks. PRs avoid compiling every integration test twice:
 they retain full debug workspace coverage on three native platforms and exercise the
-runtime, twelve real execution fixtures and embedding examples in release mode. Full
+runtime correctness/resource bounds and embedding examples in release mode. Full
 optimized workspace tests run on extended weekly/manual validation. Full
 test debug symbols are replaced with `line-tables-only` in native CI; debug assertions
 and overflow checks remain enabled. Dependency caches retain their architecture/toolchain
@@ -32,8 +34,8 @@ boundaries and save only on dev. Clean release builds still do not restore build
 Each crate's integration tests build as one binary (`tests/main.rs`, `autotests = false`),
 with every former test file as a module and shared helpers such as `common` declared
 once. 99 separately linked test executables became three, and the harness runs their
-tests on one thread pool instead of one binary after another. Locally, with dependencies
-built, the workspace test build fell from 19 s to 15 s and the run from about 18–33 s to
+tests on one thread pool instead of one binary after another. In PR127's historical local
+experiment, with dependencies built, the workspace test build fell from 19 s to 15 s and the run from about 18–33 s to
 9–10 s, with the same 1,211 passing and 15 ignored tests. A new test file must be added as
 a `mod` in its crate's `tests/main.rs`; Cargo no longer discovers it on its own.
 
@@ -54,7 +56,7 @@ timeouts remain. Signing/publication authority stays in release environments. Th
 unqualified application configuration still blocks publication; no signing/packaging
 gate has been passed. Branch protections continue to require the existing `rust` context.
 
-## Performance checks selected for the current core
+## Correctness/resource checks in CI and local performance work
 
 Keep deterministic output, budget, allocation-refusal and disposal regressions in the
 required workspace suite. They catch concrete behavior/resource regressions without
@@ -63,22 +65,22 @@ sample or a coverage percentage. Named rule boundaries, property tests and regre
 remain the coverage policy; unimplemented services/UI and ignored tests are not covered
 merely because this workflow succeeds.
 
-`Execution measurements` runs weekly, manually, and on PRs that change executable Rust
-(any crate's `src/` or manifest, the lockfile, toolchain, workflow or comparison tool).
-It builds the twelve execution workloads in release mode on Linux x64. On a PR it also
-builds the PR's base commit and measures both on the same runner in six alternating
-processes (base, head, head, base, base, head), each warming for five seconds and
-recording thirty complete sessions per workload. Hosted runners change CPU model between
-runs (a 2026-11-06 PR run moved from an EPYC 9V45 to a slower 9V74, about 1.8× on
-unchanged workloads), so only this same-runner pairing supports a speed comparison.
-`tools/compare-measurements.mjs` reports per-workload medians and a verdict: `faster` or
-`slower` only when the change is at least 5% and every head process lies on one side of
-every base process, otherwise `same` or `noisy`. Slowdowns become warning annotations,
-not failures. Allocation counts from both sides appear in the same table. A base that
-cannot build the execution profile drops to head-only evidence. Scheduled and manual runs
-measure head only with ten seconds of warmup. Assertions still check expected results
-after each session; a failed head workload fails the job. This workflow is evidence
-separate from the required `rust` gate and must not become a required check.
+The separate `Execution measurements` workflow (`performance.yml`) and the required
+validation step that timed all twelve execution workloads were removed by user direction.
+There is no scheduled, manual-dispatch, PR or release-CD timing, allocation-profile,
+speed-comparison, RSS or latency/performance job. Release CD inherits the same
+correctness-only validation. This does not remove deterministic allocation-refusal,
+ownership, pump-budget, cleanup or disposal assertions: those validate product resource
+guarantees and remain ordinary unit/integration checks. Measurement-tool Clippy and
+both feature-mode correctness tests also remain.
+
+Historical CI reports from the removed workflow retain their exact source, machine
+and qualification limits. They are prior engineering observations, not current checks
+or reliable proof of speed changes across hosted processors. The earlier same-runner
+pairing experiment and any retained comparison helper do not restore CI/CD performance
+authority. New quantitative measurements use the local procedure below on a named
+controlled machine, independently verify equivalent workload/build inputs, and keep
+timing separate from allocator instrumentation. The product NFR targets are unchanged.
 
 The measured interval includes session construction, all budget-64 pumps, stop/dispose
 and session destruction. Documents and compiled plans are prepared beforehand; returned
@@ -116,13 +118,13 @@ before the window. Neither is process RSS or a hard resident-memory bound. Thirt
 samples make nearest-rank p99 equal to the maximum; this is descriptive evidence, not
 a qualified tail-latency estimate.
 
-The workflow uploads every JSON report (`head-timing-N.json`, `base-timing-N.json`,
-`head-allocations.json`, `base-allocations.json`), the exact checked-out and base commits,
-compiler/Cargo versions, lockfile digest, each binary digest, CPU/OS/RAM and build flags
-for thirty days. Code uses
-portable x64 instructions, not `target-cpu=native`. Partial provenance is retained after
-a failure. Cache/toolchain/build changes and differing machines invalidate direct
-absolute comparisons; compilation occurs before measurement.
+Local evidence retains every JSON report, the exact source commits, compiler/Cargo
+versions, lockfile digest, features, each binary digest, CPU/OS/RAM, power/background-load
+conditions and build flags. Use portable x64 instructions rather than `target-cpu=native`
+for comparable x64 builds. Keep provenance after failures. Cache/toolchain/build changes
+and differing machines invalidate direct absolute comparisons; compilation occurs before
+measurement. Prior CI upload filenames and retention windows are historical, not an
+active artifact-production promise.
 
 ## Testing the 1 ms goal and older computers
 
@@ -141,8 +143,9 @@ instead of deleting them. Compare complete-session p95/p99/max and allocation/pe
 changes separately. Compilation and end-to-end host/I/O latency need separate windows.
 
 Before turning results into a gate, agree on the graph/size, machine, percentile and
-allowed memory budget, then measure normal run-to-run variation. A dedicated controlled
-runner can enforce the resulting threshold; hosted VMs remain trend/evidence runners.
+allowed memory budget, then measure normal run-to-run variation. Apply any resulting
+threshold only in the named controlled local setup; hosted CI/CD does not collect or
+judge performance measurements.
 No older-machine result or universal sub-1 ms result is claimed here. Improving the
 executor's data structures/ownership costs is a separate measured runtime change.
 

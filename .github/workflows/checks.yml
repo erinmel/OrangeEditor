@@ -232,9 +232,6 @@ jobs:
           for example in headless_control headless_fork headless_authoring; do
             cargo run -p orange-bundled --example "$example" --release --locked
           done
-      - name: Check all twelve optimized execution workloads
-        shell: bash
-        run: cargo run -p orange-measure --release --locked -- --execution --warmup 1 --runs 1 > "$RUNNER_TEMP/execution-smoke.json"
       - name: Full optimized workspace qualification on extended runs
         if: needs.policy.outputs.extended == 'true'
         run: cargo test --workspace --release --locked

@@ -299,16 +299,27 @@ pub struct EventHandler {
     entry: ControlIx,
     capacity: usize,
     overflow: OverflowPolicy,
+    mode: ReentrancyMode,
+    max_parallel: usize,
 }
 impl EventHandler {
     pub fn entry(&self) -> ControlIx {
         self.entry
     }
+    /// Effective pending capacity; Replace retains one latest envelope.
     pub fn capacity(&self) -> usize {
         self.capacity
     }
     pub fn overflow(&self) -> OverflowPolicy {
         self.overflow
+    }
+    /// Checked entry reentrancy policy.
+    pub fn mode(&self) -> ReentrancyMode {
+        self.mode
+    }
+    /// Maximum simultaneously owned handler roots; one except for Parallel.
+    pub fn max_parallel(&self) -> usize {
+        self.max_parallel
     }
 }
 impl ControlNode {
@@ -823,10 +834,14 @@ fn prepare_events(
                 .activation
                 .as_ref()
                 .ok_or(CompileError::ValidationIncomplete)?;
-            if policy.mode != ReentrancyMode::Queue
-                || policy.capacity == 0
-                || policy.overflow == OverflowPolicy::Backpressure
-            {
+            let max_parallel = match (policy.mode, policy.max_parallel) {
+                (ReentrancyMode::Queue | ReentrancyMode::Drop | ReentrancyMode::Replace, None) => 1,
+                (ReentrancyMode::Parallel, Some(max)) if max > 0 => {
+                    usize::try_from(max).map_err(|_| CompileError::ResourceLimit)?
+                }
+                _ => return Err(CompileError::UnsupportedNode { node: node_id }),
+            };
+            if policy.capacity == 0 || policy.overflow == OverflowPolicy::Backpressure {
                 return Err(CompileError::UnsupportedNode { node: node_id });
             }
             charge(graph_items, 1, cx.options.limits.max_graph_items)?;
@@ -834,9 +849,14 @@ fn prepare_events(
                 entry: *control_ix
                     .get(&(scope, node_id))
                     .ok_or(CompileError::ValidationIncomplete)?,
-                capacity: usize::try_from(policy.capacity)
-                    .map_err(|_| CompileError::ResourceLimit)?,
+                capacity: if policy.mode == ReentrancyMode::Replace {
+                    1
+                } else {
+                    usize::try_from(policy.capacity).map_err(|_| CompileError::ResourceLimit)?
+                },
                 overflow: policy.overflow,
+                mode: policy.mode,
+                max_parallel,
             };
             referenced
                 .entry(event_id)

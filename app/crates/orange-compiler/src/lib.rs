@@ -6,7 +6,8 @@
 //! documented entries, Get/Set, branches, Sequence, Count/While/ForEach, Fork, scalar
 //! Switch, Match-result, Gate/DoOnce/FlipFlop/Register, Core variable updates, virtual
 //! Wait/Yield and graph-local Action/Async calls. Run-scoped OnEvent/Emit support FIFO
-//! Queue handlers with bounded lossy/fault overflow. Other event families/reentrancy,
+//! Queue, busy Drop, serial latest-only Replace and bounded Parallel handlers. Replace
+//! waits for owned cleanup before starting a new root. Other event families,
 //! package-provided bodies, clock readers and host services remain unsupported.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").

@@ -1247,6 +1247,13 @@ impl Run {
                 }
                 Transfer::None => self.retire_strand(activation)?,
             }
+            // Emit may request replacement of this very activation. Its strand and frame
+            // are owned by the actor again only after the transfer/requeue above, so the
+            // targeted walk can now find every ready/timed descendant before another node
+            // or newly eligible handler executes.
+            if let Err(error) = self.cancel_replaced_roots() {
+                return self.fail(error);
+            }
             remaining = remaining.saturating_sub(self.regions.take_work());
         }
         if self.state == RunState::Faulted {

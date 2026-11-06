@@ -3179,3 +3179,82 @@ MSRV remains 1.97.1; native Linux/macOS and MSRV checks were not run locally.
   One current map entry per controlled definition is retained; no per-run callback or
   graph traversal is added. No timing/RSS/NFR qualification or full-core completion is
   claimed. The earlier dated default-resurrection limitation is superseded by P01.
+
+### C01 — bounded Drop/Parallel events and local-only benchmarks — 2026-11-06
+
+Base dev `ab27fa1` (P01 integrated); Rust/Cargo 1.99.1, Windows x64 MSVC,
+edition 2024, default workspace features, unchanged lock SHA256
+`8BB91CAAFF5A7106E5752D49D9AB285D4566A1B69B55AD1CA81E10E1D70BB068`.
+MSRV remains 1.97.1; native/MSRV CI is required before integration.
+
+- Checked event metadata now admits Queue, Drop and positive-cap Parallel. Drop is
+  busy with pending or active work, deliberately drops without an overflow count,
+  and still validates payload and causal depth. Parallel retains deterministic eligible
+  head ordering and pending-only queue capacity. Active root identity/payload ownership
+  lasts through all descendants and cancellation cleanup. Replace remains unsupported.
+- Twelve new real-graph acceptance tests cover pending/active Drop and reacceptance,
+  bounded parallel payload/local isolation, queue overflow, all-handler admission
+  atomicity, exact/one-over live and aggregate budgets, global activation pressure,
+  graceful/immediate/fault stop, disposal and Fork-race cleanup before the next entry.
+  Focused event suite: 34 passed. Separate production review found no actionable defect;
+  supplementary agent review does not constitute an independent human approval.
+- User-selected CI policy removes `.github/workflows/performance.yml` and the shared
+  twelve-workload timing runner. Release CD inherits that removal. Native/MSRV,
+  dependency/workflow security, examples and deterministic resource-bound correctness
+  tests remain. Local named-machine benchmarking tools and historical evidence remain;
+  no hosted timing comparison or new performance qualification is claimed.
+- PASS: full workspace debug and full workspace release each **1,228 passed, zero
+  failed, 15 opt-in measurements ignored**; fmt, all-target/all-feature Clippy with
+  warnings denied, warnings-denied rustdoc, 15 repository helper tests, dependency
+  policy and whitespace. Cargo used locked/offline dependencies, CARGO_INCREMENTAL=0
+  and debug line-table symbols. No new dependency, saved graph, provider identity,
+  message key, host service or execution-domain boundary. Logs remain ignored locally.
+- Contracts/trace updated in README and 01/03/06/08/11/12/14/18. This completes the
+  supported Drop/Parallel increment only; Replace, general ingress/replay/reactivity,
+  resources/services, concrete adapters and product NFR qualification remain open.
+
+### C02 — cleanup-serial Replace events — 2026-11-06
+
+Extends C01 commit `6b9ae15700f86f40a98ea50c7c043442c0e6d410` in the same
+PR, based on dev `ab27fa1`. Rust/Cargo **1.99.1**, Windows x64 MSVC,
+edition 2024, default workspace test features; MSRV remains 1.97.1. No dependency
+or lockfile change: SHA256
+`8BB91CAAFF5A7106E5752D49D9AB285D4566A1B69B55AD1CA81E10E1D70BB068`.
+
+- Replace now retains one latest pending envelope and cancels its old owned root
+  once, after the emitting strand/frame are restored. Active payloads, descendants
+  and retained function frames survive through existing bounded cleanup. Complete
+  fanout admission precedes cancellation intent; rejected replacements do not cancel
+  the old root or partially mutate another handler. This supersedes C01's historical
+  Replace limitation, without extending ingress sources or replay/reactivity.
+- Eleven new real-graph regressions cover latest-only behavior for both saved
+  capacities and all four supported overflow selectors; cleanup ownership and
+  repeated updates without re-cancellation; zero cleanup fuel/deadline; exact and
+  one-byte-under old-plus-new live payload admission; later-target Fault atomicity
+  with active and pending earlier targets; graceful/immediate/fault stop and disposal;
+  root, terminal, Fork-child and called-function self-emission. The function cleanup
+  reads its original local frame before the latest root starts; cancelled emitter and
+  caller continuations remain unexecuted. An older rejection test now asserts the
+  admitted Replace metadata instead. Focused event suite: **45 passed**.
+- Final-source PASS commands: `cargo fmt --all --check`;
+  `cargo test -p orange-bundled --test integration --locked --offline run_events::`;
+  `cargo test --workspace --locked --offline` and the same with `--release`;
+  `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings`;
+  `cargo doc --workspace --no-deps --all-features --locked --offline` with
+  `RUSTDOCFLAGS=-D warnings`. Debug and release each report **1,239 passed,
+  zero failed, 15 opt-in measurements ignored**. Tests use `CARGO_INCREMENTAL=0`
+  and `CARGO_PROFILE_TEST_DEBUG=line-tables-only`. Repository helpers pass 15 tests;
+  Cargo metadata policy and its 19 fixtures pass; release configuration check confirms
+  publication remains disabled; whitespace passes. No hosted or local timing probe ran.
+- Separate production review and final maintainer self-review found no actionable
+  defect; agent review is supplementary evidence, not independent human approval.
+  The initial broader run exposed only the obsolete Replace-rejection expectation;
+  the final full runs above passed after its correction. Source/build-input receipt
+  includes all new test files: 326 files, SHA256
+  `702b97282c362221536c08e20c35afc6f2197fe483efe31fe7db714ac44c3d58`;
+  documentation and ignored output are excluded. Raw logs/receipt remain ignored.
+- README and contracts/trace 01/03/08/11/12 are updated together. C01's removal of
+  hosted CI/CD timing runs remains in place; deterministic correctness checks remain.
+  Required current-head native/MSRV/workflow CI still precedes integration. These
+  cooperative semantics establish neither physical cancellation latency nor complete
+  FR-48, runtime, adapter, UI, release or NFR qualification.
