@@ -327,6 +327,74 @@ fn record_event_payloads_nest_through_containers_and_enums() {
     }
 }
 
+fn cas(n: u32, ty: &str, expected: Json, value: Json) -> Json {
+    let mut node = var_node(n, "update-variable", 100);
+    node["config"]["operation"] = json!("compare-and-set");
+    node["inputs"] = json!({
+        "expected": {"type": ty, "value": expected},
+        "value": {"type": ty, "value": value}
+    });
+    node
+}
+
+/// Compare-and-set on a derived-`eq` record compares field presence, then fields by
+/// language equality: a map field in another insertion order is equal; a missing
+/// optional field never equals a present one.
+#[test]
+fn record_compare_and_set_applies_derived_field_equality() {
+    let (package, snapshot) = catalog();
+    let walk = |meta: Json| json!({"points": [{"x": "1"}], "meta": meta});
+    for (ty, init, expected, value, exchanged, stored_after) in [
+        (
+            PATH,
+            walk(json!([["a", "1"], ["b", "2"]])),
+            walk(json!([["b", "2"], ["a", "1"]])),
+            walk(json!([])),
+            true,
+            path(vec![point(1, None)], vec![]),
+        ),
+        (
+            PATH,
+            walk(json!([["a", "1"]])),
+            walk(json!([["a", "2"]])),
+            walk(json!([])),
+            false,
+            path(vec![point(1, None)], vec![("a", 1)]),
+        ),
+        (
+            POINT,
+            json!({"x": "1"}),
+            json!({"x": "1", "label": ""}),
+            json!({"x": "2"}),
+            false,
+            point(1, None),
+        ),
+    ] {
+        let doc = document(
+            &package,
+            vec![
+                core(1, "on-start"),
+                cas(2, ty, expected, value),
+                var_node(3, "set-variable", 101),
+            ],
+            vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "then", 3, "in"),
+                edge(3, 2, "exchanged", 3, "value"),
+            ],
+            vec![
+                variable(100, ty, Some(init)),
+                variable(101, "core/bool@1", None),
+            ],
+            vec![],
+            vec![],
+        );
+        let run = run_to_idle(&doc, compile(&doc, &package, &snapshot).unwrap());
+        assert_eq!(stored(&run, 101), Some(&Value::Bool(exchanged)), "{ty}");
+        assert_eq!(stored(&run, 100), Some(&stored_after), "{ty}");
+    }
+}
+
 /// A literal that does not match its schema never reaches lowering; a recursive record
 /// is valid metadata but has no executable shape, so lowering refuses it.
 #[test]

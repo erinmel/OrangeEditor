@@ -135,7 +135,7 @@ pub(super) fn resolve(
         {
             UpdateOperation::Append
         }
-        "compare-and-set" if ty.native_eq() => UpdateOperation::CompareAndSet,
+        "compare-and-set" if ty.host_eq() => UpdateOperation::CompareAndSet,
         _ => return Err(unsupported()),
     })
 }

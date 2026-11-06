@@ -310,26 +310,21 @@ fn value_work(old_charge: usize, new_charge: usize) -> usize {
         .saturating_add(values(new_charge).saturating_sub(1))
 }
 
-/// Core equality of two values already checked against `ty`: compare-and-set is
-/// compiled only for native-eq shapes, every variable store is checked against
-/// the variable type, and `expected` was checked against its slot type (the
-/// port type) when the data plan published it. Structural equality implies Core
-/// equality, and the two differ only inside maps, whose Core equality ignores
-/// insertion order; only that case falls back to the model's checked comparison.
+/// Language equality of two values already checked against `ty`: compare-and-set
+/// is compiled only for `host_eq` shapes (native Core equality and derived record
+/// and enum `eq`), every variable store is checked against the variable type, and
+/// `expected` was checked against its slot type (the port type) when the data plan
+/// published it. Structural identity implies equality, and the two differ only
+/// where a map occurs, also inside records and enum payloads, because map equality
+/// ignores insertion order; only then does a mismatch fall back to the model's
+/// checked comparison.
 fn equal_checked(ty: &ValueShape, old: &Value, expected: &Value) -> Option<bool> {
-    fn has_map(ty: &ValueShape) -> bool {
-        match ty {
-            ValueShape::Map(..) => true,
-            ValueShape::Option(inner) | ValueShape::List(inner) => has_map(inner),
-            _ => false,
-        }
-    }
     if old == expected {
         Some(true)
-    } else if has_map(ty) {
-        ty.equal_values(old, expected)
-    } else {
+    } else if ty.structural_eq() {
         Some(false)
+    } else {
+        ty.equal_values(old, expected)
     }
 }
 fn internal() -> KernelFault {
@@ -515,5 +510,97 @@ mod tests {
         assert!(!cas(&shape, a.clone(), map(&[(2, 20), (1, 11)])).1);
         let maps = ValueShape::List(Box::new(shape));
         assert!(cas(&maps, list(vec![a]), list(vec![b])).1);
+    }
+
+    /// Derived record and enum `eq` compares tags, field presence and members by
+    /// language equality, so maps inside payloads and fields ignore insertion order.
+    #[test]
+    fn compare_and_set_applies_derived_enum_and_record_equality() {
+        use orange_model::type_term::{NamedTerm, TypeTerm};
+        use orange_model::value::RecordRepr;
+        use orange_model::value::literal_codec::{
+            EnumSchema, FieldSchema, RecordSchema, SchemaSet, Schemas, VariantSchema,
+        };
+        struct Derived(SchemaSet);
+        impl Schemas for Derived {
+            fn record(&self, ty: &NamedTerm) -> Option<&RecordSchema> {
+                self.0.record(ty)
+            }
+            fn enumeration(&self, ty: &NamedTerm) -> Option<&EnumSchema> {
+                self.0.enumeration(ty)
+            }
+            fn derives_eq(&self, _: &NamedTerm) -> bool {
+                true
+            }
+        }
+        let term = |ty: &str| TypeTerm::parse(&ty.parse().unwrap()).unwrap();
+        let ints = "core/map@1<core/i64@1,core/i64@1>";
+        let schemas = Derived(
+            SchemaSet::default()
+                .with_enum(
+                    "org.example/bag@1",
+                    EnumSchema {
+                        variants: vec![
+                            VariantSchema {
+                                variant_id: "empty".into(),
+                                payload: None,
+                            },
+                            VariantSchema {
+                                variant_id: "items".into(),
+                                payload: Some(term(ints)),
+                            },
+                        ],
+                    },
+                )
+                .with_record(
+                    "org.example/box@1",
+                    RecordSchema {
+                        fields: vec![
+                            FieldSchema {
+                                field_id: "items".into(),
+                                ty: term(ints),
+                                optional: false,
+                            },
+                            FieldSchema {
+                                field_id: "tag".into(),
+                                ty: term("core/i64@1"),
+                                optional: true,
+                            },
+                        ],
+                    },
+                ),
+        );
+        let of = |ty: &str| ValueShape::of_in(&ty.parse().unwrap(), &schemas).unwrap();
+        let bag = of("org.example/bag@1");
+        let items = |m| Value::Enum {
+            tag: 1,
+            payload: Some(Arc::new(m)),
+        };
+        let empty = Value::Enum {
+            tag: 0,
+            payload: None,
+        };
+        let (a, b) = (map(&[(1, 10), (2, 20)]), map(&[(2, 20), (1, 10)]));
+        assert!(cas(&bag, items(a.clone()), items(b.clone())).1);
+        assert!(!cas(&bag, items(a.clone()), items(map(&[(1, 10)]))).1);
+        assert!(!cas(&bag, items(map(&[])), empty.clone()).1);
+        assert!(cas(&bag, empty.clone(), empty).1);
+        let boxed = of("org.example/box@1");
+        let record = |m, tag: Option<i64>| {
+            Value::Record(Arc::new(RecordRepr {
+                ty: "org.example/box@1".parse().unwrap(),
+                fields: Box::new([Some(m), tag.map(Value::I64)]),
+            }))
+        };
+        assert!(
+            cas(
+                &boxed,
+                record(a.clone(), Some(1)),
+                record(b.clone(), Some(1))
+            )
+            .1
+        );
+        assert!(!cas(&boxed, record(a.clone(), None), record(b, Some(1))).1);
+        assert!(!cas(&boxed, record(a.clone(), Some(1)), record(a, Some(2))).1);
     }
 }

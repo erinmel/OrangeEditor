@@ -56,6 +56,10 @@ pub struct RecordShape {
     fields: Box<[FieldShape]>,
     /// `eq` and `hash` are structural derives and every field is a map key itself.
     key: bool,
+    /// `eq` is a structural derive over members the host compares itself.
+    eq: bool,
+    /// Structural `Value` identity is this type's equality: no member holds a map.
+    structural: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -105,6 +109,11 @@ impl RecordShape {
     pub fn derives_key(&self) -> bool {
         self.key
     }
+
+    /// Whether the host executes this type's `eq` itself ([`ValueShape::host_eq`]).
+    pub fn derives_eq(&self) -> bool {
+        self.eq
+    }
 }
 
 /// A package enum's identity, variant IDs and payload shapes in schema (tag) order.
@@ -116,6 +125,10 @@ pub struct EnumShape {
     variants: Box<[(String, Option<ValueShape>)]>,
     /// `eq` and `hash` are structural derives and every payload is a map key itself.
     key: bool,
+    /// `eq` is a structural derive over members the host compares itself.
+    eq: bool,
+    /// Structural `Value` identity is this type's equality: no member holds a map.
+    structural: bool,
 }
 
 impl EnumShape {
@@ -157,6 +170,11 @@ impl EnumShape {
     /// that are map keys themselves ([`ValueShape::map_key`]).
     pub fn derives_key(&self) -> bool {
         self.key
+    }
+
+    /// Whether the host executes this type's `eq` itself ([`ValueShape::host_eq`]).
+    pub fn derives_eq(&self) -> bool {
+        self.eq
     }
 }
 
@@ -395,10 +413,14 @@ impl ValueShape {
         }
         let mut height = 1;
         let mut key = nominal.schemas.derives_key(named);
+        let mut eq = nominal.schemas.derives_eq(named);
+        let mut structural = true;
         let mut member = |term: &TypeTerm, nominal: &mut Nominal<'_>| {
             let (shape, h) = Self::resolve_at(term, depth + 1, Some(nominal))?;
             height = height.max(h + 1);
             key &= shape.map_key();
+            eq &= shape.host_eq();
+            structural &= shape.structural_eq();
             Some(shape)
         };
         let ty = TypeTerm::Named(named.clone()).to_type_expr();
@@ -415,6 +437,8 @@ impl ValueShape {
                 ty,
                 fields: fields.into(),
                 key,
+                eq,
+                structural,
             }))
         } else {
             let schema = nominal.schemas.enumeration(named)?;
@@ -430,6 +454,8 @@ impl ValueShape {
                 ty,
                 variants: variants.into(),
                 key,
+                eq,
+                structural,
             }))
         };
         nominal.active.remove(named);
@@ -483,6 +509,41 @@ impl ValueShape {
             Self::Option(inner) | Self::List(inner) => inner.native_eq_at(depth + 1),
             Self::Map(key, value) => key.native_hash() && value.native_eq_at(depth + 1),
             _ => false,
+        }
+    }
+
+    /// Whether the host executes this type's language `eq` itself (11 §5.4) at every
+    /// level: native Core equality, maps keyed by [`ValueShape::map_key`]s, and package
+    /// records and enums whose `eq` is a declared structural derive over such members.
+    /// A package-implemented `eq` anywhere inside needs package code, so it is excluded.
+    pub fn host_eq(&self) -> bool {
+        self.host_eq_at(0)
+    }
+
+    fn host_eq_at(&self, depth: usize) -> bool {
+        if depth > MAX_NESTING {
+            return false;
+        }
+        match self {
+            // Members were checked when the nominal shape was resolved.
+            Self::Enum(shape) => shape.eq,
+            Self::Record(shape) => shape.eq,
+            Self::Option(inner) | Self::List(inner) => inner.host_eq_at(depth + 1),
+            Self::Map(key, value) => key.map_key() && value.host_eq_at(depth + 1),
+            _ => self.native_eq_at(depth),
+        }
+    }
+
+    /// Whether structural `Value` identity is exactly this type's [`ValueShape::host_eq`]
+    /// equality, so unequal identities are unequal values. Only maps differ: their
+    /// equality ignores insertion order (§5.2), also inside records and enum payloads.
+    pub fn structural_eq(&self) -> bool {
+        match self {
+            Self::Map(..) => false,
+            Self::Option(inner) | Self::List(inner) => inner.structural_eq(),
+            Self::Enum(shape) => shape.structural,
+            Self::Record(shape) => shape.structural,
+            _ => true,
         }
     }
 
@@ -661,9 +722,12 @@ impl ValueShape {
         }
     }
 
-    /// Checked Core equality. Map equality ignores insertion order; iteration does not.
+    /// Checked language equality of a [`ValueShape::host_eq`] type, None for any other
+    /// type or a value that does not check. Map equality ignores insertion order;
+    /// iteration does not. Derived record and enum equality compares tags, then payloads,
+    /// or field presence, then fields, under the same rules (11 §5.4).
     pub fn equal_values(&self, a: &Value, b: &Value) -> Option<bool> {
-        if !self.native_eq() || !self.accepts(a) || !self.accepts(b) {
+        if !self.host_eq() || !self.accepts(a) || !self.accepts(b) {
             return None;
         }
         Some(self.equal(a, b))
@@ -716,6 +780,43 @@ impl ValueShape {
                 a.iter()
                     .all(|(k, v)| find(k).is_some_and(|other| inner.equal(v, other)))
             }
+            Self::Enum(shape) if !shape.structural => {
+                let (
+                    Value::Enum {
+                        tag: ta,
+                        payload: pa,
+                    },
+                    Value::Enum {
+                        tag: tb,
+                        payload: pb,
+                    },
+                ) = (a, b)
+                else {
+                    return false;
+                };
+                ta == tb
+                    && match (shape.payload(*ta).flatten(), pa, pb) {
+                        (Some(inner), Some(a), Some(b)) => inner.equal(a, b),
+                        (None, None, None) => true,
+                        _ => false,
+                    }
+            }
+            Self::Record(shape) if !shape.structural => {
+                let (Value::Record(a), Value::Record(b)) = (a, b) else {
+                    return false;
+                };
+                Arc::ptr_eq(a, b)
+                    || a.fields
+                        .iter()
+                        .zip(b.fields.iter())
+                        .zip(shape.fields.iter())
+                        .all(|((a, b), field)| match (a, b) {
+                            (Some(a), Some(b)) => field.shape.equal(a, b),
+                            (None, None) => true,
+                            _ => false,
+                        })
+            }
+            // Structural identity is the language equality here (`structural_eq`).
             _ => a == b,
         }
     }
@@ -971,6 +1072,143 @@ mod tests {
         let wrap = |n| format!("{}{point}{}", "core/list@1<".repeat(n), ">".repeat(n));
         assert!(of(&wrap(MAX_NESTING - 1)).is_some());
         assert!(of(&wrap(MAX_NESTING)).is_none());
+    }
+
+    /// Derived record and enum `eq` is host equality only when every member's is too;
+    /// it compares tags or field presence, then members, with maps ignoring order.
+    #[test]
+    fn derived_eq_records_and_enums_compare_members_by_language_equality() {
+        use crate::value::literal_codec::{
+            EnumSchema, FieldSchema, RecordSchema, SchemaSet, VariantSchema,
+        };
+        use crate::value::{MapRepr, RecordRepr};
+        struct Derived(SchemaSet, &'static [&'static str]);
+        impl Schemas for Derived {
+            fn record(&self, ty: &NamedTerm) -> Option<&RecordSchema> {
+                self.0.record(ty)
+            }
+            fn enumeration(&self, ty: &NamedTerm) -> Option<&EnumSchema> {
+                self.0.enumeration(ty)
+            }
+            fn derives_eq(&self, ty: &NamedTerm) -> bool {
+                self.1.contains(&ty.name.as_str())
+            }
+        }
+        let term = |text: &str| TypeTerm::parse(&text.parse().unwrap()).unwrap();
+        let variant = |id: &str, payload: Option<&str>| VariantSchema {
+            variant_id: id.into(),
+            payload: payload.map(term),
+        };
+        let ints = "core/map@1<core/string@1,core/i64@1>";
+        let set = SchemaSet::default()
+            .with_enum(
+                "org.example/bag@1",
+                EnumSchema {
+                    variants: vec![variant("empty", None), variant("items", Some(ints))],
+                },
+            )
+            .with_enum(
+                "org.example/flat@1",
+                EnumSchema {
+                    variants: vec![variant("n", Some("core/list@1<core/i64@1>"))],
+                },
+            )
+            .with_enum(
+                "org.example/floaty@1",
+                EnumSchema {
+                    variants: vec![variant("x", Some("core/f64@1"))],
+                },
+            )
+            .with_record(
+                "org.example/holder@1",
+                RecordSchema {
+                    fields: vec![
+                        FieldSchema {
+                            field_id: "bag".into(),
+                            ty: term("org.example/bag@1"),
+                            optional: false,
+                        },
+                        FieldSchema {
+                            field_id: "note".into(),
+                            ty: term("core/string@1"),
+                            optional: true,
+                        },
+                    ],
+                },
+            );
+        let all = Derived(set.clone(), &["bag", "flat", "floaty", "holder"]);
+        let of = |schemas: &Derived, text: &str| {
+            ValueShape::of_in(&text.parse().unwrap(), schemas).unwrap()
+        };
+        let bag = of(&all, "org.example/bag@1");
+        let holder = of(&all, "org.example/holder@1");
+        let flat = of(&all, "org.example/flat@1");
+        assert!(bag.host_eq() && holder.host_eq() && flat.host_eq());
+        assert!(!bag.native_eq() && !holder.native_eq());
+        // Only a map anywhere inside makes identity differ from equality.
+        assert!(!bag.structural_eq() && !holder.structural_eq() && flat.structural_eq());
+        // A float payload has no host equality, whatever the derive claims.
+        assert!(!of(&all, "org.example/floaty@1").host_eq());
+        // A derive on the outer type does not cover a member without one.
+        let outer_only = Derived(set.clone(), &["holder"]);
+        assert!(!of(&outer_only, "org.example/holder@1").host_eq());
+        assert!(!of(&Derived(set, &[]), "org.example/bag@1").host_eq());
+
+        let map = |entries: &[(&str, i64)]| {
+            Value::Map(Arc::new(
+                MapRepr::new(
+                    entries
+                        .iter()
+                        .map(|(k, v)| (Value::Str(Arc::new((*k).into())), Value::I64(*v)))
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            ))
+        };
+        let items = |m| Value::Enum {
+            tag: 1,
+            payload: Some(Arc::new(m)),
+        };
+        let empty = Value::Enum {
+            tag: 0,
+            payload: None,
+        };
+        let (ab, ba) = (map(&[("a", 1), ("b", 2)]), map(&[("b", 2), ("a", 1)]));
+        assert_ne!(items(ab.clone()), items(ba.clone()));
+        assert_eq!(
+            bag.equal_values(&items(ab.clone()), &items(ba.clone())),
+            Some(true)
+        );
+        assert_eq!(
+            bag.equal_values(&items(ab.clone()), &items(map(&[("a", 1)]))),
+            Some(false)
+        );
+        assert_eq!(bag.equal_values(&items(map(&[])), &empty), Some(false));
+        assert_eq!(bag.equal_values(&empty, &empty), Some(true));
+        // A value outside the shape is no comparison at all.
+        let unknown = Value::Enum {
+            tag: 2,
+            payload: None,
+        };
+        assert_eq!(bag.equal_values(&empty, &unknown), None);
+        let held = |b, note: Option<&str>| {
+            Value::Record(Arc::new(RecordRepr {
+                ty: "org.example/holder@1".parse().unwrap(),
+                fields: Box::new([Some(b), note.map(|n| Value::Str(Arc::new(n.into())))]),
+            }))
+        };
+        assert_eq!(
+            holder.equal_values(&held(items(ab.clone()), None), &held(items(ba), None)),
+            Some(true)
+        );
+        assert_eq!(
+            holder.equal_values(&held(empty.clone(), None), &held(empty.clone(), Some(""))),
+            Some(false)
+        );
+        assert_eq!(
+            holder.equal_values(&held(empty.clone(), Some("x")), &held(empty, Some("x"))),
+            Some(true)
+        );
     }
 
     /// A record keys maps when its `eq` and `hash` derive over key fields; optional

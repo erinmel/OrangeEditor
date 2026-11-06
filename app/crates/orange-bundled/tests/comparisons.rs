@@ -391,9 +391,8 @@ fn shapes_without_host_semantics_are_refused_at_binding() {
         (Comparison::NotEqual, WRAPPER),
         // No enum order is ever derived.
         (Comparison::Less, LIGHT),
-        // Records have a shape but no comparison kernel yet.
-        (Comparison::Equal, POINT),
-        (Comparison::Equal, SEGMENT),
+        // No record order is ever derived either.
+        (Comparison::Less, POINT),
         // Ord is scalar only.
         (Comparison::Less, "core/bytes@1"),
         (Comparison::Greater, "core/list@1<core/i64@1>"),
@@ -756,44 +755,44 @@ fn constraint_proofs_without_a_host_kernel_fail_compilation_with_a_typed_reason(
             "{ty}"
         );
     }
-    // A nested record satisfies derived eq and has a port shape, but no comparison kernel.
+}
+
+/// Records whose `eq` is a structural derive compare field by field, nested records
+/// included, at binding and through the pure compiler.
+#[test]
+fn derived_records_compare_by_fields() {
     let point = |x, y| {
         Value::Record(Arc::new(RecordRepr {
             ty: POINT.parse().unwrap(),
             fields: Box::new([Some(Value::I64(x)), Some(Value::I64(y))]),
         }))
     };
-    let segment = Value::Record(Arc::new(RecordRepr {
-        ty: SEGMENT.parse().unwrap(),
-        fields: Box::new([Some(point(0, 0)), Some(point(1, 2))]),
-    }));
-    let compare = Compare {
-        n: 1,
-        comparison: Comparison::Equal,
-        ty: SEGMENT,
-        a: Some(segment.clone()),
-        b: Some(segment),
+    let segment = |to| {
+        Value::Record(Arc::new(RecordRepr {
+            ty: SEGMENT.parse().unwrap(),
+            fields: Box::new([Some(point(0, 0)), Some(to)]),
+        }))
     };
-    let doc = graph(
-        &package,
-        &snapshot,
-        vec![],
-        &[compare],
-        vec![],
-        vec![export(1)],
+    assert_equality(POINT, point(1, 2), point(1, 2), true);
+    assert_equality(POINT, point(1, 2), point(2, 1), false);
+    assert_equality(SEGMENT, segment(point(1, 2)), segment(point(1, 2)), true);
+    assert_equality(SEGMENT, segment(point(1, 2)), segment(point(1, 3)), false);
+    let compare = |n, comparison, to| Compare {
+        n,
+        comparison,
+        ty: SEGMENT,
+        a: Some(segment(point(1, 2))),
+        b: Some(segment(to)),
+    };
+    let folded = compile_exports(&[
+        compare(1, Comparison::Equal, point(1, 2)),
+        compare(2, Comparison::NotEqual, point(1, 3)),
+    ])
+    .unwrap();
+    assert_eq!(
+        folded,
+        [true, true].map(|b| FoldedValue::Value(Value::Bool(b)))
     );
-    let analysis = analyze(&doc, &snapshot);
-    assert!(analysis.is_ready_for_lowering(&doc, &snapshot));
-    assert!(matches!(
-        compile_pure(
-            &doc,
-            snapshot,
-            &analysis,
-            &package,
-            CompileOptions::default()
-        ),
-        Err(CompileError::KernelUnsupportedType { .. })
-    ));
 }
 
 #[test]
