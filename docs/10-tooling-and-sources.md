@@ -3212,3 +3212,49 @@ MSRV remains 1.97.1; native/MSRV CI is required before integration.
 - Contracts/trace updated in README and 01/03/06/08/11/12/14/18. This completes the
   supported Drop/Parallel increment only; Replace, general ingress/replay/reactivity,
   resources/services, concrete adapters and product NFR qualification remain open.
+
+### C02 — cleanup-serial Replace events — 2026-11-06
+
+Extends C01 commit `6b9ae15700f86f40a98ea50c7c043442c0e6d410` in the same
+PR, based on dev `ab27fa1`. Rust/Cargo **1.99.1**, Windows x64 MSVC,
+edition 2024, default workspace test features; MSRV remains 1.97.1. No dependency
+or lockfile change: SHA256
+`8BB91CAAFF5A7106E5752D49D9AB285D4566A1B69B55AD1CA81E10E1D70BB068`.
+
+- Replace now retains one latest pending envelope and cancels its old owned root
+  once, after the emitting strand/frame are restored. Active payloads, descendants
+  and retained function frames survive through existing bounded cleanup. Complete
+  fanout admission precedes cancellation intent; rejected replacements do not cancel
+  the old root or partially mutate another handler. This supersedes C01's historical
+  Replace limitation, without extending ingress sources or replay/reactivity.
+- Eleven new real-graph regressions cover latest-only behavior for both saved
+  capacities and all four supported overflow selectors; cleanup ownership and
+  repeated updates without re-cancellation; zero cleanup fuel/deadline; exact and
+  one-byte-under old-plus-new live payload admission; later-target Fault atomicity
+  with active and pending earlier targets; graceful/immediate/fault stop and disposal;
+  root, terminal, Fork-child and called-function self-emission. The function cleanup
+  reads its original local frame before the latest root starts; cancelled emitter and
+  caller continuations remain unexecuted. An older rejection test now asserts the
+  admitted Replace metadata instead. Focused event suite: **45 passed**.
+- Final-source PASS commands: `cargo fmt --all --check`;
+  `cargo test -p orange-bundled --test integration --locked --offline run_events::`;
+  `cargo test --workspace --locked --offline` and the same with `--release`;
+  `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings`;
+  `cargo doc --workspace --no-deps --all-features --locked --offline` with
+  `RUSTDOCFLAGS=-D warnings`. Debug and release each report **1,239 passed,
+  zero failed, 15 opt-in measurements ignored**. Tests use `CARGO_INCREMENTAL=0`
+  and `CARGO_PROFILE_TEST_DEBUG=line-tables-only`. Repository helpers pass 15 tests;
+  Cargo metadata policy and its 19 fixtures pass; release configuration check confirms
+  publication remains disabled; whitespace passes. No hosted or local timing probe ran.
+- Separate production review and final maintainer self-review found no actionable
+  defect; agent review is supplementary evidence, not independent human approval.
+  The initial broader run exposed only the obsolete Replace-rejection expectation;
+  the final full runs above passed after its correction. Source/build-input receipt
+  includes all new test files: 326 files, SHA256
+  `702b97282c362221536c08e20c35afc6f2197fe483efe31fe7db714ac44c3d58`;
+  documentation and ignored output are excluded. Raw logs/receipt remain ignored.
+- README and contracts/trace 01/03/08/11/12 are updated together. C01's removal of
+  hosted CI/CD timing runs remains in place; deterministic correctness checks remain.
+  Required current-head native/MSRV/workflow CI still precedes integration. These
+  cooperative semantics establish neither physical cancellation latency nor complete
+  FR-48, runtime, adapter, UI, release or NFR qualification.

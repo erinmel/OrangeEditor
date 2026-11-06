@@ -25,7 +25,7 @@ const DEPTH: KernelFault = KernelFault {
 pub struct RunEventStats {
     pub accepted: u64,
     pub delivered: u64,
-    /// Evicted or deliberately skipped deliveries, including a busy Drop handler.
+    /// Evicted or deliberately skipped deliveries, including busy Drop and replaced latest.
     pub dropped: u64,
     /// Capacity overflow outcomes and limit refusals; a busy Drop is not an overflow.
     pub overflows: u64,
@@ -59,8 +59,11 @@ struct Handler {
     pending: VecDeque<Envelope>,
     /// Root identities remain owned through descendant/cleanup retirement. The existing
     /// singleton set keeps serial handlers allocation-free and can identify a Replace
-    /// target when that separate cancellation policy is implemented.
+    /// target without scanning unrelated activations.
     active_roots: IdSet<u64>,
+    /// A Replace request cancels its old root once. Further admitted latest envelopes
+    /// must not cancel that root's cleanup again before full retirement.
+    cancel_requested: Option<u64>,
 }
 impl Handler {
     fn has_slot(&self) -> bool {
@@ -69,6 +72,15 @@ impl Handler {
     fn drops_busy(&self) -> bool {
         self.mode == ReentrancyMode::Drop
             && (!self.pending.is_empty() || !self.active_roots.is_empty())
+    }
+    fn replacement_target(&self) -> Option<u64> {
+        if self.mode != ReentrancyMode::Replace {
+            return None;
+        }
+        self.active_roots
+            .iter()
+            .next()
+            .filter(|root| self.cancel_requested != Some(*root))
     }
 }
 pub(super) struct ActivationTemplate {
@@ -86,6 +98,9 @@ pub(super) struct Events {
     ready: BTreeSet<(u64, usize)>,
     /// Reservation ownership is independent of a temporarily checked-out frame.
     active: BTreeMap<u64, (usize, usize)>,
+    /// Successful Replace admissions, in emission/handler order. Each root is queued
+    /// once until retirement, so this is bounded by active roots, not emission history.
+    cancel_pending: VecDeque<u64>,
     by_event: Vec<Vec<usize>>,
     source_sequences: Vec<u64>,
     ingestion: u64,
@@ -115,6 +130,7 @@ impl Events {
                             max_parallel: handler.max_parallel(),
                             pending: VecDeque::new(),
                             active_roots: IdSet::default(),
+                            cancel_requested: None,
                         });
                         index
                     })
@@ -125,6 +141,7 @@ impl Events {
             handlers,
             ready: BTreeSet::new(),
             active: BTreeMap::new(),
+            cancel_pending: VecDeque::new(),
             by_event,
             source_sequences: if plan.events().is_empty() {
                 Vec::new()
@@ -157,6 +174,9 @@ impl Events {
             if !self.handlers[handler].active_roots.remove(&activation) {
                 return Err(RunError::InvalidState);
             }
+            if self.handlers[handler].cancel_requested == Some(activation) {
+                self.handlers[handler].cancel_requested = None;
+            }
             self.stats.live_payload_bytes = self
                 .stats
                 .live_payload_bytes
@@ -178,6 +198,9 @@ impl Events {
         self.stats.pending = 0;
         self.stats.pending_bytes = 0;
         self.ready.clear();
+        // Whole-run cancellation will visit every root itself. Do not cancel cleanup
+        // a second time by replaying a targeted Replace request afterward.
+        self.cancel_pending.clear();
         for handler in &mut self.handlers {
             handler.pending.clear();
         }
@@ -188,6 +211,7 @@ impl Events {
         self.stats.live_payload_bytes = 0;
         for handler in &mut self.handlers {
             handler.active_roots.clear();
+            handler.cancel_requested = None;
         }
     }
     pub fn release(&mut self, high_water: usize) {
@@ -197,6 +221,7 @@ impl Events {
         self.ready = BTreeSet::new();
         self.by_event = Vec::new();
         self.source_sequences = Vec::new();
+        self.cancel_pending = VecDeque::new();
         self.live_stop_frames = 0;
     }
 }
@@ -206,6 +231,7 @@ struct Disposition {
     skip: bool,
     overflow: bool,
     charge: usize,
+    cancel: Option<u64>,
 }
 impl Run {
     pub fn event_stats(&self) -> RunEventStats {
@@ -295,8 +321,13 @@ impl Run {
             // A busy Drop target is a deliberate policy loss, not a capacity overflow.
             // Type/causal checks above still apply, but no payload is retained for it.
             let drops_busy = queue.drops_busy();
-            let overflow = !drops_busy && queue.pending.len() >= queue.capacity;
-            let (remove, skip) = if drops_busy {
+            let replaces = queue.mode == ReentrancyMode::Replace;
+            let overflow = !replaces && !drops_busy && queue.pending.len() >= queue.capacity;
+            let (remove, skip) = if replaces {
+                // Replace always retains only the latest pending envelope. Its intrinsic
+                // coalescing supersedes the configured capacity overflow selector.
+                (queue.pending.len(), false)
+            } else if drops_busy {
                 (0, true)
             } else if overflow {
                 match queue.overflow {
@@ -345,6 +376,7 @@ impl Run {
                 skip,
                 overflow,
                 charge: delivery_charge,
+                cancel: queue.replacement_target(),
             });
         }
         if pending > self.options.limits.max_pending_events
@@ -392,6 +424,10 @@ impl Run {
                 });
                 self.events.stats.accepted = self.events.stats.accepted.saturating_add(1);
             }
+            if let Some(root) = change.cancel {
+                queue.cancel_requested = Some(root);
+                self.events.cancel_pending.push_back(root);
+            }
             self.events.make_ready(change.handler);
         }
         self.events.stats.pending = pending;
@@ -401,6 +437,25 @@ impl Run {
         self.events.source_sequences[owner.index()] = source_seq;
         self.events.last = Some(origin);
         self.regions.charge(self.events.by_event[event].len());
+        Ok(())
+    }
+    /// Apply Replace only at an actor-owned boundary: the emitting strand and its shared
+    /// frame must already be restored, even when it targets its own root from a function
+    /// or Fork child. Cancellation schedules existing bounded cleanup; it runs no nodes.
+    pub(super) fn cancel_replaced_roots(&mut self) -> Result<(), RunError> {
+        if !matches!(self.state, RunState::Running | RunState::Draining) {
+            self.events.cancel_pending.clear();
+            return Ok(());
+        }
+        while let Some(activation) = self.events.cancel_pending.pop_front() {
+            let root = RegionId::root(activation);
+            // A terminal self-Emit can naturally retire its old root during restoration.
+            // Identities never reuse, so such a request cannot target its replacement.
+            if self.regions.contains(root) {
+                self.cancel_region(root)?;
+                self.complete_regions(root)?;
+            }
+        }
         Ok(())
     }
     pub(super) fn dispatch_event(&mut self, plan: &ControlPlan) -> Result<bool, RunError> {

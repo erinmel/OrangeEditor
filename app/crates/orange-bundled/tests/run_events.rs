@@ -546,16 +546,18 @@ fn event_admission_rejects_unsupported_scopes_reentrancy_and_payload_types() {
     let event = |scope: &str, payload: &str| json!({"id":EVENT,"name":"pulse","payload":payload,"scope":scope});
     let mut replacement = on_event(3, 0, 4, "drop-newest");
     replacement["activation"]["mode"] = json!("replace");
-    assert!(
-        compile_with_event(
-            vec![replacement],
-            vec![],
-            vec![],
-            event("run", "core/u64@1")
-        )
-        .is_err(),
-        "unsupported Replace reentrancy must not enter a plan"
+    let (_, replace_plan) = compile_with_event(
+        vec![replacement],
+        vec![],
+        vec![],
+        event("run", "core/u64@1"),
+    )
+    .expect("Replace is supported for run-scoped events");
+    assert_eq!(
+        replace_plan.events()[0].handlers()[0].mode(),
+        orange_model::document::ReentrancyMode::Replace
     );
+    assert_eq!(replace_plan.events()[0].handlers()[0].max_parallel(), 1);
     let mut backpressure = on_event(3, 0, 4, "backpressure");
     backpressure["activation"]["overflow"] = json!("backpressure");
     assert!(
@@ -1583,3 +1585,12 @@ mod budget_events;
 
 #[path = "support/event_modes.rs"]
 mod event_modes;
+
+#[path = "support/event_replace.rs"]
+mod event_replace;
+
+#[path = "support/event_replace_limits.rs"]
+mod event_replace_limits;
+
+#[path = "support/event_replace_owned.rs"]
+mod event_replace_owned;
