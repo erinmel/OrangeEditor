@@ -202,6 +202,20 @@ fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Opt
                     _ => None,
                 }
             }
+            // Mirrors the record check: type text, then one slot per field, present or
+            // not. Unknown fields are left to the codec, which refuses them.
+            ValueShape::Record(shape) => {
+                let object = value.as_object()?;
+                *remaining = remaining.checked_sub(shape.ty().as_str().len())?;
+                for index in 0..shape.len() {
+                    let (inner, _) = shape.field(index)?;
+                    match object.get(shape.field_id(index)?) {
+                        Some(field) => visit(field, inner, remaining)?,
+                        None => *remaining = remaining.checked_sub(VALUE_CHARGE)?,
+                    }
+                }
+                Some(())
+            }
             ValueShape::Option(inner) => {
                 let object = value.as_object().filter(|o| o.len() == 1)?;
                 if object.get("none") == Some(&serde_json::Value::Bool(true)) {

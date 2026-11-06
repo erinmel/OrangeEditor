@@ -43,6 +43,68 @@ pub enum ValueShape {
     Result(Box<ValueShape>),
     /// A nominal enum resolved from its registered schema ([`ValueShape::of_in`]).
     Enum(Arc<EnumShape>),
+    /// A nominal record resolved from its registered schema ([`ValueShape::of_in`]).
+    Record(Arc<RecordShape>),
+}
+
+/// A package record's identity and field shapes in schema order. Like [`EnumShape`],
+/// only schema resolution builds one, so its fields are within the nesting limit and
+/// never cyclic.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RecordShape {
+    ty: TypeExpr,
+    fields: Box<[FieldShape]>,
+    /// `eq` and `hash` are structural derives and every field is a map key itself.
+    key: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FieldShape {
+    id: String,
+    shape: ValueShape,
+    optional: bool,
+}
+
+impl RecordShape {
+    /// The canonical nominal type, which every value's [`RecordRepr::ty`] must equal.
+    ///
+    /// [`RecordRepr::ty`]: super::RecordRepr::ty
+    pub fn ty(&self) -> &TypeExpr {
+        &self.ty
+    }
+
+    /// Number of fields in the resolved schema.
+    pub fn len(&self) -> usize {
+        self.fields.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.fields.is_empty()
+    }
+
+    /// The compiled index of a stable field ID, as [`RecordRepr::fields`] stores it.
+    ///
+    /// [`RecordRepr::fields`]: super::RecordRepr::fields
+    pub fn index(&self, field_id: &str) -> Option<usize> {
+        self.fields.iter().position(|field| field.id == field_id)
+    }
+
+    /// The stable field ID at a compiled index.
+    pub fn field_id(&self, index: usize) -> Option<&str> {
+        Some(self.fields.get(index)?.id.as_str())
+    }
+
+    /// The shape of a field and whether it may be absent (missing, not None).
+    pub fn field(&self, index: usize) -> Option<(&ValueShape, bool)> {
+        let field = self.fields.get(index)?;
+        Some((&field.shape, field.optional))
+    }
+
+    /// Whether the record's `eq` and `hash` are declared structural derives over fields
+    /// that are map keys themselves ([`ValueShape::map_key`]).
+    pub fn derives_key(&self) -> bool {
+        self.key
+    }
 }
 
 /// A package enum's identity, variant IDs and payload shapes in schema (tag) order.
@@ -98,8 +160,8 @@ impl EnumShape {
     }
 }
 
-/// Schema-aware resolution state for one top-level type. Each nominal enum resolves
-/// once, keeping its height; any failure ends the whole resolution, so only successes
+/// Schema-aware resolution state for one top-level type. Each nominal record or enum
+/// resolves once, keeping its height; any failure ends the whole resolution, so only successes
 /// are memoized. A type reached again through its own payloads is refused: recursive
 /// schemas have no executable shape.
 struct Nominal<'a> {
@@ -127,8 +189,8 @@ const SHAPE_CODE_BITS: u32 = 55;
 impl MapCheck {
     /// Preorder tags of the key then the value shape. Every tag is non-zero and fixes its
     /// arity, so the code is injective: equal codes are equal shapes, never a hash
-    /// collision. The depth fills the top byte. Enums and shapes over eleven nodes have
-    /// no code and are simply not remembered.
+    /// collision. The depth fills the top byte. Nominal shapes and shapes over eleven
+    /// nodes have no code and are simply not remembered.
     fn code(key: &ValueShape, value: &ValueShape, depth: usize) -> Option<u64> {
         fn push(shape: &ValueShape, code: &mut u64, used: &mut u32) -> Option<()> {
             use ValueShape as S;
@@ -150,7 +212,7 @@ impl MapCheck {
                 S::Option(inner) => (15, [Some(inner), None]),
                 S::Result(inner) => (16, [Some(inner), None]),
                 S::Map(k, v) => (17, [Some(k), Some(v)]),
-                S::Enum(_) => return None,
+                S::Enum(_) | S::Record(_) => return None,
             };
             if *used + SHAPE_TAG_BITS > SHAPE_CODE_BITS {
                 return None;
@@ -250,8 +312,9 @@ impl ValueShape {
         Self::resolve_at(term, 0, None).map(|(shape, _)| shape)
     }
 
-    /// Shape of a canonical type expression whose nominal enums resolve through `schemas`
-    /// (12 §5). Records, parameterized nominal types and recursive enums stay unsupported.
+    /// Shape of a canonical type expression whose nominal records and enums resolve
+    /// through `schemas` (12 §5). Parameterized nominal types, handle kinds and recursive
+    /// schemas stay unsupported.
     pub fn of_in(expr: &TypeExpr, schemas: &dyn Schemas) -> Option<Self> {
         Self::resolve_in(&TypeTerm::parse(expr).ok()?, schemas)
     }
@@ -280,7 +343,7 @@ impl ValueShape {
             return None;
         };
         if named.namespace != "core" || named.major != 1 {
-            return Self::enumeration(named, depth, nominal?);
+            return Self::nominal(named, depth, nominal?);
         }
         let mut height = 1;
         let mut inner = |i: usize| {
@@ -317,7 +380,9 @@ impl ValueShape {
         Some((shape, height))
     }
 
-    fn enumeration(
+    /// A registered record or enum, each member resolved one level deeper. Both kinds
+    /// share the memo, the cycle guard and the height rule.
+    fn nominal(
         named: &NamedTerm,
         depth: usize,
         nominal: &mut Nominal<'_>,
@@ -328,28 +393,46 @@ impl ValueShape {
         if !named.args.is_empty() || !nominal.active.insert(named.clone()) {
             return None;
         }
-        let schema = nominal.schemas.enumeration(named)?;
         let mut height = 1;
         let mut key = nominal.schemas.derives_key(named);
-        let mut variants = Vec::with_capacity(schema.variants.len());
-        for variant in &schema.variants {
-            let payload = match &variant.payload {
-                None => None,
-                Some(term) => {
-                    let (shape, h) = Self::resolve_at(term, depth + 1, Some(nominal))?;
-                    height = height.max(h + 1);
-                    key &= shape.map_key();
-                    Some(shape)
-                }
-            };
-            variants.push((variant.variant_id.clone(), payload));
-        }
+        let mut member = |term: &TypeTerm, nominal: &mut Nominal<'_>| {
+            let (shape, h) = Self::resolve_at(term, depth + 1, Some(nominal))?;
+            height = height.max(h + 1);
+            key &= shape.map_key();
+            Some(shape)
+        };
+        let ty = TypeTerm::Named(named.clone()).to_type_expr();
+        let shape = if let Some(schema) = nominal.schemas.record(named) {
+            let mut fields = Vec::with_capacity(schema.fields.len());
+            for field in &schema.fields {
+                fields.push(FieldShape {
+                    id: field.field_id.clone(),
+                    shape: member(&field.ty, nominal)?,
+                    optional: field.optional,
+                });
+            }
+            Self::Record(Arc::new(RecordShape {
+                ty,
+                fields: fields.into(),
+                key,
+            }))
+        } else {
+            let schema = nominal.schemas.enumeration(named)?;
+            let mut variants = Vec::with_capacity(schema.variants.len());
+            for variant in &schema.variants {
+                let payload = match &variant.payload {
+                    None => None,
+                    Some(term) => Some(member(term, nominal)?),
+                };
+                variants.push((variant.variant_id.clone(), payload));
+            }
+            Self::Enum(Arc::new(EnumShape {
+                ty,
+                variants: variants.into(),
+                key,
+            }))
+        };
         nominal.active.remove(named);
-        let shape = Self::Enum(Arc::new(EnumShape {
-            ty: TypeTerm::Named(named.clone()).to_type_expr(),
-            variants: variants.into(),
-            key,
-        }));
         nominal
             .resolved
             .insert(named.clone(), (shape.clone(), height));
@@ -365,18 +448,20 @@ impl ValueShape {
     }
 
     /// Whether values of this type key an executable map (11 §5.2): a native Core `hash`
-    /// type, or a package enum whose `eq` and `hash` are structural derives over such
-    /// keys. Equal keys are then exactly equal tags and payloads, `Value`'s structural
-    /// identity, so map storage and lookup run no package code.
+    /// type, or a package enum or record whose `eq` and `hash` are structural derives
+    /// over such keys. Equal keys are then exactly equal tags and payloads, or equal
+    /// field presence and fields, `Value`'s structural identity, so map storage and
+    /// lookup run no package code.
     pub fn map_key(&self) -> bool {
         match self {
             Self::Enum(shape) => shape.key,
+            Self::Record(shape) => shape.key,
             _ => self.native_hash(),
         }
     }
 
-    /// Whether the host implements this exact Core type's total equality. Nominal enum
-    /// equality belongs to the owning package, so it is never native.
+    /// Whether the host implements this exact Core type's total equality. Nominal record and
+    /// enum equality belongs to the owning package, so it is never native.
     pub fn native_eq(&self) -> bool {
         self.native_eq_at(0)
     }
@@ -533,6 +618,23 @@ impl ValueShape {
                     (Some(ty), Some(value)) => ty.check(value, left, depth + 1),
                     _ => Err(InvalidType),
                 }
+            }
+            // Fields sit at their schema index; a missing optional field still holds its
+            // slot, and the value retains its canonical type text.
+            (Self::Record(shape), Value::Record(record)) => {
+                if record.ty != shape.ty || record.fields.len() != shape.fields.len() {
+                    return Err(InvalidType);
+                }
+                charge(left, record.ty.as_str().len())?;
+                minimum(*left, record.fields.len(), VALUE_CHARGE)?;
+                for (slot, field) in record.fields.iter().zip(&shape.fields) {
+                    match slot {
+                        Some(value) => field.shape.check(value, left, depth + 1)?,
+                        None if field.optional => charge(left, VALUE_CHARGE)?,
+                        None => return Err(InvalidType),
+                    }
+                }
+                Ok(())
             }
             (Self::String, Value::Str(text)) => charge(left, text.len()),
             (Self::Bytes, Value::Bytes(bytes)) => charge(left, bytes.len()),
@@ -745,6 +847,196 @@ mod tests {
         }
         assert!(of(&wrap(MAX_NESTING - 1)).is_some());
         assert!(of(&wrap(MAX_NESTING)).is_none());
+    }
+
+    #[test]
+    fn records_resolve_through_schemas_and_check_fields_by_index() {
+        use crate::value::RecordRepr;
+        use crate::value::literal_codec::{
+            EnumSchema, FieldSchema, RecordSchema, SchemaSet, VariantSchema,
+        };
+        let term = |text: &str| TypeTerm::parse(&text.parse().unwrap()).unwrap();
+        let field = |id: &str, ty: &str, optional| FieldSchema {
+            field_id: id.into(),
+            ty: term(ty),
+            optional,
+        };
+        let record = |fields| RecordSchema { fields };
+        let point = "org.example/point@1";
+        let schemas = SchemaSet::default()
+            .with_record(
+                point,
+                record(vec![
+                    field("x", "core/i64@1", false),
+                    field("label", "core/string@1", true),
+                ]),
+            )
+            .with_record(
+                "org.example/other@1",
+                record(vec![
+                    field("x", "core/i64@1", false),
+                    field("label", "core/string@1", true),
+                ]),
+            )
+            .with_record(
+                "org.example/link@1",
+                record(vec![field("next", "org.example/link@1", true)]),
+            )
+            .with_record(
+                "org.example/ring@1",
+                record(vec![field("via", "org.example/turn@1", false)]),
+            )
+            .with_enum(
+                "org.example/turn@1",
+                EnumSchema {
+                    variants: vec![VariantSchema {
+                        variant_id: "back".into(),
+                        payload: Some(term("org.example/ring@1")),
+                    }],
+                },
+            )
+            .with_enum(
+                "org.example/shape@1",
+                EnumSchema {
+                    variants: vec![VariantSchema {
+                        variant_id: "dot".into(),
+                        payload: Some(term(point)),
+                    }],
+                },
+            );
+        let of = |text: &str| ValueShape::of_in(&text.parse().unwrap(), &schemas);
+        assert!(shape(point).is_none());
+        let shape = of(point).unwrap();
+        assert_ne!(Some(&shape), of("org.example/other@1").as_ref());
+        let ValueShape::Record(layout) = &shape else {
+            panic!("{shape:?}");
+        };
+        assert_eq!((layout.len(), layout.index("label")), (2, Some(1)));
+        assert_eq!(layout.field_id(0), Some("x"));
+        assert_eq!(layout.field(1), Some((&ValueShape::String, true)));
+        assert!(!shape.native_eq() && !shape.native_hash() && !shape.map_key());
+        let value = |ty: &str, fields: Vec<Option<Value>>| {
+            Value::Record(Arc::new(RecordRepr {
+                ty: ty.parse().unwrap(),
+                fields: fields.into(),
+            }))
+        };
+        let label = || Some(Value::Str(Arc::new("ab".into())));
+        let full = value(point, vec![Some(Value::I64(1)), label()]);
+        let missing = value(point, vec![Some(Value::I64(1)), None]);
+        // One value, the type text, then each slot: its value or an absent slot.
+        let base = VALUE_CHARGE + point.len() + VALUE_CHARGE;
+        assert_eq!(
+            shape.checked_charge(&full, usize::MAX),
+            Ok(base + VALUE_CHARGE + 2)
+        );
+        assert_eq!(
+            shape.checked_charge(&missing, usize::MAX),
+            Ok(base + VALUE_CHARGE)
+        );
+        assert_eq!(shape.checked_charge(&full, base), Err(ResourceLimit));
+        for invalid in [
+            value(point, vec![None, label()]),
+            value(point, vec![Some(Value::I64(1))]),
+            value(point, vec![Some(Value::Bool(true)), None]),
+            value("org.example/other@1", vec![Some(Value::I64(1)), None]),
+            Value::Enum {
+                tag: 0,
+                payload: None,
+            },
+        ] {
+            assert_eq!(
+                shape.checked_charge(&invalid, usize::MAX),
+                Err(InvalidType),
+                "{invalid:?}"
+            );
+        }
+        // Records nest in enums and containers; an option over one stays unboxed.
+        assert!(of("org.example/shape@1").unwrap().accepts(&Value::Enum {
+            tag: 0,
+            payload: Some(Arc::new(missing.clone())),
+        }));
+        let optional = of(&format!("core/option@1<{point}>")).unwrap();
+        assert!(optional.accepts(&Value::None) && optional.accepts(&missing));
+        // Direct and indirect recursion, unknown types and float keys have no shape.
+        for unsupported in [
+            "org.example/link@1",
+            "org.example/ring@1",
+            "org.example/missing@1",
+            &format!("core/map@1<{point},core/i64@1>"),
+        ] {
+            assert!(of(unsupported).is_none(), "{unsupported}");
+        }
+        // A record reused deeper still respects the nesting limit (height 2).
+        let wrap = |n| format!("{}{point}{}", "core/list@1<".repeat(n), ">".repeat(n));
+        assert!(of(&wrap(MAX_NESTING - 1)).is_some());
+        assert!(of(&wrap(MAX_NESTING)).is_none());
+    }
+
+    /// A record keys maps when its `eq` and `hash` derive over key fields; optional
+    /// fields keep presence in the key's identity.
+    #[test]
+    fn derived_key_records_key_maps() {
+        use crate::value::literal_codec::{EnumSchema, FieldSchema, RecordSchema, SchemaSet};
+        use crate::value::{MapRepr, RecordRepr};
+        struct Derived(SchemaSet);
+        impl Schemas for Derived {
+            fn record(&self, ty: &NamedTerm) -> Option<&RecordSchema> {
+                self.0.record(ty)
+            }
+            fn enumeration(&self, ty: &NamedTerm) -> Option<&EnumSchema> {
+                self.0.enumeration(ty)
+            }
+            fn derives_key(&self, _: &NamedTerm) -> bool {
+                true
+            }
+        }
+        let field = |id: &str, ty: &str, optional| FieldSchema {
+            field_id: id.into(),
+            ty: TypeTerm::parse(&ty.parse().unwrap()).unwrap(),
+            optional,
+        };
+        let schemas = Derived(
+            SchemaSet::default()
+                .with_record(
+                    "org.example/key@1",
+                    RecordSchema {
+                        fields: vec![
+                            field("id", "core/u32@1", false),
+                            field("tag", "core/string@1", true),
+                        ],
+                    },
+                )
+                .with_record(
+                    "org.example/listed@1",
+                    RecordSchema {
+                        fields: vec![field("ids", "core/list@1<core/u32@1>", false)],
+                    },
+                ),
+        );
+        let of = |key: &str| {
+            ValueShape::of_in(
+                &format!("core/map@1<{key},core/bool@1>").parse().unwrap(),
+                &schemas,
+            )
+        };
+        assert!(of("org.example/listed@1").is_none());
+        let map = of("org.example/key@1").unwrap();
+        let key = |tag: Option<&str>| {
+            Value::Record(Arc::new(RecordRepr {
+                ty: "org.example/key@1".parse().unwrap(),
+                fields: Box::new([
+                    Some(Value::U32(1)),
+                    tag.map(|t| Value::Str(Arc::new(t.into()))),
+                ]),
+            }))
+        };
+        let entries = MapRepr::new(vec![
+            (key(None), Value::Bool(true)),
+            (key(Some("")), Value::Bool(false)),
+        ])
+        .unwrap();
+        assert!(map.accepts(&Value::Map(Arc::new(entries))));
     }
 
     /// An enum keys maps only when its schemas prove derived `eq` + `hash` for it and

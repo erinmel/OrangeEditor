@@ -391,7 +391,7 @@ fn shapes_without_host_semantics_are_refused_at_binding() {
         (Comparison::NotEqual, WRAPPER),
         // No enum order is ever derived.
         (Comparison::Less, LIGHT),
-        // Records have no executable shape.
+        // Records have a shape but no comparison kernel yet.
         (Comparison::Equal, POINT),
         (Comparison::Equal, SEGMENT),
         // Ord is scalar only.
@@ -756,7 +756,7 @@ fn constraint_proofs_without_a_host_kernel_fail_compilation_with_a_typed_reason(
             "{ty}"
         );
     }
-    // A nested record satisfies derived eq, but records have no executable port shape.
+    // A nested record satisfies derived eq and has a port shape, but no comparison kernel.
     let point = |x, y| {
         Value::Record(Arc::new(RecordRepr {
             ty: POINT.parse().unwrap(),
@@ -792,7 +792,7 @@ fn constraint_proofs_without_a_host_kernel_fail_compilation_with_a_typed_reason(
             &package,
             CompileOptions::default()
         ),
-        Err(CompileError::UnsupportedPort { .. })
+        Err(CompileError::KernelUnsupportedType { .. })
     ));
 }
 
