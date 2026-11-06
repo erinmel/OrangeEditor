@@ -12,7 +12,19 @@ pub(super) type TimerKey = (u64, u64);
 pub(super) struct Timers {
     next: u64,
     by_strand: IdMap<StrandId, TimerKey>,
-    order: BTreeMap<TimerKey, Timer>,
+    by_awaiter: IdMap<u64, TimerKey>,
+    order: BTreeMap<TimerKey, TimerTarget>,
+}
+
+/// Timer ownership remains unique: ordinary waits own their strand here, while an
+/// Await timeout records only its registration token (the waiter table owns the strand).
+#[expect(
+    clippy::large_enum_variant,
+    reason = "Boxing would add a per-Wait allocation to the existing parked-strand path."
+)]
+pub(super) enum TimerTarget {
+    Wait(Timer),
+    Await { run: u64, token: u64 },
 }
 
 /// [`Timers::schedule`] refused a timer: the run's timer limit or sequence is exhausted.
@@ -34,22 +46,48 @@ impl Timers {
     }
     /// Parks `timer` until `at`, unless the run already holds `max` timers.
     pub fn schedule(&mut self, at: u64, timer: Timer, max: usize) -> Result<(), TimerLimit> {
-        if self.order.len() == max {
+        if self.order.len() >= max {
             return Err(TimerLimit);
         }
-        let sequence = self.next;
-        self.next = sequence.checked_add(1).ok_or(TimerLimit)?;
-        self.by_strand.insert(timer.activation.id, (at, sequence));
-        self.order.insert((at, sequence), timer);
+        let key = self.next_key(at)?;
+        self.by_strand.insert(timer.activation.id, key);
+        self.order.insert(key, TimerTarget::Wait(timer));
         Ok(())
     }
+    pub fn schedule_await(
+        &mut self,
+        at: u64,
+        run: u64,
+        token: u64,
+        max: usize,
+    ) -> Result<TimerKey, TimerLimit> {
+        if self.order.len() >= max {
+            return Err(TimerLimit);
+        }
+        let key = self.next_key(at)?;
+        self.by_awaiter.insert(token, key);
+        self.order.insert(key, TimerTarget::Await { run, token });
+        Ok(key)
+    }
+    fn next_key(&mut self, at: u64) -> Result<TimerKey, TimerLimit> {
+        let sequence = self.next;
+        self.next = sequence.checked_add(1).ok_or(TimerLimit)?;
+        Ok((at, sequence))
+    }
     /// Removes and returns the earliest timer if it is due at `now`.
-    pub fn pop_due(&mut self, now: u64) -> Option<Timer> {
+    pub fn pop_due(&mut self, now: u64) -> Option<TimerTarget> {
         if !self.is_due(now) {
             return None;
         }
         let (_, timer) = self.order.pop_first()?;
-        self.by_strand.remove(&timer.activation.id);
+        match &timer {
+            TimerTarget::Wait(timer) => {
+                self.by_strand.remove(&timer.activation.id);
+            }
+            TimerTarget::Await { token, .. } => {
+                self.by_awaiter.remove(token);
+            }
+        }
         Some(timer)
     }
     /// Detaches `strand`'s timer from the directory; [`remove`](Self::remove) takes it out
@@ -57,12 +95,16 @@ impl Timers {
     pub fn detach(&mut self, strand: StrandId) -> Option<TimerKey> {
         self.by_strand.remove(&strand)
     }
-    pub fn remove(&mut self, key: TimerKey) -> Option<Timer> {
+    pub fn detach_await(&mut self, token: u64) -> Option<TimerKey> {
+        self.by_awaiter.remove(&token)
+    }
+    pub fn remove(&mut self, key: TimerKey) -> Option<TimerTarget> {
         self.order.remove(&key)
     }
     pub fn clear(&mut self) {
         self.order.clear();
         self.by_strand.clear();
+        self.by_awaiter.clear();
     }
     /// Drops all timers and releases their storage.
     pub fn release(&mut self) {

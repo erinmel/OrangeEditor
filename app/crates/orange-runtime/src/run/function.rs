@@ -159,7 +159,10 @@ impl Frames {
             let cell = cells.outputs[input].ok_or(RunError::InvalidState)?;
             if matches!(
                 plan.host_sources()[input],
-                HostSource::Value(_) | HostSource::Update(_, _) | HostSource::CallOutput(_, _)
+                HostSource::Value(_)
+                    | HostSource::EventPayload(_)
+                    | HostSource::Update(_, _)
+                    | HostSource::CallOutput(_, _)
             ) && let Some(FoldedValue::Value(value)) = &shared.outputs[cell]
             {
                 let slot =
