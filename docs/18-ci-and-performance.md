@@ -63,13 +63,22 @@ sample or a coverage percentage. Named rule boundaries, property tests and regre
 remain the coverage policy; unimplemented services/UI and ignored tests are not covered
 merely because this workflow succeeds.
 
-`Execution measurements` runs weekly, manually, and on PR changes to its workflow or
-the measurement crate. It builds and runs the existing twelve execution workloads in
-release mode on Linux x64. Each workload warms for at least ten seconds and three runs,
-then records thirty complete sessions. Assertions still check expected results after
-each session. A failed workload fails the measurement job. This workflow is evidence
-separate from the required `rust` gate; it has path-filtered PR triggers and must not be
-made a required check for every PR without changing that selection.
+`Execution measurements` runs weekly, manually, and on PRs that change executable Rust
+(any crate's `src/` or manifest, the lockfile, toolchain, workflow or comparison tool).
+It builds the twelve execution workloads in release mode on Linux x64. On a PR it also
+builds the PR's base commit and measures both on the same runner in six alternating
+processes (base, head, head, base, base, head), each warming for five seconds and
+recording thirty complete sessions per workload. Hosted runners change CPU model between
+runs (a 2026-11-06 PR run moved from an EPYC 9V45 to a slower 9V74, about 1.8× on
+unchanged workloads), so only this same-runner pairing supports a speed comparison.
+`tools/compare-measurements.mjs` reports per-workload medians and a verdict: `faster` or
+`slower` only when the change is at least 5% and every head process lies on one side of
+every base process, otherwise `same` or `noisy`. Slowdowns become warning annotations,
+not failures. Allocation counts from both sides appear in the same table. A base that
+cannot build the execution profile drops to head-only evidence. Scheduled and manual runs
+measure head only with ten seconds of warmup. Assertions still check expected results
+after each session; a failed head workload fails the job. This workflow is evidence
+separate from the required `rust` gate and must not become a required check.
 
 The measured interval includes session construction, all budget-64 pumps, stop/dispose
 and session destruction. Documents and compiled plans are prepared beforehand; returned
@@ -107,8 +116,10 @@ before the window. Neither is process RSS or a hard resident-memory bound. Thirt
 samples make nearest-rank p99 equal to the maximum; this is descriptive evidence, not
 a qualified tail-latency estimate.
 
-The workflow uploads both JSON files, exact checked-out commit, compiler/Cargo versions,
-lockfile digest, each binary digest, CPU/OS/RAM and build flags for thirty days. Code uses
+The workflow uploads every JSON report (`head-timing-N.json`, `base-timing-N.json`,
+`head-allocations.json`, `base-allocations.json`), the exact checked-out and base commits,
+compiler/Cargo versions, lockfile digest, each binary digest, CPU/OS/RAM and build flags
+for thirty days. Code uses
 portable x64 instructions, not `target-cpu=native`. Partial provenance is retained after
 a failure. Cache/toolchain/build changes and differing machines invalidate direct
 absolute comparisons; compilation occurs before measurement.

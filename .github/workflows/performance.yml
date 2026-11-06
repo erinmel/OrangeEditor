@@ -1,12 +1,18 @@
 name: Execution measurements
 
-# Collect evidence when the harness changes; normal graph PRs keep the fast required lane.
-# Hosted timings are observations, never an absolute latency gate.
+# PRs that change executable Rust measure their base and head on the same runner, in
+# alternating processes, so a different hosted CPU model cannot fake a change. Scheduled
+# and manual runs record head only. Hosted timings are observations, never a latency gate.
 on:
   pull_request:
     paths:
       - '.github/workflows/performance.yml'
-      - 'app/crates/orange-measure/**'
+      - 'tools/compare-measurements.mjs'
+      - 'app/crates/*/src/**'
+      - 'app/crates/*/Cargo.toml'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'rust-toolchain.toml'
   workflow_dispatch:
   schedule:
     - cron: '30 8 * * 1'
@@ -29,16 +35,23 @@ jobs:
   execution:
     name: evidence / complete execution · Linux x64
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 35
+    env:
+      BASE_SHA: ${{ github.event.pull_request.base.sha }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24.18.0
+          package-manager-cache: false
       - name: Record source, machine, compiler and lockfile
         shell: bash
         run: |
           mkdir -p measurements
           git rev-parse HEAD > measurements/commit.txt
+          if [[ -n "$BASE_SHA" ]]; then echo "$BASE_SHA" > measurements/base-commit.txt; fi
           sha256sum Cargo.lock > measurements/lockfile.sha256
           rustc -vV > measurements/rustc.txt
           cargo -V > measurements/cargo.txt
@@ -53,31 +66,59 @@ jobs:
           key: execution-measurements
           cache-bin: false
           save-if: ${{ github.ref == 'refs/heads/dev' }}
-      - name: Build and measure complete execution without allocator instrumentation
+      # Each binary is copied out before the next build so both feature modes and both
+      # sources share one target directory and its compiled dependencies.
+      - name: Build head timing and allocation binaries
         shell: bash
         run: |
+          mkdir -p "$RUNNER_TEMP/bin"
           cargo build --release -p orange-measure --no-default-features --locked
-          sha256sum target/release/orange-measure > measurements/timing-binary.sha256
-          target/release/orange-measure --execution --warmup-seconds 10 --runs 30 > measurements/timing.json
-      - name: Build and measure allocations separately
+          cp target/release/orange-measure "$RUNNER_TEMP/bin/head-timing"
+          cargo build --release -p orange-measure --locked
+          cp target/release/orange-measure "$RUNNER_TEMP/bin/head-allocations"
+          sha256sum "$RUNNER_TEMP"/bin/head-* > measurements/head-binaries.sha256
+      - name: Build base timing and allocation binaries
+        id: base
+        if: env.BASE_SHA != ''
+        # A base without the execution profile only loses the comparison, not the evidence.
+        continue-on-error: true
         shell: bash
         run: |
-          cargo build --release -p orange-measure --locked
-          sha256sum target/release/orange-measure > measurements/allocation-binary.sha256
-          target/release/orange-measure --execution --warmup-seconds 10 --runs 30 > measurements/allocations.json
-      - name: Publish timing and allocation tables
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/base" FETCH_HEAD
+          cd "$RUNNER_TEMP/base"
+          cargo build --release -p orange-measure --no-default-features --locked --target-dir "$GITHUB_WORKSPACE/target"
+          cp "$GITHUB_WORKSPACE/target/release/orange-measure" "$RUNNER_TEMP/bin/base-timing"
+          cargo build --release -p orange-measure --locked --target-dir "$GITHUB_WORKSPACE/target"
+          cp "$GITHUB_WORKSPACE/target/release/orange-measure" "$RUNNER_TEMP/bin/base-allocations"
+          sha256sum "$RUNNER_TEMP"/bin/base-* > "$GITHUB_WORKSPACE/measurements/base-binaries.sha256"
+      - name: Measure base and head in alternating processes
+        if: steps.base.outcome == 'success'
+        shell: bash
+        run: |
+          # b h h b b h: each side runs first and last once, so drift favours neither.
+          i=0
+          for side in base head head base base head; do
+            i=$((i + 1))
+            "$RUNNER_TEMP/bin/$side-timing" --execution --warmup-seconds 5 --runs 30 > "measurements/$side-timing-$i.json"
+          done
+          for side in base head; do
+            "$RUNNER_TEMP/bin/$side-allocations" --execution --warmup-seconds 1 --runs 5 > "measurements/$side-allocations.json"
+          done
+      - name: Measure head only
+        if: steps.base.outcome != 'success'
+        shell: bash
+        run: |
+          "$RUNNER_TEMP/bin/head-timing" --execution --warmup-seconds 10 --runs 30 > measurements/head-timing-1.json
+          "$RUNNER_TEMP/bin/head-allocations" --execution --warmup-seconds 10 --runs 30 > measurements/head-allocations.json
+      - name: Publish comparison and allocation tables
         shell: bash
         run: |
           {
             echo '## Complete execution evidence · Linux x64'
             echo 'Start, all pumps, stop/dispose/drop are measured; document/plan construction is excluded. Timers advance virtually.'
-            echo 'Timing uses the platform allocator; allocation counters run in a separate binary. Hosted-runner results do not qualify a 1 ms target.'
-            echo '| Workload | Total p50 ms | Total p95 ms | Total p99 ms | Max ms |'
-            echo '|---|---:|---:|---:|---:|'
-            jq -r '.workloads[] | "| \(.workload) | \(.total_ms.p50) | \(.total_ms.p95) | \(.total_ms.p99) | \(.total_ms.max) |"' measurements/timing.json
-            echo '| Workload | Allocations/run | Requested bytes/run | Peak incremental live heap bytes |'
-            echo '|---|---:|---:|---:|'
-            jq -r '.workloads[] | "| \(.workload) | \(.allocation_counts.allocations) | \(.allocation_counts.allocated_bytes) | \(.allocation_counts.peak_live_bytes) |"' measurements/allocations.json
+            echo 'Base and head run on this one runner in alternating processes; a verdict needs every head process on one side of every base process and a change of at least 5%. Hosted results do not qualify a 1 ms target.'
+            node tools/compare-measurements.mjs measurements
           } >> "$GITHUB_STEP_SUMMARY"
       - name: Retain raw samples and provenance
         if: ${{ !cancelled() }}
