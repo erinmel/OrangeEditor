@@ -152,6 +152,9 @@ pub enum TransactionError {
     /// An exact dependency is not active.
     #[error("dependency `{0}` is not active")]
     MissingDependency(PackageKey),
+    /// An exact dependency is active with a content digest other than the lock records.
+    #[error("dependency `{0}` does not match its locked digest")]
+    DependencyDigest(PackageKey),
     /// A shipped definition is not listed in `contributions.nodes`.
     #[error("definition `{}@{}` is not declared by the manifest", .0.id, .0.version)]
     UndeclaredDefinition(DefinitionRef),
@@ -231,6 +234,7 @@ impl TransactionError {
             Self::DigestConflict(_) => "packages/transaction-digest-conflict",
             Self::HostApi { .. } => "packages/transaction-host-api",
             Self::MissingDependency(_) => "packages/transaction-missing-dependency",
+            Self::DependencyDigest(_) => "packages/transaction-dependency-digest",
             Self::UndeclaredDefinition(_) => "packages/transaction-undeclared-definition",
             Self::MissingDefinition(_) => "packages/transaction-missing-definition",
             Self::DefinitionChanged(_) => "packages/transaction-definition-changed",
@@ -956,18 +960,18 @@ impl<J: Journal> PackageStore<J> {
                 host: self.host_api,
             });
         }
-        for dependency in manifest.dependencies() {
-            let dependency = PackageKey {
-                id: dependency.id.clone(),
-                version: dependency.version.clone(),
-            };
-            if !self
+        for lock in manifest.dependencies() {
+            let dependency = lock.key();
+            let Some(record) = self
                 .current
                 .packages
                 .get(&dependency)
-                .is_some_and(|record| record.state.is_active())
-            {
+                .filter(|record| record.state.is_active())
+            else {
                 return Err(TransactionError::MissingDependency(dependency));
+            };
+            if record.manifest.content_digest() != lock.content_digest {
+                return Err(TransactionError::DependencyDigest(dependency));
             }
         }
 

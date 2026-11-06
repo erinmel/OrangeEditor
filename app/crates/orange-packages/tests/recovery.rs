@@ -16,7 +16,7 @@ fn original() -> (Vec<JournalEntry>, Vec<PackageContents>) {
     store.install(device("1.0.0", HEX_1)).unwrap();
     store.install(device("2.0.0", HEX_2)).unwrap();
     store
-        .install(app("org.example.app", HEX_3, &["2.0.0"]))
+        .install(app("org.example.app", HEX_3, &[("2.0.0", HEX_2)]))
         .unwrap();
     let doomed = app("org.example.doomed", &"4".repeat(64), &[]);
     store.install(doomed.clone()).unwrap();
@@ -24,7 +24,7 @@ fn original() -> (Vec<JournalEntry>, Vec<PackageContents>) {
     store.remove(&pkg(PACKAGE, "1.0.0")).unwrap();
     let live = vec![
         device("2.0.0", HEX_2),
-        app("org.example.app", HEX_3, &["2.0.0"]),
+        app("org.example.app", HEX_3, &[("2.0.0", HEX_2)]),
     ];
     (store.journal().entries().to_vec(), live)
 }

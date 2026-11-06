@@ -76,18 +76,19 @@ pub fn device(version: &str, digest: &str) -> PackageContents {
                 "providers": [{"slot": format!("node:{NODE}@1"), "id": "impl"}]
             },
             "permissions": [],
-            "integrity": {"algorithm": "sha256", "payload_digest": digest},
+            "integrity": {"algorithm": "sha256", "content_digest": digest},
             "license": "MIT"
         })),
         vec![definition(NODE)],
     )
 }
 
-/// A package without contributions; `needs` lists exact `device` versions it depends on.
-pub fn app(id: &str, digest: &str, needs: &[&str]) -> PackageContents {
+/// A package without contributions; `needs` lists the exact `device` versions it depends on
+/// with their digests (hex).
+pub fn app(id: &str, digest: &str, needs: &[(&str, &str)]) -> PackageContents {
     let dependencies: Vec<Value> = needs
         .iter()
-        .map(|version| json!({"id": PACKAGE, "version": version}))
+        .map(|(version, hex)| json!({"id": PACKAGE, "version": version, "content_digest": format!("sha256:{hex}")}))
         .collect();
     PackageContents::new(
         manifest(&json!({
@@ -95,7 +96,7 @@ pub fn app(id: &str, digest: &str, needs: &[&str]) -> PackageContents {
             "id": id, "version": "1.0.0", "publisher": "org.example",
             "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
             "dependencies": dependencies,
-            "integrity": {"algorithm": "sha256", "payload_digest": digest}
+            "integrity": {"algorithm": "sha256", "content_digest": digest}
         })),
         vec![],
     )

@@ -5,7 +5,11 @@
   "version": "1.0.0",
   "publisher": "acme",
   "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
-  "execution": {"kind": "native-worker", "entry": "acme-math-worker"},
+  "execution": {
+    "kind": "worker",
+    "wire_version": 1,
+    "targets": [{"os": "linux", "arch": "x86_64", "entry": "acme-math-worker"}]
+  },
   "dependencies": [],
   "contributions": {
     "nodes": ["acme.math/triple"],
@@ -17,7 +21,7 @@
   "permissions": [],
   "integrity": {
     "algorithm": "sha256",
-    "payload_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
+    "content_digest": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1"
   },
   "license": "MIT"
 }

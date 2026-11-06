@@ -19,6 +19,7 @@ const NODE: &str = "org.example.device/value";
 const SIG: &str = "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 const HEX_1: &str = "1111111111111111111111111111111111111111111111111111111111111111";
 const HEX_2: &str = "2222222222222222222222222222222222222222222222222222222222222222";
+const LOCK_1: &str = "sha256:1111111111111111111111111111111111111111111111111111111111111111";
 const HOST: HostApiVersion = HOST_API_VERSION;
 
 fn origin() -> HostOrigin {
@@ -68,7 +69,7 @@ fn manifest_json(version: &str, digest: &str) -> Value {
             "providers": [{"slot": format!("node:{NODE}@1"), "id": "impl"}]
         },
         "permissions": [],
-        "integrity": {"algorithm": "sha256", "payload_digest": digest},
+        "integrity": {"algorithm": "sha256", "content_digest": digest},
         "license": "MIT"
     })
 }
@@ -188,18 +189,21 @@ fn manifest_validation_accepts_the_sample_and_rejects_bad_inputs() {
         ManifestError::DigestAlgorithm("md5".into()),
     );
     rejects(
-        &|v| v["integrity"]["payload_digest"] = json!("A".repeat(64)),
+        &|v| v["integrity"]["content_digest"] = json!("A".repeat(64)),
         ManifestError::Digest,
     );
     rejects(
-        &|v| v["dependencies"] = json!([{"id": PACKAGE, "version": "1.0.0"}]),
+        &|v| {
+            v["dependencies"] =
+                json!([{"id": PACKAGE, "version": "1.0.0", "content_digest": LOCK_1}])
+        },
         ManifestError::SelfDependency,
     );
     rejects(
         &|v| {
             v["dependencies"] = json!([
-                {"id": "org.example.a", "version": "1.0.0"},
-                {"id": "org.example.a", "version": "2.0.0"}
+                {"id": "org.example.a", "version": "1.0.0", "content_digest": LOCK_1},
+                {"id": "org.example.a", "version": "2.0.0", "content_digest": LOCK_1}
             ])
         },
         ManifestError::DuplicateDependency("org.example.a".into()),
@@ -347,7 +351,8 @@ fn failed_install_quarantines_and_leaves_the_prior_registry_active() {
     );
 
     let mut value = manifest_json("2.0.0", HEX_2);
-    value["dependencies"] = json!([{"id": "org.example.base", "version": "1.0.0"}]);
+    value["dependencies"] =
+        json!([{"id": "org.example.base", "version": "1.0.0", "content_digest": LOCK_1}]);
     fail(
         PackageContents::new(parse(&value).unwrap(), vec![definition(NODE)]),
         TransactionError::MissingDependency(PackageKey {
@@ -499,8 +504,8 @@ fn remove_is_refused_while_an_active_package_depends_on_it() {
         "format": "orange.plugin", "format_version": 1,
         "id": "org.example.app", "version": "0.1.0", "publisher": "org.example",
         "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
-        "dependencies": [{"id": PACKAGE, "version": "1.0.0"}],
-        "integrity": {"algorithm": "sha256", "payload_digest": HEX_2}
+        "dependencies": [{"id": PACKAGE, "version": "1.0.0", "content_digest": LOCK_1}],
+        "integrity": {"algorithm": "sha256", "content_digest": HEX_2}
     });
     store
         .install(PackageContents::new(parse(&dependent).unwrap(), vec![]))
@@ -606,7 +611,7 @@ fn other(digest: &str) -> PackageContents {
         "format": "orange.plugin", "format_version": 1,
         "id": "org.example.other", "version": "1.0.0", "publisher": "org.example",
         "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
-        "integrity": {"algorithm": "sha256", "payload_digest": digest}
+        "integrity": {"algorithm": "sha256", "content_digest": digest}
     });
     PackageContents::new(parse(&manifest).unwrap(), vec![])
 }
