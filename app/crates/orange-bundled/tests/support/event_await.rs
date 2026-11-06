@@ -448,7 +448,9 @@ fn await_then_return_preserves_causal_depth_into_following_emit() {
     run.advance_to(1).unwrap();
     pump_until_trace(&mut run, 5, ControlOutcome::Then);
     let metadata = run.last_event().expect("post-return Emit metadata");
-    assert_eq!(metadata.source.to_string(), id(5));
+    assert!(
+        matches!(metadata.origin, orange_runtime::EventOrigin::Graph { node, .. } if node.to_string() == id(5))
+    );
     assert_eq!(
         metadata.cause_depth, 2,
         "Await lineage must survive Return before Emit"
@@ -782,11 +784,15 @@ fn fork_sibling_emits_keep_independent_cause_depth_after_await_resumes() {
     run.advance_to(1).unwrap();
     pump_until_trace(&mut run, 22, ControlOutcome::Then);
     pump_until_trace(&mut run, 13, ControlOutcome::Then);
-    assert_eq!(run.last_event().unwrap().source.to_string(), id(13));
+    assert!(
+        matches!(run.last_event().unwrap().origin, orange_runtime::EventOrigin::Graph { node, .. } if node.to_string() == id(13))
+    );
     assert_eq!(run.last_event().unwrap().cause_depth, 3);
     run.advance_to(5).unwrap();
     pump_until_trace(&mut run, 15, ControlOutcome::Then);
-    assert_eq!(run.last_event().unwrap().source.to_string(), id(15));
+    assert!(
+        matches!(run.last_event().unwrap().origin, orange_runtime::EventOrigin::Graph { node, .. } if node.to_string() == id(15))
+    );
     assert_eq!(
         run.last_event().unwrap().cause_depth,
         2,

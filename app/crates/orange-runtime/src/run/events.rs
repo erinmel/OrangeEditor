@@ -2,6 +2,7 @@
 //! No handler executes in Emit.
 use super::*;
 use orange_model::document::{OverflowPolicy, ReentrancyMode};
+use orange_model::id::EventDeclId;
 use std::collections::BTreeSet;
 
 const LIMIT: KernelFault = KernelFault {
@@ -34,16 +35,115 @@ pub struct RunEventStats {
     pub live_payload_bytes: usize,
     pub activation_high_water: usize,
 }
-/// Last successfully ingested graph emission. Contains no payload or host wall clock.
+/// Identifies whether an accepted event came from a graph node or a registered host source.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventOrigin {
+    Graph { node: NodeId, scope: usize },
+    Host { source: HostSourceId },
+}
+
+/// Last successfully ingested event. Contains no payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventMetadata {
     pub ingestion_seq: u64,
-    pub source: NodeId,
-    pub source_scope: usize,
+    pub event: EventDeclId,
+    pub origin: EventOrigin,
     pub source_seq: u64,
-    pub cause: u64,
+    pub cause: Option<u64>,
     pub cause_depth: u16,
     pub monotonic_ns: u64,
+    pub wall_ns: Option<i64>,
+}
+
+/// Run-local host-source generation. IDs are never reused during a run.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct HostSourceId(u64);
+impl HostSourceId {
+    pub const fn get(self) -> u64 {
+        self.0
+    }
+}
+impl std::fmt::Debug for HostSourceId {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_tuple("HostSourceId").field(&self.0).finish()
+    }
+}
+
+/// Opaque registration token bound to one run and one checked event.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub struct RunEventSource {
+    run: u64,
+    id: HostSourceId,
+    event: EventDeclId,
+}
+impl RunEventSource {
+    pub const fn id(self) -> HostSourceId {
+        self.id
+    }
+    pub const fn event(self) -> EventDeclId {
+        self.event
+    }
+}
+impl std::fmt::Debug for RunEventSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("RunEventSource")
+            .field("run", &self.run)
+            .field("id", &self.id)
+            .field("event", &self.event)
+            .finish()
+    }
+}
+
+/// Bounded, payload-free refusal from the host ingress boundary.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+pub enum IngressError {
+    #[error("The event source belongs to another run.")]
+    WrongRun,
+    #[error("The run is stopping and cannot accept an event.")]
+    NotRunning,
+    #[error("The event is not present in the checked run plan.")]
+    UnknownEvent,
+    #[error("The run has reached its active host source limit.")]
+    SourceLimit,
+    #[error("The host source identity space is exhausted.")]
+    IdentityExhausted,
+    #[error("The host event source is revoked or unknown.")]
+    RevokedSource,
+    #[error("The source sequence must be nonzero and strictly increasing.")]
+    SequenceNotIncreasing,
+    #[error("The event payload does not match its checked type.")]
+    InvalidPayload,
+    #[error("The event exceeds a run delivery limit.")]
+    DeliveryLimit,
+}
+impl IngressError {
+    pub const fn message_key(self) -> &'static str {
+        match self {
+            Self::WrongRun => "core/ingress-wrong-run",
+            Self::NotRunning => "core/event-run-stopping",
+            Self::UnknownEvent => "core/ingress-unknown-event",
+            Self::SourceLimit => "core/ingress-source-limit",
+            Self::IdentityExhausted => "core/ingress-identity-exhausted",
+            Self::RevokedSource => "core/ingress-source-revoked",
+            Self::SequenceNotIncreasing => "core/ingress-sequence-invalid",
+            Self::InvalidPayload => "core/ingress-payload-invalid",
+            Self::DeliveryLimit => "core/event-limit-exceeded",
+        }
+    }
+}
+
+struct HostSource {
+    event: usize,
+    last_seq: u64,
+}
+struct EventAdmission {
+    event: usize,
+    origin: EventOrigin,
+    cause: Option<u64>,
+    cause_depth: u16,
+    source_seq: u64,
+    wall_ns: Option<i64>,
+    graph_source: Option<usize>,
 }
 struct Envelope {
     metadata: EventMetadata,
@@ -253,6 +353,8 @@ pub(super) struct Events {
     cancel_pending: VecDeque<u64>,
     by_event: Vec<Vec<usize>>,
     source_sequences: Vec<u64>,
+    host_sources: BTreeMap<HostSourceId, HostSource>,
+    next_host_source_id: Option<u64>,
     ingestion: u64,
     last: Option<EventMetadata>,
     stats: RunEventStats,
@@ -299,6 +401,8 @@ impl Events {
             } else {
                 vec![0; plan.nodes().len()]
             },
+            host_sources: BTreeMap::new(),
+            next_host_source_id: Some(1),
             ingestion: 0,
             last: None,
             stats: RunEventStats::default(),
@@ -356,6 +460,7 @@ impl Events {
         // Whole-run cancellation will visit every root itself. Do not cancel cleanup
         // a second time by replaying a targeted Replace request afterward.
         self.cancel_pending.clear();
+        self.host_sources.clear();
         for handler in &mut self.handlers {
             handler.pending.clear();
         }
@@ -378,6 +483,7 @@ impl Events {
         self.by_event = Vec::new();
         self.waiters.release();
         self.source_sequences = Vec::new();
+        self.host_sources = BTreeMap::new();
         self.cancel_pending = VecDeque::new();
         self.live_stop_frames = 0;
     }
@@ -391,6 +497,15 @@ struct Disposition {
     cancel: Option<u64>,
 }
 impl Run {
+    pub(super) fn host_source_count(&self) -> usize {
+        self.events.host_sources.len()
+    }
+    pub(super) fn has_replace_cancellation(&self) -> bool {
+        !self.events.cancel_pending.is_empty()
+    }
+    pub(super) fn close_host_sources(&mut self) {
+        self.events.host_sources.clear();
+    }
     pub fn event_stats(&self) -> RunEventStats {
         RunEventStats {
             activation_high_water: self
@@ -402,6 +517,117 @@ impl Run {
     }
     pub fn last_event(&self) -> Option<EventMetadata> {
         self.events.last
+    }
+    /// Register one bounded host source for an event in this run's checked plan.
+    pub fn register_event_source(
+        &mut self,
+        event: EventDeclId,
+    ) -> Result<RunEventSource, IngressError> {
+        // An unwound pump leaves `Interrupted` for pump/advance_to to report once;
+        // a refused host call must not consume or otherwise mutate that state.
+        if self.pump_open || self.state != RunState::Running {
+            return Err(IngressError::NotRunning);
+        }
+        let plan = self.plan.as_ref().ok_or(IngressError::UnknownEvent)?;
+        let event_index = plan
+            .events()
+            .iter()
+            .position(|checked| checked.id() == event)
+            .ok_or(IngressError::UnknownEvent)?;
+        if self.events.host_sources.len() >= self.options.limits.max_host_sources {
+            return Err(IngressError::SourceLimit);
+        }
+        let id = HostSourceId(
+            self.events
+                .next_host_source_id
+                .ok_or(IngressError::IdentityExhausted)?,
+        );
+        self.events.next_host_source_id = id.0.checked_add(1);
+        self.events.host_sources.insert(
+            id,
+            HostSource {
+                event: event_index,
+                last_seq: 0,
+            },
+        );
+        Ok(RunEventSource {
+            run: self.id,
+            id,
+            event,
+        })
+    }
+
+    /// Revoke a source generation. Already accepted deliveries keep their ownership.
+    pub fn revoke_event_source(&mut self, source: &RunEventSource) -> Result<bool, IngressError> {
+        if source.run != self.id {
+            return Err(IngressError::WrongRun);
+        }
+        Ok(self.events.host_sources.remove(&source.id).is_some())
+    }
+
+    /// Admit one host event synchronously; graph work remains deferred to `pump`.
+    pub fn ingest_event(
+        &mut self,
+        source: &RunEventSource,
+        source_seq: u64,
+        payload: &Value,
+        wall_ns: Option<i64>,
+    ) -> Result<EventMetadata, IngressError> {
+        if source.run != self.id {
+            return Err(IngressError::WrongRun);
+        }
+        if self.pump_open || self.state != RunState::Running {
+            return Err(IngressError::NotRunning);
+        }
+        let plan = self.plan.as_ref().ok_or(IngressError::RevokedSource)?;
+        let (event_index, last_seq) = self
+            .events
+            .host_sources
+            .get(&source.id)
+            .filter(|entry| {
+                plan.events()
+                    .get(entry.event)
+                    .is_some_and(|event| event.id() == source.event)
+            })
+            .map(|entry| (entry.event, entry.last_seq))
+            .ok_or(IngressError::RevokedSource)?;
+        if source_seq == 0 || source_seq <= last_seq {
+            return Err(IngressError::SequenceNotIncreasing);
+        }
+        let plan = plan.clone();
+        let checked = plan
+            .events()
+            .get(event_index)
+            .ok_or(IngressError::RevokedSource)?;
+        checked
+            .payload_type()
+            .checked_charge(payload, usize::MAX)
+            .map_err(|_| IngressError::InvalidPayload)?;
+        let accepted = self.admit_event(
+            &plan,
+            payload,
+            EventAdmission {
+                event: event_index,
+                origin: EventOrigin::Host { source: source.id },
+                cause: None,
+                cause_depth: 0,
+                source_seq,
+                wall_ns,
+                graph_source: None,
+            },
+        );
+        let metadata = match accepted {
+            Ok(metadata) => metadata,
+            Err(LIMIT) => {
+                self.events.stats.overflows = self.events.stats.overflows.saturating_add(1);
+                return Err(IngressError::DeliveryLimit);
+            }
+            Err(_) => return Err(IngressError::DeliveryLimit),
+        };
+        if let Some(entry) = self.events.host_sources.get_mut(&source.id) {
+            entry.last_seq = source_seq;
+        }
+        Ok(metadata)
     }
     pub(super) fn waiter_count(&self) -> usize {
         self.events.waiters.len()
@@ -537,18 +763,52 @@ impl Run {
             .checked_add(1)
             .filter(|d| *d <= self.options.max_cause_depth)
             .ok_or(DEPTH)?;
-        let metadata = plan.events().get(event).ok_or(LIMIT)?;
-        let charge = metadata
-            .payload_type()
-            .checked_charge(&payload, usize::MAX)
-            .map_err(|_| LIMIT)?;
-        let ingestion = self.events.ingestion.checked_add(1).ok_or(LIMIT)?;
         let source_seq = self
             .events
             .source_sequences
             .get(owner.index())
             .and_then(|n| n.checked_add(1))
             .ok_or(LIMIT)?;
+        self.admit_event(
+            plan,
+            &payload,
+            EventAdmission {
+                event,
+                origin: EventOrigin::Graph {
+                    node: plan.nodes()[owner.index()].node(),
+                    scope: plan.nodes()[owner.index()].scope(),
+                },
+                cause: Some(activation.sequence),
+                cause_depth: depth,
+                source_seq,
+                wall_ns: None,
+                graph_source: Some(owner.index()),
+            },
+        )?;
+        Ok(())
+    }
+
+    fn admit_event(
+        &mut self,
+        plan: &ControlPlan,
+        payload: &Value,
+        admission: EventAdmission,
+    ) -> Result<EventMetadata, KernelFault> {
+        let EventAdmission {
+            event,
+            origin: event_origin,
+            cause,
+            cause_depth,
+            source_seq,
+            wall_ns,
+            graph_source,
+        } = admission;
+        let metadata = plan.events().get(event).ok_or(LIMIT)?;
+        let charge = metadata
+            .payload_type()
+            .checked_charge(payload, usize::MAX)
+            .map_err(|_| LIMIT)?;
+        let ingestion = self.events.ingestion.checked_add(1).ok_or(LIMIT)?;
         let mut pending = self.events.stats.pending;
         let mut bytes = self.events.stats.pending_bytes;
         let mut live = self.events.stats.live_payload_bytes;
@@ -645,12 +905,13 @@ impl Run {
         }
         let origin = EventMetadata {
             ingestion_seq: ingestion,
-            source: plan.nodes()[owner.index()].node(),
-            source_scope: plan.nodes()[owner.index()].scope(),
+            event: metadata.id(),
+            origin: event_origin,
             source_seq,
-            cause: activation.sequence,
-            cause_depth: depth,
+            cause,
+            cause_depth,
             monotonic_ns: self.now,
+            wall_ns,
         };
         // Every refusal above precedes mutation of any target queue or identity counter.
         // Retire every eviction before retaining a replacement, so commit does not
@@ -720,14 +981,16 @@ impl Run {
         self.events.stats.pending_bytes = bytes;
         self.events.stats.live_payload_bytes = live;
         self.events.ingestion = ingestion;
-        self.events.source_sequences[owner.index()] = source_seq;
+        if let Some(owner) = graph_source {
+            self.events.source_sequences[owner] = source_seq;
+        }
         self.events.last = Some(origin);
         self.regions.charge(
             self.events.by_event[event]
                 .len()
                 .saturating_add(waiter_tokens.len()),
         );
-        Ok(())
+        Ok(origin)
     }
     /// Apply Replace only at an actor-owned boundary: the emitting strand and its shared
     /// frame must already be restored, even when it targets its own root from a function
