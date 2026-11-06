@@ -3132,3 +3132,50 @@ Windows x86_64 MSVC, unchanged lock SHA256
   research. Raw local evidence is ignored, not committed. Normal desktop scheduling
   and layout bias are uncontrolled; no qualified tail, older-machine, RSS, arbitrary
   sub-1 ms or product NFR gate is claimed. Native CI is recorded in the optimization PR.
+
+### P01 — explicit cleared provider defaults survive recovery — 2026-11-05
+
+Base `dev` aa5ef149c580bb30951d2ebe3568d5e34dd21d69; Rust 1.99.1
+(`58cf8f9c3`, LLVM 23.1.1), Cargo 1.99.1, Windows x86_64 MSVC, edition 2024,
+default workspace features, unchanged lock SHA256
+`8BB91CAAFF5A7106E5752D49D9AB285D4566A1B69B55AD1CA81E10E1D70BB068`.
+MSRV remains 1.97.1; native Linux/macOS and MSRV checks were not run locally.
+
+- **Problem and current behavior:** selecting installed provider P over base default B,
+  then removing P, correctly cleared the running registry but restart resurrected B.
+  The focused public-API check failed before the fix. Checkpoints now use one current
+  `BTreeMap<DefinitionRef, Option<ProviderKey>>`: a controlled `None` clears the choice,
+  a selected key restores its exact provider, and an absent key leaves unrelated base
+  policy unchanged. `RegistryBuilder::clear_new_binding_default` changes selection only.
+- **Atomicity and identity:** controlled keys are adopted only after durable append and
+  survive retirement, rollback, compaction and repeated restart. Restore still stages the
+  whole candidate then appends one complete checkpoint. Existing document locks and
+  retained snapshots are unchanged. The earlier unreleased default-less checkpoint
+  branch/test was removed rather than supported through another reader or migration.
+  No dependency, saved graph, runtime operation, message key or capability grant changes.
+- **Focused acceptance:** package integration 42 passed and model catalog-generation
+  tests 5 passed. Cases cover explicit absence with an unrelated base default, removed
+  and revoked overrides, pinned snapshots, B/P/None rollback, compacted/retired history,
+  repeated recovery and final-append failure, failed-selection tracking and unavailable
+  selected providers. Implementation and test work had separate owners; a separate
+  source/contract review found no actionable defect. This is supplementary agent review,
+  not an independent human approval.
+- **Commands/results:** `cargo fmt --all --check`; `cargo test --workspace --locked
+  --offline`; the same with `--release`; `cargo clippy --workspace --all-targets
+  --all-features --locked --offline -- -D warnings`; warnings-denied `cargo doc
+  --workspace --no-deps --all-features --locked --offline`; metadata policy plus its
+  19 fixtures; `node --test tools/*.test.mjs` (15 passed); disabled-release check and
+  `git diff --check` all PASS. Full debug and full release each report **1,216 passed,
+  zero failed, 15 opt-in measurement tests ignored**. Cargo checks use
+  `CARGO_INCREMENTAL=0`; debug tests retain assertions/overflow checks and use
+  `CARGO_PROFILE_TEST_DEBUG=line-tables-only`. Logs remain in ignored local artifacts.
+- **Source receipt:** SHA256
+  `c026a8ee325f786ac974e446fce2f0015fe53b41f98ad935a1a3621398de8409`
+  over the sorted path-to-SHA256 JSON map of 323 tracked app/tool/workflow/build-input
+  files, excluding documentation and ignored output. Contracts/FR trace are updated in
+  01/04/08/12. Native/MSRV CI remains required before integration through docs 14.
+- **Limits:** this verifies the memory-journal/public-library recovery contract, not a
+  durable filesystem journal, archive loader, executable draining or package authority.
+  One current map entry per controlled definition is retained; no per-run callback or
+  graph traversal is added. No timing/RSS/NFR qualification or full-core completion is
+  claimed. The earlier dated default-resurrection limitation is superseded by P01.

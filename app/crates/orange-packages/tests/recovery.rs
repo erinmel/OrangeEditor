@@ -63,6 +63,7 @@ fn failed_restore_leaves_the_prior_commit_authoritative_at_every_append() {
         assert_eq!(after.published, before.published);
         assert_eq!(after.revoked, before.revoked);
         assert_eq!(after.removed, before.removed);
+        assert_eq!(after.defaults, before.defaults);
     }
 }
 
@@ -121,4 +122,5 @@ fn successful_restore_publishes_the_complete_candidate_and_keeps_identity() {
     assert_eq!(again.committed, recovery.committed);
     assert_eq!(again.published, recovery.published);
     assert_eq!(again.revoked, recovery.revoked);
+    assert_eq!(again.defaults, recovery.defaults);
 }

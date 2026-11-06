@@ -208,6 +208,40 @@ fn new_binding_defaults_select_new_bindings_without_rebinding_documents() {
 }
 
 #[test]
+fn clearing_a_default_keeps_providers_and_locked_documents_unchanged() {
+    let original = first();
+    let doc = document();
+    let selected = RegistryBuilder::from_snapshot(&original)
+        .new_binding_default(dref("example/value"), b())
+        .build()
+        .unwrap();
+    let cleared = RegistryBuilder::from_snapshot(&selected)
+        .clear_new_binding_default(dref("example/value"))
+        .build()
+        .unwrap();
+    assert!(cleared.generation() > selected.generation());
+    assert_eq!(
+        selected.new_binding_default(&dref("example/value")),
+        Some(&b())
+    );
+    assert_eq!(cleared.new_binding_default(&dref("example/value")), None);
+    assert!(cleared.provider(&a()).is_some());
+    assert!(cleared.provider(&b()).is_some());
+    assert!(cleared.definition(&dref("example/value")).is_some());
+    assert_eq!(codes(&doc, &cleared), vec![]);
+    assert_eq!(doc, document());
+
+    // Clearing an already absent choice is valid; it does not remove a provider.
+    let again = RegistryBuilder::from_snapshot(&cleared)
+        .clear_new_binding_default(dref("example/value"))
+        .build()
+        .unwrap();
+    assert_eq!(again.new_binding_default(&dref("example/value")), None);
+    assert!(again.provider(&b()).is_some());
+    assert_eq!(codes(&doc, &again), vec![]);
+}
+
+#[test]
 fn removing_a_locked_provider_reports_it_unavailable_without_substitution() {
     let old = first();
     let doc = document();

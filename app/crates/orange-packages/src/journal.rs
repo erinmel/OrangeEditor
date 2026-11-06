@@ -14,12 +14,9 @@ use crate::manifest::PackageKey;
 
 /// One journal record.
 ///
-/// The enum is `#[non_exhaustive]` so later checkpoint representations are additive. The
-/// recovery checkpoint grew a `defaults` field in place rather than a second variant: a host
-/// that stores entries in its own format keeps one checkpoint shape, and reads an older
-/// record that lacks defaults as `defaults: None` (see [`Committed`](Self::Committed)).
-/// Hosts that construct or destructure `Committed` must handle the new field; hosts that
-/// only store and replay entries need no change.
+/// The enum is `#[non_exhaustive]`. Hosts persist the current checkpoint shape, including
+/// explicit absent provider selections; unreleased earlier shapes have no compatibility
+/// reader in this crate.
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum JournalEntry {
@@ -44,12 +41,12 @@ pub enum JournalEntry {
         published: BTreeMap<PackageKey, String>,
         /// Every revoked content digest.
         revoked: BTreeSet<String>,
-        /// The exact new-binding provider default of each definition the store tracks, such
-        /// as every definition an active package implements or a host selected a default
-        /// for. `None` marks a checkpoint written before defaults were recorded: restoring
-        /// it applies none. `Some` is authoritative: a restart applies exactly these
-        /// choices after every referenced provider exists, never install order.
-        defaults: Option<BTreeMap<DefinitionRef, ProviderKey>>,
+        /// The exact new-binding selection state of every controlled definition. A value
+        /// of `Some(provider)` selects that provider; `None` explicitly clears the choice,
+        /// including one supplied by the base registry. Definitions absent from this map
+        /// retain their base policy. Controlled keys survive retirement and rollback;
+        /// recovery applies them after all referenced providers exist, never install order.
+        defaults: BTreeMap<DefinitionRef, Option<ProviderKey>>,
     },
 }
 
@@ -126,9 +123,10 @@ pub struct Recovery {
     /// Versions whose last step is an unfinished installation step and that the last commit
     /// does not include: their staged files are stale and must never be executed.
     pub abandoned: Vec<PackageKey>,
-    /// The new-binding defaults of the last commit, or `None` if nothing was committed or
-    /// that checkpoint predates recorded defaults. See [`JournalEntry::Committed`].
-    pub defaults: Option<BTreeMap<DefinitionRef, ProviderKey>>,
+    /// The authoritative selection state of controlled definitions in the last commit, or
+    /// an empty map if nothing was committed. Map values of `None` explicitly clear a
+    /// default; absent keys retain their base policy. See [`JournalEntry::Committed`].
+    pub defaults: BTreeMap<DefinitionRef, Option<ProviderKey>>,
 }
 
 impl Recovery {
