@@ -3362,3 +3362,58 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   missed-tick policies, clock-reader inputs, replay, OS adapters and services remain
   later increments. No timing probe ran; required exact-head CI still precedes
   integration.
+
+### A01 — per-edge diagnostic lookup for scoped edge edits — 2026-11-06
+
+Base dev `319b9ca` (PR130 integrated). Rust 1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo
+1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024, default features.
+MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
+`8BB91CAAFF5A7106E5752D49D9AB285D4566A1B69B55AD1CA81E10E1D70BB068`. `orange-runtime`
+source unchanged.
+
+- **Cause:** the E16 visit counters showed every scoped edit that adds or removes an
+  edge, including a node removal's incident edges, scanning the whole published list
+  (about 17,000 to 19,000 warnings on W9) for a diagnostic naming that edge, and every
+  scoped exec edit also scanning the kept control-flow list for an item without a node.
+- **Change:** the session's kept state holds a count of published diagnostics per
+  subject edge and a flag for a node-less control-flow item ([16 §3](16-incremental-validation.md)).
+  The full analysis counts both from what it publishes; the in-place patch adjusts an
+  edge's count for each item it actually removes or inserts, and a whole-document
+  control-flow rerun recomputes the flag. The published list, its order, deduplication
+  and freshness are untouched; no validator was split and no cache layer was added.
+- **Measurement:** `orange-measure w9` (release), the baseline binary built from `dev`
+  `319b9ca` in a temporary worktree and the change's binary run as two interleaved
+  before/after pairs, with other sessions building on the machine. Diagnostics visited
+  at p95, before → after: seeded edits 17,152 (19,150 on the 20k graphs) → 0;
+  cycle close/open about 34,300 (38,300) → 0; chain-node removal 68,620 (76,616) → 0;
+  exec edge 18,139 (20,139) → 0; every other kind 0 before and after. Time: in the
+  quieter pairs edge kinds' p95 fell 0.01 to 0.18 ms (clustered chain-node removal
+  0.600 → 0.507 ms, clustered 20k 0.739 → 0.562 ms; seeded edits on shared Get 20k
+  0.212/0.215 → 0.204/0.209 ms) while literal and type-argument controls moved about
+  ±0.01 ms; the noisier pairs moved every kind, the untouched controls included, by up
+  to about 0.2 ms either way. Maintenance memory: session heap after the first analysis (125.2 to
+  139.7 MiB) and after the edits unchanged to 0.1 MiB on all five graphs, since W9
+  publishes no edge-subject diagnostic and the map stays empty; each diagnosed edge
+  costs one map entry (16-byte ID and a count). Per-kind numbers in
+  [17](17-authoring-verification.md).
+- **Regressions:** an `orange-model` unit test patches edge diagnostics through the
+  single-item and stretch-rebuild paths, an already published item and one another kept
+  list still reports, and compares the counts with a recount of the published list after
+  each patch. `orange-bundled` `analysis_session_visits` asserts the exact per-pass
+  counts of data and exec edge edits, cycle close/open and a function-body edge with no
+  diagnostic visited, and runs a wire removal, its restore, a chain-node removal and its
+  undo on a warning graph, a clean graph and a graph with an input error and incomplete
+  nodes, each scoped, visiting no diagnostic and equal to the full analysis.
+- **Commands (repo root, `CARGO_INCREMENTAL=0`):** `cargo fmt --all --check`;
+  `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings`;
+  `cargo test --workspace --locked --offline` and the same with `--release` each PASS
+  **1,253 passed, 0 failed, 15 ignored** in 16 result groups.
+- **Judgement:** edge edits and node removals now visit only their own edges' diagnostic
+  buckets. Every edge-subject diagnostic is an error that makes a report unclean or sits
+  on an incomplete node the isolation check keeps scoped edits away from, so the
+  `EdgeDiagnostics` fallback is a guard no W9 or test edit reaches. NFR-15 is not passed:
+  the R machine, Linux and macOS were not measured, and exec edits still rerun the state
+  pass in full (A02).
+- **Rebased onto dev `a0e9f0b` (C04a merged):** fmt, Clippy, warnings-denied rustdoc,
+  and debug and release tests rerun on the rebased source: **1,263 passed, 0 failed,
+  15 ignored** each.
