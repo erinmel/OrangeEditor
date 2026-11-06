@@ -12,7 +12,7 @@ contract or a passed product performance gate. Branch and release policy remains
 | Repository rules | Every PR, merge group, dev/main push, manual, weekly; reusable by CD | Format; first-party/core dependency policy and its fixtures; actionlint 1.7.12 including shellcheck on Linux; zizmor 1.30.1; platform-selection and release-contract tests; disabled-release check |
 | Rust quality | Same | All-target/all-feature Clippy; rustdoc with warnings denied; measurement binary Clippy without allocator instrumentation |
 | Dependencies | Same | Pinned cargo-deny 0.20.2; refreshed advisories, bans, licenses and sources |
-| Native behavior | After repository rules | Workspace unit/integration/property/doctests on Linux x64, Windows x64 and macOS ARM64 |
+| Native behavior | After repository rules | Workspace unit/integration/property/doctests on Linux x64, Windows x64 and macOS ARM64; extended runs raise default proptest cases from 256 to 1,024 |
 | Optimized behavior | After repository rules, parallel with native tests | Linux release runtime/measurement regressions, both measurement feature modes, twelve execution workloads, example tests and all three headless example programs; release builds reused throughout. Extended weekly/manual runs also execute the full optimized workspace suite |
 | Compatibility | After repository rules | MSRV 1.97.1, all workspace targets; weekly and extended manual native tests also cover Linux ARM64 and macOS Intel x64 |
 | Required result | After all required jobs | Existing `rust` context fails on failure, cancellation or skipping, including any failed native matrix member |
