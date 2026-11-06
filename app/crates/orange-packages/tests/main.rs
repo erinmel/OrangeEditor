@@ -3,9 +3,12 @@
 
 mod common;
 
+mod archive;
 mod defaults;
+mod durable;
 mod lifecycle;
 mod recovery;
 mod redaction;
 mod retention;
+mod schemas;
 mod specializations;

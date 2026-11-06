@@ -46,7 +46,7 @@ The optional package manifest `localization` field is required when a package co
 }
 ```
 
-Map keys in `arguments` are local message IDs; messages without arguments omit that entry. The complete v1 type vocabulary is `string`, `i64`, `u64`, `f64`, `timestamp`, `duration`, encoded as in 12 §6.2. `default_locale` MUST be `en`; catalogue locale tags are matched case-insensitively and duplicate equivalent tags are rejected. Catalogue files use local IDs; the host adds the owning package prefix. Example source resource:
+Map keys in `arguments` are local message IDs; messages without arguments omit that entry. The complete v1 type vocabulary is `string`, `i64`, `u64`, `f64`, `timestamp`, `duration`, encoded as in 12 §6.2. `default_locale` MUST be `en`; catalogue locale tags are matched case-insensitively and duplicate equivalent tags are rejected. Since K01 (2026-11-06) `orange-packages` enforces this field shape when it decodes a manifest: tags must have the BCP 47 shape (a 2–3 or 5–8 letter language subtag, then 1–8 character alphanumeric subtags), each catalogue list is a non-empty set of distinct `.ftl` archive paths, a file serves one locale, message IDs are `[a-z][a-z0-9-]*`, argument names `[a-z][a-z0-9_]*`, and counts are bounded (256 locales, 64 files per locale, 4,096 messages, 32 arguments each; unmeasured starting points). Catalogue content validation below remains host work. Catalogue files use local IDs; the host adds the owning package prefix. Example source resource:
 
 ```ftl
 node-add-label = Add

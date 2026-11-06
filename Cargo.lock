@@ -342,6 +342,7 @@ dependencies = [
  "orange-model",
  "serde",
  "serde_json",
+ "sha2",
  "thiserror",
 ]
 

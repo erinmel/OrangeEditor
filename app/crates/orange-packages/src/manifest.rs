@@ -12,6 +12,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::json::{self, Problem};
+use crate::path::ArchivePath;
+use crate::sections::{self, Execution, Localization, PanelId};
+
 /// The only manifest `format` this version reads.
 pub const MANIFEST_FORMAT: &str = "orange.plugin";
 /// The only manifest `format_version` this version reads.
@@ -113,6 +117,96 @@ pub enum ManifestError {
         /// The repeated provider ID.
         id: String,
     },
+    /// An object repeats a key; readers that keep the first or the last would disagree.
+    #[error("manifest repeats key {0}")]
+    DuplicateKey(Rejected),
+    /// A number is not an integer within ±(2^53 − 1).
+    #[error("manifest numbers must be integers within 2^53")]
+    Number,
+    /// A dependency lock digest is not `sha256:` and 64 lowercase hexadecimal digits.
+    #[error("invalid dependency digest {0}")]
+    DependencyDigest(Rejected),
+    /// `execution.kind` is not `wasm-component` or `worker`. Native libraries are refused.
+    #[error("unsupported execution kind {0}")]
+    ExecutionKind(Rejected),
+    /// The component world is not `orange:expansion/<name>@<x.y.z>`.
+    #[error("invalid component world {0}")]
+    ComponentWorld(Rejected),
+    /// The worker wire version is not [`WORKER_WIRE_VERSION`](crate::WORKER_WIRE_VERSION).
+    #[error("unsupported worker wire version {0}")]
+    WorkerWireVersion(u64),
+    /// A worker section lists no targets.
+    #[error("worker execution lists no targets")]
+    WorkerTargets,
+    /// Two worker targets share an operating system and architecture.
+    #[error("worker target {os:?}/{arch:?} is listed twice")]
+    DuplicateWorkerTarget {
+        /// Target operating system.
+        os: crate::TargetOs,
+        /// Target architecture.
+        arch: crate::TargetArch,
+    },
+    /// A manifest reference to an archive file is not a valid archive path.
+    #[error(transparent)]
+    Path(#[from] crate::PathError),
+    /// A panel ID is not `<package>/<local-id>`.
+    #[error("invalid panel id {0}")]
+    PanelId(Rejected),
+    /// A panel lies outside the package's own namespace.
+    #[error("panel `{panel}` is outside package namespace `{package}`")]
+    PanelNamespace {
+        /// The panel ID.
+        panel: String,
+        /// The package ID that owns the namespace.
+        package: String,
+    },
+    /// A panel is listed twice.
+    #[error("panel `{0}` is listed twice")]
+    DuplicatePanel(String),
+    /// `localization.format_version` is not 1.
+    #[error("unsupported localization format version {0}")]
+    LocalizationFormatVersion(u64),
+    /// `localization.format` is not `fluent`.
+    #[error("unsupported localization format {0}")]
+    LocalizationFormat(Rejected),
+    /// `localization.default_locale` is not `en`.
+    #[error("default locale {0} is not `en`")]
+    DefaultLocale(Rejected),
+    /// A catalogue key is not a BCP 47 tag shape.
+    #[error("invalid locale tag {0}")]
+    LocaleTag(Rejected),
+    /// Two catalogue tags are equal ignoring ASCII case.
+    #[error("locale {0} is listed twice")]
+    DuplicateLocale(Rejected),
+    /// No catalogue for the default locale `en`.
+    #[error("no catalogue for the default locale")]
+    MissingDefaultCatalog,
+    /// A locale lists no catalogue files.
+    #[error("locale {0} lists no catalogue files")]
+    EmptyCatalog(Rejected),
+    /// A catalogue file is not an `.ftl` file.
+    #[error("catalogue file {0} is not .ftl")]
+    CatalogFile(Rejected),
+    /// One catalogue file is listed twice, possibly under two locales.
+    #[error("catalogue file {0} is listed twice")]
+    DuplicateCatalogFile(Rejected),
+    /// An argument schema names a message ID outside `[a-z][a-z0-9-]*`.
+    #[error("invalid message id {0}")]
+    MessageId(Rejected),
+    /// An argument name is outside `[a-z][a-z0-9_]*`.
+    #[error("invalid argument name {0}")]
+    ArgumentName(Rejected),
+    /// An argument type is not one of the 13 §3 vocabulary.
+    #[error("invalid argument type {0}")]
+    ArgumentType(Rejected),
+    /// A section lists more items than the format allows.
+    #[error("{section} exceeds {limit} items")]
+    SectionLimit {
+        /// The section, as a manifest path.
+        section: &'static str,
+        /// The format's limit.
+        limit: usize,
+    },
 }
 
 impl ManifestError {
@@ -138,6 +232,31 @@ impl ManifestError {
             Self::Slot(_) => "packages/manifest-slot",
             Self::ProviderId(_) => "packages/manifest-provider-id",
             Self::DuplicateProvider { .. } => "packages/manifest-duplicate-provider",
+            Self::DuplicateKey(_) => "packages/manifest-duplicate-key",
+            Self::Number => "packages/manifest-number",
+            Self::DependencyDigest(_) => "packages/manifest-dependency-digest",
+            Self::ExecutionKind(_) => "packages/manifest-execution-kind",
+            Self::ComponentWorld(_) => "packages/manifest-component-world",
+            Self::WorkerWireVersion(_) => "packages/manifest-worker-wire-version",
+            Self::WorkerTargets => "packages/manifest-worker-targets",
+            Self::DuplicateWorkerTarget { .. } => "packages/manifest-duplicate-worker-target",
+            Self::Path(_) => "packages/manifest-path",
+            Self::PanelId(_) => "packages/manifest-panel-id",
+            Self::PanelNamespace { .. } => "packages/manifest-panel-namespace",
+            Self::DuplicatePanel(_) => "packages/manifest-duplicate-panel",
+            Self::LocalizationFormatVersion(_) => "packages/manifest-localization-format-version",
+            Self::LocalizationFormat(_) => "packages/manifest-localization-format",
+            Self::DefaultLocale(_) => "packages/manifest-default-locale",
+            Self::LocaleTag(_) => "packages/manifest-locale-tag",
+            Self::DuplicateLocale(_) => "packages/manifest-duplicate-locale",
+            Self::MissingDefaultCatalog => "packages/manifest-missing-default-catalog",
+            Self::EmptyCatalog(_) => "packages/manifest-empty-catalog",
+            Self::CatalogFile(_) => "packages/manifest-catalog-file",
+            Self::DuplicateCatalogFile(_) => "packages/manifest-duplicate-catalog-file",
+            Self::MessageId(_) => "packages/manifest-message-id",
+            Self::ArgumentName(_) => "packages/manifest-argument-name",
+            Self::ArgumentType(_) => "packages/manifest-argument-type",
+            Self::SectionLimit { .. } => "packages/manifest-section-limit",
         }
     }
 }
@@ -275,13 +394,27 @@ impl HostApiRange {
     }
 }
 
-/// An exact dependency on another package version.
+/// An exact dependency lock: another package version and its content digest. The store
+/// refuses to install against an active version with any other digest, and the lock is part
+/// of the dependent's own content digest, so neither side can be swapped silently.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct Dependency {
     /// The package depended on.
     pub id: PackageId,
     /// Its exact version.
     pub version: PackageVersion,
+    /// Its content digest in lock form, `sha256:<64 hex>`.
+    pub content_digest: String,
+}
+
+impl Dependency {
+    /// The exact version depended on.
+    pub fn key(&self) -> PackageKey {
+        PackageKey {
+            id: self.id.clone(),
+            version: self.version.clone(),
+        }
+    }
 }
 
 /// Kinds of replaceable slot other than node providers (04 "Installation, activation and
@@ -361,8 +494,9 @@ pub struct ProviderContribution {
 /// A validated package manifest. Only [`PackageManifest::from_json`] constructs one, so every
 /// value satisfies the format 1 rules.
 ///
-/// `execution`, `permissions`, `localization`, `panels` and `license` are retained as
-/// written but not interpreted yet; granting authority and loading code are later work.
+/// `execution`, `contributions.panels` and `localization` are typed and enforced
+/// ([`Execution`], [`PanelId`], [`Localization`]). `permissions` and `license` are retained as
+/// written but not interpreted; granting authority is later work (K03).
 #[derive(Clone, PartialEq)]
 pub struct PackageManifest {
     key: PackageKey,
@@ -372,16 +506,10 @@ pub struct PackageManifest {
     dependencies: Vec<Dependency>,
     nodes: Vec<DefinitionId>,
     providers: Vec<ProviderContribution>,
-    opaque: Opaque,
-}
-
-/// Manifest sections retained but not interpreted by this version.
-#[derive(Clone, PartialEq, Default)]
-struct Opaque {
-    execution: Option<Value>,
+    execution: Option<Execution>,
+    panels: Vec<PanelId>,
+    localization: Option<Localization>,
     permissions: Option<Value>,
-    localization: Option<Value>,
-    panels: Option<Value>,
     license: Option<String>,
 }
 
@@ -401,10 +529,20 @@ impl fmt::Debug for ProviderSlot {
     }
 }
 
-/// A bounded summary: identity, host API range, counts and the presence of each opaque
-/// section, never its content. Read content through the accessors.
+/// A bounded summary: identity, host API range, counts, section shapes and the presence of
+/// each uninterpreted section, never its content. Read content through the accessors.
 impl fmt::Debug for PackageManifest {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let permissions = match &self.permissions {
+            None => "absent".to_owned(),
+            Some(Value::Array(items)) => format!("array({} items)", items.len()),
+            Some(Value::Object(fields)) => format!("object({} fields)", fields.len()),
+            Some(_) => "scalar".to_owned(),
+        };
+        let license = self.license.as_deref().map_or_else(
+            || "absent".to_owned(),
+            |text| Rejected::from(text).to_string(),
+        );
         f.debug_struct("PackageManifest")
             .field("key", &self.key)
             .field("publisher", &self.publisher)
@@ -412,51 +550,33 @@ impl fmt::Debug for PackageManifest {
             .field("dependencies", &self.dependencies.len())
             .field("nodes", &self.nodes.len())
             .field("providers", &self.providers.len())
-            .field("opaque", &self.opaque)
+            .field("execution", &self.execution)
+            .field("panels", &self.panels.len())
+            .field("localization", &self.localization)
+            .field("permissions", &format_args!("{permissions}"))
+            .field("license", &format_args!("{license}"))
             .finish_non_exhaustive()
     }
 }
 
-/// Which opaque sections exist and how large they are, never their content.
-impl fmt::Debug for Opaque {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let section = |value: &Option<Value>| match value {
-            None => "absent".to_owned(),
-            Some(Value::Null) => "null".to_owned(),
-            Some(Value::Bool(_)) => "bool".to_owned(),
-            Some(Value::Number(_)) => "number".to_owned(),
-            Some(Value::String(text)) => format!("string({} chars)", text.chars().count()),
-            Some(Value::Array(items)) => format!("array({} items)", items.len()),
-            Some(Value::Object(fields)) => format!("object({} fields)", fields.len()),
-        };
-        let license = self.license.as_deref().map_or_else(
-            || "absent".to_owned(),
-            |text| Rejected::from(text).to_string(),
-        );
-        f.debug_struct("Opaque")
-            .field("execution", &format_args!("{}", section(&self.execution)))
-            .field(
-                "permissions",
-                &format_args!("{}", section(&self.permissions)),
-            )
-            .field(
-                "localization",
-                &format_args!("{}", section(&self.localization)),
-            )
-            .field("panels", &format_args!("{}", section(&self.panels)))
-            .field("license", &format_args!("{license}"))
-            .finish()
-    }
-}
-
 impl PackageManifest {
-    /// Decodes and validates a format 1 manifest. Unknown fields are rejected so a misspelt
-    /// field cannot silently drop a declaration.
+    /// Decodes and validates a format 1 manifest. Unknown fields, duplicate object keys and
+    /// non-integer numbers are rejected so every reader sees the same declarations.
     pub fn from_json(bytes: &[u8]) -> Result<Self, ManifestError> {
+        Self::decode(bytes).map(|(manifest, _)| manifest)
+    }
+
+    /// Decodes a manifest and returns it with its canonical body: the canonical JSON of the
+    /// manifest object without its `integrity` member, which the content digest covers.
+    pub(crate) fn decode(bytes: &[u8]) -> Result<(Self, Vec<u8>), ManifestError> {
         if bytes.len() > MAX_MANIFEST_BYTES {
             return Err(ManifestError::TooLarge { bytes: bytes.len() });
         }
-        let value: Value = serde_json::from_slice(bytes).map_err(decode)?;
+        let mut value = match json::parse(bytes).map_err(decode)? {
+            Ok(value) => value,
+            Err(Problem::DuplicateKey(key)) => return Err(ManifestError::DuplicateKey(key.into())),
+            Err(Problem::Number) => return Err(ManifestError::Number),
+        };
         let format = value.get("format").and_then(Value::as_str);
         if format != Some(MANIFEST_FORMAT) {
             return Err(ManifestError::Format(format.unwrap_or_default().into()));
@@ -467,8 +587,16 @@ impl PackageManifest {
                 format_version.unwrap_or_default(),
             ));
         }
+        let integrity = value
+            .as_object_mut()
+            .and_then(|members| members.remove("integrity"));
+        let mut body = Vec::with_capacity(bytes.len());
+        json::write_canonical(&value, &mut body);
+        if let (Some(integrity), Some(members)) = (integrity, value.as_object_mut()) {
+            members.insert("integrity".to_owned(), integrity);
+        }
         let wire: WireManifest = serde_json::from_value(value).map_err(decode)?;
-        wire.validate()
+        Ok((wire.validate()?, body))
     }
 
     /// The package ID and exact version.
@@ -486,12 +614,14 @@ impl PackageManifest {
         self.host_api
     }
 
-    /// The payload digest in lock form, `sha256:<64 hex>`, as document locks record it.
+    /// The declared content digest in lock form, `sha256:<64 hex>`, as document and
+    /// dependency locks record it. It covers the canonical manifest body and every other
+    /// archive file; [`read_archive`](crate::read_archive) verifies it.
     pub fn content_digest(&self) -> &str {
         &self.content_digest
     }
 
-    /// Exact dependencies, in manifest order.
+    /// Exact dependency locks, in manifest order.
     pub fn dependencies(&self) -> &[Dependency] {
         &self.dependencies
     }
@@ -506,33 +636,41 @@ impl PackageManifest {
         &self.providers
     }
 
-    /// The declared license expression, if any.
-    pub fn license(&self) -> Option<&str> {
-        self.opaque.license.as_deref()
+    /// How the package's code runs; `None` for a data-only package.
+    pub fn execution(&self) -> Option<&Execution> {
+        self.execution.as_ref()
     }
 
-    /// The uninterpreted `execution` section.
-    pub fn execution(&self) -> Option<&Value> {
-        self.opaque.execution.as_ref()
+    /// Declarative panels the package contributes, in manifest order.
+    pub fn panels(&self) -> &[PanelId] {
+        &self.panels
+    }
+
+    /// The localization section (13 §3).
+    pub fn localization(&self) -> Option<&Localization> {
+        self.localization.as_ref()
     }
 
     /// The uninterpreted `permissions` section. Nothing is granted from it yet.
     pub fn permissions(&self) -> Option<&Value> {
-        self.opaque.permissions.as_ref()
+        self.permissions.as_ref()
     }
 
-    /// The uninterpreted `localization` section (13 §3).
-    pub fn localization(&self) -> Option<&Value> {
-        self.opaque.localization.as_ref()
+    /// The declared license expression, if any.
+    pub fn license(&self) -> Option<&str> {
+        self.license.as_deref()
     }
 
-    /// The uninterpreted `contributions.panels` section.
-    pub fn panels(&self) -> Option<&Value> {
-        self.opaque.panels.as_ref()
+    /// Every archive file the manifest names: execution entries and catalogue files.
+    pub fn referenced_files(&self) -> impl Iterator<Item = &ArchivePath> {
+        self.execution
+            .iter()
+            .flat_map(Execution::entries)
+            .chain(self.localization.iter().flat_map(Localization::files))
     }
 }
 
-fn decode(error: serde_json::Error) -> ManifestError {
+pub(crate) fn decode(error: serde_json::Error) -> ManifestError {
     ManifestError::Decode {
         error: error.into(),
     }
@@ -568,6 +706,7 @@ struct WireManifest {
 struct WireDependency {
     id: String,
     version: String,
+    content_digest: String,
 }
 
 #[derive(Default, Deserialize)]
@@ -576,7 +715,7 @@ struct WireContributions {
     #[serde(default)]
     nodes: Vec<String>,
     #[serde(default)]
-    panels: Option<Value>,
+    panels: Vec<String>,
     #[serde(default)]
     providers: Vec<WireProvider>,
 }
@@ -592,7 +731,7 @@ struct WireProvider {
 #[serde(deny_unknown_fields)]
 struct WireIntegrity {
     algorithm: String,
-    payload_digest: String,
+    content_digest: String,
 }
 
 impl WireManifest {
@@ -627,31 +766,35 @@ impl WireManifest {
                 self.integrity.algorithm.into(),
             ));
         }
-        let digest = &self.integrity.payload_digest;
-        if digest.len() != 64
-            || !digest
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
+        let digest = &self.integrity.content_digest;
+        if !is_hex_digest(digest) {
             return Err(ManifestError::Digest);
         }
 
         let mut seen = BTreeSet::new();
         let mut dependencies = Vec::with_capacity(self.dependencies.len());
         for dependency in self.dependencies {
-            let dependency = Dependency {
+            let valid_digest = dependency
+                .content_digest
+                .strip_prefix("sha256:")
+                .is_some_and(is_hex_digest);
+            let parsed = Dependency {
                 id: dependency.id.parse()?,
                 version: dependency.version.parse()?,
+                content_digest: dependency.content_digest,
             };
-            if dependency.id == id {
-                return Err(ManifestError::SelfDependency);
-            }
-            if !seen.insert(dependency.id.clone()) {
-                return Err(ManifestError::DuplicateDependency(
-                    dependency.id.to_string(),
+            if !valid_digest {
+                return Err(ManifestError::DependencyDigest(
+                    parsed.content_digest.into(),
                 ));
             }
-            dependencies.push(dependency);
+            if parsed.id == id {
+                return Err(ManifestError::SelfDependency);
+            }
+            if !seen.insert(parsed.id.clone()) {
+                return Err(ManifestError::DuplicateDependency(parsed.id.to_string()));
+            }
+            dependencies.push(parsed);
         }
 
         let mut seen = BTreeSet::new();
@@ -692,6 +835,10 @@ impl WireManifest {
             providers.push(contribution);
         }
 
+        let execution = self.execution.map(sections::execution).transpose()?;
+        let panels = sections::panels(&id, self.contributions.panels)?;
+        let localization = self.localization.map(sections::localization).transpose()?;
+
         Ok(PackageManifest {
             content_digest: format!("sha256:{digest}"),
             key: PackageKey { id, version },
@@ -700,19 +847,25 @@ impl WireManifest {
             dependencies,
             nodes,
             providers,
-            opaque: Opaque {
-                execution: self.execution,
-                permissions: self.permissions,
-                localization: self.localization,
-                panels: self.contributions.panels,
-                license: self.license,
-            },
+            execution,
+            panels,
+            localization,
+            permissions: self.permissions,
+            license: self.license,
         })
     }
 }
 
+/// 64 lowercase hexadecimal digits.
+fn is_hex_digest(text: &str) -> bool {
+    text.len() == 64
+        && text
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 /// `ident { "." ident }` with `ident = [a-z][a-z0-9_]*` (11 §5.1 namespaces).
-fn is_namespace(text: &str) -> bool {
+pub(crate) fn is_namespace(text: &str) -> bool {
     text.len() <= MAX_NAME_BYTES
         && text.split('.').all(|ident| {
             let mut bytes = ident.bytes();

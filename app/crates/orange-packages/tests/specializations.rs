@@ -35,7 +35,7 @@ fn manifest() -> PackageManifest {
             "nodes": [ECHO],
             "providers": [{"slot": format!("node:{ECHO}@1"), "id": "impl"}]
         },
-        "integrity": {"algorithm": "sha256", "payload_digest": HEX}
+        "integrity": {"algorithm": "sha256", "content_digest": HEX}
     });
     PackageManifest::from_json(&serde_json::to_vec(&value).unwrap()).unwrap()
 }
