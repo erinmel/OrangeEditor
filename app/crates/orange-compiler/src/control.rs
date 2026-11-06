@@ -299,6 +299,8 @@ pub struct EventHandler {
     entry: ControlIx,
     capacity: usize,
     overflow: OverflowPolicy,
+    mode: ReentrancyMode,
+    max_parallel: usize,
 }
 impl EventHandler {
     pub fn entry(&self) -> ControlIx {
@@ -309,6 +311,14 @@ impl EventHandler {
     }
     pub fn overflow(&self) -> OverflowPolicy {
         self.overflow
+    }
+    /// Checked entry reentrancy policy. Replace remains outside the executable profile.
+    pub fn mode(&self) -> ReentrancyMode {
+        self.mode
+    }
+    /// Maximum simultaneously owned handler roots; one for Queue and Drop.
+    pub fn max_parallel(&self) -> usize {
+        self.max_parallel
     }
 }
 impl ControlNode {
@@ -823,10 +833,14 @@ fn prepare_events(
                 .activation
                 .as_ref()
                 .ok_or(CompileError::ValidationIncomplete)?;
-            if policy.mode != ReentrancyMode::Queue
-                || policy.capacity == 0
-                || policy.overflow == OverflowPolicy::Backpressure
-            {
+            let max_parallel = match (policy.mode, policy.max_parallel) {
+                (ReentrancyMode::Queue | ReentrancyMode::Drop, None) => 1,
+                (ReentrancyMode::Parallel, Some(max)) if max > 0 => {
+                    usize::try_from(max).map_err(|_| CompileError::ResourceLimit)?
+                }
+                _ => return Err(CompileError::UnsupportedNode { node: node_id }),
+            };
+            if policy.capacity == 0 || policy.overflow == OverflowPolicy::Backpressure {
                 return Err(CompileError::UnsupportedNode { node: node_id });
             }
             charge(graph_items, 1, cx.options.limits.max_graph_items)?;
@@ -837,6 +851,8 @@ fn prepare_events(
                 capacity: usize::try_from(policy.capacity)
                     .map_err(|_| CompileError::ResourceLimit)?,
                 overflow: policy.overflow,
+                mode: policy.mode,
+                max_parallel,
             };
             referenced
                 .entry(event_id)

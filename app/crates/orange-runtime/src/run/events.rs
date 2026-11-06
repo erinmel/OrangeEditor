@@ -1,6 +1,7 @@
-//! Run-scoped event fan-out and FIFO handler ownership. No handler executes in Emit.
+//! Run-scoped event fan-out, bounded reentrancy and FIFO delivery ownership.
+//! No handler executes in Emit.
 use super::*;
-use orange_model::document::OverflowPolicy;
+use orange_model::document::{OverflowPolicy, ReentrancyMode};
 use std::collections::BTreeSet;
 
 const LIMIT: KernelFault = KernelFault {
@@ -24,7 +25,9 @@ const DEPTH: KernelFault = KernelFault {
 pub struct RunEventStats {
     pub accepted: u64,
     pub delivered: u64,
+    /// Evicted or deliberately skipped deliveries, including a busy Drop handler.
     pub dropped: u64,
+    /// Capacity overflow outcomes and limit refusals; a busy Drop is not an overflow.
     pub overflows: u64,
     pub pending: usize,
     pub pending_bytes: usize,
@@ -51,8 +54,22 @@ struct Handler {
     entry: ControlIx,
     capacity: usize,
     overflow: OverflowPolicy,
+    mode: ReentrancyMode,
+    max_parallel: usize,
     pending: VecDeque<Envelope>,
-    active: bool,
+    /// Root identities remain owned through descendant/cleanup retirement. The existing
+    /// singleton set keeps serial handlers allocation-free and can identify a Replace
+    /// target when that separate cancellation policy is implemented.
+    active_roots: IdSet<u64>,
+}
+impl Handler {
+    fn has_slot(&self) -> bool {
+        self.active_roots.len() < self.max_parallel
+    }
+    fn drops_busy(&self) -> bool {
+        self.mode == ReentrancyMode::Drop
+            && (!self.pending.is_empty() || !self.active_roots.is_empty())
+    }
 }
 pub(super) struct ActivationTemplate {
     pub prepared: Arc<PreparedData>,
@@ -65,7 +82,7 @@ pub(super) struct ActivationTemplate {
 }
 pub(super) struct Events {
     handlers: Vec<Handler>,
-    /// Only idle handlers with pending deliveries are in this ordered set.
+    /// Only handlers with an available root slot and pending deliveries are ready.
     ready: BTreeSet<(u64, usize)>,
     /// Reservation ownership is independent of a temporarily checked-out frame.
     active: BTreeMap<u64, (usize, usize)>,
@@ -94,8 +111,10 @@ impl Events {
                             entry: handler.entry(),
                             capacity: handler.capacity(),
                             overflow: handler.overflow(),
+                            mode: handler.mode(),
+                            max_parallel: handler.max_parallel(),
                             pending: VecDeque::new(),
-                            active: false,
+                            active_roots: IdSet::default(),
                         });
                         index
                     })
@@ -127,7 +146,7 @@ impl Events {
     }
     fn make_ready(&mut self, handler: usize) {
         let queue = &self.handlers[handler];
-        if !queue.active
+        if queue.has_slot()
             && let Some(front) = queue.pending.front()
         {
             self.ready.insert((front.metadata.ingestion_seq, handler));
@@ -135,12 +154,14 @@ impl Events {
     }
     fn finish(&mut self, activation: u64) -> Result<(), RunError> {
         if let Some((handler, charge)) = self.active.remove(&activation) {
+            if !self.handlers[handler].active_roots.remove(&activation) {
+                return Err(RunError::InvalidState);
+            }
             self.stats.live_payload_bytes = self
                 .stats
                 .live_payload_bytes
                 .checked_sub(charge)
                 .ok_or(RunError::InvalidState)?;
-            self.handlers[handler].active = false;
             self.make_ready(handler);
         }
         Ok(())
@@ -166,7 +187,7 @@ impl Events {
         self.active.clear();
         self.stats.live_payload_bytes = 0;
         for handler in &mut self.handlers {
-            handler.active = false;
+            handler.active_roots.clear();
         }
     }
     pub fn release(&mut self, high_water: usize) {
@@ -271,8 +292,13 @@ impl Run {
         let mut changes = Vec::with_capacity(self.events.by_event[event].len());
         for &handler in &self.events.by_event[event] {
             let queue = &self.events.handlers[handler];
-            let overflow = queue.pending.len() >= queue.capacity;
-            let (remove, skip) = if overflow {
+            // A busy Drop target is a deliberate policy loss, not a capacity overflow.
+            // Type/causal checks above still apply, but no payload is retained for it.
+            let drops_busy = queue.drops_busy();
+            let overflow = !drops_busy && queue.pending.len() >= queue.capacity;
+            let (remove, skip) = if drops_busy {
+                (0, true)
+            } else if overflow {
                 match queue.overflow {
                     OverflowPolicy::DropNewest => (0, true),
                     OverflowPolicy::DropOldest => (1, false),
@@ -289,11 +315,12 @@ impl Run {
                 bytes = bytes.checked_sub(old.charge).ok_or(LIMIT)?;
                 live = live.checked_sub(old.charge).ok_or(LIMIT)?;
             }
-            let retained = charge
-                .checked_mul(plan.value_targets(queue.entry).len())
-                .ok_or(LIMIT)?;
-            let delivery_charge = charge.max(retained);
+            let mut delivery_charge = 0;
             if !skip {
+                let retained = charge
+                    .checked_mul(plan.value_targets(queue.entry).len())
+                    .ok_or(LIMIT)?;
+                delivery_charge = charge.max(retained);
                 pending = pending.checked_add(1).ok_or(LIMIT)?;
                 bytes = bytes.checked_add(delivery_charge).ok_or(LIMIT)?;
                 live = live.checked_add(delivery_charge).ok_or(LIMIT)?;
@@ -382,6 +409,9 @@ impl Run {
         }
         let (_, handler) = *self.events.ready.first().ok_or(RunError::InvalidState)?;
         let queue = &self.events.handlers[handler];
+        if !queue.has_slot() {
+            return Err(RunError::InvalidState);
+        }
         let entry = queue.entry;
         let envelope = queue.pending.front().ok_or(RunError::InvalidState)?;
         let template = self.event_template.as_ref().ok_or(RunError::InvalidState)?;
@@ -430,7 +460,9 @@ impl Run {
         self.events.remove_ready(handler);
         let queue = &mut self.events.handlers[handler];
         let envelope = queue.pending.pop_front().ok_or(RunError::InvalidState)?;
-        queue.active = true;
+        if !queue.active_roots.insert(sequence) {
+            return Err(RunError::InvalidState);
+        }
         self.events
             .active
             .insert(sequence, (handler, envelope.charge));
@@ -469,6 +501,9 @@ impl Run {
             cleanup_remaining: 0,
         };
         self.ready.push_back(strand_id, strand);
+        // Parallel may admit another pending root before the first one retires. Only
+        // the queue head participates, preserving global ingestion/handler ordering.
+        self.events.make_ready(handler);
         Ok(true)
     }
     pub(super) fn retire_activation(&mut self, id: u64) -> Result<(), RunError> {

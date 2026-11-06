@@ -3179,3 +3179,36 @@ MSRV remains 1.97.1; native Linux/macOS and MSRV checks were not run locally.
   One current map entry per controlled definition is retained; no per-run callback or
   graph traversal is added. No timing/RSS/NFR qualification or full-core completion is
   claimed. The earlier dated default-resurrection limitation is superseded by P01.
+
+### C01 — bounded Drop/Parallel events and local-only benchmarks — 2026-11-06
+
+Base dev `ab27fa1` (P01 integrated); Rust/Cargo 1.99.1, Windows x64 MSVC,
+edition 2024, default workspace features, unchanged lock SHA256
+`8BB91CAAFF5A7106E5752D49D9AB285D4566A1B69B55AD1CA81E10E1D70BB068`.
+MSRV remains 1.97.1; native/MSRV CI is required before integration.
+
+- Checked event metadata now admits Queue, Drop and positive-cap Parallel. Drop is
+  busy with pending or active work, deliberately drops without an overflow count,
+  and still validates payload and causal depth. Parallel retains deterministic eligible
+  head ordering and pending-only queue capacity. Active root identity/payload ownership
+  lasts through all descendants and cancellation cleanup. Replace remains unsupported.
+- Twelve new real-graph acceptance tests cover pending/active Drop and reacceptance,
+  bounded parallel payload/local isolation, queue overflow, all-handler admission
+  atomicity, exact/one-over live and aggregate budgets, global activation pressure,
+  graceful/immediate/fault stop, disposal and Fork-race cleanup before the next entry.
+  Focused event suite: 34 passed. Separate production review found no actionable defect;
+  supplementary agent review does not constitute an independent human approval.
+- User-selected CI policy removes `.github/workflows/performance.yml` and the shared
+  twelve-workload timing runner. Release CD inherits that removal. Native/MSRV,
+  dependency/workflow security, examples and deterministic resource-bound correctness
+  tests remain. Local named-machine benchmarking tools and historical evidence remain;
+  no hosted timing comparison or new performance qualification is claimed.
+- PASS: full workspace debug and full workspace release each **1,228 passed, zero
+  failed, 15 opt-in measurements ignored**; fmt, all-target/all-feature Clippy with
+  warnings denied, warnings-denied rustdoc, 15 repository helper tests, dependency
+  policy and whitespace. Cargo used locked/offline dependencies, CARGO_INCREMENTAL=0
+  and debug line-table symbols. No new dependency, saved graph, provider identity,
+  message key, host service or execution-domain boundary. Logs remain ignored locally.
+- Contracts/trace updated in README and 01/03/06/08/11/12/14/18. This completes the
+  supported Drop/Parallel increment only; Replace, general ingress/replay/reactivity,
+  resources/services, concrete adapters and product NFR qualification remain open.

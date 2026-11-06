@@ -544,17 +544,18 @@ fn accepted_event_queue_is_bounded_and_overflow_policy_selects_survivor() {
 #[test]
 fn event_admission_rejects_unsupported_scopes_reentrancy_and_payload_types() {
     let event = |scope: &str, payload: &str| json!({"id":EVENT,"name":"pulse","payload":payload,"scope":scope});
-    for mode in ["drop", "replace", "parallel"] {
-        let mut handler = on_event(3, 0, 4, "drop-newest");
-        handler["activation"]["mode"] = json!(mode);
-        if mode == "parallel" {
-            handler["activation"]["max_parallel"] = json!(2);
-        }
-        assert!(
-            compile_with_event(vec![handler], vec![], vec![], event("run", "core/u64@1")).is_err(),
-            "unsupported {mode} reentrancy must not enter a plan"
-        );
-    }
+    let mut replacement = on_event(3, 0, 4, "drop-newest");
+    replacement["activation"]["mode"] = json!("replace");
+    assert!(
+        compile_with_event(
+            vec![replacement],
+            vec![],
+            vec![],
+            event("run", "core/u64@1")
+        )
+        .is_err(),
+        "unsupported Replace reentrancy must not enter a plan"
+    );
     let mut backpressure = on_event(3, 0, 4, "backpressure");
     backpressure["activation"]["overflow"] = json!("backpressure");
     assert!(
@@ -1579,3 +1580,6 @@ fn queued_handler_blocked_by_activation_limit_waits_for_timer_without_losing_wor
 
 #[path = "support/budget_events.rs"]
 mod budget_events;
+
+#[path = "support/event_modes.rs"]
+mod event_modes;
