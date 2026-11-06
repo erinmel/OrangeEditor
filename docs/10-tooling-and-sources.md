@@ -3440,4 +3440,65 @@ Base: the L01a commit above; Rust/Cargo 1.99.1 Windows x86_64 MSVC (MSRV 1.97.1 
 - **Limits:** a package-implemented `eq`, also nested in a derive, has no executable contract (L05/K04) and stays refused. No record or enum order exists. CAS still runs as one indivisible step charged by the values' nominal size, not by the comparison it walks. The timings are single-machine descriptive evidence, not thresholds.
 - **Rebased onto dev `a0e9f0b` (C04a merged):** fmt, Clippy, warnings-denied rustdoc,
   and debug and release tests rerun on the rebased source: **1,272 passed, 0 failed,
+
+### K01 — package schemas, canonical archive and durable journal — 2026-11-06
+
+Base `dev` 319b9ca; Rust 1.99.1 (`58cf8f9c3`), Cargo 1.99.1, Windows x86_64 MSVC,
+edition 2024, default workspace features. MSRV remains 1.97.1; native Linux/macOS and
+MSRV checks were not run locally.
+
+- **Dependency:** `orange-packages` adds `sha2.workspace = true` (=0.11.1), approved
+  for this unit. The workspace already pinned it for `orange-model` and
+  `orange-runtime`, so `Cargo.lock` gains only the `orange-packages → sha2` edge and no
+  package; new lock SHA256
+  `4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000` (was
+  `8BB91CAA…BB068`). No archive or compression crate is used. Metadata policy and its
+  19 fixtures pass.
+- **Schemas (E13):** strict manifest JSON (duplicate keys, numbers other than
+  integers within 2^53 rejected at any depth), typed `execution` (component/worker;
+  native libraries refused), `contributions.panels` and 13 §3 `localization`;
+  dependency locks carry `content_digest` and install checks it against the active
+  dependency (`DependencyDigest`). `integrity.payload_digest` became
+  `content_digest` without a reader for the unreleased name. `permissions` stays
+  uninterpreted (K03).
+- **Archive:** std-only canonical uncompressed `.orangeplug` layout and
+  domain-separated content digest over the RFC 8785 manifest body (without
+  `integrity`) and every file (04 "Canonical archive"; ADR-07 K01 amendment).
+  `read_archive` checks quotas against declared sizes before reading, never allocates
+  by a declared size, and rejects traversal/absolute/drive/ADS/device paths, link,
+  directory and unknown entry kinds, nonzero modes, case-duplicate and file/directory
+  collisions, out-of-order and trailing data, flags (compression), missing referenced
+  files, non-Wasm component entries, undeclared PE/ELF/Mach-O bytes and digest
+  mismatch; a tampered payload, manifest or dependency lock fails before any byte is
+  usable, and a re-digested edit is a different package no lock names.
+  `DirectorySink` refuses a linked or reparse-point parent (exercised here with a
+  Windows junction, since unprivileged symbolic links are denied) and deletes its
+  directory on failure. Cross-language vectors
+  (`tests/fixtures/archive-v1.json`) are reproduced byte for byte by the Rust
+  encoder/reader and the independent `tools/package-archive.mjs`.
+- **Journal:** `FileJournal` (length/CRC-32/JSON records). Cutting the log inside
+  every record header, mid-record and at every boundary of one install always
+  recovers the old or new complete committed set and reports the half-staged version;
+  an appended torn tail is truncated and later appends stay readable; compaction is
+  temp-file-plus-rename and a stale temp file leaves the old log; other formats and
+  unknown CRC-valid record shapes are refused without truncation (no historical
+  readers). Error reasons name the operation and I/O kind, not paths.
+- **Commands/results:** `cargo fmt --all --check`; `cargo clippy --workspace
+  --all-targets --all-features --locked --offline -- -D warnings`; `cargo test
+  --workspace --locked --offline` and the same with `--release`; warnings-denied
+  `cargo doc --workspace --no-deps --all-features --locked --offline`;
+  `node --test tools/*.test.mjs` (17 passed); `node tools/check-cargo-metadata.mjs`
+  plus `--self-test`; `git diff --check`. Debug and release each report
+  **1,285 passed, zero failed, 15 opt-in measurements ignored**. Package integration tests: 69 passed (unit 7). Cargo checks used
+  `CARGO_INCREMENTAL=0`; debug tests used `CARGO_PROFILE_TEST_DEBUG=line-tables-only`.
+- **Limits:** quota defaults (256 MiB archive/total, 128 MiB file, 4,096 entries,
+  manifest 1 MiB, locale/panel counts) are unmeasured starting points; no timing,
+  memory or hostile-corpus measurement ran. Windows has no std directory flush, so
+  rename durability relies on NTFS; no power-loss or per-filesystem crash injection
+  ran. The native-code sniff is a header check, not malware detection, and a text file
+  beginning `MZ` is refused. Definition/specialization file locations in the archive,
+  catalogue content validation, signatures and trust, grants, code loading and the
+  K02 component probe remain open; no gate is passed by this entry.
+- **Rebased onto dev `a0e9f0b` (C04a merged):** fmt, Clippy, warnings-denied rustdoc,
+  and debug and release tests rerun on the rebased source: **1,295 passed, 0 failed,
   15 ignored** each.
