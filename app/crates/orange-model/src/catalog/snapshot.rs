@@ -370,6 +370,13 @@ impl RegistryBuilder {
         self
     }
 
+    /// Clears the new-binding choice for `definition` without removing any provider or
+    /// changing an existing document lock or binding. Clearing an absent choice is inert.
+    pub fn clear_new_binding_default(mut self, definition: DefinitionRef) -> Self {
+        self.new_binding_defaults.remove(&definition);
+        self
+    }
+
     /// Validates and publishes an immutable snapshot whose generation is larger than that of
     /// every snapshot built before it in this process.
     pub fn build(self) -> Result<Arc<RegistrySnapshot>, RegistryError> {

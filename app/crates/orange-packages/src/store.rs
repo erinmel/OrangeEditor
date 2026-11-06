@@ -319,9 +319,9 @@ pub struct PackageStore<J = MemoryJournal> {
     published: BTreeMap<PackageKey, String>,
     /// Revoked content digests, which no transaction or rollback can reinstate.
     revoked: BTreeSet<String>,
-    /// Definitions a host selected a default for, now or before a restart. Their current
-    /// default, together with those of definitions active packages implement, is what a
-    /// checkpoint records.
+    /// Controlled definitions from successful commits or recovery. Keys survive package
+    /// retirement and rollback so a checkpoint can preserve an explicitly absent choice.
+    /// Failed transactions never add keys.
     tracked: BTreeSet<DefinitionRef>,
     journal: J,
 }
@@ -449,12 +449,8 @@ impl<J: Journal> PackageStore<J> {
             let item = pending.remove(ready.unwrap_or(0));
             staging.install(item)?;
         }
-        let mut current = staging.current;
-        let mut tracked = BTreeSet::new();
-        if let Some(defaults) = &recovery.defaults {
-            current = apply_recovered_defaults(current, defaults)?;
-            tracked.extend(defaults.keys().cloned());
-        }
+        let current = apply_recovered_defaults(staging.current, &recovery.defaults)?;
+        let tracked = recovery.defaults.keys().cloned().collect();
         let mut store = Self {
             host_api,
             current,
@@ -468,7 +464,7 @@ impl<J: Journal> PackageStore<J> {
             journal,
         };
         let checkpoint = store.current.clone();
-        store.journal_commit(&checkpoint, None)?;
+        store.journal_commit(&checkpoint, None, None)?;
         Ok(store)
     }
 
@@ -534,7 +530,12 @@ impl<J: Journal> PackageStore<J> {
     /// that was not committed is no longer reported as abandoned; compact when no
     /// transaction is in flight. A journal whose `compact` fails keeps its entries.
     pub fn compact_journal(&mut self) -> Result<(), JournalError> {
-        let entry = self.checkpoint(&self.current, &self.published, &self.revoked);
+        let entry = Self::checkpoint(
+            &self.current,
+            &self.published,
+            &self.revoked,
+            self.defaults_of(&self.current),
+        );
         self.journal.compact(entry)
     }
 
@@ -546,17 +547,17 @@ impl<J: Journal> PackageStore<J> {
     }
 
     fn checkpoint(
-        &self,
         next: &Committed,
         published: &BTreeMap<PackageKey, String>,
         revoked: &BTreeSet<String>,
+        defaults: BTreeMap<DefinitionRef, Option<ProviderKey>>,
     ) -> JournalEntry {
         JournalEntry::Committed {
             generation: next.snapshot.generation(),
             active: next.active(),
             published: published.clone(),
             revoked: revoked.clone(),
-            defaults: Some(self.defaults_of(next)),
+            defaults,
         }
     }
 
@@ -613,9 +614,8 @@ impl<J: Journal> PackageStore<J> {
         let snapshot = RegistryBuilder::from_snapshot(&self.current.snapshot)
             .new_binding_default(definition.clone(), provider)
             .build()?;
-        self.tracked.insert(definition);
         let packages = self.current.packages.clone();
-        self.commit(snapshot, packages, None)
+        self.commit(snapshot, packages, None, Some(definition))
     }
 
     /// Hides an active version: its providers leave the next generation and any default
@@ -727,7 +727,7 @@ impl<J: Journal> PackageStore<J> {
         let journaled = retired
             .iter()
             .try_for_each(|key| self.transition(key, PackageState::Removed))
-            .and_then(|()| self.journal_commit(&previous, None));
+            .and_then(|()| self.journal_commit(&previous, None, None));
         if let Err(error) = journaled {
             previous.packages.retain(|key, _| !kept.contains(key));
             self.history.push_back(previous);
@@ -769,22 +769,24 @@ impl<J: Journal> PackageStore<J> {
         })
     }
 
-    /// The exact new-binding defaults a checkpoint of `next` records: those of every tracked
-    /// definition and of every definition an active package provider implements.
-    fn defaults_of(&self, next: &Committed) -> BTreeMap<DefinitionRef, ProviderKey> {
+    /// Selection state for every controlled definition. Retired records still supply their
+    /// definition keys: removing the final provider must not erase an absent selection.
+    fn defaults_of(&self, next: &Committed) -> BTreeMap<DefinitionRef, Option<ProviderKey>> {
         let mut definitions: BTreeSet<&DefinitionRef> = self.tracked.iter().collect();
-        for record in next.packages.values().filter(|r| r.state.is_active()) {
-            for key in &record.providers {
-                if let Some(descriptor) = next.snapshot.provider(key) {
-                    definitions.extend(descriptor.implements.iter().map(|(d, _)| d));
+        for record in next.packages.values() {
+            for contribution in record.manifest.providers() {
+                if let ProviderSlot::Node(definition) = &contribution.slot {
+                    definitions.insert(definition);
                 }
             }
         }
         definitions
             .into_iter()
-            .filter_map(|definition| {
-                let selected = next.snapshot.new_binding_default(definition)?;
-                Some((definition.clone(), selected.clone()))
+            .map(|definition| {
+                (
+                    definition.clone(),
+                    next.snapshot.new_binding_default(definition).cloned(),
+                )
             })
             .collect()
     }
@@ -796,6 +798,7 @@ impl<J: Journal> PackageStore<J> {
         &mut self,
         next: &Committed,
         revoke: Option<&str>,
+        selected: Option<&DefinitionRef>,
     ) -> Result<(), JournalError> {
         let mut published = self.published.clone();
         for (key, record) in &next.packages {
@@ -805,10 +808,19 @@ impl<J: Journal> PackageStore<J> {
         }
         let mut revoked = self.revoked.clone();
         revoked.extend(revoke.map(str::to_owned));
-        let entry = self.checkpoint(next, &published, &revoked);
+        let mut defaults = self.defaults_of(next);
+        if let Some(definition) = selected {
+            defaults.insert(
+                definition.clone(),
+                next.snapshot.new_binding_default(definition).cloned(),
+            );
+        }
+        let tracked = defaults.keys().cloned().collect();
+        let entry = Self::checkpoint(next, &published, &revoked, defaults);
         self.journal.append(entry)?;
         self.published = published;
         self.revoked = revoked;
+        self.tracked = tracked;
         Ok(())
     }
 
@@ -818,9 +830,10 @@ impl<J: Journal> PackageStore<J> {
         snapshot: Arc<RegistrySnapshot>,
         packages: BTreeMap<PackageKey, PackageRecord>,
         revoke: Option<&str>,
+        selected: Option<DefinitionRef>,
     ) -> Result<Arc<RegistrySnapshot>, TransactionError> {
         let next = Committed { snapshot, packages };
-        self.journal_commit(&next, revoke)?;
+        self.journal_commit(&next, revoke, selected.as_ref())?;
         let previous = std::mem::replace(&mut self.current, next);
         self.history.push_back(previous);
         self.trim_history();
@@ -911,7 +924,7 @@ impl<J: Journal> PackageStore<J> {
                 providers,
             },
         );
-        let snapshot = self.commit(snapshot, packages, None)?;
+        let snapshot = self.commit(snapshot, packages, None, None)?;
         // The commit is durable and names the version active; a lost activation record
         // cannot undo it, and recovery reads the commit first.
         let _ = self.transition(key, PackageState::Active);
@@ -1088,7 +1101,7 @@ impl<J: Journal> PackageStore<J> {
                 },
             );
         }
-        self.commit(snapshot, packages, revoke)
+        self.commit(snapshot, packages, revoke, None)
     }
 }
 
@@ -1106,19 +1119,23 @@ struct Plan {
 /// A recorded provider that is not registered is an explicit error.
 fn apply_recovered_defaults(
     mut state: Committed,
-    defaults: &BTreeMap<DefinitionRef, ProviderKey>,
+    defaults: &BTreeMap<DefinitionRef, Option<ProviderKey>>,
 ) -> Result<Committed, TransactionError> {
     let mut builder = RegistryBuilder::from_snapshot(&state.snapshot);
     let mut changed = false;
     for (definition, provider) in defaults {
-        if state.snapshot.provider(provider).is_none() {
-            return Err(TransactionError::RecoveryDefaultUnavailable {
-                definition: definition.clone(),
-                provider: Box::new(provider.clone()),
-            });
-        }
-        changed |= state.snapshot.new_binding_default(definition) != Some(provider);
-        builder = builder.new_binding_default(definition.clone(), provider.clone());
+        changed |= state.snapshot.new_binding_default(definition) != provider.as_ref();
+        builder = if let Some(provider) = provider {
+            if state.snapshot.provider(provider).is_none() {
+                return Err(TransactionError::RecoveryDefaultUnavailable {
+                    definition: definition.clone(),
+                    provider: Box::new(provider.clone()),
+                });
+            }
+            builder.new_binding_default(definition.clone(), provider.clone())
+        } else {
+            builder.clear_new_binding_default(definition.clone())
+        };
     }
     if changed {
         state.snapshot = builder.build()?;
