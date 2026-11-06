@@ -182,16 +182,34 @@ impl ValidationAnalysis {
     /// proved differs only in some kept diagnostic lists. Each sorted `(old, new)` pair
     /// replaces one list; an old one stays when `base`, the other passes'
     /// sorted diagnostics, also reports it. Returns the subjects whose lists changed.
+    /// `edges` counts the published diagnostics per subject edge, and is kept by adjusting
+    /// it for each item actually removed from or inserted into the published list.
     pub(super) fn patch(
         &mut self,
         document_state: u64,
         base: &[Diagnostic],
         inputs: &[(Vec<Diagnostic>, Vec<Diagnostic>)],
+        edges: &mut BTreeMap<crate::id::EdgeId, usize>,
     ) -> BTreeSet<Subject> {
         use super::diagnostic::diagnostic_order;
         self.document_state = document_state;
         let all = &mut self.report.diagnostics;
         let mut changed = BTreeSet::new();
+        let mut published = |item: &Diagnostic, inserted: bool| {
+            let Some(edge) = item.subject.edge else {
+                return;
+            };
+            if inserted {
+                *edges.entry(edge).or_default() += 1;
+            } else if let std::collections::btree_map::Entry::Occupied(mut count) =
+                edges.entry(edge)
+            {
+                *count.get_mut() -= 1;
+                if *count.get() == 0 {
+                    count.remove();
+                }
+            }
+        };
         for (old, new) in inputs {
             // Both lists are sorted, so one merge finds what each lacks.
             let (mut gone, mut came) = (Vec::new(), Vec::new());
@@ -231,11 +249,12 @@ impl ValidationAnalysis {
             if gone.len() + came.len() <= SPLICE_LIMIT {
                 for item in gone {
                     if let Ok(at) = all.binary_search_by(|probe| diagnostic_order(probe, item)) {
-                        all.remove(at);
+                        published(&all.remove(at), false);
                     }
                 }
                 for item in came {
                     if let Err(at) = all.binary_search_by(|probe| diagnostic_order(probe, item)) {
+                        published(item, true);
                         all.insert(at, item.clone());
                     }
                 }
@@ -266,13 +285,19 @@ impl ValidationAnalysis {
                 let mut insert = inserts.into_iter().peekable();
                 for (at, item) in (lo..).zip(stretch) {
                     while let Some((_, next)) = insert.next_if(|(position, _)| *position == at) {
+                        published(next, true);
                         rebuilt.push(next.clone());
                     }
                     if drop.next_if(|position| *position == at).is_none() {
                         rebuilt.push(item);
+                    } else {
+                        published(&item, false);
                     }
                 }
-                rebuilt.extend(insert.map(|(_, item)| item.clone()));
+                for (_, item) in insert {
+                    published(item, true);
+                    rebuilt.push(item.clone());
+                }
                 all.splice(lo..lo, rebuilt);
             }
         }
@@ -713,8 +738,11 @@ fn run_supported_analysis(
                 base,
                 config,
                 functions: function_diagnostics.clone().unwrap_or_default(),
+                flow_unattached: super::scoped::unattached(&flow),
                 flow: sorted(flow.clone()),
                 state: sorted(state.clone()),
+                // Counted once the published list is assembled, below.
+                edge_diagnostics: BTreeMap::new(),
                 complete: false,
                 clean: false,
                 isolable: false,
@@ -746,6 +774,7 @@ fn run_supported_analysis(
     options.checkpoint()?;
     if let Some(retained) = &mut retained {
         use crate::document::Suspends;
+        retained.edge_diagnostics = super::scoped::count_edge_diagnostics(&diagnostics);
         retained.complete =
             incomplete_nodes.is_empty() && functions.incomplete_functions.is_empty();
         // Every zone marker belongs to a checked pair, so each zone's body is closed (V12c).

@@ -103,8 +103,9 @@ pub struct PassVisits {
     pub inputs: VisitCounts,
     /// Node configuration checks.
     pub config: VisitCounts,
-    /// Connection checks of added and removed edges: the published-diagnostic scan, both
-    /// endpoint ports and the fan-in and fan-out scans.
+    /// Connection checks of added and removed edges: the published diagnostics on each
+    /// edge, found through the session's per-edge counts, both endpoint ports and the
+    /// fan-in and fan-out scans.
     pub connections: VisitCounts,
     /// The data dependency order (build, two-way search and cycle region), data cycles,
     /// downstream and export cone walks.

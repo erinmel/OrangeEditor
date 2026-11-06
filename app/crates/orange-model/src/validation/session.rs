@@ -293,9 +293,12 @@ impl AnalysisSession {
         };
         let scoped = scoped?;
         self.local.advance_scoped(document, registry, change);
-        self.changed_subjects =
-            self.analysis
-                .patch(document.semantic_state_id(), &retained.base, &scoped.inputs);
+        self.changed_subjects = self.analysis.patch(
+            document.semantic_state_id(),
+            &retained.base,
+            &scoped.inputs,
+            &mut retained.edge_diagnostics,
+        );
         self.changed_nodes = scoped.changed_nodes;
         self.revision = document.revision();
         self.content_state = document.state_id();
@@ -588,6 +591,91 @@ mod tests {
             &edit,
         );
         assert_eq!(result.err(), Some(ScopeFallback::MissingEntity));
+    }
+
+    /// The per-edge diagnostic counts follow every item a patch actually removes from or
+    /// inserts into the published list, one at a time or by rebuilding a stretch, and not
+    /// an item another kept list still reports or one already published (A01).
+    #[test]
+    fn patching_keeps_the_per_edge_diagnostic_counts_of_the_published_list() {
+        use super::super::{DiagnosticCode, sort_diagnostics};
+        let document = GraphDocument::new("00000000-0000-4000-8000-000000000001".parse().unwrap());
+        let origin =
+            super::super::HostOrigin::new("1.0.0", format!("sha256:{}", "0".repeat(64))).unwrap();
+        let registry = crate::catalog::RegistryBuilder::core(origin.clone())
+            .build()
+            .unwrap();
+        let mut session =
+            AnalysisSession::new(&document, &registry, BTreeMap::new(), Default::default());
+        let node =
+            |n: u32| -> NodeId { format!("10000000-0000-4000-8000-{n:012}").parse().unwrap() };
+        let edge = |n: u32| -> crate::id::EdgeId {
+            format!("30000000-0000-4000-8000-{n:012}").parse().unwrap()
+        };
+        let item = |code, n, e: Option<u32>| {
+            Diagnostic::new(
+                code,
+                Subject::new(Some(node(n)), None, e.map(edge)),
+                &origin,
+            )
+        };
+        let list = |mut items: Vec<Diagnostic>| {
+            sort_diagnostics(&mut items);
+            items
+        };
+        let mismatch = |n, e| item(DiagnosticCode::TypeMismatch, n, Some(e));
+        let kind = |n, e| item(DiagnosticCode::KindMismatch, n, Some(e));
+        let mut patch = |base: Vec<Diagnostic>, old: Vec<Diagnostic>, new: Vec<Diagnostic>| {
+            let retained = session.retained.as_mut().unwrap();
+            let state = session.analysis.document_state();
+            session.analysis.patch(
+                state,
+                &list(base),
+                &[(list(old), list(new))],
+                &mut retained.edge_diagnostics,
+            );
+            let published = &session.analysis.report().diagnostics;
+            assert_eq!(
+                retained.edge_diagnostics,
+                super::super::scoped::count_edge_diagnostics(published)
+            );
+            retained
+                .edge_diagnostics
+                .iter()
+                .map(|(id, count)| (*id, *count))
+                .collect::<Vec<_>>()
+        };
+        // One insertion, then three by rebuilding their stretch, one with no edge.
+        assert_eq!(patch(vec![], vec![], vec![mismatch(1, 1)]), [(edge(1), 1)]);
+        let three = vec![
+            kind(2, 1),
+            mismatch(2, 2),
+            item(DiagnosticCode::TypeMismatch, 3, None),
+        ];
+        assert_eq!(patch(vec![], vec![], three), [(edge(1), 2), (edge(2), 1)]);
+        // An item already published is not inserted twice.
+        assert_eq!(
+            patch(vec![], vec![], vec![mismatch(2, 2)]),
+            [(edge(1), 2), (edge(2), 1)]
+        );
+        // One removal; an item `base` still reports stays published.
+        assert_eq!(
+            patch(vec![], vec![mismatch(1, 1)], vec![]),
+            [(edge(1), 1), (edge(2), 1)]
+        );
+        assert_eq!(
+            patch(vec![mismatch(2, 2)], vec![mismatch(2, 2)], vec![]),
+            [(edge(1), 1), (edge(2), 1)]
+        );
+        // Removals and an insertion in one rebuilt stretch empty two buckets.
+        assert_eq!(
+            patch(
+                vec![],
+                vec![kind(2, 1), mismatch(2, 2)],
+                vec![mismatch(4, 3)]
+            ),
+            [(edge(3), 1)]
+        );
     }
 
     #[test]

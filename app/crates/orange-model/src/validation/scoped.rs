@@ -29,7 +29,7 @@ use crate::document::{
     BodyRef, Edge, GraphDocument, NodeKind, PortDirection, PortKind, SignatureSnapshot,
 };
 use crate::edit::{ChangeSet, NodeEdit};
-use crate::id::NodeId;
+use crate::id::{EdgeId, NodeId};
 use crate::index::DocIndex;
 
 /// What the last full analysis kept for scoped updates.
@@ -54,8 +54,16 @@ pub(super) struct Retained {
     /// Availability, region and control-cycle diagnostics, sorted and deduplicated: what a
     /// scoped exec edit recomputes for the exec-connected nodes it reaches.
     pub flow: Vec<Diagnostic>,
+    /// Some item of `flow` names no node, so a scoped exec edit cannot replace the
+    /// diagnostics of its exec-connected nodes alone and reruns the whole document's.
+    pub flow_unattached: bool,
     /// State diagnostics, sorted and deduplicated; a scoped exec edit reruns the pass.
     pub state: Vec<Diagnostic>,
+    /// How many published diagnostics name each edge as their subject; edges without one
+    /// are absent (A01). An edge edit looks up the edges it adds or removes here instead of
+    /// scanning the published list. Built with the full report and kept by
+    /// [`ValidationAnalysis::patch`], which counts each item it removes or inserts.
+    pub edge_diagnostics: BTreeMap<EdgeId, usize>,
     /// No node or function was incomplete. Every dependency-unavailable diagnostic comes
     /// from an incomplete node, so then no error can suppress one, and a node may gain or
     /// lose input, configuration or node errors without changing any other diagnostic.
@@ -115,6 +123,20 @@ pub(super) fn types_bounded<'s>(
             })
         })
     })
+}
+
+/// Whether some item of `diagnostics` names no node ([`Retained::flow_unattached`]).
+pub(super) fn unattached(diagnostics: &[Diagnostic]) -> bool {
+    diagnostics.iter().any(|item| item.subject.node.is_none())
+}
+
+/// How many of the published `diagnostics` name each edge ([`Retained::edge_diagnostics`]).
+pub(super) fn count_edge_diagnostics(diagnostics: &[Diagnostic]) -> BTreeMap<EdgeId, usize> {
+    let mut counts = BTreeMap::new();
+    for edge in diagnostics.iter().filter_map(|item| item.subject.edge) {
+        *counts.entry(edge).or_default() += 1;
+    }
+    counts
 }
 
 /// `diagnostics` grouped by subject node and sorted, or `None` if one has no node.
@@ -669,6 +691,7 @@ pub(super) fn structure_update(
         zones,
         &mut free,
         hold,
+        &retained.edge_diagnostics,
         &mut visits,
     );
     // With an edge held, or cycles before the edit, the root body's cycles are recomputed
@@ -962,6 +985,7 @@ pub(super) fn structure_update(
     if let Some(update) = flow {
         analysis.set_regions(update.regions);
         if update.component.is_empty() {
+            retained.flow_unattached = unattached(&update.flow);
             let old = std::mem::replace(&mut retained.flow, update.flow.clone());
             scoped.inputs.push((old, update.flow));
         } else {
@@ -1395,6 +1419,7 @@ fn classify_edges(
     zones: &super::zones::ZoneIndex,
     free: &mut BTreeSet<NodeId>,
     hold: bool,
+    edge_diagnostics: &BTreeMap<EdgeId, usize>,
     visits: &mut PassVisits,
 ) -> Result<EdgeKinds, ScopeFallback> {
     use ScopeFallback as Why;
@@ -1406,14 +1431,11 @@ fn classify_edges(
     let (mut read_order, mut read_cones) = (false, false);
     let local = edges.iter().all(|(edge, is_added)| {
         visits.connections.edges += 1;
-        // Whether the edge carries a published diagnostic: a scan of the report up to the
-        // first one that does.
-        let scanned = report
-            .diagnostics
-            .iter()
-            .position(|diagnostic| diagnostic.subject.edge == Some(edge.id));
-        visits.connections.diagnostics += scanned.map_or(report.diagnostics.len(), |at| at + 1);
-        let published = scanned.is_some();
+        // Whether the edge carries a published diagnostic: its count in the kept per-edge
+        // index, charged as the diagnostics of that edge alone.
+        let on_edge = edge_diagnostics.get(&edge.id).copied().unwrap_or(0);
+        visits.connections.diagnostics += on_edge;
+        let published = on_edge > 0;
         if !is_added
             && (document.node(edge.from.node).is_none() || document.node(edge.to.node).is_none())
         {
@@ -1800,12 +1822,13 @@ fn recompute_flow(
             .node
             .is_some_and(|node| component.contains(&node))
     };
-    let unattached = retained
-        .flow
-        .iter()
-        .position(|item| item.subject.node.is_none());
-    visits.control_flow.diagnostics += unattached.map_or(retained.flow.len(), |at| at + 1);
-    if !fresh.iter().all(local) || unattached.is_some() || has_error(&fresh) || has_error(&state) {
+    // A kept item with no node cannot be attributed to the component: kept as a flag, so
+    // no retained diagnostic is read.
+    if !fresh.iter().all(local)
+        || retained.flow_unattached
+        || has_error(&fresh)
+        || has_error(&state)
+    {
         return whole_flow(document, registry, analysis, effects, &ports, free, visits);
     }
     let mut flow = fresh;
