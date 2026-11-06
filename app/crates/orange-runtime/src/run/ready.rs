@@ -1,7 +1,7 @@
 //! Ordered ready work with direct strand removal. Reusable slots keep ordinary
 //! front/back scheduling on dense links; hashing is only the identity directory.
+use super::ids::IdMap;
 use super::ids::StrandId;
-use std::collections::HashMap;
 struct Link<T> {
     id: StrandId,
     previous: Option<usize>,
@@ -11,7 +11,7 @@ struct Link<T> {
 pub(super) struct ReadyQueue<T> {
     nodes: Vec<Option<Link<T>>>,
     free: Vec<usize>,
-    index: HashMap<StrandId, usize>,
+    index: IdMap<StrandId, usize>,
     single: Option<(StrandId, T)>,
     indexed: bool,
     first: Option<usize>,
@@ -22,7 +22,10 @@ impl<T> ReadyQueue<T> {
         Self {
             nodes: Vec::with_capacity(if capacity > 1 { capacity } else { 0 }),
             free: Vec::new(),
-            index: HashMap::with_capacity(if capacity > 1 { capacity } else { 0 }),
+            index: IdMap::with_capacity_and_hasher(
+                if capacity > 1 { capacity } else { 0 },
+                Default::default(),
+            ),
             single: None,
             indexed: false,
             first: None,

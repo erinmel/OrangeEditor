@@ -4,10 +4,10 @@
 //! and the live count equals the strands that regions hold.
 use super::RunError;
 use super::RunLimits;
+use super::ids::IdMap;
 use super::ids::{FrameId, OwnerIds, RegionId, StrandId};
 use super::ownership::{IdSet, Region, RegionKind};
 use orange_compiler::ControlIx;
-use std::collections::HashMap;
 
 pub(super) struct Regions {
     map: RegionStore,
@@ -22,7 +22,7 @@ pub(super) struct Regions {
 /// Storage follows peak live ownership rather than the run's total minted IDs.
 #[derive(Default)]
 struct RegionStore {
-    index: HashMap<RegionId, usize>,
+    index: IdMap<RegionId, usize>,
     slots: Vec<Option<(RegionId, Region)>>,
     free: Vec<usize>,
     indexed: bool,
