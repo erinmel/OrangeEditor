@@ -1,4 +1,5 @@
 //! Actor-owned region lifetimes. Identities are never reused within a run.
+use super::events::Awaiter;
 use super::*;
 
 /// Region ownership is usually a singleton. Keep that case allocation-free;
@@ -217,6 +218,7 @@ pub(super) struct Region {
     pub parent: Option<RegionId>,
     pub activation: u64,
     pub depth: usize,
+    pub max_cause_depth: u16,
     pub live: IdSet<StrandId>,
     pub children: IdSet<RegionId>,
     pub continuation: Option<Held>,
@@ -281,6 +283,7 @@ impl Run {
                 parent: Some(caller.region),
                 activation: caller.sequence,
                 depth,
+                max_cause_depth: caller.cause_depth,
                 live: IdSet::one(child.id),
                 children: IdSet::default(),
                 continuation: Some(caller),
@@ -304,6 +307,7 @@ impl Run {
             region,
             sequence: caller.sequence,
             entry: caller.entry,
+            cause_depth: caller.cause_depth,
             pc: caller.pc,
             pull: PullState::default(),
             stack: vec![],
@@ -314,6 +318,8 @@ impl Run {
         })
     }
     pub(super) fn retire_strand(&mut self, strand: Strand) -> Result<(), RunError> {
+        self.regions
+            .observe_cause_depth(strand.region, strand.cause_depth)?;
         let region = self.regions.retire_strand(strand.region, strand.id)?;
         if let Some(caller) = region.continuation.as_mut() {
             caller.pull.recycle(strand.pull);
@@ -383,6 +389,7 @@ impl Run {
                 parent: Some(caller.region),
                 activation: caller.sequence,
                 depth,
+                max_cause_depth: caller.cause_depth,
                 live: IdSet::one(child.id),
                 children: IdSet::default(),
                 continuation: Some(caller),
@@ -401,6 +408,8 @@ impl Run {
         strand: Strand,
         result: FunctionReturn,
     ) -> Result<(), RunError> {
+        self.regions
+            .observe_cause_depth(strand.region, strand.cause_depth)?;
         let region = RegionId::of_frame(strand.function.ok_or(RunError::InvalidState)?);
         let frame = self.regions.get_mut(region)?;
         let RegionKind::Function {
@@ -454,6 +463,15 @@ impl Run {
             let Some(mut r) = self.regions.take_if_done(id)? else {
                 return Ok(());
             };
+            if let Some(caller) = r.continuation.as_mut() {
+                caller.cause_depth = caller.cause_depth.max(r.max_cause_depth);
+            }
+            if let Some(parent) = r.parent
+                && self.regions.contains(parent)
+            {
+                self.regions
+                    .observe_cause_depth(parent, r.max_cause_depth)?;
+            }
             let function =
                 matches!(r.kind, RegionKind::Function { .. }).then(|| FrameId::of_region(id));
             let retired = r.frames.iter().flat_map(|frames| frames.iter());
@@ -580,6 +598,7 @@ impl Run {
         caller.pc = *completed;
         let parent = caller.region;
         let activation = caller.sequence;
+        let cause_depth = caller.cause_depth;
         let detach = *join == ForkJoin::Detach;
         let continuation = if detach {
             self.record(RunEvent {
@@ -601,6 +620,7 @@ impl Run {
                 parent: Some(parent),
                 activation,
                 depth: depth + 1,
+                max_cause_depth: cause_depth,
                 live: IdSet::default(),
                 children: IdSet::default(),
                 continuation,
@@ -620,6 +640,7 @@ impl Run {
                     parent: Some(group),
                     activation,
                     depth: depth + 2,
+                    max_cause_depth: cause_depth,
                     live: IdSet::one(child.id),
                     children: IdSet::default(),
                     continuation: None,
@@ -687,8 +708,10 @@ impl Run {
         // Traverse only owned descendants. Logical strand IDs may also identify
         // held serial continuations; only one queued/timed strand has that ID.
         let retired = self.regions.subtree(root, ids)?;
+        let mut awaiters = Vec::new();
         for &id in ids.iter() {
-            for strand in self.regions.get(id)?.live.iter() {
+            let live: Vec<_> = self.regions.get(id)?.live.iter().collect();
+            for strand in live {
                 if let Some(queued) = self.ready.remove(strand) {
                     self.cleanup_truncated = self
                         .cleanup_truncated
@@ -697,36 +720,94 @@ impl Run {
                 if let Some(key) = self.timers.detach(strand) {
                     timer_keys.push(key);
                 }
+                if let Some(waiter) = self.take_waiter_for_cancel(strand) {
+                    awaiters.push(waiter);
+                }
             }
         }
-        // Timer keys are unique, so sorting reproduces the ordered-set walk.
-        timer_keys.sort_unstable();
         let mut cleanup = Vec::new();
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
-        // Timer keys preserve the original cancellation/outcome order.
-        for &key in timer_keys.iter() {
-            let mut timer = self.timers.remove(key).ok_or(RunError::InvalidState)?;
-            let node = &plan.nodes()[timer.owner.index()];
-            self.record(RunEvent {
-                activation: timer.activation.sequence,
-                node: node.node(),
-                outcome: ControlOutcome::Cancelled,
-                fault: None,
-            });
-            if let Some(target) = node.cancelled() {
-                let s = &mut timer.activation;
-                s.region = root;
-                s.pc = Some(target);
-                s.stack.clear();
-                s.pull.reset();
-                s.reenter = None;
-                s.transfer = Transfer::None;
-                s.yielded = false;
-                s.cleanup = true;
-                let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
-                s.cleanup_deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
-                s.cleanup_remaining = self.options.max_cleanup_operations;
-                cleanup.push(timer.activation);
+        #[expect(
+            clippy::large_enum_variant,
+            reason = "Boxing adds an allocation per cancellation solely for timer ordering."
+        )]
+        enum CancelWait {
+            Timer(TimerKey),
+            Await(Awaiter),
+        }
+        let mut waiters = std::mem::take(timer_keys)
+            .into_iter()
+            .map(CancelWait::Timer)
+            .chain(awaiters.into_iter().map(CancelWait::Await))
+            .collect::<Vec<_>>();
+        waiters.sort_unstable_by_key(|waiter| match waiter {
+            CancelWait::Timer(key) => *key,
+            CancelWait::Await(waiter) => waiter.timer.unwrap_or((u64::MAX, waiter.token)),
+        });
+        for waiter in waiters {
+            match waiter {
+                CancelWait::Timer(key) => {
+                    let Some(TimerTarget::Wait(mut timer)) = self.timers.remove(key) else {
+                        return Err(RunError::InvalidState);
+                    };
+                    let node = &plan.nodes()[timer.owner.index()];
+                    self.record(RunEvent {
+                        activation: timer.activation.sequence,
+                        node: node.node(),
+                        outcome: ControlOutcome::Cancelled,
+                        fault: None,
+                    });
+                    if let Some(target) = node.cancelled() {
+                        let strand = &mut timer.activation;
+                        strand.region = root;
+                        strand.pc = Some(target);
+                        strand.stack.clear();
+                        strand.pull.reset();
+                        strand.reenter = None;
+                        strand.transfer = Transfer::None;
+                        strand.yielded = false;
+                        strand.cleanup = true;
+                        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
+                        strand.cleanup_deadline =
+                            Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
+                        strand.cleanup_remaining = self.options.max_cleanup_operations;
+                        cleanup.push(timer.activation);
+                    }
+                }
+                CancelWait::Await(mut waiter) => {
+                    if let Some(key) = self.timers.detach_await(waiter.token) {
+                        if Some(key) != waiter.timer
+                            || !matches!(self.timers.remove(key), Some(TimerTarget::Await { .. }))
+                        {
+                            return Err(RunError::InvalidState);
+                        }
+                    } else if waiter.timer.is_some() {
+                        return Err(RunError::InvalidState);
+                    }
+                    let node = &plan.nodes()[waiter.owner.index()];
+                    self.record(RunEvent {
+                        activation: waiter.strand.sequence,
+                        node: node.node(),
+                        outcome: ControlOutcome::Cancelled,
+                        fault: None,
+                    });
+                    if let Some(target) = node.cancelled() {
+                        let strand = &mut waiter.strand;
+                        strand.region = root;
+                        strand.pc = Some(target);
+                        strand.stack.clear();
+                        strand.pull.reset();
+                        strand.reenter = None;
+                        strand.transfer = Transfer::None;
+                        strand.yielded = false;
+                        strand.cleanup = true;
+                        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
+                        strand.cleanup_deadline =
+                            Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
+                        strand.cleanup_remaining = self.options.max_cleanup_operations;
+                        cleanup.push(waiter.strand);
+                    }
+                }
             }
         }
         let activation =
@@ -760,6 +841,7 @@ impl Run {
             .continuation
             .take()
             .ok_or(RunError::InvalidState)?;
+        caller.cause_depth = caller.cause_depth.max(strand.cause_depth);
         caller.pull.recycle(strand.pull);
         let owner = match self.regions.get(region)?.kind {
             RegionKind::Body {

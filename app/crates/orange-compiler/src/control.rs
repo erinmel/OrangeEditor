@@ -141,6 +141,13 @@ pub enum ControlOperation {
         event: usize,
         payload: usize,
     },
+    /// Suspends this strand until its next matching run-scoped emission, or its
+    /// optional timeout; it never creates a new activation.
+    AwaitEvent {
+        event: usize,
+        timeout: Option<usize>,
+        timed_out: Option<ExecTarget>,
+    },
     MatchResult {
         result: usize,
         boxed: bool,
@@ -661,6 +668,7 @@ pub fn compile_control(
                 HostSource::Error(_)
                     | HostSource::Index(_)
                     | HostSource::Value(_)
+                    | HostSource::EventPayload(_)
                     | HostSource::Update(_, _)
                     | HostSource::CallOutput(_, _)
             )
@@ -765,6 +773,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::ON_STOP
                     | ids::ON_EVENT
                     | ids::EMIT
+                    | ids::AWAIT_EVENT
                     | ids::BRANCH
                     | ids::SET_VARIABLE
                     | ids::UPDATE_VARIABLE
@@ -805,7 +814,8 @@ fn prepare_events(
         let node = cx.node((scope, node_id));
         let is_handler = node.definition.id.as_str() == ids::ON_EVENT;
         let is_emitter = node.definition.id.as_str() == ids::EMIT;
-        if !is_handler && !is_emitter {
+        let is_awaiter = node.definition.id.as_str() == ids::AWAIT_EVENT;
+        if !is_handler && !is_emitter && !is_awaiter {
             continue;
         }
         let event_id = match cx.snapshot.reference(node, ReferenceKind::Event) {
@@ -1185,7 +1195,12 @@ impl NodeLowering<'_, '_> {
             .iter()
             .filter(|p| p.kind == PortKind::Data && p.direction == PortDirection::Input)
         {
-            if port.is_optional() || port.is_lazy() || port.variadic.is_some() {
+            let optional_await_timeout = node.definition.id.as_str() == ids::AWAIT_EVENT
+                && port.port_id.as_str() == "timeout";
+            if (port.is_optional() && !optional_await_timeout)
+                || port.is_lazy()
+                || port.variadic.is_some()
+            {
                 return Err(CompileError::UnsupportedPort {
                     node: id,
                     port: port_key(port),
@@ -1284,6 +1299,30 @@ impl NodeLowering<'_, '_> {
                         .get(&event_id)
                         .ok_or(CompileError::ValidationIncomplete)?,
                     payload: self.input(key, orange_model::port_id!("payload")),
+                }
+            }
+            ids::AWAIT_EVENT => {
+                let event_id = match cx.snapshot.reference(node, ReferenceKind::Event) {
+                    Ok(DeclId::Event(id)) => id,
+                    _ => return Err(CompileError::UnsupportedNode { node: id }),
+                };
+                let timeout_port =
+                    orange_model::id::PortKey::new(orange_model::port_id!("timeout"), None);
+                let timeout_provided = node.inputs.contains_key(&timeout_port)
+                    || cx
+                        .calls
+                        .body(cx.document, scope)
+                        .edges
+                        .values()
+                        .any(|edge| edge.to.node == id && edge.to.port == timeout_port);
+                ControlOperation::AwaitEvent {
+                    event: *self
+                        .event_ids
+                        .get(&event_id)
+                        .ok_or(CompileError::ValidationIncomplete)?,
+                    timeout: timeout_provided
+                        .then(|| self.input(key, orange_model::port_id!("timeout"))),
+                    timed_out: self.target(key, "timed_out"),
                 }
             }
             ids::MATCH_RESULT => {
@@ -1494,7 +1533,12 @@ fn host_source(
         return Ok(HostSource::Argument { scope, index });
     }
     let operation = tables.nodes[owner.index()].operation();
-    if port == "payload" && cx.node((scope, source.node)).definition.id.as_str() == ids::ON_EVENT {
+    if port == "payload"
+        && matches!(
+            cx.node((scope, source.node)).definition.id.as_str(),
+            ids::ON_EVENT | ids::AWAIT_EVENT
+        )
+    {
         return Ok(HostSource::EventPayload(owner));
     }
     if matches!(operation, ControlOperation::Call { .. }) && port != "error" {

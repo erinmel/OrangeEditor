@@ -138,6 +138,11 @@ impl Regions {
     pub fn live_strands(&self) -> usize {
         self.live_strands
     }
+    pub fn observe_cause_depth(&mut self, region: RegionId, depth: u16) -> Result<(), RunError> {
+        let current = self.map.get_mut(&region).ok_or(RunError::InvalidState)?;
+        current.max_cause_depth = current.max_cause_depth.max(depth);
+        Ok(())
+    }
     /// Reserve one admitted batch, avoiding geometric over-allocation of large
     /// region values. Existing vacant slots are reused before growing storage.
     pub fn reserve(&mut self, additional: usize) {
@@ -434,6 +439,7 @@ mod tests {
             parent,
             activation: 0,
             depth: 0,
+            max_cause_depth: 0,
             live,
             children: IdSet::default(),
             continuation: None,

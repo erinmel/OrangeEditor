@@ -1219,6 +1219,7 @@ fn panicking_provider_retires_checked_out_event_activation_on_stop_and_dispose()
             strands: 0,
             regions: 0,
             timers: 0,
+            event_waiters: 0,
         }
     );
     assert_eq!(run.event_stats().live_payload_bytes, 0);
@@ -1594,3 +1595,6 @@ mod event_replace_limits;
 
 #[path = "support/event_replace_owned.rs"]
 mod event_replace_owned;
+
+#[path = "support/event_await.rs"]
+mod event_await;

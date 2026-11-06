@@ -43,6 +43,7 @@ use ids::{FrameId, RegionId, StrandId};
 use ownership::{IdSet, Region, RegionKind};
 use ready::ReadyQueue;
 use regions::Regions;
+use timers::TimerTarget;
 use timers::{TimerKey, Timers};
 use trace::Trace;
 
@@ -97,6 +98,7 @@ pub enum ControlOutcome {
     Break,
     Continue,
     Cancelled,
+    TimedOut,
 }
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RunEvent {
@@ -214,6 +216,8 @@ pub struct RunOwnership {
     pub strands: usize,
     pub regions: usize,
     pub timers: usize,
+    /// Strands parked on an event and still observing future emissions.
+    pub event_waiters: usize,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
@@ -423,6 +427,11 @@ enum Transfer {
         at: u64,
         owner: ControlIx,
     },
+    Await {
+        event: usize,
+        owner: ControlIx,
+        at: Option<u64>,
+    },
 }
 struct Strand {
     function: Option<FrameId>,
@@ -433,6 +442,7 @@ struct Strand {
     region: RegionId,
     sequence: u64,
     entry: ControlIx,
+    cause_depth: u16,
     pc: Option<ExecTarget>,
     pull: PullState,
     stack: Vec<Cursor>,
@@ -451,7 +461,6 @@ struct Strand {
 /// first two are tallies that also reserve from the run's aggregate budget and holds
 /// reserve their own bytes there; dropping this state releases all of it.
 struct ActivationState {
-    cause_depth: u16,
     budget: Arc<Budget>,
     retained_bytes: Tally,
     owned_bytes: Arc<std::sync::atomic::AtomicUsize>,
@@ -536,6 +545,10 @@ fn demand_root(operation: &ControlOperation, input: ExecInput) -> Option<usize> 
         | ControlOperation::Wait { duration: root }
         | ControlOperation::Set { value: root, .. }
         | ControlOperation::Emit { payload: root, .. } => Some(*root),
+        ControlOperation::AwaitEvent {
+            timeout: Some(root),
+            ..
+        } => Some(*root),
         ControlOperation::Register { next, .. } if input != ExecInput::Reset => Some(*next),
         _ => None,
     }
@@ -578,6 +591,40 @@ fn schedule(
             }
         }
         (ControlOperation::Wait { .. }, Some(_)) => {
+            return Err(DataError::KernelContract { node: node.node() }.into());
+        }
+        (ControlOperation::AwaitEvent { event, .. }, None | Some(Value::None)) => {
+            activation.transfer = Transfer::Await {
+                event: *event,
+                owner: ix,
+                at: None,
+            };
+            (None, ControlOutcome::Suspended, None)
+        }
+        (ControlOperation::AwaitEvent { event, .. }, Some(Value::Duration(duration))) => {
+            match u64::try_from(duration)
+                .ok()
+                .and_then(|d| now.checked_add(d))
+            {
+                Some(at) => {
+                    activation.transfer = Transfer::Await {
+                        event: *event,
+                        owner: ix,
+                        at: Some(at),
+                    };
+                    (None, ControlOutcome::Suspended, None)
+                }
+                None => failure(
+                    node,
+                    KernelFault {
+                        code: "core/OutOfRange",
+                        message_key: "core/await-event-out-of-range",
+                        message: "Await Event timeout is outside the clock range.",
+                    },
+                ),
+            }
+        }
+        (ControlOperation::AwaitEvent { .. }, Some(_)) => {
             return Err(DataError::KernelContract { node: node.node() }.into());
         }
         _ => return Err(RunError::InvalidState),
@@ -736,7 +783,11 @@ impl Run {
         let has_events = plan
             .events()
             .iter()
-            .any(|event| !event.handlers().is_empty());
+            .any(|event| !event.handlers().is_empty())
+            || plan
+                .nodes()
+                .iter()
+                .any(|node| matches!(node.operation(), ControlOperation::AwaitEvent { .. }));
         let prepared = if capacity > 0 || has_events {
             Some(PreparedData::new(plan.data().clone(), options.data.limits)?)
         } else {
@@ -754,7 +805,6 @@ impl Run {
                 return Err(RunError::AggregateLimit);
             }
             activations.push(Some(Box::new(ActivationState {
-                cause_depth: 0,
                 budget: budget.clone(),
                 retained_bytes: Tally::new(Some(budget.clone()), 0),
                 owned_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -782,6 +832,7 @@ impl Run {
                     parent: None,
                     activation: sequence as u64,
                     depth: 0,
+                    max_cause_depth: 0,
                     live: IdSet::one(StrandId::root(sequence as u64)),
                     children: IdSet::default(),
                     continuation: None,
@@ -797,6 +848,7 @@ impl Run {
                 region: RegionId::root(sequence as u64),
                 sequence: sequence as u64,
                 entry,
+                cause_depth: 0,
                 pc: Some(entry.into()),
                 pull: PullState::default(),
                 stack: vec![],
@@ -921,6 +973,7 @@ impl Run {
             strands: self.regions.live_strands(),
             regions: self.regions.len(),
             timers: self.timers.len(),
+            event_waiters: self.waiter_count(),
         }
     }
     /// IDs written by the last/current segment, once each. No equality comparison,
@@ -1080,18 +1133,39 @@ impl Run {
             }
             if let Some(timer) = self.timers.pop_due(self.now) {
                 remaining -= 1;
-                if timer.run != self.id {
-                    return self.fail(RunError::InvalidState);
+                match timer {
+                    TimerTarget::Wait(timer) => {
+                        if timer.run != self.id {
+                            return self.fail(RunError::InvalidState);
+                        }
+                        self.record(RunEvent {
+                            activation: timer.activation.sequence,
+                            node: self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()
+                                [timer.owner.index()]
+                            .node(),
+                            outcome: ControlOutcome::Then,
+                            fault: None,
+                        });
+                        self.ready.push_back(timer.activation.id, timer.activation);
+                    }
+                    TimerTarget::Await { run, token } => {
+                        if run != self.id {
+                            return self.fail(RunError::InvalidState);
+                        }
+                        if let Err(error) = self.complete_waiter_timeout(token) {
+                            return self.fail(error);
+                        }
+                    }
                 }
-                self.record(RunEvent {
-                    activation: timer.activation.sequence,
-                    node: self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()
-                        [timer.owner.index()]
-                    .node(),
-                    outcome: ControlOutcome::Then,
-                    fault: None,
-                });
-                self.ready.push_back(timer.activation.id, timer.activation);
+                continue;
+            }
+            // A matched Await completion is actor work of its own. Publish one per
+            // pump operation, after due timers and before queued handler dispatch.
+            if self.pending_await_completions() {
+                if let Err(error) = self.resume_awaiters(&plan) {
+                    return self.fail(error);
+                }
+                remaining -= 1;
                 continue;
             }
             match self.dispatch_event(&plan) {
@@ -1236,6 +1310,29 @@ impl Run {
                         return self.fail(RunError::ResourceLimit);
                     }
                 }
+                Transfer::Await { event, owner, at } => {
+                    self.segment_owner = None;
+                    let token = match self.next_waiter_token() {
+                        Ok(token) => token,
+                        Err(_) => return self.fail(RunError::ResourceLimit),
+                    };
+                    let timer = match at {
+                        Some(at) => match self.timers.schedule_await(
+                            at,
+                            self.id,
+                            token,
+                            self.options.limits.max_timers,
+                        ) {
+                            Ok(key) => Some(key),
+                            Err(_) => return self.fail(RunError::ResourceLimit),
+                        },
+                        None => None,
+                    };
+                    if let Err(error) = self.register_waiter(token, event, owner, activation, timer)
+                    {
+                        return self.fail(error);
+                    }
+                }
                 Transfer::None if activation.pc.is_some() || !activation.stack.is_empty() => {
                     if activation.yielded {
                         self.segment_owner = None;
@@ -1290,7 +1387,10 @@ impl Run {
             && self.state != RunState::Cancelling
             && self.state != RunState::Stopped
             && self.operations == self.options.limits.max_operations
-            && (!self.ready.is_empty() || !self.timers.is_empty() || self.events.pending() > 0)
+            && (!self.ready.is_empty()
+                || !self.timers.is_empty()
+                || self.events.pending() > 0
+                || self.pending_await_completions())
         {
             return self.fail(RunError::ResourceLimit);
         }
@@ -1299,6 +1399,8 @@ impl Run {
         if self.events.pending() > 0
             && self.ready.is_empty()
             && self.timers.is_empty()
+            && self.event_waiter_count() == 0
+            && !self.pending_await_completions()
             && !self.event_dispatchable()
         {
             return self.fail(RunError::ResourceLimit);
@@ -1313,6 +1415,7 @@ impl Run {
             operations: count,
             ready: !self.ready.is_empty()
                 || self.timers.is_due(self.now)
+                || self.pending_await_completions()
                 || self.event_dispatchable(),
             next_wakeup,
         })
@@ -1342,6 +1445,8 @@ impl Run {
         if matches!(self.state, RunState::Draining | RunState::Cancelling)
             && self.ready.is_empty()
             && self.timers.is_empty()
+            && self.event_waiter_count() == 0
+            && !self.pending_await_completions()
             && self.events.pending() == 0
         {
             self.deadline = None;
@@ -1386,6 +1491,18 @@ impl Run {
             self.refuse_in_cleanup(plan, activation, shared, ix)?;
             return Ok(());
         }
+        if activation.pull.active.is_none()
+            && matches!(operation, ControlOperation::AwaitEvent { .. })
+        {
+            Self::publish_match_value(
+                plan,
+                &self.layout,
+                shared,
+                ix,
+                None,
+                self.options.limits.max_state_bytes,
+            )?;
+        }
         let value = match demand_root(operation, target.input()) {
             None => None,
             Some(root) => match self
@@ -1414,7 +1531,7 @@ impl Run {
         let step = match operation {
             ControlOperation::Emit { event, .. } => {
                 let payload = value.ok_or(RunError::InvalidState)?;
-                match self.emit_event(plan, activation, shared, ix, *event, payload) {
+                match self.emit_event(plan, activation, ix, *event, payload) {
                     Ok(()) => (node.then(), ControlOutcome::Then, None),
                     Err(fault) => failure(node, fault),
                 }
@@ -1475,6 +1592,7 @@ impl Run {
             | ControlOperation::Entry
             | ControlOperation::Yield
             | ControlOperation::Wait { .. } => schedule(self.now, node, ix, activation, value)?,
+            ControlOperation::AwaitEvent { .. } => schedule(self.now, node, ix, activation, value)?,
         };
         self.complete(plan, activation, shared, ix, step)
     }
@@ -1565,6 +1683,55 @@ impl Run {
             self.transition(RunState::Faulted);
         }
         activation.pc = next;
+        Ok(())
+    }
+    /// Publish matched/expired waiters only after the current strand has restored
+    /// its shared activation frame and replacement cancellation has run.
+    fn resume_awaiters(&mut self, plan: &ControlPlan) -> Result<(), RunError> {
+        if let Some(mut waiter) = self.pop_completed_waiter() {
+            let completion = waiter.completion.take().ok_or(RunError::InvalidState)?;
+            let shared = self
+                .activations
+                .get_mut(waiter.strand.sequence)
+                .and_then(Option::as_deref_mut)
+                .ok_or(RunError::InvalidState)?;
+            if let Err(error) = Self::publish_match_value(
+                plan,
+                &self.layout,
+                shared,
+                waiter.owner,
+                completion.payload.clone(),
+                self.options.limits.max_state_bytes,
+            ) {
+                self.dropped_await_delivery(&completion);
+                return Err(error);
+            }
+            if let Some(metadata) = completion.metadata {
+                waiter.strand.cause_depth = waiter.strand.cause_depth.max(metadata.cause_depth);
+            }
+            let node = &plan.nodes()[waiter.owner.index()];
+            let timed_out = completion.timed_out;
+            waiter.strand.pc = if timed_out {
+                match node.operation() {
+                    ControlOperation::AwaitEvent { timed_out, .. } => *timed_out,
+                    _ => return Err(RunError::InvalidState),
+                }
+            } else {
+                node.then()
+            };
+            self.published_await_delivery(&completion);
+            self.record(RunEvent {
+                activation: waiter.strand.sequence,
+                node: node.node(),
+                outcome: if timed_out {
+                    ControlOutcome::TimedOut
+                } else {
+                    ControlOutcome::Then
+                },
+                fault: None,
+            });
+            self.ready.push_back(waiter.strand.id, waiter.strand);
+        }
         Ok(())
     }
     fn publish_match_value(

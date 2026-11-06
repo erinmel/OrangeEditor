@@ -20,7 +20,7 @@ const DEPTH: KernelFault = KernelFault {
     message: "The event causal depth limit was reached.",
 };
 
-/// Saturating per-handler delivery counters, with exact current queue occupancy.
+/// Saturating handler and waiter delivery counters, with exact current occupancy.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct RunEventStats {
     pub accepted: u64,
@@ -64,6 +64,156 @@ struct Handler {
     /// A Replace request cancels its old root once. Further admitted latest envelopes
     /// must not cancel that root's cleanup again before full retirement.
     cancel_requested: Option<u64>,
+}
+pub(super) struct AwaitCompletion {
+    pub(super) metadata: Option<EventMetadata>,
+    pub(super) payload: Option<Value>,
+    pub(super) charge: usize,
+    pub(super) timed_out: bool,
+}
+pub(super) struct Awaiter {
+    pub(super) token: u64,
+    pub(super) event: usize,
+    pub(super) owner: ControlIx,
+    pub(super) strand: Strand,
+    pub(super) timer: Option<TimerKey>,
+    pub(super) completion: Option<AwaitCompletion>,
+}
+#[derive(Default)]
+struct Awaiters {
+    next: u64,
+    by_event: Vec<BTreeSet<u64>>,
+    by_token: BTreeMap<u64, Awaiter>,
+    by_strand: super::ids::IdMap<StrandId, u64>,
+    ready: VecDeque<u64>,
+}
+impl Awaiters {
+    fn with_events(count: usize) -> Self {
+        Self {
+            by_event: vec![BTreeSet::new(); count],
+            ..Self::default()
+        }
+    }
+    fn token(&mut self) -> Result<u64, KernelFault> {
+        let token = self.next;
+        self.next = token.checked_add(1).ok_or(LIMIT)?;
+        Ok(token)
+    }
+    fn insert(
+        &mut self,
+        token: u64,
+        event: usize,
+        owner: ControlIx,
+        strand: Strand,
+        timer: Option<TimerKey>,
+    ) -> Result<(), RunError> {
+        let index = self.by_event.get_mut(event).ok_or(RunError::InvalidState)?;
+        if self.by_token.contains_key(&token) || self.by_strand.contains_key(&strand.id) {
+            return Err(RunError::InvalidState);
+        }
+        index.insert(token);
+        self.by_strand.insert(strand.id, token);
+        self.by_token.insert(
+            token,
+            Awaiter {
+                token,
+                event,
+                owner,
+                strand,
+                timer,
+                completion: None,
+            },
+        );
+        Ok(())
+    }
+    fn matching(&self, event: usize) -> impl Iterator<Item = u64> + '_ {
+        self.by_event
+            .get(event)
+            .into_iter()
+            .flat_map(|tokens| tokens.iter().copied())
+    }
+    fn accept(&mut self, token: u64, completion: AwaitCompletion) -> Result<(), RunError> {
+        let waiter = self
+            .by_token
+            .get_mut(&token)
+            .ok_or(RunError::InvalidState)?;
+        if waiter.completion.is_some() {
+            return Err(RunError::InvalidState);
+        }
+        self.by_event[waiter.event].remove(&token);
+        waiter.timer = None;
+        waiter.completion = Some(completion);
+        self.ready.push_back(token);
+        Ok(())
+    }
+    fn timeout(&mut self, token: u64) -> Result<bool, RunError> {
+        let Some(waiter) = self.by_token.get_mut(&token) else {
+            return Ok(false);
+        };
+        if waiter.completion.is_some() {
+            return Ok(false);
+        }
+        self.by_event[waiter.event].remove(&token);
+        waiter.timer = None;
+        waiter.completion = Some(AwaitCompletion {
+            metadata: None,
+            payload: None,
+            charge: 0,
+            timed_out: true,
+        });
+        self.ready.push_back(token);
+        Ok(true)
+    }
+    fn pop_ready(&mut self) -> Option<(u64, Awaiter)> {
+        let token = self.ready.pop_front()?;
+        let waiter = self.by_token.remove(&token)?;
+        self.by_strand.remove(&waiter.strand.id);
+        Some((token, waiter))
+    }
+    fn detach_strand(&mut self, strand: StrandId) -> Option<Awaiter> {
+        let token = self.by_strand.remove(&strand)?;
+        let waiter = self.by_token.remove(&token)?;
+        self.by_event[waiter.event].remove(&token);
+        if waiter.completion.is_some() {
+            self.ready.retain(|pending| *pending != token);
+        }
+        Some(waiter)
+    }
+    fn len(&self) -> usize {
+        self.by_event.iter().map(BTreeSet::len).sum()
+    }
+    fn has_ready(&self) -> bool {
+        !self.ready.is_empty()
+    }
+    fn clear(&mut self) {
+        self.by_token.clear();
+        self.by_strand.clear();
+        self.ready.clear();
+        for index in &mut self.by_event {
+            index.clear();
+        }
+    }
+    fn release(&mut self) {
+        let next = self.next;
+        *self = Self {
+            next,
+            ..Self::default()
+        };
+    }
+    fn discard_completions(&mut self, stats: &mut RunEventStats) {
+        for token in self.ready.drain(..) {
+            if let Some(waiter) = self.by_token.get_mut(&token)
+                && let Some(completion) = waiter.completion.take()
+                && completion.metadata.is_some()
+            {
+                stats.pending = stats.pending.saturating_sub(1);
+                stats.pending_bytes = stats.pending_bytes.saturating_sub(completion.charge);
+                stats.live_payload_bytes =
+                    stats.live_payload_bytes.saturating_sub(completion.charge);
+                stats.dropped = stats.dropped.saturating_add(1);
+            }
+        }
+    }
 }
 impl Handler {
     fn has_slot(&self) -> bool {
@@ -109,6 +259,7 @@ pub(super) struct Events {
     static_starts: u64,
     static_roots: u64,
     live_stop_frames: usize,
+    waiters: Awaiters,
 }
 impl Events {
     pub fn new(plan: &ControlPlan) -> Self {
@@ -154,6 +305,7 @@ impl Events {
             static_starts: plan.starts().len() as u64,
             static_roots: (plan.starts().len() + plan.stops().len()) as u64,
             live_stop_frames: plan.stops().len(),
+            waiters: Awaiters::with_events(plan.events().len()),
         }
     }
     fn remove_ready(&mut self, handler: usize) {
@@ -190,6 +342,9 @@ impl Events {
         self.stats.pending
     }
     pub fn clear(&mut self) {
+        // Await completions share aggregate pending counters with handler deliveries.
+        // Refund them first so the handler-only queue reset below runs exactly once.
+        self.waiters.discard_completions(&mut self.stats);
         self.stats.dropped = self.stats.dropped.saturating_add(self.stats.pending as u64);
         self.stats.live_payload_bytes = self
             .stats
@@ -207,6 +362,7 @@ impl Events {
     }
     pub fn abort(&mut self) {
         self.clear();
+        self.waiters.clear();
         self.active.clear();
         self.stats.live_payload_bytes = 0;
         for handler in &mut self.handlers {
@@ -220,6 +376,7 @@ impl Events {
         self.handlers = Vec::new();
         self.ready = BTreeSet::new();
         self.by_event = Vec::new();
+        self.waiters.release();
         self.source_sequences = Vec::new();
         self.cancel_pending = VecDeque::new();
         self.live_stop_frames = 0;
@@ -246,6 +403,88 @@ impl Run {
     pub fn last_event(&self) -> Option<EventMetadata> {
         self.events.last
     }
+    pub(super) fn waiter_count(&self) -> usize {
+        self.events.waiters.len()
+    }
+    pub(super) fn next_waiter_token(&mut self) -> Result<u64, KernelFault> {
+        self.events.waiters.token()
+    }
+    pub(super) fn register_waiter(
+        &mut self,
+        token: u64,
+        event: usize,
+        owner: ControlIx,
+        strand: Strand,
+        timer: Option<TimerKey>,
+    ) -> Result<(), RunError> {
+        self.events
+            .waiters
+            .insert(token, event, owner, strand, timer)
+    }
+    pub(super) fn take_waiter_for_cancel(&mut self, strand: StrandId) -> Option<Awaiter> {
+        let waiter = self.events.waiters.detach_strand(strand)?;
+        if let Some(completion) = &waiter.completion
+            && completion.metadata.is_some()
+        {
+            self.events.stats.pending = self.events.stats.pending.saturating_sub(1);
+            self.events.stats.pending_bytes = self
+                .events
+                .stats
+                .pending_bytes
+                .saturating_sub(completion.charge);
+            self.events.stats.live_payload_bytes = self
+                .events
+                .stats
+                .live_payload_bytes
+                .saturating_sub(completion.charge);
+            self.events.stats.dropped = self.events.stats.dropped.saturating_add(1);
+        }
+        Some(waiter)
+    }
+    pub(super) fn complete_waiter_timeout(&mut self, token: u64) -> Result<bool, RunError> {
+        self.events.waiters.timeout(token)
+    }
+    pub(super) fn pop_completed_waiter(&mut self) -> Option<Awaiter> {
+        self.events.waiters.pop_ready().map(|(_, waiter)| waiter)
+    }
+    pub(super) fn pending_await_completions(&self) -> bool {
+        self.events.waiters.has_ready()
+    }
+    pub(super) fn published_await_delivery(&mut self, completion: &AwaitCompletion) {
+        if completion.metadata.is_some() {
+            self.events.stats.pending = self.events.stats.pending.saturating_sub(1);
+            self.events.stats.pending_bytes = self
+                .events
+                .stats
+                .pending_bytes
+                .saturating_sub(completion.charge);
+            self.events.stats.live_payload_bytes = self
+                .events
+                .stats
+                .live_payload_bytes
+                .saturating_sub(completion.charge);
+            self.events.stats.delivered = self.events.stats.delivered.saturating_add(1);
+        }
+    }
+    pub(super) fn dropped_await_delivery(&mut self, completion: &AwaitCompletion) {
+        if completion.metadata.is_some() {
+            self.events.stats.pending = self.events.stats.pending.saturating_sub(1);
+            self.events.stats.pending_bytes = self
+                .events
+                .stats
+                .pending_bytes
+                .saturating_sub(completion.charge);
+            self.events.stats.live_payload_bytes = self
+                .events
+                .stats
+                .live_payload_bytes
+                .saturating_sub(completion.charge);
+            self.events.stats.dropped = self.events.stats.dropped.saturating_add(1);
+        }
+    }
+    pub(super) fn event_waiter_count(&self) -> usize {
+        self.waiter_count()
+    }
     fn event_frame_room(&self) -> bool {
         let Some(template) = &self.event_template else {
             return false;
@@ -271,13 +510,12 @@ impl Run {
     pub(super) fn emit_event(
         &mut self,
         plan: &ControlPlan,
-        activation: &Strand,
-        shared: &ActivationState,
+        activation: &mut Strand,
         owner: ControlIx,
         event: usize,
         payload: Value,
     ) -> Result<(), KernelFault> {
-        let result = self.enqueue_event(plan, activation, shared, owner, event, payload);
+        let result = self.enqueue_event(plan, activation, owner, event, payload);
         if result == Err(LIMIT) {
             self.events.stats.overflows = self.events.stats.overflows.saturating_add(1);
         }
@@ -286,8 +524,7 @@ impl Run {
     fn enqueue_event(
         &mut self,
         plan: &ControlPlan,
-        activation: &Strand,
-        shared: &ActivationState,
+        activation: &mut Strand,
         owner: ControlIx,
         event: usize,
         payload: Value,
@@ -295,7 +532,7 @@ impl Run {
         if self.state != RunState::Running {
             return Err(STOPPING);
         }
-        let depth = shared
+        let depth = activation
             .cause_depth
             .checked_add(1)
             .filter(|d| *d <= self.options.max_cause_depth)
@@ -316,6 +553,27 @@ impl Run {
         let mut bytes = self.events.stats.pending_bytes;
         let mut live = self.events.stats.live_payload_bytes;
         let mut changes = Vec::with_capacity(self.events.by_event[event].len());
+        let waiter_tokens: Vec<_> = self.events.waiters.matching(event).collect();
+        let mut waiter_charges = Vec::with_capacity(waiter_tokens.len());
+        for &token in &waiter_tokens {
+            let waiter = self.events.waiters.by_token.get(&token).ok_or(LIMIT)?;
+            let retained = charge
+                .checked_mul(plan.value_targets(waiter.owner).len())
+                .ok_or(LIMIT)?;
+            let delivery_charge = charge.max(retained);
+            pending = pending.checked_add(1).ok_or(LIMIT)?;
+            bytes = bytes.checked_add(delivery_charge).ok_or(LIMIT)?;
+            live = live.checked_add(delivery_charge).ok_or(LIMIT)?;
+            if self.event_template.as_ref().is_none_or(|template| {
+                template
+                    .local_bytes
+                    .checked_add(retained)
+                    .is_none_or(|n| n > self.options.limits.max_state_bytes)
+            }) {
+                return Err(LIMIT);
+            }
+            waiter_charges.push((token, delivery_charge));
+        }
         for &handler in &self.events.by_event[event] {
             let queue = &self.events.handlers[handler];
             // A busy Drop target is a deliberate policy loss, not a capacity overflow.
@@ -430,13 +688,45 @@ impl Run {
             }
             self.events.make_ready(change.handler);
         }
+        for (token, delivery_charge) in waiter_charges {
+            let timer_key = self.timers.detach_await(token);
+            if let Some(key) = timer_key {
+                let Some(TimerTarget::Await {
+                    run,
+                    token: timer_token,
+                }) = self.timers.remove(key)
+                else {
+                    return Err(LIMIT);
+                };
+                if run != self.id || timer_token != token {
+                    return Err(LIMIT);
+                }
+            }
+            self.events
+                .waiters
+                .accept(
+                    token,
+                    AwaitCompletion {
+                        metadata: Some(origin),
+                        payload: Some(payload.clone()),
+                        charge: delivery_charge,
+                        timed_out: false,
+                    },
+                )
+                .map_err(|_| LIMIT)?;
+            self.events.stats.accepted = self.events.stats.accepted.saturating_add(1);
+        }
         self.events.stats.pending = pending;
         self.events.stats.pending_bytes = bytes;
         self.events.stats.live_payload_bytes = live;
         self.events.ingestion = ingestion;
         self.events.source_sequences[owner.index()] = source_seq;
         self.events.last = Some(origin);
-        self.regions.charge(self.events.by_event[event].len());
+        self.regions.charge(
+            self.events.by_event[event]
+                .len()
+                .saturating_add(waiter_tokens.len()),
+        );
         Ok(())
     }
     /// Apply Replace only at an actor-owned boundary: the emitting strand and its shared
@@ -476,7 +766,6 @@ impl Run {
             return Err(RunError::AggregateLimit);
         }
         let mut frame = Box::new(ActivationState {
-            cause_depth: envelope.metadata.cause_depth,
             budget: self.budget.clone(),
             retained_bytes: Tally::new(Some(self.budget.clone()), 0),
             owned_bytes: Arc::new(std::sync::atomic::AtomicUsize::new(0)),
@@ -532,6 +821,7 @@ impl Run {
                 parent: None,
                 activation: sequence,
                 depth: 0,
+                max_cause_depth: envelope.metadata.cause_depth,
                 live: IdSet::one(strand_id),
                 children: IdSet::default(),
                 continuation: None,
@@ -547,6 +837,7 @@ impl Run {
             region,
             sequence,
             entry,
+            cause_depth: envelope.metadata.cause_depth,
             pc: Some(entry.into()),
             pull: PullState::default(),
             stack: vec![],

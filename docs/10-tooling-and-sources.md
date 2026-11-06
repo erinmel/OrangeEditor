@@ -3258,3 +3258,62 @@ or lockfile change: SHA256
   Required current-head native/MSRV/workflow CI still precedes integration. These
   cooperative semantics establish neither physical cancellation latency nor complete
   FR-48, runtime, adapter, UI, release or NFR qualification.
+
+### C03 — owned typed Await Event — 2026-11-06
+
+Base dev `4b26315f5960d9843153334c6605b9b62aee925b` (PR129 integrated).
+Rust 1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo 1.99.1 (`5f94df478`,
+2026-08-27), Windows x64 MSVC, edition 2024, default workspace test features.
+MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
+`8BB91CAAFF5A7106E5752D49D9AB285D4566A1B69B55AD1CA81E10E1D70BB068`.
+
+- The existing run-scope `core/await-event` intrinsic now lowers and executes with
+  an absent/None or checked duration timeout, typed payload on `then`, `timed_out`
+  and owned cancellation. Each registration owns one existing strand and a checked
+  non-reused token; event/timeout directories hold identity only. The next accepted
+  matching Emit broadcasts to current registrations without replay or a new root.
+  Handler-plus-waiter fanout is atomic under combined pending/live payload quotas.
+  Each completed waiter publication consumes one pump work item after due timers
+  and before handler dispatch or graph nodes. Accepted completions remain cancelable.
+- Causal depth moved from activation-wide state to strands and serial continuation
+  lineage. Await cannot reset a chain; concurrent siblings remain independent.
+  Emit derives the new envelope depth without changing its emitting strand's lineage.
+  Registration storage is bounded by existing strands; timed Await shares the timer
+  limit with Wait. Existing private inline timer/cancellation layouts are retained
+  with narrow documented large-enum lint expectations, avoiding a new allocation
+  solely to satisfy that lint. This is not an allocation/timing qualification claim.
+- Twelve real-graph regressions pass: typed broadcast/no backlog/wrong event ID;
+  event/timeout/cancel and zero-timeout boundary; rearm without stale timeout;
+  same-activation Fork; function Return lineage, depth refusal, sequential Emit and
+  sibling isolation; exact/one-under combined handler/waiter payload quota; shared
+  timer exact/one-under refusal and fatal cleanup; Replace/function cleanup and
+  accepted-unpublished immediate-stop refunds; intentional indefinite wait with
+  capacity-blocked pending handlers, followed by complete stop/disposal release.
+  `RunOwnership::event_waiters` counts registrations still observing future emits;
+  matched unpublished deliveries are instead visible in pending delivery counters.
+- Final-source PASS: `cargo fmt --all --check`;
+  `cargo test -p orange-bundled --test integration --locked --offline run_events::event_await`;
+  `cargo test --workspace --locked --offline` and the same with `--release`;
+  `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings`;
+  `cargo doc --workspace --no-deps --all-features --locked --offline` with
+  `RUSTDOCFLAGS=-D warnings`. Debug and release each report **1,251 passed,
+  zero failed, 15 opt-in measurements ignored**; focused Await suite **12 passed**.
+  Tests used `CARGO_INCREMENTAL=0` and `CARGO_PROFILE_TEST_DEBUG=line-tables-only`.
+  Repository helper tests pass 15; metadata policy and 19 fixtures pass; the release
+  configuration check confirms publication remains disabled; whitespace passes.
+- Initial acceptance observed the expected unsupported Await compiler result.
+  Integration review corrected emitter-lineage mutation, duplicate pending-payload
+  refund/drop and uncharged broadcast publication before final verification; the
+  focused cases above cover those outcomes. Separate final source review found no
+  outstanding actionable defect. Agent review is supplementary evidence, not an
+  independent human approval. Local source/build-input receipt: 327 files, SHA256
+  `69dc1c3773268ff76e8d954bddcd15306e7de599a5a9cc8e596869d22825f478`;
+  documentation and ignored output excluded. Raw logs/receipt remain ignored locally.
+- README, FR/NFR trace, lifecycle/language/layout contracts and ADR-24 are updated
+  together. Additive unfrozen operation/outcome/inspection fields require exhaustive
+  downstream matches and literals to update; saved JSON/provider identities do not
+  change. Required exact-head native/MSRV/workflow CI still precedes integration.
+  An indefinite Await may intentionally remain Running with no ready work or wakeup;
+  this is no graph-liveness proof. Other ingress, replay/reactivity, services/adapters,
+  UI, release and physical NFR qualification remain open. No timing probe ran, and
+  the removal of hosted CI/CD performance runs remains in place.
