@@ -3502,3 +3502,33 @@ MSRV checks were not run locally.
 - **Rebased onto dev `a0e9f0b` (C04a merged):** fmt, Clippy, warnings-denied rustdoc,
   and debug and release tests rerun on the rebased source: **1,295 passed, 0 failed,
   15 ignored** each.
+
+### C04b1 — manual entries — 2026-11-06
+
+Base dev `68a06ef` (PR134 integrated). Rust 1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo
+1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024, default features.
+MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+- `core/on-manual@1` is a registered Entry. Its optional `config.payload` type gives a
+  `payload` output (`Ports::Manual`, derived like For Each's mode ports); a bad type or
+  extra field reports `E-MANUAL-PAYLOAD`. The compiler lowers each root manual entry
+  to a private one-handler channel (`ControlPlan::manuals()`), using the same checked
+  handler policy as On Event.
+- `Run::trigger(node, payload, wall_ns)` admits through the shared staged handler
+  admission and runs no graph work inline. `EventMetadata::event` became
+  `target: EventTarget` (`Declared(event)` or `Manual(node)`); `EventOrigin::Manual`
+  and `IngressError::UnknownEntry` are new.
+- Five focused regressions pass in `run_events::manual_entry`: typed trigger metadata
+  and later-pump root start; unknown-entry, missing/extra/wrong-type payload and
+  stopped-run refusals leave sequences, queues and counters unchanged; payloadless
+  entries; drop-newest and fault overflow with sequence retained after refusal; and
+  config validation for unregistered, parameterized, non-string and extra fields.
+- Commands: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets
+  --all-features --locked --offline -- -D warnings`; `cargo test --workspace --locked
+  --offline` and the same with `--release`; warnings-denied `cargo doc --workspace
+  --no-deps --locked --offline`. Debug and release each report **1,313 passed, zero
+  failed, 15 opt-in measurements ignored**. Cargo used `CARGO_INCREMENTAL=0`.
+- Limits: editor test buttons, CLI wiring and key bindings are host work. Timer
+  entries and missed-tick policies, clock-reader inputs, replay and adapters remain
+  later increments. No timing probe ran.
