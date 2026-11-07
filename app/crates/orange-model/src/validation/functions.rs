@@ -618,8 +618,8 @@ const UNREGISTERED_HOST_ENTRIES: &[&str] = &[
     ids::ON_START,
     ids::ON_STOP,
     ids::ON_MANUAL,
-    "core/on-timer",
-    "core/on-timeout",
+    ids::ON_TIMER,
+    ids::ON_TIMEOUT,
     "core/on-variable-changed",
     "core/on-watch",
 ];

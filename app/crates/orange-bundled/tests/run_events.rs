@@ -1627,3 +1627,6 @@ mod event_ingress;
 
 #[path = "support/manual_entry.rs"]
 mod manual_entry;
+
+#[path = "support/timer_entry.rs"]
+mod timer_entry;

@@ -5,6 +5,7 @@ use orange_model::document::{OverflowPolicy, ReentrancyMode};
 use orange_model::id::EventDeclId;
 use orange_model::value::shape::ValueShape;
 use std::collections::BTreeSet;
+use ticks::{Tick, TickCursor};
 
 const LIMIT: KernelFault = KernelFault {
     code: "core/LimitExceeded",
@@ -36,8 +37,8 @@ pub struct RunEventStats {
     pub live_payload_bytes: usize,
     pub activation_high_water: usize,
 }
-/// Identifies whether an accepted event came from a graph node, a registered host source
-/// or the host manual-trigger call.
+/// Identifies whether an accepted event came from a graph node, a registered host source,
+/// the host manual-trigger call or a timer entry's schedule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventOrigin {
     Graph {
@@ -49,14 +50,18 @@ pub enum EventOrigin {
     },
     /// `Run::trigger`: no source registration; `source_seq` counts the entry's triggers.
     Manual,
+    /// A timer entry's schedule; `source_seq` is the tick's ordinal, so a gap is missed ticks.
+    Timer,
 }
 
 /// What an accepted delivery targets: a checked run-scope event declaration, consumed by
-/// its On Event handlers and Await waiters, or one root `core/on-manual` entry.
+/// its On Event handlers and Await waiters, one root `core/on-manual` entry, or one root
+/// `core/on-timer`/`core/on-timeout` entry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventTarget {
     Declared(EventDeclId),
     Manual(NodeId),
+    Timer(NodeId),
 }
 
 /// Last successfully ingested event. Contains no payload.
@@ -156,18 +161,21 @@ struct HostSource {
     event: usize,
     last_seq: u64,
 }
-struct EventAdmission {
-    event: usize,
-    origin: EventOrigin,
-    cause: Option<u64>,
-    cause_depth: u16,
-    source_seq: u64,
-    wall_ns: Option<i64>,
-    graph_source: Option<usize>,
+pub(super) struct EventAdmission {
+    pub event: usize,
+    pub origin: EventOrigin,
+    pub cause: Option<u64>,
+    pub cause_depth: u16,
+    pub source_seq: u64,
+    pub wall_ns: Option<i64>,
+    pub graph_source: Option<usize>,
+    /// A timer tick's output values; its payload is `Unit`.
+    pub tick: Option<Tick>,
 }
 struct Envelope {
     metadata: EventMetadata,
     payload: Value,
+    tick: Option<Tick>,
     charge: usize,
 }
 struct Handler {
@@ -353,18 +361,21 @@ impl Handler {
             .filter(|root| self.cancel_requested != Some(*root))
     }
 }
-/// Payload shape and target of one delivery channel: a checked event, then manual entries.
+/// Payload shape and target of one delivery channel: checked events, then manual entries,
+/// then timer entries.
 fn channel(plan: &ControlPlan, channel: usize) -> Option<(Option<&ValueShape>, EventTarget)> {
-    match plan.events().get(channel) {
-        Some(event) => Some((
+    if let Some(event) = plan.events().get(channel) {
+        return Some((
             Some(event.payload_type()),
             EventTarget::Declared(event.id()),
-        )),
-        None => {
-            let manual = plan.manuals().get(channel - plan.events().len())?;
-            Some((manual.payload_type(), EventTarget::Manual(manual.node())))
-        }
+        ));
     }
+    let channel = channel - plan.events().len();
+    if let Some(manual) = plan.manuals().get(channel) {
+        return Some((manual.payload_type(), EventTarget::Manual(manual.node())));
+    }
+    let timer = plan.timers().get(channel - plan.manuals().len())?;
+    Some((None, EventTarget::Timer(timer.node())))
 }
 pub(super) struct ActivationTemplate {
     pub prepared: Arc<PreparedData>,
@@ -385,11 +396,13 @@ pub(super) struct Events {
     /// once until retirement, so this is bounded by active roots, not emission history.
     cancel_pending: VecDeque<u64>,
     /// Handler indices per channel: checked events first, then one channel per root manual
-    /// entry at `events.len() + manual index`.
+    /// entry at `events.len() + manual index`, then one per root timer entry.
     by_event: Vec<Vec<usize>>,
     source_sequences: Vec<u64>,
     /// Accepted trigger count per manual entry, used as its source sequence.
     manual_sequences: Vec<u64>,
+    /// Schedule cursor per timer entry.
+    ticks: Vec<TickCursor>,
     host_sources: BTreeMap<HostSourceId, HostSource>,
     next_host_source_id: Option<u64>,
     ingestion: u64,
@@ -426,6 +439,7 @@ impl Events {
                 .iter()
                 .map(|manual| vec![add(manual.handler())]),
         );
+        by_event.extend(plan.timers().iter().map(|timer| vec![add(timer.handler())]));
         Self {
             handlers,
             ready: BTreeSet::new(),
@@ -438,6 +452,7 @@ impl Events {
                 vec![0; plan.nodes().len()]
             },
             manual_sequences: vec![0; plan.manuals().len()],
+            ticks: vec![TickCursor::default(); plan.timers().len()],
             host_sources: BTreeMap::new(),
             next_host_source_id: Some(1),
             ingestion: 0,
@@ -482,6 +497,26 @@ impl Events {
     pub fn pending(&self) -> usize {
         self.stats.pending
     }
+    pub(super) fn tick_cursor(&self, timer: usize) -> Result<TickCursor, RunError> {
+        self.ticks.get(timer).copied().ok_or(RunError::InvalidState)
+    }
+    pub(super) fn set_tick_admitted(&mut self, timer: usize, ordinal: u64) -> Result<(), RunError> {
+        self.ticks
+            .get_mut(timer)
+            .ok_or(RunError::InvalidState)?
+            .admitted = ordinal;
+        Ok(())
+    }
+    pub(super) fn set_tick_next(&mut self, timer: usize, ordinal: u64) -> Result<(), RunError> {
+        self.ticks
+            .get_mut(timer)
+            .ok_or(RunError::InvalidState)?
+            .next = ordinal;
+        Ok(())
+    }
+    pub(super) fn count_overflow(&mut self) {
+        self.stats.overflows = self.stats.overflows.saturating_add(1);
+    }
     pub fn clear(&mut self) {
         // Await completions share aggregate pending counters with handler deliveries.
         // Refund them first so the handler-only queue reset below runs exactly once.
@@ -520,6 +555,8 @@ impl Events {
         self.by_event = Vec::new();
         self.waiters.release();
         self.source_sequences = Vec::new();
+        self.manual_sequences = Vec::new();
+        self.ticks = Vec::new();
         self.host_sources = BTreeMap::new();
         self.cancel_pending = VecDeque::new();
         self.live_stop_frames = 0;
@@ -651,6 +688,7 @@ impl Run {
                 source_seq,
                 wall_ns,
                 graph_source: None,
+                tick: None,
             },
         );
         let metadata = match accepted {
@@ -712,6 +750,7 @@ impl Run {
                 source_seq,
                 wall_ns,
                 graph_source: None,
+                tick: None,
             },
         );
         let metadata = match accepted {
@@ -879,12 +918,13 @@ impl Run {
                 source_seq,
                 wall_ns: None,
                 graph_source: Some(owner.index()),
+                tick: None,
             },
         )?;
         Ok(())
     }
 
-    fn admit_event(
+    pub(super) fn admit_event(
         &mut self,
         plan: &ControlPlan,
         payload: &Value,
@@ -898,6 +938,7 @@ impl Run {
             source_seq,
             wall_ns,
             graph_source,
+            tick,
         } = admission;
         let (payload_type, target) = channel(plan, event).ok_or(LIMIT)?;
         let charge = match payload_type {
@@ -1038,6 +1079,7 @@ impl Run {
                 queue.pending.push_back(Envelope {
                     metadata: origin,
                     payload: payload.clone(),
+                    tick,
                     charge: change.charge,
                 });
                 self.events.stats.accepted = self.events.stats.accepted.saturating_add(1);
@@ -1147,14 +1189,24 @@ impl Run {
             local_bytes,
             outputs: vec![None; self.layout.output_count],
         });
-        Self::publish_match_value(
-            plan,
-            &self.layout,
-            &mut frame,
-            entry,
-            Some(envelope.payload.clone()),
-            self.options.limits.max_state_bytes,
-        )?;
+        match envelope.tick {
+            Some(tick) => Self::publish_tick(
+                plan,
+                &self.layout,
+                &mut frame,
+                entry,
+                tick,
+                self.options.limits.max_state_bytes,
+            )?,
+            None => Self::publish_match_value(
+                plan,
+                &self.layout,
+                &mut frame,
+                entry,
+                Some(envelope.payload.clone()),
+                self.options.limits.max_state_bytes,
+            )?,
+        }
         self.activations.insert(
             sequence,
             frame,

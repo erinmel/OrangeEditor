@@ -4,6 +4,8 @@
 pub const ON_START: &str = "core/on-start";
 pub const ON_STOP: &str = "core/on-stop";
 pub const ON_MANUAL: &str = "core/on-manual";
+pub const ON_TIMER: &str = "core/on-timer";
+pub const ON_TIMEOUT: &str = "core/on-timeout";
 pub const CALL: &str = "core/call";
 pub const FUNCTION_ENTRY: &str = "core/function-entry";
 pub const FUNCTION_OUTPUTS: &str = "core/function-outputs";

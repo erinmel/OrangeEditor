@@ -10,6 +10,7 @@ pub(crate) mod intrinsics;
 pub(crate) mod language;
 pub mod provider;
 pub mod snapshot;
+mod timer;
 
 pub use call::{CallInterface, CallInterfaceError, call_interface};
 pub(crate) use call::{
@@ -26,3 +27,4 @@ pub(crate) use language::{
 };
 pub use provider::{ProviderDescriptor, ProviderKey};
 pub use snapshot::{RegistryBuilder, RegistryError, RegistrySnapshot};
+pub use timer::{MissedTicks, TimerFirst, TimerSchedule};

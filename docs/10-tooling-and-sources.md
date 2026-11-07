@@ -3532,3 +3532,36 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
 - Limits: editor test buttons, CLI wiring and key bindings are host work. Timer
   entries and missed-tick policies, clock-reader inputs, replay and adapters remain
   later increments. No timing probe ran.
+
+### C04b2 — timer entries — 2026-11-06
+
+Base dev `0022f41` (PR135 integrated). Rust 1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo
+1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024, default features.
+MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+- `core/on-timer@1` and `core/on-timeout@1` are registered Entries (`Ports::Timer`).
+  `TimerSchedule::from_node` checks their config (decimal nanosecond `interval`/`delay`,
+  `first`, `missed`, `catch_up_max`); anything else reports `E-TIMER-CONFIG`. The
+  compiler lowers each root timer entry to a private one-handler channel
+  (`ControlPlan::timers()`) whose `scheduled_at`/`missed` outputs are
+  `HostSource::Tick` projections.
+- The run arms one `TimerTarget::Entry` per timer entry at start (within
+  `max_timers`). When a pump handles it, the due ticks are counted on the grid
+  `offset + (k − 1) × interval`; `coalesce`, `skip` and `catch-up(max)` select which to
+  admit through the shared staged handler admission, and the next tick is re-armed on
+  the grid. Metadata has target `Timer(node)`, origin `Timer` and the tick ordinal as
+  `source_seq`. A refused tick increments the overflow counter, is reported in the next
+  admitted tick's `missed` and never faults the run. Stop and fault disarm the entries.
+- Nine focused regressions pass in `run_events::timer_entry`, plus two schedule unit
+  tests in `orange-model`: grid scheduling without drift and tick metadata; immediate
+  first tick; exact coalesce, skip and catch-up counts after a stalled actor (G-38);
+  refused ticks counted as missed without a run fault; one-shot timeout; graceful and
+  immediate stop disarming and the timer limit at start; config validation.
+- Commands: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets
+  --all-features --locked --offline -- -D warnings`; `cargo test --workspace --locked
+  --offline` and the same with `--release`; warnings-denied `cargo doc --workspace
+  --no-deps --locked --offline`. Debug and release each report **1,324 passed, zero
+  failed, 15 opt-in measurements ignored**. Cargo used `CARGO_INCREMENTAL=0`.
+- Limits: ticks follow the run's virtual clock only; OS timers, wall-clock alignment,
+  clock-reader inputs (C04b3), replay and adapters remain open. No timing probe ran.

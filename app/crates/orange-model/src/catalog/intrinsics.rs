@@ -102,6 +102,12 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
         ports: Ports::Manual,
         ..definition(ids::ON_MANUAL, NodeKind::Entry, None, Vec::new())
     });
+    for id in [ids::ON_TIMER, ids::ON_TIMEOUT] {
+        definitions.push(NodeDefinition {
+            ports: Ports::Timer,
+            ..definition(id, NodeKind::Entry, None, Vec::new())
+        });
+    }
     definitions.extend(zone_definitions());
     definitions
 }
@@ -182,6 +188,33 @@ pub(crate) fn manual_contract(
         ports.push(PortDescriptor::data_out(
             "payload",
             payload,
+            OutputSource::Payload,
+        ));
+    }
+    Ok(NodeContract {
+        kind: definition.kind,
+        suspends: definition.suspends,
+        type_params: Vec::new(),
+        ports,
+    })
+}
+
+/// `core/on-timer` and `core/on-timeout` ports after their config is checked (11 §10.2):
+/// `scheduled_at` for both, plus `missed` for the interval timer.
+pub(crate) fn timer_contract(
+    definition: &NodeDefinition,
+    node: &NodeInstance,
+) -> Result<NodeContract, ContractError> {
+    let schedule = super::TimerSchedule::from_node(node).ok_or(ContractError::TimerConfig)?;
+    let mut ports = vec![PortDescriptor::data_out(
+        "scheduled_at",
+        ty("core/duration@1"),
+        OutputSource::Payload,
+    )];
+    if matches!(schedule, super::TimerSchedule::Interval { .. }) {
+        ports.push(PortDescriptor::data_out(
+            "missed",
+            ty("core/u64@1"),
             OutputSource::Payload,
         ));
     }
