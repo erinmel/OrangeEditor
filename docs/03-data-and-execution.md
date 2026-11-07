@@ -6,6 +6,68 @@ incremental authoring preview or graph stream iteration. Verification is in [10]
 
 ## Trusted execution boundary (C11a/C09a, 2026-11-06)
 
+### Bounded reference-only recording and replay (C05, 2026-11-07)
+
+`RecordedRun::start` owns a fresh Run and pins its exact immutable compiled plan,
+provider snapshot, seed, options and `ENTROPY_ALGORITHM`. Only immutable `inspect`
+is exposed; mutations pass through recorded pump budgets, clock advancement,
+manual triggers, source registration/revocation, host ingestion, Async request
+handoff/completion and explicit stop. Internal timers, Emit/Await, Watch, entropy
+and local computation are recomputed. Refused ordinary operations retain their
+typed outcomes, preserving source order, complete-once rules and overflow counters.
+Process-specific run identities are remapped, including foreign-token refusals;
+source generations, operation sequences, node IDs and arrival order stay semantic.
+
+Every synchronous trusted Action reserves an entry before its callback and records
+its safe fault or typed result reference inside the enclosing pump command. Replay
+substitutes that result without invoking the callback. Async request handoffs are
+consumed internally and recorded results use the ordinary completion boundary;
+no request reaches an external executor. Replay returns read-only inspection and
+cannot expose pending requests or continue as live execution. Stop before accepted
+result publication still wins. Replay uses exact recorded host/pump boundaries;
+independent recordings at different budgets must preserve language semantics.
+`begin_replay` returns a read-only `ReplayPlayback`; each `step` executes at most
+one saved host command with that command's original pump work bound. Premature
+finish is refused and divergence permanently invalidates that playback. The
+`replay` convenience method intentionally executes the whole finite prefix in one
+call; an interactive host can drive `step` on its existing worker instead.
+A step interruption guard also refuses finish/resume after a caught host archive
+panic, including when that command was the last entry and no Run pump had started.
+
+`ReplayArchive` is an explicit trusted host sensitivity/integrity boundary. It
+captures values under host policy and resolves immutable `ReplayPayloadRef`
+identities; both callbacks must be bounded/nonblocking. Journal entries contain
+references, scalar metadata and safe static fault envelopes, never captured values,
+credentials, formatted payloads or an archive owner. The archive must preserve exact
+values or return `Excluded`; changing a string to a redacted string changes graph
+semantics and cannot qualify exact replay. Missing references and invalid typed
+results fail closed. Archive authentication, retention, credentials and storage
+quotas remain host-owned, outside Run/journal accounting. Plan/context references
+remain pinned in memory; no credential bytes are exported as a log format. Debug
+shows metadata/counts only and never invokes archive/provider formatters.
+
+`ReplayOptions` defaults to 8192 fixed entries/2 MiB of entry storage. Count/byte
+overflow or allocation refusal is checked before Run starts. A full journal refuses
+a host command before mutation and increments `full_refusals`; it never evicts old
+records. If an Action cannot reserve inside a pump, it does not run and the run
+faults `RunError::ReplayFailed`, leaving the journal incomplete. Archive exclusion/
+failure after an already executed callback also invalidates the recording; it cannot
+undo that real effect. Placeholders and the pump interruption guard prevent sealing
+after a caught panic. `finish` seals a complete prefix and returns the original live
+Run separately; it does not claim the whole Run is Stopped. `abort` abandons the
+journal, requests immediate stop independently of capacity and returns the Run for
+remaining bounded cleanup. Stats expose entry count, nominal reserved bytes, full
+refusals and completeness; archive/plan/allocator/RSS cost is excluded.
+
+This profile accepts ordinary typed value effects and explicit virtual time/stop.
+Live CancelToken timing and resource/stream operations/results are refused before
+start; no sockets, handles, producers or arbitrary live continuations are restored.
+The sealed history reuses its exact in-process plan, with normal document/registry
+freshness checks. It is not a portable serialized log, recompiled-plan hash format,
+credential archive or checkpoint. Portable version/provider identity and concrete
+adapter replay remain separate integration gates. Executed checks are in 10;
+physical recording overhead/latency/RSS qualification remains deferred.
+
 ### Bounded Tee and push bridges (C10, 2026-11-07)
 
 `Run::open_push_stream(item_type, StreamBufferOptions)` acquires a run-owned

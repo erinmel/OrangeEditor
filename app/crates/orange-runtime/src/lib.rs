@@ -7,7 +7,9 @@
 //! run-scoped Queue, busy Drop, serial latest-only Replace and bounded Parallel handlers.
 //! Runs own authenticated graph resource aliases and close each resource once under
 //! region/run ownership. Runtime Watch, trusted effects and host pull streams are
-//! supported; replay, authoring preview, graph streams and concrete services remain open.
+//! supported, including graph stream iteration and bounded Tee/push bridges. Reference-only
+//! replay pins an exact plan and substitutes recorded value effects. Portable replay,
+//! authoring preview and concrete services remain open.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -27,9 +29,11 @@ pub use run::{
     AcquireRefused, CloseReason, ControlOutcome, EffectError, EffectId, EffectLease, EffectRequest,
     EffectResourceRefused, EffectStreamRefused, EventMetadata, EventOrigin, EventTarget,
     HostSourceId, IngressError, PullStream, PushAdmission, PushStream, PushStreamSource,
-    ResourceError, ResourceHandle, Run, RunError, RunEvent, RunEventSource, RunEventStats,
-    RunLimits, RunOptions, RunOwnership, RunProgress, RunResource, RunRetention, RunState,
-    StopMode, StreamBranchStats, StreamBridge, StreamBridgeStats, StreamBufferOptions,
-    StreamCollectPoll, StreamConsumer, StreamDemand, StreamError, StreamHandle, StreamNextId,
-    StreamOverflow, StreamRead, StreamRefused, StreamStep, TeeStreams,
+    RecordedRun, ReplayArchive, ReplayArchiveError, ReplayError, ReplayLog, ReplayOptions,
+    ReplayPayloadRef, ReplayPlayback, ReplayStats, ReplayedRun, ResourceError, ResourceHandle, Run,
+    RunError, RunEvent, RunEventSource, RunEventStats, RunLimits, RunOptions, RunOwnership,
+    RunProgress, RunResource, RunRetention, RunState, StopMode, StreamBranchStats, StreamBridge,
+    StreamBridgeStats, StreamBufferOptions, StreamCollectPoll, StreamConsumer, StreamDemand,
+    StreamError, StreamHandle, StreamNextId, StreamOverflow, StreamRead, StreamRefused, StreamStep,
+    TeeStreams,
 };

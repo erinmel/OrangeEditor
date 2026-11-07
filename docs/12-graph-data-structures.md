@@ -1,5 +1,30 @@
 # Graph data structures
 
+## C05 reference-only replay representation (2026-11-07)
+
+`RecordedRun` owns the sole mutable Run. A private optional Session owns fixed-size
+command entries and the explicit host archive reference. Preallocated entry storage
+has independent count/nominal byte caps; entries carry scalar identity/order/time,
+typed outcomes, payload references and safe static faults, with no Value buffers.
+Pump and Action entries start incomplete, then seal after execution/capture. The
+Action hook sits at the existing effect dispatch boundary; ordinary runs with no
+Session keep their original callback path. Complete-once effect and ingress
+directories remain authoritative, with no second continuation queue.
+
+`finish` moves completed entries into a sealed immutable `Arc<[Entry]>`, drops the
+archive owner and retains the exact compiled plan, seed/options and version-1
+metadata. This is an in-memory representation, not a new saved/wire schema or
+portable compiled-plan fingerprint. Replay uses a cursor over the immutable history;
+its Action hook consumes nested result entries instead of provider callbacks. Host
+source/effect tokens remap to the new nonreused Run identity; other metadata stays
+exact. The read-only result owns its Run and cannot hand an effect to a live host.
+`ReplayPlayback` owns that cursor/Run during resumable stepping, with failure
+latched before another command can run and completion required before finishing.
+A separate step-open guard survives archive unwinding outside the Run pump, so
+consuming the final entry alone cannot falsely certify a completed replay.
+The archive and pinned plan/context storage are separately host-owned; stats count
+only entry storage. No dependency/feature/provider-lock or graph format changes.
+
 ## C10 bounded bridge representation (2026-11-07)
 
 `ControlOperation::Tee` retains its strict stream demand, two ordered

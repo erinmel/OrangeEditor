@@ -122,6 +122,16 @@ Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the reg
 
 ## ADR-14 — One cooperative actor per run
 
+C05 amendment (2026-11-07): record the owning host's command boundaries and safe
+effect outcomes through a bounded reference-only journal. Intercept Action at its
+existing trusted callback boundary and consume Async requests internally during
+replay, so replay cannot resend effects. Pin the exact immutable in-process plan
+and keep restored runs read-only. Payload capture/resolution is an explicit trusted
+host policy, with no raw values or credential store in the journal. Full/incomplete
+histories cannot silently qualify as complete; cancellation remains available by
+abandoning recording. Portable log formats and resource/service replay are separate
+gates, not inferred from this in-memory profile (03/11/12, checks in 10).
+
 C10 amendment (2026-11-07): bounded push and Tee hubs remain Run-owned actor data,
 using existing affine resources and a live source/demand wakeup index. Fan-out
 preflights joint queue admission rather than giving each branch an independent
