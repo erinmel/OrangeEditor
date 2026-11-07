@@ -52,6 +52,9 @@ pub enum EventOrigin {
     Manual,
     /// A timer entry's schedule; `source_seq` is the tick's ordinal, so a gap is missed ticks.
     Timer,
+    /// A segment end changed a watched run variable; `source_seq` counts the entry's
+    /// admitted changes and `cause` is the writing activation.
+    Change,
 }
 
 /// What an accepted delivery targets: a checked run-scope event declaration, consumed by
@@ -62,6 +65,7 @@ pub enum EventTarget {
     Declared(EventDeclId),
     Manual(NodeId),
     Timer(NodeId),
+    VariableChanged(NodeId),
 }
 
 /// Last successfully ingested event. Contains no payload.
@@ -374,8 +378,15 @@ fn channel(plan: &ControlPlan, channel: usize) -> Option<(Option<&ValueShape>, E
     if let Some(manual) = plan.manuals().get(channel) {
         return Some((manual.payload_type(), EventTarget::Manual(manual.node())));
     }
-    let timer = plan.timers().get(channel - plan.manuals().len())?;
-    Some((None, EventTarget::Timer(timer.node())))
+    let channel = channel - plan.manuals().len();
+    if let Some(timer) = plan.timers().get(channel) {
+        return Some((None, EventTarget::Timer(timer.node())));
+    }
+    let change = plan.changes().get(channel - plan.timers().len())?;
+    Some((
+        Some(change.payload_type()),
+        EventTarget::VariableChanged(change.node()),
+    ))
 }
 pub(super) struct ActivationTemplate {
     pub prepared: Arc<PreparedData>,
@@ -440,6 +451,11 @@ impl Events {
                 .map(|manual| vec![add(manual.handler())]),
         );
         by_event.extend(plan.timers().iter().map(|timer| vec![add(timer.handler())]));
+        by_event.extend(
+            plan.changes()
+                .iter()
+                .map(|change| vec![add(change.handler())]),
+        );
         Self {
             handlers,
             ready: BTreeSet::new(),
@@ -1198,6 +1214,16 @@ impl Run {
                 tick,
                 self.options.limits.max_state_bytes,
             )?,
+            None if matches!(envelope.metadata.target, EventTarget::VariableChanged(_)) => {
+                Self::publish_values(
+                    plan,
+                    &self.layout,
+                    &mut frame,
+                    entry,
+                    |source| super::changes::project(&envelope.payload, source),
+                    self.options.limits.max_state_bytes,
+                )?
+            }
             None => Self::publish_match_value(
                 plan,
                 &self.layout,

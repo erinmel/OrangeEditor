@@ -801,6 +801,8 @@ Concrete supported actor (2026-10-24): `Run` owns shared activations and indepen
 
 Resource table (C08a, 2026-11-06): `Run` holds a generational slab of host resources. A `ResourceHandle` is the run ID plus a `HandleId {index, generation, kind}` whose `kind` indexes the run's interned handle-kind expressions. Generations start at 1 and advance when a slot empties; a slot at `u32::MAX` is retired instead of reused. Lookup is one index plus generation and kind compare. Live entries are bounded by `RunLimits::max_resources`; disposal releases the table storage.
 
+Change tracking (C06, 2026-11-06): `Run` keeps, per plan variable, a watched flag, the value captured before the segment's first write and a first-write list, plus one source sequence per `ControlPlan::changes()` entry. Ending a segment visits only that list. A change delivery's payload is a `list<T>` of `[value, previous]` on its private channel after events, manual entries and timers, so admission charges both values; dispatch projects it onto `HostSource::Change(owner, Value | Previous)`.
+
 ```rust
 pub struct Run {
     pub id: RunId, pub generation: Generation, pub plan: Arc<ExecutionPlan>,

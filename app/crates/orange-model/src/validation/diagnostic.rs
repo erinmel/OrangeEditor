@@ -147,6 +147,9 @@ diagnostics! { subject;
     TimerConfig => ("E-TIMER-CONFIG", "core/graph-timer-config", Error, {
                 "A timer entry needs a positive interval or a non-negative delay in nanoseconds, and only its documented fields.".into()
             });
+    VariableChanged => ("E-VARIABLE-CHANGED", "core/graph-variable-changed", Error, {
+                "A variable-changed entry needs a run variable with an initial value and a type with eq.".into()
+            });
     BusyLoop => ("W-BUSY-LOOP", "core/graph-busy-loop", Warning, "This control cycle only yields and keeps the CPU busy.".into());
     Unreachable => ("W-UNREACHABLE", "core/graph-unreachable", Warning, {
                 "Execution node is not reachable from any entry or region root.".into()

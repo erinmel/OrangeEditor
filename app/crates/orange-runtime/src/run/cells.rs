@@ -69,6 +69,7 @@ pub(super) struct Cells<'r> {
     pub versions: &'r mut [u64],
     pub frames: &'r mut Frames,
     pub segment: &'r mut SegmentWrites,
+    pub changes: &'r mut super::changes::Changes,
     /// Virtual time that `core/now` reads in an epoch prologue.
     pub now: u64,
 }
@@ -83,6 +84,7 @@ impl Run {
             versions: &mut self.versions,
             frames: &mut self.frames,
             segment: &mut self.segment,
+            changes: &mut self.changes,
             now: self.now,
         }
     }
@@ -282,6 +284,9 @@ impl Cells<'_> {
             .checked_add(1)
             .ok_or(RunError::ResourceLimit)?;
         Self::reserve(local, &mut *self.bytes, &mut shared.local_bytes, bytes)?;
+        if !local {
+            self.changes.capture(variable, store[cell].as_ref());
+        }
         store[cell] = Some(value);
         self.versions[variable] = version;
         self.segment.variable(variable, var.id());
@@ -404,6 +409,7 @@ impl Cells<'_> {
                     | HostSource::Value(_)
                     | HostSource::EventPayload(_)
                     | HostSource::Tick(_, _)
+                    | HostSource::Change(_, _)
                     | HostSource::Update(_, _)
                     | HostSource::CallOutput(_, _) => {
                         self.layout.outputs[i].and_then(|slot| shared.outputs[slot].clone())

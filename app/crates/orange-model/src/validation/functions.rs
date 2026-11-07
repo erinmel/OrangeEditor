@@ -553,7 +553,9 @@ fn core_variable_write(
             .and_then(Value::as_str)
             .and_then(WriteOperation::parse_update)
             .ok_or(DiagnosticCode::UpdateOperation)?,
-        VariableAccess::Read => return Err(DiagnosticCode::FunctionMetadataUnavailable),
+        VariableAccess::Read | VariableAccess::Changed => {
+            return Err(DiagnosticCode::FunctionMetadataUnavailable);
+        }
     };
     Ok(VariableWrite {
         variable,
@@ -620,7 +622,7 @@ const UNREGISTERED_HOST_ENTRIES: &[&str] = &[
     ids::ON_MANUAL,
     ids::ON_TIMER,
     ids::ON_TIMEOUT,
-    "core/on-variable-changed",
+    ids::ON_VARIABLE_CHANGED,
     "core/on-watch",
 ];
 

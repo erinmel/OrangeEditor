@@ -39,6 +39,14 @@ pub enum TickProjection {
     /// `missed: core/u64@1`, ticks not delivered since the previous delivered tick.
     Missed,
 }
+/// Which value of a delivered variable change a `core/on-variable-changed` output reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ChangeProjection {
+    /// `value`: the variable's value at the end of the writing segment.
+    Value,
+    /// `previous`: its value when that segment started.
+    Previous,
+}
 pub use dispatch::{SwitchCase, SwitchKey};
 pub use update::{UpdateDemand, UpdateOperation, UpdateProjection};
 
@@ -271,6 +279,7 @@ pub enum HostSource {
     CallOutput(ControlIx, usize),
     EventPayload(ControlIx),
     Tick(ControlIx, TickProjection),
+    Change(ControlIx, ChangeProjection),
     /// `core/now`: the run's virtual time since its clock's zero, read once per epoch.
     Clock,
     Error(ControlIx),
@@ -380,6 +389,31 @@ impl ControlTimer {
         &self.handler
     }
 }
+/// One admitted root `core/on-variable-changed` entry: a private single-handler channel fed
+/// at segment ends when its run variable's value changed under its type's host `eq`.
+#[derive(Debug, Clone)]
+pub struct ControlChange {
+    node: NodeId,
+    variable: usize,
+    /// `list<T>` of `[value, previous]`, so one delivery charges both values.
+    payload_type: ValueShape,
+    handler: EventHandler,
+}
+impl ControlChange {
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+    /// Index into [`ControlPlan::variables`].
+    pub fn variable(&self) -> usize {
+        self.variable
+    }
+    pub fn payload_type(&self) -> &ValueShape {
+        &self.payload_type
+    }
+    pub fn handler(&self) -> &EventHandler {
+        &self.handler
+    }
+}
 impl ControlNode {
     /// Static compilation scope; zero is the root, not a runtime invocation ID.
     pub fn scope(&self) -> usize {
@@ -446,6 +480,7 @@ pub struct ControlPlan {
     events: Box<[ControlEvent]>,
     manuals: Box<[ControlManual]>,
     timers: Box<[ControlTimer]>,
+    changes: Box<[ControlChange]>,
     pub(crate) variables: Box<[ControlVariable]>,
     states: Box<[ControlState]>,
     pub(crate) host_sources: Box<[HostSource]>,
@@ -463,6 +498,7 @@ impl std::fmt::Debug for ControlPlan {
             .field("events", &self.events.len())
             .field("manuals", &self.manuals.len())
             .field("timers", &self.timers.len())
+            .field("changes", &self.changes.len())
             .finish_non_exhaustive()
     }
 }
@@ -492,6 +528,10 @@ impl ControlPlan {
     /// Root timer entries in persisted handler order, then node ID.
     pub fn timers(&self) -> &[ControlTimer] {
         &self.timers
+    }
+    /// Root variable-changed entries in persisted handler order, then node ID.
+    pub fn changes(&self) -> &[ControlChange] {
+        &self.changes
     }
     pub fn variables(&self) -> &[ControlVariable] {
         &self.variables
@@ -619,6 +659,14 @@ pub fn compile_control(
     let timers = prepare_timers(&cx, &controls, &control_ix, &mut graph_items)?;
     let mut bytes = 0;
     let (variables, variable_nodes) = collect_variables(&cx, &mut bytes)?;
+    let changes = prepare_changes(
+        &cx,
+        &controls,
+        &control_ix,
+        &variables,
+        &variable_nodes,
+        &mut graph_items,
+    )?;
     let mut functions = function_layouts(&cx, &control_ix, &variables, &variable_nodes)?;
     let (states, state_nodes) = collect_states(&cx, &controls, &mut bytes)?;
     let (edges, producers) = exec_edges(&cx, &controls, &control_ix)?;
@@ -757,6 +805,7 @@ pub fn compile_control(
             HostSource::Value(owner)
             | HostSource::EventPayload(owner)
             | HostSource::Tick(owner, _)
+            | HostSource::Change(owner, _)
             | HostSource::Update(owner, _)
             | HostSource::CallOutput(owner, _) => value_targets[owner.index()].push(i),
             HostSource::Variable(_)
@@ -802,6 +851,7 @@ pub fn compile_control(
         events: events.into(),
         manuals: manuals.into(),
         timers: timers.into(),
+        changes: changes.into(),
         variables: variables.into(),
         states: states.into(),
         host_sources: host_sources.into(),
@@ -843,6 +893,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::ON_MANUAL
                     | ids::ON_TIMER
                     | ids::ON_TIMEOUT
+                    | ids::ON_VARIABLE_CHANGED
                     | ids::ON_EVENT
                     | ids::EMIT
                     | ids::AWAIT_EVENT
@@ -1044,6 +1095,45 @@ fn prepare_timers(
         .collect())
 }
 
+/// Root `core/on-variable-changed` entries. Equality must run on the host, because a
+/// segment end compares values without package code.
+fn prepare_changes(
+    cx: &Cx<'_>,
+    controls: &BTreeSet<ControlKey>,
+    control_ix: &BTreeMap<ControlKey, ControlIx>,
+    variables: &[ControlVariable],
+    variable_nodes: &BTreeMap<NodeId, usize>,
+    graph_items: &mut usize,
+) -> Result<Vec<ControlChange>, CompileError> {
+    let mut changes = Vec::new();
+    for &key in controls {
+        cx.options.checkpoint()?;
+        if cx.node(key).definition.id.as_str() != ids::ON_VARIABLE_CHANGED {
+            continue;
+        }
+        let variable = *variable_nodes
+            .get(&key.1)
+            .ok_or(CompileError::ValidationIncomplete)?;
+        let ty = variables[variable].ty();
+        if variables[variable].scope() != VarScope::Run || !ty.host_eq() {
+            return Err(CompileError::UnsupportedNode { node: key.1 });
+        }
+        charge(graph_items, 1, cx.options.limits.max_graph_items)?;
+        let (order, handler) = entry_handler(cx, control_ix, key, graph_items)?;
+        changes.push((order, key.1, variable, handler));
+    }
+    changes.sort_by_key(|(order, node, _, _)| (*order, *node));
+    Ok(changes
+        .into_iter()
+        .map(|(_, node, variable, handler)| ControlChange {
+            node,
+            variable,
+            payload_type: ValueShape::List(Box::new(variables[variable].ty().clone())),
+            handler,
+        })
+        .collect())
+}
+
 /// Variable layouts for every Get/Set/Update, including unused or lazy call bodies,
 /// and the layout each such node uses.
 fn collect_variables(
@@ -1070,7 +1160,7 @@ fn collect_variables(
         }
         if !matches!(
             node.definition.id.as_str(),
-            ids::GET_VARIABLE | ids::SET_VARIABLE | ids::UPDATE_VARIABLE
+            ids::GET_VARIABLE | ids::SET_VARIABLE | ids::UPDATE_VARIABLE | ids::ON_VARIABLE_CHANGED
         ) {
             continue;
         }
@@ -1492,9 +1582,11 @@ impl NodeLowering<'_, '_> {
                 entries.push(self.control_ix[&key]);
                 ControlOperation::Entry
             }
-            ids::ON_EVENT | ids::ON_MANUAL | ids::ON_TIMER | ids::ON_TIMEOUT => {
-                ControlOperation::Entry
-            }
+            ids::ON_EVENT
+            | ids::ON_MANUAL
+            | ids::ON_TIMER
+            | ids::ON_TIMEOUT
+            | ids::ON_VARIABLE_CHANGED => ControlOperation::Entry,
             ids::BRANCH => ControlOperation::Branch {
                 condition: self.input(key, orange_model::port_id!("condition")),
                 when_true: self.target(key, "true"),
@@ -1699,6 +1791,13 @@ fn host_source(
         return match port {
             "scheduled_at" => Ok(HostSource::Tick(owner, TickProjection::ScheduledAt)),
             "missed" => Ok(HostSource::Tick(owner, TickProjection::Missed)),
+            _ => Err(CompileError::ValidationIncomplete),
+        };
+    }
+    if cx.node((scope, source.node)).definition.id.as_str() == ids::ON_VARIABLE_CHANGED {
+        return match port {
+            "value" => Ok(HostSource::Change(owner, ChangeProjection::Value)),
+            "previous" => Ok(HostSource::Change(owner, ChangeProjection::Previous)),
             _ => Err(CompileError::ValidationIncomplete),
         };
     }
