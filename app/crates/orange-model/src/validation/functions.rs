@@ -617,7 +617,7 @@ fn emit(result: &mut FunctionAnalysis, code: DiagnosticCode, id: FunctionId, ori
 const UNREGISTERED_HOST_ENTRIES: &[&str] = &[
     ids::ON_START,
     ids::ON_STOP,
-    "core/on-manual",
+    ids::ON_MANUAL,
     "core/on-timer",
     "core/on-timeout",
     "core/on-variable-changed",

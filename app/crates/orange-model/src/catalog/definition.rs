@@ -78,6 +78,9 @@ pub enum Ports {
     Event(EventAccess),
     /// `core/for-each`: the element ports follow `config.mode` (`list` or `map`, 11 §8.4).
     ForEach,
+    /// `core/on-manual`: a `payload` output typed by the concrete `config.payload` type,
+    /// or no data output when that field is absent (11 §10.2).
+    Manual,
 }
 
 /// Inputs needed to evaluate one volatile definition.
@@ -166,6 +169,8 @@ pub enum ContractError {
     EventUnknown,
     #[error("for-each mode is not `list` or `map`")]
     ForEachMode,
+    #[error("manual entry config is malformed or its payload is not a concrete registered type")]
+    ManualPayload,
     #[error("converter config is malformed or uses an unsupported version")]
     ConverterConfig,
     #[error("converter entry is unavailable")]

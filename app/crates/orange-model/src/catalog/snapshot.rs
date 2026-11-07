@@ -681,7 +681,7 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         Ports::Declared(ports) => ports,
         Ports::Variable(_) => return check_variable_ports(definition),
         Ports::Event(_) => return check_event_ports(definition),
-        Ports::ForEach => return Ok(()),
+        Ports::ForEach | Ports::Manual => return Ok(()),
     };
     let declared: BTreeSet<&str> = definition
         .type_params
@@ -964,7 +964,7 @@ impl Registered {
                 type_params: definition.type_params.clone(),
                 ports: ports.clone(),
             }),
-            Ports::Variable(_) | Ports::Event(_) | Ports::ForEach => None,
+            Ports::Variable(_) | Ports::Event(_) | Ports::ForEach | Ports::Manual => None,
         };
         Self {
             definition,
@@ -1080,9 +1080,13 @@ impl RegistrySnapshot {
             return super::intrinsics::for_each_contract(definition, node)
                 .map(|contract| Some(Cow::Owned(contract)));
         }
+        if matches!(definition.ports, Ports::Manual) {
+            return super::intrinsics::manual_contract(definition, node, self.types())
+                .map(|contract| Some(Cow::Owned(contract)));
+        }
         let ports = match &definition.ports {
             Ports::Declared(ports) => ports.clone(),
-            Ports::ForEach => unreachable!("for-each returned above"),
+            Ports::ForEach | Ports::Manual => unreachable!("returned above"),
             Ports::Variable(access) => self.variable_ports(document, node, *access)?,
             Ports::Event(access) => self.event_ports(document, node, *access)?,
         };

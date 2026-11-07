@@ -141,6 +141,9 @@ diagnostics! { subject;
                     .into()
             });
     ForEachMode => ("E-FOR-EACH-MODE", "core/graph-for-each-mode", Error, "For each mode must be list or map.".into());
+    ManualPayload => ("E-MANUAL-PAYLOAD", "core/graph-manual-payload", Error, {
+                "A manual entry payload must name a concrete registered type, and no other field is allowed.".into()
+            });
     BusyLoop => ("W-BUSY-LOOP", "core/graph-busy-loop", Warning, "This control cycle only yields and keeps the CPU busy.".into());
     Unreachable => ("W-UNREACHABLE", "core/graph-unreachable", Warning, {
                 "Execution node is not reachable from any entry or region root.".into()
