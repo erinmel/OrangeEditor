@@ -144,6 +144,9 @@ diagnostics! { subject;
     ManualPayload => ("E-MANUAL-PAYLOAD", "core/graph-manual-payload", Error, {
                 "A manual entry payload must name a concrete registered type, and no other field is allowed.".into()
             });
+    TimerConfig => ("E-TIMER-CONFIG", "core/graph-timer-config", Error, {
+                "A timer entry needs a positive interval or a non-negative delay in nanoseconds, and only its documented fields.".into()
+            });
     BusyLoop => ("W-BUSY-LOOP", "core/graph-busy-loop", Warning, "This control cycle only yields and keeps the CPU busy.".into());
     Unreachable => ("W-UNREACHABLE", "core/graph-unreachable", Warning, {
                 "Execution node is not reachable from any entry or region root.".into()

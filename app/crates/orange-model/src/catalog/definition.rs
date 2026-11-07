@@ -81,6 +81,9 @@ pub enum Ports {
     /// `core/on-manual`: a `payload` output typed by the concrete `config.payload` type,
     /// or no data output when that field is absent (11 §10.2).
     Manual,
+    /// `core/on-timer` and `core/on-timeout`: fixed tick outputs whose schedule comes from
+    /// a config checked by [`TimerSchedule::from_node`](super::TimerSchedule::from_node).
+    Timer,
 }
 
 /// Inputs needed to evaluate one volatile definition.
@@ -171,6 +174,8 @@ pub enum ContractError {
     ForEachMode,
     #[error("manual entry config is malformed or its payload is not a concrete registered type")]
     ManualPayload,
+    #[error("timer entry config is malformed or out of range")]
+    TimerConfig,
     #[error("converter config is malformed or uses an unsupported version")]
     ConverterConfig,
     #[error("converter entry is unavailable")]
