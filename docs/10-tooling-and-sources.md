@@ -3565,3 +3565,31 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   failed, 15 opt-in measurements ignored**. Cargo used `CARGO_INCREMENTAL=0`.
 - Limits: ticks follow the run's virtual clock only; OS timers, wall-clock alignment,
   clock-reader inputs (C04b3), replay and adapters remain open. No timing probe ran.
+
+### C04b3 — clock readers — 2026-11-06
+
+Base dev `3ea94fa` (PR136 integrated). Rust 1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo
+1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024, default features.
+MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+- `core/now@1` is a registered `Volatility::Clock` intrinsic with determinism
+  `External`, no inputs or config and one output `elapsed: core/duration@1`.
+- The compiler admits state and clock readers through one host-read check
+  (`is_host_read`) in root demands, data plans and Volatile function bodies; Pure
+  plans still refuse them. A Now read lowers to `HostSource::Clock`, which the run fills
+  from `Run::now()` in each epoch prologue; past the duration range it yields
+  `core/OutOfRange`.
+- Four focused regressions pass: two consumptions of one Now node in a Start → Wait
+  chain read 0 and the later resume time; a late timer tick's handler reads
+  `scheduled_at` 20 and Now 25; the registered definition is an input-free clock
+  reader; and a Now read inside a called Volatile function lowers to
+  `HostSource::Clock` and reads the actor clock at consumption.
+- Commands: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets
+  --all-features --locked --offline -- -D warnings`; `cargo test --workspace --locked
+  --offline` and the same with `--release`; warnings-denied `cargo doc --workspace
+  --no-deps --locked --offline`. Debug and release each report **1,328 passed, zero
+  failed, 15 opt-in measurements ignored**. Cargo used `CARGO_INCREMENTAL=0`.
+- Limits: only the run's virtual clock is read; wall-clock time stays host-supplied.
+  Standalone `compile_data` hosts supply the Now input like a state read, which no new
+  test exercises. OS timers, replay and adapters remain open. No timing probe ran.
