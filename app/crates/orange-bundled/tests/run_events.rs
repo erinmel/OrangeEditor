@@ -1624,3 +1624,6 @@ mod event_await;
 
 #[path = "support/event_ingress.rs"]
 mod event_ingress;
+
+#[path = "support/manual_entry.rs"]
+mod manual_entry;

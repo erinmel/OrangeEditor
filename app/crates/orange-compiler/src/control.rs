@@ -329,6 +329,26 @@ impl EventHandler {
         self.max_parallel
     }
 }
+
+/// One admitted root `core/on-manual` entry: a private single-handler channel that only
+/// the host trigger API feeds. `payload_type` is `None` when the entry declares no payload.
+#[derive(Debug, Clone)]
+pub struct ControlManual {
+    node: NodeId,
+    payload_type: Option<ValueShape>,
+    handler: EventHandler,
+}
+impl ControlManual {
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+    pub fn payload_type(&self) -> Option<&ValueShape> {
+        self.payload_type.as_ref()
+    }
+    pub fn handler(&self) -> &EventHandler {
+        &self.handler
+    }
+}
 impl ControlNode {
     /// Static compilation scope; zero is the root, not a runtime invocation ID.
     pub fn scope(&self) -> usize {
@@ -393,6 +413,7 @@ pub struct ControlPlan {
     pub(crate) starts: Box<[ControlIx]>,
     pub(crate) stops: Box<[ControlIx]>,
     events: Box<[ControlEvent]>,
+    manuals: Box<[ControlManual]>,
     pub(crate) variables: Box<[ControlVariable]>,
     states: Box<[ControlState]>,
     pub(crate) host_sources: Box<[HostSource]>,
@@ -408,6 +429,7 @@ impl std::fmt::Debug for ControlPlan {
             .field("starts", &self.starts.len())
             .field("stops", &self.stops.len())
             .field("events", &self.events.len())
+            .field("manuals", &self.manuals.len())
             .finish_non_exhaustive()
     }
 }
@@ -429,6 +451,10 @@ impl ControlPlan {
     }
     pub fn events(&self) -> &[ControlEvent] {
         &self.events
+    }
+    /// Root manual entries in persisted handler order, then node ID.
+    pub fn manuals(&self) -> &[ControlManual] {
+        &self.manuals
     }
     pub fn variables(&self) -> &[ControlVariable] {
         &self.variables
@@ -552,6 +578,7 @@ pub fn compile_control(
         .map(|(i, id)| (*id, ControlIx(i)))
         .collect();
     let (events, event_ids) = prepare_events(&cx, &controls, &control_ix, &mut graph_items)?;
+    let manuals = prepare_manuals(&cx, &controls, &control_ix, &mut graph_items)?;
     let mut bytes = 0;
     let (variables, variable_nodes) = collect_variables(&cx, &mut bytes)?;
     let mut functions = function_layouts(&cx, &control_ix, &variables, &variable_nodes)?;
@@ -733,6 +760,7 @@ pub fn compile_control(
         starts: starts.into(),
         stops: stops.into(),
         events: events.into(),
+        manuals: manuals.into(),
         variables: variables.into(),
         states: states.into(),
         host_sources: host_sources.into(),
@@ -771,6 +799,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::MATCH_RESULT
                     | ids::ON_START
                     | ids::ON_STOP
+                    | ids::ON_MANUAL
                     | ids::ON_EVENT
                     | ids::EMIT
                     | ids::AWAIT_EVENT
@@ -837,41 +866,11 @@ fn prepare_events(
         // recursive shape (ValueShape::of_in enforces the language nesting limit).
         charge(graph_items, 1, cx.options.limits.max_graph_items)?;
         if is_handler {
-            if scope != 0 {
-                return Err(CompileError::UnsupportedNode { node: node_id });
-            }
-            let policy = node
-                .activation
-                .as_ref()
-                .ok_or(CompileError::ValidationIncomplete)?;
-            let max_parallel = match (policy.mode, policy.max_parallel) {
-                (ReentrancyMode::Queue | ReentrancyMode::Drop | ReentrancyMode::Replace, None) => 1,
-                (ReentrancyMode::Parallel, Some(max)) if max > 0 => {
-                    usize::try_from(max).map_err(|_| CompileError::ResourceLimit)?
-                }
-                _ => return Err(CompileError::UnsupportedNode { node: node_id }),
-            };
-            if policy.capacity == 0 || policy.overflow == OverflowPolicy::Backpressure {
-                return Err(CompileError::UnsupportedNode { node: node_id });
-            }
-            charge(graph_items, 1, cx.options.limits.max_graph_items)?;
-            let handler = EventHandler {
-                entry: *control_ix
-                    .get(&(scope, node_id))
-                    .ok_or(CompileError::ValidationIncomplete)?,
-                capacity: if policy.mode == ReentrancyMode::Replace {
-                    1
-                } else {
-                    usize::try_from(policy.capacity).map_err(|_| CompileError::ResourceLimit)?
-                },
-                overflow: policy.overflow,
-                mode: policy.mode,
-                max_parallel,
-            };
+            let (order, handler) = entry_handler(cx, control_ix, (scope, node_id), graph_items)?;
             referenced
                 .entry(event_id)
                 .or_default()
-                .push((policy.order, node_id, handler));
+                .push((order, node_id, handler));
         } else {
             referenced.entry(event_id).or_default();
         }
@@ -896,6 +895,80 @@ fn prepare_events(
         });
     }
     Ok((events, indices))
+}
+
+/// Checked bounded handler policy of a root entry: its persisted order and handler.
+fn entry_handler(
+    cx: &Cx<'_>,
+    control_ix: &BTreeMap<ControlKey, ControlIx>,
+    (scope, node_id): ControlKey,
+    graph_items: &mut usize,
+) -> Result<(u32, EventHandler), CompileError> {
+    if scope != 0 {
+        return Err(CompileError::UnsupportedNode { node: node_id });
+    }
+    let policy = cx
+        .node((scope, node_id))
+        .activation
+        .as_ref()
+        .ok_or(CompileError::ValidationIncomplete)?;
+    let max_parallel = match (policy.mode, policy.max_parallel) {
+        (ReentrancyMode::Queue | ReentrancyMode::Drop | ReentrancyMode::Replace, None) => 1,
+        (ReentrancyMode::Parallel, Some(max)) if max > 0 => {
+            usize::try_from(max).map_err(|_| CompileError::ResourceLimit)?
+        }
+        _ => return Err(CompileError::UnsupportedNode { node: node_id }),
+    };
+    if policy.capacity == 0 || policy.overflow == OverflowPolicy::Backpressure {
+        return Err(CompileError::UnsupportedNode { node: node_id });
+    }
+    charge(graph_items, 1, cx.options.limits.max_graph_items)?;
+    let handler = EventHandler {
+        entry: *control_ix
+            .get(&(scope, node_id))
+            .ok_or(CompileError::ValidationIncomplete)?,
+        capacity: if policy.mode == ReentrancyMode::Replace {
+            1
+        } else {
+            usize::try_from(policy.capacity).map_err(|_| CompileError::ResourceLimit)?
+        },
+        overflow: policy.overflow,
+        mode: policy.mode,
+        max_parallel,
+    };
+    Ok((policy.order, handler))
+}
+
+/// Root `core/on-manual` entries with their checked payload shape and handler policy.
+fn prepare_manuals(
+    cx: &Cx<'_>,
+    controls: &BTreeSet<ControlKey>,
+    control_ix: &BTreeMap<ControlKey, ControlIx>,
+    graph_items: &mut usize,
+) -> Result<Vec<ControlManual>, CompileError> {
+    let mut manuals = Vec::new();
+    for &key in controls {
+        cx.options.checkpoint()?;
+        if cx.node(key).definition.id.as_str() != ids::ON_MANUAL {
+            continue;
+        }
+        let payload_type = match cx.port(key, "payload") {
+            Ok(port) => Some(port_type(cx.snapshot, key.1, port)?),
+            Err(_) => None,
+        };
+        charge(graph_items, 1, cx.options.limits.max_graph_items)?;
+        let (order, handler) = entry_handler(cx, control_ix, key, graph_items)?;
+        manuals.push((order, key.1, payload_type, handler));
+    }
+    manuals.sort_by_key(|(order, node, _, _)| (*order, *node));
+    Ok(manuals
+        .into_iter()
+        .map(|(_, node, payload_type, handler)| ControlManual {
+            node,
+            payload_type,
+            handler,
+        })
+        .collect())
 }
 
 /// Variable layouts for every Get/Set/Update, including unused or lazy call bodies,
@@ -1346,7 +1419,7 @@ impl NodeLowering<'_, '_> {
                 entries.push(self.control_ix[&key]);
                 ControlOperation::Entry
             }
-            ids::ON_EVENT => ControlOperation::Entry,
+            ids::ON_EVENT | ids::ON_MANUAL => ControlOperation::Entry,
             ids::BRANCH => ControlOperation::Branch {
                 condition: self.input(key, orange_model::port_id!("condition")),
                 when_true: self.target(key, "true"),
@@ -1536,7 +1609,7 @@ fn host_source(
     if port == "payload"
         && matches!(
             cx.node((scope, source.node)).definition.id.as_str(),
-            ids::ON_EVENT | ids::AWAIT_EVENT
+            ids::ON_EVENT | ids::ON_MANUAL | ids::AWAIT_EVENT
         )
     {
         return Ok(HostSource::EventPayload(owner));

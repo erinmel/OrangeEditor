@@ -34,7 +34,7 @@ mod events;
 mod ids;
 use activations::Activations;
 pub use events::{EventMetadata, RunEventStats};
-pub use events::{EventOrigin, HostSourceId, IngressError, RunEventSource};
+pub use events::{EventOrigin, EventTarget, HostSourceId, IngressError, RunEventSource};
 mod ready;
 mod regions;
 mod timers;
@@ -790,6 +790,7 @@ impl Run {
             .events()
             .iter()
             .any(|event| !event.handlers().is_empty())
+            || !plan.manuals().is_empty()
             || plan
                 .nodes()
                 .iter()

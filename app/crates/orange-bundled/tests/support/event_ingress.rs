@@ -1,7 +1,7 @@
 //! Bounded host input acceptance against real checked event graphs (C04a).
 use super::*;
 use orange_model::id::EventDeclId;
-use orange_runtime::{EventOrigin, IngressError};
+use orange_runtime::{EventOrigin, EventTarget, IngressError};
 
 const OTHER_EVENT: &str = "40000000-0000-4000-8000-000000000003";
 
@@ -118,7 +118,7 @@ fn typed_ingress_wakes_handler_and_await_on_later_budgeted_actor_turns() {
         .ingest_event(&source, 1, &Value::U64(42), Some(123_456))
         .unwrap();
     assert_eq!(run.last_event(), Some(metadata));
-    assert_eq!(metadata.event, event_id());
+    assert_eq!(metadata.target, EventTarget::Declared(event_id()));
     assert_eq!(
         metadata.origin,
         EventOrigin::Host {
@@ -285,8 +285,8 @@ fn host_source_is_pinned_to_run_identity_and_compiled_payload_type() {
     let accepted_b = run_b
         .ingest_event(&source_b, 1, &Value::Str(Arc::new("pinned B".into())), None)
         .unwrap();
-    assert_eq!(accepted_a.event, event_id());
-    assert_eq!(accepted_b.event, event_id());
+    assert_eq!(accepted_a.target, EventTarget::Declared(event_id()));
+    assert_eq!(accepted_b.target, EventTarget::Declared(event_id()));
     assert_eq!(accepted_a.ingestion_seq, 1);
     assert_eq!(accepted_b.ingestion_seq, 1);
     assert_eq!(run_a.event_stats().overflows, 0);

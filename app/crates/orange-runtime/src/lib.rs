@@ -22,7 +22,7 @@ pub use entropy::{
     EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,
 };
 pub use run::{
-    ControlOutcome, EventMetadata, EventOrigin, HostSourceId, IngressError, Run, RunError,
-    RunEvent, RunEventSource, RunEventStats, RunLimits, RunOptions, RunOwnership, RunProgress,
-    RunRetention, RunState, StopMode,
+    ControlOutcome, EventMetadata, EventOrigin, EventTarget, HostSourceId, IngressError, Run,
+    RunError, RunEvent, RunEventSource, RunEventStats, RunLimits, RunOptions, RunOwnership,
+    RunProgress, RunRetention, RunState, StopMode,
 };
