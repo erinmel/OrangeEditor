@@ -1229,6 +1229,35 @@ impl RegistrySnapshot {
             .variables()
             .get(&id)
             .ok_or(ContractError::VariableUnknown)?;
+        if access == VariableAccess::Changed {
+            // Every segment end compares two present values with the type's `eq`.
+            if declaration.scope != VarScope::Run || declaration.init.is_none() {
+                return Err(ContractError::VariableChanged);
+            }
+            let term = TypeTerm::parse(&declaration.ty).map_err(|error| match error {
+                crate::error::IdError::TypeTooDeep { .. } => ContractError::TypeComplexity,
+                _ => ContractError::TypeMismatch,
+            })?;
+            match self
+                .types
+                .supports_term(&term, CapabilityRequest::Constraint(Constraint::Eq))
+            {
+                Ok(Some(_)) => {}
+                Ok(None) | Err(CapabilityError::RecursiveDerivation { .. }) => {
+                    return Err(ContractError::VariableChanged);
+                }
+                Err(CapabilityError::DerivationTooDeep { .. })
+                | Err(CapabilityError::Type(TypeResolveError::TooDeep { .. }))
+                | Err(CapabilityError::Type(TypeResolveError::DerivationTooDeep { .. })) => {
+                    return Err(ContractError::TypeComplexity);
+                }
+                Err(CapabilityError::Type(_)) => return Err(ContractError::TypeMismatch),
+            }
+            return Ok(vec![
+                PortDescriptor::data_out("value", declaration.ty.clone(), OutputSource::Payload),
+                PortDescriptor::data_out("previous", declaration.ty.clone(), OutputSource::Payload),
+            ]);
+        }
         match (access, declaration.scope) {
             (VariableAccess::Write | VariableAccess::Update, VarScope::Workspace) => {
                 return Err(ContractError::VariableScope);
@@ -1245,6 +1274,7 @@ impl RegistrySnapshot {
             VariableAccess::Read => {
                 vec![PortDescriptor::data_out("value", ty, OutputSource::State)]
             }
+            VariableAccess::Changed => unreachable!("returned above"),
             VariableAccess::Write | VariableAccess::WriteShared => {
                 vec![PortDescriptor::data_in("value", ty)]
             }

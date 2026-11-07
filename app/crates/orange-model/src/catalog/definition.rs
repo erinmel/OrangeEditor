@@ -51,6 +51,8 @@ pub enum VariableAccess {
     Update,
     WriteShared,
     UpdateShared,
+    /// `core/on-variable-changed`: `value` and `previous` outputs of the variable type.
+    Changed,
 }
 
 /// How an event intrinsic uses its event declaration (11 §8.4, §10.2).
@@ -176,6 +178,8 @@ pub enum ContractError {
     ManualPayload,
     #[error("timer entry config is malformed or out of range")]
     TimerConfig,
+    #[error("variable-changed entry needs a run variable with an initial value and `eq`")]
+    VariableChanged,
     #[error("converter config is malformed or uses an unsupported version")]
     ConverterConfig,
     #[error("converter entry is unavailable")]

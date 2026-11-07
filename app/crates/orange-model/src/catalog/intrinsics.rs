@@ -539,6 +539,12 @@ fn core_control_definitions() -> Vec<NodeDefinition> {
             Some(Suspends::Maybe),
             VariableAccess::UpdateShared,
         ),
+        variable_definition(
+            ids::ON_VARIABLE_CHANGED,
+            NodeKind::Entry,
+            None,
+            VariableAccess::Changed,
+        ),
         event_definition(ids::ON_EVENT, NodeKind::Entry, None, EventAccess::Handle),
         event_definition(ids::EMIT, Action, Some(Suspends::Never), EventAccess::Emit),
         event_definition(
