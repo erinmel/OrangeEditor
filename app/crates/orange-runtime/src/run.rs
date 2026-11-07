@@ -4,8 +4,8 @@ use crate::data::{CleanupScope, HostPoll, PreparedData};
 use crate::{DataActivation, DataError, DataOptions};
 use orange_compiler::{
     ConstantFault, ControlIx, ControlNode, ControlOperation, ControlPlan, ExecInput, ExecTarget,
-    FoldedValue, ForkJoin, HostSource, IterationProjection, KernelFault, SwitchKey, UpdateDemand,
-    UpdateOperation, UpdateProjection,
+    FoldedValue, ForkJoin, HostSource, IterationProjection, KernelFault, SwitchKey, TickProjection,
+    UpdateDemand, UpdateOperation, UpdateProjection,
 };
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::{FaultPolicy, VarScope};
@@ -37,6 +37,7 @@ pub use events::{EventMetadata, RunEventStats};
 pub use events::{EventOrigin, EventTarget, HostSourceId, IngressError, RunEventSource};
 mod ready;
 mod regions;
+mod ticks;
 mod timers;
 mod trace;
 mod update;
@@ -791,6 +792,7 @@ impl Run {
             .iter()
             .any(|event| !event.handlers().is_empty())
             || !plan.manuals().is_empty()
+            || !plan.timers().is_empty()
             || plan
                 .nodes()
                 .iter()
@@ -902,7 +904,7 @@ impl Run {
             None
         };
         let events = events::Events::new(&plan);
-        Ok(Self {
+        let mut run = Self {
             frames: Frames::default(),
             id: run_identity()?,
             plan: Some(plan),
@@ -937,7 +939,9 @@ impl Run {
             cancel_timers: vec![],
             fork_children: vec![],
             pump_open: false,
-        })
+        };
+        run.arm_timer_entries()?;
+        Ok(run)
     }
     pub fn id(&self) -> u64 {
         self.id
@@ -964,7 +968,7 @@ impl Run {
         self.cleanup_truncated
     }
     pub fn pending_continuations(&self) -> usize {
-        self.timers.len()
+        self.timers.len() - self.timers.entry_count()
     }
     /// Aggregate nominal reservation held by live activations. Retiring an activation,
     /// refusing a publication or disposing the run returns capacity.
@@ -1173,6 +1177,15 @@ impl Run {
                         }
                         if let Err(error) = self.complete_waiter_timeout(token) {
                             return self.fail(error);
+                        }
+                    }
+                    TimerTarget::Entry { run, timer, at } => {
+                        if run != self.id {
+                            return self.fail(RunError::InvalidState);
+                        }
+                        match self.fire_timer_entry(timer, at) {
+                            Ok(attempts) => remaining = remaining.saturating_sub(attempts - 1),
+                            Err(error) => return self.fail(error),
                         }
                     }
                 }
@@ -1766,6 +1779,35 @@ impl Run {
         value: Option<Value>,
         limit: usize,
     ) -> Result<(), RunError> {
+        Self::publish_values(plan, layout, shared, owner, |_| value.clone(), limit)
+    }
+    /// Publishes a delivered timer tick on its entry's `scheduled_at`/`missed` outputs.
+    fn publish_tick(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        tick: ticks::Tick,
+        limit: usize,
+    ) -> Result<(), RunError> {
+        let value = |source: HostSource| match source {
+            HostSource::Tick(_, TickProjection::ScheduledAt) => {
+                Some(Value::Duration(tick.scheduled_at))
+            }
+            HostSource::Tick(_, TickProjection::Missed) => Some(Value::U64(tick.missed)),
+            _ => None,
+        };
+        Self::publish_values(plan, layout, shared, owner, value, limit)
+    }
+    /// Publishes `value(source)` on each value target of `owner` within the frame limit.
+    fn publish_values(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        value: impl Fn(HostSource) -> Option<Value>,
+        limit: usize,
+    ) -> Result<(), RunError> {
         let mut old = 0usize;
         let mut new = 0usize;
         for &i in plan.value_targets(owner) {
@@ -1783,7 +1825,7 @@ impl Run {
                     .checked_add(charge(value)?)
                     .ok_or(RunError::ResourceLimit)?;
             }
-            if let Some(value) = &value {
+            if let Some(value) = &value(plan.host_sources()[i]) {
                 new = new
                     .checked_add(charge(value)?)
                     .ok_or(RunError::ResourceLimit)?;
@@ -1803,7 +1845,7 @@ impl Run {
         shared.retained(retained)?;
         for &i in plan.value_targets(owner) {
             shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
-                value.clone().map(FoldedValue::Value);
+                value(plan.host_sources()[i]).map(FoldedValue::Value);
         }
         Ok(())
     }
@@ -1861,6 +1903,7 @@ impl Run {
                     .ok_or(RunError::ResourceLimit)?;
                 self.transition(RunState::Draining);
                 self.close_host_sources();
+                self.timers.remove_entries();
                 self.deadline = Some(deadline);
                 while let Some(strand) = self.stop_ready.pop_front() {
                     self.ready.push_back(strand.id, strand);
@@ -1876,6 +1919,7 @@ impl Run {
         let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
         self.transition(RunState::Cancelling);
         self.events.clear();
+        self.timers.remove_entries();
         self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
         self.stop_ready.clear();
         let roots = self.regions.roots();

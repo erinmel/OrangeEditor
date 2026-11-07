@@ -7,6 +7,7 @@ use orange_model::GraphDocument;
 use orange_model::Value;
 use orange_model::catalog::ReferenceKind;
 use orange_model::catalog::RegistrySnapshot;
+use orange_model::catalog::TimerSchedule;
 use orange_model::catalog::intrinsic_id as ids;
 use orange_model::document::{
     EventScope, FaultPolicy, NodeKind, OverflowPolicy, PortDirection, PortKind, ReentrancyMode,
@@ -29,6 +30,14 @@ pub enum IterationProjection {
     Element,
     Key,
     Value,
+}
+/// Which value of a delivered timer tick a `core/on-timer`/`core/on-timeout` output reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TickProjection {
+    /// `scheduled_at: core/duration@1`, virtual nanoseconds since the run clock's zero.
+    ScheduledAt,
+    /// `missed: core/u64@1`, ticks not delivered since the previous delivered tick.
+    Missed,
 }
 pub use dispatch::{SwitchCase, SwitchKey};
 pub use update::{UpdateDemand, UpdateOperation, UpdateProjection};
@@ -261,6 +270,7 @@ pub enum HostSource {
     },
     CallOutput(ControlIx, usize),
     EventPayload(ControlIx),
+    Tick(ControlIx, TickProjection),
     Error(ControlIx),
     Index(ControlIx),
     Value(ControlIx),
@@ -349,6 +359,25 @@ impl ControlManual {
         &self.handler
     }
 }
+/// One admitted root timer entry: a private single-handler channel that only its run's
+/// virtual-clock schedule feeds.
+#[derive(Debug, Clone)]
+pub struct ControlTimer {
+    node: NodeId,
+    schedule: TimerSchedule,
+    handler: EventHandler,
+}
+impl ControlTimer {
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+    pub fn schedule(&self) -> TimerSchedule {
+        self.schedule
+    }
+    pub fn handler(&self) -> &EventHandler {
+        &self.handler
+    }
+}
 impl ControlNode {
     /// Static compilation scope; zero is the root, not a runtime invocation ID.
     pub fn scope(&self) -> usize {
@@ -414,6 +443,7 @@ pub struct ControlPlan {
     pub(crate) stops: Box<[ControlIx]>,
     events: Box<[ControlEvent]>,
     manuals: Box<[ControlManual]>,
+    timers: Box<[ControlTimer]>,
     pub(crate) variables: Box<[ControlVariable]>,
     states: Box<[ControlState]>,
     pub(crate) host_sources: Box<[HostSource]>,
@@ -430,6 +460,7 @@ impl std::fmt::Debug for ControlPlan {
             .field("stops", &self.stops.len())
             .field("events", &self.events.len())
             .field("manuals", &self.manuals.len())
+            .field("timers", &self.timers.len())
             .finish_non_exhaustive()
     }
 }
@@ -455,6 +486,10 @@ impl ControlPlan {
     /// Root manual entries in persisted handler order, then node ID.
     pub fn manuals(&self) -> &[ControlManual] {
         &self.manuals
+    }
+    /// Root timer entries in persisted handler order, then node ID.
+    pub fn timers(&self) -> &[ControlTimer] {
+        &self.timers
     }
     pub fn variables(&self) -> &[ControlVariable] {
         &self.variables
@@ -579,6 +614,7 @@ pub fn compile_control(
         .collect();
     let (events, event_ids) = prepare_events(&cx, &controls, &control_ix, &mut graph_items)?;
     let manuals = prepare_manuals(&cx, &controls, &control_ix, &mut graph_items)?;
+    let timers = prepare_timers(&cx, &controls, &control_ix, &mut graph_items)?;
     let mut bytes = 0;
     let (variables, variable_nodes) = collect_variables(&cx, &mut bytes)?;
     let mut functions = function_layouts(&cx, &control_ix, &variables, &variable_nodes)?;
@@ -718,6 +754,7 @@ pub fn compile_control(
             HostSource::Error(owner) => error_targets[owner.index()].push(i),
             HostSource::Value(owner)
             | HostSource::EventPayload(owner)
+            | HostSource::Tick(owner, _)
             | HostSource::Update(owner, _)
             | HostSource::CallOutput(owner, _) => value_targets[owner.index()].push(i),
             HostSource::Variable(_)
@@ -761,6 +798,7 @@ pub fn compile_control(
         stops: stops.into(),
         events: events.into(),
         manuals: manuals.into(),
+        timers: timers.into(),
         variables: variables.into(),
         states: states.into(),
         host_sources: host_sources.into(),
@@ -800,6 +838,8 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::ON_START
                     | ids::ON_STOP
                     | ids::ON_MANUAL
+                    | ids::ON_TIMER
+                    | ids::ON_TIMEOUT
                     | ids::ON_EVENT
                     | ids::EMIT
                     | ids::AWAIT_EVENT
@@ -966,6 +1006,36 @@ fn prepare_manuals(
         .map(|(_, node, payload_type, handler)| ControlManual {
             node,
             payload_type,
+            handler,
+        })
+        .collect())
+}
+
+/// Root `core/on-timer`/`core/on-timeout` entries with their checked schedule and handler.
+fn prepare_timers(
+    cx: &Cx<'_>,
+    controls: &BTreeSet<ControlKey>,
+    control_ix: &BTreeMap<ControlKey, ControlIx>,
+    graph_items: &mut usize,
+) -> Result<Vec<ControlTimer>, CompileError> {
+    let mut timers = Vec::new();
+    for &key in controls {
+        cx.options.checkpoint()?;
+        let node = cx.node(key);
+        if !matches!(node.definition.id.as_str(), ids::ON_TIMER | ids::ON_TIMEOUT) {
+            continue;
+        }
+        let schedule = TimerSchedule::from_node(node).ok_or(CompileError::ValidationIncomplete)?;
+        charge(graph_items, 1, cx.options.limits.max_graph_items)?;
+        let (order, handler) = entry_handler(cx, control_ix, key, graph_items)?;
+        timers.push((order, key.1, schedule, handler));
+    }
+    timers.sort_by_key(|(order, node, _, _)| (*order, *node));
+    Ok(timers
+        .into_iter()
+        .map(|(_, node, schedule, handler)| ControlTimer {
+            node,
+            schedule,
             handler,
         })
         .collect())
@@ -1419,7 +1489,9 @@ impl NodeLowering<'_, '_> {
                 entries.push(self.control_ix[&key]);
                 ControlOperation::Entry
             }
-            ids::ON_EVENT | ids::ON_MANUAL => ControlOperation::Entry,
+            ids::ON_EVENT | ids::ON_MANUAL | ids::ON_TIMER | ids::ON_TIMEOUT => {
+                ControlOperation::Entry
+            }
             ids::BRANCH => ControlOperation::Branch {
                 condition: self.input(key, orange_model::port_id!("condition")),
                 when_true: self.target(key, "true"),
@@ -1613,6 +1685,16 @@ fn host_source(
         )
     {
         return Ok(HostSource::EventPayload(owner));
+    }
+    if matches!(
+        cx.node((scope, source.node)).definition.id.as_str(),
+        ids::ON_TIMER | ids::ON_TIMEOUT
+    ) {
+        return match port {
+            "scheduled_at" => Ok(HostSource::Tick(owner, TickProjection::ScheduledAt)),
+            "missed" => Ok(HostSource::Tick(owner, TickProjection::Missed)),
+            _ => Err(CompileError::ValidationIncomplete),
+        };
     }
     if matches!(operation, ControlOperation::Call { .. }) && port != "error" {
         return Ok(HostSource::CallOutput(

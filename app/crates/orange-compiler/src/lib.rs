@@ -28,9 +28,9 @@ mod zones;
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
 pub use control::{
     ControlCell, ControlEvent, ControlIx, ControlManual, ControlNode, ControlOperation,
-    ControlPlan, ControlState, ControlVariable, EventHandler, ExecInput, ExecTarget, ForkJoin,
-    FunctionLayout, HostSource, IterationProjection, SwitchCase, SwitchKey, UpdateDemand,
-    UpdateOperation, UpdateProjection, compile_control,
+    ControlPlan, ControlState, ControlTimer, ControlVariable, EventHandler, ExecInput, ExecTarget,
+    ForkJoin, FunctionLayout, HostSource, IterationProjection, SwitchCase, SwitchKey,
+    TickProjection, UpdateDemand, UpdateOperation, UpdateProjection, compile_control,
 };
 pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
 pub use data_compile::compile_data;
