@@ -653,6 +653,25 @@ fn project_nodes(
         };
         match projection {
             Ok(projected) => {
+                if node.definition.id.as_str() == ids::ON_WATCH
+                    && node.config.get("mode").and_then(|v| v.as_str()) == Some("rising")
+                    && projected
+                        .ports
+                        .iter()
+                        .find(|p| p.port_id.as_str() == "watch")
+                        .and_then(|p| p.ty.as_ref())
+                        .map(|t| t.as_str())
+                        != Some("core/bool@1")
+                {
+                    diagnostics.push(port_type_diagnostic(
+                        *id,
+                        crate::port_id!("watch"),
+                        DiagnosticCode::TypeMismatch,
+                        pass.origin,
+                    ));
+                    report.incomplete_nodes.insert(*id);
+                    continue;
+                }
                 if drifted {
                     report_drift(pass, *id, report, diagnostics);
                 }

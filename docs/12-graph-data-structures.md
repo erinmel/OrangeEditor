@@ -1,5 +1,48 @@
 # Graph data structures
 
+The C11a/C07a/C09a representation note below extends the current concrete Rust
+subset. Illustrative general IR/runtime structures remain proposals beyond that subset.
+
+## C11a/C07a/C09a concrete representation (2026-11-06)
+
+`ControlOperation::Effect` retains a `ControlEffect` and the existing ordered
+`UpdateDemand` roots/frozen host-input union. `ControlEffect` owns the exact data
+port keys, output shapes, optional synchronous `Arc<dyn ActionKernel>` and an opaque
+Arc host context which pins the executable generation. `HostSource::EffectOutput`
+maps dense input slots to their owner and result ordinal; function layouts include
+these projections in invocation cleanup. No effect names/types/providers resolve
+inside the actor. Existing saved graph fields and format version are unchanged.
+
+The run's effect directory owns each sole parked strand, ordered input values and
+state/aggregate `Hold`s. Checked operation sequences index the directory; a second
+directory maps strand identity to operation identity for targeted cancellation.
+Command/completion queues contain scalar identities, not duplicate continuations.
+Removal also compacts pending identity queues, so storage follows peak live demand,
+not total operations. `RunOwnership::effects` reports the live count. Cancellation
+signals the monotonic lease before its strand can enter bounded cleanup. Debug
+formatters omit inputs, outputs, callbacks and host contexts.
+
+`ControlPlan::watches` retains entry/type/mode, demand root, host-input dependencies,
+run-variable dependency indices and the ordinary handler. Changed-variable capture
+also covers Watch dependencies. A separate aggregate-charged data activation
+evaluates affected Watches while ordinary strands are paused, preserving a stable
+post-segment state across host slices. Per-Watch previous values/faults/sequences
+and a single bounded pending reaction queue preserve initial baseline and mixed
+Change/Watch ordering. Cached previous values plus staged before/after values share
+the state-byte bound; their leases and evaluator storage are released on stop.
+Evaluator storage is included in frame admission and the event template's retained
+storage. Evaluation counts and bounded last faults are host metadata.
+
+Host streams wrap a `PullStream` as a typed C08a resource. Its generational handle
+is opaque and claim-once; `StreamConsumer` has no public constructor or Clone.
+Each resource retains one current pull identity, optional checked result, monotonic
+closed signal and optional partial collection. Item/result and collection tallies
+lease the run aggregate. Stream close removes the slab entry before calling its
+closer; the wrapper's destructor closes an otherwise unretired producer once. Slot
+generation retirement prevents a late demand from reaching a reused resource.
+No new `Value` or `ValueShape` resource variant, graph stream instruction or saved
+schema is introduced. C08b and graph-stream ownership remain explicitly open.
+
 Status: **normative proposal for graph format v1**, 2026-10-20. Rust items below are conceptual layouts, **not compiled code**. Field names and JSON shapes are contracts; Rust spelling, generic parameters and crate placement can change in WU-00 if the JSON/wire contract and the invariants in §11 are preserved. Semantics are defined in [11](11-graph-language.md); value rules in [03](03-data-and-execution.md). JSON examples are syntax-checked documentation, not installable artifacts; IDs are shortened (`n1`, `v1`) where real documents use UUIDs and digests are synthetic.
 
 ## 1. Four representations

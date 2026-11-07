@@ -23,6 +23,7 @@ mod changes;
 mod function;
 mod iteration;
 mod loops;
+mod watch;
 use loops::Loops;
 mod retained;
 mod select;
@@ -31,7 +32,9 @@ use function::{Frames, FunctionFrame, FunctionReturn, FunctionStep, PendingCall,
 mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod activations;
+mod effects;
 mod events;
+pub use effects::{EffectError, EffectId, EffectLease, EffectRequest};
 mod ids;
 use activations::Activations;
 pub use events::{EventMetadata, RunEventStats};
@@ -39,7 +42,12 @@ pub use events::{EventOrigin, EventTarget, HostSourceId, IngressError, RunEventS
 mod ready;
 mod regions;
 mod resources;
+mod streams;
 pub use resources::{AcquireRefused, CloseReason, ResourceError, ResourceHandle, RunResource};
+pub use streams::{
+    PullStream, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError, StreamHandle,
+    StreamNextId, StreamRead, StreamRefused, StreamStep,
+};
 mod ticks;
 mod timers;
 mod trace;
@@ -140,6 +148,16 @@ pub struct RunLimits {
     pub max_host_sources: usize,
     /// Live host resources the run owns (C08a).
     pub max_resources: usize,
+    /// Live asynchronous commands, including accepted unpublished completions.
+    pub max_pending_effects: usize,
+    /// Aggregate nominal input/result bytes retained by asynchronous commands.
+    pub max_effect_bytes: usize,
+    /// Maximum nominal bytes of one pulled item or buffered completion.
+    pub max_stream_item_bytes: usize,
+    /// Upper bound on an explicit collection's requested item limit.
+    pub max_stream_collect_items: usize,
+    /// Partial collection bytes, separately from one pending pull result.
+    pub max_stream_collect_bytes: usize,
     /// Aggregate nominal reservation budget for the whole run, distinct from the
     /// per-activation limits (`max_state_bytes`, `DataLimits::max_retained_bytes`),
     /// frame storage and event ingress. Every activation (roots, On Stop frames,
@@ -182,6 +200,11 @@ impl Default for RunLimits {
             max_live_event_payload_bytes: 16 * 1024 * 1024,
             max_host_sources: 64,
             max_resources: 256,
+            max_pending_effects: 256,
+            max_effect_bytes: 16 * 1024 * 1024,
+            max_stream_item_bytes: 1024 * 1024,
+            max_stream_collect_items: 4096,
+            max_stream_collect_bytes: 16 * 1024 * 1024,
             max_run_retained_bytes: 512 * 1024 * 1024,
         }
     }
@@ -233,6 +256,8 @@ pub struct RunOwnership {
     pub host_sources: usize,
     /// Live host resources the run owns and will close.
     pub resources: usize,
+    /// Owned asynchronous commands, including accepted unpublished completions.
+    pub effects: usize,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
@@ -425,6 +450,7 @@ impl PullState {
 /// call/return/fault/fork/unwind/body/wait flags cannot coexist.
 #[derive(Default)]
 enum Transfer {
+    Effect(effects::PreparedEffect),
     #[default]
     None,
     /// An unhandled fault outside a function retires the activation tree.
@@ -693,6 +719,8 @@ pub struct Run {
     pump_open: bool,
     resources: resources::Resources,
     changes: changes::Changes,
+    effects: effects::Effects,
+    watches: watch::Watches,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -793,9 +821,21 @@ impl Run {
         )?;
         // Every start and On Stop frame reserves its storage now, so admit the
         // aggregate before constructing any of them.
+        let watch_storage = if plan.watches().is_empty() {
+            0
+        } else {
+            crate::data::activation_storage(plan.data())
+                .and_then(|bytes| {
+                    bytes.checked_add(plan.watches().len().checked_mul(
+                        std::mem::size_of::<Option<Value>>() + std::mem::size_of::<u64>(),
+                    )?)
+                })
+                .ok_or(RunError::ResourceLimit)?
+        };
         layout
             .frame_storage(&plan, locals.len() + local_states.len())
             .and_then(|bytes| bytes.checked_mul(capacity))
+            .and_then(|bytes| bytes.checked_add(watch_storage))
             .filter(|total| *total <= options.limits.max_frame_storage_bytes)
             .ok_or(RunError::ResourceLimit)?;
         let has_events = plan
@@ -805,6 +845,7 @@ impl Run {
             || !plan.manuals().is_empty()
             || !plan.timers().is_empty()
             || !plan.changes().is_empty()
+            || !plan.watches().is_empty()
             || plan
                 .nodes()
                 .iter()
@@ -896,6 +937,7 @@ impl Run {
                         .checked_mul(std::mem::size_of::<Option<Value>>())
                         .ok_or(RunError::ResourceLimit)?,
                 )
+                .and_then(|n| n.checked_add(watch_storage))
                 .ok_or(RunError::ResourceLimit)?;
             let minimum = (plan.stops().len() + 1).max(capacity);
             frame_storage
@@ -917,6 +959,14 @@ impl Run {
         };
         let events = events::Events::new(&plan);
         let changes = changes::Changes::new(&plan);
+        let watches = watch::Watches::new(
+            &plan,
+            event_template.as_ref().map(|t| t.prepared.clone()),
+            document.revision(),
+            seed,
+            options.data.clone(),
+            budget.clone(),
+        )?;
         let mut run = Self {
             frames: Frames::default(),
             id: run_identity()?,
@@ -953,7 +1003,9 @@ impl Run {
             fork_children: vec![],
             pump_open: false,
             resources: resources::Resources::default(),
+            effects: effects::Effects::default(),
             changes,
+            watches,
         };
         run.arm_timer_entries()?;
         Ok(run)
@@ -1002,6 +1054,7 @@ impl Run {
             event_waiters: self.waiter_count(),
             host_sources: self.host_source_count(),
             resources: self.resources.len(),
+            effects: self.effects.len(),
         }
     }
     /// IDs written by the last/current segment, once each. No equality comparison,
@@ -1157,6 +1210,15 @@ impl Run {
             )
         {
             self.observe_cancellation()?;
+            if self.watches.has_pending() && self.state == RunState::Running {
+                if let Err(error) = self.evaluate_watch(&plan, &mut remaining) {
+                    return self.fail(error);
+                }
+                if !self.watches.has_pending() {
+                    self.watches.finish_segment();
+                }
+                continue;
+            }
             if self.state == RunState::Stopped {
                 break;
             }
@@ -1205,6 +1267,13 @@ impl Run {
                         }
                     }
                 }
+                continue;
+            }
+            if self.effects.has_ready() {
+                if let Err(error) = self.resume_effect(&plan) {
+                    return self.fail(error);
+                }
+                remaining -= 1;
                 continue;
             }
             // A matched Await completion is actor work of its own. Publish one per
@@ -1278,6 +1347,10 @@ impl Run {
             let before = quantum;
             if self.segment_owner != Some(activation.id) {
                 self.end_segment(&plan);
+                if self.watches.has_pending() {
+                    self.ready.push_front(activation.id, activation);
+                    continue;
+                }
                 self.segment.open();
                 self.changes
                     .open((activation.sequence, activation.cause_depth));
@@ -1329,6 +1402,12 @@ impl Run {
                 break;
             }
             match std::mem::take(&mut activation.transfer) {
+                Transfer::Effect(prepared) => {
+                    self.segment_owner = None;
+                    if let Err(error) = self.park_effect(activation, prepared) {
+                        return self.fail(error);
+                    }
+                }
                 Transfer::Return(result) => {
                     if let Err(error) = self.leave_function(activation, result) {
                         return self.fail(error);
@@ -1432,6 +1511,7 @@ impl Run {
                                         | ControlOperation::Return { .. }
                                         | ControlOperation::Register { .. }
                                         | ControlOperation::Update { .. }
+                                        | ControlOperation::Effect { .. }
                                 )
                             })))
             })
@@ -1451,6 +1531,8 @@ impl Run {
                 || !self.timers.is_empty()
                 || self.events.pending() > 0
                 || self.pending_await_completions()
+                || self.effects.has_ready()
+                || self.watches.has_pending()
                 || self.has_replace_cancellation())
         {
             return self.fail(RunError::ResourceLimit);
@@ -1461,6 +1543,7 @@ impl Run {
             && self.ready.is_empty()
             && self.timers.is_empty()
             && self.event_waiter_count() == 0
+            && self.effects.len() == 0
             && !self.pending_await_completions()
             && !self.event_dispatchable()
         {
@@ -1475,8 +1558,10 @@ impl Run {
         Ok(RunProgress {
             operations: count,
             ready: !self.ready.is_empty()
+                || self.watches.has_pending()
                 || self.timers.is_due(self.now)
                 || self.pending_await_completions()
+                || self.effects.has_ready()
                 || self.has_replace_cancellation()
                 || self.event_dispatchable(),
             next_wakeup,
@@ -1509,6 +1594,7 @@ impl Run {
             && self.ready.is_empty()
             && self.timers.is_empty()
             && self.event_waiter_count() == 0
+            && self.effects.len() == 0
             && !self.pending_await_completions()
             && self.events.pending() == 0
         {
@@ -1525,6 +1611,8 @@ impl Run {
         self.stop_ready.clear();
         self.ready.clear();
         self.timers.clear();
+        self.effects.clear();
+        self.watches.clear();
         self.regions.clear();
         self.frames.clear();
         self.activations.clear();
@@ -1596,6 +1684,12 @@ impl Run {
             },
         };
         let step = match operation {
+            ControlOperation::Effect { .. } => {
+                match self.execute_effect(plan, activation, shared, ix, budget)? {
+                    Some(step) => step,
+                    None => return Ok(()),
+                }
+            }
             ControlOperation::Emit { event, .. } => {
                 let payload = value.ok_or(RunError::InvalidState)?;
                 match self.emit_event(plan, activation, ix, *event, payload) {
@@ -1932,6 +2026,7 @@ impl Run {
                     .checked_add(self.options.drain_timeout_ns)
                     .ok_or(RunError::ResourceLimit)?;
                 self.transition(RunState::Draining);
+                self.watches.clear();
                 self.close_host_sources();
                 self.timers.remove_entries();
                 self.deadline = Some(deadline);
@@ -1945,6 +2040,7 @@ impl Run {
         }
     }
     fn cancel_owned(&mut self) -> Result<(), RunError> {
+        self.watches.clear();
         // Cancellation must remain possible at the end of the virtual clock range.
         let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
         self.transition(RunState::Cancelling);
@@ -1994,6 +2090,8 @@ impl Run {
         self.fork_children = Vec::new();
         self.resources = resources::Resources::default();
         self.changes.release();
+        self.effects = effects::Effects::default();
+        self.watches.clear();
         self.transition(RunState::Disposed);
         Ok(())
     }

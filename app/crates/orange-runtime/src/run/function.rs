@@ -165,6 +165,7 @@ impl Frames {
                     | HostSource::Change(_, _)
                     | HostSource::Update(_, _)
                     | HostSource::CallOutput(_, _)
+                    | HostSource::EffectOutput(_, _)
             ) && let Some(FoldedValue::Value(value)) = &shared.outputs[cell]
             {
                 let slot =
@@ -453,7 +454,7 @@ pub(super) fn call_returned(
         FunctionReturn::Fault(fault) => Ok((node.failed(), ControlOutcome::Failed, Some(fault))),
     }
 }
-fn values_charge(
+pub(super) fn values_charge(
     plan: &ControlPlan,
     demand: &UpdateDemand,
     values: &[Value],

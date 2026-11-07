@@ -23,8 +23,10 @@ pub use entropy::{
     EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,
 };
 pub use run::{
-    AcquireRefused, CloseReason, ControlOutcome, EventMetadata, EventOrigin, EventTarget,
-    HostSourceId, IngressError, ResourceError, ResourceHandle, Run, RunError, RunEvent,
-    RunEventSource, RunEventStats, RunLimits, RunOptions, RunOwnership, RunProgress, RunResource,
-    RunRetention, RunState, StopMode,
+    AcquireRefused, CloseReason, ControlOutcome, EffectError, EffectId, EffectLease, EffectRequest,
+    EventMetadata, EventOrigin, EventTarget, HostSourceId, IngressError, PullStream, ResourceError,
+    ResourceHandle, Run, RunError, RunEvent, RunEventSource, RunEventStats, RunLimits, RunOptions,
+    RunOwnership, RunProgress, RunResource, RunRetention, RunState, StopMode, StreamCollectPoll,
+    StreamConsumer, StreamDemand, StreamError, StreamHandle, StreamNextId, StreamRead,
+    StreamRefused, StreamStep,
 };

@@ -1,5 +1,65 @@
 # Graph language and execution semantics
 
+The C11a/C07a/C09a execution profile below records the current trusted effects,
+runtime Watch and host pull-stream subset. Broader normative rules remain product gates.
+
+## C11a/C07a/C09a executable profile (2026-11-06)
+
+**Trusted effects.** The opt-in control compiler admits registered package Action
+and Async leaves with strict required data inputs, execution-sourced data outputs
+on `then`, and only the ordinary `in`/`then`/`failed`/`cancelled` control vocabulary.
+The exact provider, config, fresh port order and executable context bind before
+execution. Action invokes a bounded nonblocking trusted callback once per control
+token; Async submits one inert command and parks that same strand. Merely reading
+an output cannot resubmit work. An accepted typed success/fault resumes once on a
+later pump. Input faults preserve their original producer and submit no command.
+Effects in graph-local Action/Async functions retain scoped projections and region
+ownership and require the existing fresh host leaf-effect evidence through
+`analyze_with_effects`; registered kind alone is insufficient. Unsupported
+subscription/custom-outcome/resource-value forms fail closed.
+Cancellation retires the operation before running connected bounded `cancelled`
+cleanup. These package leaves are not cleanup-safe in this profile. Host executors,
+concrete services, handle-valued results (C08b), replay and worker isolation remain
+separate gates; a cancellation signal cannot undo a remote side effect.
+
+**Runtime Watch.** `core/on-watch@1`, config version 1, is a generic host Entry with
+required `watch: T` input and payload-sourced `value: T` output, requiring `eq` and
+the ordinary saved activation policy. `config.mode` is required and is `changed` or
+`rising`; no other config fields are accepted. Rising requires `T = core/bool@1`
+(`E-TYPE-MISMATCH` otherwise). Changed compares under host-supported exact Eq;
+rising fires only from false to true. The current compiler admits pure cones over
+initialized, host-Eq run variables; entropy, clock, locals, register reads and
+execution outputs in a watched cone remain refused. The cold baseline is computed
+under pump fuel before ordinary strands and does not fire. A failed evaluation
+suppresses delivery, preserves the previous successful baseline and exposes the
+original producer through `Run::watch_fault`; the next success clears that fault.
+The first successful sample is a baseline even after earlier faults.
+
+At a semantic segment end, only Watches whose run-variable dependencies actually
+changed are scheduled. Their resumable evaluation holds the post-segment state
+stable before the next strand runs. Watch and On Variable Changed deliveries share
+one saved `(order, node ID)` ordering, existing bounded handler admission and causal
+depth plus one. Origin is `Watch`, target is `Watch(node)`, and source sequences count
+admitted deliveries. A refused delivery/depth overflow is counted without faulting
+the run. Previous-value cache and staged changes are charged; `watch_evaluations`
+counts actual epochs and survives stop. Stop admits no further reactions. Pump
+slices do not split a segment. This is runtime C07a; incremental effect-free
+authoring preview and its A01/A02 locality qualification remain open.
+
+**Pull streams.** C09a implements an embedding API for typed, run-owned producers,
+not graph `stream<T>` values or the §12 node vocabulary. An opaque stream handle can
+be claimed once; copying the handle grants no extra consumer. A demand obtains one
+item/end/fault or one pending identity. Repeated reads of that pending identity do
+not call the producer again. The host supplies one typed completion; duplicate,
+foreign, retired and previous-demand completions are refused. Next pulls occur only
+on consumer demand. Collection fixes `max_items` for its lifetime, is resumable under
+an explicit read budget and returns the whole typed list or a failure, never a
+partial list. It reads one extra item to detect exceeding an exact item bound.
+Normal end, producer fault, collection refusal, explicit close, stop and run drop
+close the producer once. Graph iterator/Break/Return ownership, graph next/collect,
+tee, push bridges and concrete adapters remain later C09/C10 increments. The full
+affine graph rules in §12 are unchanged and are not claimed implemented by C09a.
+
 Status: **normative proposal for graph format v1**. The document model, type/inference work and partial validator passes exist; complete validation, compiler and runtime remain to be implemented and tested. Section 18 supplies reference scenarios for focused implementation tests. Structure layouts live in [12](12-graph-data-structures.md). On conflict, this document governs graph semantics, [12](12-graph-data-structures.md) governs data layout, and the other document is a defect that must be fixed in the same work unit. MUST, MUST NOT and SHOULD are normative.
 
 **Layering (ADR-21).** §4–§6, §16 and §17 are the shared **substrate** that every execution domain uses: ports, types, conversions, extension surface and diagnostics. §1–§3 and §7–§15 define the built-in **`control` domain** (event activations, exec/data wires, async, structured loops), which a body uses when it declares no `domain` ([12 §3.1](12-graph-data-structures.md)). The core ships no other domain; crates that depend on the core may add domains, bridges and object models, each with its own semantics document. Combined validation currently accepts absence or exact `control` only. Other domain metadata remains preserved but reports `E-DOMAIN-UNSUPPORTED` before control-domain analysis; skipped nodes/functions receive `E-DOMAIN-ANALYSIS-BLOCKED`, and coverage records only the domain check. No control semantics are inferred for foreign domains.

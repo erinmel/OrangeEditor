@@ -18,7 +18,7 @@ pub(super) struct Changes {
     /// Captured variables in first-write order, so ending a segment visits only writes.
     touched: Vec<usize>,
     /// Admitted deliveries per change entry, used as its source sequence.
-    sequences: Box<[u64]>,
+    pub(super) sequences: Box<[u64]>,
     /// The segment owner's activation sequence and causal depth.
     cause: (u64, u16),
 }
@@ -27,6 +27,11 @@ impl Changes {
         let mut watched = vec![false; plan.variables().len()];
         for change in plan.changes() {
             watched[change.variable()] = true;
+        }
+        for watch in plan.watches() {
+            for &variable in watch.variables() {
+                watched[variable] = true;
+            }
         }
         Self {
             watched: watched.into(),
@@ -52,7 +57,12 @@ impl Changes {
 }
 
 /// `[value, previous]` as the channel's `list<T>` payload.
-fn pair(plan: &ControlPlan, variable: usize, value: Value, previous: Value) -> Option<Value> {
+pub(super) fn pair(
+    plan: &ControlPlan,
+    variable: usize,
+    value: Value,
+    previous: Value,
+) -> Option<Value> {
     let mut list = ListBuilder::new(Some(plan.variables()[variable].ty()));
     list.reserve(2).ok()?;
     list.push(value).ok()?;
@@ -91,6 +101,17 @@ impl Run {
             return;
         }
         let (cause, depth) = self.changes.cause;
+        if !plan.watches().is_empty() {
+            if !self.watches.schedule(
+                plan,
+                &changed,
+                (cause, depth),
+                self.options.limits.max_state_bytes,
+            ) {
+                self.events.count_overflow();
+            }
+            return;
+        }
         let depth = depth
             .checked_add(1)
             .filter(|depth| *depth <= self.options.max_cause_depth);

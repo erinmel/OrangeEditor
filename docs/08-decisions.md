@@ -122,6 +122,20 @@ Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the reg
 
 ## ADR-14 — One cooperative actor per run
 
+C11a/C07a/C09a amendment (2026-11-06): keep trusted effect resolution separate
+from pure folding, and retain each executable generation in the immutable binding.
+Only synchronous bounded Action callbacks run on the actor; Async returns an inert
+command to a host-owned executor. Complete-once IDs own parked strands and typed
+state/aggregate leases until publication or cancellation. Reuse the existing region
+walk rather than adding per-node futures or a second scheduler. Runtime Watch uses
+a separate budgeted evaluator which pauses ordinary strands at segment boundaries;
+this preserves post-segment consistency and mixed notification order across host
+slices. Reuse the C08a generational slab for host affine streams and their pending
+pull/partial-collection ownership. Producer callbacks only initiate nonblocking work.
+No UI, OS executor, guest loader or concrete service dependency enters core crates.
+The implemented subsets and remaining graph-stream/preview/resource-value gates are
+specified in 03/11/12, with executed evidence in 10; broader unit/NFR gates stay open.
+
 **Selected.** Each run executes one strand segment at a time on one logical actor that owns its state, activations and queues. Strands interleave only at suspension, yield and slice boundaries. Runs execute in parallel, heavy pure programs and async effects run off-actor, and workspace state has its own host actor with published snapshots ([11 §9](11-graph-language.md)). Alternatives: a multi-threaded run with locked state (data races become semantic, nondeterministic order, lock cost on every Get); a thread per activation (oversubscription, no replay). Consequences: no locks on run state and deterministic order given the ingestion log. Read-modify-write is atomic unless a value was captured across a suspension (`W-STALE-CAPTURE`). A single CPU-bound run uses one core plus offload. **Falsification:** W2/W5/W9 throughput and NFR-02 latency with offload enabled; G-14, G-32, G-33. If representative workloads cannot meet NFR-02 without intra-run parallelism, revise with explicit partitioning semantics, not shared locks. Owner runtime lead; G2.
 
 **Run-owned resources (C08a, 2026-11-06).** The run actor owns host resources in a generational table instead of the host keeping a side registry: one owner sees stop, fault and drop, so closing happens exactly once without callbacks into graph work. Handles carry the run identity at the host boundary and a slot that would wrap its generation is retired, so no handle is issued twice. Closers are host code on the host's stack; resources must be `Send + Sync` because `Run` is. Graph-visible handles wait for a node that produces one (C11) rather than adding untestable value plumbing now.

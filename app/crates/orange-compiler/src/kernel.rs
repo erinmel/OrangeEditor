@@ -17,6 +17,10 @@ pub struct KernelFault {
     pub message: &'static str,
 }
 impl KernelFault {
+    /// Whether this static redacted envelope satisfies the shared bounded ABI.
+    pub fn is_valid(self) -> bool {
+        crate::compile::valid_fault(self)
+    }
     /// Shared by Count loops and Repeat zones.
     pub const NEGATIVE_COUNT: Self = Self {
         code: "core/OutOfRange",

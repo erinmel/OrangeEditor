@@ -55,6 +55,7 @@ pub enum EventOrigin {
     /// A segment end changed a watched run variable; `source_seq` counts the entry's
     /// admitted changes and `cause` is the writing activation.
     Change,
+    Watch,
 }
 
 /// What an accepted delivery targets: a checked run-scope event declaration, consumed by
@@ -66,6 +67,7 @@ pub enum EventTarget {
     Manual(NodeId),
     Timer(NodeId),
     VariableChanged(NodeId),
+    Watch(NodeId),
 }
 
 /// Last successfully ingested event. Contains no payload.
@@ -382,11 +384,15 @@ fn channel(plan: &ControlPlan, channel: usize) -> Option<(Option<&ValueShape>, E
     if let Some(timer) = plan.timers().get(channel) {
         return Some((None, EventTarget::Timer(timer.node())));
     }
-    let change = plan.changes().get(channel - plan.timers().len())?;
-    Some((
-        Some(change.payload_type()),
-        EventTarget::VariableChanged(change.node()),
-    ))
+    let channel = channel - plan.timers().len();
+    if let Some(change) = plan.changes().get(channel) {
+        return Some((
+            Some(change.payload_type()),
+            EventTarget::VariableChanged(change.node()),
+        ));
+    }
+    let watch = plan.watches().get(channel - plan.changes().len())?;
+    Some((Some(watch.ty()), EventTarget::Watch(watch.node())))
 }
 pub(super) struct ActivationTemplate {
     pub prepared: Arc<PreparedData>,
@@ -455,6 +461,11 @@ impl Events {
             plan.changes()
                 .iter()
                 .map(|change| vec![add(change.handler())]),
+        );
+        by_event.extend(
+            plan.watches()
+                .iter()
+                .map(|watch| vec![add(watch.handler())]),
         );
         Self {
             handlers,

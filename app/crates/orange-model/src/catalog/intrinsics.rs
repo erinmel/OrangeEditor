@@ -89,6 +89,23 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     definitions.extend(register_definitions());
     definitions.extend(result_definitions());
     definitions.extend(lazy_pure_definitions());
+    let mut watch = generic(
+        definition(
+            ids::ON_WATCH,
+            NodeKind::Entry,
+            None,
+            vec![
+                PortDescriptor::data_in("watch", ty("$T")),
+                PortDescriptor::data_out("value", ty("$T"), OutputSource::Payload),
+            ],
+        ),
+        "T",
+        &["eq"],
+    );
+    watch.config_schema = Some(
+        serde_json::json!({"type":"object","required":["mode"],"properties":{"mode":{"type":"string","enum":["changed","rising"]}},"additionalProperties":false}),
+    );
+    definitions.push(watch);
     definitions.push(NodeDefinition {
         ports: Ports::ForEach,
         ..definition(

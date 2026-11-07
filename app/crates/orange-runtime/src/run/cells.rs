@@ -411,7 +411,8 @@ impl Cells<'_> {
                     | HostSource::Tick(_, _)
                     | HostSource::Change(_, _)
                     | HostSource::Update(_, _)
-                    | HostSource::CallOutput(_, _) => {
+                    | HostSource::CallOutput(_, _)
+                    | HostSource::EffectOutput(_, _) => {
                         self.layout.outputs[i].and_then(|slot| shared.outputs[slot].clone())
                     }
                 };
