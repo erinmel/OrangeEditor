@@ -219,7 +219,7 @@ impl<'a> Calls<'a> {
                     );
                     let state = profile != CallProfile::Pure
                         && sig.kind == NodeKind::Volatile
-                        && crate::compile::is_state_read(snapshot, node);
+                        && crate::compile::is_host_read(snapshot, node);
                     if state {
                         crate::compile::admit_state_read(node.id, sig)?;
                     }

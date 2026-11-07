@@ -312,3 +312,43 @@ fn workspace_state_in_potential_callees_is_refused_before_any_kernel_binding() {
     assert_eq!(resolver.pure.load(Ordering::Relaxed), 0);
     assert_eq!(resolver.entropy.load(Ordering::Relaxed), 0);
 }
+
+#[test]
+fn called_clock_reader_observes_the_actor_clock_at_its_consumption() {
+    let (package, snapshot) = catalog();
+    let clock = json!({"id":id(100),"name":"clock","kind":"volatile","inputs":[],
+        "outputs":[port("elapsed","output","core/duration@1")],
+        "nodes":[core(102,"function-outputs"),core(103,"now")],
+        "edges":[edge(101,103,"elapsed",102,"elapsed")]});
+    let mut wait = core(2, "wait");
+    wait["inputs"] = json!({"duration":{"type":"core/duration@1","value":"5"}});
+    let mut store = core(3, "set-variable");
+    store["config"] = json!({"variable":id(10)});
+    let doc = document(
+        &package,
+        vec![start(), wait, store, state_call(4, 100)],
+        vec![
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then", 3, "in"),
+            edge(3, 4, "elapsed", 3, "value"),
+        ],
+        vec![],
+        vec![clock],
+        vec![variable(10, "core/duration@1")],
+    );
+    let resolver = Counting::new(package.clone());
+    let plan = control(&doc, snapshot.clone(), &resolver);
+    assert!(
+        plan.host_sources()
+            .iter()
+            .any(|s| matches!(s, HostSource::Clock))
+    );
+    let mut run = Run::start(plan, &doc, &snapshot, 1, RunOptions::default()).unwrap();
+    finish(&mut run, 64);
+    run.advance_to(9).unwrap();
+    finish(&mut run, 64);
+    assert_eq!(
+        run.variable(id(10).parse().unwrap()),
+        Some(&Value::Duration(9))
+    );
+}

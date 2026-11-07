@@ -271,6 +271,8 @@ pub enum HostSource {
     CallOutput(ControlIx, usize),
     EventPayload(ControlIx),
     Tick(ControlIx, TickProjection),
+    /// `core/now`: the run's virtual time since its clock's zero, read once per epoch.
+    Clock,
     Error(ControlIx),
     Index(ControlIx),
     Value(ControlIx),
@@ -762,6 +764,7 @@ pub fn compile_control(
             | HostSource::FrameLocal { .. }
             | HostSource::Argument { .. }
             | HostSource::State(_)
+            | HostSource::Clock
             | HostSource::Iteration(_, _) => {}
         }
     }
@@ -1666,6 +1669,9 @@ fn host_source(
         });
     }
     let source = &data.slot_sources()[node.outputs()[0].index()];
+    if cx.node((scope, source.node)).definition.id.as_str() == ids::NOW {
+        return Ok(HostSource::Clock);
+    }
     let key = (scope, source.node);
     let owner = tables
         .control_ix
