@@ -3621,3 +3621,34 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
 - Limits: host API only. No node produces or consumes handle values, so activation
   owners, Return/Fork transfer and graph close nodes (C08b) remain open, as do
   concrete adapters. No timing or memory probe ran.
+
+### C06 — variable-changed entries — 2026-11-06
+
+Base dev `e9cb5f7` (PR138 integrated). Rust 1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo
+1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024, default features.
+MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+- `core/on-variable-changed@1` is a registered Entry (`VariableAccess::Changed`) with
+  `value`/`previous` outputs. A non-run, uninitialized or non-`eq` variable reports
+  `E-VARIABLE-CHANGED`; compiler admission also requires host `eq`.
+- Watched run variables capture their value before the first write of a segment. The
+  segment ends when its strand suspends, yields, retires or another strand is selected,
+  or at pump exit when it no longer holds the ready head. Changed values are admitted
+  in handler order through shared handler admission; refusals and depth overflow count
+  as overflows without faulting the run.
+- Seven focused regressions pass: three writes in one segment give one notification
+  with the segment-start previous value and change metadata; equal and restored
+  values stay silent; one-operation pump slices give the same single notification; a
+  Wait splits two notifications; re-setting the delivered value is silent (G-16); a
+  self-incrementing handler stops at `max_cause_depth` with one overflow; and local,
+  uninitialized and `f64` variables report `E-VARIABLE-CHANGED`. Removing the
+  pump-exit segment end makes five of them fail.
+- Commands: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets
+  --all-features --locked --offline -- -D warnings`; `cargo test --workspace --locked
+  --offline` and the same with `--release`; warnings-denied `cargo doc --workspace
+  --no-deps --locked --offline`. Debug and release each report **1,341 passed, zero
+  failed, 15 opt-in measurements ignored**. Cargo used `CARGO_INCREMENTAL=0`.
+- Limits: Watch, live preview, workspace variables and package-implemented `eq` remain
+  open. Writes during Draining or cancellation never notify. No timing or memory probe
+  ran.
