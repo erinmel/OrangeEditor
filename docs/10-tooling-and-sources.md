@@ -3593,3 +3593,31 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
 - Limits: only the run's virtual clock is read; wall-clock time stays host-supplied.
   Standalone `compile_data` hosts supply the Now input like a state read, which no new
   test exercises. OS timers, replay and adapters remain open. No timing probe ran.
+
+### C08a — run-owned resources — 2026-11-06
+
+Base dev `6d5ea97` (PR137 integrated). Rust 1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo
+1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024, default features.
+MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+- `Run` owns a generational resource table. `acquire_resource` admits a `RunResource`
+  of a registered handle-kind type while `Running` and returns a run-bound
+  `ResourceHandle`; refusals hand the object back unclosed. `close_resource`,
+  `resource_kind` and `resource_mut` refuse foreign, stale and wrong-kind handles.
+- Each resource closes exactly once: host close, `Stopped` (newest first, `RunStopped`
+  or `RunFaulted`) or drop of a run still owning it. A panicking closer does not skip
+  the rest. A slot at the last generation is retired, so no handle repeats.
+- Six focused regressions pass: run/generation/kind checks with slot reuse and a
+  foreign run at the same slot; unknown-kind, limit and draining refusals returning
+  the object; graceful stop closing newest first after drain and disposal staying
+  stale; immediate stop, stop-run fault and drop reasons; and two table unit tests for
+  generation retirement and a panicking closer.
+- Commands: `cargo fmt --all --check`; `cargo clippy --workspace --all-targets
+  --all-features --locked --offline -- -D warnings`; `cargo test --workspace --locked
+  --offline` and the same with `--release`; warnings-denied `cargo doc --workspace
+  --no-deps --locked --offline`. Debug and release each report **1,334 passed, zero
+  failed, 15 opt-in measurements ignored**. Cargo used `CARGO_INCREMENTAL=0`.
+- Limits: host API only. No node produces or consumes handle values, so activation
+  owners, Return/Fork transfer and graph close nodes (C08b) remain open, as do
+  concrete adapters. No timing or memory probe ran.

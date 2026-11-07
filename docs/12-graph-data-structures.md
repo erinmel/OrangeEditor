@@ -799,6 +799,8 @@ Host input admission may reuse a map/list type check and nominal charge only whe
 
 Concrete supported actor (2026-10-24): `Run` owns shared activations and independently scheduled strands, iterative Sequence/loop cursors, run cells, activation-local cells and bounded resumable data frames. Virtual timers own suspended strands and a non-reused insertion sequence under a process-unique run ID. Host methods take exclusive `&mut Run`, so stop/time commands are serialized at pump boundaries without a redundant command queue. R2 adds the general bounded event/completion inbox later. Operation slices rotate unfinished activations to the ready tail; state inputs are captured at epoch start and remain immutable across interleaving. State-store, data-frame, activation, timer, depth, trace and cleanup limits are explicit; they are not a measured RSS or callback-preemption guarantee. Segment inspection returns unique written variable IDs, not R2b notifications. The full structures below remain illustrative for general resources/services and remaining entry families not yet implemented.
 
+Resource table (C08a, 2026-11-06): `Run` holds a generational slab of host resources. A `ResourceHandle` is the run ID plus a `HandleId {index, generation, kind}` whose `kind` indexes the run's interned handle-kind expressions. Generations start at 1 and advance when a slot empties; a slot at `u32::MAX` is retired instead of reused. Lookup is one index plus generation and kind compare. Live entries are bounded by `RunLimits::max_resources`; disposal releases the table storage.
+
 ```rust
 pub struct Run {
     pub id: RunId, pub generation: Generation, pub plan: Arc<ExecutionPlan>,
