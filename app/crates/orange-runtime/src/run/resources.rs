@@ -39,6 +39,12 @@ pub struct ResourceHandle {
     id: HandleId,
 }
 impl ResourceHandle {
+    pub(super) fn for_run(run: u64, id: HandleId) -> Self {
+        Self { run, id }
+    }
+    pub(super) fn belongs_to(self, run: u64) -> bool {
+        self.run == run
+    }
     /// Table identity; its `kind` is the run-local index of the handle-kind type.
     pub const fn id(self) -> HandleId {
         self.id
@@ -135,7 +141,7 @@ impl Resources {
         self.kind_index.insert(kind.clone(), index);
         Some(index)
     }
-    fn insert(
+    pub(super) fn insert(
         &mut self,
         kind: &TypeExpr,
         resource: Box<dyn RunResource>,

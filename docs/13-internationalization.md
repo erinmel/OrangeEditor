@@ -1,5 +1,19 @@
 # Internationalization and translatable text
 
+C11a/C09a boundary messages (2026-11-06): fieldless `EffectError` exposes
+`core/effect-wrong-run`, `core/effect-stale`, `core/effect-not-running`,
+`core/effect-contract` and `core/effect-limit`. Fieldless `StreamError` exposes
+`core/stream-wrong-run`, `core/stream-stale`, `core/stream-claimed`,
+`core/stream-contract`, `core/stream-limit` and `core/stream-not-running`.
+Their static English `Display` strings are fallback text; hosts present the
+namespaced `message_key()` with no arguments. Error/debug envelopes contain no
+input/result/config/producer/host-context data. Rising Watch type errors reuse
+`E-TYPE-MISMATCH`/`core/graph-type-mismatch`; malformed config uses the existing
+config-schema diagnostic. Watch faults retain the original typed producer and safe
+kernel envelope. Route IDs, operation/demand/resource identities, Watch mode, Eq,
+event order and counters are semantic metadata and never translated. No UI locale,
+catalogue or saved-format change is introduced.
+
 Status: **normative planning proposal**, 2026-10-20; no implementation or localization tests have run. This document owns presentation text, catalogues and locale selection. [11](11-graph-language.md) owns graph semantics; [12](12-graph-data-structures.md) owns persisted and wire layouts. Their contracts must agree. Requirement FR-51, NFR-16 and ADR-17 apply from feasibility through release, including expansion SDK design before G2.
 
 ## 1. Scope and ownership

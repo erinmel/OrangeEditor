@@ -1244,6 +1244,7 @@ fn panicking_provider_retires_checked_out_event_activation_on_stop_and_dispose()
             event_waiters: 0,
             host_sources: 0,
             resources: 0,
+            effects: 0,
         }
     );
     assert_eq!(run.event_stats().live_payload_bytes, 0);
@@ -1640,3 +1641,5 @@ mod run_resources;
 
 #[path = "support/variable_changed.rs"]
 mod variable_changed;
+#[path = "support/watch.rs"]
+mod watch;

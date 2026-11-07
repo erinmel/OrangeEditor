@@ -1,6 +1,65 @@
 # Data, compilation and execution contracts
 
-Current executable scope (2026-11-06): checked data/iteration zones, structured control/Fork, graph-local functions and bounded run-scoped On Event/Emit with Queue, Drop, Replace and Parallel policies plus typed Await Event in 11 §10. Earlier dated checkpoints retain their historical limitations. Other event sources, replay/reactivity, streams, general resources/services, workspace state/checkpoints and full qualification remain open.
+Current effect/reactivity/stream additions (2026-11-06): the bounded profiles below
+extend the earlier execution evidence; they do not complete concrete services,
+incremental authoring preview or graph stream iteration. Verification is in [10](10-tooling-and-sources.md).
+
+## Trusted execution boundary (C11a/C09a, 2026-11-06)
+
+`compile_control_with_effects` takes a separate inert `EffectResolver` in addition
+to the existing pure/entropy resolver. `compile_control` keeps its previous profile.
+A binding's port order and Action/Async mode must match the fresh signature; its
+immutable `context: Arc<dyn Any + Send + Sync>` must retain the exact executable
+generation, compiled config and capability references. `route: u64` is only a
+host dispatch hint. Updating a route table must not retarget an existing context.
+Binding and compilation never execute actions, acquire services or submit commands.
+
+Async commands remain owned by the run until completion/cancellation. `take_effect`
+hands each command out once with Arc-owned typed inputs, an opaque `EffectId`
+and a monotonic read-only lifetime lease. The identity combines the existing
+process-unique Run ID and a checked, never-reused operation sequence. The host
+executes on its own bounded executor and calls `complete_effect` with borrowed
+results or a static safe `KernelFault`. Whole-result type/count/byte/state/aggregate
+admission precedes any copy or mutation. A rejected result can be corrected and
+retried; an accepted result is complete-once. Admission does not run a continuation;
+one later pump work item publishes the result and follows `then` or `failed`.
+Cancellation wins if the owner retires before publication, including after result
+acceptance. Cancelled/late completions cannot touch a reused frame or slot.
+
+`max_pending_effects` defaults to 256 and includes accepted unpublished results.
+`max_effect_bytes` defaults to 16 MiB and charges retained inputs and results
+together, also against activation state and run aggregate leases. Input reservation
+is conservatively retained through completion admission. Command/ready directories
+hold identities only; removing an operation removes all indexes and refunds leases.
+Operation cancellation uses the existing region walk, including Race/Return/stop,
+and connected cleanup retains its usual deadlines/fuel. The host signal does not
+kill a worker, revoke authority or guarantee a remote write was rolled back. A host
+that still owns a request owns its Arc inputs/context outside the run's accounting.
+Trusted Action callbacks must be bounded/nonblocking; callback interruption is
+governed by the existing terminal pump-unwind policy, not OS isolation.
+
+The host stream API admits a `PullStream` without calling it, using the same C08a
+generational resource slab and `max_resources`. Refusal returns the producer
+unclosed. Item types must resolve to the existing executable value shapes; streams
+cannot contain handles/streams. One uncloneable consumer claims the resource once.
+Each `StreamNextId` includes the stream resource's run/slot/kind/generation and a
+checked nonwrapping demand sequence. A trusted producer's `next` must initiate
+bounded work and return promptly; Pending is completed by the host, with no polling
+or executor inside the core. A producer panic retires that stream before unwinding.
+Explicit close is idempotent for its issued consumer, including after run stop.
+
+`max_stream_item_bytes` defaults to 1 MiB. Each stream retains at most one pending
+result, charged to the run aggregate; refused asynchronous results can be retried
+without consuming the identity. Returned host-owned items are outside run retention.
+Collection stores its partial values inside the resource, charges them to the run
+aggregate and obeys `max_stream_collect_items` (4096) and
+`max_stream_collect_bytes` (16 MiB). `collect_stream` consumes only its caller's read
+budget and preserves pending identity/partial ownership between slices. End/fault,
+over-bound collection, close or terminal run cleanup releases the producer and all
+partial/result reservations. Streaming without collection has length-independent
+buffering. These are nominal limits, not allocator/RSS or physical timing evidence.
+
+Current executable scope (2026-11-06): checked data/iteration zones, structured control/Fork, graph-local functions and bounded run-scoped On Event/Emit with Queue, Drop, Replace and Parallel policies plus typed Await Event in 11 §10. Earlier dated checkpoints retain their historical limitations. The C04/C06 and C11a/C07a/C09a amendments add host/manual/timer ingress, virtual clock reads, variable-change/Watch notifications, trusted effects and host pull streams. Replay, incremental preview, graph stream nodes, resource-valued results, concrete services, workspace state/checkpoints and full qualification remain open.
 
 This is the proposed v1 contract baseline. JSON examples are documentation, not executed schemas. **Graph semantics are normative in [11](11-graph-language.md)** (node kinds, ports, types, conversions, regions, cycles, ordering, events, state) and **layouts are normative in [12](12-graph-data-structures.md)**. This document keeps the value policy, persistence, compiler pipeline and run lifecycle. On conflict, 11/12 govern and this document must be corrected. IDs use a constrained ASCII namespace (`org.orange.math/add-i64`) and immutable UUID instance/member IDs where user-created; examples shorten instance IDs to `n1`, `v1` for readability. Display labels may change without changing IDs. Definition version, configuration version, codec version, graph format, provider/package version and host API version are separate compatibility axes.
 

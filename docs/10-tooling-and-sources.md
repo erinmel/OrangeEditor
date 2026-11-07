@@ -1,5 +1,84 @@
 # Tooling, environment and research register
 
+## C11a effects, C07a runtime Watch and C09a host pull streams — 2026-11-06
+
+Local work on `codex/c11-c07-c09-core`, based on dev
+`290c82a383ea5e1cc9fb2dc6722ec2a334fb1934` (PR139). This records tested local changes,
+not a merge or whole-unit completion. Rust 1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo
+1.99.1 (`5f94df478`, 2026-08-27), Windows `x86_64-pc-windows-msvc`, edition 2024;
+default workspace test features, all features for Clippy. `CARGO_INCREMENTAL=0`.
+MSRV remains 1.97.1; only 1.99.1 is installed locally, so no local MSRV compile is
+claimed. Dependencies/features/lockfile are unchanged. Cargo.lock SHA256 remains
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+The tested source receipt covers 336 tracked/new files under `app` plus the root
+Cargo manifest/lock/toolchain files, excluding documentation and ignored outputs.
+Its sorted `sha256  path` manifest digest is
+`BE879627AF29E3A7BC46C6CBEC1A7A49CC199E23D114442E6153211D27151F21`.
+Contracts and public additions are documented in 03/08/11/12/13; FR/NFR trace is in 01.
+
+- **C11a:** separate exact-provider effect resolution, pinned executable context,
+  bounded synchronous Action callbacks, inert host Async commands, strict inputs,
+  typed atomic complete-once results, budgeted publication and region cancellation.
+  Thirteen public-boundary regressions cover result type/quotas/static-fault checks,
+  duplicate/foreign/stale identities, reentry, pending capacity, stop before/after
+  result acceptance, connected cleanup, Race, graph-local function results and
+  Return cancelling a detached pending effect. A compiled headless workflow runs
+  manual → typed Emit/Await → run variable → Watch → inert effect → stop/dispose.
+  This is not IC1 replay qualification: C05 recording/replay remains absent.
+- **C07a:** registered generic `core/on-watch` with checked changed/rising config,
+  initial baseline, host-Eq run-variable dependency admission, budgeted stable
+  post-segment evaluation, original-producer faults and ordinary event admission.
+  Seven regressions cover diamond/final-state consistency across pump sizes,
+  equal/rising behavior, causal feedback refusal, mixed Change/Watch saved order,
+  unrelated writes opening no Watch epochs, fault recovery and invalid rising/
+  entropy-cone admission. No incremental authoring-preview API or locality/NFR gate
+  is claimed.
+- **C09a:** generation-checked run-owned host streams, claim-once consuming authority,
+  one pending pull, typed complete-once host input, no prefetch/polling, explicit
+  close and bounded resumable collection. Eight regressions cover 1,000 demanded
+  items with unchanged nominal retained buffering, foreign/reused handles,
+  stale/duplicate/type/byte refusals, partial collection across pending reads and
+  stop, exact/one-under list byte limits, producer panic and acquisition refusal.
+  End/overflow/cancel closes once and partial reservations return to zero. These
+  are host APIs; graph stream nodes and structured iterator Break/Return evidence
+  remain open.
+
+Final executed checks:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test --workspace --locked --offline` | **1,369 passed, 0 failed, 15 opt-in measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,369 passed, 0 failed, 15 opt-in measurements ignored** |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass |
+| `cargo run -p orange-bundled --example headless_control --locked --offline` | Pass: total 3, virtual time 10 ns |
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` | Pass: all/any/race/detach completion and ownership retirement |
+| `cargo run -p orange-bundled --example headless_authoring --locked --offline` | Pass: old-plan wait, fresh restart, On Stop marker |
+| `node tools/check-cargo-metadata.mjs` | Pass; core dependency boundary retained |
+| `node --test tools/release.test.mjs` | 7 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+Node is 24.18.0. Final Rust tests use repository-local ignored temporary storage:
+PowerShell `$env:TEMP=(Resolve-Path .artifacts/c11-c07-c09-validation/tmp).Path` and
+`$env:TMP=$env:TEMP`. An earlier full debug run hit `PermissionDenied` while the
+existing package journal compaction test replaced its file in the default temporary
+directory. That test passed when rerun with the local temporary directory, and both
+final complete workspace runs passed there. No journal code was changed. Earlier
+development failures (fixture suspension/effect metadata and bounded-fault charging)
+were corrected before the final checks; no failed result is recorded as passed.
+
+Limitations: C08b graph handle values, graph stream next/collect/iterator and
+Break/Return ownership, incremental authoring preview/A01/A02 qualification,
+streaming service operations, concrete adapters/executors, replay, other-OS/MSRV
+compilation, hosted checks and physical timing/RSS qualification were not executed
+or completed by this work. No new dependency, hosted timing job, publication, PR or
+product-completion claim is introduced. Trusted callbacks remain cooperative and
+cannot be forcibly interrupted by the core.
+
 ## CI/CD grouping, native compatibility and execution evidence — 2026-11-05
 
 Work: CI/CD update in PR [126](https://github.com/erinmel/OrangeEditor/pull/126), continuing

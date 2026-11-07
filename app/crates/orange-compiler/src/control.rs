@@ -116,6 +116,10 @@ fn destination(
 
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
+    Effect {
+        effect: ControlEffect,
+        demand: UpdateDemand,
+    },
     Call {
         scope: usize,
         demand: UpdateDemand,
@@ -277,6 +281,7 @@ pub enum HostSource {
         index: usize,
     },
     CallOutput(ControlIx, usize),
+    EffectOutput(ControlIx, usize),
     EventPayload(ControlIx),
     Tick(ControlIx, TickProjection),
     Change(ControlIx, ChangeProjection),
@@ -324,6 +329,7 @@ impl ControlEvent {
 /// One admitted top-level On Event entry, in persisted handler order.
 #[derive(Debug, Clone, Copy)]
 pub struct EventHandler {
+    order: u32,
     entry: ControlIx,
     capacity: usize,
     overflow: OverflowPolicy,
@@ -331,6 +337,9 @@ pub struct EventHandler {
     max_parallel: usize,
 }
 impl EventHandler {
+    pub fn order(&self) -> u32 {
+        self.order
+    }
     pub fn entry(&self) -> ControlIx {
         self.entry
     }
@@ -466,12 +475,48 @@ impl FunctionLayout {
     }
 }
 
+/// Checked root Watch metadata and its frozen dependency layout.
+#[derive(Debug)]
+pub struct ControlWatch {
+    node: NodeId,
+    root: usize,
+    ty: ValueShape,
+    rising: bool,
+    handler: EventHandler,
+    inputs: Arc<[usize]>,
+    variables: Box<[usize]>,
+}
+impl ControlWatch {
+    pub fn node(&self) -> NodeId {
+        self.node
+    }
+    pub fn root(&self) -> usize {
+        self.root
+    }
+    pub fn ty(&self) -> &ValueShape {
+        &self.ty
+    }
+    pub fn rising(&self) -> bool {
+        self.rising
+    }
+    pub fn handler(&self) -> &EventHandler {
+        &self.handler
+    }
+    pub fn inputs(&self) -> &[usize] {
+        &self.inputs
+    }
+    pub fn variables(&self) -> &[usize] {
+        &self.variables
+    }
+}
+
 /// Private checked construction, no serde/default bypass. Debug omits payloads.
 ///
 /// ```compile_fail
 /// let plan = orange_compiler::ControlPlan::default();
 /// ```
 pub struct ControlPlan {
+    watches: Box<[ControlWatch]>,
     functions: Box<[Option<FunctionLayout>]>,
     pub(crate) data: Arc<DataPlan>,
     pub(crate) nodes: Box<[ControlNode]>,
@@ -503,6 +548,9 @@ impl std::fmt::Debug for ControlPlan {
     }
 }
 impl ControlPlan {
+    pub fn watches(&self) -> &[ControlWatch] {
+        &self.watches
+    }
     pub fn function(&self, scope: usize) -> Option<&FunctionLayout> {
         self.functions.get(scope.checked_sub(1)?)?.as_ref()
     }
@@ -568,8 +616,9 @@ type PortSite = (usize, NodeId, orange_model::id::PortKey);
 
 /// Borrowed inputs every control lowering phase reads.
 struct Cx<'a> {
+    effects: Option<&'a dyn EffectResolver>,
     document: &'a GraphDocument,
-    snapshot: &'a RegistrySnapshot,
+    snapshot: &'a Arc<RegistrySnapshot>,
     analysis: &'a ValidationAnalysis,
     calls: &'a crate::calls::Calls<'a>,
     options: CompileOptions<'a>,
@@ -615,6 +664,37 @@ pub fn compile_control(
     resolver: &impl EntropyKernelResolver,
     options: CompileOptions<'_>,
 ) -> Result<ControlPlan, CompileError> {
+    compile_control_inner(document, snapshot, analysis, resolver, None, options)
+}
+
+/// Compile trusted package Action/Async leaves as well as the built-in vocabulary.
+/// Binding is inert and happens only after structural/type admission.
+pub fn compile_control_with_effects(
+    document: &GraphDocument,
+    snapshot: Arc<RegistrySnapshot>,
+    analysis: &ValidationAnalysis,
+    resolver: &impl EntropyKernelResolver,
+    effects: &impl EffectResolver,
+    options: CompileOptions<'_>,
+) -> Result<ControlPlan, CompileError> {
+    compile_control_inner(
+        document,
+        snapshot,
+        analysis,
+        resolver,
+        Some(effects),
+        options,
+    )
+}
+
+fn compile_control_inner(
+    document: &GraphDocument,
+    snapshot: Arc<RegistrySnapshot>,
+    analysis: &ValidationAnalysis,
+    resolver: &impl EntropyKernelResolver,
+    effects: Option<&dyn EffectResolver>,
+    options: CompileOptions<'_>,
+) -> Result<ControlPlan, CompileError> {
     options.checkpoint()?;
     if analysis.document_state() != document.semantic_state_id() {
         return Err(CompileError::StaleDocument);
@@ -642,6 +722,7 @@ pub fn compile_control(
         crate::calls::CallProfile::Control,
     )?);
     let cx = Cx {
+        effects,
         document,
         snapshot: &snapshot,
         analysis,
@@ -671,6 +752,7 @@ pub fn compile_control(
     let (states, state_nodes) = collect_states(&cx, &controls, &mut bytes)?;
     let (edges, producers) = exec_edges(&cx, &controls, &control_ix)?;
     let mut lowering = NodeLowering {
+        watches: Vec::new(),
         cx: &cx,
         edges: &edges,
         control_ix: &control_ix,
@@ -690,6 +772,7 @@ pub fn compile_control(
         nodes.push(lowering.lower(*key)?);
     }
     let NodeLowering {
+        watches: watch_roots,
         mut roots,
         mut starts,
         mut stops,
@@ -784,6 +867,7 @@ pub fn compile_control(
                     | HostSource::EventPayload(_)
                     | HostSource::Update(_, _)
                     | HostSource::CallOutput(_, _)
+                    | HostSource::EffectOutput(_, _)
             )
         {
             charge(&mut graph_items, 1, options.limits.max_graph_items)?;
@@ -807,7 +891,8 @@ pub fn compile_control(
             | HostSource::Tick(owner, _)
             | HostSource::Change(owner, _)
             | HostSource::Update(owner, _)
-            | HostSource::CallOutput(owner, _) => value_targets[owner.index()].push(i),
+            | HostSource::CallOutput(owner, _)
+            | HostSource::EffectOutput(owner, _) => value_targets[owner.index()].push(i),
             HostSource::Variable(_)
             | HostSource::CallLocal(_)
             | HostSource::FrameLocal { .. }
@@ -828,10 +913,66 @@ pub fn compile_control(
                 .ok_or(CompileError::ValidationIncomplete)
         })
         .collect::<Result<Vec<_>, _>>()?;
+    let mut watches = Vec::new();
+    for (key, root) in watch_roots {
+        let ty = port_type(cx.snapshot, key.1, cx.port(key, "watch")?)?;
+        let rising = match cx.node(key).config.get("mode").and_then(|v| v.as_str()) {
+            Some("changed") => false,
+            Some("rising") if ty == ValueShape::Bool => true,
+            _ => return Err(CompileError::UnsupportedNode { node: key.1 }),
+        };
+        if !ty.host_eq() {
+            return Err(CompileError::UnsupportedNode { node: key.1 });
+        }
+        let mut variables_used = BTreeSet::new();
+        for &input in root_inputs[root].iter() {
+            match host_sources[input] {
+                HostSource::Variable(i)
+                    if variables[i].scope() == VarScope::Run
+                        && variables[i].initial().is_some()
+                        && variables[i].ty().host_eq() =>
+                {
+                    variables_used.insert(i);
+                }
+                _ => return Err(CompileError::UnsupportedNode { node: key.1 }),
+            }
+        }
+        let mut pending = vec![
+            data.export_node(root)
+                .ok_or(CompileError::ValidationIncomplete)?,
+        ];
+        let mut seen = BTreeSet::new();
+        while let Some(ix) = pending.pop() {
+            if !seen.insert(ix.index()) {
+                continue;
+            }
+            let node = &data.nodes()[ix.index()];
+            if matches!(node.operation(), DataOperation::Entropy(_)) {
+                return Err(CompileError::UnsupportedNode { node: key.1 });
+            }
+            pending.extend(node.inputs().iter().filter_map(|i| i.producer));
+        }
+        let (order, handler) = entry_handler(&cx, &control_ix, key, &mut graph_items)?;
+        watches.push((
+            order,
+            ControlWatch {
+                node: key.1,
+                root,
+                ty,
+                rising,
+                handler,
+                inputs: root_inputs[root].clone(),
+                variables: variables_used.into_iter().collect(),
+            },
+        ));
+    }
+    watches.sort_by_key(|(order, w)| (*order, w.node));
     for node in &mut nodes {
         if let ControlOperation::Update { demand, .. }
         | ControlOperation::Call { demand, .. }
-        | ControlOperation::Return { demand } = &mut node.operation
+        | ControlOperation::Return { demand }
+        | ControlOperation::Effect { demand, .. } = &mut node.operation
+        // Effect operands use one strict consumption epoch, like call arguments.
         {
             demand.inputs = union_inputs(
                 demand.roots.iter().map(|&root| &root_inputs[root]),
@@ -843,6 +984,7 @@ pub fn compile_control(
     }
     let boxed = |targets: Vec<Vec<usize>>| targets.into_iter().map(Vec::into_boxed_slice).collect();
     Ok(ControlPlan {
+        watches: watches.into_iter().map(|(_, w)| w).collect(),
         functions: functions.into(),
         data: Arc::new(data),
         nodes: nodes.into(),
@@ -877,6 +1019,36 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
             {
                 continue;
             }
+            if cx.effects.is_some()
+                && !node.definition.id.is_core()
+                && matches!(sig.kind, NodeKind::Action | NodeKind::Async)
+            {
+                // Custom outcomes/subscriptions and optional/lazy/variadic effects
+                // need separate execution protocols and remain fail-closed.
+                for port in &sig.ports {
+                    if port.kind == PortKind::Event
+                        || (port.kind == PortKind::Exec
+                            && !matches!(
+                                port.port_id.as_str(),
+                                "in" | "then" | "failed" | "cancelled"
+                            ))
+                        || (port.kind == PortKind::Data
+                            && (port.variadic.is_some()
+                                || (port.direction == PortDirection::Input
+                                    && (port.is_optional() || port.is_lazy()))))
+                    {
+                        return Err(CompileError::UnsupportedPort {
+                            node: node.id,
+                            port: port_key(port),
+                        });
+                    }
+                    if port.kind == PortKind::Data {
+                        port_type(cx.snapshot, node.id, port)?;
+                    }
+                }
+                controls.insert((scope, node.id));
+                continue;
+            }
             if !matches!(
                 node.definition.id.as_str(),
                 ids::CALL
@@ -894,6 +1066,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::ON_TIMER
                     | ids::ON_TIMEOUT
                     | ids::ON_VARIABLE_CHANGED
+                    | ids::ON_WATCH
                     | ids::ON_EVENT
                     | ids::EMIT
                     | ids::AWAIT_EVENT
@@ -1018,6 +1191,7 @@ fn entry_handler(
     }
     charge(graph_items, 1, cx.options.limits.max_graph_items)?;
     let handler = EventHandler {
+        order: policy.order,
         entry: *control_ix
             .get(&(scope, node_id))
             .ok_or(CompileError::ValidationIncomplete)?,
@@ -1370,6 +1544,7 @@ fn exec_edges(
 
 /// Per-node lowering state; demand roots and entry lists accumulate across nodes.
 struct NodeLowering<'a, 'c> {
+    watches: Vec<(ControlKey, usize)>,
     cx: &'a Cx<'c>,
     edges: &'a BTreeMap<PortSite, ExecTarget>,
     control_ix: &'a BTreeMap<ControlKey, ControlIx>,
@@ -1469,7 +1644,67 @@ impl NodeLowering<'_, '_> {
         let (scope, id) = key;
         let node = cx.node(key);
         let definition = node.definition.id.as_str();
+        if !node.definition.id.is_core() {
+            let resolver = cx
+                .effects
+                .ok_or(CompileError::UnsupportedNode { node: id })?;
+            let signature = cx.calls.signature(cx.analysis, scope, id);
+            let request = BindingRequest::new(cx.document, node, signature, cx.snapshot.clone())
+                .map_err(|_| CompileError::KernelUnavailable { node: id })?;
+            let binding = resolver.resolve_effect(&request).map_err(|e| match e {
+                ResolveError::Unavailable => CompileError::KernelUnavailable { node: id },
+                ResolveError::Contract => CompileError::KernelContract { node: id },
+                ResolveError::UnsupportedType => CompileError::KernelUnsupportedType { node: id },
+            })?;
+            let inputs: Vec<_> = cx
+                .ports(key)
+                .iter()
+                .filter(|p| p.kind == PortKind::Data && p.direction == PortDirection::Input)
+                .collect();
+            let outputs: Vec<_> = cx
+                .ports(key)
+                .iter()
+                .filter(|p| {
+                    p.kind == PortKind::Data
+                        && p.direction == PortDirection::Output
+                        && p.port_id.as_str() != "error"
+                })
+                .collect();
+            if binding.inputs.as_ref() != inputs.iter().map(|p| port_key(p)).collect::<Vec<_>>()
+                || binding.outputs.as_ref()
+                    != outputs.iter().map(|p| port_key(p)).collect::<Vec<_>>()
+                || binding.action.is_some() != (signature.kind == NodeKind::Action)
+                || outputs.iter().any(|p| {
+                    p.source != Some(orange_model::document::OutputSource::Execution)
+                        || p.available_on
+                            .as_ref()
+                            .is_some_and(|on| on.iter().any(|p| p.as_str() != "then"))
+                })
+            {
+                return Err(CompileError::KernelContract { node: id });
+            }
+            let output_types = outputs
+                .iter()
+                .map(|p| port_type(cx.snapshot, id, p))
+                .collect::<Result<Vec<_>, _>>()?;
+            let ports: Vec<_> = inputs.iter().map(|p| p.port_id.clone()).collect();
+            return Ok(ControlOperation::Effect {
+                effect: ControlEffect {
+                    binding,
+                    outputs: output_types.into(),
+                },
+                demand: UpdateDemand {
+                    roots: ports.into_iter().map(|p| self.input(key, p)).collect(),
+                    inputs: Arc::from([]),
+                },
+            });
+        }
         Ok(match definition {
+            ids::ON_WATCH => {
+                let root = self.input(key, orange_model::port_id!("watch"));
+                self.watches.push((key, root));
+                ControlOperation::Entry
+            }
             ids::CALL | ids::RETURN => {
                 let ports: Vec<_> = cx
                     .ports(key)
@@ -1776,6 +2011,22 @@ fn host_source(
         return Ok(HostSource::Argument { scope, index });
     }
     let operation = tables.nodes[owner.index()].operation();
+    if cx.node(key).definition.id.as_str() == ids::ON_WATCH && port == "value" {
+        return Ok(HostSource::EventPayload(owner));
+    }
+    if matches!(operation, ControlOperation::Effect { .. }) && port != "error" {
+        let index = cx
+            .ports(key)
+            .iter()
+            .filter(|p| {
+                p.kind == PortKind::Data
+                    && p.direction == PortDirection::Output
+                    && p.port_id.as_str() != "error"
+            })
+            .position(|p| port_key(p) == source.port)
+            .ok_or(CompileError::ValidationIncomplete)?;
+        return Ok(HostSource::EffectOutput(owner, index));
+    }
     if port == "payload"
         && matches!(
             cx.node((scope, source.node)).definition.id.as_str(),

@@ -709,6 +709,7 @@ impl Run {
         // held serial continuations; only one queued/timed strand has that ID.
         let retired = self.regions.subtree(root, ids)?;
         let mut awaiters = Vec::new();
+        let mut effects = Vec::new();
         for &id in ids.iter() {
             let live: Vec<_> = self.regions.get(id)?.live.iter().collect();
             for strand in live {
@@ -723,29 +724,59 @@ impl Run {
                 if let Some(waiter) = self.take_waiter_for_cancel(strand) {
                     awaiters.push(waiter);
                 }
+                if let Some(effect) = self.take_effect_for_cancel(strand) {
+                    effects.push(effect);
+                }
             }
         }
         let mut cleanup = Vec::new();
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
-        #[expect(
-            clippy::large_enum_variant,
-            reason = "Boxing adds an allocation per cancellation solely for timer ordering."
-        )]
         enum CancelWait {
             Timer(TimerKey),
             Await(Awaiter),
+            Effect(super::effects::PendingEffect),
         }
         let mut waiters = std::mem::take(timer_keys)
             .into_iter()
             .map(CancelWait::Timer)
             .chain(awaiters.into_iter().map(CancelWait::Await))
+            .chain(effects.into_iter().map(CancelWait::Effect))
             .collect::<Vec<_>>();
         waiters.sort_unstable_by_key(|waiter| match waiter {
-            CancelWait::Timer(key) => *key,
-            CancelWait::Await(waiter) => waiter.timer.unwrap_or((u64::MAX, waiter.token)),
+            CancelWait::Timer(key) => (key.0, key.1, 0),
+            CancelWait::Await(waiter) => {
+                let key = waiter.timer.unwrap_or((u64::MAX, waiter.token));
+                (key.0, key.1, 1)
+            }
+            CancelWait::Effect(effect) => (u64::MAX, effect.token, 2),
         });
         for waiter in waiters {
             match waiter {
+                CancelWait::Effect(mut pending) => {
+                    let node = &plan.nodes()[pending.owner.index()];
+                    self.record(RunEvent {
+                        activation: pending.strand.sequence,
+                        node: node.node(),
+                        outcome: ControlOutcome::Cancelled,
+                        fault: None,
+                    });
+                    if let Some(target) = node.cancelled() {
+                        let strand = &mut pending.strand;
+                        strand.region = root;
+                        strand.pc = Some(target);
+                        strand.stack.clear();
+                        strand.pull.reset();
+                        strand.reenter = None;
+                        strand.transfer = Transfer::None;
+                        strand.yielded = false;
+                        strand.cleanup = true;
+                        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
+                        strand.cleanup_deadline =
+                            Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
+                        strand.cleanup_remaining = self.options.max_cleanup_operations;
+                        cleanup.push(pending.strand);
+                    }
+                }
                 CancelWait::Timer(key) => {
                     let Some(TimerTarget::Wait(mut timer)) = self.timers.remove(key) else {
                         return Err(RunError::InvalidState);

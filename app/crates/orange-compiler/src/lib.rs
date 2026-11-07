@@ -18,6 +18,7 @@ mod compile;
 mod control;
 mod data;
 mod data_compile;
+mod effects;
 mod error;
 mod evaluate;
 mod kernel;
@@ -26,15 +27,17 @@ mod plan;
 mod zones;
 
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
+pub use control::ControlWatch;
 pub use control::{
     ChangeProjection, ControlCell, ControlChange, ControlEvent, ControlIx, ControlManual,
     ControlNode, ControlOperation, ControlPlan, ControlState, ControlTimer, ControlVariable,
     EventHandler, ExecInput, ExecTarget, ForkJoin, FunctionLayout, HostSource, IterationProjection,
     SwitchCase, SwitchKey, TickProjection, UpdateDemand, UpdateOperation, UpdateProjection,
-    compile_control,
+    compile_control, compile_control_with_effects,
 };
 pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
 pub use data_compile::compile_data;
+pub use effects::{ActionKernel, ControlEffect, EffectBinding, EffectResolver};
 pub use error::CompileError;
 pub use evaluate::{EvaluatedExport, EvaluationError, EvaluationOptions, PureEvaluation};
 pub use kernel::{
