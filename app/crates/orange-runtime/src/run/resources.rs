@@ -199,7 +199,7 @@ impl Resources {
             kind,
         })
     }
-    fn contains(&self, id: HandleId) -> bool {
+    pub(in crate::run) fn contains(&self, id: HandleId) -> bool {
         self.slots
             .get(id.index as usize)
             .filter(|slot| slot.generation == id.generation)
@@ -317,6 +317,7 @@ impl Run {
         self.revoke_resource_effects(handle.id);
         self.graph_streams.revoke(handle.id);
         resource.close(CloseReason::Closed);
+        self.reconcile_stream_bridges();
         Ok(())
     }
 
@@ -357,6 +358,7 @@ impl Run {
             CloseReason::RunStopped
         };
         self.resources.close_all(reason);
+        self.bridges.clear();
     }
 }
 

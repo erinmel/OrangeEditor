@@ -6,6 +6,59 @@ incremental authoring preview or graph stream iteration. Verification is in [10]
 
 ## Trusted execution boundary (C11a/C09a, 2026-11-06)
 
+### Bounded Tee and push bridges (C10, 2026-11-07)
+
+`Run::open_push_stream(item_type, StreamBufferOptions)` acquires a run-owned
+affine stream and a cloneable `PushStreamSource`. `push_stream(source, sequence,
+&value)` admits a whole typed item in host call order without graph execution.
+Sequences are nonzero and strictly increasing; gaps are allowed. A bad sequence,
+type, item/aggregate quota or Backpressure/Full refusal changes neither queues nor
+accepted sequence, so the same sequence can be corrected/retried. A deliberate
+drop accepts its sequence. `finish_push_stream` stops admission and drains accepted
+queues before End; `fail_push_stream` discards unread queues and supplies a safe
+static producer fault. New items require Running; finish/fail also work while
+Draining so an already accepted read can terminate. The source's monotonic
+`is_closed` signal means its consumer resource has closed, and owns no queued data.
+
+`tee_stream` consumes one unclaimed stream and returns two independent affine
+streams. Graph `core/tee` uses the same hub (11 §12). Refusal before acquisition
+preserves consuming authority. The hub owns its upstream independently of its
+original acquisition region; each branch has normal dynamic ownership, including
+function argument/Return transfer. Closing one branch discards that branch's queue
+and unblocks the other. Closing the last branch closes upstream once. Normal End
+drains each queue; producer failure or Fault overflow discards unread queues and
+fails both consumers. Host bridge revocation also discards accepted unpublished
+results through ordinary resource invalidation. Nested Tee is bounded at 32 levels.
+
+Every consumer has a finite queue with positive `capacity` and `max_bytes`, and one
+of `StreamOverflow::{Backpressure, DropOldest, DropNewest, Fault}`. Backpressure
+refuses a full push or suspends a pull without polling upstream. Drop policies
+affect only full consumers. Fault overflow terminates the hub with
+`core/QueueOverflow`, without partial new delivery. All branch policies, allocation
+and joint aggregate growth are admitted before fan-out mutation. Queue limits
+exclude the one already accepted immutable C09a pending result per consumer; that
+result retains its separate item/aggregate charge and is never overwritten or
+evicted. A variable-sized upstream item can occupy one separately aggregate-leased
+staging slot while a slow branch frees bytes. There is no further upstream pull
+until that item can be admitted.
+
+Options default to 64 items/1 MiB/Backpressure. Run limits
+`max_stream_bridge_items` (1024) and `max_stream_bridge_bytes` (16 MiB) cap each
+consumer queue; `max_resources`, `max_stream_item_bytes` and aggregate limits also
+apply. These additive public RunLimits fields require downstream struct literals
+to update. No dependency, feature, saved format or provider-lock change is needed.
+
+Bridge admission/completion only schedules actor work. One bridge pump work item
+reads upstream at most once and can hand off to both waiting consumers. External
+`complete_stream` cannot inject results into bridge-owned demands. Ready/source
+indexes retain live identities only; no completed history or worker/executor is
+introduced. `stream_bridge_stats`/`stream_bridges` expose type, source sequence,
+staged bytes and accepted/delivered/dropped/queued counters, never payloads.
+Delivered counts handoff into consumer ownership, including an accepted pending
+result, rather than execution of its graph continuation. Fault/close discards count
+as drops. Stats disappear when the last branch retires. Concrete push adapters and
+physical timing/RSS qualification remain open; mandatory correctness checks are in 10.
+
 ### Graph stream execution (C09b, 2026-11-07)
 
 Direct `Value::Stream` aliases reuse authenticated run/generation/kind/region

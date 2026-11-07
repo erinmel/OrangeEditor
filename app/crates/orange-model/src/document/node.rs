@@ -120,6 +120,16 @@ pub enum OverflowPolicy {
     Fault,
 }
 
+/// Finite stream queue policy, shared by graph Tee and host push bridges.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum StreamOverflow {
+    Backpressure,
+    DropOldest,
+    DropNewest,
+    Fault,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum FaultPolicy {

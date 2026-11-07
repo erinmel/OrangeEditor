@@ -496,6 +496,7 @@ impl Run {
                 return Ok(());
             };
             let closed = self.resources.close_region_resources(id)?;
+            self.reconcile_stream_bridges();
             self.regions.charge(closed);
             if let Some(caller) = r.continuation.as_mut() {
                 caller.cause_depth = caller.cause_depth.max(r.max_cause_depth);

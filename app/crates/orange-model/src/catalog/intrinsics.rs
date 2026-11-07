@@ -225,7 +225,40 @@ fn stream_definitions() -> Vec<NodeDefinition> {
         "T",
         &[],
     );
-    let mut definitions = vec![next, collect, iterate, close];
+    let mut tee = generic(
+        definition(
+            ids::TEE,
+            NodeKind::Action,
+            Some(Suspends::Never),
+            vec![
+                input(),
+                on(
+                    PortDescriptor::data_out(
+                        "left",
+                        ty("core/stream@1<$T>"),
+                        OutputSource::Execution,
+                    ),
+                    &["then"],
+                ),
+                on(
+                    PortDescriptor::data_out(
+                        "right",
+                        ty("core/stream@1<$T>"),
+                        OutputSource::Execution,
+                    ),
+                    &["then"],
+                ),
+            ],
+        ),
+        "T",
+        &[],
+    );
+    tee.config_schema = Some(
+        serde_json::json!({"type":"object","required":["capacity","max_bytes","overflow"],"properties":{
+        "capacity":{"type":"integer","minimum":1,"maximum":4294967295u64},"max_bytes":{"type":"integer","minimum":1,"maximum":4294967295u64},
+        "overflow":{"type":"string","enum":["backpressure","drop-oldest","drop-newest","fault"]}},"additionalProperties":false}),
+    );
+    let mut definitions = vec![next, collect, iterate, close, tee];
     for definition in &mut definitions {
         if definition.config_schema.is_none() {
             definition.config_schema =

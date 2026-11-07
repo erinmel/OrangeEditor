@@ -182,7 +182,7 @@ const EVENT: Option<ReferenceKind> = Some(ReferenceKind::Event);
 const FUNCTION: Option<ReferenceKind> = Some(ReferenceKind::Function);
 
 /// Every intrinsic of format v1, in the order of 11 §8.4, §11 and §14.
-const INTRINSICS: [Intrinsic; 54] = [
+const INTRINSICS: [Intrinsic; 55] = [
     rule(ids::ON_START, ENTRY, None),
     rule(ids::ON_STOP, ENTRY, None),
     rule(ids::ON_MANUAL, ENTRY, None),
@@ -192,6 +192,7 @@ const INTRINSICS: [Intrinsic; 54] = [
     rule(ids::ON_WATCH, ENTRY, None),
     rule(ids::CLOSE_HANDLE, ACTION, None),
     rule(ids::CLOSE_STREAM, ACTION, None),
+    rule(ids::TEE, ACTION, None),
     rule(
         ids::NEXT_ITEM,
         Some((NodeKind::Async, Suspends::Maybe)),

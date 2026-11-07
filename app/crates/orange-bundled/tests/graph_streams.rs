@@ -820,3 +820,187 @@ fn iterator_waits_for_detached_body_descendants_before_demanding_another_item() 
     assert_eq!(probe.reads.load(Ordering::Relaxed), 3);
     assert_eq!(probe.closes.lock().unwrap().len(), 1);
 }
+
+#[test]
+fn compiled_tee_keeps_fast_and_slow_iterators_bounded_and_one_can_break_early() {
+    for break_left in [false, true] {
+        let mut run = setup(RunOptions::default(), |wire| {
+            let mut tee = core(7, "tee");
+            tee["config"] = json!({"capacity":1,"max_bytes":16,"overflow":"backpressure"});
+            let mut fork = core(8, "fork");
+            fork["config"] = json!({"join":"all"});
+            fork["variadic"] = json!({"branch":{"next":2,"order":[0,1]}});
+            let mut left = pick(wire, 5);
+            left["config"]["int_overflow"] = json!("wrapping");
+            let mut right = left.clone();
+            right["id"] = json!(id(10));
+            wire["nodes"] = json!([
+                pick(wire, 1),
+                source(2),
+                tee,
+                fork,
+                core(3, "for-each-item"),
+                wait(4, 1),
+                left,
+                core(9, "for-each-item"),
+                wait(11, 10),
+                right,
+                wait(6, 100)
+            ]);
+            let mut edges = vec![
+                edge(1, 1, "then", 2, "in"),
+                edge(2, 2, "then", 7, "in"),
+                edge(3, 2, "stream", 7, "stream"),
+                edge(4, 7, "then", 8, "in"),
+                edge(5, 7, "left", 3, "stream"),
+                edge(6, 7, "right", 9, "stream"),
+                edge(7, 8, "branch#0", 3, "in"),
+                edge(8, 8, "branch#1", 9, "in"),
+                edge(9, 3, "body", 4, "in"),
+                edge(10, 4, "then", 5, "in"),
+                edge(11, 3, "item", 5, "value"),
+                edge(12, 9, "body", 11, "in"),
+                edge(13, 11, "then", 10, "in"),
+                edge(14, 9, "item", 10, "value"),
+                edge(15, 8, "completed", 6, "in"),
+            ];
+            if break_left {
+                wire["nodes"]
+                    .as_array_mut()
+                    .unwrap()
+                    .push(core(12, "break"));
+                edges.push(edge(16, 5, "then", 12, "in"));
+            }
+            wire["edges"] = json!(edges);
+        });
+        let probe = open(&mut run, 3, false);
+        idle(&mut run);
+        for _ in 0..100 {
+            if run.now() >= 30 {
+                break;
+            }
+            let next = run.pump(0).unwrap().next_wakeup.expect("waiting body");
+            run.advance_to(next.min(30)).unwrap();
+            idle(&mut run);
+            for stats in run.stream_bridges() {
+                for branch in stats.branches.into_iter().flatten() {
+                    assert!(branch.queued_items <= 1 && branch.queued_bytes <= 16);
+                }
+            }
+        }
+        assert_eq!(
+            variable(&run),
+            Some(&Value::U64(if break_left { 7 } else { 12 }))
+        );
+        assert_eq!(probe.reads.load(Ordering::Relaxed), 4);
+        assert_eq!(probe.closes.lock().unwrap().len(), 1);
+        assert_eq!(run.stream_bridges().count(), 0);
+        assert_eq!(run.ownership().resources, 0);
+        run.stop().unwrap();
+        idle(&mut run);
+        run.dispose().unwrap();
+        assert_eq!(run.retention().reserved_bytes, 0);
+    }
+}
+#[test]
+fn a_returned_tee_branch_keeps_upstream_alive_after_the_other_branchs_scope_ends() {
+    let mut run = setup(RunOptions::default(), |wire| {
+        let mut tee = core(204, "tee");
+        tee["config"] = json!({"capacity":1,"max_bytes":16,"overflow":"backpressure"});
+        wire["functions"] = json!([{"id":id(200),"name":"one-branch","kind":"async","inputs":[],"outputs":[port("stream","output","core/stream@1<core/u64@1>")],
+            "nodes":[core(201,"function-entry"),source(202),tee,core(203,"return")],
+            "edges":[edge(201,201,"then",202,"in"),edge(202,202,"then",204,"in"),edge(203,202,"stream",204,"stream"),edge(204,204,"then",203,"in"),edge(205,204,"left",203,"stream")]}]);
+        wire["nodes"][1] = call(2, 200);
+    });
+    let probe = open(&mut run, 3, false);
+    idle(&mut run);
+    let stats = run.stream_bridges().next().unwrap();
+    assert!(stats.branches[1].unwrap().closed);
+    assert!(!stats.branches[0].unwrap().closed);
+    assert!(probe.closes.lock().unwrap().is_empty());
+    for at in [5, 10, 15] {
+        run.advance_to(at).unwrap();
+        idle(&mut run);
+    }
+    assert_eq!(variable(&run), Some(&Value::U64(6)));
+    assert_eq!(probe.closes.lock().unwrap().len(), 1);
+    assert_eq!(run.ownership().resources, 0);
+}
+#[test]
+fn pushed_items_wake_a_graph_iterator_without_running_graph_work_inline() {
+    let mut run = setup(RunOptions::default(), |_| {});
+    idle(&mut run);
+    let request = run.take_effect().unwrap();
+    let push = run
+        .open_push_stream(
+            &ITEM.parse().unwrap(),
+            orange_runtime::StreamBufferOptions {
+                capacity: 1,
+                max_bytes: 16,
+                overflow: orange_runtime::StreamOverflow::Backpressure,
+            },
+        )
+        .unwrap();
+    let value = run.stream_value(push.stream).unwrap();
+    run.complete_effect(request.id, Ok(&[value])).unwrap();
+    idle(&mut run);
+    assert!(!run.pump(0).unwrap().ready);
+    run.push_stream(&push.source, 1, &Value::U64(7)).unwrap();
+    assert_eq!(variable(&run), Some(&Value::U64(0)));
+    assert!(run.pump(0).unwrap().ready);
+    idle(&mut run);
+    assert_eq!(variable(&run), Some(&Value::U64(0)));
+    run.advance_to(5).unwrap();
+    idle(&mut run);
+    assert_eq!(variable(&run), Some(&Value::U64(7)));
+    run.request_stop(orange_runtime::StopMode::Graceful)
+        .unwrap();
+    assert_eq!(
+        run.push_stream(&push.source, 2, &Value::U64(8)),
+        Err(StreamError::NotRunning)
+    );
+    run.finish_push_stream(&push.source).unwrap();
+    idle(&mut run);
+    assert!(push.source.is_closed());
+    assert_eq!(run.stream_bridges().count(), 0);
+    run.stop().unwrap();
+    idle(&mut run);
+    run.dispose().unwrap();
+    assert_eq!(run.retention().reserved_bytes, 0);
+}
+#[test]
+fn push_overflow_fault_wakes_a_pending_graph_read_even_at_the_item_byte_limit() {
+    let mut options = RunOptions::default();
+    options.limits.max_stream_item_bytes = 16;
+    let mut run = setup(options, next_wire);
+    idle(&mut run);
+    let request = run.take_effect().unwrap();
+    let push = run
+        .open_push_stream(
+            &ITEM.parse().unwrap(),
+            orange_runtime::StreamBufferOptions {
+                capacity: 1,
+                max_bytes: 16,
+                overflow: orange_runtime::StreamOverflow::Fault,
+            },
+        )
+        .unwrap();
+    let value = run.stream_value(push.stream).unwrap();
+    run.complete_effect(request.id, Ok(&[value])).unwrap();
+    idle(&mut run);
+    run.push_stream(&push.source, 1, &Value::U64(1)).unwrap();
+    assert_eq!(
+        run.push_stream(&push.source, 2, &Value::U64(2)),
+        Err(StreamError::Overflow)
+    );
+    idle(&mut run);
+    assert_eq!(variable(&run), Some(&Value::None));
+    assert!(push.source.is_closed());
+    assert!(run.trace().iter().any(|e| {
+        e.fault
+            .as_ref()
+            .is_some_and(|f| f.fault.code == "core/QueueOverflow")
+    }));
+    assert_eq!(run.ownership().resources, 0);
+    assert_eq!(run.stream_bridges().count(), 0);
+}

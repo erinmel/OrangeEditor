@@ -652,6 +652,34 @@ Targets retain the destination command after compilation. State writes reserve n
 
 Push sources (subscriptions) become streams only through a package node with declared capacity and overflow policy. Cancelling the consumer closes the stream and notifies the producer. Byte and file chunk streams follow the chunk limits in [05](05-services-and-platforms.md).
 
+### C10 executable bounded Tee (2026-11-07)
+
+`core/tee@1`, config version 1, is a synchronous Action (`suspends: never`),
+not cleanup-safe. It consumes required `stream: stream<$T>` and atomically exposes
+`left: stream<$T>` and `right: stream<$T>` on ordinary `then`, with `failed` on
+refusal. Its required `config.capacity` and `config.max_bytes` are positive
+integers at most u32::MAX; `config.overflow` is exactly `backpressure`,
+`drop-oldest`, `drop-newest` or `fault`. No extra config fields are accepted.
+Run caps and supported non-resource item shapes also apply. Both outputs have
+independent affine consuming authority. Tee cannot pull during acquisition.
+
+Per-consumer queues have explicit item/byte bounds. Backpressure waits for every
+live branch to have room; drop policies affect only full branches; Fault terminates
+both with `core/QueueOverflow` without partial new delivery. One separately charged
+variable-sized upstream item may wait for byte capacity. Queue bounds exclude
+each consumer's separately charged immutable accepted pending result, which cannot
+be overwritten by a later drop. Closing one branch unblocks the other, and the
+last branch closes upstream once. Normal End drains queues; faults discard unread
+queues. Branches transfer through existing function ownership rules, and their hub
+retains upstream beyond its original scope. Nesting is bounded at 32.
+
+Host push admission uses the same policies, finite bounds and existing affine read
+API. Typed nonzero increasing source sequences establish host ingestion order;
+Full/type/quota refusals leave the sequence retryable. Admissions wake actor work
+without executing graph continuations. Finish drains; failure/revocation closes
+under existing cancellation rules. APIs, counters and nominal limits are in 03/12;
+actual service subscriptions remain host/package adapters under §16.
+
 ### C09b executable stream profile (2026-11-07)
 
 Direct streams now execute through `core/next-item@1`, `core/collect@1`,
@@ -693,7 +721,7 @@ Producer errors and invalid items close before following `failed`; quota overflo
 uses `core/LimitExceeded`. Host revocation discards an accepted unpublished item.
 Producer panics follow the existing terminal interrupted-pump policy. Producers
 and closers are trusted bounded/nonblocking code, not physically preempted workers.
-Tee, push bridges and actual service adapters remain C10/C11 work. See 03/12 for
+C10 above adds Tee and push bridges; actual service adapters remain C11 work. See 03/12 for
 admission/representation and 10 for executed checks; performance qualification is
 deferred, not inferred from these correctness bounds.
 

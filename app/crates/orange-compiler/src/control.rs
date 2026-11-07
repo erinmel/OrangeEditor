@@ -116,6 +116,12 @@ fn destination(
 
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
+    Tee {
+        stream: usize,
+        capacity: usize,
+        max_bytes: usize,
+        overflow: orange_model::document::StreamOverflow,
+    },
     NextItem {
         stream: usize,
         boxed: bool,
@@ -1100,6 +1106,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::COLLECT
                     | ids::FOR_EACH_ITEM
                     | ids::CLOSE_STREAM
+                    | ids::TEE
                     | ids::ON_EVENT
                     | ids::EMIT
                     | ids::AWAIT_EVENT
@@ -1136,6 +1143,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                         | ids::COLLECT
                         | ids::FOR_EACH_ITEM
                         | ids::CLOSE_STREAM
+                        | ids::TEE
                 ) {
                     return Err(CompileError::UnsupportedPort {
                         node: node.id,
@@ -1758,6 +1766,28 @@ impl NodeLowering<'_, '_> {
             });
         }
         Ok(match definition {
+            ids::TEE => {
+                let integer = |key: &str| {
+                    node.config
+                        .get(key)
+                        .and_then(serde_json::Value::as_u64)
+                        .and_then(|n| u32::try_from(n).ok())
+                        .filter(|n| *n > 0)
+                        .map(|n| n as usize)
+                        .ok_or(CompileError::UnsupportedNode { node: id })
+                };
+                ControlOperation::Tee {
+                    stream: self.input(key, orange_model::port_id!("stream")),
+                    capacity: integer("capacity")?,
+                    max_bytes: integer("max_bytes")?,
+                    overflow: node
+                        .config
+                        .get("overflow")
+                        .cloned()
+                        .and_then(|v| serde_json::from_value(v).ok())
+                        .ok_or(CompileError::UnsupportedNode { node: id })?,
+                }
+            }
             ids::NEXT_ITEM => {
                 let ValueShape::Option(item) = port_type(cx.snapshot, id, cx.port(key, "item")?)?
                 else {
@@ -2100,6 +2130,16 @@ fn host_source(
         return Ok(HostSource::Argument { scope, index });
     }
     let operation = tables.nodes[owner.index()].operation();
+    if matches!(operation, ControlOperation::Tee { .. }) && port != "error" {
+        return Ok(HostSource::EffectOutput(
+            owner,
+            match port {
+                "left" => 0,
+                "right" => 1,
+                _ => return Err(CompileError::UnsupportedNode { node: source.node }),
+            },
+        ));
+    }
     if cx.node(key).definition.id.as_str() == ids::ON_WATCH && port == "value" {
         return Ok(HostSource::EventPayload(owner));
     }
