@@ -24,6 +24,9 @@ pub const ERROR_CHARGE: usize = 2 * VALUE_CHARGE;
 #[derive(Debug, Clone, PartialEq, Eq)]
 #[non_exhaustive]
 pub enum ValueShape {
+    /// Direct runtime resource reference. Literal/schema shape resolution never
+    /// creates it; a control compiler must resolve the registered handle kind.
+    Handle(TypeExpr),
     Bool,
     I32,
     I64,
@@ -230,7 +233,7 @@ impl MapCheck {
                 S::Option(inner) => (15, [Some(inner), None]),
                 S::Result(inner) => (16, [Some(inner), None]),
                 S::Map(k, v) => (17, [Some(k), Some(v)]),
-                S::Enum(_) | S::Record(_) => return None,
+                S::Enum(_) | S::Record(_) | S::Handle(_) => return None,
             };
             if *used + SHAPE_TAG_BITS > SHAPE_CODE_BITS {
                 return None;
@@ -630,6 +633,7 @@ impl ValueShape {
         }
         charge(left, VALUE_CHARGE)?;
         match (self, value) {
+            (Self::Handle(kind), Value::Handle(handle)) if handle.kind() == kind => Ok(()),
             (Self::List(inner), Value::List(items)) => {
                 minimum(*left, items.len(), VALUE_CHARGE)?;
                 let packed = matches!(

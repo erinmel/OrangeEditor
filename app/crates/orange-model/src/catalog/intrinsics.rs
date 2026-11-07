@@ -89,6 +89,16 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     definitions.extend(register_definitions());
     definitions.extend(result_definitions());
     definitions.extend(lazy_pure_definitions());
+    definitions.push(generic(
+        definition(
+            ids::CLOSE_HANDLE,
+            NodeKind::Action,
+            Some(Suspends::Never),
+            vec![PortDescriptor::data_in("handle", ty("core/handle@1<$K>"))],
+        ),
+        "K",
+        &[],
+    ));
     let mut watch = generic(
         definition(
             ids::ON_WATCH,

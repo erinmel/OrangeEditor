@@ -69,7 +69,14 @@ pub(crate) fn port_type(
 ) -> Result<ValueShape, CompileError> {
     port.ty
         .as_ref()
-        .and_then(|ty| ValueShape::of_in(ty, snapshot.types().as_ref()))
+        .and_then(|ty| {
+            ValueShape::of_in(ty, snapshot.types().as_ref()).or_else(|| {
+                let term = orange_model::type_term::TypeTerm::parse(ty).ok()?;
+                let args = term.core("handle")?;
+                snapshot.types().validate(&term).ok()?;
+                Some(ValueShape::Handle(args.first()?.to_string().parse().ok()?))
+            })
+        })
         .ok_or_else(|| CompileError::UnsupportedPort {
             node,
             port: key(port),
@@ -97,7 +104,12 @@ pub(crate) fn admit_data_ports(
                 port: key(port),
             });
         }
-        port_type(snapshot, node, port)?;
+        if matches!(port_type(snapshot, node, port)?, ValueShape::Handle(_)) {
+            return Err(CompileError::UnsupportedPort {
+                node,
+                port: key(port),
+            });
+        }
     }
     Ok(())
 }

@@ -1,5 +1,18 @@
 # Internationalization and translatable text
 
+C08b boundary messages (2026-11-07): `ResourceError::WrongOwner` uses
+`core/resource-wrong-owner` ("The resource is owned by another graph scope.") and
+`Forged` uses `core/resource-forged` ("The resource value has no authentic issuing
+evidence."). Graph consumption maps stale handles to `core/StaleHandle`, owner
+violations to `core/ResourceOwner`, and other invalid references to
+`core/InvalidHandle`, retaining the corresponding `ResourceError` message key and
+the static fallback "The resource reference is unavailable in this scope."
+There are no message arguments, resource contents or host credentials. Refused
+resource completions reuse `EffectError` envelopes. Handle kind/identity,
+ownership, cancellation and close reasons remain semantic metadata, independent
+of UI language. Close Handle uses ordinary intrinsic port/label presentation; no
+catalogue, locale or saved schema change is introduced.
+
 C11a/C09a boundary messages (2026-11-06): fieldless `EffectError` exposes
 `core/effect-wrong-run`, `core/effect-stale`, `core/effect-not-running`,
 `core/effect-contract` and `core/effect-limit`. Fieldless `StreamError` exposes

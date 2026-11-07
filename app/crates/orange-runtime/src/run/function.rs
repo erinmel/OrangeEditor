@@ -30,6 +30,9 @@ pub(super) struct PendingCall {
     storage: FrameStorage,
 }
 impl PendingCall {
+    pub(super) fn arguments(&self) -> &[Value] {
+        &self.storage.arguments
+    }
     /// The Call node and the function scope it enters.
     pub fn target(&self) -> (ControlIx, usize) {
         (self.owner, self.scope)

@@ -122,6 +122,18 @@ impl RegionStore {
 }
 
 impl Regions {
+    /// Whether `region` is `ancestor` or one of its still-live descendants.
+    pub fn is_within(&self, mut region: RegionId, ancestor: RegionId) -> bool {
+        loop {
+            if region == ancestor {
+                return self.map.contains_key(&region);
+            }
+            let Some(parent) = self.map.get(&region).and_then(|r| r.parent) else {
+                return false;
+            };
+            region = parent;
+        }
+    }
     /// An empty tree whose minted identities start above `activations` root identities.
     pub fn after_roots(activations: u64) -> Self {
         Self {

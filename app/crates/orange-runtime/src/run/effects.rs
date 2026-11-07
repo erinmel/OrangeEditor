@@ -89,6 +89,7 @@ pub(super) struct PendingEffect {
     lease: EffectLease,
     issued: bool,
     completion: Option<EffectCompletion>,
+    revoked: Option<KernelFault>,
 }
 struct EffectCompletion {
     outcome: Result<Vec<Value>, KernelFault>,
@@ -130,6 +131,59 @@ impl Effects {
     }
 }
 impl Run {
+    pub(in crate::run) fn revoke_resource_effects(&mut self, id: orange_model::value::HandleId) {
+        for (&sequence, pending) in &mut self.effects.by_id {
+            let matches = |value: &Value| matches!(value,Value::Handle(handle) if handle.id()==id);
+            let uses = pending.inputs.iter().any(matches)
+                || pending
+                    .completion
+                    .as_ref()
+                    .is_some_and(|c| c.outcome.as_ref().is_ok_and(|v| v.iter().any(matches)));
+            if !uses || pending.revoked.is_some() {
+                continue;
+            }
+            if let Some(completion) = pending.completion.take() {
+                self.effects.bytes -= completion.hold.bytes;
+            }
+            pending.revoked = Some(resources::resource_fault(ResourceError::StaleHandle));
+            pending.lease.0.store(1, Ordering::Relaxed);
+            self.effects.commands.retain(|id| *id != sequence);
+            if !self.effects.ready.contains(&sequence) {
+                self.effects.ready.push_back(sequence);
+            }
+        }
+    }
+    pub(in crate::run) fn effect_resource_target(
+        &self,
+        id: EffectId,
+        kind: &orange_model::id::TypeExpr,
+    ) -> Result<RegionId, EffectError> {
+        if id.run != self.id {
+            return Err(EffectError::WrongRun);
+        }
+        if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
+            return Err(EffectError::NotRunning);
+        }
+        let pending = self
+            .effects
+            .by_id
+            .get(&id.sequence)
+            .ok_or(EffectError::Stale)?;
+        if !pending.issued || pending.completion.is_some() || pending.revoked.is_some() {
+            return Err(EffectError::Stale);
+        }
+        let ControlOperation::Effect { effect, .. } =
+            self.plan.as_ref().ok_or(EffectError::NotRunning)?.nodes()[pending.owner.index()]
+                .operation()
+        else {
+            return Err(EffectError::Contract);
+        };
+        if !matches!(effect.outputs(),[orange_model::value::shape::ValueShape::Handle(expected)] if expected==kind)
+        {
+            return Err(EffectError::Contract);
+        }
+        Ok(pending.strand.region)
+    }
     /// Transfers one request to the host. A blocked worker cannot block the run actor.
     pub fn take_effect(&mut self) -> Option<EffectRequest> {
         if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
@@ -171,9 +225,9 @@ impl Run {
         let pending = self
             .effects
             .by_id
-            .get_mut(&id.sequence)
+            .get(&id.sequence)
             .ok_or(EffectError::Stale)?;
-        if !pending.issued || pending.completion.is_some() {
+        if !pending.issued || pending.completion.is_some() || pending.revoked.is_some() {
             return Err(EffectError::Stale);
         }
         let plan = self.plan.as_ref().ok_or(EffectError::NotRunning)?;
@@ -197,6 +251,8 @@ impl Run {
                 return Err(EffectError::Contract);
             }
             for (ty, value) in effect.outputs().iter().zip(values) {
+                self.check_graph_resource(value, pending.strand.region)
+                    .map_err(|_| EffectError::Contract)?;
                 let charge = ty
                     .checked_charge(
                         value,
@@ -227,7 +283,11 @@ impl Run {
             .ok_or(EffectError::Stale)?;
         let hold = Hold::new(shared, bytes, 0, self.options.limits.max_state_bytes)
             .map_err(|_| EffectError::Limit)?;
-        pending.completion = Some(EffectCompletion {
+        self.effects
+            .by_id
+            .get_mut(&id.sequence)
+            .ok_or(EffectError::Stale)?
+            .completion = Some(EffectCompletion {
             outcome: outcome.map(<[Value]>::to_vec),
             hold,
         });
@@ -259,6 +319,7 @@ impl Run {
                 lease: EffectLease(Arc::new(AtomicU8::new(0))),
                 issued: false,
                 completion: None,
+                revoked: None,
             },
         );
         self.effects.commands.push_back(sequence);
@@ -280,18 +341,37 @@ impl Run {
             .effects
             .remove(sequence)
             .ok_or(RunError::InvalidState)?;
-        pending.lease.0.store(2, Ordering::Relaxed);
-        let completion = pending.completion.take().ok_or(RunError::InvalidState)?;
+        let _ = pending
+            .lease
+            .0
+            .compare_exchange(0, 2, Ordering::Relaxed, Ordering::Relaxed);
+        let completion = pending.completion.take();
+        let outcome = match (pending.revoked.take(), completion) {
+            (Some(fault), _) => Err(fault),
+            (None, Some(completion)) => {
+                drop(completion.hold);
+                match completion.outcome {
+                    Ok(values) => match values.iter().find_map(|value| {
+                        self.check_graph_resource(value, pending.strand.region)
+                            .err()
+                    }) {
+                        Some(error) => Err(resources::resource_fault(error)),
+                        None => Ok(values),
+                    },
+                    fault => fault,
+                }
+            }
+            (None, None) => return Err(RunError::InvalidState),
+        };
         let mut shared = self
             .activations
             .get_mut(pending.strand.sequence)
             .and_then(Option::take)
             .ok_or(RunError::InvalidState)?;
-        drop(completion.hold);
         drop(pending.hold);
         let node = &plan.nodes()[pending.owner.index()];
         let result = (|| {
-            let step = match completion.outcome {
+            let step = match outcome {
                 Ok(values) => {
                     Self::publish_effect_values(
                         plan,
@@ -365,6 +445,12 @@ impl Run {
         let values = std::mem::take(&mut strand.pull.call_values);
         strand.pull.reset();
         shared.pull_owner = None;
+        if let Some(error) = values
+            .iter()
+            .find_map(|value| self.check_graph_resource(value, strand.region).err())
+        {
+            return Ok(Some(failure(node, resources::resource_fault(error))));
+        }
         if let Some(action) = &effect.binding().action {
             let mut outputs = vec![Value::None; effect.outputs().len()];
             let outcome = action.execute(&values, &mut outputs);
@@ -375,6 +461,9 @@ impl Run {
                     for (ty, value) in effect.outputs().iter().zip(&outputs) {
                         ty.checked_charge(value, self.options.limits.max_state_bytes)
                             .map_err(|_| DataError::KernelContract { node: node.node() })?;
+                        if let Err(error) = self.check_graph_resource(value, strand.region) {
+                            return Ok(Some(failure(node, resources::resource_fault(error))));
+                        }
                     }
                     Self::publish_effect_values(
                         plan,
