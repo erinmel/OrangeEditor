@@ -3,6 +3,33 @@
 The C08b/C11a/C07a/C09a representation notes below extend the current concrete Rust
 subset. Illustrative general IR/runtime structures remain proposals beyond that subset.
 
+## C09b graph stream representation (2026-11-07)
+
+`Value::Stream(Arc<HandleValue>)` is a thin authenticated alias whose metadata kind
+is the exact item type. `Value` remains at most 16 bytes. A private issuing token
+distinguishes stream from resource aliases and retains the shared terminal signal
+and metadata lease; relabeling an issued Arc as the other variant fails
+authentication. Live lookup also requires canonical Arc identity in the slab.
+Normal end retains only an authenticated terminal marker, so the same consumer's
+later Next Item can return None without a live slot. It keeps no producer alive.
+
+The stream wrapper retains one graph claim key (activation, function frame, control
+node), one pending pull/result and optional bounded partial collection. Direct
+`ValueShape::Stream(item_type)` exists only through checked control-port admission;
+literal/container shape resolution still refuses it. Compiler operations cover
+Next Item, Collect, For Each Item and Close Stream. Scalar/list results use dense
+value projections; stream iteration uses the existing immutable item/index frames.
+
+`GraphStreams` owns a bounded directory of parked strands/prepared inputs, a strand
+index, exact stream-generation/demand wakeup index and ready identity queue.
+Storage follows live work bounded by strands/resources, with no completed-demand
+history. Input holds count against activation and run aggregate limits; pending
+results and partial lists use the existing stream tallies. Collection requeues
+after one read. Iterator cursors retain the stream alias, next index and captured
+item frame while their body owns descendants. Cancellation removes pending indexes
+and closes discarded cursors before pruning ownership, preserving the item frame
+for cleanup. No saved graph/wire schema, provider lock or dependency changes.
+
 ## C08b graph resource representation (2026-11-07)
 
 `Value::Handle(Arc<HandleValue>)` replaces its unused inline `HandleId` payload;
@@ -63,7 +90,7 @@ lease the run aggregate. Stream close removes the slab entry before calling its
 closer; the wrapper's destructor closes an otherwise unretired producer once. Slot
 generation retirement prevents a late demand from reaching a reused resource.
 That C09a slice introduced no resource value variant, graph stream instruction or
-saved schema. C08b above adds direct handles; graph-stream ownership remains open.
+saved schema. C08b/C09b above add direct handles and graph stream ownership.
 
 Status: **normative proposal for graph format v1**, 2026-10-20. Rust items below are conceptual layouts, **not compiled code**. Field names and JSON shapes are contracts; Rust spelling, generic parameters and crate placement can change in WU-00 if the JSON/wire contract and the invariants in §11 are preserved. Semantics are defined in [11](11-graph-language.md); value rules in [03](03-data-and-execution.md). JSON examples are syntax-checked documentation, not installable artifacts; IDs are shortened (`n1`, `v1`) where real documents use UUIDs and digests are synthetic.
 

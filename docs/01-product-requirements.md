@@ -1,5 +1,14 @@
 # Product requirements
 
+C09b trace addition (2026-11-07): FR-14/18/50 now include graph Next Item, bounded
+Collect, structured For Each Item with backpressure across waits/descendants, and
+idempotent Close Stream. FR-04/16/20/35 include direct stream results, affine
+function ownership transfer and cancellation/revocation before publication.
+FR-44/45 retain stream storage/literal/export restrictions. Typed quotas and
+exactly-once cleanup are partial NFR-02/03/05/08/13/14 evidence; physical performance
+qualification is deferred. Tee/push bridges and concrete streaming services remain
+open. Contracts and actual executed checks are in 03/08/10/11/12/13.
+
 C08b trace addition (2026-11-07): FR-04/16/20/35 now include authenticated direct
 handle results, region-owned acquisition, ancestor borrowing, Return ownership
 transfer, cleanup-safe close and host revocation of dependent effects. FR-44/45

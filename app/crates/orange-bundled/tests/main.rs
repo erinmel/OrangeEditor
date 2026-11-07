@@ -32,6 +32,7 @@ mod entropy;
 mod enum_declarations;
 mod function_epochs;
 mod graph_handles;
+mod graph_streams;
 mod record_declarations;
 mod reference_equivalence;
 mod run_events;

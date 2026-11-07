@@ -6,6 +6,47 @@ incremental authoring preview or graph stream iteration. Verification is in [10]
 
 ## Trusted execution boundary (C11a/C09a, 2026-11-06)
 
+### Graph stream execution (C09b, 2026-11-07)
+
+Direct `Value::Stream` aliases reuse authenticated run/generation/kind/region
+evidence and the existing pull-stream resource slab. `stream_value(handle)` exposes
+a host stream without claiming or pulling. `complete_effect_stream(id, item_type,
+producer)` atomically acquires a pending Async's sole typed stream result for its
+executing region. Any refusal returns the original producer unclosed in
+`EffectStreamRefused`; type/resource/metadata/result quota failures release staging
+and leave a valid pending effect retryable. Host-issued run streams retain their
+Run owner until a function argument explicitly transfers affine ownership.
+
+The executable nodes and exact ports/config are in 11 §12. Consumer authority is
+claimed by activation/function-frame/control-node identity, independent of alias
+cloning. Next Item reentry uses the same claim; normal end has an authenticated
+terminal marker so repeated reads return None without touching a reused slot.
+Stream arguments move ownership into a graph-local Action/Async callee and
+unreturned streams close there; returned streams use C08b Return transfer and
+post-cleanup publication checks. Arbitrary effect stream inputs and nested
+resource shapes remain refused.
+
+A separate actor directory owns parked strands, prepared stream inputs and their
+state/aggregate holds. It indexes exact stream/demand identities for host wakeup,
+uses a ready queue for bounded collection work and removes retired indexes.
+Completions only admit and wake; a later pump publishes. Ready stream work follows
+due timers and effect completions, before Await/event dispatch. Each read is a work item,
+and collection advances one read per item before publishing its whole typed list.
+Partial collection and buffered results retain the existing separate stream quotas
+and aggregate leases. Iterator item/index frames reserve activation/aggregate
+storage and stay immutable while descendants or cancellation cleanup retain them.
+No next pull occurs while the current body owns any work. Break/Return/Race/stop
+close unfinished consumers/cursors, even when acquisition belonged to an ancestor;
+Continue retains the cursor until body cleanup completes. Host revocation cancels
+accepted unpublished work. Producer panic closes the stream before unwinding into
+the existing interrupted-pump policy.
+
+`RunOwnership::stream_reads` counts parked graph operations. Direct aliases remain
+16 nominal bytes and shared evidence/terminal metadata is aggregate-leased until
+its last alias drops, including external invalidated aliases. There is no OS
+executor, polling, service implementation, tee or push bridge in this increment.
+Physical timing/RSS qualification is deferred; mandatory correctness checks remain.
+
 ### Graph resource ownership (C08b, 2026-11-07)
 
 Direct `core/handle@1<K>` values now cross trusted effect ports and graph-local

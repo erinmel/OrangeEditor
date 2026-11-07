@@ -8,6 +8,7 @@ use orange_model::Value;
 struct GraphToken {
     run: u64,
     id: HandleId,
+    stream: Option<Arc<std::sync::atomic::AtomicU8>>,
     _metadata: Lease,
 }
 
@@ -27,7 +28,11 @@ impl std::fmt::Debug for EffectResourceRefused {
 }
 
 impl Resources {
-    fn set_owner(&mut self, id: HandleId, owner: Option<RegionId>) -> Result<(), ResourceError> {
+    pub(in crate::run) fn set_owner(
+        &mut self,
+        id: HandleId,
+        owner: Option<RegionId>,
+    ) -> Result<(), ResourceError> {
         let old = self.entry(id)?.owner;
         if old == owner {
             return Ok(());
@@ -117,13 +122,35 @@ impl Run {
         {
             return Err(ResourceError::UnknownKind);
         }
+        self.issue_resource_value(handle, None)
+    }
+    pub(in crate::run) fn issue_resource_value(
+        &mut self,
+        handle: ResourceHandle,
+        stream: Option<Arc<std::sync::atomic::AtomicU8>>,
+    ) -> Result<Value, ResourceError> {
+        let kind = self.resource_kind(handle)?.clone();
+        let wrap = |value| {
+            if stream.is_some() {
+                Value::Stream(value)
+            } else {
+                Value::Handle(value)
+            }
+        };
         if let Some(value) = self.resources.entry(handle.id)?.value.as_ref() {
-            return Ok(Value::Handle(value.clone()));
+            return Ok(wrap(value.clone()));
         }
         let bytes = std::mem::size_of::<HandleValue>()
             .checked_add(std::mem::size_of::<GraphToken>())
             .and_then(|b| b.checked_add(4 * std::mem::size_of::<usize>()))
             .and_then(|b| b.checked_add(kind.as_str().len()))
+            .and_then(|b| {
+                b.checked_add(if stream.is_some() {
+                    3 * std::mem::size_of::<usize>()
+                } else {
+                    0
+                })
+            })
             .ok_or(ResourceError::ResourceLimit)?;
         if !self.budget.admits(bytes) {
             return Err(ResourceError::ResourceLimit);
@@ -133,19 +160,22 @@ impl Run {
         let token = Arc::new(GraphToken {
             run: self.id,
             id: handle.id,
+            stream: stream.clone(),
             _metadata: lease,
         });
         let value = Arc::new(HandleValue::new(kind, handle.id, token));
         self.resources.entry(handle.id)?.value = Some(value.clone());
-        Ok(Value::Handle(value))
+        Ok(wrap(value))
     }
-    fn issued_handle(
+    pub(in crate::run) fn issued_handle(
         &self,
         value: &Value,
         kind: &TypeExpr,
     ) -> Result<ResourceHandle, ResourceError> {
-        let Value::Handle(value) = value else {
-            return Err(ResourceError::WrongKind);
+        let (value, stream) = match value {
+            Value::Handle(value) => (value, false),
+            Value::Stream(value) => (value, true),
+            _ => return Err(ResourceError::WrongKind),
         };
         let token = value
             .evidence::<GraphToken>()
@@ -154,6 +184,9 @@ impl Run {
             return Err(ResourceError::WrongRun);
         }
         if token.id != value.id() {
+            return Err(ResourceError::Forged);
+        }
+        if token.stream.is_some() != stream {
             return Err(ResourceError::Forged);
         }
         if value.kind() != kind {
@@ -176,7 +209,7 @@ impl Run {
             .get(handle.id.index as usize)
             .and_then(|s| s.entry.as_ref())
             .ok_or(ResourceError::StaleHandle)?;
-        let Value::Handle(value) = value else {
+        let (Value::Handle(value) | Value::Stream(value)) = value else {
             return Err(ResourceError::WrongKind);
         };
         if !entry
@@ -193,7 +226,7 @@ impl Run {
         value: &Value,
         region: RegionId,
     ) -> Result<(), ResourceError> {
-        let Value::Handle(value_ref) = value else {
+        let (Value::Handle(value_ref) | Value::Stream(value_ref)) = value else {
             return Ok(());
         };
         let handle = self.resource_handle(value, value_ref.kind())?;
@@ -214,7 +247,7 @@ impl Run {
         value: &Value,
         region: RegionId,
     ) -> Result<(), ResourceError> {
-        let Value::Handle(reference) = value else {
+        let (Value::Handle(reference) | Value::Stream(reference)) = value else {
             return Err(ResourceError::WrongKind);
         };
         let handle = self.issued_handle(value, reference.kind())?;
@@ -267,6 +300,44 @@ impl Run {
             },
         }
     }
+    pub(in crate::run) fn graph_stream_handle(
+        &self,
+        value: &Value,
+        region: RegionId,
+    ) -> Result<(ResourceHandle, bool), ResourceError> {
+        let Value::Stream(reference) = value else {
+            return Err(ResourceError::WrongKind);
+        };
+        let handle = self.issued_handle(value, reference.kind())?;
+        let token = reference
+            .evidence::<GraphToken>()
+            .ok_or(ResourceError::Forged)?;
+        let ended = token
+            .stream
+            .as_ref()
+            .is_some_and(|state| state.load(Ordering::Relaxed) == 2);
+        if !ended {
+            self.check_graph_resource(value, region)?;
+        }
+        Ok((handle, ended))
+    }
+    pub(in crate::run) fn transfer_stream_arguments(
+        &mut self,
+        values: &[Value],
+        region: RegionId,
+    ) -> Result<(), RunError> {
+        for value in values {
+            if let Value::Stream(reference) = value {
+                let handle = self
+                    .issued_handle(value, reference.kind())
+                    .map_err(|_| RunError::InvalidState)?;
+                self.resources
+                    .set_owner(handle.id, Some(region))
+                    .map_err(|_| RunError::InvalidState)?;
+            }
+        }
+        Ok(())
+    }
     pub(in crate::run) fn transfer_return_resources(
         &mut self,
         strand: &Strand,
@@ -279,7 +350,7 @@ impl Run {
         };
         let mut handles = Vec::new();
         for value in values {
-            if let Value::Handle(reference) = value {
+            if let Value::Handle(reference) | Value::Stream(reference) = value {
                 self.check_graph_resource(value, strand.region)
                     .map_err(|_| RunError::InvalidState)?;
                 let handle = self

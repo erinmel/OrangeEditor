@@ -89,6 +89,7 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
     definitions.extend(register_definitions());
     definitions.extend(result_definitions());
     definitions.extend(lazy_pure_definitions());
+    definitions.extend(stream_definitions());
     definitions.push(generic(
         definition(
             ids::CLOSE_HANDLE,
@@ -152,6 +153,85 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
         });
     }
     definitions.extend(zone_definitions());
+    definitions
+}
+
+fn stream_definitions() -> Vec<NodeDefinition> {
+    let input = || PortDescriptor::data_in("stream", ty("core/stream@1<$T>"));
+    let next = generic(
+        definition(
+            ids::NEXT_ITEM,
+            NodeKind::Async,
+            Some(Suspends::Maybe),
+            vec![
+                input(),
+                on(
+                    PortDescriptor::data_out(
+                        "item",
+                        ty("core/option@1<$T>"),
+                        OutputSource::Execution,
+                    ),
+                    &["then"],
+                ),
+            ],
+        ),
+        "T",
+        &[],
+    );
+    let mut collect = generic(
+        definition(
+            ids::COLLECT,
+            NodeKind::Async,
+            Some(Suspends::Maybe),
+            vec![
+                input(),
+                on(
+                    PortDescriptor::data_out(
+                        "items",
+                        ty("core/list@1<$T>"),
+                        OutputSource::Execution,
+                    ),
+                    &["then"],
+                ),
+            ],
+        ),
+        "T",
+        &[],
+    );
+    collect.config_schema = Some(
+        serde_json::json!({"type":"object","required":["max_items"],"properties":{"max_items":{"type":"integer","minimum":0,"maximum":4294967295u64}},"additionalProperties":false}),
+    );
+    let iterate = generic(
+        definition(
+            ids::FOR_EACH_ITEM,
+            NodeKind::Iterator,
+            Some(Suspends::Maybe),
+            vec![
+                input(),
+                PortDescriptor::data_out("item", ty("$T"), OutputSource::Iteration),
+                PortDescriptor::data_out("index", ty("core/i64@1"), OutputSource::Iteration),
+            ],
+        ),
+        "T",
+        &[],
+    );
+    let close = generic(
+        definition(
+            ids::CLOSE_STREAM,
+            NodeKind::Action,
+            Some(Suspends::Never),
+            vec![input()],
+        ),
+        "T",
+        &[],
+    );
+    let mut definitions = vec![next, collect, iterate, close];
+    for definition in &mut definitions {
+        if definition.config_schema.is_none() {
+            definition.config_schema =
+                Some(serde_json::json!({"type":"object","additionalProperties":false}));
+        }
+    }
     definitions
 }
 

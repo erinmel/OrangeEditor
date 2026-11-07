@@ -161,6 +161,20 @@ impl Loops<'_> {
             return Ok(());
         };
         match cursor {
+            Cursor::Stream(cursor) => {
+                let work = streams::PreparedRead::new(
+                    cursor.owner,
+                    cursor.reference,
+                    streams::ReadMode::Iterate {
+                        index: cursor.next,
+                        parent: activation.iteration_context.clone(),
+                    },
+                    shared,
+                    self.limits.max_state_bytes,
+                )?;
+                activation.transfer = Transfer::Stream(work);
+                activation.yielded = true;
+            }
             Cursor::ForEach(cursor) => self.resume_iteration(plan, activation, shared, cursor)?,
             Cursor::While { owner, iterations } => {
                 activation.pc = Some(owner.into());

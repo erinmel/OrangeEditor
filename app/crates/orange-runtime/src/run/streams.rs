@@ -4,6 +4,9 @@ use super::*;
 use orange_model::id::TypeExpr;
 use orange_model::value::shape::ValueShape;
 use std::sync::atomic::AtomicBool;
+mod graph;
+pub use graph::EffectStreamRefused;
+pub(in crate::run) use graph::{GraphStreams, PendingRead, PreparedRead, ReadMode, StreamCursor};
 
 /// A trusted nonblocking producer. `next` may return one item or initiate one
 /// asynchronous read. It must never prefetch an unbounded source or block the actor.
@@ -142,15 +145,20 @@ struct StreamResource {
     producer: Option<Box<dyn PullStream>>,
     shape: ValueShape,
     claimed: bool,
+    graph_consumer: Option<graph::ConsumerKey>,
     next: u64,
     pending: Option<Pending>,
     retained: Tally,
     closed: Arc<AtomicBool>,
+    terminal: Arc<std::sync::atomic::AtomicU8>,
     collection: Option<Collection>,
 }
 impl RunResource for StreamResource {
     fn close(mut self: Box<Self>, reason: CloseReason) {
         self.closed.store(true, Ordering::Relaxed);
+        let _ = self
+            .terminal
+            .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed);
         if let Some(producer) = self.producer.take() {
             producer.close(reason);
         }
@@ -159,6 +167,9 @@ impl RunResource for StreamResource {
 impl Drop for StreamResource {
     fn drop(&mut self) {
         self.closed.store(true, Ordering::Relaxed);
+        let _ = self
+            .terminal
+            .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed);
         if let Some(producer) = self.producer.take() {
             producer.close(CloseReason::RunDropped);
         }
@@ -176,6 +187,14 @@ impl Run {
         if self.pump_open || self.state != RunState::Running {
             return refuse(StreamError::NotRunning, producer);
         }
+        self.insert_stream(item, producer)
+    }
+    fn insert_stream(
+        &mut self,
+        item: &TypeExpr,
+        producer: Box<dyn PullStream>,
+    ) -> Result<StreamHandle, StreamRefused> {
+        let refuse = |error, producer| Err(StreamRefused { error, producer });
         let Some(shape) = self
             .plan
             .as_ref()
@@ -190,10 +209,12 @@ impl Run {
             producer: Some(producer),
             shape,
             claimed: false,
+            graph_consumer: None,
             next: 0,
             pending: None,
             retained: Tally::new(Some(self.budget.clone()), 0),
             closed: Arc::new(AtomicBool::new(false)),
+            terminal: Arc::new(std::sync::atomic::AtomicU8::new(0)),
             collection: None,
         };
         match self
@@ -249,6 +270,9 @@ impl Run {
         &mut self,
         consumer: &mut StreamConsumer,
     ) -> Result<StreamRead, StreamError> {
+        if self.pump_open {
+            return Err(StreamError::NotRunning);
+        }
         if !consumer.finished && self.stream_resource(consumer.handle)?.collection.is_some() {
             return Err(StreamError::Claimed);
         }
@@ -261,7 +285,7 @@ impl Run {
         if !consumer.handle.resource.belongs_to(self.id) {
             return Err(StreamError::WrongRun);
         }
-        if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
+        if !matches!(self.state, RunState::Running | RunState::Draining) {
             return Err(StreamError::NotRunning);
         }
         if consumer.finished {
@@ -282,6 +306,7 @@ impl Run {
             return match result {
                 Ok(Some(value)) => Ok(StreamRead::Item(value)),
                 Ok(None) => {
+                    resource.terminal.store(2, Ordering::Relaxed);
                     self.close_stream(consumer)?;
                     Ok(StreamRead::End)
                 }
@@ -338,6 +363,7 @@ impl Run {
                 Ok(StreamRead::Item(value))
             }
             Ok(StreamStep::End) => {
+                resource.terminal.store(2, Ordering::Relaxed);
                 self.close_stream(consumer)?;
                 Ok(StreamRead::End)
             }
@@ -396,6 +422,7 @@ impl Run {
         }
         resource.pending.as_mut().ok_or(StreamError::Stale)?.result =
             Some(outcome.map(|v| v.cloned()));
+        self.graph_streams.wake(id);
         Ok(())
     }
     /// Idempotent for this consumer; closes/cancels the producer exactly once.
@@ -424,6 +451,14 @@ impl Run {
         if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
             return Err(StreamError::NotRunning);
         }
+        self.collect_stream_inner(consumer, max_items, budget)
+    }
+    fn collect_stream_inner(
+        &mut self,
+        consumer: &mut StreamConsumer,
+        max_items: usize,
+        budget: &mut usize,
+    ) -> Result<StreamCollectPoll, StreamError> {
         if max_items > self.options.limits.max_stream_collect_items {
             return Err(StreamError::Limit);
         }

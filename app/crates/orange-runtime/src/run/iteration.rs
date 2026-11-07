@@ -21,6 +21,43 @@ impl Drop for IterationFrame {
     }
 }
 impl IterationFrame {
+    pub(super) fn stream(
+        plan: &ControlPlan,
+        shared: &ActivationState,
+        owner: ControlIx,
+        index: u64,
+        first: Value,
+        parent: Option<Arc<Self>>,
+        limit: usize,
+    ) -> Result<Self, RunError> {
+        let ControlOperation::ForEachItem { stream, .. } = plan.nodes()[owner.index()].operation()
+        else {
+            return Err(RunError::InvalidState);
+        };
+        let orange_model::value::shape::ValueShape::Stream(item) =
+            &plan.data().slot_types()[plan.data().exports()[*stream].slot.index()]
+        else {
+            return Err(RunError::InvalidState);
+        };
+        let shape = orange_model::value::shape::ValueShape::of_in(
+            item,
+            plan.data().snapshot().types().as_ref(),
+        )
+        .ok_or(RunError::InvalidState)?;
+        let bytes = shape
+            .checked_charge(&first, limit)
+            .map_err(|_| RunError::ResourceLimit)?
+            .checked_add(16)
+            .ok_or(RunError::ResourceLimit)?;
+        Ok(Self {
+            owner,
+            parent,
+            index: i64::try_from(index).map_err(|_| RunError::ResourceLimit)?,
+            first,
+            second: None,
+            hold: Hold::new(shared, bytes, 0, limit)?,
+        })
+    }
     pub(super) fn find(mut context: Option<&Self>, owner: ControlIx) -> Option<&Self> {
         while let Some(frame) = context {
             if frame.owner == owner {

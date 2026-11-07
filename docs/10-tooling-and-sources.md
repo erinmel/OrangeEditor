@@ -1,5 +1,70 @@
 # Tooling, environment and research register
 
+## C09b — graph streams and structured consumer cleanup — 2026-11-07
+
+Branch `codex/c09b-graph-streams`, from dev
+`f118edeeb16a8729a8c2eeed56b30bb8ff545099` (PR141). Rust 1.99.1 (`58cf8f9c3`,
+2026-10-13), Cargo 1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024;
+default workspace test features, all features for Clippy/rustdoc,
+`CARGO_INCREMENTAL=0`, locked/offline. MSRV stays 1.97.1; only 1.99.1 is installed
+locally. Dependencies/features/lockfile unchanged. Cargo.lock SHA256:
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+Source receipt: 342 tracked/new files under `app` plus root Cargo manifest/lock/
+toolchain files, excluding docs and ignored outputs; sorted `sha256  path`
+manifest SHA256 `DFD8D0DF4BAD435E27FDDFF114F44B3CD57C1B596ECAA73B478467834569B5FF`.
+Contracts, ADR-14, traceability and message mappings are updated in 01/03/08/11/12/13.
+Rust API additions include `Value::Stream`, stream result/value admission and
+`RunOwnership::stream_reads` (downstream struct literals must add this field).
+Saved graph format, provider locks and the compile-time `Value <= 16 bytes` bound
+are unchanged.
+
+Eighteen public-boundary regressions cover actual compiled stream results and
+Next Item/Collect/For Each Item/Close Stream: no prefetch while a body waits or has
+detached descendants; one read per collection work item and atomic typed list
+publication; pending pulls never polled and matching typed complete-once wakeup;
+same-node Next reentry and stable end; Break/Continue; Race cleanup retaining item
+context; stop after accepted unpublished results/partial collection; empty/overflow
+collection; unclosed refusal/retry and forged aliases; idempotent close without
+pulls; returned ownership and unreturned function arguments; Return from an
+unfinished iterator; host revocation before publication; resource/result quota
+rollback; exact/one-under collection byte limits; Some(None) distinct from end;
+producer fault/bad item; and panic closing once with terminal interrupted-pump
+behavior. Existing host stream, handle, function, event and resource suites also pass.
+
+Final local checks:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test --workspace --locked --offline` | **1,403 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,403 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| `cargo run -p orange-bundled --example headless_control --locked --offline` | Pass; total 3 at virtual time 10 ns |
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` | Pass; all/any/race/detach completion/retirement |
+| `cargo run -p orange-bundled --example headless_authoring --locked --offline` | Pass; old-plan wait, fresh restart, On Stop |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary metadata check | Pass; 19 fixtures/core dependency boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+Node is 24.18.0; tests use ignored `.artifacts/c09b-validation/tmp` for TEMP/TMP.
+A development fixture initially used JSON null instead of the canonical option
+None literal; it and a lint issue were corrected before final validation.
+Review confirmed stream class authentication, post-cleanup Return checks, bounded
+live indexes and cursor closing across ownership pruning. No independent approval
+or unexecuted test is claimed.
+
+At the user's direction, physical performance measurement/optimization is deferred;
+correctness, typed quotas, cleanup and native/MSRV CI remain required. This work
+adds no tee/push bridge, actual service producer/executor, replay/checkpoint restore,
+resource container/storage or pure stream kernel. Trusted producers/closers remain
+bounded/nonblocking host code. No physical timing/RSS or local other-OS/MSRV result
+is claimed; broader core/product gates remain open.
+
 ## C08b — authenticated graph handles and region ownership — 2026-11-07
 
 Local work on `codex/c08b-graph-handles`, from dev

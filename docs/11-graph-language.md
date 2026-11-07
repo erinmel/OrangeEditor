@@ -1,7 +1,8 @@
 # Graph language and execution semantics
 
-The C11a/C07a/C09a execution profile below records the current trusted effects,
-runtime Watch and host pull-stream subset. Broader normative rules remain product gates.
+The C11a/C07a/C09a execution profile below records trusted effects, runtime Watch
+and host pull streams; C08b/C09b amendments add direct resource values and graph
+stream execution. Broader normative rules remain product gates.
 
 ## C11a/C07a/C09a executable profile (2026-11-06)
 
@@ -650,6 +651,51 @@ Targets retain the destination command after compilation. State writes reserve n
 | `core/tee` | action | Two streams with a bounded buffer and an overflow policy; the explicit way to fan out |
 
 Push sources (subscriptions) become streams only through a package node with declared capacity and overflow policy. Cancelling the consumer closes the stream and notifies the producer. Byte and file chunk streams follow the chunk limits in [05](05-services-and-platforms.md).
+
+### C09b executable stream profile (2026-11-07)
+
+Direct streams now execute through `core/next-item@1`, `core/collect@1`,
+`core/for-each-item@1` and `core/close-stream@1` (config version 1). Each has one
+required `stream: core/stream@1<$T>` input; `T` must have a supported executable
+non-resource value shape. Next Item is Async (`suspends: maybe`) and publishes
+`item: option<T>` on `then`; a present None item stays `Some(None)`, distinct from
+end. Collect is Async (`maybe`), requires integer `config.max_items` in
+`0..=u32::MAX`, permits no other config field, and publishes `items: list<T>` on
+`then`. The run's collection item/byte limits also apply; zero accepts only an
+empty stream. Collect reads one extra item to detect exceeding the bound and
+never publishes a partial list. For Each Item is an Iterator (`maybe`), with
+`body`, `completed`, `item: T` and `index: i64` (iteration outputs, zero-based).
+Close Stream is a synchronous cleanup-safe Action, never pulls, and closes an
+authentic already-closed alias idempotently. These use ordinary failed/cancelled
+routes for their kinds.
+
+A trusted Async may produce a stream as its sole data result through
+`Run::complete_effect_stream`. A host stream can be exposed through `stream_value`.
+Acquisition belongs to its dynamic region. Graph-local Action/Async functions can
+take and return direct streams; unlike borrowed handle arguments, stream arguments
+transfer ownership into the callee, whose unreturned streams close at retirement.
+Return transfers newly returned streams to the caller before callee cleanup.
+No stream container, variable/Register/event payload, pure kernel, literal/export
+or arbitrary package-effect stream input is admitted. Existing single-consumer
+edge validation remains authoritative. Run/frame/node identity claims one graph
+consumer; repeated Next Item execution on that same node retains its authority,
+and after normal end it continues to return None without another producer call.
+
+Each pending graph pull parks its strand. Only its exact accepted host completion
+or revocation makes it ready; repeated pumps never poll the producer. Publication
+is later actor work, including when the result was accepted before cancellation.
+Collection consumes at most one read per pump work item. An iterator pulls again
+only after its current body and owned descendants retire. Break closes its
+unfinished stream; Continue finishes bounded body cleanup before the next pull.
+Return, Race/stop/fault cancel pending reads and owned iterator cursors, close once
+and preserve captured item/index context through connected bounded cleanup.
+Producer errors and invalid items close before following `failed`; quota overflow
+uses `core/LimitExceeded`. Host revocation discards an accepted unpublished item.
+Producer panics follow the existing terminal interrupted-pump policy. Producers
+and closers are trusted bounded/nonblocking code, not physically preempted workers.
+Tee, push bridges and actual service adapters remain C10/C11 work. See 03/12 for
+admission/representation and 10 for executed checks; performance qualification is
+deferred, not inferred from these correctness bounds.
 
 ## 13. Errors
 

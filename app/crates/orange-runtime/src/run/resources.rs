@@ -214,7 +214,10 @@ impl Resources {
             .filter(|entry| entry.kind == id.kind)
             .ok_or(ResourceError::StaleHandle)
     }
-    fn remove(&mut self, id: HandleId) -> Result<Box<dyn RunResource>, ResourceError> {
+    pub(in crate::run) fn remove(
+        &mut self,
+        id: HandleId,
+    ) -> Result<Box<dyn RunResource>, ResourceError> {
         self.entry(id)?;
         Ok(self.release(id.index).resource)
     }
@@ -312,6 +315,7 @@ impl Run {
         }
         let resource = self.resources.remove(handle.id)?;
         self.revoke_resource_effects(handle.id);
+        self.graph_streams.revoke(handle.id);
         resource.close(CloseReason::Closed);
         Ok(())
     }

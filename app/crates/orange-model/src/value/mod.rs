@@ -62,6 +62,8 @@ pub enum Value {
     Ok(Arc<Value>),
     Json(Arc<JsonText>),
     Handle(Arc<HandleValue>),
+    /// Affine stream alias; cloning never creates consuming authority.
+    Stream(Arc<HandleValue>),
 }
 
 const _: () = assert!(
@@ -465,6 +467,7 @@ impl PartialEq for Value {
             (Err(a), Err(b)) => a == b,
             (Json(a), Json(b)) => a == b,
             (Handle(a), Handle(b)) => a == b,
+            (Stream(a), Stream(b)) => a == b,
             _ => false,
         }
     }
@@ -497,6 +500,7 @@ impl Hash for Value {
             Err(v) => v.hash(state),
             Json(v) => v.hash(state),
             Handle(v) => v.hash(state),
+            Stream(v) => v.hash(state),
         }
     }
 }
