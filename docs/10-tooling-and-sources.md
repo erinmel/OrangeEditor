@@ -1,5 +1,65 @@
 # Tooling, environment and research register
 
+## C10 — bounded Tee and push-to-stream bridges — 2026-11-07
+
+Branch `codex/c10-stream-bridges`, from dev
+`2643b8ec78e143a3f68e83df54ebf63927744660` (PR142). Rust 1.99.1 (`58cf8f9c3`,
+2026-10-13), Cargo 1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024;
+default workspace test features, all features for Clippy/rustdoc,
+`CARGO_INCREMENTAL=0`, locked/offline. MSRV stays 1.97.1; only 1.99.1 is installed
+locally. No dependencies/features/lockfile changed. Cargo.lock SHA256:
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+Source receipt: 347 tracked/new files under `app` plus root Cargo manifest/lock/
+toolchain files, excluding docs and ignored outputs; sorted `sha256  path`
+manifest SHA256 `486685E582037182942D57A8895B11A86AA05FCCD85489B0144430E85BEF05C7`.
+Contracts, ADR-14, FR/NFR trace and messages are updated in 01/03/08/11/12/13.
+Public additions include bridge/push/options/stats APIs, `StreamOverflow`, three
+fieldless StreamError variants, a compiler Tee operation and two RunLimits fields
+(downstream exhaustive matches and struct literals need review). Saved graph
+format, provider locks and `Value <= 16 bytes` are unchanged.
+
+Sixteen new public-boundary regressions exercise all four overflow policies,
+strict source sequences and typed/quota retry without partial admission;
+fast/slow Tee consumers, no producer polling, one-sided/last close; pending
+upstream waking both branches and revocation before publication; exact item/byte
+and joint aggregate bounds/refunds; nested Tee, depth/resource refusal preserving
+unclaimed input; variable-byte staging that sleeps until space opens; stop/drop
+closing producers and push authority once; actual compiled Tee iterators and Break;
+returning one function branch without closing its upstream; push waking graph work
+without inline execution and ending during graceful drain; terminal faults making
+progress at full item quota. Existing effects/resources/stream/function suites pass.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test --workspace --locked --offline` | **1,419 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,419 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| `cargo run -p orange-bundled --example headless_control --locked --offline` | Pass; total 3 at virtual time 10 ns |
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` | Pass; all four join modes |
+| `cargo run -p orange-bundled --example headless_authoring --locked --offline` | Pass; old-plan wait, fresh restart and On Stop |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary check | Pass; 19 fixtures/core boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+Node 24.18.0; TEMP/TMP use ignored `.artifacts/c10-validation/tmp`. One added
+cleanup test initially pumped an already Stopped run; corrected its state guard
+before both full final runs. Self-review covered complete-once pending result
+immutability, private completion authority, fan-out reservation before mutation,
+stage/queue/pending accounting, branch Return lifetime, close cascades and live-only
+indexes. No independent approval is claimed. Exact-head native/MSRV/security CI is
+required before merge; this local record claims no unexecuted remote check.
+
+Performance measurement/optimization remains deferred at the user's direction.
+Nominal quotas do not qualify physical latency/RSS, and trusted producer/closer
+callbacks cannot be preempted. Concrete OS/network service adapters, replay,
+authoring preview, shared state, checkpoints and broader product gates remain open.
+
 ## C09b — graph streams and structured consumer cleanup — 2026-11-07
 
 Branch `codex/c09b-graph-streams`, from dev

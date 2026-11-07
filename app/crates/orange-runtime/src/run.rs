@@ -47,8 +47,10 @@ pub use resources::{
     AcquireRefused, CloseReason, EffectResourceRefused, ResourceError, ResourceHandle, RunResource,
 };
 pub use streams::{
-    EffectStreamRefused, PullStream, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError,
-    StreamHandle, StreamNextId, StreamRead, StreamRefused, StreamStep,
+    EffectStreamRefused, PullStream, PushAdmission, PushStream, PushStreamSource,
+    StreamBranchStats, StreamBridge, StreamBridgeStats, StreamBufferOptions, StreamCollectPoll,
+    StreamConsumer, StreamDemand, StreamError, StreamHandle, StreamNextId, StreamOverflow,
+    StreamRead, StreamRefused, StreamStep, TeeStreams,
 };
 mod ticks;
 mod timers;
@@ -160,6 +162,10 @@ pub struct RunLimits {
     pub max_stream_collect_items: usize,
     /// Partial collection bytes, separately from one pending pull result.
     pub max_stream_collect_bytes: usize,
+    /// Maximum queued items and nominal bytes in each tee/push branch. The
+    /// separately bounded C09a pending pull result is outside these queue limits.
+    pub max_stream_bridge_items: usize,
+    pub max_stream_bridge_bytes: usize,
     /// Aggregate nominal reservation budget for the whole run, distinct from the
     /// per-activation limits (`max_state_bytes`, `DataLimits::max_retained_bytes`),
     /// frame storage and event ingress. Every activation (roots, On Stop frames,
@@ -209,6 +215,8 @@ impl Default for RunLimits {
             max_stream_item_bytes: 1024 * 1024,
             max_stream_collect_items: 4096,
             max_stream_collect_bytes: 16 * 1024 * 1024,
+            max_stream_bridge_items: 1024,
+            max_stream_bridge_bytes: 16 * 1024 * 1024,
             max_run_retained_bytes: 512 * 1024 * 1024,
         }
     }
@@ -599,6 +607,7 @@ fn demand_root(operation: &ControlOperation, input: ExecInput) -> Option<usize> 
         | ControlOperation::Emit { payload: root, .. } => Some(*root),
         ControlOperation::CloseHandle { handle } => Some(*handle),
         ControlOperation::NextItem { stream, .. }
+        | ControlOperation::Tee { stream, .. }
         | ControlOperation::Collect { stream, .. }
         | ControlOperation::ForEachItem { stream, .. }
         | ControlOperation::CloseStream { stream } => Some(*stream),
@@ -736,6 +745,7 @@ pub struct Run {
     changes: changes::Changes,
     effects: effects::Effects,
     graph_streams: streams::GraphStreams,
+    bridges: streams::Bridges,
     watches: watch::Watches,
 }
 impl std::fmt::Debug for Run {
@@ -1021,6 +1031,7 @@ impl Run {
             resources: resources::Resources::default(),
             effects: effects::Effects::default(),
             graph_streams: streams::GraphStreams::default(),
+            bridges: streams::Bridges::default(),
             changes,
             watches,
         };
@@ -1294,6 +1305,15 @@ impl Run {
                 remaining -= 1;
                 continue;
             }
+            if matches!(self.state, RunState::Running | RunState::Draining)
+                && self.bridges.has_ready()
+            {
+                if let Err(error) = self.pump_stream_bridge() {
+                    return self.fail(error);
+                }
+                remaining = remaining.saturating_sub(1);
+                continue;
+            }
             if self.graph_streams.has_ready() {
                 if let Err(error) = self.resume_stream_read(&plan) {
                     return self.fail(error);
@@ -1564,6 +1584,7 @@ impl Run {
                 || self.pending_await_completions()
                 || self.effects.has_ready()
                 || self.graph_streams.has_ready()
+                || self.bridges.has_ready()
                 || self.watches.has_pending()
                 || self.has_replace_cancellation())
         {
@@ -1596,6 +1617,8 @@ impl Run {
                 || self.pending_await_completions()
                 || self.effects.has_ready()
                 || self.graph_streams.has_ready()
+                || (matches!(self.state, RunState::Running | RunState::Draining)
+                    && self.bridges.has_ready())
                 || self.has_replace_cancellation()
                 || self.event_dispatchable(),
             next_wakeup,
@@ -1685,7 +1708,8 @@ impl Run {
         if activation.pull.active.is_none()
             && matches!(
                 operation,
-                ControlOperation::AwaitEvent { .. }
+                ControlOperation::Tee { .. }
+                    | ControlOperation::AwaitEvent { .. }
                     | ControlOperation::NextItem { .. }
                     | ControlOperation::Collect { .. }
             )
@@ -1725,6 +1749,23 @@ impl Run {
             },
         };
         let step = match operation {
+            ControlOperation::Tee {
+                capacity,
+                max_bytes,
+                overflow,
+                ..
+            } => self.execute_stream_tee(
+                plan,
+                activation,
+                shared,
+                ix,
+                value.ok_or(RunError::InvalidState)?,
+                StreamBufferOptions {
+                    capacity: *capacity,
+                    max_bytes: *max_bytes,
+                    overflow: *overflow,
+                },
+            )?,
             ControlOperation::CloseStream { .. } => {
                 match self.close_graph_resource(
                     value.as_ref().ok_or(RunError::InvalidState)?,
@@ -2194,6 +2235,7 @@ impl Run {
         self.changes.release();
         self.effects = effects::Effects::default();
         self.graph_streams = streams::GraphStreams::default();
+        self.bridges = streams::Bridges::default();
         self.watches.clear();
         self.transition(RunState::Disposed);
         Ok(())

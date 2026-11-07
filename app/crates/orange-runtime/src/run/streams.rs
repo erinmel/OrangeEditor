@@ -4,9 +4,16 @@ use super::*;
 use orange_model::id::TypeExpr;
 use orange_model::value::shape::ValueShape;
 use std::sync::atomic::AtomicBool;
+mod bridge;
 mod graph;
+pub(in crate::run) use bridge::Bridges;
+pub use bridge::{
+    PushAdmission, PushStream, PushStreamSource, StreamBranchStats, StreamBridge,
+    StreamBridgeStats, StreamBufferOptions, TeeStreams,
+};
 pub use graph::EffectStreamRefused;
 pub(in crate::run) use graph::{GraphStreams, PendingRead, PreparedRead, ReadMode, StreamCursor};
+pub use orange_model::document::StreamOverflow;
 
 /// A trusted nonblocking producer. `next` may return one item or initiate one
 /// asynchronous read. It must never prefetch an unbounded source or block the actor.
@@ -95,6 +102,12 @@ impl std::fmt::Debug for StreamRead {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum StreamError {
+    #[error("The stream queue is full; retry when the consumer frees space.")]
+    Full,
+    #[error("The stream queue overflowed.")]
+    Overflow,
+    #[error("The stream source sequence must be nonzero and strictly increasing.")]
+    Sequence,
     #[error("The stream belongs to another run.")]
     WrongRun,
     #[error("The stream is closed or its demand is stale.")]
@@ -111,6 +124,9 @@ pub enum StreamError {
 impl StreamError {
     pub const fn message_key(self) -> &'static str {
         match self {
+            Self::Full => "core/stream-full",
+            Self::Overflow => "core/stream-queue-overflow",
+            Self::Sequence => "core/stream-sequence",
             Self::WrongRun => "core/stream-wrong-run",
             Self::Stale => "core/stream-stale",
             Self::Claimed => "core/stream-claimed",
@@ -142,6 +158,7 @@ struct Collection {
     retained: Tally,
 }
 struct StreamResource {
+    bridge: Option<bridge::BranchLink>,
     producer: Option<Box<dyn PullStream>>,
     shape: ValueShape,
     claimed: bool,
@@ -206,6 +223,7 @@ impl Run {
             return refuse(StreamError::Limit, producer);
         }
         let resource = StreamResource {
+            bridge: None,
             producer: Some(producer),
             shape,
             claimed: false,
@@ -254,6 +272,9 @@ impl Run {
         if self.pump_open || self.state != RunState::Running {
             return Err(StreamError::NotRunning);
         }
+        self.claim_stream_inner(handle)
+    }
+    fn claim_stream_inner(&mut self, handle: StreamHandle) -> Result<StreamConsumer, StreamError> {
         let resource = self.stream_resource(handle)?;
         if resource.claimed {
             return Err(StreamError::Claimed);
@@ -332,7 +353,12 @@ impl Run {
             sequence,
             result: None,
         });
+        let link = resource.bridge;
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            if let Some(link) = link {
+                return self.read_bridge(link, demand);
+            }
+            let resource = self.stream_resource(consumer.handle)?;
             resource
                 .producer
                 .as_mut()
@@ -346,6 +372,7 @@ impl Run {
                 std::panic::resume_unwind(payload);
             }
         };
+        let resource = self.stream_resource(consumer.handle)?;
         match result {
             Ok(StreamStep::Pending) => Ok(StreamRead::Pending(id)),
             Ok(StreamStep::Item(value)) => {
@@ -390,6 +417,22 @@ impl Run {
         if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
             return Err(StreamError::NotRunning);
         }
+        if self.stream_resource(id.handle)?.bridge.is_some() {
+            return Err(StreamError::Contract);
+        }
+        self.complete_stream_inner(id, outcome)
+    }
+    fn complete_stream_inner(
+        &mut self,
+        id: StreamNextId,
+        outcome: Result<Option<&Value>, KernelFault>,
+    ) -> Result<(), StreamError> {
+        if !id.handle.resource.belongs_to(self.id) {
+            return Err(StreamError::WrongRun);
+        }
+        if !matches!(self.state, RunState::Running | RunState::Draining) {
+            return Err(StreamError::NotRunning);
+        }
         let limit = self.options.limits.max_stream_item_bytes;
         let resource = self.stream_resource(id.handle)?;
         let pending = resource
@@ -423,6 +466,7 @@ impl Run {
         resource.pending.as_mut().ok_or(StreamError::Stale)?.result =
             Some(outcome.map(|v| v.cloned()));
         self.graph_streams.wake(id);
+        self.bridges.wake_source(id.handle.resource.id());
         Ok(())
     }
     /// Idempotent for this consumer; closes/cancels the producer exactly once.

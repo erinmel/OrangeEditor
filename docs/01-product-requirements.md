@@ -1,5 +1,14 @@
 # Product requirements
 
+C10 trace addition (2026-11-07): FR-14/18/50 now include graph/host bounded Tee
+and host push-to-stream bridges with explicit per-consumer item/byte bounds,
+backpressure, drop-oldest, drop-newest or fault overflow, checked source order,
+metadata-only loss/queue counters and last-consumer cancellation. FR-04/16/20/35
+include branch ownership across function Return and stop/drop cleanup. Atomic
+admission, aggregate charging and focused cleanup regressions extend partial
+NFR-02/03/05/08/13/14 evidence; physical performance qualification remains deferred.
+Concrete service adapters remain open. Contracts and checks are in 03/08/10/11/12/13.
+
 C09b trace addition (2026-11-07): FR-14/18/50 now include graph Next Item, bounded
 Collect, structured For Each Item with backpressure across waits/descendants, and
 idempotent Close Stream. FR-04/16/20/35 include direct stream results, affine

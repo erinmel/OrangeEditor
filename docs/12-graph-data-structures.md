@@ -1,5 +1,32 @@
 # Graph data structures
 
+## C10 bounded bridge representation (2026-11-07)
+
+`ControlOperation::Tee` retains its strict stream demand, two ordered
+`HostSource::EffectOutput` projections and checked buffer options; publishing
+left/right uses the existing whole-result publication path. `StreamOverflow` is
+shared model metadata, independent of UI language. No saved format changes.
+
+The Run owns a live `Bridges` directory with checked nonreused sequence identities,
+an exact source-resource generation index and ready identity queue. Each hub owns
+one optional affine upstream consumer, one optional staged item with an aggregate
+lease, a terminal state, and one (push) or two (Tee) branch records. Each branch
+owns a finite `VecDeque<(Value, charge)>`, aggregate tally, closed signal, optional
+pending demand and counters. Its resource slab wrapper has a private branch link
+instead of a producer object; it still owns the ordinary single accepted pending
+result. Queue quotas exclude this separately charged immutable pending result.
+No reference cycle, broadcast service, callback executor or payload history exists.
+
+The hub reparents its claimed upstream to Run ownership; returned branches can
+outlive the original acquisition scope. Branch closing reconciles live ownership,
+clears/refunds its queue, and the last branch removes the hub/source/ready indexes
+and closes upstream exactly once. Stop/dispose/drop releases all queues and
+staging. Tee depth is checked at 32 before acquisition. Fan-out preflights every
+branch and aggregate growth before mutation, applying refunds before growth.
+Queue-to-pending handoff transfers nominal charging. Safe static terminal failures
+use the existing pending enum without a fresh payload reservation so cleanup can
+progress at full quota. Stats and external push tokens own no item values.
+
 The C08b/C11a/C07a/C09a representation notes below extend the current concrete Rust
 subset. Illustrative general IR/runtime structures remain proposals beyond that subset.
 

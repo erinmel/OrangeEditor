@@ -18,6 +18,7 @@ pub const NEXT_ITEM: &str = "core/next-item";
 pub const COLLECT: &str = "core/collect";
 pub const FOR_EACH_ITEM: &str = "core/for-each-item";
 pub const CLOSE_STREAM: &str = "core/close-stream";
+pub const TEE: &str = "core/tee";
 pub const NOW: &str = "core/now";
 pub const SET_VARIABLE: &str = "core/set-variable";
 pub const UPDATE_VARIABLE: &str = "core/update-variable";

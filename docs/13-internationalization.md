@@ -1,5 +1,15 @@
 # Internationalization and translatable text
 
+C10 boundary messages (2026-11-07): fieldless `StreamError::Full`, `Overflow` and
+`Sequence` expose `core/stream-full`, `core/stream-queue-overflow` and
+`core/stream-sequence`. Their static fallbacks are, respectively, "The stream queue
+is full; retry when the consumer frees space.", "The stream queue overflowed." and
+"The stream source sequence must be nonzero and strictly increasing."
+Hosts render these keys without arguments. Graph
+overflow faults as `core/QueueOverflow`; private terminal envelopes keep safe
+static text without producer/item data. Buffer bounds, source sequences, counters,
+branch names and overflow tokens are semantic metadata and never translated.
+
 C09b graph streams (2026-11-07): refused stream acquisitions/results reuse
 fieldless `StreamError`/`EffectError` keys. Graph `StreamError::Limit` faults as
 `core/LimitExceeded`, `Contract` as `core/InternalFault`, `NotRunning` as

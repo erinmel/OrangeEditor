@@ -516,7 +516,7 @@ impl Run {
         });
         Ok(Some((node.then(), ControlOutcome::Suspended, None)))
     }
-    fn publish_effect_values(
+    pub(super) fn publish_effect_values(
         plan: &ControlPlan,
         layout: &StateLayout,
         shared: &mut ActivationState,

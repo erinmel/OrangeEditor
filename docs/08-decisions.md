@@ -122,6 +122,16 @@ Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the reg
 
 ## ADR-14 — One cooperative actor per run
 
+C10 amendment (2026-11-07): bounded push and Tee hubs remain Run-owned actor data,
+using existing affine resources and a live source/demand wakeup index. Fan-out
+preflights joint queue admission rather than giving each branch an independent
+effect or broadcast subscription. Preserve complete-once accepted pull results;
+per-consumer queues and one staged variable-sized source item have separate
+aggregate leases. Closing the last branch closes the hub-owned upstream, including
+across function Return. Nested Tee has a hard depth bound. No worker, lock, generic
+broadcast API or concrete service enters the core; 03/11/12 define the bounded
+profile and 10 records checks. Physical performance qualification remains deferred.
+
 C11a/C07a/C09a amendment (2026-11-06): keep trusted effect resolution separate
 from pure folding, and retain each executable generation in the immutable binding.
 Only synchronous bounded Action callbacks run on the actor; Async returns an inert

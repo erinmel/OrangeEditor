@@ -224,10 +224,11 @@ impl Run {
             .map_err(|_| RunError::InvalidState)
     }
 }
-fn stream_fault(error: StreamError) -> KernelFault {
+pub(in crate::run) fn stream_fault(error: StreamError) -> KernelFault {
     KernelFault {
         code: match error {
             StreamError::Limit => "core/LimitExceeded",
+            StreamError::Overflow => "core/QueueOverflow",
             StreamError::Contract => "core/InternalFault",
             StreamError::NotRunning => "core/RunStopping",
             _ => "core/StaleHandle",
