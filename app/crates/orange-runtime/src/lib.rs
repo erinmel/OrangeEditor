@@ -5,7 +5,8 @@
 //! graph-local Action/Async calls and staged stop/disposal for the admitted control
 //! subset, including Fork joins, typed collection iteration, atomic state and bounded
 //! run-scoped Queue, busy Drop, serial latest-only Replace and bounded Parallel handlers.
-//! General event ingress/replay/reactivity, resources and services remain open.
+//! Runs own host resources through a generation-checked table that closes each once.
+//! Replay, reactivity, graph handle values and services remain open.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -22,7 +23,8 @@ pub use entropy::{
     EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,
 };
 pub use run::{
-    ControlOutcome, EventMetadata, EventOrigin, EventTarget, HostSourceId, IngressError, Run,
-    RunError, RunEvent, RunEventSource, RunEventStats, RunLimits, RunOptions, RunOwnership,
-    RunProgress, RunRetention, RunState, StopMode,
+    AcquireRefused, CloseReason, ControlOutcome, EventMetadata, EventOrigin, EventTarget,
+    HostSourceId, IngressError, ResourceError, ResourceHandle, Run, RunError, RunEvent,
+    RunEventSource, RunEventStats, RunLimits, RunOptions, RunOwnership, RunProgress, RunResource,
+    RunRetention, RunState, StopMode,
 };

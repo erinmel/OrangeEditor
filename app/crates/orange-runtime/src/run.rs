@@ -37,6 +37,8 @@ pub use events::{EventMetadata, RunEventStats};
 pub use events::{EventOrigin, EventTarget, HostSourceId, IngressError, RunEventSource};
 mod ready;
 mod regions;
+mod resources;
+pub use resources::{AcquireRefused, CloseReason, ResourceError, ResourceHandle, RunResource};
 mod ticks;
 mod timers;
 mod trace;
@@ -135,6 +137,8 @@ pub struct RunLimits {
     pub max_live_event_payload_bytes: usize,
     /// Active, run-local registered host event sources.
     pub max_host_sources: usize,
+    /// Live host resources the run owns (C08a).
+    pub max_resources: usize,
     /// Aggregate nominal reservation budget for the whole run, distinct from the
     /// per-activation limits (`max_state_bytes`, `DataLimits::max_retained_bytes`),
     /// frame storage and event ingress. Every activation (roots, On Stop frames,
@@ -176,6 +180,7 @@ impl Default for RunLimits {
             max_pending_event_bytes: 16 * 1024 * 1024,
             max_live_event_payload_bytes: 16 * 1024 * 1024,
             max_host_sources: 64,
+            max_resources: 256,
             max_run_retained_bytes: 512 * 1024 * 1024,
         }
     }
@@ -225,6 +230,8 @@ pub struct RunOwnership {
     pub event_waiters: usize,
     /// Active registered host event sources.
     pub host_sources: usize,
+    /// Live host resources the run owns and will close.
+    pub resources: usize,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
@@ -683,6 +690,7 @@ pub struct Run {
     /// Set while `pump` runs. Still set on the next call only if a trusted callback
     /// panicked through a pump, which can leave work taken out of the run's stores.
     pump_open: bool,
+    resources: resources::Resources,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -940,6 +948,7 @@ impl Run {
             cancel_timers: vec![],
             fork_children: vec![],
             pump_open: false,
+            resources: resources::Resources::default(),
         };
         run.arm_timer_entries()?;
         Ok(run)
@@ -987,6 +996,7 @@ impl Run {
             timers: self.timers.len(),
             event_waiters: self.waiter_count(),
             host_sources: self.host_source_count(),
+            resources: self.resources.len(),
         }
     }
     /// IDs written by the last/current segment, once each. No equality comparison,
@@ -1488,6 +1498,7 @@ impl Run {
             self.deadline = None;
             self.transition(RunState::Stopped);
             self.close_host_sources();
+            self.close_resources();
         }
     }
     fn abort_cleanup(&mut self) {
@@ -1504,6 +1515,7 @@ impl Run {
         self.close_host_sources();
         self.deadline = None;
         self.transition(RunState::Stopped);
+        self.close_resources();
     }
     /// One node step. Single-root demand is consumed here, once: pending keeps
     /// the pull for the next quantum, and a graph fault takes the node's Failed
@@ -1963,6 +1975,7 @@ impl Run {
         self.cancel_regions = Vec::new();
         self.cancel_timers = Vec::new();
         self.fork_children = Vec::new();
+        self.resources = resources::Resources::default();
         self.transition(RunState::Disposed);
         Ok(())
     }

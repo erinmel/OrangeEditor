@@ -1243,6 +1243,7 @@ fn panicking_provider_retires_checked_out_event_activation_on_stop_and_dispose()
             timers: 0,
             event_waiters: 0,
             host_sources: 0,
+            resources: 0,
         }
     );
     assert_eq!(run.event_stats().live_payload_bytes, 0);
@@ -1633,3 +1634,6 @@ mod timer_entry;
 
 #[path = "support/clock_reader.rs"]
 mod clock_reader;
+
+#[path = "support/run_resources.rs"]
+mod run_resources;
