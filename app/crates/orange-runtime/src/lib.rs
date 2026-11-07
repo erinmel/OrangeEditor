@@ -25,9 +25,9 @@ pub use entropy::{
 };
 pub use run::{
     AcquireRefused, CloseReason, ControlOutcome, EffectError, EffectId, EffectLease, EffectRequest,
-    EffectResourceRefused, EventMetadata, EventOrigin, EventTarget, HostSourceId, IngressError,
-    PullStream, ResourceError, ResourceHandle, Run, RunError, RunEvent, RunEventSource,
-    RunEventStats, RunLimits, RunOptions, RunOwnership, RunProgress, RunResource, RunRetention,
-    RunState, StopMode, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError, StreamHandle,
-    StreamNextId, StreamRead, StreamRefused, StreamStep,
+    EffectResourceRefused, EffectStreamRefused, EventMetadata, EventOrigin, EventTarget,
+    HostSourceId, IngressError, PullStream, ResourceError, ResourceHandle, Run, RunError, RunEvent,
+    RunEventSource, RunEventStats, RunLimits, RunOptions, RunOwnership, RunProgress, RunResource,
+    RunRetention, RunState, StopMode, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError,
+    StreamHandle, StreamNextId, StreamRead, StreamRefused, StreamStep,
 };

@@ -47,8 +47,8 @@ pub use resources::{
     AcquireRefused, CloseReason, EffectResourceRefused, ResourceError, ResourceHandle, RunResource,
 };
 pub use streams::{
-    PullStream, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError, StreamHandle,
-    StreamNextId, StreamRead, StreamRefused, StreamStep,
+    EffectStreamRefused, PullStream, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError,
+    StreamHandle, StreamNextId, StreamRead, StreamRefused, StreamStep,
 };
 mod ticks;
 mod timers;
@@ -262,6 +262,8 @@ pub struct RunOwnership {
     pub resources: usize,
     /// Owned asynchronous commands, including accepted unpublished completions.
     pub effects: usize,
+    /// Parked graph stream consumers, including resumable collection work.
+    pub stream_reads: usize,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
@@ -454,6 +456,7 @@ impl PullState {
 /// call/return/fault/fork/unwind/body/wait flags cannot coexist.
 #[derive(Default)]
 enum Transfer {
+    Stream(streams::PreparedRead),
     Effect(effects::PreparedEffect),
     #[default]
     None,
@@ -525,6 +528,7 @@ struct Timer {
     activation: Strand,
 }
 enum Cursor {
+    Stream(Box<streams::StreamCursor>),
     ForEach(Box<ForEachCursor>),
     While {
         owner: ControlIx,
@@ -573,6 +577,7 @@ fn cleanup_safe(operation: &ControlOperation) -> bool {
             | ControlOperation::Register { .. }
             | ControlOperation::Update { .. }
             | ControlOperation::CloseHandle { .. }
+            | ControlOperation::CloseStream { .. }
     )
 }
 /// The one data root an operation consumes before it acts. Call, Return and
@@ -593,6 +598,10 @@ fn demand_root(operation: &ControlOperation, input: ExecInput) -> Option<usize> 
         | ControlOperation::Set { value: root, .. }
         | ControlOperation::Emit { payload: root, .. } => Some(*root),
         ControlOperation::CloseHandle { handle } => Some(*handle),
+        ControlOperation::NextItem { stream, .. }
+        | ControlOperation::Collect { stream, .. }
+        | ControlOperation::ForEachItem { stream, .. }
+        | ControlOperation::CloseStream { stream } => Some(*stream),
         ControlOperation::AwaitEvent {
             timeout: Some(root),
             ..
@@ -726,6 +735,7 @@ pub struct Run {
     resources: resources::Resources,
     changes: changes::Changes,
     effects: effects::Effects,
+    graph_streams: streams::GraphStreams,
     watches: watch::Watches,
 }
 impl std::fmt::Debug for Run {
@@ -1010,6 +1020,7 @@ impl Run {
             pump_open: false,
             resources: resources::Resources::default(),
             effects: effects::Effects::default(),
+            graph_streams: streams::GraphStreams::default(),
             changes,
             watches,
         };
@@ -1061,6 +1072,7 @@ impl Run {
             host_sources: self.host_source_count(),
             resources: self.resources.len(),
             effects: self.effects.len(),
+            stream_reads: self.graph_streams.len(),
         }
     }
     /// IDs written by the last/current segment, once each. No equality comparison,
@@ -1282,6 +1294,13 @@ impl Run {
                 remaining -= 1;
                 continue;
             }
+            if self.graph_streams.has_ready() {
+                if let Err(error) = self.resume_stream_read(&plan) {
+                    return self.fail(error);
+                }
+                remaining = remaining.saturating_sub(1 + self.regions.take_work());
+                continue;
+            }
             // A matched Await completion is actor work of its own. Publish one per
             // pump operation, after due timers and before queued handler dispatch.
             if self.pending_await_completions() {
@@ -1408,6 +1427,12 @@ impl Run {
                 break;
             }
             match std::mem::take(&mut activation.transfer) {
+                Transfer::Stream(work) => {
+                    self.segment_owner = None;
+                    if let Err(error) = self.park_stream_read(activation, work) {
+                        return self.fail(error);
+                    }
+                }
                 Transfer::Effect(prepared) => {
                     self.segment_owner = None;
                     if let Err(error) = self.park_effect(activation, prepared) {
@@ -1538,6 +1563,7 @@ impl Run {
                 || self.events.pending() > 0
                 || self.pending_await_completions()
                 || self.effects.has_ready()
+                || self.graph_streams.has_ready()
                 || self.watches.has_pending()
                 || self.has_replace_cancellation())
         {
@@ -1550,6 +1576,7 @@ impl Run {
             && self.timers.is_empty()
             && self.event_waiter_count() == 0
             && self.effects.len() == 0
+            && self.graph_streams.len() == 0
             && !self.pending_await_completions()
             && !self.event_dispatchable()
         {
@@ -1568,6 +1595,7 @@ impl Run {
                 || self.timers.is_due(self.now)
                 || self.pending_await_completions()
                 || self.effects.has_ready()
+                || self.graph_streams.has_ready()
                 || self.has_replace_cancellation()
                 || self.event_dispatchable(),
             next_wakeup,
@@ -1601,6 +1629,7 @@ impl Run {
             && self.timers.is_empty()
             && self.event_waiter_count() == 0
             && self.effects.len() == 0
+            && self.graph_streams.len() == 0
             && !self.pending_await_completions()
             && self.events.pending() == 0
         {
@@ -1618,6 +1647,7 @@ impl Run {
         self.ready.clear();
         self.timers.clear();
         self.effects.clear();
+        self.graph_streams.clear();
         self.watches.clear();
         self.regions.clear();
         self.frames.clear();
@@ -1653,7 +1683,12 @@ impl Run {
             return Ok(());
         }
         if activation.pull.active.is_none()
-            && matches!(operation, ControlOperation::AwaitEvent { .. })
+            && matches!(
+                operation,
+                ControlOperation::AwaitEvent { .. }
+                    | ControlOperation::NextItem { .. }
+                    | ControlOperation::Collect { .. }
+            )
         {
             Self::publish_match_value(
                 plan,
@@ -1690,6 +1725,39 @@ impl Run {
             },
         };
         let step = match operation {
+            ControlOperation::CloseStream { .. } => {
+                match self.close_graph_resource(
+                    value.as_ref().ok_or(RunError::InvalidState)?,
+                    activation.region,
+                ) {
+                    Ok(()) => (node.then(), ControlOutcome::Then, None),
+                    Err(error) => failure(node, resources::resource_fault(error)),
+                }
+            }
+            ControlOperation::NextItem { .. }
+            | ControlOperation::Collect { .. }
+            | ControlOperation::ForEachItem { .. } => {
+                let mode = match operation {
+                    ControlOperation::NextItem { boxed, .. } => {
+                        streams::ReadMode::Next { boxed: *boxed }
+                    }
+                    ControlOperation::Collect { max_items, .. } => {
+                        streams::ReadMode::Collect { max: *max_items }
+                    }
+                    _ => streams::ReadMode::Iterate {
+                        index: 0,
+                        parent: activation.iteration_context.clone(),
+                    },
+                };
+                activation.transfer = Transfer::Stream(streams::PreparedRead::new(
+                    ix,
+                    value.ok_or(RunError::InvalidState)?,
+                    mode,
+                    shared,
+                    self.options.limits.max_state_bytes,
+                )?);
+                (node.then(), ControlOutcome::Suspended, None)
+            }
             ControlOperation::CloseHandle { .. } => {
                 match self.close_graph_resource(
                     value.as_ref().ok_or(RunError::InvalidState)?,
@@ -2125,6 +2193,7 @@ impl Run {
         self.resources = resources::Resources::default();
         self.changes.release();
         self.effects = effects::Effects::default();
+        self.graph_streams = streams::GraphStreams::default();
         self.watches.clear();
         self.transition(RunState::Disposed);
         Ok(())

@@ -140,6 +140,20 @@ specified in 03/11/12, with executed evidence in 10; broader unit/NFR gates stay
 
 **Run-owned resources (C08a, 2026-11-06; C08b amendment, 2026-11-07).** The run actor owns host resources in a generational table instead of the host keeping a side registry: one owner sees scope retirement, stop, fault and drop, so closing happens exactly once. Handles carry the run identity and a slot that would wrap its generation is retired. C08b now uses the trusted Async completion boundary to produce direct graph handles. Thin Arc aliases preserve `Value <= 16 bytes`; private issuer evidence plus canonical table identity prevents metadata forgery. Dynamic regions own acquisitions, descendants borrow, and successful Return transfers only returned owned resources to the caller. Cancellation reparents ownership to its cleanup barrier, avoiding early release while cleanup still reads an alias. A generic cleanup-safe close invalidates aliases idempotently. Host revocation cancels dependent pending results, and Return rechecks liveness after cleanup. This reuses the actor/slab rather than giving every alias an independent closer. Metadata is aggregate-leased even for invalidated aliases retained outside the Run. Closers are trusted bounded/nonblocking host code on the calling actor/host stack; resources remain `Send + Sync`. Resource containers, graph streams and concrete service adapters remain separate gates (03/11/12, evidence 10).
 
+C09b amendment (2026-11-07): direct graph streams reuse the C08b evidence/slab
+and the existing trusted pull ABI. One consumer key belongs to an activation,
+function frame and control node; copying a thin alias grants no claim. Parked reads
+have their own actor directory and wake only for matching completion or revocation,
+so blocked producers do not require polling. Collection requeues one read at a time;
+iterator cursors use existing body regions and immutable item/index frames, allowing
+Break/Return/Race/stop to close the producer while cleanup retains item context.
+Stream arguments transfer ownership into their callee rather than borrowing it;
+returned streams use the established transfer and publication checks. An issued
+terminal marker permits repeated None after normal end without resurrecting a slab
+entry. This avoids per-node futures, a second executor and independent alias closers.
+Tee/push bridges and concrete adapters remain later units; physical performance
+qualification is deferred while correctness/native/MSRV checks remain mandatory.
+
 ## ADR-15 — Structured regions, value availability and cycle classes
 
 **Selected.** Exec nodes belong to exactly one region. Exec edges cannot leave regions except through terminators. An `execution` output may be consumed only where its outcome dominates the consumer. A data cycle is legal only through a state boundary (register, variable), a zone or a loop. A control cycle must contain a `suspends: always` node. Event and reactive cycles are bounded by causal depth. Synchronous recursion is rejected in v1 ([11 §7–8](11-graph-language.md)). Alternatives: unstructured exec wiring with stale or default outputs (a common source of node-editor bugs); a pure DAG with no cycles (cannot express counters, polling or feedback); bounded synchronous recursion (needs dynamic frame sizes, breaks NFR-05 allocation-free frames and fixed memory). Consequences: some wirings need a local, register or `select`, and diagnostics must suggest them. Loops and feedback are explicit and analyzable. Frames have static size. **Falsification:** G-04–07, G-10, G-12, G-16, G-24, G-26, G-27; representative workflow trials in 02b/05a. If users cannot express listed workflows (01 workflows 1–4) without excessive workarounds, revise the rule by ADR with a focused regression test. Owner language lead; G2/G3.

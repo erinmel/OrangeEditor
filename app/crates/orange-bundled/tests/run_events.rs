@@ -1245,6 +1245,7 @@ fn panicking_provider_retires_checked_out_event_activation_on_stop_and_dispose()
             host_sources: 0,
             resources: 0,
             effects: 0,
+            stream_reads: 0,
         }
     );
     assert_eq!(run.event_stats().live_payload_bytes, 0);

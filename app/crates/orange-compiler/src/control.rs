@@ -116,6 +116,22 @@ fn destination(
 
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
+    NextItem {
+        stream: usize,
+        boxed: bool,
+    },
+    Collect {
+        stream: usize,
+        max_items: usize,
+    },
+    ForEachItem {
+        stream: usize,
+        body: Option<ExecTarget>,
+        completed: Option<ExecTarget>,
+    },
+    CloseStream {
+        stream: usize,
+    },
     CloseHandle {
         handle: usize,
     },
@@ -1045,8 +1061,17 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                             port: port_key(port),
                         });
                     }
-                    if port.kind == PortKind::Data {
-                        port_type(cx.snapshot, node.id, port)?;
+                    if port.kind == PortKind::Data
+                        && matches!(
+                            port_type(cx.snapshot, node.id, port)?,
+                            ValueShape::Stream(_)
+                        )
+                        && port.direction == PortDirection::Input
+                    {
+                        return Err(CompileError::UnsupportedPort {
+                            node: node.id,
+                            port: port_key(port),
+                        });
                     }
                 }
                 controls.insert((scope, node.id));
@@ -1071,6 +1096,10 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::ON_VARIABLE_CHANGED
                     | ids::ON_WATCH
                     | ids::CLOSE_HANDLE
+                    | ids::NEXT_ITEM
+                    | ids::COLLECT
+                    | ids::FOR_EACH_ITEM
+                    | ids::CLOSE_STREAM
                     | ids::ON_EVENT
                     | ids::EMIT
                     | ids::AWAIT_EVENT
@@ -1096,10 +1125,17 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
             for port in sig.ports.iter().filter(|p| p.kind == PortKind::Data) {
                 if matches!(
                     port_type(cx.snapshot, node.id, port)?,
-                    ValueShape::Handle(_)
+                    ValueShape::Handle(_) | ValueShape::Stream(_)
                 ) && !matches!(
                     node.definition.id.as_str(),
-                    ids::CALL | ids::FUNCTION_ENTRY | ids::RETURN | ids::CLOSE_HANDLE
+                    ids::CALL
+                        | ids::FUNCTION_ENTRY
+                        | ids::RETURN
+                        | ids::CLOSE_HANDLE
+                        | ids::NEXT_ITEM
+                        | ids::COLLECT
+                        | ids::FOR_EACH_ITEM
+                        | ids::CLOSE_STREAM
                 ) {
                     return Err(CompileError::UnsupportedPort {
                         node: node.id,
@@ -1704,7 +1740,7 @@ impl NodeLowering<'_, '_> {
                 .collect::<Result<Vec<_>, _>>()?;
             if output_types
                 .iter()
-                .any(|ty| matches!(ty, ValueShape::Handle(_)))
+                .any(|ty| matches!(ty, ValueShape::Handle(_) | ValueShape::Stream(_)))
                 && output_types.len() != 1
             {
                 return Err(CompileError::UnsupportedNode { node: id });
@@ -1722,6 +1758,34 @@ impl NodeLowering<'_, '_> {
             });
         }
         Ok(match definition {
+            ids::NEXT_ITEM => {
+                let ValueShape::Option(item) = port_type(cx.snapshot, id, cx.port(key, "item")?)?
+                else {
+                    return Err(CompileError::ValidationIncomplete);
+                };
+                ControlOperation::NextItem {
+                    stream: self.input(key, orange_model::port_id!("stream")),
+                    boxed: item.unboxed_none(),
+                }
+            }
+            ids::COLLECT => ControlOperation::Collect {
+                stream: self.input(key, orange_model::port_id!("stream")),
+                max_items: node
+                    .config
+                    .get("max_items")
+                    .and_then(serde_json::Value::as_u64)
+                    .and_then(|n| u32::try_from(n).ok())
+                    .map(|n| n as usize)
+                    .ok_or(CompileError::UnsupportedNode { node: id })?,
+            },
+            ids::FOR_EACH_ITEM => ControlOperation::ForEachItem {
+                stream: self.input(key, orange_model::port_id!("stream")),
+                body: self.target(key, "body"),
+                completed: self.target(key, "completed"),
+            },
+            ids::CLOSE_STREAM => ControlOperation::CloseStream {
+                stream: self.input(key, orange_model::port_id!("stream")),
+            },
             ids::CLOSE_HANDLE => ControlOperation::CloseHandle {
                 handle: self.input(key, orange_model::port_id!("handle")),
             },
@@ -2093,6 +2157,14 @@ fn host_source(
     }
     let unsupported = CompileError::UnsupportedNode { node: source.node };
     match (operation, port) {
+        (ControlOperation::NextItem { .. }, "item")
+        | (ControlOperation::Collect { .. }, "items") => Ok(HostSource::Value(owner)),
+        (ControlOperation::ForEachItem { .. }, "index") => {
+            Ok(HostSource::Iteration(owner, IterationProjection::Index))
+        }
+        (ControlOperation::ForEachItem { .. }, "item") => {
+            Ok(HostSource::Iteration(owner, IterationProjection::Element))
+        }
         (ControlOperation::ForEach { .. }, "index") => {
             Ok(HostSource::Iteration(owner, IterationProjection::Index))
         }

@@ -133,7 +133,7 @@ impl Effects {
 impl Run {
     pub(in crate::run) fn revoke_resource_effects(&mut self, id: orange_model::value::HandleId) {
         for (&sequence, pending) in &mut self.effects.by_id {
-            let matches = |value: &Value| matches!(value,Value::Handle(handle) if handle.id()==id);
+            let matches = |value: &Value| matches!(value,Value::Handle(handle) | Value::Stream(handle) if handle.id()==id);
             let uses = pending.inputs.iter().any(matches)
                 || pending
                     .completion
@@ -158,6 +158,14 @@ impl Run {
         id: EffectId,
         kind: &orange_model::id::TypeExpr,
     ) -> Result<RegionId, EffectError> {
+        self.effect_reference_target(id, kind, false)
+    }
+    pub(in crate::run) fn effect_reference_target(
+        &self,
+        id: EffectId,
+        kind: &orange_model::id::TypeExpr,
+        stream: bool,
+    ) -> Result<RegionId, EffectError> {
         if id.run != self.id {
             return Err(EffectError::WrongRun);
         }
@@ -178,8 +186,12 @@ impl Run {
         else {
             return Err(EffectError::Contract);
         };
-        if !matches!(effect.outputs(),[orange_model::value::shape::ValueShape::Handle(expected)] if expected==kind)
-        {
+        let valid = if stream {
+            matches!(effect.outputs(),[orange_model::value::shape::ValueShape::Stream(expected)] if expected==kind)
+        } else {
+            matches!(effect.outputs(),[orange_model::value::shape::ValueShape::Handle(expected)] if expected==kind)
+        };
+        if !valid {
             return Err(EffectError::Contract);
         }
         Ok(pending.strand.region)

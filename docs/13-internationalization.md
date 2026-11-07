@@ -1,5 +1,17 @@
 # Internationalization and translatable text
 
+C09b graph streams (2026-11-07): refused stream acquisitions/results reuse
+fieldless `StreamError`/`EffectError` keys. Graph `StreamError::Limit` faults as
+`core/LimitExceeded`, `Contract` as `core/InternalFault`, `NotRunning` as
+`core/RunStopping`, and stale/foreign/already-claimed consumption as
+`core/StaleHandle`, with its `core/stream-*` key and static fallback "The stream is
+unavailable or exceeds its configured bounds." Producer faults retain their safe
+original kernel envelope. There are no message arguments or producer/item data in
+boundary errors/debug. Node and port identities, max-items, item index, ownership,
+claim keys, demand order and end/None semantics never depend on locale. Collect
+config errors use existing config-schema diagnostics. No catalogue or UI language
+change is introduced.
+
 C08b boundary messages (2026-11-07): `ResourceError::WrongOwner` uses
 `core/resource-wrong-owner` ("The resource is owned by another graph scope.") and
 `Forged` uses `core/resource-forged` ("The resource value has no authentic issuing

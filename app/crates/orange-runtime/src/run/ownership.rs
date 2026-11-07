@@ -263,10 +263,16 @@ impl Run {
         }
         let region = self.regions.mint_region()?;
         let mut child = self.child_strand(&caller, region)?;
-        if let Some(owner) = loop_owner
-            && let Some(Cursor::ForEach(cursor)) = caller.stack.last()
-        {
-            child.iteration_context = Some(cursor.context(owner)?);
+        if let Some(owner) = loop_owner {
+            match caller.stack.last() {
+                Some(Cursor::ForEach(cursor)) => {
+                    child.iteration_context = Some(cursor.context(owner)?)
+                }
+                Some(Cursor::Stream(cursor)) if cursor.owner == owner => {
+                    child.iteration_context = Some(cursor.frame.clone())
+                }
+                _ => {}
+            }
         }
 
         // A structured body continues the same logical strand. Only Fork
@@ -373,6 +379,7 @@ impl Run {
             self.options.limits.max_state_bytes,
         )?;
         let region = self.regions.mint_region()?;
+        self.transfer_stream_arguments(&frame.arguments, region)?;
         let mut child = self.child_strand(&caller, region)?;
         child.id = caller.id;
         child.pull = caller.pull.lend();
@@ -737,10 +744,22 @@ impl Run {
         let retired = self.regions.subtree(root, ids)?;
         let mut awaiters = Vec::new();
         let mut effects = Vec::new();
+        let mut stream_reads = Vec::new();
+        let mut stream_cursors = Vec::new();
         for &id in ids.iter() {
+            if id != root
+                && let Some(caller) = self.regions.get(id)?.continuation.as_ref()
+            {
+                for cursor in &caller.stack {
+                    if let Cursor::Stream(cursor) = cursor {
+                        stream_cursors.push((cursor.reference.clone(), caller.region));
+                    }
+                }
+            }
             let live: Vec<_> = self.regions.get(id)?.live.iter().collect();
             for strand in live {
                 if let Some(queued) = self.ready.remove(strand) {
+                    self.close_stream_cursors(&queued)?;
                     self.cleanup_truncated = self
                         .cleanup_truncated
                         .saturating_add(u64::from(queued.cleanup));
@@ -754,7 +773,14 @@ impl Run {
                 if let Some(effect) = self.take_effect_for_cancel(strand) {
                     effects.push(effect);
                 }
+                if let Some(read) = self.take_stream_read_for_cancel(strand) {
+                    stream_reads.push(read);
+                }
             }
+        }
+        for (reference, region) in stream_cursors {
+            self.close_graph_resource(&reference, region)
+                .map_err(|_| RunError::InvalidState)?;
         }
         let mut cleanup = Vec::new();
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
@@ -762,12 +788,14 @@ impl Run {
             Timer(TimerKey),
             Await(Awaiter),
             Effect(super::effects::PendingEffect),
+            Stream(super::streams::PendingRead),
         }
         let mut waiters = std::mem::take(timer_keys)
             .into_iter()
             .map(CancelWait::Timer)
             .chain(awaiters.into_iter().map(CancelWait::Await))
             .chain(effects.into_iter().map(CancelWait::Effect))
+            .chain(stream_reads.into_iter().map(CancelWait::Stream))
             .collect::<Vec<_>>();
         waiters.sort_unstable_by_key(|waiter| match waiter {
             CancelWait::Timer(key) => (key.0, key.1, 0),
@@ -776,9 +804,36 @@ impl Run {
                 (key.0, key.1, 1)
             }
             CancelWait::Effect(effect) => (u64::MAX, effect.token, 2),
+            CancelWait::Stream(read) => (u64::MAX, read.token, 3),
         });
         for waiter in waiters {
             match waiter {
+                CancelWait::Stream(mut read) => {
+                    self.cancel_stream_read(&read)?;
+                    let node = &plan.nodes()[read.owner.index()];
+                    self.record(RunEvent {
+                        activation: read.strand.sequence,
+                        node: node.node(),
+                        outcome: ControlOutcome::Cancelled,
+                        fault: None,
+                    });
+                    if let Some(target) = node.cancelled() {
+                        let strand = &mut read.strand;
+                        strand.region = root;
+                        strand.pc = Some(target);
+                        strand.stack.clear();
+                        strand.pull.reset();
+                        strand.reenter = None;
+                        strand.transfer = Transfer::None;
+                        strand.yielded = false;
+                        strand.cleanup = true;
+                        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
+                        strand.cleanup_deadline =
+                            Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
+                        strand.cleanup_remaining = self.options.max_cleanup_operations;
+                        cleanup.push(read.strand);
+                    }
+                }
                 CancelWait::Effect(mut pending) => {
                     let node = &plan.nodes()[pending.owner.index()];
                     self.record(RunEvent {
@@ -910,7 +965,11 @@ impl Run {
         };
         if is_break {
             let retired = caller.stack.pop().ok_or(RunError::InvalidState)?;
-            if !matches!(retired, Cursor::ForEach(_)) {
+            if let Cursor::Stream(cursor) = &retired {
+                self.close_graph_resource(&cursor.reference, caller.region)
+                    .map_err(|_| RunError::InvalidState)?;
+            }
+            if !matches!(retired, Cursor::ForEach(_) | Cursor::Stream(_)) {
                 self.regions.get_mut(region)?.retired_cursor = Some(Box::new(retired));
             }
             caller.pc = match self.plan.as_ref().ok_or(RunError::InvalidState)?.nodes()
@@ -920,6 +979,7 @@ impl Run {
                 ControlOperation::Count { completed, .. }
                 | ControlOperation::While { completed, .. }
                 | ControlOperation::ForEach { completed, .. } => *completed,
+                ControlOperation::ForEachItem { completed, .. } => *completed,
                 _ => return Err(RunError::InvalidState),
             };
         } else {
