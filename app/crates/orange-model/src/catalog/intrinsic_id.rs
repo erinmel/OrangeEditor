@@ -11,6 +11,7 @@ pub const FUNCTION_ENTRY: &str = "core/function-entry";
 pub const FUNCTION_OUTPUTS: &str = "core/function-outputs";
 pub const RETURN: &str = "core/return";
 pub const GET_VARIABLE: &str = "core/get-variable";
+pub const NOW: &str = "core/now";
 pub const SET_VARIABLE: &str = "core/set-variable";
 pub const UPDATE_VARIABLE: &str = "core/update-variable";
 pub const SET_SHARED: &str = "core/set-shared";
