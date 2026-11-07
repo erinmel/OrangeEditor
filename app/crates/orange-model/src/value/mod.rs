@@ -8,6 +8,8 @@
 //! payload can itself carry the Err tag. Secrets are never values.
 
 mod base64;
+mod handle;
+pub use handle::HandleValue;
 pub mod literal_codec;
 pub mod shape;
 
@@ -59,7 +61,7 @@ pub enum Value {
     /// Ordinary result successes remain unboxed (12 §7).
     Ok(Arc<Value>),
     Json(Arc<JsonText>),
-    Handle(HandleId),
+    Handle(Arc<HandleValue>),
 }
 
 const _: () = assert!(
@@ -414,7 +416,7 @@ fn nests_deeper_than(text: &str, max: usize) -> bool {
 }
 
 /// Generation-checked resource handle (12 §2); never persisted.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct HandleId {
     pub index: u32,
     pub generation: u32,

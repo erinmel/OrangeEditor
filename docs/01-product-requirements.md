@@ -1,5 +1,14 @@
 # Product requirements
 
+C08b trace addition (2026-11-07): FR-04/16/20/35 now include authenticated direct
+handle results, region-owned acquisition, ancestor borrowing, Return ownership
+transfer, cleanup-safe close and host revocation of dependent effects. FR-44/45
+retain the restrictions on resource storage/persistence. Metadata and result
+admission have bounded quotas and exactly-once scope/stop/drop cleanup; this is
+partial NFR-02/03/05/08/13/14 evidence, with no physical latency/RSS qualification.
+The limited direct-handle profile is defined in 03/11/12 and verified in 10;
+graph streams, replay and concrete services remain open.
+
 C11a/C07a/C09a trace addition (2026-11-06): FR-04/16/20/35 now have a trusted
 Action/Async command/completion slice with exact bindings, complete-once results,
 bounded ownership and cancellation signals. FR-49 has runtime dependency Watch;

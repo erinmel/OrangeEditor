@@ -5,8 +5,9 @@
 //! graph-local Action/Async calls and staged stop/disposal for the admitted control
 //! subset, including Fork joins, typed collection iteration, atomic state and bounded
 //! run-scoped Queue, busy Drop, serial latest-only Replace and bounded Parallel handlers.
-//! Runs own host resources through a generation-checked table that closes each once.
-//! Replay, reactivity, graph handle values and services remain open.
+//! Runs own authenticated graph resource aliases and close each resource once under
+//! region/run ownership. Runtime Watch, trusted effects and host pull streams are
+//! supported; replay, authoring preview, graph streams and concrete services remain open.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -24,9 +25,9 @@ pub use entropy::{
 };
 pub use run::{
     AcquireRefused, CloseReason, ControlOutcome, EffectError, EffectId, EffectLease, EffectRequest,
-    EventMetadata, EventOrigin, EventTarget, HostSourceId, IngressError, PullStream, ResourceError,
-    ResourceHandle, Run, RunError, RunEvent, RunEventSource, RunEventStats, RunLimits, RunOptions,
-    RunOwnership, RunProgress, RunResource, RunRetention, RunState, StopMode, StreamCollectPoll,
-    StreamConsumer, StreamDemand, StreamError, StreamHandle, StreamNextId, StreamRead,
-    StreamRefused, StreamStep,
+    EffectResourceRefused, EventMetadata, EventOrigin, EventTarget, HostSourceId, IngressError,
+    PullStream, ResourceError, ResourceHandle, Run, RunError, RunEvent, RunEventSource,
+    RunEventStats, RunLimits, RunOptions, RunOwnership, RunProgress, RunResource, RunRetention,
+    RunState, StopMode, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError, StreamHandle,
+    StreamNextId, StreamRead, StreamRefused, StreamStep,
 };

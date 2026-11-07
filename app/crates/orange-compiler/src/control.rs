@@ -116,6 +116,9 @@ fn destination(
 
 #[derive(Debug, Clone)]
 pub enum ControlOperation {
+    CloseHandle {
+        handle: usize,
+    },
     Effect {
         effect: ControlEffect,
         demand: UpdateDemand,
@@ -1067,6 +1070,7 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::ON_TIMEOUT
                     | ids::ON_VARIABLE_CHANGED
                     | ids::ON_WATCH
+                    | ids::CLOSE_HANDLE
                     | ids::ON_EVENT
                     | ids::EMIT
                     | ids::AWAIT_EVENT
@@ -1090,7 +1094,18 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
             }
             controls.insert((scope, node.id));
             for port in sig.ports.iter().filter(|p| p.kind == PortKind::Data) {
-                port_type(cx.snapshot, node.id, port)?;
+                if matches!(
+                    port_type(cx.snapshot, node.id, port)?,
+                    ValueShape::Handle(_)
+                ) && !matches!(
+                    node.definition.id.as_str(),
+                    ids::CALL | ids::FUNCTION_ENTRY | ids::RETURN | ids::CLOSE_HANDLE
+                ) {
+                    return Err(CompileError::UnsupportedPort {
+                        node: node.id,
+                        port: port_key(port),
+                    });
+                }
             }
         }
     }
@@ -1687,6 +1702,13 @@ impl NodeLowering<'_, '_> {
                 .iter()
                 .map(|p| port_type(cx.snapshot, id, p))
                 .collect::<Result<Vec<_>, _>>()?;
+            if output_types
+                .iter()
+                .any(|ty| matches!(ty, ValueShape::Handle(_)))
+                && output_types.len() != 1
+            {
+                return Err(CompileError::UnsupportedNode { node: id });
+            }
             let ports: Vec<_> = inputs.iter().map(|p| p.port_id.clone()).collect();
             return Ok(ControlOperation::Effect {
                 effect: ControlEffect {
@@ -1700,6 +1722,9 @@ impl NodeLowering<'_, '_> {
             });
         }
         Ok(match definition {
+            ids::CLOSE_HANDLE => ControlOperation::CloseHandle {
+                handle: self.input(key, orange_model::port_id!("handle")),
+            },
             ids::ON_WATCH => {
                 let root = self.input(key, orange_model::port_id!("watch"));
                 self.watches.push((key, root));

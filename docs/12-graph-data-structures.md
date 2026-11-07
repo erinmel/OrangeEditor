@@ -1,7 +1,29 @@
 # Graph data structures
 
-The C11a/C07a/C09a representation note below extends the current concrete Rust
+The C08b/C11a/C07a/C09a representation notes below extend the current concrete Rust
 subset. Illustrative general IR/runtime structures remain proposals beyond that subset.
+
+## C08b graph resource representation (2026-11-07)
+
+`Value::Handle(Arc<HandleValue>)` replaces its unused inline `HandleId` payload;
+the compile-time `Value <= 16 bytes` invariant remains. `HandleValue` holds the
+exact kind expression, `HandleId { index, generation, kind }` metadata and opaque
+`Arc<dyn Any + Send + Sync>` issuing evidence. The runtime's private evidence holds
+its non-reused Run identity and a metadata-budget lease. Public construction does
+not grant authority. Live lookup additionally requires the canonical outer Arc
+retained in the generational slab entry. Rust identity Eq/Hash do not add language
+Eq/map-key or serialization support. Debug omits evidence and resource contents.
+
+Each live entry has optional dynamic `RegionId` ownership (`None` means Run) and
+an optional issued canonical value. A region-to-live-handles index contains only
+live entries and removes empty buckets. Region retirement removes entries before
+calling closers newest first; cancellation reparents pruned owners to its retained
+cleanup barrier. Return moves only returned callee-owned entries to its caller.
+Direct `ValueShape::Handle(kind)` is resolved by control-port admission, never by
+literal/container shape resolution; each retained alias costs 16 nominal bytes.
+Shared issuing metadata is separately leased against the run aggregate until the
+last alias drops, including aliases held by an external host after disposal.
+The opaque token holds no resource object. Saved graph/wire formats do not change.
 
 ## C11a/C07a/C09a concrete representation (2026-11-06)
 
@@ -40,8 +62,8 @@ closed signal and optional partial collection. Item/result and collection tallie
 lease the run aggregate. Stream close removes the slab entry before calling its
 closer; the wrapper's destructor closes an otherwise unretired producer once. Slot
 generation retirement prevents a late demand from reaching a reused resource.
-No new `Value` or `ValueShape` resource variant, graph stream instruction or saved
-schema is introduced. C08b and graph-stream ownership remain explicitly open.
+That C09a slice introduced no resource value variant, graph stream instruction or
+saved schema. C08b above adds direct handles; graph-stream ownership remains open.
 
 Status: **normative proposal for graph format v1**, 2026-10-20. Rust items below are conceptual layouts, **not compiled code**. Field names and JSON shapes are contracts; Rust spelling, generic parameters and crate placement can change in WU-00 if the JSON/wire contract and the invariants in §11 are preserved. Semantics are defined in [11](11-graph-language.md); value rules in [03](03-data-and-execution.md). JSON examples are syntax-checked documentation, not installable artifacts; IDs are shortened (`n1`, `v1`) where real documents use UUIDs and digests are synthetic.
 
@@ -685,7 +707,7 @@ pub enum Value {
     Err(Arc<NodeError>),                     // only inside result<T>
     Ok(Arc<Value>),                          // only ambiguous result success payloads
     Json(Arc<JsonRepr>),
-    Handle(HandleId),
+    Handle(Arc<HandleValue>),                 // C08b authenticated runtime alias
 }
 pub enum ListRepr { Bool(BitBox), I32(Box<[i32]>), I64(Box<[i64]>), U32(Box<[u32]>), U64(Box<[u64]>),
                     F32(Box<[f32]>), F64(Box<[f64]>), Str(Box<[ArcStr]>), Values(Box<[Value]>) }

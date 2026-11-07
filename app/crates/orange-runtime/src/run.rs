@@ -43,7 +43,9 @@ mod ready;
 mod regions;
 mod resources;
 mod streams;
-pub use resources::{AcquireRefused, CloseReason, ResourceError, ResourceHandle, RunResource};
+pub use resources::{
+    AcquireRefused, CloseReason, EffectResourceRefused, ResourceError, ResourceHandle, RunResource,
+};
 pub use streams::{
     PullStream, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError, StreamHandle,
     StreamNextId, StreamRead, StreamRefused, StreamStep,
@@ -146,7 +148,7 @@ pub struct RunLimits {
     pub max_live_event_payload_bytes: usize,
     /// Active, run-local registered host event sources.
     pub max_host_sources: usize,
-    /// Live host resources the run owns (C08a).
+    /// Live resources owned by the run or one of its graph regions.
     pub max_resources: usize,
     /// Live asynchronous commands, including accepted unpublished completions.
     pub max_pending_effects: usize,
@@ -167,6 +169,8 @@ pub struct RunLimits {
     /// - its local and local-state cell charge, including the initial copy;
     /// - its retained outputs (event payloads, update projections, call results);
     /// - its function-frame and iteration holds (arguments, locals, collections).
+    /// - shared issued-handle metadata, until the final alias drops (even if the
+    ///   host retains an invalidated alias after Run disposal).
     ///
     /// Charges are nominal and per holder: a payload shared by several activations
     /// through `Arc` is charged by each one that retains it, matching the
@@ -568,6 +572,7 @@ fn cleanup_safe(operation: &ControlOperation) -> bool {
             | ControlOperation::FlipFlop { .. }
             | ControlOperation::Register { .. }
             | ControlOperation::Update { .. }
+            | ControlOperation::CloseHandle { .. }
     )
 }
 /// The one data root an operation consumes before it acts. Call, Return and
@@ -587,6 +592,7 @@ fn demand_root(operation: &ControlOperation, input: ExecInput) -> Option<usize> 
         | ControlOperation::Wait { duration: root }
         | ControlOperation::Set { value: root, .. }
         | ControlOperation::Emit { payload: root, .. } => Some(*root),
+        ControlOperation::CloseHandle { handle } => Some(*handle),
         ControlOperation::AwaitEvent {
             timeout: Some(root),
             ..
@@ -1684,6 +1690,15 @@ impl Run {
             },
         };
         let step = match operation {
+            ControlOperation::CloseHandle { .. } => {
+                match self.close_graph_resource(
+                    value.as_ref().ok_or(RunError::InvalidState)?,
+                    activation.region,
+                ) {
+                    Ok(()) => (node.then(), ControlOutcome::Then, None),
+                    Err(error) => failure(node, resources::resource_fault(error)),
+                }
+            }
             ControlOperation::Effect { .. } => {
                 match self.execute_effect(plan, activation, shared, ix, budget)? {
                     Some(step) => step,
@@ -1698,10 +1713,29 @@ impl Run {
                 }
             }
             ControlOperation::Call { .. } | ControlOperation::Return { .. } => {
-                match self
+                let function_step = self
                     .cells()
-                    .execute_function(plan, activation, shared, ix, budget)?
+                    .execute_function(plan, activation, shared, ix, budget)?;
+                let values = match &activation.transfer {
+                    Transfer::Call(call) => call.arguments(),
+                    Transfer::Return(FunctionReturn::Values { values, .. }) => values,
+                    _ => &[],
+                };
+                if let Some(error) = values
+                    .iter()
+                    .find_map(|value| self.check_graph_resource(value, activation.region).err())
                 {
+                    activation.transfer = Transfer::None;
+                    self.complete(
+                        plan,
+                        activation,
+                        shared,
+                        ix,
+                        failure(node, resources::resource_fault(error)),
+                    )?;
+                    return Ok(());
+                }
+                match function_step {
                     FunctionStep::Failed(step) => step,
                     FunctionStep::Returned => {
                         self.record(RunEvent {

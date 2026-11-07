@@ -1,5 +1,70 @@
 # Tooling, environment and research register
 
+## C08b — authenticated graph handles and region ownership — 2026-11-07
+
+Local work on `codex/c08b-graph-handles`, from dev
+`1374d97058e270c104412a2ae1640b5ecc78a797` (PR140). Rust 1.99.1
+(`58cf8f9c3`, 2026-10-13), Cargo 1.99.1 (`5f94df478`, 2026-08-27), Windows
+`x86_64-pc-windows-msvc`, edition 2024, default workspace test features, all features
+for Clippy/rustdoc; `CARGO_INCREMENTAL=0`. MSRV stays 1.97.1; only 1.99.1 is installed
+locally. No dependencies, features or lockfile changed. Cargo.lock SHA256:
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+The source receipt covers 339 tracked/new files under `app` plus root Cargo
+manifest/lock/toolchain files, excluding docs and ignored outputs. Sorted
+`sha256  path` manifest SHA256:
+`7D9B976A37975BD23CDF2B143B5B607ECC984F9C880F36801ABCC352389591E7`.
+Contracts/ADR/message keys are updated in 03/08/11/12/13, FR/NFR trace in 01.
+Public Rust API change: `Value::Handle` now takes `Arc<HandleValue>` instead of the
+unused inline `HandleId`; consumers matching it must update. `CloseReason` and
+`ResourceError` gain scope/authentication variants. Saved graph format stays v1.
+
+Fifteen public-boundary regressions cover compiled Async acquisition/use/close
+across Wait; wrong-kind, forged and foreign references; unclosed refusal/retry;
+stale generation after slab reuse; resource and result quotas with rollback;
+natural scope retirement; nested Return transfer; ancestor borrowing with
+unreturned callee acquisition; Race and immediate-stop cleanup with repeated
+idempotent close; sibling-owner refusal; revocation before completion and after
+result acceptance; Return cleanup closing its own result before caller publication;
+stop/drop before result publication; metadata retained by external invalidated
+aliases; literal/Eq/map-key restrictions and the 16-byte Value invariant; and
+compiler refusal of manual handle payloads/Register storage. One table regression
+checks scope close newest-first despite a panicking closer and empty owner indexes.
+
+Final local checks:
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test --workspace --locked --offline` | **1,385 passed, 0 failed, 15 opt-in measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,385 passed, 0 failed, 15 opt-in measurements ignored** |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| `cargo run -p orange-bundled --example headless_control --locked --offline` | Pass; total 3 at virtual time 10 ns |
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` | Pass; all/any/race/detach completion and retirement |
+| `cargo run -p orange-bundled --example headless_authoring --locked --offline` | Pass; old-plan wait, fresh restart, On Stop |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary metadata check | Pass; 19 fixtures and core boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+Node is 24.18.0. Rust tests use ignored repository-local temporary storage:
+`TEMP`/`TMP` point to `.artifacts/c08b-validation/tmp`. Development fixture mistakes
+(duplicate function interface port names) and lint failures were corrected before
+these final runs. Review also found and fixed Return publication after cleanup
+revocation and unintended Register/manual admission; both have regressions.
+No failed or planned check is counted as passed.
+
+This implements the limited direct-handle C08b profile, with trusted bounded and
+nonblocking synchronous closers. No actual OS resource/service adapter, resource
+container/variable/event storage, pure handle kernel, graph stream iterator,
+replay/checkpoint restoration, physical timing/RSS or local other-OS/MSRV evidence
+is claimed. Host-retained invalidated aliases keep only their charged issuing
+metadata alive, never the resource object. Broader C11 services and core/product
+qualification remain open; a passing merge does not pass those gates.
+
 ## C11a effects, C07a runtime Watch and C09a host pull streams — 2026-11-06
 
 Local work on `codex/c11-c07-c09-core`, based on dev

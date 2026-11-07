@@ -411,6 +411,14 @@ impl Run {
         self.regions
             .observe_cause_depth(strand.region, strand.cause_depth)?;
         let region = RegionId::of_frame(strand.function.ok_or(RunError::InvalidState)?);
+        let caller_region = self
+            .regions
+            .get(region)?
+            .continuation
+            .as_ref()
+            .ok_or(RunError::InvalidState)?
+            .region;
+        self.transfer_return_resources(&strand, &result, region, caller_region)?;
         let frame = self.regions.get_mut(region)?;
         let RegionKind::Function {
             result: pending, ..
@@ -436,6 +444,23 @@ impl Run {
         result: FunctionReturn,
     ) -> Result<(), RunError> {
         let plan = self.plan.as_ref().ok_or(RunError::InvalidState)?.clone();
+        // Return cleanup may close/revoke an alias after Return collected it.
+        // Validate at the caller's publication boundary as well as collection.
+        let result = match result {
+            FunctionReturn::Values { ref values, .. } => {
+                match values
+                    .iter()
+                    .find_map(|value| self.check_graph_resource(value, caller.region).err())
+                {
+                    Some(error) => FunctionReturn::Fault(ConstantFault {
+                        source: plan.nodes()[owner.index()].node(),
+                        fault: resources::resource_fault(error),
+                    }),
+                    None => result,
+                }
+            }
+            _ => result,
+        };
         let mut shared = self
             .activations
             .get_mut(caller.sequence)
@@ -463,6 +488,8 @@ impl Run {
             let Some(mut r) = self.regions.take_if_done(id)? else {
                 return Ok(());
             };
+            let closed = self.resources.close_region_resources(id)?;
+            self.regions.charge(closed);
             if let Some(caller) = r.continuation.as_mut() {
                 caller.cause_depth = caller.cause_depth.max(r.max_cause_depth);
             }
@@ -841,6 +868,7 @@ impl Run {
                 }
             }
         }
+        self.resources.reparent_resources(ids, root)?;
         let activation =
             self.regions
                 .prune(ids, retired, cleanup.iter().map(|s| s.id).collect())?;

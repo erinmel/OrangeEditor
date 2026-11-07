@@ -6,6 +6,55 @@ incremental authoring preview or graph stream iteration. Verification is in [10]
 
 ## Trusted execution boundary (C11a/C09a, 2026-11-06)
 
+### Graph resource ownership (C08b, 2026-11-07)
+
+Direct `core/handle@1<K>` values now cross trusted effect ports and graph-local
+Action/Async function interfaces, and `core/close-handle@1` consumes them. `K` must
+resolve to a registered handle kind. This profile admits a handle result only as
+an effect's sole data result. It adds no resource containers, variable/register/
+event storage, pure handle kernels, persistence or graph stream operations.
+
+`Run::resource_value` exposes an existing host resource as an authenticated alias;
+the resource retains its run owner. `complete_effect_resource(id, kind, object)`
+acquires a new resource for the pending Async's dynamic region and admits its
+sole typed result atomically. Wrong identity/type, resource capacity, metadata or
+result quota refusals return the object unclosed in `EffectResourceRefused` and
+release any staged reservations. A valid pending effect stays pending for retry;
+stale identities cannot be revived. No continuation executes
+inside completion admission. The host still handles real service acquisition and
+any late worker result after cancellation.
+
+Cloning a value creates an alias, never an additional resource owner. Execution
+checks private issuing evidence, canonical alias identity, run, live generation,
+exact kind and owner ancestry before effect/function consumption or publication.
+Descendants borrow ancestor resources; sibling scopes cannot publish each other's
+resources. Successful Return transfers returned callee-owned resources to the
+caller before callee cancellation; borrowed ancestor/run resources retain their
+owner. Results are checked again after Return cleanup, which may have closed one.
+
+Normal region retirement closes its unreturned resources newest first with
+`ScopeEnded`. Cancellation moves resources from pruned descendants to the surviving
+cleanup barrier, so connected cleanup can still close aliases; barrier retirement
+closes the remainder. `core/close-handle` is a synchronous, cleanup-safe Action,
+with one `handle: core/handle@1<$K>` input, no data outputs/config, and ordinary
+`then`/`failed`. Closing an authentic already-closed alias succeeds idempotently;
+other invalid references fail. Host close removes the entry before its closer,
+invalidates all aliases, cancels effects borrowing/returning it and schedules their
+failure on a later pump, including an accepted unpublished completion. Late worker
+success cannot publish. A panicking scope closer does not skip the other closers.
+Closers run on the actor/calling host stack and must be trusted, bounded and
+nonblocking; none of this is OS isolation or wall-clock preemption.
+
+Each direct retained alias has the ordinary 16-byte nominal value charge. Issued
+metadata has a separate run-aggregate lease shared by aliases; it survives close/
+disposal while an external alias remains, then refunds when the last alias drops.
+It keeps no resource object alive. Public `HandleValue` metadata/construction and
+Rust identity Eq/Hash grant no runtime authority, language Eq/map-key support or
+literal/serialization codec. `Value` remains at most 16 bytes. The saved graph
+format, dependencies and provider locks are unchanged. Checks and limits are in 10.
+
+### Trusted effect commands
+
 `compile_control_with_effects` takes a separate inert `EffectResolver` in addition
 to the existing pure/entropy resolver. `compile_control` keeps its previous profile.
 A binding's port order and Action/Async mode must match the fresh signature; its
@@ -301,7 +350,7 @@ sequenceDiagram
 
 Cancellation propagates parent → child; completion races resolve once through the continuation state machine. A stopped owner cannot receive new callbacks. Handle generation prevents stale use even if indices are reused. Unhandled errors fault that activation by default; entrypoint policy decides whether run remains subscribed or terminates. Fatal host integrity failures terminate safely; ordinary errors are not evidence that native crashes are isolated.
 
-**Run-owned resources (C08a, 2026-11-06).** `Run::acquire_resource(kind, resource)` takes ownership of a host object (`RunResource`, `Send + Sync`) whose kind is a registered handle-kind type in the run's registry, and returns a `ResourceHandle` bound to that run. Only a `Running` run acquires; a refusal (`NotRunning`, `UnknownKind`, `ResourceLimit`, `IdentityExhausted`) hands the object back unclosed. `close_resource`, `resource_kind` and `resource_mut::<T>(handle, kind)` work in every state while the handle is live and refuse `WrongRun`, `StaleHandle` and `WrongKind`. The run calls `close` exactly once with its reason: `Closed` by the host, `RunStopped` or `RunFaulted` when the run reaches `Stopped` (newest acquisition first, after graceful drain or bounded cancellation cleanup), or `RunDropped` when a run is dropped still owning it. A panicking closer does not skip the others. `RunLimits::max_resources` (default 256) bounds live resources and `RunOwnership::resources` counts them. Graph handle values, activation owners and close nodes are later work (C08b); no node produces or consumes `core/handle@1<K>` yet.
+**Run-owned resources (C08a, 2026-11-06; extended by C08b above).** `Run::acquire_resource(kind, resource)` takes ownership of a host object (`RunResource`, `Send + Sync`) whose kind is a registered handle-kind type in the run's registry, and returns a `ResourceHandle` bound to that run. Only a `Running` run acquires; a refusal (`NotRunning`, `UnknownKind`, `ResourceLimit`, `IdentityExhausted`) hands the object back unclosed. `close_resource`, `resource_kind` and `resource_mut::<T>(handle, kind)` work in every state while the handle is live and refuse `WrongRun`, `StaleHandle` and `WrongKind`. The run calls `close` exactly once with its reason: `Closed` by the host or graph close, `ScopeEnded` when a graph owner retires, `RunStopped` or `RunFaulted` when the run reaches `Stopped` (newest acquisition first, after graceful drain or bounded cancellation cleanup), or `RunDropped` when a run is dropped still owning it. A panicking closer does not skip the others. `RunLimits::max_resources` (default 256) bounds live resources and `RunOwnership::resources` counts them. C08b adds direct graph aliases and region owners; concrete services remain separate.
 
 Requirements: FR-04–16, FR-19, FR-34–38, FR-44–50. Test families V01/V02/V03/V05/V08 and the G-suite in [11 §18](11-graph-language.md). ADR-01/04/05/06/13–16 in [08](08-decisions.md).
 

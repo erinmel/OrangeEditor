@@ -1,19 +1,24 @@
-//! Run-owned resources (C08a): a bounded, generation-checked table of host objects that
-//! the run closes exactly once. Graph handle values and activation owners are later work.
+//! Run- and region-owned resources: a bounded, generation-checked table of host
+//! objects, authenticated graph aliases and exactly-once closing.
+use super::ids::RegionId;
 use super::{Run, RunState};
 use orange_model::id::TypeExpr;
 use orange_model::type_term::TypeTerm;
 use orange_model::types::TypeKind;
-use orange_model::value::HandleId;
+use orange_model::value::{HandleId, HandleValue};
 use std::any::Any;
-use std::collections::HashMap;
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::sync::Arc;
 use thiserror::Error;
+mod graph;
+pub use graph::EffectResourceRefused;
+pub(in crate::run) use graph::resource_fault;
 
 /// A host object owned by one run. The run calls `close` exactly once: when the host
-/// closes its handle, when the run reaches `Stopped`, or when the run is dropped.
-/// `close` runs on the host's call stack, never inside graph execution. `Send + Sync`
-/// keeps `Run` movable and shareable across host threads.
+/// closes its handle, its graph scope retires, the run reaches `Stopped`, or the run
+/// is dropped. `close` runs synchronously on the calling host/actor stack and must
+/// be bounded and nonblocking. `Send + Sync` keeps `Run` movable and shareable.
 pub trait RunResource: Any + Send + Sync {
     fn close(self: Box<Self>, reason: CloseReason);
 }
@@ -29,6 +34,8 @@ pub enum CloseReason {
     RunFaulted,
     /// The run was dropped while it still owned the resource.
     RunDropped,
+    /// A graph ownership region completed, including bounded cancellation cleanup.
+    ScopeEnded,
 }
 
 /// Opaque handle to a resource of one run. A closed handle stays stale for good: its
@@ -78,6 +85,10 @@ pub enum ResourceError {
     StaleHandle,
     #[error("The resource is not of the requested kind.")]
     WrongKind,
+    #[error("The resource is owned by another graph scope.")]
+    WrongOwner,
+    #[error("The resource value has no authentic issuing evidence.")]
+    Forged,
 }
 impl ResourceError {
     pub const fn message_key(self) -> &'static str {
@@ -89,6 +100,8 @@ impl ResourceError {
             Self::IdentityExhausted => "core/resource-identity-exhausted",
             Self::StaleHandle => "core/resource-stale",
             Self::WrongKind => "core/resource-wrong-kind",
+            Self::WrongOwner => "core/resource-wrong-owner",
+            Self::Forged => "core/resource-forged",
         }
     }
 }
@@ -108,6 +121,8 @@ impl std::fmt::Debug for AcquireRefused {
 }
 
 struct Entry {
+    owner: Option<RegionId>,
+    value: Option<Arc<HandleValue>>,
     kind: u32,
     /// Acquisition order; terminal closing runs newest first.
     seq: u64,
@@ -121,6 +136,7 @@ struct Slot {
 /// Generational slab. Generations start at 1, so a zeroed handle is never live.
 #[derive(Default)]
 pub(super) struct Resources {
+    owners: BTreeMap<RegionId, BTreeSet<HandleId>>,
     slots: Vec<Slot>,
     free: Vec<u32>,
     live: usize,
@@ -170,6 +186,8 @@ impl Resources {
         self.next_seq = seq;
         let slot = &mut self.slots[index as usize];
         slot.entry = Some(Entry {
+            owner: None,
+            value: None,
             kind,
             seq,
             resource,
@@ -205,6 +223,19 @@ impl Resources {
     fn release(&mut self, index: u32) -> Entry {
         let slot = &mut self.slots[index as usize];
         let entry = slot.entry.take().unwrap_or_else(|| unreachable!());
+        if let Some(owner) = entry.owner {
+            let id = HandleId {
+                index,
+                generation: slot.generation,
+                kind: entry.kind,
+            };
+            if let Some(items) = self.owners.get_mut(&owner) {
+                items.remove(&id);
+                if items.is_empty() {
+                    self.owners.remove(&owner);
+                }
+            }
+        }
         self.live -= 1;
         if let Some(next) = slot.generation.checked_add(1) {
             slot.generation = next;
@@ -279,7 +310,9 @@ impl Run {
         if handle.run != self.id {
             return Err(ResourceError::WrongRun);
         }
-        self.resources.remove(handle.id)?.close(CloseReason::Closed);
+        let resource = self.resources.remove(handle.id)?;
+        self.revoke_resource_effects(handle.id);
+        resource.close(CloseReason::Closed);
         Ok(())
     }
 
