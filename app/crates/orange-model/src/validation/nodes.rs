@@ -421,6 +421,7 @@ pub(crate) fn contract_code(error: ContractError) -> DiagnosticCode {
         ContractError::TypeMismatch => DiagnosticCode::TypeMismatch,
         ContractError::TypeComplexity => DiagnosticCode::TypeComplexity,
         ContractError::ForEachMode => DiagnosticCode::ForEachMode,
+        ContractError::ManualPayload => DiagnosticCode::ManualPayload,
         ContractError::ConverterConfig => DiagnosticCode::ConverterConfig,
         ContractError::ConverterEntry => DiagnosticCode::ConverterEntry,
         ContractError::ConverterOptions => DiagnosticCode::ConverterOptions,

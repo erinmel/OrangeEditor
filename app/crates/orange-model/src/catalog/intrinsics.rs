@@ -98,6 +98,10 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
             Vec::new(),
         )
     });
+    definitions.push(NodeDefinition {
+        ports: Ports::Manual,
+        ..definition(ids::ON_MANUAL, NodeKind::Entry, None, Vec::new())
+    });
     definitions.extend(zone_definitions());
     definitions
 }
@@ -143,6 +147,48 @@ pub(crate) fn for_each_contract(
         kind: definition.kind,
         suspends: definition.suspends,
         type_params,
+        ports,
+    })
+}
+
+/// `core/on-manual` ports (11 §10.2): the implicit `then` plus a `payload` output typed by
+/// `config.payload`, which must name a concrete registered type. Without that field the
+/// entry carries no payload. No other config field is defined.
+pub(crate) fn manual_contract(
+    definition: &NodeDefinition,
+    node: &NodeInstance,
+    types: &crate::types::TypeRegistry,
+) -> Result<NodeContract, ContractError> {
+    if node.config.keys().any(|key| key != "payload") {
+        return Err(ContractError::ManualPayload);
+    }
+    let mut ports = Vec::new();
+    if let Some(payload) = node.config.get("payload") {
+        let payload: TypeExpr = payload
+            .as_str()
+            .and_then(|text| text.parse().ok())
+            .ok_or(ContractError::ManualPayload)?;
+        let term = crate::type_term::TypeTerm::parse(&payload).map_err(|error| match error {
+            crate::IdError::TypeTooDeep { .. } => ContractError::TypeComplexity,
+            _ => ContractError::ManualPayload,
+        })?;
+        types.validate(&term).map_err(|error| match error {
+            crate::types::TypeResolveError::TooDeep { .. }
+            | crate::types::TypeResolveError::DerivationTooDeep { .. } => {
+                ContractError::TypeComplexity
+            }
+            _ => ContractError::ManualPayload,
+        })?;
+        ports.push(PortDescriptor::data_out(
+            "payload",
+            payload,
+            OutputSource::Payload,
+        ));
+    }
+    Ok(NodeContract {
+        kind: definition.kind,
+        suspends: definition.suspends,
+        type_params: Vec::new(),
         ports,
     })
 }

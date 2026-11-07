@@ -3,6 +3,7 @@
 use super::*;
 use orange_model::document::{OverflowPolicy, ReentrancyMode};
 use orange_model::id::EventDeclId;
+use orange_model::value::shape::ValueShape;
 use std::collections::BTreeSet;
 
 const LIMIT: KernelFault = KernelFault {
@@ -35,18 +36,34 @@ pub struct RunEventStats {
     pub live_payload_bytes: usize,
     pub activation_high_water: usize,
 }
-/// Identifies whether an accepted event came from a graph node or a registered host source.
+/// Identifies whether an accepted event came from a graph node, a registered host source
+/// or the host manual-trigger call.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventOrigin {
-    Graph { node: NodeId, scope: usize },
-    Host { source: HostSourceId },
+    Graph {
+        node: NodeId,
+        scope: usize,
+    },
+    Host {
+        source: HostSourceId,
+    },
+    /// `Run::trigger`: no source registration; `source_seq` counts the entry's triggers.
+    Manual,
+}
+
+/// What an accepted delivery targets: a checked run-scope event declaration, consumed by
+/// its On Event handlers and Await waiters, or one root `core/on-manual` entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventTarget {
+    Declared(EventDeclId),
+    Manual(NodeId),
 }
 
 /// Last successfully ingested event. Contains no payload.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EventMetadata {
     pub ingestion_seq: u64,
-    pub event: EventDeclId,
+    pub target: EventTarget,
     pub origin: EventOrigin,
     pub source_seq: u64,
     pub cause: Option<u64>,
@@ -115,6 +132,8 @@ pub enum IngressError {
     InvalidPayload,
     #[error("The event exceeds a run delivery limit.")]
     DeliveryLimit,
+    #[error("The node is not a manual entry in the checked run plan.")]
+    UnknownEntry,
 }
 impl IngressError {
     pub const fn message_key(self) -> &'static str {
@@ -128,6 +147,7 @@ impl IngressError {
             Self::SequenceNotIncreasing => "core/ingress-sequence-invalid",
             Self::InvalidPayload => "core/ingress-payload-invalid",
             Self::DeliveryLimit => "core/event-limit-exceeded",
+            Self::UnknownEntry => "core/ingress-unknown-entry",
         }
     }
 }
@@ -333,6 +353,19 @@ impl Handler {
             .filter(|root| self.cancel_requested != Some(*root))
     }
 }
+/// Payload shape and target of one delivery channel: a checked event, then manual entries.
+fn channel(plan: &ControlPlan, channel: usize) -> Option<(Option<&ValueShape>, EventTarget)> {
+    match plan.events().get(channel) {
+        Some(event) => Some((
+            Some(event.payload_type()),
+            EventTarget::Declared(event.id()),
+        )),
+        None => {
+            let manual = plan.manuals().get(channel - plan.events().len())?;
+            Some((manual.payload_type(), EventTarget::Manual(manual.node())))
+        }
+    }
+}
 pub(super) struct ActivationTemplate {
     pub prepared: Arc<PreparedData>,
     pub locals: Vec<Option<Value>>,
@@ -351,8 +384,12 @@ pub(super) struct Events {
     /// Successful Replace admissions, in emission/handler order. Each root is queued
     /// once until retirement, so this is bounded by active roots, not emission history.
     cancel_pending: VecDeque<u64>,
+    /// Handler indices per channel: checked events first, then one channel per root manual
+    /// entry at `events.len() + manual index`.
     by_event: Vec<Vec<usize>>,
     source_sequences: Vec<u64>,
+    /// Accepted trigger count per manual entry, used as its source sequence.
+    manual_sequences: Vec<u64>,
     host_sources: BTreeMap<HostSourceId, HostSource>,
     next_host_source_id: Option<u64>,
     ingestion: u64,
@@ -366,30 +403,29 @@ pub(super) struct Events {
 impl Events {
     pub fn new(plan: &ControlPlan) -> Self {
         let mut handlers = Vec::new();
-        let by_event = plan
+        let mut add = |handler: &orange_compiler::EventHandler| {
+            handlers.push(Handler {
+                entry: handler.entry(),
+                capacity: handler.capacity(),
+                overflow: handler.overflow(),
+                mode: handler.mode(),
+                max_parallel: handler.max_parallel(),
+                pending: VecDeque::new(),
+                active_roots: IdSet::default(),
+                cancel_requested: None,
+            });
+            handlers.len() - 1
+        };
+        let mut by_event: Vec<Vec<usize>> = plan
             .events()
             .iter()
-            .map(|metadata| {
-                metadata
-                    .handlers()
-                    .iter()
-                    .map(|handler| {
-                        let index = handlers.len();
-                        handlers.push(Handler {
-                            entry: handler.entry(),
-                            capacity: handler.capacity(),
-                            overflow: handler.overflow(),
-                            mode: handler.mode(),
-                            max_parallel: handler.max_parallel(),
-                            pending: VecDeque::new(),
-                            active_roots: IdSet::default(),
-                            cancel_requested: None,
-                        });
-                        index
-                    })
-                    .collect()
-            })
+            .map(|metadata| metadata.handlers().iter().map(&mut add).collect())
             .collect();
+        by_event.extend(
+            plan.manuals()
+                .iter()
+                .map(|manual| vec![add(manual.handler())]),
+        );
         Self {
             handlers,
             ready: BTreeSet::new(),
@@ -401,6 +437,7 @@ impl Events {
             } else {
                 vec![0; plan.nodes().len()]
             },
+            manual_sequences: vec![0; plan.manuals().len()],
             host_sources: BTreeMap::new(),
             next_host_source_id: Some(1),
             ingestion: 0,
@@ -629,6 +666,65 @@ impl Run {
         }
         Ok(metadata)
     }
+    /// Admit one host trigger of a root `core/on-manual` entry. Like `ingest_event`, this
+    /// is synchronous bounded admission only; the handler root starts in a later `pump`.
+    /// `payload` is required exactly when the entry declares a payload type.
+    pub fn trigger(
+        &mut self,
+        node: NodeId,
+        payload: Option<&Value>,
+        wall_ns: Option<i64>,
+    ) -> Result<EventMetadata, IngressError> {
+        if self.pump_open || self.state != RunState::Running {
+            return Err(IngressError::NotRunning);
+        }
+        let plan = self
+            .plan
+            .as_ref()
+            .ok_or(IngressError::UnknownEntry)?
+            .clone();
+        let manual = plan
+            .manuals()
+            .iter()
+            .position(|manual| manual.node() == node)
+            .ok_or(IngressError::UnknownEntry)?;
+        let payload = match (plan.manuals()[manual].payload_type(), payload) {
+            (Some(shape), Some(payload)) => {
+                shape
+                    .checked_charge(payload, usize::MAX)
+                    .map_err(|_| IngressError::InvalidPayload)?;
+                payload
+            }
+            (None, None) => &Value::Unit,
+            _ => return Err(IngressError::InvalidPayload),
+        };
+        let source_seq = self.events.manual_sequences[manual]
+            .checked_add(1)
+            .ok_or(IngressError::DeliveryLimit)?;
+        let accepted = self.admit_event(
+            &plan,
+            payload,
+            EventAdmission {
+                event: plan.events().len() + manual,
+                origin: EventOrigin::Manual,
+                cause: None,
+                cause_depth: 0,
+                source_seq,
+                wall_ns,
+                graph_source: None,
+            },
+        );
+        let metadata = match accepted {
+            Ok(metadata) => metadata,
+            Err(LIMIT) => {
+                self.events.stats.overflows = self.events.stats.overflows.saturating_add(1);
+                return Err(IngressError::DeliveryLimit);
+            }
+            Err(_) => return Err(IngressError::DeliveryLimit),
+        };
+        self.events.manual_sequences[manual] = source_seq;
+        Ok(metadata)
+    }
     pub(super) fn waiter_count(&self) -> usize {
         self.events.waiters.len()
     }
@@ -803,11 +899,14 @@ impl Run {
             wall_ns,
             graph_source,
         } = admission;
-        let metadata = plan.events().get(event).ok_or(LIMIT)?;
-        let charge = metadata
-            .payload_type()
-            .checked_charge(payload, usize::MAX)
-            .map_err(|_| LIMIT)?;
+        let (payload_type, target) = channel(plan, event).ok_or(LIMIT)?;
+        let charge = match payload_type {
+            Some(shape) => shape
+                .checked_charge(payload, usize::MAX)
+                .map_err(|_| LIMIT)?,
+            None if matches!(payload, Value::Unit) => 0,
+            None => return Err(LIMIT),
+        };
         let ingestion = self.events.ingestion.checked_add(1).ok_or(LIMIT)?;
         let mut pending = self.events.stats.pending;
         let mut bytes = self.events.stats.pending_bytes;
@@ -905,7 +1004,7 @@ impl Run {
         }
         let origin = EventMetadata {
             ingestion_seq: ingestion,
-            event: metadata.id(),
+            target,
             origin: event_origin,
             source_seq,
             cause,
