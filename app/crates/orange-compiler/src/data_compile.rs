@@ -1,6 +1,6 @@
 use crate::compile::{
     Admission, ConstantFolder, FAULT_CHARGE, Incoming, admit, binding_error, charge, decode,
-    is_state_read, key, matches_abi, port_type, value_bytes,
+    is_host_read, key, matches_abi, port_type, value_bytes,
 };
 use crate::lazy::Lazy;
 use crate::*;
@@ -497,7 +497,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
                     boxed: port_type(&self.plan.snapshot, node_id, &sig.ports[0])?.unboxed_error(),
                 },
             }
-        } else if is_state_read(&self.plan.snapshot, node) {
+        } else if is_host_read(&self.plan.snapshot, node) {
             DataOperation::Input
         } else {
             let abi = |inputs: &[PortKey], outputs: &[PortKey]| {

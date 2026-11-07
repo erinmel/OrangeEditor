@@ -304,6 +304,7 @@ impl StateLayout {
                         | HostSource::Argument { .. }
                         | HostSource::CallLocal(_)
                         | HostSource::State(_)
+                        | HostSource::Clock
                         | HostSource::Iteration(_, _)
                 ) {
                     None

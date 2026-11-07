@@ -1630,3 +1630,6 @@ mod manual_entry;
 
 #[path = "support/timer_entry.rs"]
 mod timer_entry;
+
+#[path = "support/clock_reader.rs"]
+mod clock_reader;

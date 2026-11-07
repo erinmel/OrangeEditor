@@ -69,6 +69,8 @@ pub(super) struct Cells<'r> {
     pub versions: &'r mut [u64],
     pub frames: &'r mut Frames,
     pub segment: &'r mut SegmentWrites,
+    /// Virtual time that `core/now` reads in an epoch prologue.
+    pub now: u64,
 }
 impl Run {
     pub(super) fn cells(&mut self) -> Cells<'_> {
@@ -81,6 +83,7 @@ impl Run {
             versions: &mut self.versions,
             frames: &mut self.frames,
             segment: &mut self.segment,
+            now: self.now,
         }
     }
 }
@@ -384,6 +387,18 @@ impl Cells<'_> {
                             }),
                         })
                     }
+                    HostSource::Clock => Some(match i64::try_from(self.now) {
+                        Ok(now) => FoldedValue::Value(Value::Duration(now)),
+                        Err(_) => FoldedValue::Fault(ConstantFault {
+                            source: plan.data().nodes()[plan.data().host_inputs()[i].index()]
+                                .node(),
+                            fault: KernelFault {
+                                code: "core/OutOfRange",
+                                message_key: "core/clock-out-of-range",
+                                message: "The run clock is beyond the duration range.",
+                            },
+                        }),
+                    }),
                     HostSource::Error(_)
                     | HostSource::Index(_)
                     | HostSource::Value(_)

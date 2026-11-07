@@ -102,6 +102,22 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
         ports: Ports::Manual,
         ..definition(ids::ON_MANUAL, NodeKind::Entry, None, Vec::new())
     });
+    // The clock reader: no inputs, read once per epoch like a state read (11 §7.4).
+    definitions.push(NodeDefinition {
+        volatility: Some(super::Volatility::Clock),
+        determinism: super::Determinism::External,
+        ..definition(
+            ids::NOW,
+            NodeKind::Volatile,
+            None,
+            vec![PortDescriptor::data_out(
+                "elapsed",
+                ty("core/duration@1"),
+                // Host reads publish like state reads: one host input per epoch.
+                OutputSource::State,
+            )],
+        )
+    });
     for id in [ids::ON_TIMER, ids::ON_TIMEOUT] {
         definitions.push(NodeDefinition {
             ports: Ports::Timer,

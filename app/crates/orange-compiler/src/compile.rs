@@ -911,7 +911,24 @@ pub(crate) fn is_state_read(
             definition.volatility == Some(orange_model::catalog::Volatility::StateRead)
         })
 }
-/// State readers have the same host-input ABI in roots and called bodies.
+/// A state or clock reader: the host supplies its single output once per epoch.
+pub(crate) fn is_host_read(
+    snapshot: &RegistrySnapshot,
+    node: &orange_model::document::NodeInstance,
+) -> bool {
+    snapshot
+        .definition(&node.definition)
+        .is_some_and(|definition| {
+            matches!(
+                definition.volatility,
+                Some(
+                    orange_model::catalog::Volatility::StateRead
+                        | orange_model::catalog::Volatility::Clock
+                )
+            )
+        })
+}
+/// State and clock readers have the same host-input ABI in roots and called bodies.
 pub(crate) fn admit_state_read(
     node: NodeId,
     sig: &orange_model::document::SignatureSnapshot,
@@ -988,7 +1005,7 @@ pub(crate) fn admit_roots<'a>(
         // A data plan reads host state through a single-output input slot.
         let state_read = data_plan
             && sig.kind == NodeKind::Volatile
-            && is_state_read(snapshot, &body.nodes[node]);
+            && is_host_read(snapshot, &body.nodes[node]);
         if state_read {
             admit_state_read(*node, sig)?;
         }
