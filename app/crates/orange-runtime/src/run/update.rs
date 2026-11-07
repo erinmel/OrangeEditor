@@ -286,6 +286,8 @@ impl Cells<'_> {
                 shared.locals[cell] = Some(new);
                 shared.local_bytes.set(bytes);
             } else {
+                self.changes
+                    .capture(variable, self.variables[cell].as_ref());
                 self.variables[cell] = Some(new);
                 *self.bytes = bytes;
             }

@@ -162,6 +162,7 @@ impl Frames {
                 HostSource::Value(_)
                     | HostSource::EventPayload(_)
                     | HostSource::Tick(_, _)
+                    | HostSource::Change(_, _)
                     | HostSource::Update(_, _)
                     | HostSource::CallOutput(_, _)
             ) && let Some(FoldedValue::Value(value)) = &shared.outputs[cell]

@@ -19,6 +19,7 @@ use std::sync::{
 use thiserror::Error;
 
 mod cells;
+mod changes;
 mod function;
 mod iteration;
 mod loops;
@@ -691,6 +692,7 @@ pub struct Run {
     /// panicked through a pump, which can leave work taken out of the run's stores.
     pump_open: bool,
     resources: resources::Resources,
+    changes: changes::Changes,
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -802,6 +804,7 @@ impl Run {
             .any(|event| !event.handlers().is_empty())
             || !plan.manuals().is_empty()
             || !plan.timers().is_empty()
+            || !plan.changes().is_empty()
             || plan
                 .nodes()
                 .iter()
@@ -913,6 +916,7 @@ impl Run {
             None
         };
         let events = events::Events::new(&plan);
+        let changes = changes::Changes::new(&plan);
         let mut run = Self {
             frames: Frames::default(),
             id: run_identity()?,
@@ -949,6 +953,7 @@ impl Run {
             fork_children: vec![],
             pump_open: false,
             resources: resources::Resources::default(),
+            changes,
         };
         run.arm_timer_entries()?;
         Ok(run)
@@ -1272,7 +1277,10 @@ impl Run {
             }
             let before = quantum;
             if self.segment_owner != Some(activation.id) {
+                self.end_segment(&plan);
                 self.segment.open();
+                self.changes
+                    .open((activation.sequence, activation.cause_depth));
                 self.segment_owner = Some(activation.id);
                 self.last_segment = Some(activation.sequence);
             }
@@ -1395,6 +1403,15 @@ impl Run {
                 return self.fail(error);
             }
             remaining = remaining.saturating_sub(self.regions.take_work());
+        }
+        // A segment whose strand suspended, retired or rotated away has ended; one that
+        // keeps the ready head continues in the next pump, so host slices never split it.
+        if !self
+            .ready
+            .front()
+            .is_some_and(|a| Some(a.id) == self.segment_owner)
+        {
+            self.end_segment(&plan);
         }
         if self.state == RunState::Faulted {
             self.cancel_owned()?;
@@ -1976,6 +1993,7 @@ impl Run {
         self.cancel_timers = Vec::new();
         self.fork_children = Vec::new();
         self.resources = resources::Resources::default();
+        self.changes.release();
         self.transition(RunState::Disposed);
         Ok(())
     }

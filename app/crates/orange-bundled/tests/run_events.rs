@@ -1637,3 +1637,6 @@ mod clock_reader;
 
 #[path = "support/run_resources.rs"]
 mod run_resources;
+
+#[path = "support/variable_changed.rs"]
+mod variable_changed;
