@@ -1,5 +1,15 @@
 # Internationalization and translatable text
 
+C13 checkpoint boundary (2026-11-08): fieldless CheckpointError uses
+`core/checkpoint-invalid`, `-version`, `-limit`, `-owner`, `-selection`,
+`-incompatible`, `-unsupported-value`, `-boundary` and `-startup` (the same
+`core/checkpoint-` prefix). Static safe fallbacks have no arguments;
+RunError::Checkpoint preserves the key. Parser/codec errors never retain rejected
+text or serializer diagnostics. Debug shows only version/scope/graph/counts,
+never values, labels, provider contexts or credentials. Native value bits, IDs,
+schema/codec/provider identity and hash framing are locale-independent. Selection
+and artifact sensitivity remain host-owned, with no automatic value presentation.
+
 C12c bus boundary (2026-11-08): fieldless WorkspaceBusError uses
 `core/workspace-bus-contract`, `-schema-mismatch`, `-wrong-owner`, `-not-attached`,
 `-closed`, `-limit`, `-identity-exhausted` and `-sequence-not-increasing` (the same

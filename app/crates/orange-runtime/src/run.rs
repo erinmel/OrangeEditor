@@ -32,6 +32,7 @@ use function::{Frames, FunctionFrame, FunctionReturn, FunctionStep, PendingCall,
 mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod activations;
+mod checkpoint;
 mod effects;
 mod shared;
 mod workspace_events;
@@ -285,6 +286,8 @@ pub struct RunOwnership {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
     #[error("{0}")]
+    Checkpoint(#[from] crate::CheckpointError),
+    #[error("{0}")]
     WorkspaceBus(#[from] crate::WorkspaceBusError),
     #[error("{0}")]
     Shared(#[from] SharedError),
@@ -308,6 +311,7 @@ pub enum RunError {
 impl RunError {
     pub const fn message_key(self) -> &'static str {
         match self {
+            Self::Checkpoint(e) => e.message_key(),
             Self::WorkspaceBus(e) => e.message_key(),
             Self::Shared(e) => e.message_key(),
             Self::ReplayFailed => "core/replay-failed",
@@ -790,7 +794,7 @@ impl Run {
         seed: u64,
         options: RunOptions,
     ) -> Result<Self, RunError> {
-        Self::start_workspace(plan, document, registry, seed, options, None)
+        Self::start_workspace(plan, document, registry, seed, options, None, None)
     }
     /// Start with an exact compatible host snapshot. The host explicitly delivers
     /// later publications; no background thread or shared mutable store is read.
@@ -805,7 +809,15 @@ impl Run {
         snapshot
             .check_schema(document, registry)
             .map_err(|_| SharedError::Contract)?;
-        Self::start_workspace(plan, document, registry, seed, options, Some(snapshot))
+        Self::start_workspace(
+            plan,
+            document,
+            registry,
+            seed,
+            options,
+            Some(snapshot),
+            None,
+        )
     }
     fn start_workspace(
         plan: Arc<ControlPlan>,
@@ -814,6 +826,7 @@ impl Run {
         seed: u64,
         options: RunOptions,
         snapshot: Option<&crate::WorkspaceSnapshot>,
+        restored: Option<&crate::checkpoint::Values>,
     ) -> Result<Self, RunError> {
         if snapshot.is_none()
             && (plan
@@ -869,18 +882,28 @@ impl Run {
             run: Vec<Option<Value>>,
             local: Vec<Option<Value>>,
         }
-        fn initialize<Id: Copy>(
+        fn initialize<Id: Copy + Ord>(
             cells: &[orange_compiler::ControlCell<Id>],
             run_bytes: &mut usize,
             local_bytes: &mut usize,
             limit: usize,
+            restored: Option<&BTreeMap<Id, Option<Value>>>,
         ) -> Result<InitialCells, RunError> {
             let (mut run, mut local) = (Vec::new(), Vec::new());
             for cell in cells {
                 if cell.scope() == VarScope::Workspace {
                     continue;
                 }
-                let bytes = cell.initial().and_then(|v| cell.charge(v)).unwrap_or(16);
+                let value = match restored.and_then(|r| r.get(&cell.id())) {
+                    Some(value) => value.as_ref(),
+                    None => cell.initial(),
+                };
+                let bytes = match value {
+                    Some(value) => cell
+                        .checked_charge(value, limit)
+                        .map_err(|_| RunError::ResourceLimit)?,
+                    None => 16,
+                };
                 let (store, total) = if cell.scope() == VarScope::Local {
                     (&mut local, &mut *local_bytes)
                 } else {
@@ -890,7 +913,7 @@ impl Run {
                     .checked_add(bytes)
                     .filter(|n| *n <= limit)
                     .ok_or(RunError::ResourceLimit)?;
-                store.push(cell.initial().cloned());
+                store.push(value.cloned());
             }
             Ok(InitialCells { run, local })
         }
@@ -902,6 +925,7 @@ impl Run {
             &mut state_bytes,
             &mut local_bytes,
             options.limits.max_state_bytes,
+            restored,
         )?;
         let InitialCells {
             run: states,
@@ -911,6 +935,7 @@ impl Run {
             &mut state_bytes,
             &mut local_bytes,
             options.limits.max_state_bytes,
+            None,
         )?;
         // Every start and On Stop frame reserves its storage now, so admit the
         // aggregate before constructing any of them.

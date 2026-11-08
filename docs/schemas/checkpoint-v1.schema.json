@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "urn:orange:checkpoint:v1",
+  "title": "OrangeEditor persistent-value checkpoint v1",
+  "$comment": "Structural contract only. Core additionally enforces host quotas, unique variable IDs, persistent scope, codecs, resolved schemas and provider compatibility before fresh-actor restoration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["format", "format_version", "scope", "graph_id", "compatibility", "values"],
+  "properties": {
+    "format": {"const": "orange.checkpoint"},
+    "format_version": {"const": 1},
+    "scope": {"enum": ["run", "workspace"]},
+    "graph_id": {"$ref": "#/$defs/id"},
+    "compatibility": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "values": {"type": "array", "items": {"$ref": "#/$defs/stored"}}
+  },
+  "$defs": {
+    "id": {"type": "string", "format": "uuid"},
+    "stored": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "type", "value"],
+      "properties": {
+        "id": {"$ref": "#/$defs/id"},
+        "type": {"type": "string", "minLength": 1},
+        "value": {
+          "oneOf": [
+            {"type": "null"},
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["encoding", "data"],
+              "properties": {"encoding": {"const": "value"}, "data": {}}
+            },
+            {
+              "type": "object", "additionalProperties": false,
+              "required": ["encoding", "data"],
+              "properties": {
+                "encoding": {"const": "bits"},
+                "data": {"type": "string", "pattern": "^([0-9a-f]{8}|[0-9a-f]{16})$"}
+              }
+            }
+          ]
+        }
+      }
+    }
+  }
+}

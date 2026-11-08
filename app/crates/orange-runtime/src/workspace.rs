@@ -302,10 +302,18 @@ impl Workspace {
         registry: Arc<RegistrySnapshot>,
         limits: WorkspaceLimits,
     ) -> Result<Self, WorkspaceError> {
+        Self::with_values(document, registry, limits, None)
+    }
+    pub(crate) fn with_values(
+        document: &GraphDocument,
+        registry: Arc<RegistrySnapshot>,
+        limits: WorkspaceLimits,
+        restored: Option<&crate::checkpoint::Values>,
+    ) -> Result<Self, WorkspaceError> {
         check_domains(document, &registry)?;
         let budget = Budget::new(limits.max_retained_bytes);
         let (variables, values, value_bytes, schema_bytes) =
-            schema::prepare(document, &registry, limits, &budget)?;
+            schema::prepare(document, &registry, limits, &budget, restored)?;
         let id = identity()?;
         let schema = Arc::new(Schema {
             id,
