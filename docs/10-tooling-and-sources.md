@@ -1,5 +1,74 @@
 # Tooling, environment and research register
 
+## C07b — effect-free authoring preview — 2026-11-07
+
+Branch `codex/c07b-authoring-preview`, from dev
+`47ce681089ab18540977d1fbe9b7353745ea4b29` (PR144). Rust 1.99.1 (`58cf8f9c3`,
+2026-10-13), Cargo 1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024;
+default workspace tests, all features for Clippy/rustdoc, `CARGO_INCREMENTAL=0`,
+locked/offline. MSRV stays 1.97.1; only 1.99.1 is installed locally. No dependency,
+feature or lockfile change. Cargo.lock SHA256:
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+Source receipt: 354 tracked/new files under `app` plus root Cargo manifest/lock/
+toolchain files, excluding docs and ignored outputs; sorted `sha256  path`
+manifest SHA256 `263AAB8FF6DB5961AAE15077E2D4FBCD57237DFFB5E1ADC7EBE2A64E18055DB8`.
+Contracts/ADR-14/trace/messages/locality notes are updated in 01/03/08/11/12/13/16.
+Public preview/session/snapshot/limits/stats APIs are additive. Ordinary compiler
+profiles retain their existing admission and callback path; the opt-in preview
+profile selects pure exports in mixed graphs. Saved format/provider locks unchanged.
+
+Seventeen focused public regressions pass. A two-cone edit recomputes its two
+affected kernels and retains the unrelated third; layout edits run zero kernels
+and preserve semantic freshness. Configuration and type changes rebind correctly;
+rewiring to equal values reuses the consumer and prunes undemanded entries. Lazy
+unselected faults stay unexecuted, cached faults retain producer/diagnostics, and
+an unselected volatile dependency is refused before any fold. Pure function
+instances keep independent input caches; body edits recompute and changed call
+layout resets scope identity. Unrelated effects remain inert. A suspended Run
+keeps old value15/provider snapshot while new authoring publishes50 under a new
+registry generation. Tests cover stale/cancel/quota admission, cache-disabled/full
+equivalence and bounds, cached-value publication quota, invalid output/panic
+recovery, graph/registry reset, real editor commit/undo/redo with retained analysis,
+Send+Sync embedding, safe Debug and a32-edit fresh-compiler comparison with known
+answers. Existing compiler/data/control/function/runtime suites also pass.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo test --workspace --locked --offline` | **1,454 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,454 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| `cargo run -p orange-bundled --example headless_control --locked --offline` | Pass; total3/time10ns |
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` | Pass; all four joins |
+| `cargo run -p orange-bundled --example headless_authoring --locked --offline` | Pass; old-plan wait/fresh restart/On Stop |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary check | Pass; 19 fixtures/core boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+Node24.18.0; TEMP/TMP use ignored `.artifacts/c07b-validation/tmp`. A type-changing
+fixture initially retained its old signature/decimal-string u32 encoding; corrected
+it to the authored inferred signature and numeric u32 literal. A lint and unused
+test receipt were fixed before final checks. Self-review traced fresh whole-cone
+admission before callbacks, mixed-graph exclusion, exact cache keys, function-scope
+identity, normal slot/diagnostic construction, quota-before-clone and panic recovery.
+No independent approval is claimed. Exact-head native/MSRV/security CI remains
+required before merge; this record claims no unexecuted remote check.
+
+Cache nominal storage is explicitly bounded (defaults20,000entries/16MiB), and
+full/disabled caches change work without changing graph results. Source validation,
+metadata/binding traversal and value comparisons can still be broad; no NFR-15
+visit/timing or physical allocator/RSS qualification follows. Cache stats exclude
+compiled publications and externally retained old snapshots. Physical performance
+measurement/optimization remains deferred at the user's direction. Stateful/
+seeded/data-zone authoring preview, editor scheduling, shared workspace/checkpoint
+and wider product/integration gates remain open. Pure callbacks remain trusted,
+bounded/nonblocking and not physically preempted.
+
 ## C05 — bounded reference-only recording and effect-safe replay — 2026-11-07
 
 Branch `codex/c05-recording-replay`, from dev

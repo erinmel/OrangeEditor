@@ -170,6 +170,32 @@ impl<'a> Calls<'a> {
         options: CompileOptions<'_>,
         profile: CallProfile,
     ) -> Result<Self, CompileError> {
+        Self::prepare_inner(document, snapshot, analysis, options, profile, None)
+    }
+    pub(crate) fn prepare_preview(
+        document: &'a GraphDocument,
+        snapshot: &RegistrySnapshot,
+        analysis: &'a ValidationAnalysis,
+        options: CompileOptions<'_>,
+        roots: &BTreeSet<NodeId>,
+    ) -> Result<Self, CompileError> {
+        Self::prepare_inner(
+            document,
+            snapshot,
+            analysis,
+            options,
+            CallProfile::Pure,
+            Some(roots),
+        )
+    }
+    fn prepare_inner(
+        document: &'a GraphDocument,
+        snapshot: &RegistrySnapshot,
+        analysis: &'a ValidationAnalysis,
+        options: CompileOptions<'_>,
+        profile: CallProfile,
+        roots: Option<&BTreeSet<NodeId>>,
+    ) -> Result<Self, CompileError> {
         let mut out = Self {
             scopes: vec![CallScope::default()],
             incoming: BTreeMap::new(),
@@ -191,7 +217,7 @@ impl<'a> Calls<'a> {
             .checked_add(document.root().edges.len())
             .and_then(|n| n.checked_add(document.exports().len()))
             .ok_or(CompileError::ResourceLimit)?;
-        let mut operations = document.root().nodes.len();
+        let mut operations = roots.map_or(document.root().nodes.len(), BTreeSet::len);
         let mut slots = 0;
         let mut cache = BTreeMap::<(FunctionId, TypeArgs), Arc<PreparedBody<'a>>>::new();
         let mut cursor = 0;
@@ -208,6 +234,9 @@ impl<'a> Calls<'a> {
                 .collect();
             for node in body.nodes.values() {
                 options.checkpoint()?;
+                if cursor == 0 && roots.is_some_and(|roots| !roots.contains(&node.id)) {
+                    continue;
+                }
                 let sig = out.signature(analysis, cursor, node.id);
                 if cursor != 0 {
                     let effect = profile == CallProfile::Control && out.scopes[cursor].control;

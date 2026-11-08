@@ -367,6 +367,16 @@ Dominance is computed with one Cooper–Harvey–Kennedy dominator tree per acti
 - A pull never executes actions. A pure program flagged `heavy` (cost hint, or a zone over a large input) MAY be offloaded to the compute pool after the prologue. The strand suspends, which is semantically invisible because inputs are immutable.
 - Zones check the slice budget at iteration boundaries; partial zone state lives in the frame.
 
+C07b authoring preview (2026-11-07) executes only pure persisted-export cones,
+including supported graph-local Pure functions. Fresh semantic analysis and whole
+potential-cone admission precede provider callbacks; an unselected volatile/effect
+alternative is refused. Unrelated controls/services stay inert. The ordinary lazy
+rules, typed values, selected branches, faults and producer identity remain exact.
+An unchanged semantic/input match can reuse a pure fold, without invoking language
+Eq or retargeting an existing run/provider. Immutable preview publications enforce
+document/registry freshness. This is the current pure-export profile, not stateful/
+seeded preview or execution of arbitrary control graphs (03/12, evidence10).
+
 ### 7.5 Ordering guarantees
 
 | ID | Guarantee |

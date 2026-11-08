@@ -122,6 +122,16 @@ Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the reg
 
 ## ADR-14 — One cooperative actor per run
 
+C07b amendment (2026-11-07; also ADR-23): authoring preview owns a separate pure
+compiler session rather than mutating a running activation or sharing its cache.
+Reuse only exact semantic/type/provider/input matches at the existing fold
+boundary; preserve ordinary IR, lazy demand and fault provenance. Explicit count/
+byte bounds make the cache optional without changing outcomes. Immutable typed
+publications and provider pins survive later authoring updates independently.
+Fresh admission/cancellation remains required, and a caught callback panic clears
+interrupted state before another update. This provides pure export preview, not
+an editor worker, live state/entropy reader or NFR-15 timing qualification (03/12/16).
+
 C05 amendment (2026-11-07): record the owning host's command boundaries and safe
 effect outcomes through a bounded reference-only journal. Intercept Action at its
 existing trusted callback boundary and consume Async requests internally during

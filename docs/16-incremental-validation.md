@@ -1,5 +1,14 @@
 # Incremental validation (V12)
 
+C07b addition (2026-11-07): `orange_compiler::PurePreview` provides a separate
+effect-free authoring export session on fresh analysis. It reuses exact typed pure
+folds, including scoped Pure function calls, while preserving lazy/fault behavior
+and old running plan/provider pins. Immutable publications enforce freshness and
+cache storage is independently bounded. This is computation reuse; source admission,
+analysis and metadata traversal still have their existing scope. No NFR-15 timing,
+A02 validation locality or whole-graph visit claim follows. The executable profile
+is in 03/11/12, with actual checks and limits in 10.
+
 Status: **V12a implemented; bounded V12b caching**, 2026-10-25. `AnalysisSession` retains fresh combined analysis, an optional document index, configuration/declaration-type buckets and, since 2026-10-30, per-node input checks, per-edge connection checks and per-component type inference. Literal, type argument, type pin and package-node configuration edits in root bodies that leave every resolved signature unchanged, and additions and removals of data edges and pure package nodes in a clean root body, are applied as scoped updates without a full analysis; other semantic edits still run full admission and all other validation passes, and their publication still scans current/previous results. The remaining incremental design targets NFR-15 ([06](06-quality-and-validation.md)) and [12 §11](12-graph-data-structures.md), under ADR-23 in [08](08-decisions.md). Pass names refer to `orange_model::validation`. Neither full V12b nor NFR-15 is complete.
 
 ## 1. Goal
