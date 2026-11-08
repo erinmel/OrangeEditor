@@ -6,6 +6,55 @@ incremental authoring preview or graph stream iteration. Verification is in [10]
 
 ## Trusted execution boundary (C11a/C09a, 2026-11-06)
 
+### Effect-free authoring preview (C07b, 2026-11-07)
+
+`orange_compiler::PurePreview<R>` owns its trusted pure resolver, bounded fold
+cache and latest immutable `PreviewSnapshot`. `update` requires fresh successful
+semantic analysis and applies ordinary compiler admission/type/provider/constant
+quotas before publication. It previews persisted export roots, including supported
+graph-local Pure calls. Unrelated controls/services/volatile nodes remain inert;
+every potential dependency of a selected export, including an unselected lazy
+alternative, must be pure. No EffectResolver, Run, service acquisition, state/clock
+read or entropy callback exists in this profile. Seeded/stateful preview and data
+iteration zones remain outside this pure-export compiler profile.
+
+The existing constant folder retains ordinary lazy demand, typed slots, steps,
+diagnostics and fault provenance. At its fold boundary a cache hit requires exact
+node metadata, fresh specialized signature, bound input/output port order, scope
+identity and immutable input values under the same registry generation. Matching
+uses structural values, not language Eq or a hash as authority. Config/type/input
+changes recompute; unchanged results in unrelated cones remain cached. An edge
+rewire to equal values can reuse its consumer. Unselected arms never execute.
+Cached faults recreate ordinary ConstError diagnostics; inherited faults/Try keep
+their current producer identity. Full graph admission and metadata traversal may
+still occur; callback reuse does not qualify incremental validation or timing.
+
+Each function invocation has its own cache scope. The complete admitted call-site
+layout is compared before using scope indices; changed ancestry/layout explicitly
+clears the cache. Graph identity and registry generation changes also reset it.
+The session retains its resolver; each locked provider's semantics must remain
+immutable. Prior snapshots and running plans keep their own provider/context pins;
+updating authoring never mutates an existing Run or recompiles its frozen plan.
+
+`PreviewLimits` defaults to 20,000 entries/16 MiB of nominal cache storage, separate
+from the publication's CompileLimits. Charges include fixed entry/call metadata,
+bounded serialized node/signature/port metadata and typed retained inputs/results.
+Metadata is counted before cloning without creating a temporary JSON value.
+Unavailable cache capacity skips retention, preserving graph results; zero limits
+disable caching. Successful publication removes entries not demanded in that
+update. These are nominal bounds, excluding allocator/RSS and externally retained
+snapshots, not physical memory qualification. Stats report actual folds/reuses,
+uncached computations, current entries/bytes, reset reason, request and publication.
+
+Only a successful final cancellation checkpoint publishes. An ordinary failed
+update clears the cache and latest publication; external old snapshots remain
+immutable and enforce their own document/registry freshness on `evaluate`.
+An open-update guard survives provider/resolver panic; the next update discards
+interrupted cache state before recovery. Snapshot/session Debug omits values,
+configuration, provider formatting and resolver internals. The host owns worker
+scheduling and stale-result presentation. There is no editor thread, executor,
+graph mutation, dependency/feature/format change or physical NFR claim. Checks are in 10.
+
 ### Bounded reference-only recording and replay (C05, 2026-11-07)
 
 `RecordedRun::start` owns a fresh Run and pins its exact immutable compiled plan,

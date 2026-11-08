@@ -1,5 +1,13 @@
 # Internationalization and translatable text
 
+C07b preview boundary (2026-11-07): updates and reads reuse the existing fieldless
+CompileError/EvaluationError message keys, with typed source IDs and safe static
+fallbacks. Graph faults retain original producer/ConstError provenance and host
+origin. Session/snapshot Debug exposes only metadata and counts, never cached
+strings, config, resolver/provider formatting or input/output buffers. Request,
+source freshness, cache identity, reset reasons and reuse counters are semantic
+metadata independent of locale. No new catalogue, argument or UI-language change.
+
 C05 replay boundary messages (2026-11-07): fieldless `ReplayError` uses
 `core/replay-full` ("The replay journal is full; the operation was not started."),
 `core/replay-unsupported` ("This plan or option is outside the supported replay

@@ -396,18 +396,51 @@ pub fn compile_pure(
     resolver: &impl PureKernelResolver,
     options: CompileOptions<'_>,
 ) -> Result<PurePlan, CompileError> {
+    compile_pure_inner(document, snapshot, analysis, resolver, options, None)
+}
+pub(crate) fn compile_preview<'a>(
+    document: &'a GraphDocument,
+    snapshot: Arc<RegistrySnapshot>,
+    analysis: &'a ValidationAnalysis,
+    resolver: &'a impl PureKernelResolver,
+    options: CompileOptions<'a>,
+    cache: &'a mut crate::preview::Cache,
+) -> Result<PurePlan, CompileError> {
+    compile_pure_inner(document, snapshot, analysis, resolver, options, Some(cache))
+}
+fn compile_pure_inner<'a>(
+    document: &'a GraphDocument,
+    snapshot: Arc<RegistrySnapshot>,
+    analysis: &'a ValidationAnalysis,
+    resolver: &'a impl PureKernelResolver,
+    options: CompileOptions<'a>,
+    mut preview: Option<&'a mut crate::preview::Cache>,
+) -> Result<PurePlan, CompileError> {
+    let (admission, selected) = if preview.is_some() {
+        let (admission, selected) = admit_preview(document, &snapshot, analysis, options)?;
+        (admission, Some(selected))
+    } else {
+        (admit(document, &snapshot, analysis, options, false)?, None)
+    };
     let Admission {
         incoming,
         lazy_nodes,
         ..
-    } = admit(document, &snapshot, analysis, options, false)?;
-    let calls = Arc::new(crate::calls::Calls::prepare(
-        document,
-        &snapshot,
-        analysis,
-        options,
-        crate::calls::CallProfile::Pure,
-    )?);
+    } = admission;
+    let calls = Arc::new(if let Some(selected) = &selected {
+        crate::calls::Calls::prepare_preview(document, &snapshot, analysis, options, selected)?
+    } else {
+        crate::calls::Calls::prepare(
+            document,
+            &snapshot,
+            analysis,
+            options,
+            crate::calls::CallProfile::Pure,
+        )?
+    });
+    if let Some(cache) = preview.as_deref_mut() {
+        cache.prepare(document.graph_id(), snapshot.generation(), &calls.sites);
+    }
     let mut folder = ConstantFolder::new(
         document,
         analysis,
@@ -418,6 +451,7 @@ pub fn compile_pure(
         &lazy_nodes,
         calls,
     )?;
+    folder.preview = preview;
     for export in document.exports() {
         folder.pull(export.node)?;
     }
@@ -441,6 +475,7 @@ pub fn compile_pure(
 /// Internal demand folder shared by checked lowering paths. Callers must perform
 /// fresh semantic and whole-potential-cone admission before constructing it.
 pub(crate) struct ConstantFolder<'a, R: PureKernelResolver> {
+    preview: Option<&'a mut crate::preview::Cache>,
     document: &'a GraphDocument,
     analysis: &'a ValidationAnalysis,
     snapshot: Arc<RegistrySnapshot>,
@@ -500,6 +535,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             )?;
         }
         Ok(Self {
+            preview: None,
             document,
             analysis,
             snapshot,
@@ -561,6 +597,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
     }
     pub(crate) fn pull_at(&mut self, root_scope: usize, root: NodeId) -> Result<(), CompileError> {
         let Self {
+            preview,
             document,
             analysis,
             snapshot,
@@ -838,7 +875,37 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     }
                 }
                 options.checkpoint()?;
-                match binding.kernel.fold(input_values, output_values) {
+                let outcome = if let Some(cache) = preview.as_deref_mut() {
+                    let output_types = output_ports
+                        .iter()
+                        .map(|p| port_type(snapshot, node_id, p))
+                        .collect::<Result<Vec<_>, _>>()?;
+                    let input_bytes = inputs.iter().zip(input_values.iter()).try_fold(
+                        0usize,
+                        |sum, (input, value)| {
+                            let charge = plan.types[input.slot.index()]
+                                .checked_charge(value, usize::MAX)
+                                .ok()?;
+                            sum.checked_add(charge)
+                        },
+                    );
+                    cache.fold(
+                        crate::preview::FoldKey {
+                            scope,
+                            node,
+                            signature: sig,
+                            input_bytes,
+                        },
+                        &binding,
+                        input_values,
+                        output_values,
+                        &output_types,
+                        options.limits.max_constant_bytes,
+                    )?
+                } else {
+                    binding.kernel.fold(input_values, output_values)
+                };
+                match outcome {
                     Ok(()) => None,
                     Err(fault) => {
                         if !valid_fault(fault) {
@@ -959,6 +1026,86 @@ pub(crate) fn admit_state_read(
     }
     Ok(())
 }
+fn check_source(
+    document: &GraphDocument,
+    snapshot: &RegistrySnapshot,
+    analysis: &ValidationAnalysis,
+    options: CompileOptions<'_>,
+) -> Result<(), CompileError> {
+    options.checkpoint()?;
+    if analysis.document_state() != document.semantic_state_id() {
+        return Err(CompileError::StaleDocument);
+    }
+    if analysis.registry_generation() != snapshot.generation() {
+        return Err(CompileError::StaleRegistry);
+    }
+    if !analysis.is_ready_for_lowering(document, snapshot) {
+        return Err(CompileError::ValidationIncomplete);
+    }
+    let mut items = 0;
+    for n in [
+        document.root().nodes.len(),
+        document.root().edges.len(),
+        document.exports().len(),
+    ] {
+        charge(&mut items, n, options.limits.max_graph_items)?;
+    }
+    Ok(())
+}
+fn admit_preview<'a>(
+    document: &'a GraphDocument,
+    snapshot: &RegistrySnapshot,
+    analysis: &ValidationAnalysis,
+    options: CompileOptions<'_>,
+) -> Result<(Admission<'a>, BTreeSet<NodeId>), CompileError> {
+    check_source(document, snapshot, analysis, options)?;
+    let incoming: BTreeMap<_, _> = document
+        .root()
+        .edges
+        .values()
+        .map(|e| ((e.to.node, e.to.port.clone()), e))
+        .collect();
+    let roots: Vec<_> = document.exports().iter().map(|e| e.node).collect();
+    let mut work = roots.clone();
+    let mut selected = BTreeSet::new();
+    while let Some(node) = work.pop() {
+        options.checkpoint()?;
+        if !selected.insert(node) {
+            continue;
+        }
+        if selected.len() > options.limits.max_fold_operations {
+            return Err(CompileError::ResourceLimit);
+        }
+        let sig = analysis
+            .report()
+            .resolved
+            .get(&node)
+            .ok_or(CompileError::UnsupportedNode { node })?;
+        if sig.kind != NodeKind::Pure {
+            return Err(CompileError::UnsupportedNode { node });
+        }
+        for port in sig
+            .ports
+            .iter()
+            .filter(|p| p.direction == PortDirection::Input)
+        {
+            if let Some(edge) = incoming.get(&(node, key(port))) {
+                work.push(edge.from.node);
+            }
+        }
+    }
+    let ignored = document
+        .root()
+        .nodes
+        .keys()
+        .filter(|id| !selected.contains(id))
+        .copied()
+        .collect();
+    let admission = admit_roots(
+        document, snapshot, analysis, options, false, &roots, &ignored,
+    )?;
+    Ok((admission, selected))
+}
 pub(crate) fn admit<'a>(
     document: &'a GraphDocument,
     snapshot: &RegistrySnapshot,
@@ -994,21 +1141,8 @@ pub(crate) fn admit_roots<'a>(
     roots: &[NodeId],
     controls: &BTreeSet<NodeId>,
 ) -> Result<Admission<'a>, CompileError> {
-    options.checkpoint()?;
-    if analysis.document_state() != document.semantic_state_id() {
-        return Err(CompileError::StaleDocument);
-    }
-    if analysis.registry_generation() != snapshot.generation() {
-        return Err(CompileError::StaleRegistry);
-    }
-    if !analysis.is_ready_for_lowering(document, snapshot) {
-        return Err(CompileError::ValidationIncomplete);
-    }
+    check_source(document, snapshot, analysis, options)?;
     let body = document.root();
-    let mut items = 0;
-    for count in [body.nodes.len(), body.edges.len(), document.exports().len()] {
-        charge(&mut items, count, options.limits.max_graph_items)?;
-    }
     // Admit all root nodes: no silently omitted side effects or unsupported port semantics.
     let mut ports = 0;
     let mut lazy_nodes = BTreeMap::new();

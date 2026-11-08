@@ -24,6 +24,7 @@ mod evaluate;
 mod kernel;
 mod lazy;
 mod plan;
+mod preview;
 mod zones;
 
 pub use compile::{CompileLimits, CompileOptions, compile_pure};
@@ -49,6 +50,7 @@ pub use plan::{
     ConstantFault, Export, FoldedValue, InputSource, NodeIx, PureCallSite, PurePlan, PureStep,
     SlotIx, SlotSource,
 };
+pub use preview::{PreviewLimits, PreviewReset, PreviewSnapshot, PreviewStats, PurePreview};
 pub use zones::{DataZone, ZoneIx};
 
 pub(crate) use orange_model::value::shape::{ValueCheckError, ValueShape};

@@ -1,5 +1,14 @@
 # Product requirements
 
+C07b trace addition (2026-11-07): FR-46/49 now include an effect-free pure authoring
+preview API, immutable typed publications, affected-computation reuse, separate
+function scopes and unchanged running plan/provider pins. FR-44/47 retain fresh
+analysis, exact quota/type/provider checks and fault/lazy semantics. Bounded cache,
+publication cancellation and panic recovery extend partial NFR-03/05/08/14/15
+evidence. Full validation locality and physical qualification remain deferred;
+stateful/seeded preview and data-zone preview are outside this pure-export profile.
+Contracts and actual checks are in 03/08/10/11/12/13/16.
+
 C05 trace addition (2026-11-07): FR-47 now has bounded reference-only host command/
 ingress/clock/completion recording and exact-pinned-plan replay, including local
 Emit/Await/Watch/timer execution and zero resent Action/Async effects. FR-16/20/35

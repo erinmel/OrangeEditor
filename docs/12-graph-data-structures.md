@@ -1,5 +1,34 @@
 # Graph data structures
 
+## C07b authoring preview representation (2026-11-07)
+
+`PurePreview<R>` owns its resolver, mutable private cache, checked request counter,
+open-update guard and optional `Arc<PreviewSnapshot>`. Each snapshot privately owns
+an ordinary fully folded PurePlan; typed export inspection uses PureEvaluation's
+existing freshness/cancellation contract. No Run or execution state is shared.
+
+The constant folder has an optional mutable cache hook only for the preview entry;
+ordinary pure/data/control compilation defaults to no cache. Cache hits still
+construct normal bindings, steps, slots and diagnostics. Preview admission selects
+pure export dependencies and prepares only those root calls; unrelated control/
+service nodes and their function calls cannot bind or execute. Fresh whole-document
+analysis and existing bounded call/body checks remain required.
+
+A bounded BTreeMap is keyed by scope index/node ID. Each entry stores exact cloned
+node/specialized signature/port metadata, typed immutable inputs, safe fault or
+typed outputs, nominal charge and last request. A charged call-layout header binds
+graph identity, registry generation and the complete original call ancestry table.
+Any changed header clears entries before scope reuse. There is no hash collision
+authority, generic shared cache, lock around kernels, epoch/state cache or history
+of retired nodes. Successful publication prunes undemanded entries; failure clears
+all. Capacity refusal skips caching and keeps the ordinary result.
+
+Metadata charging uses bounded serde output into a counting writer, without a JSON
+buffer or value logging. Cache and publication budgets are separate; user-held old
+snapshots retain their own immutable storage/provider pins outside session cache
+stats. The open-update guard forces recovery after a caught callback panic. No
+saved graph schema, provider lock, dependency or feature changes are introduced.
+
 ## C05 reference-only replay representation (2026-11-07)
 
 `RecordedRun` owns the sole mutable Run. A private optional Session owns fixed-size
