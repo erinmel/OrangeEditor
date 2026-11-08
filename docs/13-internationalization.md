@@ -1,5 +1,18 @@
 # Internationalization and translatable text
 
+C05 replay boundary messages (2026-11-07): fieldless `ReplayError` uses
+`core/replay-full` ("The replay journal is full; the operation was not started."),
+`core/replay-unsupported` ("This plan or option is outside the supported replay
+profile."), `core/replay-incomplete` ("The recording is incomplete or was
+interrupted."), `core/replay-diverged` ("Replay diverged from its recorded command
+or outcome.") and `core/replay-payload-unavailable` (safe archive refusal).
+`RunError::ReplayFailed` uses `core/replay-failed` ("Run recording or replay could
+not continue safely."). Wrapped run/ingress/effect errors retain their existing
+keys. Archive reasons are Excluded/Missing/Limit without payload text or arguments.
+References, versions, seed, clock, command order and typed outcomes are semantic
+metadata. Canonical replay never compares translated presentation or calls a
+provider/archive formatter; Debug omits captured values and host context.
+
 C10 boundary messages (2026-11-07): fieldless `StreamError::Full`, `Overflow` and
 `Sequence` expose `core/stream-full`, `core/stream-queue-overflow` and
 `core/stream-sequence`. Their static fallbacks are, respectively, "The stream queue

@@ -85,7 +85,7 @@ pub struct EventMetadata {
 
 /// Run-local host-source generation. IDs are never reused during a run.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct HostSourceId(u64);
+pub struct HostSourceId(pub(super) u64);
 impl HostSourceId {
     pub const fn get(self) -> u64 {
         self.0
@@ -100,9 +100,9 @@ impl std::fmt::Debug for HostSourceId {
 /// Opaque registration token bound to one run and one checked event.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct RunEventSource {
-    run: u64,
-    id: HostSourceId,
-    event: EventDeclId,
+    pub(super) run: u64,
+    pub(super) id: HostSourceId,
+    pub(super) event: EventDeclId,
 }
 impl RunEventSource {
     pub const fn id(self) -> HostSourceId {

@@ -40,6 +40,11 @@ use activations::Activations;
 pub use events::{EventMetadata, RunEventStats};
 pub use events::{EventOrigin, EventTarget, HostSourceId, IngressError, RunEventSource};
 mod ready;
+mod replay;
+pub use replay::{
+    RecordedRun, ReplayArchive, ReplayArchiveError, ReplayError, ReplayLog, ReplayOptions,
+    ReplayPayloadRef, ReplayPlayback, ReplayStats, ReplayedRun,
+};
 mod regions;
 mod resources;
 mod streams;
@@ -275,6 +280,8 @@ pub struct RunOwnership {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
+    #[error("Run recording or replay could not continue safely.")]
+    ReplayFailed,
     #[error("{0}")]
     Data(#[from] DataError),
     #[error("The run operation is invalid in its current state.")]
@@ -293,6 +300,7 @@ pub enum RunError {
 impl RunError {
     pub const fn message_key(self) -> &'static str {
         match self {
+            Self::ReplayFailed => "core/replay-failed",
             Self::Data(e) => e.message_key(),
             Self::InvalidState => "core/run-invalid-state",
             Self::ResourceLimit => "core/run-resource-limit",
@@ -746,6 +754,7 @@ pub struct Run {
     effects: effects::Effects,
     graph_streams: streams::GraphStreams,
     bridges: streams::Bridges,
+    replay: Option<replay::Session>,
     watches: watch::Watches,
 }
 impl std::fmt::Debug for Run {
@@ -1032,6 +1041,7 @@ impl Run {
             effects: effects::Effects::default(),
             graph_streams: streams::GraphStreams::default(),
             bridges: streams::Bridges::default(),
+            replay: None,
             changes,
             watches,
         };

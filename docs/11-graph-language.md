@@ -384,6 +384,18 @@ Dominance is computed with one Cooper–Harvey–Kennedy dominator tree per acti
 
 ### 7.6 Determinism and replay
 
+C05 executable profile (2026-11-07): reference-only bounded in-memory histories pin
+the exact compiled plan/provider snapshot and seed. They record host command,
+clock/pump boundary, ingress and completion order; local graph work is recomputed,
+Action outcomes are substituted and Async requests remain internal. Replay exposes
+read-only results, so an unfinished request cannot escape to a live executor.
+The explicit host archive must preserve exact values under sensitivity policy or
+exclude the recording; raw payloads and credentials are not journal entries.
+Log full is observable and never silently truncates history. Live cancellation
+tokens and resource/stream profiles are refused. This is a sealed complete prefix,
+not continuation restoration or portable recompiled-plan replay. See 03/12 for the
+bounded API/representation and 10 for actual checks; broader P6 qualification remains.
+
 A run is reproducible when its plan hash, seed, virtual clock, ingestion log (events and completion arrival order with payloads) and every provider declare `deterministic`. A seeded entropy node draws from `stream(seed, node_id, activation_seq, invocation_in_activation)`; the algorithm and version are recorded in run metadata ([03](03-data-and-execution.md)). Replay re-executes local computation only. Remote effects are simulated from the log and never re-sent. A non-deterministic provider marks the trace `replay: partial`.
 
 ## 8. Cycles and loops

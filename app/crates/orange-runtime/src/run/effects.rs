@@ -6,8 +6,8 @@ use std::sync::atomic::AtomicU8;
 /// Non-reused operation identity bound to one process-unique run.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct EffectId {
-    run: u64,
-    sequence: u64,
+    pub(super) run: u64,
+    pub(super) sequence: u64,
 }
 
 /// Read-only lifetime signal for a host adapter. Cancellation is monotonic and
@@ -465,7 +465,18 @@ impl Run {
         }
         if let Some(action) = &effect.binding().action {
             let mut outputs = vec![Value::None; effect.outputs().len()];
-            let outcome = action.execute(&values, &mut outputs);
+            let outcome = if let Some(session) = &mut self.replay {
+                session.action(
+                    node.node(),
+                    action.as_ref(),
+                    &values,
+                    &mut outputs,
+                    effect.outputs(),
+                    self.options.limits.max_state_bytes,
+                )?
+            } else {
+                action.execute(&values, &mut outputs)
+            };
             let step = match outcome {
                 Err(fault) if fault.is_valid() => failure(node, fault),
                 Err(_) => return Err(DataError::KernelContract { node: node.node() }.into()),

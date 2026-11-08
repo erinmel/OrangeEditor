@@ -1,5 +1,14 @@
 # Product requirements
 
+C05 trace addition (2026-11-07): FR-47 now has bounded reference-only host command/
+ingress/clock/completion recording and exact-pinned-plan replay, including local
+Emit/Await/Watch/timer execution and zero resent Action/Async effects. FR-16/20/35
+include complete-once completion and cancellation ordering during replay. Explicit
+host payload policy, full/incomplete refusal and read-only replay results extend
+partial NFR-05/08/13 evidence. Portable logs/recompiled-plan identity, live resource/
+stream adapters and physical overhead qualification remain open. The executable
+profile is in 03/11/12; checks/limitations are in 10.
+
 C10 trace addition (2026-11-07): FR-14/18/50 now include graph/host bounded Tee
 and host push-to-stream bridges with explicit per-consumer item/byte bounds,
 backpressure, drop-oldest, drop-newest or fault overflow, checked source order,

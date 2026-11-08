@@ -35,6 +35,7 @@ mod graph_handles;
 mod graph_streams;
 mod record_declarations;
 mod reference_equivalence;
+mod replay;
 mod run_events;
 mod scalars;
 mod seeded_equivalence;

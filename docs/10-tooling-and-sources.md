@@ -1,5 +1,73 @@
 # Tooling, environment and research register
 
+## C05 — bounded reference-only recording and effect-safe replay — 2026-11-07
+
+Branch `codex/c05-recording-replay`, from dev
+`85b030ae98af15c4d762b570fbd195e9ef927806` (PR143). Rust 1.99.1 (`58cf8f9c3`,
+2026-10-13), Cargo 1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024;
+default workspace tests, all features for Clippy/rustdoc, `CARGO_INCREMENTAL=0`,
+locked/offline. MSRV stays 1.97.1; only 1.99.1 is installed locally. No dependency,
+feature or lockfile change. Cargo.lock SHA256:
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+Source receipt: 351 tracked/new files under `app` plus root Cargo manifest/lock/
+toolchain files, excluding docs and ignored outputs; sorted `sha256  path`
+manifest SHA256 `B0EEE6ADE27C6A27EB66F654BD16DE42797AC866685BEAB740B38CD01C5D0291`.
+Contracts/ADR-14/trace/messages are updated in 01/03/08/11/12/13. New recording,
+sealed log, archive and read-only replay APIs are additive; the new
+`RunError::ReplayFailed` requires downstream exhaustive-match review. Saved graph
+format, provider locks and ordinary Run execution without a Session are unchanged.
+
+Seventeen new public-boundary regressions and a compile-fail read-only replay
+guard pass. Known answers include Action success42/fault provenance with callback
+count1 after repeated replays, and IC1 manual → Emit/Await → Watch → Async with
+timer tick20/result42 at pump budgets1/7/1000. Tests compare canonical trace,
+transitions, event metadata/counters and state. Parallel manual activations complete
+in reverse request order; duplicate/late/foreign effect/source identities, refused
+type/sequence inputs, revocation and stop-before-publication retain their outcomes.
+Full journal refuses a host mutation unchanged or prevents an Action callback
+inside a pump; zero-capacity abort still drives ordinary cleanup. Missing/wrong-
+typed/excluded archive results, changed document/registry, provider panic and host
+archive panic refuse complete replay. The last-entry archive panic is tested both
+inside Action and outside Run pump; neither can falsely finish or resume. Debug
+omits a secret-bearing string, the sealed log owns no archive, and resumable steps
+execute one command, reject premature finish and latch divergence.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo test --workspace --locked --offline` | **1,437 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,437 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| `cargo run -p orange-bundled --example headless_control --locked --offline` | Pass; total3/time10ns |
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` | Pass; all four join modes |
+| `cargo run -p orange-bundled --example headless_authoring --locked --offline` | Pass; old-plan wait/fresh restart/On Stop |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary check | Pass; 19 fixtures/core boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+Node24.18.0; TEMP/TMP use ignored `.artifacts/c05-validation/tmp`. Review found the
+last-entry archive-unwind completion edge and added the separate step-open guard;
+both full suites/lints/docs were rerun after this final correction. Self-review
+traced reserve-before-effect, opaque identity remap, archive/value separation,
+complete-once cancellation and immutable inspection. No independent approval is
+claimed. Exact-head native/MSRV/security CI remains required before merge; no
+unexecuted remote or other-platform result is claimed here.
+
+Journal count and nominal entry storage obey explicit caps (defaults8192/2MiB),
+with observable full refusals and no eviction. These counters exclude pinned plan/
+context, host archive, allocator overhead and RSS. Physical recording overhead,
+latency/RSS measurement and optimization are deferred at the user's direction.
+This is exact-pinned-plan in-process replay of a sealed prefix: portable serialized
+logs/recompiled-plan identity, resource/stream adapter replay, live CancelToken
+timing and continuation/checkpoint restoration remain separate gates. Trusted
+archive/provider callbacks are bounded/nonblocking and not physically preempted;
+capture failure cannot undo an effect already executed.
+
 ## C10 — bounded Tee and push-to-stream bridges — 2026-11-07
 
 Branch `codex/c10-stream-bridges`, from dev
