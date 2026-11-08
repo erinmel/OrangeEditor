@@ -230,6 +230,7 @@ fn changed_metadata(
         .chain([definition])
         .chain(orange_bundled::comparison_definitions().unwrap())
         .chain(orange_bundled::integer_definitions().unwrap())
+        .chain(orange_bundled::float_definitions().unwrap())
     {
         builder = builder.definition(definition);
     }

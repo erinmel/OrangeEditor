@@ -17,6 +17,9 @@ The bundled integer vocabulary also includes remainder and Euclidean modulo,
 negate/absolute, min/max/clamp, bitwise logic and shifts for all four integer widths.
 Exact overflow/count policies and safe faults apply in folded and running graphs;
 the finite catalog is in [12 §4.2](docs/12-graph-data-structures.md).
+Float math adds square root, exponential, logarithms, power, rounding and float
+negate/absolute/min/max/clamp/remainder for f32/f64 under finite or IEEE policy
+([12 §4.3](docs/12-graph-data-structures.md)).
 
 The compiler also supports nested options over its scalar/JSON types and constant Coalesce: only outer None demands fallback; present values, JSON null and upstream faults remain distinct. PlanType represents recursive options and exported type metadata is borrowed. Try captures pure input-cone graph faults into typed Result values with original producer identity; nested successes preserve Ok(Err) distinctly. DataActivation executes the supported pure/seeded-entropy root-data subset, including dynamic Select/And/Or/Coalesce/Try. The control runtime admits a bounded subset including Pure and seeded-volatile calls in data demands; remaining control families, clock readers and general services stay open. The same bundled crate executes the four existing explicit core converters: i32↔i64 and f32↔f64. Narrowing checks range; lossy float conversion returns JSON loss metadata. These preserve exact entry/provider choices and require complete saved policies; they introduce no implicit conversions.
 

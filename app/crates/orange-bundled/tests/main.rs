@@ -31,6 +31,7 @@ mod data_epochs;
 mod effects;
 mod entropy;
 mod enum_declarations;
+mod floats;
 mod function_epochs;
 mod graph_handles;
 mod graph_streams;

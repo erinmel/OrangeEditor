@@ -303,6 +303,40 @@ Checked shift does not promise preservation of high value bits. Saturating shift
 config is rejected, rather than inventing a saturation rule. All other new nodes
 have empty config. Kernel errors carry safe static text and no operand values.
 
+L02b float vocabulary (2026-11-08): [12 §4.3](12-graph-data-structures.md)
+lists sixteen ordinary pure math definitions with `T: float` and exact native
+f32/f64 specializations. Every input and `result` is `$T`; inputs are strict.
+Operations that L02a already names for integers use a `float-` prefix
+(`float-negate`, `float-absolute`, `float-minimum`, `float-maximum`,
+`float-clamp`, `float-remainder`): their NaN and signed-zero rules differ, so
+they are separate contracts instead of a widening of the `T: int` definitions.
+
+Every node accepts only `float_policy`: `finite` (default) or `ieee`. Under
+`finite`, checks run in IEEE exception order: a non-finite input is
+`core/NonFinite`; a pole is `core/DivideByZero` (log of ±0, power of ±0 with a
+negative exponent, remainder by ±0); an invalid operand is `core/Domain` (square
+root or log of a negative number, power of a negative base with a non-integer
+exponent); then a non-finite result (overflow) is `core/NonFinite`. Underflow to
+zero or a subnormal is a normal result. Under `ieee`, the native IEEE-754 result
+is returned, including NaN and infinities.
+
+`floor`, `ceiling`, `truncate` and `round-ties-even` round to an integral
+value of the same type and keep the sign of zero. Negate and absolute act on the
+sign bit only, so NaN payloads are unchanged. `float-remainder` is the exact
+truncated remainder: it has the dividend's sign and a magnitude below the divisor.
+`float-minimum`/`float-maximum` follow IEEE 754-2019 minimum/maximum: NaN
+propagates (the first NaN operand) and -0 orders below +0.
+`float-clamp(value,min,max)` is maximum(minimum(value,max),min); a NaN bound or
+min > max is `core/Domain` under both policies, so the native panicking clamp
+is never reached. A NaN value propagates under `ieee`.
+
+Square root, rounding, negate, absolute, minimum, maximum, clamp and remainder are
+exact IEEE operations. Exponential, the logarithms and power use the platform
+library: last-bit results may differ between platforms, and replay determinism is
+scoped to the locked implementation and platform ([03](03-data-and-execution.md)).
+Trigonometry, IEEE comparison/total-order nodes and the remaining casts are later
+L02 increments.
+
 ## 6. Conversions
 
 1. The compiler never converts. Every conversion is a `core/convert` node that names a **converter registry entry**.

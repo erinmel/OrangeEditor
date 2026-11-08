@@ -1,5 +1,37 @@
 # Tooling, environment and research register
 
+## L02b — finite float vocabulary — 2026-11-08
+
+Branch `l02b-float-math`, based on dev `4a17b28` (L02a PR150). Rust 1.99.1
+(`58cf8f9c3`, 2026-10-13), Cargo 1.99.1 (`5f94df478`, 2026-08-27), Windows x64
+MSVC, edition 2024, all features. MSRV 1.97.1 is unchanged and checked by hosted CI;
+every native method used (`sqrt`, `exp`, `ln`, `log2`, `log10`, `powf`,
+`floor`, `ceil`, `trunc`, `round_ties_even`, `abs`, `%`) is stable before it.
+No dependency, feature or lockfile change.
+
+Eleven public regressions cover known answers for all sixteen operations in f32
+and f64 under both policies; finite-policy precedence (non-finite input, pole,
+domain, overflow) on every input slot; IEEE NaN/infinity results, sign-bit
+operations on NaN payloads and signed zero through rounding/remainder; IEEE
+754-2019 minimum/maximum NaN propagation and zero order, clamp bound refusal;
+wrong arity/type/config/provider/version/specialization and old snapshot
+retention. Four 128-case properties check rounding brackets and ties-to-even,
+remainder sign/magnitude, exact square roots and min/max as an ordered partition.
+An actual pure plan folds all sixteen definitions and keeps original-node
+DivideByZero/Domain/NonFinite faults; a compiled Run reads state through
+Absolute→SquareRoot→Power→Clamp at pump budgets 1/2/64 and releases reservations.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,555 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
+Limits: trigonometry, IEEE comparison/total-order nodes and remaining casts are not
+in this slice. Exponential, logarithms and power use the platform library, so only
+exactly representable answers are asserted. No timing or memory probe ran.
+
 ## L02a — finite integer vocabulary — 2026-11-08
 
 Branch `codex/l02a-integer-kernels`, based on dev

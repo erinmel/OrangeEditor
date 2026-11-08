@@ -1787,6 +1787,7 @@ fn fresh_descriptor_default_and_instance_override_precede_folding() {
         .unwrap()
         .into_iter()
         .chain(orange_bundled::integer_definitions().unwrap())
+        .chain(orange_bundled::float_definitions().unwrap())
     {
         builder = builder.definition(definition);
     }

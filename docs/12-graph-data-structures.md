@@ -721,6 +721,30 @@ constraint extension or dependency/feature is introduced. Float variants and the
 remaining math/cast vocabulary are separate L02 increments; this is a finite
 integer slice, not completion of FR-10 or the whole core.
 
+### 4.3 Bundled float definitions
+
+L02b (2026-11-08) adds the following finite set to `org.orange.math/native-v1`.
+Every definition/config version is 1, Pure and deterministic, with `T: float` and
+provider specializations exactly f32/f64. Every input and the computed output
+`result` have type `$T`. IDs below have the `org.orange.math/` prefix.
+Semantics: [11 §5.6](11-graph-language.md).
+
+| ID suffix | Inputs |
+|---|---|
+| `square-root`, `exponential`, `natural-log`, `log2`, `log10` | `value` |
+| `power` | `base`, `exponent` |
+| `floor`, `ceiling`, `truncate`, `round-ties-even` | `value` |
+| `float-negate`, `float-absolute` | `value` |
+| `float-minimum`, `float-maximum`, `float-remainder` | `a`, `b` |
+| `float-clamp` | `value`, `min`, `max` |
+
+Every config schema is closed and has only `float_policy`: finite (default) or
+ieee. `FloatOperation`, `ResolvedFloat` and `MathPackage::resolve_float` expose
+the same native contracts to embedders; retaining a binding pins its registry
+snapshot. The compiler uses ordinary PureKernel bindings for constant folds and
+dynamic data/control demands. No new intrinsic, saved format, error code or
+dependency is introduced.
+
 ## 5. Type and converter definitions
 
 ```json
