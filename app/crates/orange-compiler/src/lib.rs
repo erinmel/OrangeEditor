@@ -38,7 +38,7 @@ pub use control::{
 };
 pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
 pub use data_compile::compile_data;
-pub use effects::{ActionKernel, ControlEffect, EffectBinding, EffectResolver};
+pub use effects::{ActionKernel, ControlEffect, EffectBinding, EffectResolver, SharedWrite};
 pub use error::CompileError;
 pub use evaluate::{EvaluatedExport, EvaluationError, EvaluationOptions, PureEvaluation};
 pub use kernel::{

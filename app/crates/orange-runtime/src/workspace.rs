@@ -139,6 +139,13 @@ impl std::fmt::Debug for WorkspaceSnapshot {
     }
 }
 impl WorkspaceSnapshot {
+    pub(crate) fn matches(&self, id: VariableId, shape: &ValueShape) -> bool {
+        self.0
+            .schema
+            .variables
+            .get(&id)
+            .is_some_and(|v| &v.shape == shape)
+    }
     pub fn registry(&self) -> &Arc<RegistrySnapshot> {
         &self.0.schema.registry
     }

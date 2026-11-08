@@ -1113,6 +1113,8 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
                     | ids::BRANCH
                     | ids::SET_VARIABLE
                     | ids::UPDATE_VARIABLE
+                    | ids::SET_SHARED
+                    | ids::UPDATE_SHARED
                     | ids::SEQUENCE
                     | ids::FORK
                     | ids::YIELD
@@ -1393,7 +1395,12 @@ fn collect_variables(
         }
         if !matches!(
             node.definition.id.as_str(),
-            ids::GET_VARIABLE | ids::SET_VARIABLE | ids::UPDATE_VARIABLE | ids::ON_VARIABLE_CHANGED
+            ids::GET_VARIABLE
+                | ids::SET_VARIABLE
+                | ids::UPDATE_VARIABLE
+                | ids::ON_VARIABLE_CHANGED
+                | ids::SET_SHARED
+                | ids::UPDATE_SHARED
         ) {
             continue;
         }
@@ -1404,13 +1411,15 @@ fn collect_variables(
             .and_then(|s| s.parse().ok())
             .ok_or(CompileError::ValidationIncomplete)?;
         let declaration = &document.variables()[&id];
-        if declaration.scope == VarScope::Workspace {
-            return Err(CompileError::UnsupportedNode { node: node.id });
-        }
         if let std::collections::btree_map::Entry::Vacant(entry) = variable_ids.entry(id) {
             let ty = ValueShape::of_in(&declaration.ty, cx.snapshot.types().as_ref())
                 .ok_or(CompileError::UnsupportedNode { node: node.id })?;
-            let initial = match &declaration.init {
+            // A shared initializer belongs to the host Workspace, never a Run.
+            let initial = match declaration
+                .init
+                .as_ref()
+                .filter(|_| declaration.scope != VarScope::Workspace)
+            {
                 Some(literal) => Some(
                     decode(
                         literal,
@@ -1437,7 +1446,10 @@ fn collect_variables(
                 initial,
             });
         }
-        if node.definition.id.as_str() == ids::UPDATE_VARIABLE {
+        if matches!(
+            node.definition.id.as_str(),
+            ids::UPDATE_VARIABLE | ids::UPDATE_SHARED
+        ) {
             update::resolve(node.id, &node.config, variables[variable_ids[&id]].ty())?;
         }
         variable_nodes.insert(node.id, variable_ids[&id]);
@@ -1758,6 +1770,7 @@ impl NodeLowering<'_, '_> {
                 effect: ControlEffect {
                     binding,
                     outputs: output_types.into(),
+                    shared: None,
                 },
                 demand: UpdateDemand {
                     roots: ports.into_iter().map(|p| self.input(key, p)).collect(),
@@ -1766,6 +1779,56 @@ impl NodeLowering<'_, '_> {
             });
         }
         Ok(match definition {
+            ids::SET_SHARED | ids::UPDATE_SHARED => {
+                let variable = &self.variables[self.variable_nodes[&id]];
+                let write = SharedWrite {
+                    variable: variable.id(),
+                    operation: if definition == ids::UPDATE_SHARED {
+                        Some(update::resolve(id, &node.config, variable.ty())?)
+                    } else {
+                        None
+                    },
+                };
+                let inputs: Vec<_> = cx
+                    .ports(key)
+                    .iter()
+                    .filter(|p| p.kind == PortKind::Data && p.direction == PortDirection::Input)
+                    .collect();
+                let outputs: Vec<_> = cx
+                    .ports(key)
+                    .iter()
+                    .filter(|p| {
+                        p.kind == PortKind::Data
+                            && p.direction == PortDirection::Output
+                            && p.port_id.as_str() != "error"
+                    })
+                    .collect();
+                let roots = inputs
+                    .iter()
+                    .map(|p| self.input(key, p.port_id.clone()))
+                    .collect();
+                ControlOperation::Effect {
+                    effect: ControlEffect {
+                        binding: EffectBinding {
+                            route: 0,
+                            context: Arc::new(write),
+                            action: None,
+                            inputs: inputs.iter().map(|p| port_key(p)).collect(),
+                            outputs: outputs.iter().map(|p| port_key(p)).collect(),
+                        },
+                        outputs: outputs
+                            .iter()
+                            .map(|p| port_type(cx.snapshot, id, p))
+                            .collect::<Result<Vec<_>, _>>()?
+                            .into(),
+                        shared: Some(write),
+                    },
+                    demand: UpdateDemand {
+                        roots,
+                        inputs: Arc::from([]),
+                    },
+                }
+            }
             ids::TEE => {
                 let integer = |key: &str| {
                     node.config

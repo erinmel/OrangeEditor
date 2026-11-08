@@ -1,5 +1,71 @@
 # Tooling, environment and research register
 
+## C12b — authenticated graph workspace values — 2026-11-07
+
+Branch `codex/c12-shared-graph`, based on dev
+`a619cb7ecc1f98fd55b8c6ecb259bf5620d5fc46` (PR146). C12a's tested head
+`9021dc083dde2a8b6597dc28328db99f1e80dccf` passed all nine exact-head CI jobs
+in run42449038938 and merged at2026-11-08T05:05:02Z; its tree matches dev.
+Strict current-base rust protection, administrator enforcement and resolved
+conversations were verified; solo mode required zero independent approvals.
+No review threads/submissions or bypass. That records C12a's actual merge evidence.
+
+C12b local environment: Rust1.99.1 (`58cf8f9c3`, 2026-10-13), Cargo1.99.1
+(`5f94df478`, 2026-08-27), Windows x64 MSVC, edition2024. Default workspace
+tests; all-feature Clippy/rustdoc; `CARGO_INCREMENTAL=0`, locked/offline.
+TEMP/TMP use ignored `.artifacts/c12b-validation/tmp`; Node24.18.0.
+MSRV1.97.1 unchanged, verified remotely before merge, not installed locally.
+No dependency/feature/lock/toolchain change. Cargo.lock SHA256:
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+Source receipt:359 tracked/new files under app plus root Cargo manifest/lock/
+toolchain files, excluding docs and ignored outputs; sorted `sha256  path`
+manifest SHA256 `CB8F00FC9F3AFB83CFECD0A0172E5711FEC1D788FB64D1703CC95D877F22E54E`.
+
+Eighteen public regressions plus a noncloneable-command compile-fail check cover
+two compiled Runs' serialized Add/read-own-write and competing CAS; Set's empty
+result; original Get fault and called workspace readers; frozen input unions
+across pump slices; monotonic publications; wrong workspace/Run retry; cancellation
+before/after commit and race-region retirement; host rejection/fault validation;
+snapshot/request/actor/completion quota refusal; immutable retryable receipts;
+host-held request reservation after cancellation/disposal and refund-to-zero;
+committed oversize receipt retirement; replay refusal; Send+Sync and redacted Debug.
+The prior potential-callee rejection test now checks real attached execution.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo test --workspace --locked --offline` | **1,490 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,490 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| `cargo run -p orange-bundled --example headless_control --locked --offline` | Pass |
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` | Pass; four joins |
+| `cargo run -p orange-bundled --example headless_authoring --locked --offline` | Pass |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary check | Pass; 19 fixtures/core boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+Initial test-only fixture mistakes (terminal pumping, port name and archive method
+names) were corrected. Clippy's large-error check led to a private boxed request
+whose metadata remains included in its reservation. Final full debug/release and
+quality checks ran after those changes and the final receipt-refusal regression.
+Self-review traced scope/storage separation, exact schema attachment, private
+single-use ownership, prepublication admission, frozen epochs and cancellation
+through existing regions. No independent approval is claimed. Exact-head native/
+MSRV/security CI is still required before C12b merge.
+
+Host calls explicitly deliver publications; no background cross-run observer is
+claimed. An external commit can precede result admission/cancellation and cannot
+be undone by graph failure. Quotas are nominal, exclude arbitrary host Value
+copies/allocator/RSS, and conservatively stage old plus new snapshot reservations.
+Cross-run workspace event transport/leases, checkpoints and physical qualification
+remain open. C05 refuses this profile rather than replaying shared writes. Public
+Rust additions are unfrozen; saved formats/provider pins/dependencies unchanged.
+
 ## C12a — typed host workspace value actor — 2026-11-07
 
 Branch `codex/c12-workspace-actor`, from dev

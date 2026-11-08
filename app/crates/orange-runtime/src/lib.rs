@@ -33,10 +33,10 @@ pub use run::{
     RecordedRun, ReplayArchive, ReplayArchiveError, ReplayError, ReplayLog, ReplayOptions,
     ReplayPayloadRef, ReplayPlayback, ReplayStats, ReplayedRun, ResourceError, ResourceHandle, Run,
     RunError, RunEvent, RunEventSource, RunEventStats, RunLimits, RunOptions, RunOwnership,
-    RunProgress, RunResource, RunRetention, RunState, StopMode, StreamBranchStats, StreamBridge,
-    StreamBridgeStats, StreamBufferOptions, StreamCollectPoll, StreamConsumer, StreamDemand,
-    StreamError, StreamHandle, StreamNextId, StreamOverflow, StreamRead, StreamRefused, StreamStep,
-    TeeStreams,
+    RunProgress, RunResource, RunRetention, RunState, SharedError, SharedReceipt, SharedRefused,
+    SharedRequest, StopMode, StreamBranchStats, StreamBridge, StreamBridgeStats,
+    StreamBufferOptions, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError,
+    StreamHandle, StreamNextId, StreamOverflow, StreamRead, StreamRefused, StreamStep, TeeStreams,
 };
 pub use workspace::{
     Workspace, WorkspaceCommit, WorkspaceError, WorkspaceId, WorkspaceLimits, WorkspaceMeter,

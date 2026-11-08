@@ -45,8 +45,19 @@ pub trait EffectResolver {
 pub struct ControlEffect {
     pub(crate) binding: EffectBinding,
     pub(crate) outputs: Box<[ValueShape]>,
+    pub(crate) shared: Option<SharedWrite>,
+}
+/// Closed built-in workspace command; never routed to a package executor.
+#[derive(Debug, Clone, Copy)]
+pub struct SharedWrite {
+    pub variable: orange_model::id::VariableId,
+    /// None is Set; Some is one of the checked native Update operations.
+    pub operation: Option<crate::UpdateOperation>,
 }
 impl ControlEffect {
+    pub fn shared(&self) -> Option<&SharedWrite> {
+        self.shared.as_ref()
+    }
     pub fn binding(&self) -> &EffectBinding {
         &self.binding
     }

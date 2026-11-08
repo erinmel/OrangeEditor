@@ -1,5 +1,33 @@
 # Graph data structures
 
+## C12b graph workspace bridge (2026-11-07)
+
+ControlCell retains Workspace scope/type metadata without an initializer or a
+Run-owned variable slot. Existing HostSource::Variable projections select the
+attached immutable workspace root explicitly; called readers follow the same
+path. An attachment pins one WorkspaceSnapshot and a separately charged shared
+projection. Replacing it stages a new lease; open data epochs retain their own
+frozen input copies. A foreign identity or regressing version never replaces it.
+
+ControlEffect gains a private optional SharedWrite tag (variable ID, optional
+native UpdateOperation); Set uses None. Its strict demand and typed outputs reuse
+the ordinary Effect machinery, while host take/completion dispatch excludes the
+other command kind. Compiler-created private metadata cannot be supplied by an
+ordinary effect binding. Host-facing SharedRequest is a private boxed command
+with Run/effect/workspace identity, exact operation, immutable operands, monotonic
+cancellation signal and a payload/metadata lifetime lease. Only Workspace consumes
+it into a private SharedReceipt containing an immutable commit or typed failure.
+Neither is cloneable and a receipt cannot become another executable request.
+
+SharedRefused<T> returns the original request/receipt after admission refusal.
+Completion stages snapshot and outputs first, queues the existing parked strand,
+then installs the root before any pump work. Newer accepted roots never regress.
+Canceled region retirement uses existing Effect cleanup. A host-held command keeps
+its Run reservation after cancellation/disposal; commit cells/root stay charged
+to Workspace. Dispose releases attachment storage, while host-retained snapshots
+remain charged to their owner. No saved format/dependency/provider-lock change,
+unbounded retired-command history, bus transport or checkpoint format is added.
+
 ## C12a host workspace values (2026-11-07)
 
 `Workspace` owns one immutable current `WorkspaceSnapshot` and limits. Its private

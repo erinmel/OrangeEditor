@@ -649,6 +649,20 @@ Two branches of one Fork that write the same local or run variable or register â
 
 **Current validation (V10).** `validate_state` implements this section for `set-variable`, `update-variable`, function-call summaries and known package leaf effects; `W-STALE-CAPTURE` warns for a `set-variable` in a region of a `parallel` entry with a suspending node when its value depends on a `get-variable` of the same variable through an action or async output; `E-VARIABLE-PERSISTENT` rejects `persistent` locals; an initializer must carry the declared type and decode (`E-LITERAL-TYPE`). Registers: a stream cell type reports `E-STREAM-STORE`, `scope` must be `run` or `activation` and `initial` a decodable literal of the cell type (`E-REGISTER-CONFIG`); two branches reaching one register are already `E-REGION-AMBIGUOUS`. `validate_streams` implements `E-STREAM-STORE`, `E-HANDLE-PERSIST` and `E-HANDLE-LITERAL` for variable declarations and exports. Resource containment includes registered nominal record fields and enum payloads as well as constructor arguments; schema traversal terminates on recursive types without skipping other fields or variants. Register cell checks use the fresh resolved `current` output type, never a stale saved argument. Both run in `analyze`; `StreamRules` is reported covered, `StateRules` is not because `W-CONST-ERROR` (constant folding) is unimplemented ([08](08-decisions.md)).
 
+C12b graph shared-state profile (2026-11-07): the control compiler/Run now execute
+workspace Get and asynchronous Set-shared/Update-shared over the supported native
+value/update families. A Run must explicitly attach a compatible host snapshot;
+shared initializers are not Run-owned. Single-use host requests serialize through
+Workspace; authenticated receipts install the committed (or already newer)
+snapshot before `then` and publish typed old/new/exchanged results. Get freezes
+the latest host-accepted publication for its complete consumption epoch, including
+called readers and lazy potential inputs. The host explicitly forwards later
+publications to other runs; no inline/background graph execution occurs.
+Cancellation before commit rejects the request; cancellation after commit retires
+results without rolling shared state back. Quota refusal keeps the original
+request/receipt and pending command unchanged. C05 refuses this external-state
+profile. Cross-run workspace events and checkpoints remain open (03/12, evidence10).
+
 C12a host value substrate (2026-11-07): a typed host Workspace actor now publishes
 immutable versioned values and serializes native Set/Update/CAS. Old readers keep
 their pinned cell/schema reservations; failed writes leave the current version

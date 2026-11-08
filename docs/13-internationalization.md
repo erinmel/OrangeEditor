@@ -1,5 +1,17 @@
 # Internationalization and translatable text
 
+C12b bridge messages (2026-11-07): fieldless SharedError uses
+`core/shared-wrong-workspace`, `core/shared-wrong-run`, `core/shared-stale`,
+`core/shared-not-running`, `core/shared-contract`, `core/shared-limit` and
+`core/shared-snapshot-regression`, with static fallbacks and no arguments.
+RunError::Shared preserves that key. Host actor failures retain validated native
+faults; uninitialized reads/updates use `core/uninitialized-variable` with the
+original graph source. Other actor failures use a static WorkspaceFailure envelope
+and the existing workspace key. Host-supplied rejection faults undergo ordinary
+effect envelope/type/byte validation. Debug shows identities/counts/lifetime
+metadata, never operands, old/new values, names, config or provider formatting.
+Locale cannot alter scope, snapshot version, ordering, ownership or cancellation.
+
 C12a boundary messages (2026-11-07): fieldless host WorkspaceError uses
 `core/workspace-contract`, `core/workspace-unknown-variable`,
 `core/workspace-uninitialized`, `core/workspace-limit`,

@@ -33,6 +33,8 @@ mod ownership;
 use iteration::{ForEachCursor, IterationFrame};
 mod activations;
 mod effects;
+mod shared;
+pub use shared::{SharedError, SharedReceipt, SharedRefused, SharedRequest};
 mod events;
 pub use effects::{EffectError, EffectId, EffectLease, EffectRequest};
 mod ids;
@@ -281,6 +283,8 @@ pub struct RunOwnership {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
+    #[error("{0}")]
+    Shared(#[from] SharedError),
     #[error("Run recording or replay could not continue safely.")]
     ReplayFailed,
     #[error("{0}")]
@@ -301,6 +305,7 @@ pub enum RunError {
 impl RunError {
     pub const fn message_key(self) -> &'static str {
         match self {
+            Self::Shared(e) => e.message_key(),
             Self::ReplayFailed => "core/replay-failed",
             Self::Data(e) => e.message_key(),
             Self::InvalidState => "core/run-invalid-state",
@@ -328,6 +333,9 @@ impl StateLayout {
             cells
                 .iter()
                 .map(|cell| {
+                    if cell.scope() == VarScope::Workspace {
+                        return usize::MAX;
+                    }
                     let next = if cell.scope() == VarScope::Local {
                         &mut local
                     } else {
@@ -712,6 +720,7 @@ fn schedule(
 /// let run = orange_runtime::Run::default();
 /// ```
 pub struct Run {
+    workspace: Option<shared::Attachment>,
     frames: Frames,
     id: u64,
     plan: Option<Arc<ControlPlan>>,
@@ -776,6 +785,39 @@ impl Run {
         seed: u64,
         options: RunOptions,
     ) -> Result<Self, RunError> {
+        Self::start_workspace(plan, document, registry, seed, options, None)
+    }
+    /// Start with an exact compatible host snapshot. The host explicitly delivers
+    /// later publications; no background thread or shared mutable store is read.
+    pub fn start_in_workspace(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        snapshot: &crate::WorkspaceSnapshot,
+    ) -> Result<Self, RunError> {
+        snapshot
+            .check_schema(document, registry)
+            .map_err(|_| SharedError::Contract)?;
+        Self::start_workspace(plan, document, registry, seed, options, Some(snapshot))
+    }
+    fn start_workspace(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        snapshot: Option<&crate::WorkspaceSnapshot>,
+    ) -> Result<Self, RunError> {
+        if snapshot.is_none()
+            && plan
+                .variables()
+                .iter()
+                .any(|v| v.scope() == VarScope::Workspace)
+        {
+            return Err(SharedError::WrongWorkspace.into());
+        }
         if options
             .data
             .cancel
@@ -809,6 +851,9 @@ impl Run {
         let mut stop_ready = VecDeque::with_capacity(plan.stops().len());
         let layout = StateLayout::new(&plan);
         let budget = Budget::new(options.limits.max_run_retained_bytes);
+        let workspace = snapshot
+            .map(|s| shared::Attachment::prepare(&plan, s, &budget, options.limits.max_state_bytes))
+            .transpose()?;
         let mut state_bytes = 0usize;
         let mut local_bytes = 0usize;
         struct InitialCells {
@@ -823,6 +868,9 @@ impl Run {
         ) -> Result<InitialCells, RunError> {
             let (mut run, mut local) = (Vec::new(), Vec::new());
             for cell in cells {
+                if cell.scope() == VarScope::Workspace {
+                    continue;
+                }
                 let bytes = cell.initial().and_then(|v| cell.charge(v)).unwrap_or(16);
                 let (store, total) = if cell.scope() == VarScope::Local {
                     (&mut local, &mut *local_bytes)
@@ -1004,6 +1052,7 @@ impl Run {
             budget.clone(),
         )?;
         let mut run = Self {
+            workspace,
             frames: Frames::default(),
             id: run_identity()?,
             plan: Some(plan),
@@ -1076,8 +1125,9 @@ impl Run {
     pub fn pending_continuations(&self) -> usize {
         self.timers.len() - self.timers.entry_count()
     }
-    /// Aggregate nominal reservation held by live activations. Retiring an activation,
-    /// refusing a publication or disposing the run returns capacity.
+    /// Aggregate nominal reservations, including shared snapshot projections and
+    /// host-held shared commands. A detached command keeps its lease through
+    /// cancellation/disposal until the host drops or consumes it.
     pub fn retention(&self) -> RunRetention {
         RunRetention {
             reserved_bytes: self.budget.used(),
@@ -2222,6 +2272,7 @@ impl Run {
         // would keep. Only the terminal summary stays: identity, options, state history,
         // last error, counters and the virtual clock.
         self.plan = None;
+        self.workspace = None;
         self.frames.release();
         self.ready = ReadyQueue::with_capacity(0);
         self.events.release(self.activations.high_water());

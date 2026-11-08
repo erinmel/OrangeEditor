@@ -131,6 +131,36 @@ impl Effects {
     }
 }
 impl Run {
+    pub(in crate::run) fn reserve_shared_command(&self) -> Result<Option<Tally>, SharedError> {
+        if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
+            return Ok(None);
+        }
+        let Some(plan) = &self.plan else {
+            return Ok(None);
+        };
+        let pending = self
+            .effects
+            .commands
+            .iter()
+            .filter_map(|id| self.effects.by_id.get(id))
+            .find(|p| {
+                matches!(plan.nodes()[p.owner.index()].operation(),
+                ControlOperation::Effect { effect, .. } if effect.shared().is_some())
+            });
+        let Some(pending) = pending else {
+            return Ok(None);
+        };
+        let bytes = pending
+            .hold
+            .bytes
+            .checked_add(std::mem::size_of::<shared::RequestData>())
+            .ok_or(SharedError::Limit)?;
+        let mut hold = Tally::new(Some(self.budget.clone()), 0);
+        if !hold.try_set(bytes) {
+            return Err(SharedError::Limit);
+        }
+        Ok(Some(hold))
+    }
     pub(in crate::run) fn revoke_resource_effects(&mut self, id: orange_model::value::HandleId) {
         for (&sequence, pending) in &mut self.effects.by_id {
             let matches = |value: &Value| matches!(value,Value::Handle(handle) | Value::Stream(handle) if handle.id()==id);
@@ -198,10 +228,20 @@ impl Run {
     }
     /// Transfers one request to the host. A blocked worker cannot block the run actor.
     pub fn take_effect(&mut self) -> Option<EffectRequest> {
+        self.take_effect_kind(false)
+    }
+    pub(in crate::run) fn take_effect_kind(&mut self, shared: bool) -> Option<EffectRequest> {
         if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
             return None;
         }
-        let sequence = self.effects.commands.pop_front()?;
+        let plan = self.plan.as_ref()?;
+        let position = self.effects.commands.iter().position(|id| {
+            self.effects.by_id.get(id).is_some_and(|p| {
+                matches!(plan.nodes()[p.owner.index()].operation(),
+                ControlOperation::Effect { effect, .. } if effect.shared().is_some() == shared)
+            })
+        })?;
+        let sequence = self.effects.commands.remove(position)?;
         let pending = self.effects.by_id.get_mut(&sequence)?;
         let ControlOperation::Effect { effect, .. } =
             self.plan.as_ref()?.nodes()[pending.owner.index()].operation()
@@ -228,6 +268,14 @@ impl Run {
         id: EffectId,
         outcome: Result<&[Value], KernelFault>,
     ) -> Result<(), EffectError> {
+        self.complete_effect_kind(id, outcome, false)
+    }
+    pub(in crate::run) fn complete_effect_kind(
+        &mut self,
+        id: EffectId,
+        outcome: Result<&[Value], KernelFault>,
+        shared: bool,
+    ) -> Result<(), EffectError> {
         if id.run != self.id {
             return Err(EffectError::WrongRun);
         }
@@ -249,6 +297,9 @@ impl Run {
             return Err(EffectError::Contract);
         };
         let mut bytes = 0usize;
+        if effect.shared().is_some() != shared {
+            return Err(EffectError::Contract);
+        }
         if let Err(fault) = outcome {
             bytes = plan
                 .data()
