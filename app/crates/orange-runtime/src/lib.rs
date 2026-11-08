@@ -19,6 +19,7 @@ mod cancel;
 mod data;
 mod entropy;
 mod run;
+mod workspace;
 pub use cancel::CancelToken;
 pub use data::{DataActivation, DataError, DataLimits, DataOptions, DataPoll};
 pub use entropy::{
@@ -36,4 +37,8 @@ pub use run::{
     StreamBridgeStats, StreamBufferOptions, StreamCollectPoll, StreamConsumer, StreamDemand,
     StreamError, StreamHandle, StreamNextId, StreamOverflow, StreamRead, StreamRefused, StreamStep,
     TeeStreams,
+};
+pub use workspace::{
+    Workspace, WorkspaceCommit, WorkspaceError, WorkspaceId, WorkspaceLimits, WorkspaceMeter,
+    WorkspaceRetention, WorkspaceSnapshot,
 };

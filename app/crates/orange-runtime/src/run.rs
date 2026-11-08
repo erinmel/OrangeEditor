@@ -68,6 +68,7 @@ use regions::Regions;
 use timers::TimerTarget;
 use timers::{TimerKey, Timers};
 use trace::Trace;
+pub(crate) use update::workspace_update;
 
 static NEXT_RUN: AtomicU64 = AtomicU64::new(1);
 fn run_identity() -> Result<u64, RunError> {

@@ -1,5 +1,13 @@
 # Product requirements
 
+C12a trace addition (2026-11-07): FR-12/13 now have a typed host workspace value
+actor with immutable versioned snapshots, serialized atomic native updates and
+old/new/CAS metadata. Partial NFR-05/08/13 evidence covers type/operation/quota
+refusal without mutation, nonwrapping versions and retained-generation leases.
+Graph shared reads/writes, cross-run event bus/lease cleanup, checkpoint restore
+and physical qualification remain open. C12a does not complete C12 or FR-48;
+contracts/evidence are in 03/08/10/11/12/13.
+
 C07b trace addition (2026-11-07): FR-46/49 now include an effect-free pure authoring
 preview API, immutable typed publications, affected-computation reuse, separate
 function scopes and unchanged running plan/provider pins. FR-44/47 retain fresh

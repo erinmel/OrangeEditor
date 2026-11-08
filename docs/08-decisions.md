@@ -122,6 +122,15 @@ Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the reg
 
 ## ADR-14 — One cooperative actor per run
 
+C12a amendment (2026-11-07): host workspace values belong to a separate exclusively
+mutated actor with immutable versioned publications. Reuse the existing typed
+native Update implementation, with no per-write plugin dispatch or shared graph
+lock. Charge roots, cells and schema through lifetime leases so external old
+readers cannot hide retained generations from the workspace bound. Stage while
+retaining the old generation and publish only after whole admission. Graph command/
+receipt integration and the bounded event bus remain the next C12 increment; this
+does not claim asynchronous graph shared-state execution (03/11/12, evidence10).
+
 C07b amendment (2026-11-07; also ADR-23): authoring preview owns a separate pure
 compiler session rather than mutating a running activation or sharing its cache.
 Reuse only exact semantic/type/provider/input matches at the existing fold

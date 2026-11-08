@@ -1,5 +1,70 @@
 # Tooling, environment and research register
 
+## C12a — typed host workspace value actor — 2026-11-07
+
+Branch `codex/c12-workspace-actor`, from dev
+`cecc0f64b63e03ae93372165ece13b8eb9da2262` (PR145). Rust 1.99.1 (`58cf8f9c3`,
+2026-10-13), Cargo 1.99.1 (`5f94df478`, 2026-08-27), Windows x64 MSVC, edition 2024;
+default workspace tests, all features for Clippy/rustdoc, `CARGO_INCREMENTAL=0`,
+locked/offline. MSRV stays 1.97.1; only 1.99.1 is installed locally. Dependencies,
+features and lockfile unchanged. Cargo.lock SHA256:
+`4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+Source receipt: 357 tracked/new files under `app` plus root Cargo manifest/lock/
+toolchain files, excluding docs and ignored outputs; sorted `sha256  path`
+manifest SHA256 `07A94DB318C8FF06A8395D220DC1172152B580728DDE29AF3FE17F089DAD45A4`.
+Contracts/ADR-14/trace/messages updated in 01/03/08/11/12/13. Workspace actor,
+snapshot/commit/limits/error/accounting APIs are additive; native computation reuses
+the existing Run Update helper. Existing graph compiler/Run workspace restrictions
+remain in force. No saved schema, provider-lock or dependency change.
+
+Sixteen public-boundary regressions plus one private version-exhaustion regression
+pass. Tests cover immutable snapshots and monotonic host read-your-write commits;
+checked/wrapping/saturating arithmetic; CAS mismatch/equal success/order-independent
+map equality; bool/bitwise/Min/Max/string/list append; uninitialized/unknown/type/
+operand refusal; raw float Eq exclusion; value/state/retained quota rollback;
+old snapshot/receipt lease retention and zero reservations after last drop;
+pinned nominal record fields/Eq and incompatible schema refusal; compatible document
+initializers not resetting state; local/run exclusion and nonaliasing identities;
+constructor limits/resource rejection; uninitialized/None/Some(None) distinction;
+Send+Sync and safe Debug/errors; and preserved/refused foreign domain metadata.
+The exhaustion test proves no version wrap, value publication or reservation change.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo test --workspace --locked --offline` | **1,471 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,471 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| `cargo run -p orange-bundled --example headless_control --locked --offline` | Pass; total3/time10ns |
+| `cargo run -p orange-bundled --example headless_fork --locked --offline` | Pass; all four joins |
+| `cargo run -p orange-bundled --example headless_authoring --locked --offline` | Pass; old-plan wait/fresh restart/On Stop |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary check | Pass; 19 fixtures/core boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+Node24.18.0; TEMP/TMP use ignored `.artifacts/c12a-validation/tmp`. An initial test
+needed an explicit collection type and a lint-compliant limits initializer. The
+identity allocator uses the existing nonwrapping compare-exchange pattern rather
+than a newly deprecated std alias. Review added the domain gate and clarified the
+schema-only check name; full debug/release/lints/docs/examples were rerun afterward.
+Self-review traced pre-publication type/quota checks, all staging drops, version
+checks, native Eq/operation reuse, immutable cells and external-reader leases.
+No independent approval claimed. Exact-head native/MSRV/security CI remains
+required before merge; this local record claims no unexecuted remote result.
+
+Default nominal bounds:4096variables/16MiBschema/16MiBper-value-and-current-state/
+64MiBretained. Staging retains the old generation; snapshots/commit views remain
+charged until their last drop. Accounting excludes pinned registry, arbitrary host
+Value copies, allocator/RSS. Physical measurement/optimization remains deferred by
+user instruction. This is the C12a value substrate, not whole C12: graph shared
+reads/writes and publish-before-then, bounded cross-run bus/lease integration,
+checkpoints, general schema migration and wider product gates remain open.
+
 ## C07b — effect-free authoring preview — 2026-11-07
 
 Branch `codex/c07b-authoring-preview`, from dev
