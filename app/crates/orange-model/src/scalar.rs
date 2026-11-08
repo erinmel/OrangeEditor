@@ -8,6 +8,8 @@ pub enum Operation {
     Multiply,
     Divide,
     Not,
+    /// Boolean exclusive or. Both operands are always evaluated.
+    Xor,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -106,6 +108,12 @@ pub fn evaluate(
             _ => Err(ScalarError::InputContract),
         };
     }
+    if operation == Operation::Xor {
+        return match inputs {
+            [Value::Bool(a), Value::Bool(b)] if scalar == Scalar::Bool => Ok(Value::Bool(a ^ b)),
+            _ => Err(ScalarError::InputContract),
+        };
+    }
     let [left, right] = inputs else {
         return Err(ScalarError::InputContract);
     };
@@ -159,7 +167,7 @@ pub fn evaluate(
                 Operation::Subtract => a - b,
                 Operation::Multiply => a * b,
                 Operation::Divide => a / b,
-                Operation::Not => return Err(ScalarError::InputContract),
+                Operation::Not | Operation::Xor => return Err(ScalarError::InputContract),
             };
             if float_policy == FloatPolicy::Finite && !result.is_finite() {
                 return Err(ScalarError::NonFinite);

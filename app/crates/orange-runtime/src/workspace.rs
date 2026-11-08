@@ -369,7 +369,8 @@ impl Workspace {
             UpdateOperation::Numeric {
                 operation: orange_model::scalar::Operation::Multiply
                     | orange_model::scalar::Operation::Divide
-                    | orange_model::scalar::Operation::Not,
+                    | orange_model::scalar::Operation::Not
+                    | orange_model::scalar::Operation::Xor,
                 ..
             }
         ) {
