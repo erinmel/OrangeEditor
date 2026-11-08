@@ -41,6 +41,8 @@ pub enum ScalarError {
     NumericOverflow,
     DivideByZero,
     NonFinite,
+    Domain,
+    OutOfRange,
     InputContract,
 }
 
@@ -58,6 +60,8 @@ impl ScalarError {
             Self::NumericOverflow => "core/NumericOverflow",
             Self::DivideByZero => "core/DivideByZero",
             Self::NonFinite => "core/NonFinite",
+            Self::Domain => "core/Domain",
+            Self::OutOfRange => "core/OutOfRange",
             Self::InputContract => "core/InternalFault",
         }
     }
@@ -69,6 +73,8 @@ impl ScalarError {
             Self::NumericOverflow => "Numeric arithmetic overflowed.",
             Self::DivideByZero => "Division requires a nonzero divisor.",
             Self::NonFinite => "Finite arithmetic requires finite inputs and results.",
+            Self::Domain => "The operands are outside the operation's domain.",
+            Self::OutOfRange => "The operand is outside the operation's range.",
             Self::InputContract => "Kernel inputs violate the resolved contract.",
         }
     }
@@ -78,6 +84,8 @@ impl ScalarError {
             Self::NumericOverflow => "core/kernel-numeric-overflow",
             Self::DivideByZero => "core/kernel-divide-by-zero",
             Self::NonFinite => "core/kernel-non-finite",
+            Self::Domain => "core/kernel-domain",
+            Self::OutOfRange => "core/kernel-out-of-range",
             Self::InputContract => "core/kernel-input-contract",
         }
     }

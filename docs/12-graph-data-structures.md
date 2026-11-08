@@ -692,6 +692,35 @@ Package entry (event source acquired in the run's Starting phase):
 
 The executable subset and per-shape rules are normative in [11 §5.4](11-graph-language.md). A type validation accepts but the kernel cannot execute fails compilation with `CompileError::KernelUnsupportedType`.
 
+### 4.2 Bundled integer definitions
+
+L02a (2026-11-08) adds the following finite set to `org.orange.math/native-v1`.
+Every definition/config version is1, Pure and deterministic, with `T: int` and
+provider specializations exactly i32/i64/u32/u64. Every output is computed
+`result: $T`. Inputs are strict in the listed order, each `$T` except `count:u32`.
+IDs below have the `org.orange.math/` prefix. Semantics: [11 §5.6](11-graph-language.md).
+
+| ID suffix | Inputs | Config |
+|---|---|---|
+| `remainder`, `modulo` | `a`, `b` | empty |
+| `negate`, `absolute` | `value` | `int_overflow`: checked/wrapping/saturating |
+| `minimum`, `maximum` | `a`, `b` | empty |
+| `clamp` | `value`, `min`, `max` | empty |
+| `bit-and`, `bit-or`, `bit-xor` | `a`, `b` | empty |
+| `bit-not` | `value` | empty |
+| `shift-left`, `shift-right` | `value`, `count:core/u32@1` | `int_overflow`: checked/wrapping |
+
+Overflow config defaults to checked. Closed config schemas reject unknown fields,
+wrong values and policies absent from the operation's list. The host resolves the
+exact provider, definition/config version and specialization before execution.
+`IntegerOperation`, `ResolvedInteger` and `MathPackage::resolve_integer` expose the
+same native contracts to embedders; retaining a binding pins its registry snapshot.
+The compiler uses ordinary PureKernel bindings for constant folds and dynamic
+data/control demands. No new intrinsic, saved graph format, instruction family,
+constraint extension or dependency/feature is introduced. Float variants and the
+remaining math/cast vocabulary are separate L02 increments; this is a finite
+integer slice, not completion of FR-10 or the whole core.
+
 ## 5. Type and converter definitions
 
 ```json

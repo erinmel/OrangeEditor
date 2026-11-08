@@ -938,3 +938,16 @@ Audit remediation (2026-10-27):
 Runtime handlers and compare-and-set (2026-10-27):
 - **Execution dispatch.** `Run::execute` is the single place a node's demand root is consumed. A pending demand returns before any state changes, and a graph fault becomes the node's failed outcome. Operation families run in handlers with narrow contexts: state cells (Gate, DoOnce, FlipFlop, Register, Set) on a borrowed `Cells` view, selection, loops, scheduling (Fork, Entry, Yield, Wait), functions and updates. `SegmentWrites` owns the once-per-segment write marks.
 - **Compare-and-set equality.** Compare-and-set compiles only for shapes with native equality. Stored values are checked on every write path, and `expected` is checked when published with the variable's exact type. So equality is decided structurally. Only shapes containing a map fall back to the model's checked, insertion-order-independent equality.
+
+### L02a fixed-width integer kernels (2026-11-08)
+
+The ordinary math provider supplies thirteen strict integer-only operations listed
+in12 §4.2, under11 §5.6. Binding fixes exact metadata, type, provider and permitted
+policy once; scalar evaluation allocates no buffers, reads no registry and invokes
+no host operation. Work is bounded by fixed32/64-bit inputs, with widened128-bit
+remainder arithmetic to avoid native MIN/-1 traps. Invalid clamp bounds are checked
+before clamp; checked shifts reject the count before shifting. This is correctness
+and nominal fixed work, not physical latency qualification. Pure folding and
+actor-owned data demands share that same ordinary provider binding; faults retain
+their producer and normal Try/failed-route behavior. No scheduler, resource, saved
+format or provider selection rule changes. Broader math/casts remain open.
