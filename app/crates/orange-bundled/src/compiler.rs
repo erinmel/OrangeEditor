@@ -1,7 +1,8 @@
 //! Trusted native adapter. The compiler itself has no bundled-provider dependency.
 use crate::{
-    BindingError, Comparison, IntegerOperation, MathPackage, Operation, ResolvedComparison,
-    ResolvedConversion, ResolvedInteger, ResolvedKernel, resolve_core_conversion,
+    BindingError, Comparison, FloatOperation, IntegerOperation, MathPackage, Operation,
+    ResolvedComparison, ResolvedConversion, ResolvedFloat, ResolvedInteger, ResolvedKernel,
+    resolve_core_conversion,
 };
 use orange_compiler::{
     BindingRequest, KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError,
@@ -71,6 +72,33 @@ impl PureKernelResolver for MathPackage {
                 inputs: ports(operation.input_ports())?,
                 outputs: ports(&[operation.output_port()])?,
                 kernel: Arc::new(Native::Integer(kernel)),
+            });
+        }
+        if let Some(operation) = FloatOperation::from_definition_id(definition.id.as_str()) {
+            let ty = request
+                .signature()
+                .ports
+                .iter()
+                .find(|port| port.port_id.as_str() == operation.input_ports()[0])
+                .and_then(|port| port.ty.as_ref())
+                .ok_or(ResolveError::Contract)?;
+            let kernel = self
+                .resolve_float(
+                    request.snapshot().clone(),
+                    provider,
+                    definition,
+                    request.config_version(),
+                    ty,
+                    request.config(),
+                )
+                .map_err(|error| match error {
+                    BindingError::UnsupportedType => ResolveError::UnsupportedType,
+                    _ => ResolveError::Unavailable,
+                })?;
+            return Ok(KernelBinding {
+                inputs: ports(operation.input_ports())?,
+                outputs: ports(&[operation.output_port()])?,
+                kernel: Arc::new(Native::Float(kernel)),
             });
         }
         if let Some(comparison) = Comparison::from_definition_id(definition.id.as_str()) {
@@ -144,6 +172,7 @@ impl PureKernelResolver for MathPackage {
 enum Native {
     Math(ResolvedKernel),
     Integer(ResolvedInteger),
+    Float(ResolvedFloat),
     Comparison(ResolvedComparison),
     Conversion(ResolvedConversion),
 }
@@ -156,6 +185,16 @@ impl PureKernel for Native {
     fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
         match self {
             Self::Integer(kernel) => {
+                let [output] = outputs else {
+                    return Err(CONTRACT);
+                };
+                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
+                    code: error.code(),
+                    message_key: error.message_key(),
+                    message: error.message(),
+                })?;
+            }
+            Self::Float(kernel) => {
                 let [output] = outputs else {
                     return Err(CONTRACT);
                 };

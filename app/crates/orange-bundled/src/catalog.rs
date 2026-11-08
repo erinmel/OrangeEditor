@@ -148,6 +148,15 @@ impl MathPackage {
                 .insert(definition.definition.clone(), numeric[..4].to_vec());
             builder = builder.definition(definition);
         }
+        for definition in crate::float_definitions()? {
+            provider
+                .implements
+                .insert((definition.definition.clone(), definition.config_version));
+            provider
+                .specializations
+                .insert(definition.definition.clone(), numeric[4..].to_vec());
+            builder = builder.definition(definition);
+        }
         for definition in definitions {
             let supported = if definition.type_params.is_empty() {
                 vec![TypeArgs::new()]

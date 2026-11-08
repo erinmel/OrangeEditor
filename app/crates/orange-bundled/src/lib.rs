@@ -15,6 +15,7 @@ mod compiler;
 mod conversion;
 mod entropy;
 mod error;
+mod float;
 mod integer;
 mod kernel;
 
@@ -23,5 +24,6 @@ pub use comparison::{Comparison, ResolvedComparison, comparison_definitions};
 pub use conversion::{ConversionOutput, ResolvedConversion, resolve_core_conversion};
 pub use entropy::{RANDOM_U64_DEFINITION, ResolvedEntropyKernel, random_u64_definition};
 pub use error::{BindingError, CatalogError, ConversionError, KernelError};
+pub use float::{FloatOperation, ResolvedFloat, float_definitions};
 pub use integer::{IntegerOperation, ResolvedInteger, integer_definitions};
 pub use kernel::{Operation, ResolvedKernel};
