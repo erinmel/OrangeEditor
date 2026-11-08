@@ -1,8 +1,35 @@
 # Tooling, environment and research register
 
+## L02c — trigonometry, float predicates and XOR — 2026-11-08
+
+Branch `l02c-float-trig-compare`, based on dev `2feae34` (L02b PR151, all nine
+hosted checks green). Same local toolchain and features as L02b; MSRV 1.97.1 is
+checked by hosted CI. `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` and
+`total_cmp` are stable before it. No dependency, feature or lockfile change.
+
+The float tests now cover thirty-three operations. New regressions: predicate truth
+tables over ±∞, ±1.5, ±0, a subnormal and ±NaN against native IEEE comparisons and
+classification; total-order zero/NaN-sign/payload cases; arcsine/arccosine domain
+and atan2 signed-zero quadrants under finite policy; predicate config refusal; and
+XOR truth table, contract and binding refusals. Two 128-case properties check that
+total-order-less is a strict total order on arbitrary bit patterns and that inverse
+trig stays in principal ranges with sin²+cos² within 1e-12. The constant-fold test
+now folds all thirty-three definitions, including bool predicate results.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,559 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
+Limits: only exactly representable trig answers are asserted; the platform library
+decides last bits elsewhere. Remaining numeric casts are not in this slice. No
+timing or memory probe ran.
+
 ## L02b — finite float vocabulary — 2026-11-08
 
-Branch `l02b-float-math`, based on dev `4a17b28` (L02a PR150). Rust 1.99.1
+Merged as PR151. Branch `l02b-float-math`, based on dev `4a17b28` (L02a PR150). Rust 1.99.1
 (`58cf8f9c3`, 2026-10-13), Cargo 1.99.1 (`5f94df478`, 2026-08-27), Windows x64
 MSVC, edition 2024, all features. MSRV 1.97.1 is unchanged and checked by hosted CI;
 every native method used (`sqrt`, `exp`, `ln`, `log2`, `log10`, `powf`,

@@ -963,3 +963,12 @@ overflow with the existing `core/NonFinite`, `core/DivideByZero` and
 the same provider binding; faults keep their producer. Exponential, logarithms and
 power use the platform library, so replay is platform-scoped as stated above.
 Trigonometry, IEEE comparisons and the remaining casts remain open.
+
+### L02c trigonometry, float predicates and XOR (2026-11-08)
+
+Seventeen more strict f32/f64 operations (12 §4.3, 11 §5.6) share the L02b binding
+and evaluation path. Trigonometry keeps the finite/IEEE policy; inverse sine and
+cosine outside [-1, 1] report `core/Domain` under finite policy. The ten predicates
+return bool for every input, NaN included, and have no policy. Boolean `xor` is an
+eager scalar kernel beside `not`. No allocation, registry read or host call occurs
+during evaluation. Only the remaining numeric casts are left in L02.
