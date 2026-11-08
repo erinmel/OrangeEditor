@@ -9,6 +9,27 @@ struct UpdateOperands {
     first: Value,
     second: Option<Value>,
 }
+/// Shared by the host workspace actor; graph admission still owns capability and
+/// operand-order proofs. This wrapper adds no second arithmetic implementation.
+pub(crate) fn workspace_update(
+    ty: &ValueShape,
+    operation: UpdateOperation,
+    old: &Value,
+    first: &Value,
+    second: Option<&Value>,
+    limit: usize,
+) -> Result<(Value, bool), KernelFault> {
+    compute(
+        ty,
+        operation,
+        old,
+        &UpdateOperands {
+            first: first.clone(),
+            second: second.cloned(),
+        },
+        limit,
+    )
+}
 enum UpdatePoll {
     Pending,
     Fault(ConstantFault),

@@ -6,6 +6,54 @@ incremental authoring preview or graph stream iteration. Verification is in [10]
 
 ## Trusted execution boundary (C11a/C09a, 2026-11-06)
 
+### Host workspace value actor (C12a, 2026-11-07)
+
+`orange_runtime::Workspace` is an exclusively mutated host actor for workspace
+variable declarations. It initializes once from a document and pinned registry,
+accepting only the currently supported control-domain bodies,
+resolves ordinary executable ValueShapes, and decodes optional initializers with
+the existing bounded literal codec. Local/run declarations are excluded. Unknown,
+recursive/unsupported or resource/stream shapes and invalid/over-quota initializers
+are refused. Names/initializers in a later compatible document never reset existing
+shared values. Compatibility checks exact variable IDs, type expressions and
+resolved structural shape/schema facts; this is not hot schema migration or an
+execution/provider grant.
+
+`set` and `update` serialize through exclusive host ownership and return an immutable
+`WorkspaceCommit` with the newly published snapshot, old/new value views, written,
+optional exchanged and changed metadata. Update reuses the ordinary Run's native
+Add/Sub, Min/Max, And/Or/Xor, Append and Compare-and-set computation. Whole operand/
+result type and quota checks precede publication. An uninitialized Update refuses;
+Set initializes. CAS requires an exact host Eq shape, respects map-order-independent
+equality and never invents Eq for raw floats/package-only constraints. Mismatch
+does not write or advance version. Successful writes, including equal replacements,
+advance a checked nonwrapping version; `changed` uses host Eq, or is None when no
+language Eq implementation exists. Failed type/quota/arithmetic/version checks
+leave the current snapshot and reservations unchanged.
+
+Snapshots contain immutable Arc cells under a private nonreused workspace identity.
+Unchanged cells share one reservation across generations. Every root's map metadata,
+schema metadata and versioned cell values have aggregate leases. Old snapshots and
+commit views keep their leases after actor drop until their last reader drops;
+`WorkspaceMeter` owns only a read-only accounting observer. Arbitrary value copies
+made by the host are host-owned; snapshot/receipt clones retain the original leases.
+Debug/errors omit values, config, labels and provider formatting.
+
+Defaults: 4096 variables, 16 MiB schema metadata, 16 MiB per value/current value
+state, and 64 MiB total retained reservations. The aggregate includes historical
+generations still held by readers. Staging conservatively retains the old root/
+value while admitting the next, so replacement may require space for both even
+without external readers. Counts are nominal, excluding pinned registry/allocator/
+RSS cost; they do not prove physical performance. Host calls establish commit order;
+there is no internal thread, shared graph lock, OS service or persistence.
+
+This is C12a's value actor. Graph workspace Get, asynchronous Set-shared/Update-shared,
+read-your-writes before graph `then`, bounded cross-run event bus/lease cleanup and
+checkpoint restore remain subsequent integration. Ordinary Run/compiler workspace
+restrictions are still in force. Standalone workspace mutations are outside C05's
+sealed Run history; replay must never resend them. Contracts/shape representation
+are in 11/12 and executed checks in 10. Whole C12/core/NFR gates are not inferred.
+
 ### Effect-free authoring preview (C07b, 2026-11-07)
 
 `orange_compiler::PurePreview<R>` owns its trusted pure resolver, bounded fold

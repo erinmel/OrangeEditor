@@ -1,5 +1,29 @@
 # Graph data structures
 
+## C12a host workspace values (2026-11-07)
+
+`Workspace` owns one immutable current `WorkspaceSnapshot` and limits. Its private
+process identity and u64 publication version never wrap. A snapshot Arc holds its
+pinned schema/registry, version, sorted variable-to-Arc<Cell> map, current nominal
+value bytes and a root metadata lease. Each immutable cell holds optional Value,
+its nominal charge and a lease; the shared schema holds exact type/shape metadata
+and its own lease. None (uninitialized cell) differs from Some(Value::None), and
+nested Some(None) retains the existing value representation.
+
+Writes preflight the full new value/state/root reservations before replacing the
+current Arc. The old generation remains live during staging; it is not credited
+prematurely. Immutable commit views retain old/new cells plus the published root.
+All roots/cells/schema release their reservations at last drop, including host-held
+views after Workspace drop. A metadata-only WorkspaceMeter retains the counter,
+not values. Registry metadata and arbitrary host-made Value copies are excluded
+from its nominal accounting. There is no cycle or retired-version history table.
+
+The host actor resolves supported shapes/initializers without executable provider
+callbacks, and reuses the native Run Update helper for computation. Snapshot
+compatibility is a typed data/schema check, not authority to retarget a running
+provider. This increment changes no saved schema, dependency, feature or provider
+lock, and does not yet lower workspace graph operations or provide a cross-run bus.
+
 ## C07b authoring preview representation (2026-11-07)
 
 `PurePreview<R>` owns its resolver, mutable private cache, checked request counter,

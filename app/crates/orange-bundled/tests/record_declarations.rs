@@ -28,7 +28,7 @@ const EVENT: &str = "40000000-0000-4000-8000-000000000001";
 /// `path { points: list<point>, meta: map<string,i64> }` and the enum
 /// `shape { dot(point), path(path), empty }` deriving `eq`; and the recursive
 /// `link { next?: link }`.
-fn catalog() -> (MathPackage, Arc<RegistrySnapshot>) {
+pub(super) fn catalog() -> (MathPackage, Arc<RegistrySnapshot>) {
     let mut types = TypeRegistryBuilder::core();
     let term = |ty: &str| TypeTerm::parse(&ty.parse().unwrap()).unwrap();
     let field = |id: &str, ty: &str, optional| FieldSchema {

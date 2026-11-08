@@ -1,5 +1,17 @@
 # Internationalization and translatable text
 
+C12a boundary messages (2026-11-07): fieldless host WorkspaceError uses
+`core/workspace-contract`, `core/workspace-unknown-variable`,
+`core/workspace-uninitialized`, `core/workspace-limit`,
+`core/workspace-identity-exhausted`, `core/workspace-schema-mismatch` and
+`core/workspace-domain-unsupported` with static
+fallbacks and no arguments. Native update failures retain their validated static
+KernelFault code/key; the host can inspect that envelope while Display stays the
+generic "The workspace update failed." Debug omits values, labels, initializers,
+registry/provider formatting and host-made copies. IDs, schema compatibility,
+version/order and lease accounting are semantic metadata, independent of locale.
+Graph Get error/provenance and cross-run envelopes remain subsequent integration.
+
 C07b preview boundary (2026-11-07): updates and reads reuse the existing fieldless
 CompileError/EvaluationError message keys, with typed source IDs and safe static
 fallbacks. Graph faults retain original producer/ConstError provenance and host
