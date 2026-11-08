@@ -595,3 +595,9 @@ an integer name get distinct `float-` definitions rather than revising the L02a
 policy follows IEEE exception order (invalid input, pole, domain, overflow) with the
 existing error codes; IEEE policy returns native results. Platform-library
 transcendentals keep replay platform-scoped. Not a full core/API-freeze gate.
+
+Float predicate amendment (2026-11-08; ADR-16/20/21, FR-10): IEEE comparisons and
+total order are explicit `float-`/`total-order-less` definitions returning bool
+with empty config, not Core `eq`/`ord` implementations, so floats still cannot key
+maps or drive Switch. Boolean XOR is an eager ordinary definition, not a lazy
+intrinsic. Trigonometry follows the L02b finite/IEEE policy and platform scope.

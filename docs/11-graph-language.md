@@ -334,8 +334,30 @@ Square root, rounding, negate, absolute, minimum, maximum, clamp and remainder a
 exact IEEE operations. Exponential, the logarithms and power use the platform
 library: last-bit results may differ between platforms, and replay determinism is
 scoped to the locked implementation and platform ([03](03-data-and-execution.md)).
-Trigonometry, IEEE comparison/total-order nodes and the remaining casts are later
-L02 increments.
+The remaining casts are a later L02 increment.
+
+L02c trigonometry, float predicates and XOR (2026-11-08): seventeen more `T: float`
+definitions join [12 §4.3](12-graph-data-structures.md). `sine`, `cosine`,
+`tangent`, `arcsine`, `arccosine`, `arctangent` and `arctangent2(y, x)` work in
+radians, return `$T` and take `float_policy`. Under `finite`, non-finite inputs
+fault first; `arcsine`/`arccosine` outside [-1, 1] is `core/Domain`. Inverse
+results lie in the principal ranges, and `arctangent2` follows the IEEE signed-zero
+quadrant rules (atan2(±0, -x) is ±π; atan2(±0, +0) is ±0). They use the platform
+library, so last-bit results are platform-scoped like the logarithms.
+
+Ten predicates return `core/bool@1`, have empty config and never fault: they
+answer for NaN and infinities. `float-equal`, `float-not-equal`, `float-less`,
+`float-less-or-equal`, `float-greater` and `float-greater-or-equal` are the IEEE
+comparisons: NaN is unordered (every comparison is false except not-equal) and
+-0 equals +0. `total-order-less` is IEEE 754 totalOrder: -NaN < -∞ < … < -0 < +0 <
+… < +∞ < +NaN, with NaNs of one sign ordered by payload; it is a strict total order
+on bit patterns. `is-nan`, `is-finite` and `is-infinite` classify one value. These
+are the explicit float comparison nodes §5.4 refers to; f32/f64 still implement no
+Core `eq`/`ord`, so Switch, map keys and generic `equal`/`less` still refuse floats.
+
+`org.orange.math/xor` is an ordinary eager Pure definition: `a`, `b`, `result`, all
+`core/bool@1`, no type parameters, empty config. Unlike the lazy `core/and`/`core/or`
+intrinsics, both operands are always evaluated, since both decide the result.
 
 ## 6. Conversions
 
@@ -1068,7 +1090,7 @@ The bundled math package publishes pure `org.orange.math/equal` and `not-equal` 
 
 Order follows the §5.4 `ord` row: integers numerically (unsigned never as signed), string by code point (UTF-8 byte order, so U+FFFF precedes U+10000; no normalization or collation, 13), duration and timestamp by signed nanoseconds, and bool with false before true, as the existing Update Min/Max kernel already does. Equality covers the native `eq` shapes (bool, integers, string, bytes, duration, timestamp, and option/list/map of them; map equality ignores insertion order, §5.2) and package records and enums whose `eq` is a declared structural derive: equal tags, then equal payloads, or equal field presence, then equal fields, under the same rules, recursively. Maps may also be keyed by derived-key records and enums (§5.2).
 
-Not executed, because no semantics is defined: floats and aggregates over them (no Core `eq`/`ord`, rejected by validation with `E-CONSTRAINT-UNSATISFIED`, NaN included; the IEEE `==` and `total-order` nodes of §5.4 have no contract yet); json, error and result, whose Core `eq` is declared without a value rule; an enum or record whose `eq` is a package implementation, also when nested in a derive; and any record or enum order ("the host does not invent ... ordering"). Comparisons charge their node's ordinary work only, not the value size they walk. No intrinsic, saved field, diagnostic code or runtime operation is introduced.
+Not executed, because no semantics is defined: floats and aggregates over them (no Core `eq`/`ord`, rejected by validation with `E-CONSTRAINT-UNSATISFIED`, NaN included; the explicit IEEE comparison and `total-order-less` nodes of §5.6 are separate float definitions); json, error and result, whose Core `eq` is declared without a value rule; an enum or record whose `eq` is a package implementation, also when nested in a derive; and any record or enum order ("the host does not invent ... ordering"). Comparisons charge their node's ordinary work only, not the value size they walk. No intrinsic, saved field, diagnostic code or runtime operation is introduced.
 
 ### Volatile state-call execution evidence (2026-10-27)
 

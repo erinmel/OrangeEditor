@@ -725,8 +725,10 @@ integer slice, not completion of FR-10 or the whole core.
 
 L02b (2026-11-08) adds the following finite set to `org.orange.math/native-v1`.
 Every definition/config version is 1, Pure and deterministic, with `T: float` and
-provider specializations exactly f32/f64. Every input and the computed output
-`result` have type `$T`. IDs below have the `org.orange.math/` prefix.
+provider specializations exactly f32/f64. Every input has type `$T`; the computed output
+`result` is `$T` except for the predicates, whose `result` is `core/bool@1`. IDs
+below have the `org.orange.math/` prefix. L02c (2026-11-08) added trigonometry and
+the predicates.
 Semantics: [11 §5.6](11-graph-language.md).
 
 | ID suffix | Inputs |
@@ -737,9 +739,15 @@ Semantics: [11 §5.6](11-graph-language.md).
 | `float-negate`, `float-absolute` | `value` |
 | `float-minimum`, `float-maximum`, `float-remainder` | `a`, `b` |
 | `float-clamp` | `value`, `min`, `max` |
+| `sine`, `cosine`, `tangent`, `arcsine`, `arccosine`, `arctangent` | `value` |
+| `arctangent2` | `y`, `x` |
+| `float-equal`, `float-not-equal`, `float-less`, `float-less-or-equal`, `float-greater`, `float-greater-or-equal`, `total-order-less` (predicates) | `a`, `b` |
+| `is-nan`, `is-finite`, `is-infinite` (predicates) | `value` |
 
-Every config schema is closed and has only `float_policy`: finite (default) or
-ieee. `FloatOperation`, `ResolvedFloat` and `MathPackage::resolve_float` expose
+Every config schema is closed. Non-predicates have only `float_policy`: finite
+(default) or ieee; predicates have empty config. `FloatOperation::is_predicate`
+reports which is which. The same provider also publishes `xor` (`a`, `b`,
+`result`: `core/bool@1`, empty config) beside `not` in the scalar `Operation` set. `FloatOperation`, `ResolvedFloat` and `MathPackage::resolve_float` expose
 the same native contracts to embedders; retaining a binding pins its registry
 snapshot. The compiler uses ordinary PureKernel bindings for constant folds and
 dynamic data/control demands. No new intrinsic, saved format, error code or

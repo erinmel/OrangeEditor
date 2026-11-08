@@ -60,7 +60,7 @@ pub fn graph(
         let orange_model::catalog::Ports::Declared(ports) = definition.ports else {
             unreachable!()
         };
-        let args = if operation == Operation::Not {
+        let args = if !operation.is_numeric() {
             Default::default()
         } else {
             [("T".into(), "core/u64@1".parse().unwrap())].into()

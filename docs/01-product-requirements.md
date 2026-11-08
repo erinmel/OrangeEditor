@@ -428,3 +428,11 @@ NaN propagation, constant faults, dynamic Run demands and provider pins are veri
 through public APIs. Normative rules/catalog: 11 §5.6 and 12 §4.3. Partial FR-10:
 trigonometry, IEEE comparisons, remaining casts, strings/collections, package
 kernels, external embedding and physical performance qualification remain open.
+
+L02c trace (2026-11-08; FR-10/44/45, NFR-05/14): sine, cosine, tangent, their
+inverses and arctangent2, IEEE float comparisons, total-order-less, NaN/finite/
+infinite classification and eager boolean XOR now execute through the ordinary math
+provider. Predicate truth tables over NaN/±0/±∞, total-order properties, principal
+ranges, constant folds and provider pins are verified through public APIs. Rules and
+catalog: 11 §5.6 and 12 §4.3. Partial FR-10: remaining casts, strings/collections,
+package kernels and external embedding remain open.

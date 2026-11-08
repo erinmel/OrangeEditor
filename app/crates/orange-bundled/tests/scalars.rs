@@ -27,7 +27,7 @@ fn kernel(operation: Operation, ty: &str, config: Json) -> ResolvedKernel {
         id: operation.definition_id().parse().unwrap(),
         version: 1,
     };
-    let args: TypeArgs = if operation == Operation::Not {
+    let args: TypeArgs = if !operation.is_numeric() {
         Default::default()
     } else {
         [("T".into(), ty.parse().unwrap())].into()

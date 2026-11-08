@@ -13,7 +13,8 @@ use serde_json::json;
 
 use crate::{BindingError, CatalogError, KernelError, MathPackage};
 
-/// Float-only pure operations. Every input and the output `result` have type `$T`.
+/// Float-only pure operations. Every input has type `$T`; `result` is `$T`, or
+/// `core/bool@1` for the comparison and classification predicates.
 ///
 /// Operations whose names L02a already gives `T: int` integer contracts use a
 /// `float-` prefix: their NaN, signed-zero and domain rules differ, so they are
@@ -36,10 +37,27 @@ pub enum FloatOperation {
     Maximum,
     Clamp,
     Remainder,
+    Sine,
+    Cosine,
+    Tangent,
+    Arcsine,
+    Arccosine,
+    Arctangent,
+    Arctangent2,
+    Equal,
+    NotEqual,
+    Less,
+    LessOrEqual,
+    Greater,
+    GreaterOrEqual,
+    TotalOrderLess,
+    IsNan,
+    IsFinite,
+    IsInfinite,
 }
 
 impl FloatOperation {
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 33] = [
         Self::SquareRoot,
         Self::Exponential,
         Self::NaturalLog,
@@ -56,6 +74,23 @@ impl FloatOperation {
         Self::Maximum,
         Self::Clamp,
         Self::Remainder,
+        Self::Sine,
+        Self::Cosine,
+        Self::Tangent,
+        Self::Arcsine,
+        Self::Arccosine,
+        Self::Arctangent,
+        Self::Arctangent2,
+        Self::Equal,
+        Self::NotEqual,
+        Self::Less,
+        Self::LessOrEqual,
+        Self::Greater,
+        Self::GreaterOrEqual,
+        Self::TotalOrderLess,
+        Self::IsNan,
+        Self::IsFinite,
+        Self::IsInfinite,
     ];
 
     pub const fn definition_id(self) -> &'static str {
@@ -76,6 +111,23 @@ impl FloatOperation {
             Self::Maximum => "org.orange.math/float-maximum",
             Self::Clamp => "org.orange.math/float-clamp",
             Self::Remainder => "org.orange.math/float-remainder",
+            Self::Sine => "org.orange.math/sine",
+            Self::Cosine => "org.orange.math/cosine",
+            Self::Tangent => "org.orange.math/tangent",
+            Self::Arcsine => "org.orange.math/arcsine",
+            Self::Arccosine => "org.orange.math/arccosine",
+            Self::Arctangent => "org.orange.math/arctangent",
+            Self::Arctangent2 => "org.orange.math/arctangent2",
+            Self::Equal => "org.orange.math/float-equal",
+            Self::NotEqual => "org.orange.math/float-not-equal",
+            Self::Less => "org.orange.math/float-less",
+            Self::LessOrEqual => "org.orange.math/float-less-or-equal",
+            Self::Greater => "org.orange.math/float-greater",
+            Self::GreaterOrEqual => "org.orange.math/float-greater-or-equal",
+            Self::TotalOrderLess => "org.orange.math/total-order-less",
+            Self::IsNan => "org.orange.math/is-nan",
+            Self::IsFinite => "org.orange.math/is-finite",
+            Self::IsInfinite => "org.orange.math/is-infinite",
         }
     }
 
@@ -87,7 +139,17 @@ impl FloatOperation {
     pub const fn input_ports(self) -> &'static [&'static str] {
         match self {
             Self::Power => &["base", "exponent"],
-            Self::Minimum | Self::Maximum | Self::Remainder => &["a", "b"],
+            Self::Arctangent2 => &["y", "x"],
+            Self::Minimum
+            | Self::Maximum
+            | Self::Remainder
+            | Self::Equal
+            | Self::NotEqual
+            | Self::Less
+            | Self::LessOrEqual
+            | Self::Greater
+            | Self::GreaterOrEqual
+            | Self::TotalOrderLess => &["a", "b"],
             Self::Clamp => &["value", "min", "max"],
             _ => &["value"],
         }
@@ -96,11 +158,30 @@ impl FloatOperation {
     pub const fn output_port(self) -> &'static str {
         "result"
     }
+
+    /// Predicates return `core/bool@1` and take no `float_policy`: they classify or
+    /// compare every IEEE value, NaN and infinities included, and never fault.
+    pub const fn is_predicate(self) -> bool {
+        matches!(
+            self,
+            Self::Equal
+                | Self::NotEqual
+                | Self::Less
+                | Self::LessOrEqual
+                | Self::Greater
+                | Self::GreaterOrEqual
+                | Self::TotalOrderLess
+                | Self::IsNan
+                | Self::IsFinite
+                | Self::IsInfinite
+        )
+    }
 }
 
 /// Ordinary package definitions with `T: float` and exact f32/f64 specializations.
 pub fn float_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
     let generic: TypeExpr = "$T".parse()?;
+    let boolean: TypeExpr = "core/bool@1".parse()?;
     FloatOperation::ALL
         .into_iter()
         .map(|operation| {
@@ -111,9 +192,18 @@ pub fn float_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
                 .collect();
             ports.push(PortDescriptor::data_out(
                 operation.output_port(),
-                generic.clone(),
+                if operation.is_predicate() {
+                    boolean.clone()
+                } else {
+                    generic.clone()
+                },
                 OutputSource::Computed,
             ));
+            let properties = if operation.is_predicate() {
+                json!({})
+            } else {
+                json!({"float_policy":{"enum":["finite","ieee"],"default":"finite"}})
+            };
             Ok(NodeDefinition {
                 definition: DefinitionRef {
                     id: operation.definition_id().parse()?,
@@ -133,8 +223,7 @@ pub fn float_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
                 references: vec![],
                 specializations: None,
                 config_schema: Some(json!({"$schema":"orange.config-schema/v1","type":"object",
-                "properties":{"float_policy":{"enum":["finite","ieee"],"default":"finite"}},
-                "additionalProperties":false})),
+                "properties":properties,"additionalProperties":false})),
             })
         })
         .collect()
@@ -164,6 +253,7 @@ impl ResolvedFloat {
     /// Exact values in declared order; wrong type/arity is a contract error. Finite
     /// policy checks non-finite inputs, then poles (`DivideByZero`), then the domain,
     /// then a non-finite result. IEEE policy returns the native IEEE-754 result.
+    /// Predicates answer for every value, NaN included, and have no policy.
     pub fn evaluate(&self, inputs: &[Value]) -> Result<Value, KernelError> {
         use FloatOperation::*;
         // IEEE 754-2019 minimum/maximum: NaN propagates (first NaN operand) and
@@ -205,11 +295,28 @@ impl ResolvedFloat {
                     };
                     *slot = *x;
                 }
+                let [a, b, c] = v;
+                let truth = match self.operation {
+                    // IEEE comparisons: NaN is unordered and -0 equals +0.
+                    Equal => Some(a == b),
+                    NotEqual => Some(a != b),
+                    Less => Some(a < b),
+                    LessOrEqual => Some(a <= b),
+                    Greater => Some(a > b),
+                    GreaterOrEqual => Some(a >= b),
+                    TotalOrderLess => Some(a.total_cmp(&b).is_lt()),
+                    IsNan => Some(a.is_nan()),
+                    IsFinite => Some(a.is_finite()),
+                    IsInfinite => Some(a.is_infinite()),
+                    _ => None,
+                };
+                if let Some(truth) = truth {
+                    return Ok(Value::Bool(truth));
+                }
                 let finite = self.policy == FloatPolicy::Finite;
                 if finite && v[..arity].iter().any(|x| !x.is_finite()) {
                     return Err(KernelError::NonFinite);
                 }
-                let [a, b, c] = v;
                 let result = match self.operation {
                     SquareRoot => {
                         if finite && a < 0.0 {
@@ -263,6 +370,22 @@ impl ResolvedFloat {
                         }
                         a % b
                     }
+                    Sine => a.sin(),
+                    Cosine => a.cos(),
+                    Tangent => a.tan(),
+                    Arcsine | Arccosine => {
+                        if finite && a.abs() > 1.0 {
+                            return Err(KernelError::Domain);
+                        }
+                        if self.operation == Arcsine {
+                            a.asin()
+                        } else {
+                            a.acos()
+                        }
+                    }
+                    Arctangent => a.atan(),
+                    Arctangent2 => a.atan2(b),
+                    _ => return Err(KernelError::InputContract),
                 };
                 if finite && !result.is_finite() {
                     return Err(KernelError::NonFinite);
@@ -312,7 +435,9 @@ impl MathPackage {
             "core/f64@1" => Scalar::F64,
             _ => return Err(BindingError::UnsupportedType),
         };
-        if config.keys().any(|key| key != "float_policy") {
+        if config.keys().any(|key| key != "float_policy")
+            || operation.is_predicate() && !config.is_empty()
+        {
             return Err(BindingError::InvalidConfig);
         }
         let policy = match config.get("float_policy").map(|v| v.as_str()) {

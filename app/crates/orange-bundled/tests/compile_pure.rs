@@ -1346,7 +1346,7 @@ fn graph(
         let orange_model::catalog::Ports::Declared(ports) = def.ports else {
             panic!()
         };
-        let args = if op == Operation::Not {
+        let args = if !op.is_numeric() {
             Default::default()
         } else {
             [("T".into(), "core/i64@1".parse().unwrap())].into()

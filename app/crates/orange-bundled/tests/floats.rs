@@ -1,4 +1,5 @@
-//! L02b float known answers, policy precedence, IEEE edges and real compiled demands.
+//! L02b/L02c float known answers, policy precedence, IEEE edges, predicates and real
+//! compiled demands.
 use std::sync::Arc;
 
 use orange_bundled::{
@@ -57,6 +58,7 @@ fn bits(result: Result<Value, KernelError>) -> u64 {
 }
 
 /// Answers exact in binary32 and binary64 on every conforming platform library.
+/// Predicates encode true as 1.0; `expected` maps them to `core/bool@1`.
 fn answer(op: Op) -> (Vec<f64>, f64) {
     match op {
         Op::SquareRoot => (vec![16.0], 4.0),
@@ -75,24 +77,59 @@ fn answer(op: Op) -> (Vec<f64>, f64) {
         Op::Maximum => (vec![1.0, 2.0], 2.0),
         Op::Clamp => (vec![5.0, 0.0, 3.0], 3.0),
         Op::Remainder => (vec![7.5, 2.0], 1.5),
+        Op::Sine => (vec![0.0], 0.0),
+        Op::Cosine => (vec![0.0], 1.0),
+        Op::Tangent => (vec![0.0], 0.0),
+        Op::Arcsine => (vec![0.0], 0.0),
+        Op::Arccosine => (vec![1.0], 0.0),
+        Op::Arctangent => (vec![0.0], 0.0),
+        Op::Arctangent2 => (vec![0.0, 1.0], 0.0),
+        Op::Equal => (vec![1.0, 1.0], 1.0),
+        Op::NotEqual => (vec![1.0, 2.0], 1.0),
+        Op::Less => (vec![1.0, 2.0], 1.0),
+        Op::LessOrEqual => (vec![2.0, 2.0], 1.0),
+        Op::Greater => (vec![1.0, 2.0], 0.0),
+        Op::GreaterOrEqual => (vec![1.0, 2.0], 0.0),
+        Op::TotalOrderLess => (vec![-0.0, 0.0], 1.0),
+        Op::IsNan => (vec![1.0], 0.0),
+        Op::IsFinite => (vec![1.0], 1.0),
+        Op::IsInfinite => (vec![1.0], 0.0),
+    }
+}
+fn expected(op: Op, answer: f64, narrow: bool) -> Value {
+    if op.is_predicate() {
+        Value::Bool(answer != 0.0)
+    } else if narrow {
+        Value::F32(answer as f32)
+    } else {
+        Value::F64(answer)
+    }
+}
+fn policies(op: Op) -> Vec<Json> {
+    if op.is_predicate() {
+        vec![json!({})]
+    } else {
+        vec![
+            json!({"float_policy":"finite"}),
+            json!({"float_policy":"ieee"}),
+        ]
     }
 }
 
 #[test]
-fn all_sixteen_operations_have_known_answers_in_both_precisions_and_policies() {
+fn all_operations_have_known_answers_in_both_precisions_and_policies() {
     for op in Op::ALL {
-        let (values, expected) = answer(op);
-        for policy in ["finite", "ieee"] {
-            let config = json!({"float_policy":policy});
+        let (values, answer) = answer(op);
+        for config in policies(op) {
             assert_eq!(
                 bind(op, F64, config.clone()).evaluate(&f64s(&values)),
-                Ok(Value::F64(expected)),
+                Ok(expected(op, answer, false)),
                 "{op:?}"
             );
             let narrow: Vec<_> = values.iter().map(|v| Value::F32(*v as f32)).collect();
             assert_eq!(
                 bind(op, F32, config).evaluate(&narrow),
-                Ok(Value::F32(expected as f32)),
+                Ok(expected(op, answer, true)),
                 "{op:?}"
             );
         }
@@ -101,7 +138,7 @@ fn all_sixteen_operations_have_known_answers_in_both_precisions_and_policies() {
 
 #[test]
 fn finite_policy_checks_inputs_then_poles_then_domain_then_result() {
-    for op in Op::ALL {
+    for op in Op::ALL.into_iter().filter(|op| !op.is_predicate()) {
         let arity = op.input_ports().len();
         for bad in [f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
             for slot in 0..arity {
@@ -132,6 +169,20 @@ fn finite_policy_checks_inputs_then_poles_then_domain_then_result() {
         (Op::Remainder, vec![1.0, 0.0], Err(DivideByZero)),
         (Op::Remainder, vec![1.0, -0.0], Err(DivideByZero)),
         (Op::Clamp, vec![1.0, 2.0, 0.0], Err(Domain)),
+        (Op::Arcsine, vec![1.5], Err(Domain)),
+        (Op::Arccosine, vec![-1.0000001], Err(Domain)),
+        (Op::Arcsine, vec![-0.0], Ok(Value::F64(-0.0))),
+        (Op::Arctangent2, vec![0.0, 0.0], Ok(Value::F64(0.0))),
+        (
+            Op::Arctangent2,
+            vec![0.0, -1.0],
+            Ok(Value::F64(std::f64::consts::PI)),
+        ),
+        (
+            Op::Arctangent2,
+            vec![-0.0, -1.0],
+            Ok(Value::F64(-std::f64::consts::PI)),
+        ),
     ] {
         assert_eq!(finite(op).evaluate(&f64s(&values)), expected, "{op:?}");
     }
@@ -278,12 +329,16 @@ fn input_contracts_bindings_and_provider_pins_are_exact() {
                 BindingError::UnsupportedType
             );
         }
-        for config in [
+        let mut invalid = vec![
             json!({"unknown":true}),
             json!({"int_overflow":"checked"}),
             json!({"float_policy":"strict"}),
             json!({"float_policy":7}),
-        ] {
+        ];
+        if op.is_predicate() {
+            invalid.push(json!({"float_policy":"ieee"}));
+        }
+        for config in invalid {
             assert_eq!(
                 bind_in(&package, snapshot.clone(), op, F64, config).unwrap_err(),
                 BindingError::InvalidConfig
@@ -368,8 +423,143 @@ fn input_contracts_bindings_and_provider_pins_are_exact() {
     assert_eq!(pinned.evaluate(&f64s(&[9.0])), Ok(Value::F64(3.0)));
 }
 
+#[test]
+fn predicates_compare_and_classify_every_ieee_value_without_faults() {
+    let values = [
+        f64::NEG_INFINITY,
+        -1.5,
+        -0.0,
+        0.0,
+        f64::MIN_POSITIVE / 2.0,
+        1.5,
+        f64::INFINITY,
+        f64::NAN,
+        -f64::NAN,
+    ];
+    let truth = |op: Op, inputs: &[f64]| match finite(op).evaluate(&f64s(inputs)) {
+        Ok(Value::Bool(truth)) => truth,
+        other => panic!("{op:?} {other:?}"),
+    };
+    for &a in &values {
+        assert_eq!(truth(Op::IsNan, &[a]), a.is_nan());
+        assert_eq!(truth(Op::IsFinite, &[a]), a.is_finite());
+        assert_eq!(truth(Op::IsInfinite, &[a]), a.is_infinite());
+        for &b in &values {
+            let unordered = a.is_nan() || b.is_nan();
+            assert_eq!(truth(Op::Equal, &[a, b]), !unordered && a == b);
+            assert_eq!(truth(Op::NotEqual, &[a, b]), unordered || a != b);
+            for (op, holds) in [
+                (Op::Less, a < b),
+                (Op::LessOrEqual, a <= b),
+                (Op::Greater, a > b),
+                (Op::GreaterOrEqual, a >= b),
+            ] {
+                assert_eq!(truth(op, &[a, b]), !unordered && holds, "{op:?} {a} {b}");
+            }
+        }
+    }
+    // IEEE equality ignores the zero sign; total order separates it and orders NaNs
+    // by sign at both ends.
+    assert!(truth(Op::Equal, &[-0.0, 0.0]));
+    assert!(truth(Op::TotalOrderLess, &[-0.0, 0.0]));
+    assert!(!truth(Op::TotalOrderLess, &[0.0, -0.0]));
+    assert!(truth(Op::TotalOrderLess, &[-f64::NAN, f64::NEG_INFINITY]));
+    assert!(truth(Op::TotalOrderLess, &[f64::INFINITY, f64::NAN]));
+    assert!(!truth(Op::TotalOrderLess, &[f64::NAN, f64::NAN]));
+    let low = f64::from_bits(0x7ff8_0000_0000_0001);
+    let high = f64::from_bits(0x7ff8_0000_0000_0002);
+    assert!(truth(Op::TotalOrderLess, &[low, high]));
+    assert_eq!(
+        bind(Op::IsNan, F32, json!({})).evaluate(&[Value::F32(f32::NAN)]),
+        Ok(Value::Bool(true))
+    );
+}
+
+#[test]
+fn boolean_xor_is_an_ordinary_eager_bool_definition() {
+    let (package, snapshot) = catalog();
+    let definition = DefinitionRef {
+        id: orange_bundled::Operation::Xor
+            .definition_id()
+            .parse()
+            .unwrap(),
+        version: 1,
+    };
+    let xor = package
+        .resolve(
+            snapshot.clone(),
+            package.provider_key(),
+            &definition,
+            1,
+            &Default::default(),
+            &Default::default(),
+        )
+        .unwrap();
+    for (a, b) in [(false, false), (false, true), (true, false), (true, true)] {
+        assert_eq!(
+            xor.evaluate(&[Value::Bool(a), Value::Bool(b)]),
+            Ok(Value::Bool(a ^ b))
+        );
+    }
+    for inputs in [
+        vec![Value::Bool(true)],
+        vec![Value::Bool(true), Value::I64(1)],
+        vec![Value::I64(1), Value::I64(1)],
+    ] {
+        assert_eq!(xor.evaluate(&inputs), Err(KernelError::InputContract));
+    }
+    let args = [("T".to_string(), "core/i64@1".parse().unwrap())].into();
+    assert_eq!(
+        package
+            .resolve(
+                snapshot.clone(),
+                package.provider_key(),
+                &definition,
+                1,
+                &args,
+                &Default::default()
+            )
+            .unwrap_err(),
+        BindingError::UnsupportedType
+    );
+    assert_eq!(
+        package
+            .resolve(
+                snapshot,
+                package.provider_key(),
+                &definition,
+                1,
+                &Default::default(),
+                &serde_json::from_value(json!({"float_policy":"ieee"})).unwrap()
+            )
+            .unwrap_err(),
+        BindingError::InvalidConfig
+    );
+}
+
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(128))]
+    #[test]
+    fn total_order_less_is_a_strict_total_order_on_bits(a in any::<u64>(), b in any::<u64>()) {
+        let (a, b) = (f64::from_bits(a), f64::from_bits(b));
+        let less = |x: f64, y: f64| finite(Op::TotalOrderLess).evaluate(&f64s(&[x, y])) == Ok(Value::Bool(true));
+        prop_assert!(!less(a, a));
+        prop_assert_eq!(less(a, b) || less(b, a), a.to_bits() != b.to_bits());
+        prop_assert!(!(less(a, b) && less(b, a)));
+    }
+    #[test]
+    fn inverse_trig_stays_in_principal_ranges(x in -1.0f64..=1.0, y in -1.0e6f64..1.0e6, z in -1.0e6f64..1.0e6) {
+        let value = |op: Op, inputs: &[f64]| f64::from_bits(bits(finite(op).evaluate(&f64s(inputs))));
+        let half = std::f64::consts::FRAC_PI_2;
+        let pi = std::f64::consts::PI;
+        prop_assert!(value(Op::Arcsine, &[x]).abs() <= half);
+        prop_assert!((0.0..=pi).contains(&value(Op::Arccosine, &[x])));
+        prop_assert!(value(Op::Arctangent, &[y]).abs() <= half);
+        prop_assert!(value(Op::Arctangent2, &[y, z]).abs() <= pi);
+        let (sine, cosine) = (value(Op::Sine, &[y]), value(Op::Cosine, &[y]));
+        prop_assert!(sine.abs() <= 1.0 && cosine.abs() <= 1.0);
+        prop_assert!((sine * sine + cosine * cosine - 1.0).abs() < 1.0e-12);
+    }
     #[test]
     fn rounding_nodes_bracket_their_input(x in -1.0e15f64..1.0e15) {
         let floor = bits(finite(Op::Floor).evaluate(&[Value::F64(x)]));
@@ -471,7 +661,7 @@ fn actual_definitions_fold_constants_and_keep_original_fault_sources() {
             .collect();
         nodes.push(node(n, op, Json::Object(inputs)));
         exports.push(json!({"id":format!("out{n}"),"node":id(n),"port":"result"}));
-        expected.push(answer);
+        expected.push(self::expected(op, answer, false));
     }
     let doc = graph(&package, nodes, vec![], exports, json!([]));
     let analysis = analyze(&doc, &snapshot);
@@ -491,7 +681,7 @@ fn actual_definitions_fold_constants_and_keep_original_fault_sources() {
     for (export, answer) in plan.exports().iter().zip(expected) {
         assert_eq!(
             plan.constants()[export.slot.index()],
-            FoldedValue::Value(Value::F64(answer))
+            FoldedValue::Value(answer)
         );
     }
     for (op, inputs, code) in [

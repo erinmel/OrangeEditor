@@ -258,3 +258,6 @@ Locale changes cannot alter modulo, bit widths, overflow or shift-count policies
 L02b float errors (2026-11-08): the float nodes reuse `core/NonFinite`,
 `core/DivideByZero` and `core/Domain` with their existing zero-argument keys; no
 new key or argument is added. Operand and policy values are never interpolated.
+
+L02c (2026-11-08): trigonometry reuses `core/NonFinite` and `core/Domain`; the
+predicates and XOR raise no semantic errors. No message key or argument is added.

@@ -15,6 +15,7 @@ pub enum Operation {
     Multiply,
     Divide,
     Not,
+    Xor,
 }
 
 /// One operation's identity, ports and typed scalar rule. Every catalog, binding and
@@ -22,7 +23,7 @@ pub enum Operation {
 struct Spec {
     definition_id: &'static str,
     /// Numeric operations are generic over `T` with overflow/float policies; the
-    /// remaining operation is boolean and has no type parameters or config.
+    /// remaining operations are boolean and have no type parameters or config.
     numeric: bool,
     inputs: &'static [&'static str],
     output: &'static str,
@@ -44,12 +45,13 @@ const fn numeric(
 }
 
 impl Operation {
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Add,
         Self::Subtract,
         Self::Multiply,
         Self::Divide,
         Self::Not,
+        Self::Xor,
     ];
 
     const fn spec(self) -> Spec {
@@ -76,6 +78,13 @@ impl Operation {
                 inputs: &["value"],
                 output: "result",
                 scalar: ScalarOperation::Not,
+            },
+            Self::Xor => Spec {
+                definition_id: "org.orange.math/xor",
+                numeric: false,
+                inputs: &["a", "b"],
+                output: "result",
+                scalar: ScalarOperation::Xor,
             },
         }
     }
@@ -154,10 +163,13 @@ mod tests {
                 Operation::from_definition_id(operation.definition_id()),
                 Some(operation)
             );
-            assert_eq!(operation.is_numeric(), operation != Operation::Not);
+            assert_eq!(
+                operation.is_numeric(),
+                !matches!(operation, Operation::Not | Operation::Xor)
+            );
             assert_eq!(
                 operation.input_ports().len(),
-                if operation.is_numeric() { 2 } else { 1 }
+                if operation == Operation::Not { 1 } else { 2 }
             );
         }
         assert_eq!(
