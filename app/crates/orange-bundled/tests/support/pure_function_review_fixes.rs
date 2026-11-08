@@ -69,6 +69,7 @@ fn default_fixture(
         .into_iter()
         .chain([orange_bundled::random_u64_definition().unwrap()])
         .chain(orange_bundled::comparison_definitions().unwrap())
+        .chain(orange_bundled::integer_definitions().unwrap())
     {
         builder = builder.definition(definition);
     }
@@ -257,6 +258,7 @@ fn computed_source_admission_is_identical_at_root_and_inside_functions() {
         .into_iter()
         .chain([orange_bundled::random_u64_definition().unwrap()])
         .chain(orange_bundled::comparison_definitions().unwrap())
+        .chain(orange_bundled::integer_definitions().unwrap())
     {
         if definition.definition.id.as_str() == "org.orange.math/add" {
             let Ports::Declared(ports) = &mut definition.ports else {

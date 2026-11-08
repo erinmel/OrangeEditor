@@ -577,3 +577,12 @@ Graceful Draining rejects new Emit with core/RunStopping while draining already 
 Runtime storage note (2026-11-05; ADR-16/21): implement physical region slot reuse with a small identity directory, ordered root enumeration, admitted Fork batch reservation and a drained reusable child buffer. Retire contents immediately and free pooled capacity on disposal; never use monotonic logical IDs as unbounded physical indices. Reuse host map/list admission only through the exact immutable allocation already retained by that same typed register, while preserving current publication and resource checks. This is a private implementation optimization within the existing runtime/embedding decisions, not a new semantic or provider contract. Evidence and rejected alternatives: [19](19-runtime-performance.md).
 
 Runtime storage note, second cohort (2026-11-05; ADR-16/21): keep derived check evidence inside the immutable container it describes (never in an address-keyed cache), remember only complete checks, and keep it out of equality, hashing and persistence. Ownership spill sets may hold up to twice their live members as removal flags to avoid per-node tree allocations, with ascending iteration preserved. Only run-minted identity keys may use the non-flooding-resistant hasher; directories keyed by graph, host or network input keep the standard hasher. Region continuations use pooled out-of-line boxes so regions that never wait stay small without per-call allocation. Additive memory must be judged at the expected graph sizes (19). Evidence and the rejected timer-slot experiment: [19](19-runtime-performance.md).
+
+Integer vocabulary amendment (2026-11-08; ADR-16/20/21, FR-10/44/45): extend the
+ordinary exact bundled math provider, without adding language intrinsics or a
+compiler dependency on bundled code. Thirteen `T:int` definitions and four exact
+native specializations have closed operation-specific configuration. Remainder
+and Euclidean modulo avoid quotient overflow; shifts validate/mask counts only,
+with saturating config refused. Safe Domain/OutOfRange kernel faults retain node
+provenance. Existing scalar/state arithmetic semantics and provider locks remain.
+This is the first missing vocabulary increment, not a full core/API-freeze gate.

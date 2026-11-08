@@ -34,6 +34,7 @@ mod enum_declarations;
 mod function_epochs;
 mod graph_handles;
 mod graph_streams;
+mod integers;
 mod pure_preview;
 mod record_declarations;
 mod reference_equivalence;

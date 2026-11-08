@@ -279,6 +279,30 @@ Integer arithmetic config: `int_overflow` = `checked` (default) / `wrapping` / `
 
 For the bundled scalar arithmetic, integer zero divisors fail in every overflow mode. Signed MIN/-1 follows the selected overflow policy: error in checked mode, MIN in wrapping mode, MAX in saturating mode. Finite floating arithmetic checks non-finite operands before zero division, then checks the result; explicit `float_policy: ieee` admits native NaN/infinity and division by zero. The stable errors are `core/NonFinite`, `core/DivideByZero` and `core/NumericOverflow`. Precision, signed zero and exact provider choice remain semantic inputs; this kernel implementation does not certify compiler constant folding (03, N1a).
 
+L02a integer vocabulary (2026-11-08): [12 §4.2](12-graph-data-structures.md)
+lists thirteen ordinary pure math definitions, with `T: int` and exact native
+i32/i64/u32/u64 specializations. They have strict ordered inputs and no coercion.
+`remainder` uses truncating division's remainder (the dividend's sign);
+`modulo` is Euclidean, with `0 <= result < abs(divisor)` even for negative divisors.
+Both reject zero with `core/DivideByZero`. Signed MIN with divisor -1 yields zero
+for both: the remainder is representable, independently of quotient overflow.
+Neither node accepts overflow config. These rules do not change Divide's MIN/-1 rule.
+
+`negate` and `absolute` accept only `int_overflow` checked(default)/wrapping/saturating.
+Signed MIN faults, remains MIN, or becomes MAX respectively. Unsigned Negate is
+zero minus value under that policy; unsigned Absolute is identity. `minimum` and
+`maximum` return the numeric bound. `clamp(value,min,max)` includes both bounds;
+min > max faults with `core/Domain`, without invoking a panicking native clamp.
+Bit And/Or/Xor/Not operate on exact-width two's-complement bits.
+
+Shift `count` is always `core/u32@1`, independent of T. Left shift discards high
+bits; signed right shift extends the sign, unsigned right shift inserts zeros.
+Only checked(default) and wrapping `int_overflow` are supported: checked count
+>= bit width faults with `core/OutOfRange`, wrapping uses count modulo width.
+Checked shift does not promise preservation of high value bits. Saturating shift
+config is rejected, rather than inventing a saturation rule. All other new nodes
+have empty config. Kernel errors carry safe static text and no operand values.
+
 ## 6. Conversions
 
 1. The compiler never converts. Every conversion is a `core/convert` node that names a **converter registry entry**.

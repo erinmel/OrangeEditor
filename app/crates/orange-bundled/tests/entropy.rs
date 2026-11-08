@@ -229,6 +229,7 @@ fn changed_metadata(
         .into_iter()
         .chain([definition])
         .chain(orange_bundled::comparison_definitions().unwrap())
+        .chain(orange_bundled::integer_definitions().unwrap())
     {
         builder = builder.definition(definition);
     }

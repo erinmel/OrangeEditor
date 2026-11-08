@@ -410,3 +410,12 @@ Aggregate run budget trace (2026-11-05; FR-12/16, NFR-05; ADR-24): `RunLimits::m
 Runtime optimization trace (2026-11-05; FR-12/14/16, NFR-01/05; ADR-16/21): reusable physical region slots preserve non-reused logical identities and ordered ownership traversal; Fork batches reserve admitted storage and reuse drained temporary children. Input maps/lists reuse prior admission only when the same typed register still retains the identical immutable allocation. Current quotas, publication reservations, cancellation, epochs, provider pins and disposal remain authoritative. No public API or graph-language rule changes. Regression and measurement evidence is in [19](19-runtime-performance.md); older-machine and reference-workload performance qualification remains open.
 
 Runtime optimization trace, second cohort (2026-11-05; FR-12/14/16, NFR-01/05; ADR-16/21): each immutable map allocation remembers its first complete shape check and reuses it only for equal shapes at the same or smaller depth, still enforcing the caller's byte limit; multi-member ownership sets use an ascending tombstoned vector bounded at twice the live set; run-minted identity directories use a fixed multiplicative hasher; region continuations live in pooled boxes so regions shrink from 496 to 168 bytes. Ordering, quotas, cancellation, disposal and graph semantics are unchanged. Evidence is in [19](19-runtime-performance.md).
+
+L02a integer vocabulary trace (2026-11-08; FR-10/44/45, NFR-05/14): thirteen
+ordinary bundled pure definitions now execute remainder/modulo, negate/absolute,
+min/max/clamp, bitwise And/Or/Xor/Not and shifts for the four exact Core integer
+types. Closed per-operation policies, numeric/domain/count faults, original-node
+constant faults, dynamic Run demands and old provider pins are verified through
+public APIs. Normative rules/catalog: 11 §5.6 and12 §4.2; exact checks:10. This is
+partial FR-10: wider math/casts, string/Unicode/collection vocabulary, package
+kernels, external embedding and physical performance qualification remain open.

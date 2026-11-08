@@ -1,5 +1,67 @@
 # Tooling, environment and research register
 
+## L02a — finite integer vocabulary — 2026-11-08
+
+Branch `codex/l02a-integer-kernels`, based on dev
+`83d4808c9239803b5521264817273fb799bf6185` (C13 PR149). C13's tested head
+`adecf9b6b30fe43ce8fd51c1e9749edcd2b55651` passed all nine jobs in
+run42529944986 and merged at2026-11-08T22:26:30Z with an identical tree.
+Current base/CLEAN/MERGEABLE, no reviews/threads, strict rust/admin/conversation
+protection and zero solo independent approvals were verified; no bypass.
+
+Local environment: Rust1.99.1 (`58cf8f9c3`,2026-10-13), Cargo1.99.1
+(`5f94df478`,2026-08-27), Windows x64 MSVC, edition2024, Node24.18.0.
+All-feature workspace tests/Clippy/rustdoc; `CARGO_INCREMENTAL=0`, locked/offline;
+TEMP/TMP use ignored `.artifacts/l02a-validation/tmp`. MSRV1.97.1 is unchanged,
+not installed locally; exact-head native/MSRV/security CI is required before merge.
+No dependency, feature or toolchain changes. Cargo.lock SHA256 remains
+`3F2DD51536A323ECA3E91FC939824C4C25373B283440B081B832C34C7E09D7C2`.
+Native checked/wrapping shifts, saturating subtraction, clamp and Euclidean
+remainder were checked in the installed Rust1.99.1 versioned primitive Rustdoc.
+
+Source receipt:369 tracked/new files under app plus root Cargo manifest/lock/
+toolchain, excluding docs/ignored outputs; sorted `sha256  path` manifest SHA256
+`FE651B9C1AB8A4551671B4A3ADAAA392C7440E7E18BF587B51797E92B3A9976F`.
+
+Eleven public regressions cover known answers for all thirteen operations and four
+integer widths; signed MIN, negative/zero divisors, unary overflow modes, unsigned
+negation, inverted/equal clamp bounds, checked/wrapping shift counts and sign
+extension; wrong arity/type/config/provider/version/specialization refusal and old
+snapshot retention. Three 96-case properties check signed remainder via widened
+quotient identity, unsigned u128 quotient identity, and bit algebra/widened shifts.
+Actual pure plans preserve original-node numeric/domain/count faults; a compiled
+Run reads state through Modulo→Shift→Clamp at pump budgets1/2/64 and releases all
+reservations. These are correctness checks, not physical cost qualification.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo test --workspace --all-features --locked --offline` | **1,544 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test --workspace --all-features --release --locked --offline` | **1,544 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| all three headless_control/headless_fork/headless_authoring example runs, locked/offline | Pass |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary check | Pass; 19 fixtures/core boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+The first full debug run found six older fixtures that copied the complete math
+provider descriptor but rebuilt only older definition families. Their definition
+lists now include the new family; assertions and limits were preserved. Initial
+new graph fixtures were corrected to use stored signatures, `init` and numeric
+u32 literals. Final full/quality checks ran after all source corrections. Solo
+self-review checked exact admission, strict inputs, bounded widened arithmetic
+and preconditions before native clamp/shift. No independent approval is claimed.
+
+Rules/catalog/trace/ADR/typed message keys are synchronized in01/03/08/11/12/13.
+Callbacks allocate no buffers and perform fixed-width work; no timing/RSS claim.
+This is partial FR-10/L02. Wider math/casts, string/Unicode/collection vocabulary,
+package kernels, standalone embedding and broader M1 gates remain open. Physical
+performance qualification is deferred by the user.
+
 ## C13 — portable persistent-value checkpoints — 2026-11-08
 
 Branch `codex/c13-value-checkpoints`, based on dev
