@@ -34,6 +34,7 @@ use iteration::{ForEachCursor, IterationFrame};
 mod activations;
 mod effects;
 mod shared;
+mod workspace_events;
 pub use shared::{SharedError, SharedReceipt, SharedRefused, SharedRequest};
 mod events;
 pub use effects::{EffectError, EffectId, EffectLease, EffectRequest};
@@ -284,6 +285,8 @@ pub struct RunOwnership {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum RunError {
     #[error("{0}")]
+    WorkspaceBus(#[from] crate::WorkspaceBusError),
+    #[error("{0}")]
     Shared(#[from] SharedError),
     #[error("Run recording or replay could not continue safely.")]
     ReplayFailed,
@@ -305,6 +308,7 @@ pub enum RunError {
 impl RunError {
     pub const fn message_key(self) -> &'static str {
         match self {
+            Self::WorkspaceBus(e) => e.message_key(),
             Self::Shared(e) => e.message_key(),
             Self::ReplayFailed => "core/replay-failed",
             Self::Data(e) => e.message_key(),
@@ -720,6 +724,7 @@ fn schedule(
 /// let run = orange_runtime::Run::default();
 /// ```
 pub struct Run {
+    workspace_bus: Option<crate::workspace::BusLease>,
     workspace: Option<shared::Attachment>,
     frames: Frames,
     id: u64,
@@ -811,10 +816,14 @@ impl Run {
         snapshot: Option<&crate::WorkspaceSnapshot>,
     ) -> Result<Self, RunError> {
         if snapshot.is_none()
-            && plan
+            && (plan
                 .variables()
                 .iter()
                 .any(|v| v.scope() == VarScope::Workspace)
+                || plan
+                    .events()
+                    .iter()
+                    .any(|e| e.scope() == orange_model::document::EventScope::Workspace))
         {
             return Err(SharedError::WrongWorkspace.into());
         }
@@ -1052,6 +1061,7 @@ impl Run {
             budget.clone(),
         )?;
         let mut run = Self {
+            workspace_bus: None,
             workspace,
             frames: Frames::default(),
             id: run_identity()?,
@@ -1155,6 +1165,11 @@ impl Run {
     }
     fn transition(&mut self, state: RunState) {
         if self.state != state {
+            if state != RunState::Running
+                && let Some(lease) = &self.workspace_bus
+            {
+                lease.close();
+            }
             self.state = state;
             self.transitions.push(state);
         }
@@ -1242,11 +1257,45 @@ impl Run {
     /// propagates and the run is left faulted: every later call reports
     /// `RunError::Interrupted` until the host stops it, which cancels its remaining work.
     pub fn pump(&mut self, budget: usize) -> Result<RunProgress, RunError> {
+        self.pump_bus(budget, None)
+    }
+    /// Exclusively borrow the bounded native workspace bus for synchronous Emit
+    /// admission. Other runs' handlers never execute inside this call.
+    pub fn pump_with_workspace_bus(
+        &mut self,
+        bus: &mut crate::WorkspaceBus,
+        budget: usize,
+    ) -> Result<RunProgress, RunError> {
+        self.pump_bus(budget, Some(bus))
+    }
+    fn pump_bus(
+        &mut self,
+        budget: usize,
+        bus: Option<&mut crate::WorkspaceBus>,
+    ) -> Result<RunProgress, RunError> {
         if self.settle_interruption() {
             return Err(RunError::Interrupted);
         }
+        if self.state == RunState::Running
+            && self.plan.as_ref().is_some_and(|p| {
+                p.events()
+                    .iter()
+                    .any(|e| e.scope() == orange_model::document::EventScope::Workspace)
+            })
+        {
+            let supplied = bus
+                .as_deref()
+                .ok_or(crate::WorkspaceBusError::NotAttached)?;
+            if !self
+                .workspace_bus
+                .as_ref()
+                .is_some_and(|l| l.matches(supplied))
+            {
+                return Err(crate::WorkspaceBusError::WrongOwner.into());
+            }
+        }
         self.pump_open = true;
-        let progress = self.pump_open_run(budget);
+        let progress = self.pump_open_run(budget, bus);
         self.pump_open = false;
         progress
     }
@@ -1264,7 +1313,11 @@ impl Run {
         true
     }
 
-    fn pump_open_run(&mut self, budget: usize) -> Result<RunProgress, RunError> {
+    fn pump_open_run(
+        &mut self,
+        budget: usize,
+        mut bus: Option<&mut crate::WorkspaceBus>,
+    ) -> Result<RunProgress, RunError> {
         if !matches!(
             self.state,
             RunState::Running | RunState::Draining | RunState::Cancelling
@@ -1475,7 +1528,13 @@ impl Run {
                     shared.cleanup_scope =
                         Some(shared.data.scoped_cleanup(shared.cleanup_remaining)?);
                 }
-                self.execute(&plan, &mut activation, &mut shared, &mut quantum)
+                self.execute(
+                    &plan,
+                    &mut activation,
+                    &mut shared,
+                    &mut quantum,
+                    bus.as_deref_mut(),
+                )
             })();
             let used = before - quantum;
             remaining -= used;
@@ -1751,6 +1810,7 @@ impl Run {
         activation: &mut Strand,
         shared: &mut ActivationState,
         budget: &mut usize,
+        bus: Option<&mut crate::WorkspaceBus>,
     ) -> Result<(), RunError> {
         let Some(target) = activation.pc else {
             *budget -= 1;
@@ -1877,7 +1937,14 @@ impl Run {
             }
             ControlOperation::Emit { event, .. } => {
                 let payload = value.ok_or(RunError::InvalidState)?;
-                match self.emit_event(plan, activation, ix, *event, payload) {
+                let result = if plan.events()[*event].scope()
+                    == orange_model::document::EventScope::Workspace
+                {
+                    self.emit_workspace(plan, activation, ix, *event, &payload, bus)
+                } else {
+                    self.emit_event(plan, activation, ix, *event, payload)
+                };
+                match result {
                     Ok(()) => (node.then(), ControlOutcome::Then, None),
                     Err(fault) => failure(node, fault),
                 }
@@ -2272,6 +2339,7 @@ impl Run {
         // would keep. Only the terminal summary stays: identity, options, state history,
         // last error, counters and the virtual clock.
         self.plan = None;
+        self.workspace_bus = None;
         self.workspace = None;
         self.frames.release();
         self.ready = ReadyQueue::with_capacity(0);

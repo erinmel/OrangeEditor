@@ -12,7 +12,14 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 use thiserror::Error;
+mod bus;
 mod schema;
+pub(crate) use bus::{BusLease, Emission};
+pub use bus::{
+    WorkspaceBus, WorkspaceBusError, WorkspaceBusId, WorkspaceBusLimits, WorkspaceBusMeter,
+    WorkspaceBusRetention, WorkspaceBusStats, WorkspaceDelivery, WorkspaceDeliveryRefused,
+    WorkspaceEnvelope, WorkspaceOrigin, WorkspaceQueue,
+};
 static NEXT_WORKSPACE: AtomicU64 = AtomicU64::new(1);
 fn identity() -> Result<WorkspaceId, WorkspaceError> {
     let mut old = NEXT_WORKSPACE.load(Ordering::Relaxed);

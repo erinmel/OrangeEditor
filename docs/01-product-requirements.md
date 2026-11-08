@@ -1,5 +1,14 @@
 # Product requirements
 
+C12c trace addition (2026-11-08): FR-13/51 now include checked workspace custom
+Emit/On Event/Await Event through a typed bounded host bus. Partial NFR-05/08/13
+evidence covers exact identity/schema, synchronous whole-fan-out admission,
+separate transport/handler overflow policies, causal lineage, nonwrapping order,
+host-drained delivery leases and stop/drop/revoke cleanup. Shared-value publication
+and two-run event delivery compose through explicit host driving. C05 refuses
+external workspace-event replay. C12's value/event foundation is implemented;
+C13 checkpoints, concrete services and physical qualification remain open.
+
 C12b trace addition (2026-11-07): FR-12/13/44/45/51 now include checked graph
 workspace Get, asynchronous Set-shared/Update-shared and publish-before-then.
 Two compiled runs serialize Add/CAS without lost updates; called Get and original

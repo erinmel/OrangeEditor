@@ -406,6 +406,10 @@ impl RecordedRun {
         // cannot supply one. Resources/streams require an adapter-specific replay.
         if options.data.cancel.is_some()
             || plan
+                .events()
+                .iter()
+                .any(|e| e.scope() == orange_model::document::EventScope::Workspace)
+            || plan
                 .variables()
                 .iter()
                 .any(|v| v.scope() == VarScope::Workspace)

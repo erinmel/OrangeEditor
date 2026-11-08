@@ -6,6 +6,68 @@ incremental authoring preview or graph stream iteration. Verification is in [10]
 
 ## Trusted execution boundary (C11a/C09a, 2026-11-06)
 
+### Cross-run workspace events (C12c, 2026-11-08)
+
+`WorkspaceBus` is an exclusively borrowed native host actor. It pins a workspace
+identity, event IDs and ordinary payload schemas from the host document/registry;
+foreign domains, unsupported/resource payloads and incompatible plan schemas
+are refused without invoking executable providers. A Run starts with a compatible
+workspace snapshot and explicitly attaches one bus endpoint. Only its checked
+workspace events can be sent; only checked On Event/potential Await references
+subscribe. Bus identity and Run identity never reuse. Broadcast targets **other
+runs**, excluding its source. No changes to saved event/Emit signatures are made.
+
+`Run::pump_with_workspace_bus(&mut bus, budget)` borrows that bus while executing
+bounded native fan-out. Workspace Emit remains a synchronous Action: it commits
+admission before `then`, or takes its normal failed route. It never waits for a
+host acknowledgement or executes a receiving graph inline. Ordinary Running
+pumps reject workspace-event plans without the matching bus before graph work;
+plain cancellation/drain pumps remain available, and Emit while draining fails
+with RunStopping. No bus pointer, shared graph lock, worker, OS operation or
+provider callback is stored or introduced by this bridge.
+
+The host takes each recipient's FIFO `WorkspaceDelivery` and consumes it with
+`Run::ingest_workspace`; a boxed refusal returns the same authentic message for
+retry/drop. Messages cannot be constructed/cloned by downstream code. Ingestion
+checks exact endpoint identity, open lifetime, increasing accepted bus sequence,
+causal depth and Run admission bounds before changing queues/order. It uses the
+ordinary transactional handler-plus-Await admission, retaining Queue/Drop/Replace/
+Parallel semantics and timeout/cancellation rules. The receiving graph runs on
+later pumps. Ordinary registered host sources cannot bypass workspace transport.
+
+The immutable envelope has workspace/bus/event/source/target identity, original
+source node/scope, per-source-node sequence, checked global bus ingestion sequence,
+cause/depth and source virtual time. Run EventMetadata stores a compact source
+origin plus its existing event/cause/depth/source sequence and recipient ingestion
+order/time; source time never advances the recipient clock. The source Run
+qualifies cause identities. Causal depth is preserved across the bus and checked
+again at the recipient. This profile adds no host wall-clock source.
+
+Each endpoint has explicit finite item/byte queue bounds. Fault refuses the whole
+emission; DropNewest deliberately skips that recipient; DropOldest removes the
+minimal prefix needed for both bounds; CoalesceLatest clears its pending queue
+only on overflow. Backpressure is invalid. Type, causal and single-payload hard
+limits still precede loss. Every disposition and new lifetime reservation is staged
+before any eviction. Hard refusal leaves fan-out queues/source/global sequences
+unchanged, apart from the bus refusal counter and prior closed-endpoint reaping.
+Accepted loss still advances source/global sequence. Bus transport counters and
+Run handler/waiter counters describe separate admissions.
+
+Defaults:4096 events,16MiB schema,1024 endpoints,256 items/1MiB per queue,1MiB per
+payload,4096 retained items/64MiB aggregate bytes,causal depth64. Explicit endpoint
+queues must fit those host ceilings. Global leases include **host-drained inflight
+messages**, schema and endpoint metadata; endpoint/message holders retain their
+leases after bus/Run drop until their last owner drops. Old/new queue staging is
+conservative and may need room for both. Run stop/fault observation/disposal/drop,
+host revocation and bus drop close a monotonic endpoint signal immediately; the
+next bus boundary reaps physical queues. Already admitted Run deliveries keep
+ordinary Run ownership; graceful stop drains them, while cancel retires them.
+Return/Race retire their actual waiters through existing region cleanup. A caught
+provider panic closes the endpoint when interruption is observed at the next Run
+boundary. Nominal bounds exclude pinned registry, host-made Value copies,
+allocator/RSS and physical latency claims. C05 refuses workspace-event plans.
+Supported-value checkpoints remain C13 work. Verification is in10.
+
 ### Graph workspace values (C12b, 2026-11-07)
 
 The control compiler now lowers workspace Get in root/called scopes and exact

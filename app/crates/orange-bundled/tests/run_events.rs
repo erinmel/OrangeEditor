@@ -575,14 +575,16 @@ fn event_admission_rejects_unsupported_scopes_reentrancy_and_payload_types() {
         )
         .is_err()
     );
-    assert!(
-        compile_with_event(
-            vec![on_event(3, 0, 4, "drop-newest")],
-            vec![],
-            vec![],
-            event("workspace", "core/u64@1")
-        )
-        .is_err()
+    let (_, workspace_plan) = compile_with_event(
+        vec![on_event(3, 0, 4, "drop-newest")],
+        vec![],
+        vec![],
+        event("workspace", "core/u64@1"),
+    )
+    .unwrap();
+    assert_eq!(
+        workspace_plan.events()[0].scope(),
+        orange_model::document::EventScope::Workspace
     );
     assert!(
         compile_with_event(
@@ -1057,7 +1059,7 @@ fn async_action_wait_retains_event_argument_and_emits_with_callee_provenance() {
 }
 
 #[test]
-fn unsupported_event_scope_admission_precedes_demanded_provider_folding() {
+fn compiled_workspace_events_require_an_explicit_host_attachment() {
     let (package, registry) = catalog();
     let scope = "workspace";
     {
@@ -1088,18 +1090,16 @@ fn unsupported_event_scope_admission_precedes_demanded_provider_folding() {
             &doc,
             registry.clone(),
             &analysis,
-            &PanickingEventResolver(package.clone()),
+            &package,
             CompileOptions::default(),
         );
-        let expected_node = id(2).parse().unwrap();
-        assert!(
-            matches!(
-                result,
-                Err(orange_compiler::CompileError::UnsupportedNode { node })
-                    if node == expected_node
-            ),
-            "event scope should be typed unsupported before resolving/folding math: {result:?}"
-        );
+        let plan = Arc::new(result.unwrap());
+        assert!(matches!(
+            Run::start(plan, &doc, &registry, 1, RunOptions::default()),
+            Err(orange_runtime::RunError::Shared(
+                orange_runtime::SharedError::WrongWorkspace
+            ))
+        ));
     }
 }
 
@@ -1627,6 +1627,8 @@ mod event_await;
 
 #[path = "support/event_ingress.rs"]
 mod event_ingress;
+#[path = "support/workspace_events.rs"]
+mod workspace_events;
 
 #[path = "support/manual_entry.rs"]
 mod manual_entry;

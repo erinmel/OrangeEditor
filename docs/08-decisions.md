@@ -122,6 +122,18 @@ Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the reg
 
 ## ADR-14 — One cooperative actor per run
 
+C12c amendment (2026-11-08): preserve synchronous workspace Emit by explicitly
+borrowing a bounded native bus during the Run pump. Serialize only typed fan-out
+admission; never execute receiving graphs inline or change the Action suspension
+contract. Exact private endpoint/delivery identities and monotonic close signals
+define authority/lifetime, with queued plus host-drained messages leased against
+global item/byte limits. Stage whole fan-out before evictions, preserve causal
+source provenance and require explicit host ingress. Compact Run origins avoid
+duplicating envelope fields and preserve existing replay's default storage bound;
+external workspace replay remains refused. Unfrozen Rust enums/APIs add event
+scope, bus driving/delivery/error/metadata; saved formats/dependencies/provider pins
+do not change. Checkpoint persistence remains separate C13 work (03/11/12; evidence10).
+
 C12b amendment (2026-11-07): lower closed shared writes through the existing
 bounded async continuation machinery, with an explicit compiler-owned command
 tag and a separate host API. Private single-use requests/receipts prevent duplicate

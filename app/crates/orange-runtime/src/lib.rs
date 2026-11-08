@@ -39,6 +39,9 @@ pub use run::{
     StreamHandle, StreamNextId, StreamOverflow, StreamRead, StreamRefused, StreamStep, TeeStreams,
 };
 pub use workspace::{
-    Workspace, WorkspaceCommit, WorkspaceError, WorkspaceId, WorkspaceLimits, WorkspaceMeter,
-    WorkspaceRetention, WorkspaceSnapshot,
+    Workspace, WorkspaceBus, WorkspaceBusError, WorkspaceBusId, WorkspaceBusLimits,
+    WorkspaceBusMeter, WorkspaceBusRetention, WorkspaceBusStats, WorkspaceCommit,
+    WorkspaceDelivery, WorkspaceDeliveryRefused, WorkspaceEnvelope, WorkspaceError, WorkspaceId,
+    WorkspaceLimits, WorkspaceMeter, WorkspaceOrigin, WorkspaceQueue, WorkspaceRetention,
+    WorkspaceSnapshot,
 };

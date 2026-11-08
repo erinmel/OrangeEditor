@@ -1,5 +1,32 @@
 # Graph data structures
 
+## C12c workspace event representation (2026-11-08)
+
+ControlEvent retains its run/workspace scope and immutable payload shape. Run
+workspace attachment keeps a private noncloneable BusLease: Arc endpoint state,
+monotonic close signal and last accepted bus sequence. Endpoint state pins a bus
+schema, Run identity and checked event-index/send/receive map with a lifetime
+metadata reservation. Only host-actor records own finite VecDeque message queues.
+There is no bus reference/pointer in Run; a pump explicitly borrows the native
+actor. Private construction binds every delivery to its target endpoint Arc.
+
+WorkspaceDelivery owns an immutable typed payload, complete WorkspaceEnvelope,
+target endpoint Arc, one global item lease and payload/metadata byte lease. Taking
+it from the queue transfers those leases; it does not refund them. Successful
+Run ingestion transfers retention to existing Run event ownership and drops the
+transport leases. Refusal boxes and returns the original message. Exact pointer
+identity, closed state, increasing accepted sequence and checked admission prevent
+foreign/stale publication without any retired-ID history table.
+
+WorkspaceOrigin holds only source bus/Run/node/scope, global sequence and source
+virtual time; EventMetadata already contains event/cause/depth/source sequence
+and recipient order/time. This preserves Copy inspection and existing replay
+default storage admission without duplicate full envelopes. C05 does not record
+workspace traffic. Schema/endpoint/messages keep nominal leases beyond actor/Run
+drop; a meter owns counters only. Closed records reap at bus boundaries. Queue
+capacities, type checks, old/new staging and exclusions are in03; this adds no
+saved schema, dependency, provider grant, OS worker or checkpoint format.
+
 ## C12b graph workspace bridge (2026-11-07)
 
 ControlCell retains Workspace scope/type metadata without an initializer or a
