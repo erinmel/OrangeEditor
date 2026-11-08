@@ -586,3 +586,12 @@ and Euclidean modulo avoid quotient overflow; shifts validate/mask counts only,
 with saturating config refused. Safe Domain/OutOfRange kernel faults retain node
 provenance. Existing scalar/state arithmetic semantics and provider locks remain.
 This is the first missing vocabulary increment, not a full core/API-freeze gate.
+
+Float vocabulary amendment (2026-11-08; ADR-16/20/21, FR-10/44/45): extend the
+ordinary bundled math provider with sixteen `T: float` definitions and exact
+f32/f64 specializations, again without language intrinsics. Operations that share
+an integer name get distinct `float-` definitions rather than revising the L02a
+`T: int` contracts, because NaN, signed zero and domain rules differ. Finite
+policy follows IEEE exception order (invalid input, pole, domain, overflow) with the
+existing error codes; IEEE policy returns native results. Platform-library
+transcendentals keep replay platform-scoped. Not a full core/API-freeze gate.

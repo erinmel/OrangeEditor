@@ -951,3 +951,15 @@ and nominal fixed work, not physical latency qualification. Pure folding and
 actor-owned data demands share that same ordinary provider binding; faults retain
 their producer and normal Try/failed-route behavior. No scheduler, resource, saved
 format or provider selection rule changes. Broader math/casts remain open.
+
+### L02b float kernels (2026-11-08)
+
+The ordinary math provider supplies sixteen strict f32/f64 operations listed in
+12 §4.3, under 11 §5.6. Binding fixes exact metadata, type, provider and float
+policy once; evaluation allocates nothing, reads no registry and invokes no host
+operation. Finite policy reports non-finite inputs, poles, domain errors and
+overflow with the existing `core/NonFinite`, `core/DivideByZero` and
+`core/Domain` codes, in that order. Pure folding and actor-owned data demands share
+the same provider binding; faults keep their producer. Exponential, logarithms and
+power use the platform library, so replay is platform-scoped as stated above.
+Trigonometry, IEEE comparisons and the remaining casts remain open.

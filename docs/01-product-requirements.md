@@ -419,3 +419,12 @@ constant faults, dynamic Run demands and old provider pins are verified through
 public APIs. Normative rules/catalog: 11 §5.6 and12 §4.2; exact checks:10. This is
 partial FR-10: wider math/casts, string/Unicode/collection vocabulary, package
 kernels, external embedding and physical performance qualification remain open.
+
+L02b float vocabulary trace (2026-11-08; FR-10/44/45, NFR-05/14): sixteen ordinary
+bundled pure `T: float` definitions now execute square root, exponential,
+logarithms, power, four rounding modes and float negate/absolute/minimum/maximum/
+clamp/remainder for f32/f64 under finite or IEEE policy. Policy order, signed zero,
+NaN propagation, constant faults, dynamic Run demands and provider pins are verified
+through public APIs. Normative rules/catalog: 11 §5.6 and 12 §4.3. Partial FR-10:
+trigonometry, IEEE comparisons, remaining casts, strings/collections, package
+kernels, external embedding and physical performance qualification remain open.
