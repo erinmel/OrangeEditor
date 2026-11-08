@@ -1,5 +1,83 @@
 # Tooling, environment and research register
 
+## C13 — portable persistent-value checkpoints — 2026-11-08
+
+Branch `codex/c13-value-checkpoints`, based on dev
+`68e91c9567c9f20f3c2c4307dd95691a815f18e4` (PR148). C12c's tested head
+`27d9f4a2fcbf617f20f77c943a531ad1c5a694a3` passed all nine jobs in
+run42525209384 and merged at2026-11-08T21:30:49Z with an identical tree.
+Current-base/CLEAN/MERGEABLE, no reviews/threads, strict rust/admin/conversation
+protection and zero solo independent approvals were verified; no bypass.
+
+C13 local environment: Rust1.99.1 (`58cf8f9c3`,2026-10-13), Cargo1.99.1
+(`5f94df478`,2026-08-27), Windows x64 MSVC, edition2024, Node24.18.0.
+Default workspace tests; all-feature Clippy/rustdoc; `CARGO_INCREMENTAL=0`,
+locked/offline; TEMP/TMP use ignored `.artifacts/c13-validation/tmp`.
+MSRV1.97.1 unchanged and not installed locally; exact-head native/MSRV/security
+CI remains required before this PR merges.
+
+Runtime adopts existing exact workspace serde1.0.229 (derive) and serde_json1.0.154
+(preserve_order) as direct dependencies. No crate version or feature changes;
+Cargo.lock adds only those two runtime dependency edges. Existing sha2=0.11.1 is
+reused. Exact serde_json from_slice/to_writer APIs were checked in the installed
+versioned1.0.154 source, then compiled. Updated Cargo.lock SHA256:
+`3F2DD51536A323ECA3E91FC939824C4C25373B283440B081B832C34C7E09D7C2`.
+
+Source receipt:367 tracked/new files under app plus root Cargo manifest/lock/
+toolchain, excluding docs/ignored outputs; sorted `sha256  path` manifest SHA256
+`A11C2E78B01C3DBFF5BB94C533D3D56930911B66A02BFC709F0A88405D794D63`.
+
+Twenty public regressions pass: native scalar/container/time/float-bit roundtrip;
+uninitialized/Option/JSON distinctions and verbatim JSON text; explicit persistent
+selection and reset of other cells; stopped/fresh Run bootstrap; malformed,
+truncated, duplicate, unknown/missing-field/version and quota refusals; graph/type/
+scope/schema/codec/package/provider compatibility; unchanged source actors/bytes;
+display/initializer independence; nominal record/enum schemas; unsupported live
+reference/result/error types; state/metadata/encoding limits; replacement of
+discarded initializers before combined state quota; restored initial Watch inputs;
+safe Send+Sync/Debug; and zero effect callbacks during capture/import/startup.
+An independent .NET SHA256 length-framing vector matches the Rust identity test.
+
+The public IC2 core composition runs two actors sharing an atomic update, forwards
+a workspace event, exercises bounded push-stream backpressure, stops/closes a
+producer exactly once, then bootstraps values in a fresh registry/workspace/Run.
+No resource, effect command or bus lease reappears. This verifies that composed
+core path, not a standalone loader-free external embedding binary or OS storage.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo test --workspace --locked --offline` | **1,533 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,533 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| all three headless_control/headless_fork/headless_authoring example runs, locked/offline | Pass |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary check | Pass; 19 fixtures/core boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| checkpoint schema JSON parsing and typed Rust reader regressions | Pass; external JSON Schema validator not run |
+| `git diff --check` | Pass |
+
+Review tightened bounded structural preflight before literal allocation, explicit
+nullable-field presence, duplicate keys, format/version gating, borrowed payload
+decoding with remaining-state allowance, actual codec queries and bootstrap before
+initializer/frame/Watch admission. The SHA2 array's unsupported LowerHex formatting
+and a test-only stream-error name were corrected before final checks. Full final
+debug/release and quality checks ran after all source changes. No independent
+approval is claimed. Contracts/trace/ADR/messages/schema are synchronized in
+01/03/08/11/12/13/[20](20-value-checkpoints.md).
+
+The compatibility seal is not authentication. Host selection/sensitivity,
+integrity, durable storage and automatic save policies remain explicit. Values
+bootstrap new identities; old actors/snapshots stay pinned. Fresh On Start actions
+run only after explicit pumping, with no restored execution position. Artifact
+trees/staging/copies are host-owned; limits are nominal, not allocator/RSS/latency
+qualification. Disk/bundle recovery (U05), standalone embedding/loader-free proof
+(E01), wider language/package gates and physical size/time measurements remain
+open. The user deferred physical performance qualification.
+
 ## C12c — bounded cross-run workspace events — 2026-11-08
 
 Branch `codex/c12-workspace-events`, based on dev

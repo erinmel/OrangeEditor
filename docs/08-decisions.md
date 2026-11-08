@@ -122,6 +122,18 @@ Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the reg
 
 ## ADR-14 — One cooperative actor per run
 
+C13 amendment (2026-11-08; also ADR-16/21): portable checkpoints contain only
+explicitly selected persistent values and a versioned compatibility seal. Reuse
+bounded native codecs and metadata-only type/provider checks; never deserialize
+executable objects or ask a provider to restore them. Bootstrap new Run/Workspace
+identities with selected values before initialization publication, leaving existing
+actors and borrowed artifact bytes unchanged on failure. Host storage, sensitivity,
+integrity and automatic stop-save policy remain explicit embedding responsibilities.
+Fresh On Start work is separate from replay. Add unfrozen Rust checkpoint APIs,
+RunError wrapper and the closed wire contract/schema in20; adopt existing exact
+serde/serde_json workspace pins as direct runtime dependencies. No new crate
+version/feature, graph format, provider ABI or UI dependency is introduced.
+
 C12c amendment (2026-11-08): preserve synchronous workspace Emit by explicitly
 borrowing a bounded native bus during the Run pump. Serialize only typed fan-out
 admission; never execute receiving graphs inline or change the Action suspension

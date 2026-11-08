@@ -20,6 +20,7 @@ mod analysis_session_scoped;
 mod analysis_session_visits;
 mod binding_request;
 mod bindings;
+mod checkpoints;
 mod comparisons;
 mod compile_data;
 mod compile_pure;

@@ -6,6 +6,32 @@ incremental authoring preview or graph stream iteration. Verification is in [10]
 
 ## Trusted execution boundary (C11a/C09a, 2026-11-06)
 
+### Persistent-value bootstrap (C13, 2026-11-08)
+
+The host explicitly selects persistent run/workspace variable IDs. Clean Stopped
+Runs and immutable Workspace publications produce bounded version1 value
+checkpoints; local, resource, stream, error/result and unsupported recursive values
+are excluded. The format preserves exact float bits, opaque JSON text and
+uninitialized/Option/missing distinctions through native codecs. Unknown fields,
+duplicate keys/IDs, unsupported versions and over-quota artifacts are refused.
+
+Restore validates graph namespace, selected declaration scope/persistence, exact
+types, resolved schemas, codec identities and declared package/provider locks
+before constructing a fresh actor. Selected values replace initializers before
+state/frame/Watch initialization; other state initializes normally. Existing
+actors and source bytes never change on refusal. Workspace restoration creates a
+new identity/version0, leaving old runs/snapshots/commands pinned to their owner.
+There is no in-place live restore or migration of stack, clock, seed counters,
+timers, queues, bus leases, resources or effect requests. Capture/import/startup
+executes no provider callback. Fresh On Start actions execute only on later
+explicit pumping; this is value carryover rather than continuation/event replay.
+
+The host owns selection sensitivity, artifact storage/integrity and any stop-save
+policy; there is no automatic save or OS storage operation. SHA-256 checks
+compatibility, not authorization. Runtime startup quotas still apply in addition
+to the artifact limits. The closed structural schema, exact framing/vector,
+limits and scope are in[20](20-value-checkpoints.md); executed verification is in10.
+
 ### Cross-run workspace events (C12c, 2026-11-08)
 
 `WorkspaceBus` is an exclusively borrowed native host actor. It pins a workspace

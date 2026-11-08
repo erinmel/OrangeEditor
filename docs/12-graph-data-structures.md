@@ -1,5 +1,25 @@
 # Graph data structures
 
+## C13 persistent-value representation (2026-11-08)
+
+ValueCheckpoint privately owns a closed version1 document and host-chosen limits.
+It exposes read-only metadata and bounded byte import/export, not mutable actor
+cells. Stored entries contain variable ID/type and a required nullable tagged
+literal payload; decoded internal Literal objects are borrowed directly by the
+bounded codec rather than cloned before quota checks. A streaming structural pass
+checks count, duplicates and nesting before allocating literal trees. Encoding
+uses capped growth; capture publishes only artifacts the same reader accepts.
+
+A SHA-256 compatibility seal frames selected declarations/resolved shapes and
+exact locks/provider identities under a versioned native codec contract. Display,
+layout, initializers and process IDs are excluded. Typed restoration stages a
+bounded value map and constructs a new actor: selected initializers are replaced
+before ordinary cell/frame/Watch construction, and failed startup drops staging.
+Workspace roots/cells use their existing lifetime leases and a fresh identity;
+old publications stay pinned. No stack, resource alias, effect command, event
+queue, bus endpoint or entropy position crosses the wire. The full wire schema,
+identity algorithm and .NET/Rust vector are in[20](20-value-checkpoints.md).
+
 ## C12c workspace event representation (2026-11-08)
 
 ControlEvent retains its run/workspace scope and immutable payload shape. Run

@@ -16,11 +16,13 @@
 
 mod budget;
 mod cancel;
+mod checkpoint;
 mod data;
 mod entropy;
 mod run;
 mod workspace;
 pub use cancel::CancelToken;
+pub use checkpoint::{CheckpointError, CheckpointLimits, CheckpointScope, ValueCheckpoint};
 pub use data::{DataActivation, DataError, DataLimits, DataOptions, DataPoll};
 pub use entropy::{
     ActivationEntropy, ENTROPY_ALGORITHM, EntropyError, EntropyKey, EntropyLayout,

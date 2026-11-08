@@ -11,6 +11,7 @@ pub(super) fn prepare(
     registry: &RegistrySnapshot,
     limits: WorkspaceLimits,
     budget: &Arc<Budget>,
+    restored: Option<&crate::checkpoint::Values>,
 ) -> Result<Prepared, WorkspaceError> {
     let count = document
         .variables()
@@ -50,20 +51,24 @@ pub(super) fn prepare(
             .and_then(|n| n.checked_add(declaration.ty.as_str().len()))
             .filter(|n| *n <= limits.max_schema_bytes)
             .ok_or(WorkspaceError::Limit)?;
-        let value = match &declaration.init {
-            None => None,
-            Some(literal) if literal.ty == declaration.ty => Some(
-                literal_codec::decode_with_budget(
-                    literal,
-                    registry.types().as_ref(),
-                    limits.max_value_bytes,
-                )
-                .map_err(|error| match error {
-                    orange_model::LiteralError::TooLarge { .. } => WorkspaceError::Limit,
-                    _ => WorkspaceError::Contract,
-                })?,
-            ),
-            Some(_) => return Err(WorkspaceError::Contract),
+        let value = if let Some(value) = restored.and_then(|r| r.get(&declaration.id)) {
+            value.clone()
+        } else {
+            match &declaration.init {
+                None => None,
+                Some(literal) if literal.ty == declaration.ty => Some(
+                    literal_codec::decode_with_budget(
+                        literal,
+                        registry.types().as_ref(),
+                        limits.max_value_bytes,
+                    )
+                    .map_err(|error| match error {
+                        orange_model::LiteralError::TooLarge { .. } => WorkspaceError::Limit,
+                        _ => WorkspaceError::Contract,
+                    })?,
+                ),
+                Some(_) => return Err(WorkspaceError::Contract),
+            }
         };
         let bytes = match &value {
             Some(v) => charge(&shape, v, limits.max_value_bytes)?,

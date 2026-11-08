@@ -1,5 +1,15 @@
 # Product requirements
 
+C13 trace addition (2026-11-08): FR-13/05 now have a versioned bounded value
+checkpoint and atomic fresh-actor restore contract. Explicit persistent selection,
+exact type/schema/codec/provider compatibility, safe stopped/host boundaries and
+no restored effects/resources/continuations extend partial NFR-09/13 evidence.
+The public core IC2 regression composes shared values/events, stream backpressure,
+resource closure and portable value bootstrap in a fresh registry. Standalone
+embedding/loader-free binary evidence (E01), durable disk/bundle recovery (U05),
+physical size/time qualification and wider M1 gates remain open. Contracts and
+structural schema are in20; actual checks/environment are in10.
+
 C12c trace addition (2026-11-08): FR-13/51 now include checked workspace custom
 Emit/On Event/Await Event through a typed bounded host bus. Partial NFR-05/08/13
 evidence covers exact identity/schema, synchronous whole-fan-out admission,
