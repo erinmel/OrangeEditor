@@ -1,5 +1,69 @@
 # Tooling, environment and research register
 
+## C12c — bounded cross-run workspace events — 2026-11-08
+
+Branch `codex/c12-workspace-events`, based on dev
+`aac4f2be57fc66a262dc0505667919a3370c0eff` (PR147). C12b's tested head
+`77d7c5709386c98c8172fdabc454eac5c4ce318d` passed all nine jobs in
+run42450381835; its merged tree matched dev. Current-base/CLEAN/MERGEABLE,
+no review threads/submissions, strict rust/admin/conversation protection and zero
+solo independent approvals were verified before that merge; no bypass.
+
+C12c local environment: Rust1.99.1 (`58cf8f9c3`,2026-10-13), Cargo1.99.1
+(`5f94df478`,2026-08-27), Windows x64 MSVC, edition2024, Node24.18.0.
+Default workspace tests; all-feature Clippy/rustdoc; `CARGO_INCREMENTAL=0`,
+locked/offline. TEMP/TMP use ignored `.artifacts/c12c-validation/tmp`.
+MSRV1.97.1 unchanged and not installed locally; native/MSRV/security CI is still
+required for this head before merge. Dependencies/features/toolchain unchanged.
+Cargo.lock SHA256 `4E3C9BAE841AF75A31A50D52F7992AEFF5F62E2A0710F0F212FF8EF3BA6CF000`.
+
+Source receipt:362 tracked/new files under app plus root Cargo manifest/lock/
+toolchain, excluding docs/ignored outputs; sorted `sha256  path` manifest SHA256
+`2E8F28FD4F2775191C805E5097C5E59048B6DA13B323EDA65A29D17D9AFECFE2`.
+
+Twenty-one new public regressions, one private sequence-exhaustion regression and
+a noncloneable-delivery compile-fail check pass. Existing workspace-event refusal
+tests now verify typed compilation and explicit host attachment. Tests cover
+compiled Emit→On/Await across runs; original source/target/node/time/causal metadata;
+no inline receiving graph work; all overflow modes and minimal byte-prefix eviction;
+whole-fan-out rollback; global item/byte leases after host drain; wrong-recipient/
+Run-quota retry and increasing accepted delivery order; stop/drop/revoke/bus-drop
+cleanup/refund; endpoint replacement identity; timeout/stop waiter ownership;
+cross-run depth limits; constructor/schema/queue/payload bounds; redacted Send+Sync
+surfaces; shared-value publication then event; separate receiving handler policy;
+graceful draining/On Stop failure; and explicit workspace replay refusal.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all --check` | Pass |
+| `cargo test --workspace --locked --offline` | **1,513 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo test --workspace --release --locked --offline` | **1,513 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo clippy --workspace --all-targets --all-features --locked --offline -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked --offline`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo test -p orange-bundled --examples --locked --offline` | Pass; 10 authoring tests |
+| all three `cargo run -p orange-bundled --example headless_{control,fork,authoring} --locked --offline` invocations | Pass; total3/time10ns, four joins, old-plan wait/restart/On Stop |
+| `cargo clippy -p orange-measure --no-default-features --locked --offline -- -D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs --self-test` and ordinary check | Pass; 19 fixtures/core boundary |
+| `node --test tools/*.test.mjs` | 17 passed |
+| `node tools/release.mjs check` | Valid disabled release configuration |
+| `git diff --check` | Pass |
+
+The initial full run exposed13 existing replay failures: duplicating the full bus
+envelope in EventOrigin enlarged journal entries beyond the unchanged default
+2MiB/8192-entry admission. Compact source-only origin metadata removed that
+duplication; the existing17 replay tests and both complete suites then passed.
+No replay limit or test was disabled/relaxed. A test initializer lint and private
+source-sequence visibility were corrected before final checks.
+
+Solo self-review traced exact scope/identity/schema, synchronous Action semantics,
+whole fan-out preflight, queued/inflight lease lifetime, immutable receipt transfer,
+causal/time provenance, monotonic close and Run-owned cleanup. Contracts/trace/
+ADR/messages are synchronized in01/03/08/11/12/13. Public Rust APIs/enums are
+unfrozen; saved formats and provider locks unchanged. Bus/Run delivery is explicitly
+host-driven; there is no worker, OS service or background observer. Nominal bounds
+exclude host copies/pinned registry/allocator/RSS; conservative staging can need
+old plus new capacity. C13 checkpoints and physical qualification remain open.
+
 ## C12b — authenticated graph workspace values — 2026-11-07
 
 Branch `codex/c12-shared-graph`, based on dev

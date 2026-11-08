@@ -571,6 +571,19 @@ Executable-control prerequisite (2026-10-24): `core/on-start@1` and `core/on-sto
 
 Custom events are declared per graph: `{id, name, payload type, scope: run | workspace}`. Workspace-scope events go through the host bus to other runs in the workspace, with the same envelope and causal-depth rules.
 
+**Workspace event execution (C12c, 2026-11-08).** Checked workspace Emit remains a
+synchronous Action. A matching exclusively borrowed native host bus admits its
+complete bounded broadcast before `then`; failures use the normal failed route.
+It targets other subscribed runs, excluding the source, and executes no handler
+inline. Runs attach exact typed endpoints and hosts explicitly consume single-use
+deliveries through ordinary On Event/Await admission. Bus and recipient ingestion
+orders are distinct; the source Run/node/scope qualifies cause/source sequences,
+and causal depth is never reset. Source virtual time does not move target time.
+Finite per-endpoint item/byte overflow policies are separate from checked handler
+reentrancy. Global leases include host-drained inflight deliveries; stop/drop/
+revocation closes endpoint authority, and owning bus boundaries reclaim queues.
+C05 refuses this external profile. Contracts/limits/verification are in03/10/12.
+
 **Foundation trigger authoring (ADR-22; FR-52/54/55).** Manual entries expose an accessible test button. Keyboard and audio-threshold sources are host-backed entry definitions governed by the same acquisition, queue, reentrancy and cancellation rules as package sources; they are not new port kinds or control intrinsics. Configuration is available from the node. Source capture/registration is active only for an owning run. An installed plugin can contribute a different event source with its own typed payload through this same contract. Input-specific acquisition and timing are in 05.
 
 **Manual entry (C04b, 2026-11-06).** `core/on-manual@1` is a registered host-owned Entry with config version 1, no provider or signature and the kind-provided `then` output. Its only config field is optional `payload`, a concrete registered type; it adds a `payload` output of that type, and without it the entry has no data output. A non-string, unparsable, parameterized or unregistered type, or any other field, reports `E-MANUAL-PAYLOAD`; a type over the nesting limit reports `E-TYPE-COMPLEXITY`. Its ordinary persisted activation policy is required and is checked and executed like an On Event handler: each root manual entry is a private one-handler channel that only `Run::trigger(node, payload, wall_ns)` feeds; graph Emit and host event sources cannot reach it. A trigger is admitted through the same staged handler admission as Emit and host ingress (type, overflow policy and item/byte/live-payload quotas before any mutation), never runs graph work inline, and its root starts in a later `pump`. The payload is required exactly when the entry declares a type. Accepted metadata has target `Manual(node)`, origin `Manual`, `source_seq` counting the entry's accepted triggers, no cause, depth zero, `Run::now()` and optional caller wall time. Unknown or non-root entries refuse with `UnknownEntry`; a refused trigger changes no sequence, queue or counter except the overflow counter of an applied delivery limit. Graceful/immediate stop, fault and disposal refuse later triggers with `NotRunning`. Editor test buttons, CLI wiring and key bindings are host work outside this core contract.

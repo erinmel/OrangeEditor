@@ -332,14 +332,18 @@ pub struct ControlNode {
     pub(crate) loop_owner: Option<ControlIx>,
 }
 
-/// Checked run-scope event metadata used by the runtime dispatcher.
+/// Checked run/workspace event metadata used by the runtime dispatcher.
 #[derive(Debug, Clone)]
 pub struct ControlEvent {
     id: EventDeclId,
+    scope: EventScope,
     payload_type: ValueShape,
     handlers: Box<[EventHandler]>,
 }
 impl ControlEvent {
+    pub fn scope(&self) -> EventScope {
+        self.scope
+    }
     pub fn id(&self) -> EventDeclId {
         self.id
     }
@@ -1184,9 +1188,6 @@ fn prepare_events(
             .events()
             .get(&event_id)
             .ok_or(CompileError::UnsupportedNode { node: node_id })?;
-        if declaration.scope != EventScope::Run {
-            return Err(CompileError::UnsupportedNode { node: node_id });
-        }
         let payload_type = ValueShape::of_in(&declaration.payload, cx.snapshot.types().as_ref())
             .ok_or(CompileError::UnsupportedNode { node: node_id })?;
         payload_types.entry(event_id).or_insert(payload_type);
@@ -1215,6 +1216,7 @@ fn prepare_events(
         indices.insert(id, events.len());
         events.push(ControlEvent {
             id,
+            scope: cx.document.events()[&id].scope,
             payload_type,
             handlers: handlers
                 .into_iter()

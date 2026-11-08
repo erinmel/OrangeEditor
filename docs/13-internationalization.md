@@ -1,5 +1,16 @@
 # Internationalization and translatable text
 
+C12c bus boundary (2026-11-08): fieldless WorkspaceBusError uses
+`core/workspace-bus-contract`, `-schema-mismatch`, `-wrong-owner`, `-not-attached`,
+`-closed`, `-limit`, `-identity-exhausted` and `-sequence-not-increasing` (the same
+`core/workspace-bus-` prefix). CauseDepth/NotRunning reuse `core/event-cause-depth`
+and `core/event-run-stopping`. All have static safe fallbacks and no arguments;
+RunError::WorkspaceBus preserves the key. Graph envelopes use validated static
+WorkspaceBusFailure/LimitExceeded/RunStopping/RunawayEventChain codes as applicable.
+Debug includes bounded identities/order/counts only, never payloads, event names,
+registry/provider formatting or credentials. IDs, exact schema, global/per-Run
+sequence, virtual clocks, causal lineage, loss and leases remain locale-independent.
+
 C12b bridge messages (2026-11-07): fieldless SharedError uses
 `core/shared-wrong-workspace`, `core/shared-wrong-run`, `core/shared-stale`,
 `core/shared-not-running`, `core/shared-contract`, `core/shared-limit` and

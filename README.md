@@ -4,7 +4,7 @@ Bounded stream bridges are implemented: hosts can push typed, sequenced items
 through explicit finite queues, and graph `core/tee` splits one affine stream
 into two consumers with declared backpressure, drop-oldest, drop-newest or fault
 overflow. Closing the last branch closes its upstream once. Portable replay, stateful authoring
-preview, cross-run workspace events, checkpoints and concrete services remain open;
+preview, checkpoints and concrete services remain open;
 performance qualification is deferred. See [stream contracts](docs/03-data-and-execution.md).
 
 A reusable Rust node editor foundation: an embeddable graph core, a separate usable and extensible egui editor, and a basic application with desktop and headless execution. The selected scope is typed logic/math, variables/enums, loops/time/branching, reusable graphs and import/export, configurable triggers, files, HTTP/HTTPS/WebSocket, and basic audio playback/input/level events. MQTT and frequency/pitch analysis are conditional extensions. Specialized integrations such as OBS, Twitch and browser-canvas servers are outside this delivery; installed plugins can add them through public contracts (ADR-22).
@@ -19,7 +19,7 @@ Reference-only recording and replay now reproduce a sealed in-memory run history
 
 Pure authoring preview now publishes checked immutable exports, reuses unchanged typed calculations and keeps existing runs and providers pinned. It accepts pure cones in mixed control/service graphs without executing those services; cache limits affect reuse, while normal compiler quotas and freshness still apply.
 
-A host workspace value actor now serializes typed Set/Update/CAS and publishes immutable versioned snapshots with bounded lifetime accounting. Graph Get and asynchronous Set-shared/Update-shared now use explicit workspace attachment, single-use commands and authenticated receipts; successful completion installs the snapshot before continuing. Cross-run events and checkpoints remain open.
+A host workspace value actor now serializes typed Set/Update/CAS and publishes immutable versioned snapshots with bounded lifetime accounting. Graph Get and asynchronous Set-shared/Update-shared now use explicit workspace attachment, single-use commands and authenticated receipts; successful completion installs the snapshot before continuing. A bounded typed workspace bus connects Emit to other runs' On Event/Await Event through explicit host driving, with causal metadata and lifetime-charged deliveries. Checkpoints remain open.
 
 ## Development
 

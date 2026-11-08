@@ -97,7 +97,7 @@ pub(super) fn prepare(
     }
     Ok((variables, values, value_bytes, schema_bytes))
 }
-fn shape_bytes(root: &ValueShape, limit: usize) -> Result<usize, WorkspaceError> {
+pub(super) fn shape_bytes(root: &ValueShape, limit: usize) -> Result<usize, WorkspaceError> {
     let mut work = vec![root];
     let mut seen = BTreeSet::new();
     let mut bytes = 0usize;

@@ -41,6 +41,8 @@ pub struct RunEventStats {
 /// the host manual-trigger call or a timer entry's schedule.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EventOrigin {
+    /// Authenticated host-bus origin; cause identities are qualified by source Run.
+    Workspace(crate::WorkspaceOrigin),
     Graph {
         node: NodeId,
         scope: usize,
@@ -415,7 +417,7 @@ pub(super) struct Events {
     /// Handler indices per channel: checked events first, then one channel per root manual
     /// entry at `events.len() + manual index`, then one per root timer entry.
     by_event: Vec<Vec<usize>>,
-    source_sequences: Vec<u64>,
+    pub(super) source_sequences: Vec<u64>,
     /// Accepted trigger count per manual entry, used as its source sequence.
     manual_sequences: Vec<u64>,
     /// Schedule cursor per timer entry.
@@ -633,7 +635,9 @@ impl Run {
         let event_index = plan
             .events()
             .iter()
-            .position(|checked| checked.id() == event)
+            .position(|checked| {
+                checked.id() == event && checked.scope() == orange_model::document::EventScope::Run
+            })
             .ok_or(IngressError::UnknownEvent)?;
         if self.events.host_sources.len() >= self.options.limits.max_host_sources {
             return Err(IngressError::SourceLimit);
