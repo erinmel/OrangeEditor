@@ -122,6 +122,17 @@ Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the reg
 
 ## ADR-14 — One cooperative actor per run
 
+C12b amendment (2026-11-07): lower closed shared writes through the existing
+bounded async continuation machinery, with an explicit compiler-owned command
+tag and a separate host API. Private single-use requests/receipts prevent duplicate
+mutation without a historical command table. Host attachment and explicit
+immutable publication preserve actor boundaries and frozen epochs. Install an
+authenticated successful publication before graph continuation; cancellation
+cannot undo a host commit. Leases include host-held requests after cancellation.
+Unfrozen Rust APIs add SharedWrite, shared request/receipt/refusal/error and a
+RunError variant; saved graphs, dependencies and provider identities do not change.
+Cross-run events/checkpoints remain separate C12/C13 work (03/11/12; evidence10).
+
 C12a amendment (2026-11-07): host workspace values belong to a separate exclusively
 mutated actor with immutable versioned publications. Reuse the existing typed
 native Update implementation, with no per-write plugin dispatch or shared graph

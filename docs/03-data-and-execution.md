@@ -6,6 +6,48 @@ incremental authoring preview or graph stream iteration. Verification is in [10]
 
 ## Trusted execution boundary (C11a/C09a, 2026-11-06)
 
+### Graph workspace values (C12b, 2026-11-07)
+
+The control compiler now lowers workspace Get in root/called scopes and exact
+Set-shared/Update-shared using the existing native typed operations. Shared
+initializers are owned once by Workspace and never copied into a Run's variable
+cells. The ordinary Run constructor refuses plans with shared values; the host
+uses `Run::start_in_workspace` with an exact compatible immutable snapshot.
+Saved contracts, types and provider pins remain unchanged.
+
+The host drives `take_shared` → `Workspace::apply_shared` → `complete_shared`.
+Requests and receipts have private construction, no Clone and no conversion from
+a committed receipt back to a request. Exclusive Workspace ownership serializes
+the commit. Ordinary effect take/completion APIs cannot consume these commands.
+Each request is handed out once; a wrong-workspace, cancellation or quota refusal
+returns the original input for retry/rejection. A successful receipt contains
+immutable old/new/exchanged views; successful completion reserves both outputs
+and publication before queuing the continuation. It installs the committed
+snapshot before `then`, retaining an already newer installed publication.
+No host ingress executes graph code inline. The host can explicitly deliver
+newer snapshots to other runs using `publish_workspace`; no background observer
+or global mutable read is implied. Get reads the latest **accepted** publication
+at consumption start and retains that epoch's frozen potential inputs across
+subsequent pump slices. Uninitialized Get/Update has the existing graph fault.
+
+Cancellation before host commit makes the command stale. A commit already
+accepted by the host is never rolled back by cancellation, quota refusal or graph
+retirement; a canceled continuation cannot publish its results. A permanent
+completion refusal can be retired with a checked graph fault through
+`fail_shared_receipt`, or by stopping the run. This never recreates an executable
+write. Fault metadata has the same effect quotas and can itself be refused.
+`fail_shared` rejects an uncommitted request without mutating Workspace.
+
+The shared projection separately obeys `max_state_bytes` and the Run aggregate
+budget; Workspace's full roots/cells retain their own lifetime leases. Taking a
+request reserves its payload and metadata against the Run budget before handing
+it out; cancellation/disposal does not refund that external holder until it drops.
+Snapshot replacement conservatively stages old and new reservations together.
+Arbitrary host-made value copies and allocator/RSS costs remain outside nominal
+accounting. C05 refuses shared plans rather than replaying external mutations.
+Cross-run event transport/lease cleanup, checkpoint restore and physical
+qualification remain open. Executed verification is in10.
+
 ### Host workspace value actor (C12a, 2026-11-07)
 
 `orange_runtime::Workspace` is an exclusively mutated host actor for workspace

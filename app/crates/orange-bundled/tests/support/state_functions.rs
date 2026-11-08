@@ -279,7 +279,7 @@ fn strict_faulting_argument_skips_the_body_state_demand() {
 }
 
 #[test]
-fn workspace_state_in_potential_callees_is_refused_before_any_kernel_binding() {
+fn workspace_state_in_potential_callees_uses_the_attached_pinned_snapshot() {
     let (package, snapshot) = catalog();
     let mut f = reader(100, 10, None);
     f["nodes"]
@@ -306,11 +306,33 @@ fn workspace_state_in_potential_callees_is_refused_before_any_kernel_binding() {
         analysis.report().diagnostics
     );
     let resolver = Counting::new(package);
-    assert!(
-        matches!(compile_control(&doc,snapshot,&analysis,&resolver,CompileOptions::default()),Err(CompileError::UnsupportedNode{node}) if node.to_string()==id(103))
+    let plan = Arc::new(
+        compile_control(
+            &doc,
+            snapshot.clone(),
+            &analysis,
+            &resolver,
+            CompileOptions::default(),
+        )
+        .unwrap(),
     );
-    assert_eq!(resolver.pure.load(Ordering::Relaxed), 0);
-    assert_eq!(resolver.entropy.load(Ordering::Relaxed), 0);
+    let workspace = orange_runtime::Workspace::new(
+        &doc,
+        snapshot.clone(),
+        orange_runtime::WorkspaceLimits::default(),
+    )
+    .unwrap();
+    let mut run = Run::start_in_workspace(
+        plan,
+        &doc,
+        &snapshot,
+        1,
+        RunOptions::default(),
+        &workspace.snapshot(),
+    )
+    .unwrap();
+    finish(&mut run, 1);
+    assert_eq!(run.variable(id(11).parse().unwrap()), Some(&Value::U64(7)));
 }
 
 #[test]

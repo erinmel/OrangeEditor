@@ -60,6 +60,7 @@ impl SegmentWrites {
 /// write admits its whole byte charge before it stores, so a rejected write leaves cells,
 /// bytes, versions and segment writes unchanged.
 pub(super) struct Cells<'r> {
+    pub workspace: Option<&'r crate::WorkspaceSnapshot>,
     pub layout: &'r StateLayout,
     pub limit: usize,
     pub variables: &'r mut [Option<Value>],
@@ -76,6 +77,7 @@ pub(super) struct Cells<'r> {
 impl Run {
     pub(super) fn cells(&mut self) -> Cells<'_> {
         Cells {
+            workspace: self.workspace.as_ref().map(|a| &a.snapshot),
             layout: &self.layout,
             limit: self.options.limits.max_state_bytes,
             variables: &mut self.variables,
@@ -376,6 +378,11 @@ impl Cells<'_> {
                             var.initial()
                         } else if var.scope() == VarScope::Local {
                             shared.locals[self.layout.variables[*index]].as_ref()
+                        } else if var.scope() == VarScope::Workspace {
+                            self.workspace
+                                .ok_or(RunError::InvalidState)?
+                                .get(var.id())
+                                .map_err(|_| RunError::InvalidState)?
                         } else {
                             self.variables[self.layout.variables[*index]].as_ref()
                         };

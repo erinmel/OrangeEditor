@@ -1641,6 +1641,8 @@ fn wait_completion_and_stop_choose_one_outcome_at_the_same_virtual_time() {
 #[path = "support/control_dispatch.rs"]
 mod control_dispatch;
 
+#[path = "support/shared_workspace.rs"]
+mod shared_workspace;
 #[path = "support/state_controls.rs"]
 mod state_controls;
 

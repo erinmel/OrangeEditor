@@ -406,6 +406,10 @@ impl RecordedRun {
         // cannot supply one. Resources/streams require an adapter-specific replay.
         if options.data.cancel.is_some()
             || plan
+                .variables()
+                .iter()
+                .any(|v| v.scope() == VarScope::Workspace)
+            || plan
                 .data()
                 .slot_types()
                 .iter()

@@ -1,5 +1,14 @@
 # Product requirements
 
+C12b trace addition (2026-11-07): FR-12/13/44/45/51 now include checked graph
+workspace Get, asynchronous Set-shared/Update-shared and publish-before-then.
+Two compiled runs serialize Add/CAS without lost updates; called Get and original
+uninitialized faults retain their producer. Partial NFR-05/08/13 covers typed
+attachment, frozen epochs, single-use requests/receipts, cancellation before/after
+commit, quota rollback and lifetime reservations. C05 explicitly refuses this
+external-state profile. Cross-run event transport, checkpoints and physical
+qualification remain open; this is not whole C12/FR-48 completion (03/08/10/11/12/13).
+
 C12a trace addition (2026-11-07): FR-12/13 now have a typed host workspace value
 actor with immutable versioned snapshots, serialized atomic native updates and
 old/new/CAS metadata. Partial NFR-05/08/13 evidence covers type/operation/quota
