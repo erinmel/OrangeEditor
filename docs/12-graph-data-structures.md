@@ -779,6 +779,38 @@ output port is `result`. Semantics: [11 §5.7](11-graph-language.md).
 provider never stands in for the text provider. No new intrinsic, saved format or
 dependency is introduced.
 
+### 4.5 Bundled collection definitions
+
+L04a (2026-11-08) adds `org.orange.collections`, a third package of the same bundled
+build (`MathPackage::collections_provider_key`, ID `native-v1`). Every
+definition/config version is 1, Pure and deterministic, with empty config. The
+provider lists no specializations: like comparisons, binding resolves the concrete
+container type of the first input and refuses unsupported shapes. IDs below have the
+`org.orange.collections/` prefix; every output port is `result`. Semantics:
+[11 §5.8](11-graph-language.md).
+
+| ID suffix | Type parameters | Inputs | Output |
+|---|---|---|---|
+| `list-length` | T | `items: list<$T>` | `core/u64@1` |
+| `list-get` | T | `items`, `index: core/u64@1` | `option<$T>` |
+| `list-slice` | T | `items`, `start`, `length: core/u64@1` | `list<$T>` |
+| `list-concat` | T | `a`, `b: list<$T>` | `list<$T>` |
+| `list-append` | T | `items`, `item: $T` | `list<$T>` |
+| `list-reverse` | T | `items` | `list<$T>` |
+| `list-contains` | T: eq | `items`, `value: $T` | `core/bool@1` |
+| `list-index-of` | T: eq | `items`, `value: $T` | `option<core/u64@1>` |
+| `map-length` | K: eq+hash, V | `map: map<$K,$V>` | `core/u64@1` |
+| `map-get` | K, V | `map`, `key: $K` | `option<$V>` |
+| `map-contains-key` | K, V | `map`, `key` | `core/bool@1` |
+| `map-insert` | K, V | `map`, `key`, `value: $V` | `map<$K,$V>` |
+| `map-remove` | K, V | `map`, `key` | `map<$K,$V>` |
+| `map-keys`, `map-values` | K, V | `map` | `list<$K>` / `list<$V>` |
+| `option-is-some` | T | `value: option<$T>` | `core/bool@1` |
+
+(`list`, `map` and `option` abbreviate `core/list@1`, `core/map@1` and
+`core/option@1`.) `CollectionOperation`, `ResolvedCollection` and
+`MathPackage::resolve_collection` expose the same contracts to embedders.
+
 ## 5. Type and converter definitions
 
 ```json

@@ -1,5 +1,32 @@
 # Tooling, environment and research register
 
+## L04a — collection nodes — 2026-11-08
+
+Branch `l04a-collections`, stacked on L03b (PR155). Same local toolchain as L02b;
+MSRV 1.97.1 is checked by hosted CI. Uses the model's `ValueShape`
+(`of_in`, `checked_charge`, `equal_values`, `unboxed_none`), `ListBuilder`,
+`ListRepr::concat` and `MapRepr::new`. No dependency, feature or lockfile change.
+
+The bundled build now publishes `org.orange.collections` (16 generic definitions)
+under a third exact provider key. Nine public tests check list and map known answers
+(insertion order, in-place replacement, missing keys, empty maps), option boxing for
+`list<option<i64>>` and nested options, shape checks on every input, the 16 MiB
+growth and input limits, binding refusals (wrong container, float membership,
+provider and config), and a compiled generic chain (append→reverse→get,
+insert→keys, out-of-range slice provenance) with pinned `T`/`K`/`V`. Three
+128-case properties check slice/concat partition with reverse involution,
+index-of/get/contains agreement, and insert/get/remove on maps.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass after one test `cloned_ref_to_slice_refs` fix |
+| `cargo test --workspace --all-features` | **1,597 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
+Limits: lookups and membership are linear; record/enum construction, field access
+and JSON nodes are not in this slice. No timing or memory probe ran.
+
 ## L03b — text nodes — 2026-11-08
 
 Branch `l03b-text-nodes`, based on dev after L03a (PR154, all nine hosted checks green). Same local toolchain as L02b;

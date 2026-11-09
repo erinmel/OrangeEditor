@@ -276,3 +276,6 @@ L03b text nodes (2026-11-08): `core/LimitExceeded` from a kernel uses
 `core/kernel-limit-exceeded` ("The result would exceed the operation's size limit.")
 with zero arguments. Text nodes never format with or read a locale; case mapping and
 trimming use Unicode default rules, not the UI language.
+
+L04a collections (2026-11-08): collection nodes reuse `core/OutOfRange`,
+`core/LimitExceeded` and the kernel contract fault; no new message key or argument.
