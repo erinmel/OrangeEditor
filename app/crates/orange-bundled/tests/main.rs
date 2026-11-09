@@ -38,6 +38,7 @@ mod function_epochs;
 mod graph_handles;
 mod graph_streams;
 mod integers;
+mod nominals;
 mod pure_preview;
 mod record_declarations;
 mod reference_equivalence;
