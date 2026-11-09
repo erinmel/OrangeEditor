@@ -404,6 +404,46 @@ float→integer reports no loss. An f32 source is widened exactly before roundin
 Because more pairs now have a unique lossless-total entry, rule 3 auto-inserts
 visible converters for them (for example i32→f64); f64→i64 now requires a choice.
 
+L03a text conversions (2026-11-08): the Core registry also has 17 text entries,
+executed by the Core provider. Text forms are invariant: they never depend on a
+machine or UI locale.
+
+| Entry | Class | Policies | Errors |
+|---|---|---|---|
+| `core/<T>-to-string`, T = bool/i32/i64/u32/u64 | lossless-total | none | none |
+| `core/f32-to-string`, `core/f64-to-string` | lossy | none | none |
+| `core/string-to-bool` | checked-partial | none | `core/Parse` |
+| `core/string-to-<T>`, integer T | checked-partial | none | `core/OutOfRange`, `core/Parse` |
+| `core/string-to-f32`, `core/string-to-f64` | checked-partial | `rounding`: nearest-even | `core/OutOfRange`, `core/Parse` |
+| `core/string-to-bytes` | lossless-total | none | none |
+| `core/bytes-to-string` | checked-partial | none | `core/InvalidUtf8` |
+| `core/bytes-to-string-lossy` | lossy | `invalid`: replace | none |
+
+Bool text is `true`/`false`. Integer text is ASCII decimal: an optional `+` or
+`-`, then one or more digits (leading zeros allowed, no whitespace, separators or
+other numerals). Display never prints `+` or leading zeros. Syntax is checked
+before range, so an overlong invalid literal is `core/Parse` and a valid one outside
+the target is `core/OutOfRange`; `-0` parses as 0 for unsigned types.
+
+Float display prints the shortest digits that parse back to the same value, laid out
+like ECMAScript Number-to-String: plain decimal when the decimal exponent n satisfies
+-7 < n <= 21 (`0.000001`, `100000000000000000000`), otherwise `d.ddde±x`
+(`1e+21`, `1.5e-7`). Unlike ECMAScript, negative zero prints `-0`. Non-finite
+values print `NaN`, `Infinity` and `-Infinity`. The entry is lossy only because
+NaN payloads have no text form: `loss` is `{"lost": true}` exactly for a NaN that
+is not the canonical positive quiet NaN. Every other value round-trips bit-exactly.
+Float parsing accepts `[+-]?(D+(.D*)?|.D+)([eE][+-]?D+)?`, `[+-]?Infinity` and
+`NaN`, ASCII only. It rounds once, to nearest with ties to even, directly in the
+target precision. A finite literal that rounds to infinity is `core/OutOfRange`;
+underflow to zero or a subnormal is a normal result.
+
+`string-to-bytes` is UTF-8 encoding. `bytes-to-string` rejects any invalid UTF-8
+(overlong forms, surrogates, truncation, values above U+10FFFF) with
+`core/InvalidUtf8`; `bytes-to-string-lossy` replaces each maximal invalid
+subsequence with U+FFFD and reports `lost`. Both decoders are visible, separate
+entries, so bytes→string always requires a choice under rule 3. Rule 3 now
+auto-inserts converters for integer/bool→string and string→bytes.
+
 ## 7. Regions, availability, ordering and determinism
 
 ### 7.1 Regions

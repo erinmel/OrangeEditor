@@ -443,3 +443,10 @@ checked or lossy class, explicit float→integer rounding, exact loss reporting 
 safe NonFinite/OutOfRange faults. Boundary sweeps, rounding tables, properties and
 constant folds are verified through public APIs (11 §6). With L02a–c this completes
 the L02 numeric vocabulary; FR-10 strings/collections and package kernels remain.
+
+L03a text conversions trace (2026-11-08; FR-11/51, NFR-05/16): invariant bool/integer/
+float parse and display and strict or replacing UTF-8 decode execute as Core
+converters. Grammar refusals, range limits, correctly rounded binary32 parsing,
+bit-exact float round trips, invalid UTF-8 classes and constant-fold provenance are
+verified through public APIs (11 §6). Text node vocabulary and grapheme clusters
+remain open.
