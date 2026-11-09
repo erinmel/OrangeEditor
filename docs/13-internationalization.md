@@ -284,3 +284,8 @@ L04b (2026-11-08): `E-NOMINAL-CONFIG` uses `core/graph-nominal-config` with zero
 arguments and the safe fallback "A record or enum node must name a registered record
 or enum type and an existing field or variant, and no other field." It never echoes
 config text.
+
+L04c (2026-11-08): `ConversionError::LimitExceeded` uses `core/LimitExceeded` with key
+`core/conversion-limit-exceeded` ("The value exceeds the conversion's size or depth
+limit."). JSON nodes reuse `core/Domain` and `core/OutOfRange`. No argument carries
+JSON text.

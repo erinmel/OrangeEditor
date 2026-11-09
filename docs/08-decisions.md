@@ -636,3 +636,9 @@ derives from config and the locked schema (`Ports::Nominal`), not intrinsics.
 Optional fields are `option<F>` ports, relying on 12 §7 boxing to keep missing and
 present None distinct, so no optional-port compiler form is needed. Payload-free
 variant projection is refused in favour of enum Switch.
+
+JSON read amendment (2026-11-08; ADR-16/21, FR-08/11): JSON nodes are an ordinary
+fourth bundled package, `org.orange.json`, that navigates validated text rather
+than a parsed tree, so exact number text survives without a new serde feature.
+Duplicate keys resolve last-wins. Wrong-kind navigation is `core/Domain`, typed
+reads of another kind are None, and parse/text are Core converters.

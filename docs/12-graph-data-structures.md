@@ -831,6 +831,26 @@ or `variant`. The registry derives each node's contract from that config
 `Ports::Nominal(NominalAccess)` variant and `ContractError::NominalConfig` are
 unfrozen API additions; no saved graph field changes.
 
+### 4.7 Bundled JSON definitions
+
+L04c (2026-11-08) adds `org.orange.json`, a fourth package of the bundled build
+(`MathPackage::json_provider_key`, ID `native-v1`). Every definition/config version
+is 1, Pure, deterministic, non-generic, with empty config. IDs below have the
+`org.orange.json/` prefix; `json` is `core/json@1` and every output is `result`.
+Semantics: [11 §5.10](11-graph-language.md).
+
+| ID suffix | Inputs | Output |
+|---|---|---|
+| `kind` | `value: json` | `core/string@1` |
+| `is-null` | `value` | `core/bool@1` |
+| `get` | `value`, `key: core/string@1` | `core/option@1<core/json@1>` |
+| `at` | `value`, `index: core/u64@1` | `core/option@1<core/json@1>` |
+| `length` | `value` | `core/u64@1` |
+| `as-bool`, `as-string`, `as-i64`, `as-u64`, `as-f64` | `value` | `core/option@1<T>` of that type |
+
+`JsonOperation`, `ResolvedJson` and `MathPackage::resolve_json` expose the same
+contracts to embedders.
+
 ## 5. Type and converter definitions
 
 ```json

@@ -1,8 +1,36 @@
 # Tooling, environment and research register
 
+## L04c — JSON reads — 2026-11-08
+
+Branch `l04c-json-nodes`, based on dev after L04b (PR157, all nine hosted checks
+green). Same local toolchain as L02b; MSRV 1.97.1 is checked by hosted CI. No
+dependency, feature or lockfile change: navigation scans validated `JsonText`
+instead of enabling serde_json's `raw_value`/`arbitrary_precision`.
+
+The bundled build adds `org.orange.json` (ten definitions, fourth provider key) and
+Core converters `string-to-json`/`json-to-string` with `ConversionError::LimitExceeded`.
+Six public tests check kinds and null tests, typed reads (wrong kind None, integer
+form, range, f64 overflow), navigation with exact number text, escaped and
+duplicate keys (last wins), strings containing delimiters, wrong-kind `core/Domain`,
+converter validation and limits, provider/config refusals, and compiled folds with
+`core/Domain` provenance (plus a type error for chaining `option<json>` into
+`get`). A 128-case property checks `at`/`length` against serde_json for arrays
+with numbers, escaped strings, nulls and nested containers. One L03a test that used
+`string-to-json` as a missing entry now uses `string-to-duration`.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass after a `type_complexity` alias and test `from_ref` fixes |
+| `cargo test --workspace --all-features` | **1,607 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
+Limits: reads only (no JSON construction or editing); each read rescans the text it
+passes. No timing or memory probe ran.
+
 ## L04b — record and enum nodes — 2026-11-08
 
-Branch `l04b-nominal-nodes`, based on dev after L04a (PR156, all nine hosted checks
+Merged as PR157. Branch `l04b-nominal-nodes`, based on dev after L04a (PR156, all nine hosted checks
 green). Same local toolchain as L02b; MSRV 1.97.1 is checked by hosted CI. No
 dependency, feature or lockfile change.
 

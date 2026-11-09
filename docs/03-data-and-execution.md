@@ -1020,3 +1020,12 @@ Record/enum nodes bind to the record or enum shape resolved from the locked sche
 wrong field value is an internal contract fault, never a stored invalid record.
 Optional fields use the option boxing rule instead of optional ports, so the pure
 compiler needs no new port form. JSON nodes remain the last L04 slice.
+
+### L04c JSON reads (2026-11-08)
+
+`org.orange.json` (12 §4.7, 11 §5.10) scans the already validated JSON text instead
+of building a tree, so extracted values keep exact text and each read is linear in
+the text it passes (at most `MAX_JSON_TEXT_BYTES`, 1 MiB). Extracted values are
+re-admitted as `JsonText`. `string-to-json` uses the same `JsonText` limits and
+reports oversized or overdeep text as `core/LimitExceeded`. This completes the
+finite L04 read vocabulary; JSON construction/editing remains open.
