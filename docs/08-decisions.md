@@ -608,3 +608,10 @@ float→integer are checked-partial, and inexact integer→float is lossy with l
 metadata. Float→integer requires a saved rounding policy (truncate by default for
 new bindings) and never saturates. Wrapping integer casts are not offered; use
 bit operations explicitly. Existing four entries keep their contracts.
+
+Text conversion amendment (2026-11-08; ADR-16/20, FR-11/51): parse and display are
+registry converters, not nodes, so they stay visible and explicit like numeric
+casts. Formats are invariant and locale-free. Float display uses shortest
+round-trip digits in an ECMAScript-like layout with signed zero kept; parsing is
+correctly rounded in the target precision. Strict and replacing UTF-8 decode are
+separate entries, so a lossy decode is never chosen implicitly.

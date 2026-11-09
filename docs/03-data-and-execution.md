@@ -983,3 +983,13 @@ through i128, so range and loss checks never use a float intermediate. Float→i
 conversion reports `core/NonFinite` (`ConversionError::NonFinite`) before range.
 Compiler folds and runtime demands use the same binding. This completes the L02
 numeric vocabulary; strings, collections, package kernels and embedding remain.
+
+### L03a text conversions (2026-11-08)
+
+Text parse/display and UTF-8 encode/decode are Core converter entries (11 §6), bound
+by the same `resolve_core_conversion` path as the numeric casts. Evaluation reads
+no locale, registry or host state. New `ConversionError::Parse` and `InvalidUtf8`
+carry no input text. Work is linear in the input; display output is at most a few
+dozen bytes, and decode output is at most three times the input. Graph-level size
+quotas remain the existing value limits. Text nodes (length, substring, search,
+case, split/join) and grapheme clusters are later L03 slices.

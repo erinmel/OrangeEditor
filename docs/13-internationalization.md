@@ -265,3 +265,9 @@ predicates and XOR raise no semantic errors. No message key or argument is added
 L02d conversions (2026-11-08): float→integer conversion adds `core/NonFinite` with
 key `core/conversion-non-finite` and safe fallback "The value is not finite and has
 no integer conversion." It has zero arguments and never includes the value.
+
+L03a conversions (2026-11-08): `core/Parse` uses `core/conversion-parse` ("The text
+is not in the invariant format of the target type.") and `core/InvalidUtf8` uses
+`core/conversion-invalid-utf8` ("The bytes are not valid UTF-8."). Both have zero
+arguments and never include the text or bytes. Parse/display formats are invariant;
+locale-aware number formatting is host presentation, not a graph conversion.

@@ -50,6 +50,10 @@ pub enum ConversionError {
     OutOfRange,
     #[error("The value is not finite and has no integer conversion.")]
     NonFinite,
+    #[error("The text is not in the invariant format of the target type.")]
+    Parse,
+    #[error("The bytes are not valid UTF-8.")]
+    InvalidUtf8,
     #[error("Converter input violates the resolved contract.")]
     InputContract,
 }
@@ -60,6 +64,8 @@ impl ConversionError {
         match self {
             Self::OutOfRange => "The value is outside the target conversion range.",
             Self::NonFinite => "The value is not finite and has no integer conversion.",
+            Self::Parse => "The text is not in the invariant format of the target type.",
+            Self::InvalidUtf8 => "The bytes are not valid UTF-8.",
             Self::InputContract => "Converter input violates the resolved contract.",
         }
     }
@@ -68,6 +74,8 @@ impl ConversionError {
         match self {
             Self::OutOfRange => "core/OutOfRange",
             Self::NonFinite => "core/NonFinite",
+            Self::Parse => "core/Parse",
+            Self::InvalidUtf8 => "core/InvalidUtf8",
             Self::InputContract => "core/InternalFault",
         }
     }
@@ -76,6 +84,8 @@ impl ConversionError {
         match self {
             Self::OutOfRange => "core/conversion-out-of-range",
             Self::NonFinite => "core/conversion-non-finite",
+            Self::Parse => "core/conversion-parse",
+            Self::InvalidUtf8 => "core/conversion-invalid-utf8",
             Self::InputContract => "core/conversion-input-contract",
         }
     }

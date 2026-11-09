@@ -1,8 +1,39 @@
 # Tooling, environment and research register
 
+## L03a — text conversions — 2026-11-08
+
+Branch `l03a-text-conversions`, based on dev `91ee039` (L02d PR153, all nine
+hosted checks green). Same local toolchain as L02b; MSRV 1.97.1 is checked by
+hosted CI. Uses std only: `{:e}` shortest round-trip float formatting,
+`str::parse::<f32/f64>` (correctly rounded) after an explicit grammar check,
+`str::from_utf8` and `String::from_utf8_lossy`. No dependency, feature or lockfile
+change.
+
+Seventeen Core text entries are registered and executed. Eleven public tests check
+entry classes/errors; bool/integer/float display including signed zero, subnormal,
+`f64::MAX`, exponent thresholds and NaN loss; integer/bool grammar refusals
+(whitespace, separators, hex, non-ASCII digits, overlong invalid literals) and
+range errors; float grammar refusals, overflow, underflow and a binary32 case that a
+binary64 intermediate would double-round; UTF-8 encode, strict rejection and
+replacement of five invalid classes; option refusals; and constant folds with
+`core/Parse` provenance. Four properties check bit-exact f64 (256 cases) and f32
+display→parse round trips over arbitrary bit patterns, integer round trips and
+strict UTF-8 decode inverting encode.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,579 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
+Limits: no text node vocabulary (length, substring, search, case, split/join) and no
+grapheme clusters yet; no locale-aware formatting by design. No timing or memory
+probe ran.
+
 ## L02d — numeric casts — 2026-11-08
 
-Branch `l02d-numeric-casts`, based on dev `896b91f` (L02c PR152, all nine hosted
+Merged as PR153. Branch `l02d-numeric-casts`, based on dev `896b91f` (L02c PR152, all nine hosted
 checks green). Same local toolchain as L02b; MSRV 1.97.1 is checked by hosted CI.
 Integer→float uses Rust `as` casts (round to nearest, ties to even, documented for
 every integer width); `round_ties_even` and `i128` are stable before 1.97.1. No
@@ -32,7 +63,7 @@ probe ran.
 
 ## L02c — trigonometry, float predicates and XOR — 2026-11-08
 
-Branch `l02c-float-trig-compare`, based on dev `2feae34` (L02b PR151, all nine
+Merged as PR152. Branch `l02c-float-trig-compare`, based on dev `2feae34` (L02b PR151, all nine
 hosted checks green). Same local toolchain and features as L02b; MSRV 1.97.1 is
 checked by hosted CI. `sin`, `cos`, `tan`, `asin`, `acos`, `atan`, `atan2` and
 `total_cmp` are stable before it. No dependency, feature or lockfile change.

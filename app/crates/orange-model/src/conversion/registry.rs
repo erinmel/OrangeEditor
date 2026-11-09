@@ -37,6 +37,8 @@ impl ConverterRegistryBuilder {
     /// Starts a registry with a Core conversion entry for every ordered pair of distinct
     /// numeric scalar types (11 §6): exact widening is lossless-total, integer narrowing
     /// and float-to-integer are checked-partial, and inexact integer-to-float is lossy.
+    /// It also has invariant text parse/display entries for bool and those numeric
+    /// types, and UTF-8 encode/decode between `string` and `bytes`.
     pub fn with_core_conversions(
         types: Arc<TypeRegistry>,
     ) -> Result<Self, ConverterRegistrationError> {
@@ -55,6 +57,10 @@ impl ConverterRegistryBuilder {
                 policies,
                 errors,
             )?)?;
+        }
+        for (id, from, to, class, policies, errors) in text_contracts()? {
+            builder
+                .register_core_entry(core_definition(&id, &from, &to, class, policies, errors)?)?;
         }
         Ok(builder)
     }
@@ -366,6 +372,81 @@ fn numeric_contract(from: &str, to: &str) -> Result<NumericContract, ConverterRe
             vec![out_of_range()?],
         ),
     })
+}
+
+type TextContract = (
+    String,
+    String,
+    String,
+    ConversionClass,
+    Vec<NamedPolicy>,
+    Vec<ConverterErrorCode>,
+);
+
+/// Display is lossless-total except for floats, whose NaN payloads have no text form.
+/// Parsing is checked; float parsing rounds to nearest, ties to even.
+fn text_contracts() -> Result<Vec<TextContract>, ConverterRegistrationError> {
+    let parse = || ConverterErrorCode::new("core/Parse");
+    let range = || ConverterErrorCode::new("core/OutOfRange");
+    let string = "core/string@1".to_owned();
+    let bytes = "core/bytes@1".to_owned();
+    let mut contracts = Vec::new();
+    for ty in ["bool", "i32", "i64", "u32", "u64", "f32", "f64"] {
+        let float = ty.starts_with('f');
+        contracts.push((
+            format!("core/{ty}-to-string"),
+            format!("core/{ty}@1"),
+            string.clone(),
+            if float {
+                ConversionClass::Lossy
+            } else {
+                ConversionClass::LosslessTotal
+            },
+            vec![],
+            vec![],
+        ));
+        contracts.push((
+            format!("core/string-to-{ty}"),
+            string.clone(),
+            format!("core/{ty}@1"),
+            ConversionClass::CheckedPartial,
+            if float {
+                vec![policy("rounding", &["nearest-even"], "nearest-even")]
+            } else {
+                vec![]
+            },
+            if ty == "bool" {
+                vec![parse()?]
+            } else {
+                vec![parse()?, range()?]
+            },
+        ));
+    }
+    contracts.push((
+        "core/string-to-bytes".into(),
+        string.clone(),
+        bytes.clone(),
+        ConversionClass::LosslessTotal,
+        vec![],
+        vec![],
+    ));
+    contracts.push((
+        "core/bytes-to-string".into(),
+        bytes.clone(),
+        string.clone(),
+        ConversionClass::CheckedPartial,
+        vec![],
+        vec![ConverterErrorCode::new("core/InvalidUtf8")?],
+    ));
+    contracts.push((
+        "core/bytes-to-string-lossy".into(),
+        bytes,
+        string,
+        ConversionClass::Lossy,
+        vec![policy("invalid", &["replace"], "replace")],
+        vec![],
+    ));
+    Ok(contracts)
 }
 
 fn core_definition(

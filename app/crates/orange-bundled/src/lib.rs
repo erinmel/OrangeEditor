@@ -18,6 +18,7 @@ mod error;
 mod float;
 mod integer;
 mod kernel;
+mod text_conversion;
 
 pub use catalog::{MathPackage, math_definitions};
 pub use comparison::{Comparison, ResolvedComparison, comparison_definitions};
