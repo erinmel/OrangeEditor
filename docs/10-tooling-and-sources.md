@@ -2,7 +2,7 @@
 
 ## L03b — text nodes — 2026-11-08
 
-Branch `l03b-text-nodes`, stacked on L03a (PR154). Same local toolchain as L02b;
+Branch `l03b-text-nodes`, based on dev after L03a (PR154, all nine hosted checks green). Same local toolchain as L02b;
 MSRV 1.97.1 is checked by hosted CI. Uses std `str` search/split/replace/trim,
 `to_uppercase`/`to_lowercase` and `char_indices`; Unicode data is the toolchain's
 `char::UNICODE_VERSION`. No dependency, feature or lockfile change.
@@ -29,7 +29,7 @@ linear in the index. No timing or memory probe ran.
 
 ## L03a — text conversions — 2026-11-08
 
-Branch `l03a-text-conversions`, based on dev `91ee039` (L02d PR153, all nine
+Merged as PR154. Branch `l03a-text-conversions`, based on dev `91ee039` (L02d PR153, all nine
 hosted checks green). Same local toolchain as L02b; MSRV 1.97.1 is checked by
 hosted CI. Uses std only: `{:e}` shortest round-trip float formatting,
 `str::parse::<f32/f64>` (correctly rounded) after an explicit grammar check,
