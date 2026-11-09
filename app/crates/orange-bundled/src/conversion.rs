@@ -1,4 +1,5 @@
-//! Executable implementations of the four foundational core converter contracts.
+//! Executable implementations of the Core numeric converter contracts: every ordered
+//! pair of distinct i32/i64/u32/u64/f32/f64 types.
 
 use std::sync::Arc;
 
@@ -9,12 +10,67 @@ use orange_model::value::JsonText;
 
 use crate::{BindingError, ConversionError};
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Numeric {
+    I32,
+    I64,
+    U32,
+    U64,
+    F32,
+    F64,
+}
+
+impl Numeric {
+    fn parse(ty: &str) -> Option<Self> {
+        Some(match ty {
+            "core/i32@1" => Self::I32,
+            "core/i64@1" => Self::I64,
+            "core/u32@1" => Self::U32,
+            "core/u64@1" => Self::U64,
+            "core/f32@1" => Self::F32,
+            "core/f64@1" => Self::F64,
+            _ => return None,
+        })
+    }
+    fn name(self) -> &'static str {
+        match self {
+            Self::I32 => "i32",
+            Self::I64 => "i64",
+            Self::U32 => "u32",
+            Self::U64 => "u64",
+            Self::F32 => "f32",
+            Self::F64 => "f64",
+        }
+    }
+    fn is_float(self) -> bool {
+        matches!(self, Self::F32 | Self::F64)
+    }
+    fn integer(self, value: i128) -> Result<Value, ConversionError> {
+        let out_of_range = |_| ConversionError::OutOfRange;
+        Ok(match self {
+            Self::I32 => Value::I32(i32::try_from(value).map_err(out_of_range)?),
+            Self::I64 => Value::I64(i64::try_from(value).map_err(out_of_range)?),
+            Self::U32 => Value::U32(u32::try_from(value).map_err(out_of_range)?),
+            Self::U64 => Value::U64(u64::try_from(value).map_err(out_of_range)?),
+            _ => return Err(ConversionError::InputContract),
+        })
+    }
+}
+
+/// Explicit float-to-integer rounding, applied before the range check.
 #[derive(Debug, Clone, Copy)]
-enum Conversion {
-    I32ToI64,
-    I64ToI32,
-    F32ToF64,
-    F64ToF32,
+enum Rounding {
+    Truncate,
+    Floor,
+    Ceiling,
+    NearestEven,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Conversion {
+    from: Numeric,
+    to: Numeric,
+    rounding: Rounding,
 }
 
 /// Result ports of one explicit conversion. Only a lossy entry supplies `loss`.
@@ -53,18 +109,24 @@ impl ResolvedConversion {
     /// Loss metadata is prebuilt at binding; evaluation performs no registry lookup,
     /// policy parsing or buffer construction, including on the lossy success path.
     pub fn evaluate(&self, input: &Value) -> Result<ConversionOutput, ConversionError> {
-        let (result, lost) = match (self.operation, input) {
-            (Conversion::I32ToI64, Value::I32(value)) => (Value::I64(i64::from(*value)), false),
-            (Conversion::I64ToI32, Value::I64(value)) => {
-                let value = i32::try_from(*value).map_err(|_| ConversionError::OutOfRange)?;
-                (Value::I32(value), false)
+        let Conversion { from, to, rounding } = self.operation;
+        let (result, lost) = match (input, from) {
+            (Value::F32(value), Numeric::F32) if to == Numeric::F64 => {
+                (Value::F64(widen_float(*value)), false)
             }
-            (Conversion::F32ToF64, Value::F32(value)) => (Value::F64(widen_float(*value)), false),
-            (Conversion::F64ToF32, Value::F64(value)) => {
+            (Value::F64(value), Numeric::F64) if to == Numeric::F32 => {
                 let result = narrow_float(*value)?;
                 let lost = widen_float(result).to_bits() != value.to_bits();
                 (Value::F32(result), lost)
             }
+            (Value::F32(value), Numeric::F32) => {
+                (to.integer(round(f64::from(*value), rounding)?)?, false)
+            }
+            (Value::F64(value), Numeric::F64) => (to.integer(round(*value, rounding)?)?, false),
+            (Value::I32(value), Numeric::I32) => integer_to(to, i128::from(*value))?,
+            (Value::I64(value), Numeric::I64) => integer_to(to, i128::from(*value))?,
+            (Value::U32(value), Numeric::U32) => integer_to(to, i128::from(*value))?,
+            (Value::U64(value), Numeric::U64) => integer_to(to, i128::from(*value))?,
             _ => return Err(ConversionError::InputContract),
         };
         Ok(ConversionOutput {
@@ -98,26 +160,18 @@ pub fn resolve_core_conversion(
     {
         return Err(BindingError::Unavailable);
     }
-    let operation = match (
-        config.entry.id.as_str(),
-        definition.from.as_str(),
-        definition.to.as_str(),
-        definition.class,
-    ) {
-        ("core/i32-to-i64", "core/i32@1", "core/i64@1", ConversionClass::LosslessTotal) => {
-            Conversion::I32ToI64
-        }
-        ("core/i64-to-i32", "core/i64@1", "core/i32@1", ConversionClass::CheckedPartial) => {
-            Conversion::I64ToI32
-        }
-        ("core/f32-to-f64", "core/f32@1", "core/f64@1", ConversionClass::LosslessTotal) => {
-            Conversion::F32ToF64
-        }
-        ("core/f64-to-f32", "core/f64@1", "core/f32@1", ConversionClass::Lossy) => {
-            Conversion::F64ToF32
-        }
-        _ => return Err(BindingError::Unavailable),
+    let (Some(from), Some(to)) = (
+        Numeric::parse(definition.from.as_str()),
+        Numeric::parse(definition.to.as_str()),
+    ) else {
+        return Err(BindingError::Unavailable);
     };
+    if from == to
+        || config.entry.id.as_str() != format!("core/{}-to-{}", from.name(), to.name())
+        || definition.class != expected_class(from, to)
+    {
+        return Err(BindingError::Unavailable);
+    }
     if config.options.len() != definition.policies.len()
         || definition.policies.iter().any(|policy| {
             config
@@ -128,26 +182,91 @@ pub fn resolve_core_conversion(
     {
         return Err(BindingError::InvalidConfig);
     }
-    let loss_flags = if matches!(operation, Conversion::F64ToF32) {
-        if config.options.len() != 2
-            || config.options.get("rounding").map(String::as_str) != Some("nearest-even")
-            || config.options.get("overflow").map(String::as_str) != Some("reject")
-        {
-            return Err(BindingError::InvalidConfig);
+    // The executable contract is fixed per pair; registry metadata cannot widen it.
+    let option = |name: &str| config.options.get(name).map(String::as_str);
+    let mut rounding = Rounding::Truncate;
+    let expected = match (from.is_float(), to.is_float()) {
+        (true, true) if from == Numeric::F64 => {
+            option("rounding") == Some("nearest-even") && option("overflow") == Some("reject")
         }
+        (true, false) => {
+            rounding = match option("rounding") {
+                Some("truncate") => Rounding::Truncate,
+                Some("floor") => Rounding::Floor,
+                Some("ceiling") => Rounding::Ceiling,
+                Some("nearest-even") => Rounding::NearestEven,
+                _ => return Err(BindingError::InvalidConfig),
+            };
+            config.options.len() == 1
+        }
+        _ if definition.class == ConversionClass::Lossy => {
+            config.options.len() == 1 && option("rounding") == Some("nearest-even")
+        }
+        _ => config.options.is_empty(),
+    };
+    if !expected {
+        return Err(BindingError::InvalidConfig);
+    }
+    let loss_flags = if definition.class == ConversionClass::Lossy {
         Some([loss_flag(false)?, loss_flag(true)?])
     } else {
-        if !config.options.is_empty() {
-            return Err(BindingError::InvalidConfig);
-        }
         None
     };
     Ok(ResolvedConversion {
         snapshot,
         entry: config.entry.clone(),
-        operation,
+        operation: Conversion { from, to, rounding },
         loss_flags,
     })
+}
+
+/// The Core class of a numeric pair; it must match the registered entry exactly.
+fn expected_class(from: Numeric, to: Numeric) -> ConversionClass {
+    use Numeric::*;
+    match (from, to) {
+        (I32, I64) | (U32, I64) | (U32, U64) | (I32 | U32, F64) | (F32, F64) => {
+            ConversionClass::LosslessTotal
+        }
+        (F64, F32) => ConversionClass::Lossy,
+        (_, F32 | F64) if !from.is_float() => ConversionClass::Lossy,
+        _ => ConversionClass::CheckedPartial,
+    }
+}
+
+/// Integer source to any other numeric type. Integer targets are checked; float targets
+/// round to nearest, ties to even (Rust `as` from integers), and report whether the
+/// result differs from the source. Every result fits i128 exactly (|x| <= 2^64).
+fn integer_to(to: Numeric, value: i128) -> Result<(Value, bool), ConversionError> {
+    Ok(match to {
+        Numeric::F32 => {
+            let result = value as f32;
+            (Value::F32(result), result as i128 != value)
+        }
+        Numeric::F64 => {
+            let result = value as f64;
+            (Value::F64(result), result as i128 != value)
+        }
+        _ => (to.integer(value)?, false),
+    })
+}
+
+/// Rounds a finite float to an integral value and returns it exactly as i128 when it
+/// lies in the widest target range; the caller narrows to the exact target.
+fn round(value: f64, rounding: Rounding) -> Result<i128, ConversionError> {
+    if !value.is_finite() {
+        return Err(ConversionError::NonFinite);
+    }
+    let rounded = match rounding {
+        Rounding::Truncate => value.trunc(),
+        Rounding::Floor => value.floor(),
+        Rounding::Ceiling => value.ceil(),
+        Rounding::NearestEven => value.round_ties_even(),
+    };
+    // -2^63 and 2^64 are exact binary64 values; outside them no target can hold it.
+    if !(-9_223_372_036_854_775_808.0..18_446_744_073_709_551_616.0).contains(&rounded) {
+        return Err(ConversionError::OutOfRange);
+    }
+    Ok(rounded as i128)
 }
 
 fn loss_flag(lost: bool) -> Result<Value, BindingError> {
