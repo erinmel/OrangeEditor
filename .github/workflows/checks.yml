@@ -152,7 +152,7 @@ jobs:
       - name: Check advisories, bans, licenses and sources
         run: cargo deny --locked check advisories bans licenses sources
       - name: Check the guest SDK workspace under the same policy
-        run: cargo deny --locked --manifest-path sdk/Cargo.toml check --config deny.toml advisories bans licenses sources
+        run: cargo deny --locked --manifest-path sdk/Cargo.toml --config deny.toml check advisories bans licenses sources
 
   test:
     name: 2 · test / ${{ matrix.label }}
