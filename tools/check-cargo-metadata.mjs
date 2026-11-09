@@ -13,6 +13,8 @@ const policy = {
   'orange-packages': {core: true, normal: ['orange-model']},
   // Development measurement binary; never part of an embedding host's dependency graph.
   'orange-measure': {core: false, normal: ['orange-model', 'orange-compiler', 'orange-runtime', 'orange-bundled']},
+  // Host-side Wasm component execution (ADR-03); graph core never depends on it.
+  'orange-guest': {core: false, normal: []},
 };
 // UI, window, renderer and engine frameworks that graph-core crates must never depend on
 // (ADR-01, ADR-02, ADR-21). Host applications may use them.

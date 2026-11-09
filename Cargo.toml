@@ -1,7 +1,7 @@
 # Host application workspace (docs/15-monorepo-layout.md). Installable plugins build independently.
 [workspace]
 resolver = "3"
-members = ["app/crates/orange-model", "app/crates/orange-bundled", "app/crates/orange-compiler", "app/crates/orange-runtime", "app/crates/orange-measure", "app/crates/orange-packages"]
+members = ["app/crates/orange-model", "app/crates/orange-bundled", "app/crates/orange-compiler", "app/crates/orange-runtime", "app/crates/orange-measure", "app/crates/orange-packages", "app/crates/orange-guest"]
 exclude = ["plugins"]
 
 [workspace.package]
@@ -18,6 +18,8 @@ serde_json = { version = "=1.0.154", features = ["preserve_order"] }
 sha2 = "=0.11.1"
 thiserror = "=2.0.21"
 uuid = { version = "=1.29.0", features = ["serde"] }
+# Wasmtime 48 LTS (supported 24 months); host-only (ADR-03). Default features off.
+wasmtime = { version = "=48.0.8", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

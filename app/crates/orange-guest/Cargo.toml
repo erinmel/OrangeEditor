@@ -1,0 +1,25 @@
+[package]
+name = "orange-guest"
+description = "OrangeEditor host-side Wasm component execution for installed packages"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+# Integration tests build as one binary (tests/main.rs).
+autotests = false
+
+[dependencies]
+thiserror.workspace = true
+# Only the Wasmtime features the host uses: no WASI, async runtime, cache or debug (ADR-03).
+wasmtime.workspace = true
+
+[dev-dependencies]
+# Tests author components in the component text format.
+wasmtime = { workspace = true, features = ["wat"] }
+
+[lints]
+workspace = true
+
+[[test]]
+name = "integration"
+path = "tests/main.rs"
