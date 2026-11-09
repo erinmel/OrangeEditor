@@ -38,6 +38,7 @@ mod function_epochs;
 mod graph_handles;
 mod graph_streams;
 mod integers;
+mod json_nodes;
 mod nominals;
 mod pure_preview;
 mod record_declarations;

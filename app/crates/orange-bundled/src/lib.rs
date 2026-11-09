@@ -18,6 +18,7 @@ mod entropy;
 mod error;
 mod float;
 mod integer;
+mod json;
 mod kernel;
 mod nominal;
 mod text;
@@ -33,6 +34,7 @@ pub use entropy::{RANDOM_U64_DEFINITION, ResolvedEntropyKernel, random_u64_defin
 pub use error::{BindingError, CatalogError, ConversionError, KernelError};
 pub use float::{FloatOperation, ResolvedFloat, float_definitions};
 pub use integer::{IntegerOperation, ResolvedInteger, integer_definitions};
+pub use json::{JsonOperation, ResolvedJson, json_definitions};
 pub use kernel::{Operation, ResolvedKernel};
 pub use nominal::{NominalOperation, ResolvedNominal, nominal_definitions};
 pub use text::{MAX_TEXT_BYTES, ResolvedText, TextOperation, TextUnit, text_definitions};
