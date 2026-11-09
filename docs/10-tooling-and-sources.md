@@ -1,8 +1,53 @@
 # Tooling, environment and research register
 
+## K02a — guest runtime probe — 2026-11-08
+
+Branch `k02a-guest-runtime` from dev `505b880`. Selected by the user: Wasmtime
+`=48.0.8` (crates.io 2026-10-29; 48.0.0 released 2026-08-20), LTS, `rust-version`
+1.95.0, license `Apache-2.0 WITH LLVM-exception`. Wasmtime's published policy
+(docs.wasmtime.dev/stability-release.html): a major release on the 20th of each
+month, every release divisible by 12 is LTS with 24 months of support, others two
+months, and supported releases keep their MSRV. Alternatives checked: 50.0.1 (latest
+normal, MSRV 1.97.0) and 51.0.0-rc.1. APIs were verified in the downloaded 48.0.8
+release source: `Config::{consume_fuel, epoch_interruption, max_wasm_stack}`,
+`Store::{set_fuel, get_fuel, limiter, set_epoch_deadline, epoch_deadline_trap}`,
+`StoreLimitsBuilder::{memory_size, instances, trap_on_grow_failure}`,
+`Engine::increment_epoch`, `component::{Component::new, Linker::instantiate,
+Instance::get_typed_func, TypedFunc::call}` (`post_return` is deprecated and a
+no-op in 48) and `Trap::{UnreachableCodeReached, OutOfFuel, Interrupt,
+StackOverflow, MemoryOutOfBounds}`.
+
+New host crate `orange-guest` (classified `core: false`, no first-party deps):
+`GuestEngine`/`GuestComponent`/`GuestInstance`, `GuestLimits` (64 MiB memory,
+10M fuel per call, 64 instances, 512 KiB wasm stack by default) and safe
+`GuestError`/`GuestTrap` classifications. Each instance has its own store and an empty
+linker. Seven tests, written in the component text format (`wat` enabled for tests
+only): typed export calls and refused missing/mistyped exports; a trap poisons only
+its own instance; fuel resets per call to identical remainders and stops an infinite
+loop; `interrupt()` from another thread stops a running loop; `memory.grow` returns
+-1 at the limit and an oversized memory cannot instantiate; unbounded recursion is
+`StackOverflow`; a component importing an ungranted function fails with `Link`.
+
+Dependency tree: Cargo.lock grows from 82 to 172 packages (Cranelift, wasmparser,
+wasm-encoder, gimli and others); every license is already allowed or has an allowed
+alternative except the two added in `deny.toml`. `cargo deny` is not installed
+locally; hosted CI runs it. Cargo.lock changes accordingly.
+
+| Command | Result |
+|---|---|
+| `cargo test -p orange-guest` | 7 passed |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass; 19 fixtures |
+| `cargo fmt --all`; `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,616 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `node --test tools/*.test.mjs`; `node tools/release.mjs check` | 17 passed; valid disabled release configuration |
+
+Limits: no host capability imports, WIT world, value codec, package-archive loading,
+hot replacement or boundary benchmarks yet. No timing or memory probe ran.
+
 ## L04d — record field update — 2026-11-08
 
-Branch `l04d-set-field`, based on dev after L04c (PR158, all nine hosted checks green). Same toolchain; no dependency
+Merged as PR159. Branch `l04d-set-field`, based on dev after L04c (PR158, all nine hosted checks green). Same toolchain; no dependency
 change. `NominalAccess::SetField` and `org.orange.collections/set-field` replace one
 record field. Two public tests check required and optional replacement, clearing
 with None, keeping a boxed present None, wrong-type and arity refusal, a non-record
@@ -1346,7 +1391,7 @@ ADR-22 defines the current foundation scope; historical research below is not a 
 |---|---|---|
 | Presentation | egui + eframe (ADR-02), Slint fallback | P-01/P-02; minimal feature graph, text/accessibility/RTL evidence |
 | Async services | Dedicated Tokio host as proposed in architecture | Exact crate/features/MSRV, shutdown/reactor contract, bounded worker bridge |
-| Hot expansion execution | Wasmtime/component-model candidate | Exact supported component interface/runtime version, fuel/epoch interruption, memory limit, host-call cancellation and boundary benchmarks |
+| Hot expansion execution | Wasmtime 48.0.8 LTS selected 2026-11-08 (K02a); was candidate | Exact supported component interface/runtime version, fuel/epoch interruption, memory limit, host-call cancellation and boundary benchmarks |
 | Definitions and persistence | Serde-family serialization candidate | Versioned schema contract, malformed input bounds, deterministic output and migration tests |
 | HTTP/TLS | Async HTTP client with explicit TLS backend | HTTP/2, proxies, certificates, streaming, cancellation, ALPN and licenses |
 | WebSocket; conditional MQTT; deferred AMQP/gRPC | Separate protocol adapters; only WebSocket is foundation baseline (ADR-22) | Protocol version, authentication/stream behavior, async runtime compatibility, bounded payloads and fixtures |
