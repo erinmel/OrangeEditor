@@ -19,14 +19,16 @@ use crate::{BindingError, CatalogError, KernelError, MathPackage};
 pub enum NominalOperation {
     MakeRecord,
     GetField,
+    SetField,
     MakeEnum,
     EnumPayload,
 }
 
 impl NominalOperation {
-    pub const ALL: [Self; 4] = [
+    pub const ALL: [Self; 5] = [
         Self::MakeRecord,
         Self::GetField,
+        Self::SetField,
         Self::MakeEnum,
         Self::EnumPayload,
     ];
@@ -35,6 +37,7 @@ impl NominalOperation {
         match self {
             Self::MakeRecord => "org.orange.collections/make-record",
             Self::GetField => "org.orange.collections/get-field",
+            Self::SetField => "org.orange.collections/set-field",
             Self::MakeEnum => "org.orange.collections/make-enum",
             Self::EnumPayload => "org.orange.collections/enum-payload",
         }
@@ -48,6 +51,7 @@ impl NominalOperation {
         match self {
             Self::MakeRecord => NominalAccess::MakeRecord,
             Self::GetField => NominalAccess::GetField,
+            Self::SetField => NominalAccess::SetField,
             Self::MakeEnum => NominalAccess::MakeEnum,
             Self::EnumPayload => NominalAccess::EnumPayload,
         }
@@ -56,7 +60,7 @@ impl NominalOperation {
     fn member(self) -> Option<&'static str> {
         match self {
             Self::MakeRecord => None,
-            Self::GetField => Some("field"),
+            Self::GetField | Self::SetField => Some("field"),
             Self::MakeEnum | Self::EnumPayload => Some("variant"),
         }
     }
@@ -166,6 +170,30 @@ impl ResolvedNominal {
                     (false, None) => Err(KernelError::InputContract),
                 }
             }
+            (NominalOperation::SetField, ValueShape::Record(record)) => {
+                check(&self.shape, &inputs[0])?;
+                let (Value::Record(value), Some((field, optional))) =
+                    (&inputs[0], record.field(member))
+                else {
+                    return Err(KernelError::InputContract);
+                };
+                let mut fields = value.fields.to_vec();
+                let slot = fields.get_mut(member).ok_or(KernelError::InputContract)?;
+                *slot = match (optional, &inputs[1]) {
+                    (false, new) => Some(new.clone()),
+                    (true, Value::None) => None,
+                    (true, Value::Some(inner)) if field.unboxed_none() => {
+                        Some(inner.as_ref().clone())
+                    }
+                    (true, new) => Some(new.clone()),
+                };
+                let updated = Value::Record(Arc::new(RecordRepr {
+                    ty: value.ty.clone(),
+                    fields: fields.into(),
+                }));
+                check(&self.shape, &updated)?;
+                Ok(updated)
+            }
             (NominalOperation::MakeEnum, ValueShape::Enum(_)) => {
                 let value = Value::Enum {
                     tag: self.member,
@@ -225,9 +253,15 @@ impl MathPackage {
                     .collect::<Vec<_>>(),
                 None,
             ),
-            NominalTarget::Field { ty, field } => {
-                (ty, vec!["record".to_owned()], Some(field.field_id.as_str()))
-            }
+            NominalTarget::Field { ty, field } => (
+                ty,
+                if operation == NominalOperation::SetField {
+                    vec!["record".to_owned(), "value".to_owned()]
+                } else {
+                    vec!["record".to_owned()]
+                },
+                Some(field.field_id.as_str()),
+            ),
             NominalTarget::Variant { ty, variant } => (
                 ty,
                 match operation {

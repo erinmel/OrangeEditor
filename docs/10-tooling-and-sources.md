@@ -1,8 +1,23 @@
 # Tooling, environment and research register
 
+## L04d — record field update — 2026-11-08
+
+Branch `l04d-set-field`, based on dev after L04c (PR158, all nine hosted checks green). Same toolchain; no dependency
+change. `NominalAccess::SetField` and `org.orange.collections/set-field` replace one
+record field. Two public tests check required and optional replacement, clearing
+with None, keeping a boxed present None, wrong-type and arity refusal, a non-record
+config refusal, and a compiled fold using the derived contract.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,609 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
 ## L04c — JSON reads — 2026-11-08
 
-Branch `l04c-json-nodes`, based on dev after L04b (PR157, all nine hosted checks
+Merged as PR158. Branch `l04c-json-nodes`, based on dev after L04b (PR157, all nine hosted checks
 green). Same local toolchain as L02b; MSRV 1.97.1 is checked by hosted CI. No
 dependency, feature or lockfile change: navigation scans validated `JsonText`
 instead of enabling serde_json's `raw_value`/`arbitrary_precision`.
