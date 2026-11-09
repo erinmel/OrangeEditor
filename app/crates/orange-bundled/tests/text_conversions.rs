@@ -330,7 +330,7 @@ fn text_bindings_require_their_fixed_options() {
     );
     assert_eq!(check("core/string-to-i64", &[]), Ok(()));
     assert_eq!(
-        check("core/string-to-json", &[]),
+        check("core/string-to-duration", &[]),
         Err(BindingError::Unavailable)
     );
 }
