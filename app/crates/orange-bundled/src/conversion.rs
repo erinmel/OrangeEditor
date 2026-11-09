@@ -1,5 +1,5 @@
-//! Executable implementations of the Core numeric converter contracts: every ordered
-//! pair of distinct i32/i64/u32/u64/f32/f64 types.
+//! Executable implementations of the Core converter contracts: every ordered pair of
+//! distinct i32/i64/u32/u64/f32/f64 types, plus the text entries in `text_conversion`.
 
 use std::sync::Arc;
 
@@ -8,6 +8,7 @@ use orange_model::catalog::RegistrySnapshot;
 use orange_model::conversion::{ConversionClass, ConverterConfig, ConverterKey, ConverterProvider};
 use orange_model::value::JsonText;
 
+use crate::text_conversion::TextConversion;
 use crate::{BindingError, ConversionError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -67,10 +68,16 @@ enum Rounding {
 }
 
 #[derive(Debug, Clone, Copy)]
-struct Conversion {
+struct Cast {
     from: Numeric,
     to: Numeric,
     rounding: Rounding,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Conversion {
+    Cast(Cast),
+    Text(TextConversion),
 }
 
 /// Result ports of one explicit conversion. Only a lossy entry supplies `loss`.
@@ -109,7 +116,13 @@ impl ResolvedConversion {
     /// Loss metadata is prebuilt at binding; evaluation performs no registry lookup,
     /// policy parsing or buffer construction, including on the lossy success path.
     pub fn evaluate(&self, input: &Value) -> Result<ConversionOutput, ConversionError> {
-        let Conversion { from, to, rounding } = self.operation;
+        let Cast { from, to, rounding } = match self.operation {
+            Conversion::Cast(cast) => cast,
+            Conversion::Text(text) => {
+                let (result, lost) = text.evaluate(input)?;
+                return Ok(self.output(result, lost));
+            }
+        };
         let (result, lost) = match (input, from) {
             (Value::F32(value), Numeric::F32) if to == Numeric::F64 => {
                 (Value::F64(widen_float(*value)), false)
@@ -129,13 +142,17 @@ impl ResolvedConversion {
             (Value::U64(value), Numeric::U64) => integer_to(to, i128::from(*value))?,
             _ => return Err(ConversionError::InputContract),
         };
-        Ok(ConversionOutput {
+        Ok(self.output(result, lost))
+    }
+
+    fn output(&self, result: Value, lost: bool) -> ConversionOutput {
+        ConversionOutput {
             result,
             loss: self
                 .loss_flags
                 .as_ref()
                 .map(|flags| flags[usize::from(lost)].clone()),
-        })
+        }
     }
 }
 
@@ -160,6 +177,35 @@ pub fn resolve_core_conversion(
     {
         return Err(BindingError::Unavailable);
     }
+    if config.options.len() != definition.policies.len()
+        || definition.policies.iter().any(|policy| {
+            config
+                .options
+                .get(&policy.name)
+                .is_none_or(|value| !policy.choices.contains(value))
+        })
+    {
+        return Err(BindingError::InvalidConfig);
+    }
+    let loss = |lossy: bool| -> Result<_, BindingError> {
+        Ok(if lossy {
+            Some([loss_flag(false)?, loss_flag(true)?])
+        } else {
+            None
+        })
+    };
+    if let Some((text, lossy)) =
+        crate::text_conversion::bind(config.entry.id.as_str(), definition, |name| {
+            config.options.get(name).cloned()
+        })?
+    {
+        return Ok(ResolvedConversion {
+            snapshot,
+            entry: config.entry.clone(),
+            operation: Conversion::Text(text),
+            loss_flags: loss(lossy)?,
+        });
+    }
     let (Some(from), Some(to)) = (
         Numeric::parse(definition.from.as_str()),
         Numeric::parse(definition.to.as_str()),
@@ -171,16 +217,6 @@ pub fn resolve_core_conversion(
         || definition.class != expected_class(from, to)
     {
         return Err(BindingError::Unavailable);
-    }
-    if config.options.len() != definition.policies.len()
-        || definition.policies.iter().any(|policy| {
-            config
-                .options
-                .get(&policy.name)
-                .is_none_or(|value| !policy.choices.contains(value))
-        })
-    {
-        return Err(BindingError::InvalidConfig);
     }
     // The executable contract is fixed per pair; registry metadata cannot widen it.
     let option = |name: &str| config.options.get(name).map(String::as_str);
@@ -207,15 +243,11 @@ pub fn resolve_core_conversion(
     if !expected {
         return Err(BindingError::InvalidConfig);
     }
-    let loss_flags = if definition.class == ConversionClass::Lossy {
-        Some([loss_flag(false)?, loss_flag(true)?])
-    } else {
-        None
-    };
+    let loss_flags = loss(definition.class == ConversionClass::Lossy)?;
     Ok(ResolvedConversion {
         snapshot,
         entry: config.entry.clone(),
-        operation: Conversion { from, to, rounding },
+        operation: Conversion::Cast(Cast { from, to, rounding }),
         loss_flags,
     })
 }
