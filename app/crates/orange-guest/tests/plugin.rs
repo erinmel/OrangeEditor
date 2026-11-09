@@ -149,6 +149,52 @@ fn imports_are_linked_only_when_granted_and_logging_is_bounded() {
 }
 
 #[test]
+fn decoded_outputs_share_one_budget_and_a_refusal_keeps_the_instance_usable() {
+    let list_type = ty("core/list@1<core/string@1>");
+    let list = Value::List(Arc::new(ListRepr::Values(
+        vec![Value::Str(Arc::new(String::new())); 32].into_boxed_slice(),
+    )));
+    let inputs = vec![(list_type.clone(), list.clone()); 2];
+    let outputs = [list_type.clone(), list_type];
+    let types = types();
+    // Both encoded literals fit, but two decoded lists charge 2*(16+32*16).
+    let mut small = plugin(
+        GuestLimits {
+            transfer_bytes: 600,
+            ..Default::default()
+        },
+        LOG,
+    )
+    .unwrap();
+    assert_eq!(
+        small.evaluate(&types, "org.example.probe/echo-logged", &inputs, &outputs),
+        Err(GuestError::OutputContract)
+    );
+    assert!(!small.is_poisoned());
+    assert_eq!(
+        small.evaluate(
+            &types,
+            "org.example.probe/add",
+            &i64s(&[20, 22]),
+            &[ty("core/i64@1")]
+        ),
+        Ok(Ok(vec![Value::I64(42)]))
+    );
+    let mut exact = plugin(
+        GuestLimits {
+            transfer_bytes: 2 * (16 + 32 * 16),
+            ..Default::default()
+        },
+        LOG,
+    )
+    .unwrap();
+    assert_eq!(
+        exact.evaluate(&types, "org.example.probe/echo-logged", &inputs, &outputs),
+        Ok(Ok(vec![list.clone(), list]))
+    );
+}
+
+#[test]
 fn outputs_outside_the_contract_are_refused() {
     let types = types();
     let mut probe = plugin(GuestLimits::default(), LOG).unwrap();

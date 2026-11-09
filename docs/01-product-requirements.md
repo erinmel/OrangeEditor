@@ -501,3 +501,10 @@ lengths and payloads and refuses complete corruption without truncating later
 identity/revocation history. Physically interrupted tail writes still recover a
 complete checkpoint prefix (04; ADR-03/07/21). Crash/power-loss qualification and
 executable replacement/drain remain open.
+
+Guest resource trace (2026-11-09; FR-35/38, NFR-05/06/08): raw and plugin stores
+enforce aggregate memory/table totals, finite counts and explicit canonical transfer
+admission. Plugin decoding shares a total value budget across outputs and includes
+absent record slots/identity text before allocating container storage. Verified
+refusals and live-callback cancellation tests cover the selected policy; process RSS,
+wall-time latency, service imports and complete package authority remain open (04).

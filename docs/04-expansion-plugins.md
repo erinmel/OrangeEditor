@@ -138,7 +138,7 @@ linked: `api-version() -> (u16, u16)`, currently (1, 0)) and `log` (`write(messa
 linked only with the `log` grant), and exports `nodes.evaluate(definition, inputs) ->
 result<list<value>, node-error>`. A `value` is one Orange literal in the
 `orange.value.v1` codec: the JSON text of `{"type", "value"}` (or `"bits"` for floats),
-so every graph type, aggregates included, crosses with exact float bits, map order and
+so literal-capable types, aggregates included, cross with exact float bits, map order and
 None. `node-error` carries a namespaced `code` and `message-key` only. The host
 (`orange_guest::GuestPlugin`) encodes inputs with their declared types, checks the
 output count, each output's exact type and both error identifiers, and reports any
@@ -199,3 +199,28 @@ later call. Epoch cadence and worker ownership are host policy; there is no
 wall-time latency qualification. Fuel is still charged independently. Epochs cannot
 preempt a blocked host import. Service-import cancellation, C11 lease integration,
 manifest authority enforcement and package revocation remain separate gates.
+
+Guest resource correction (2026-11-09; review F2/F3/F4/F7, FR-35/38, NFR-05/06/08):
+both instance constructors use one store-owned limiter. `memory_bytes` is the total
+of initial linear memories and successful growth; `table_elements` is the total
+initial/grown table entries. Denial reserves no capacity; allocation failure refunds
+its reservation. Defaults are64MiB memory,65,536 table elements,64 memories/tables/
+core instances,10million execution fuel and512KiB Wasm stack. These are adjustable
+unqualified policy values, not process RSS bounds. The selected no-threads Wasmtime
+feature profile rejects shared memory, whose growth bypasses the synchronous limiter.
+
+`GuestLimits::transfer_bytes` defaults to1MiB of Wasmtime hostcall fuel for each
+guest-to-host import or result. Canonical list/string storage is admitted before
+copying, independently of execution fuel and linear memory. Exhaustion traps and
+poisons that instance under the existing redacted `GuestTrap::Other` mapping.
+Wasmtime48.0.8 already defaults to128MiB per transfer; the review's original claim
+of an unbounded copy was incorrect. OrangeEditor now selects an explicit limit.
+This is nominal runtime accounting, including encoded text and list descriptors,
+not an exact allocator/transcoding peak or an aggregate of all imports in a call.
+Retained logs remain64entries of1KiB, separately. Decoded plugin outputs also share
+one `transfer_bytes` nominal value budget; decoding checks minimum container slots
+before reserve and includes record identities and absent field slots. Decoded-output
+refusal reports `OutputContract` without poisoning or publication. Added Rust limit
+fields are unfrozen API changes; WIT and saved formats stay unchanged. Cancellation
+verification uses observed live callbacks and host ticks, replacing the redundant
+sleep-based interruption test.

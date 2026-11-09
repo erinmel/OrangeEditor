@@ -1,13 +1,14 @@
 //! The `orange:expansion/plugin@1.0.0` world (sdk/wit): grant-scoped host imports and
 //! node evaluation with values in the `orange.value.v1` literal codec (K02b).
 
+use crate::limits::InstanceLimits;
 use orange_model::Value;
 use orange_model::document::literal::Literal;
 use orange_model::id::TypeExpr;
 use orange_model::types::TypeRegistry;
 use orange_model::value::literal_codec;
+use wasmtime::Store;
 use wasmtime::component::{HasSelf, Linker};
-use wasmtime::{Store, StoreLimitsBuilder};
 
 use crate::{GuestCancellation, GuestComponent, GuestError, GuestTrap, classify};
 
@@ -33,7 +34,7 @@ pub struct Grants {
 }
 
 struct PluginState {
-    limits: wasmtime::StoreLimits,
+    limits: InstanceLimits,
     log: Vec<String>,
 }
 
@@ -68,6 +69,7 @@ pub struct GuestPlugin {
     store: Store<PluginState>,
     bindings: Plugin,
     fuel: u64,
+    output_bytes: usize,
     poisoned: bool,
     cancellation: GuestCancellation,
 }
@@ -98,15 +100,12 @@ impl GuestPlugin {
         let mut store = Store::new(
             &engine.engine,
             PluginState {
-                limits: StoreLimitsBuilder::new()
-                    .memory_size(limits.memory_bytes)
-                    .instances(limits.instances)
-                    .trap_on_grow_failure(false)
-                    .build(),
+                limits: InstanceLimits::new(limits),
                 log: Vec::new(),
             },
         );
         store.limiter(|state| &mut state.limits);
+        store.set_hostcall_fuel(limits.transfer_bytes);
         let cancellation = GuestCancellation::install(engine, &mut store)?;
         store
             .set_fuel(limits.fuel_per_call)
@@ -129,6 +128,7 @@ impl GuestPlugin {
             store,
             bindings,
             fuel: limits.fuel_per_call,
+            output_bytes: limits.transfer_bytes,
             poisoned: false,
             cancellation,
         })
@@ -187,16 +187,21 @@ impl GuestPlugin {
                     return Err(GuestError::OutputContract);
                 }
                 let mut decoded = Vec::with_capacity(values.len());
+                let mut remaining = self.output_bytes;
                 for (text, ty) in values.iter().zip(outputs) {
                     let literal: Literal =
                         serde_json::from_str(text).map_err(|_| GuestError::OutputContract)?;
                     if &literal.ty != ty {
                         return Err(GuestError::OutputContract);
                     }
-                    decoded.push(
-                        literal_codec::decode(&literal, types)
-                            .map_err(|_| GuestError::OutputContract)?,
-                    );
+                    let value = literal_codec::decode_with_budget(&literal, types, remaining)
+                        .map_err(|_| GuestError::OutputContract)?;
+                    let charge = orange_model::value::shape::ValueShape::of_in(ty, types)
+                        .ok_or(GuestError::OutputContract)?
+                        .checked_charge(&value, remaining)
+                        .map_err(|_| GuestError::OutputContract)?;
+                    remaining -= charge;
+                    decoded.push(value);
                 }
                 Ok(Ok(decoded))
             }

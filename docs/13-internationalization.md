@@ -323,3 +323,9 @@ supplied bytes that differ from their verified entry. Paths remain `Rejected` te
 the host owns authorized display. Loader `GuestLoadError::Integrity` is a static,
 redacted classification. Journal checksum/size refusals contain no payload, path or
 digest contents and use the existing transaction journal presentation contract.
+
+Guest admission correction (2026-11-09): canonical transfer exhaustion keeps the
+existing `core/guest-trap` envelope (`GuestTrap::Other`) and terminal poisoning;
+decoded-output admission keeps `core/guest-output-contract` without poisoning.
+Neither publishes partial values or guest failure text. Memory/table policy, codec
+budgets and cancellation readiness are locale-independent and add no WIT/text keys.
