@@ -2,7 +2,7 @@
 
 ## L04a — collection nodes — 2026-11-08
 
-Branch `l04a-collections`, stacked on L03b (PR155). Same local toolchain as L02b;
+Branch `l04a-collections`, based on dev after L03b (PR155, all nine hosted checks green). Same local toolchain as L02b;
 MSRV 1.97.1 is checked by hosted CI. Uses the model's `ValueShape`
 (`of_in`, `checked_charge`, `equal_values`, `unboxed_none`), `ListBuilder`,
 `ListRepr::concat` and `MapRepr::new`. No dependency, feature or lockfile change.
@@ -29,7 +29,7 @@ and JSON nodes are not in this slice. No timing or memory probe ran.
 
 ## L03b — text nodes — 2026-11-08
 
-Branch `l03b-text-nodes`, based on dev after L03a (PR154, all nine hosted checks green). Same local toolchain as L02b;
+Merged as PR155. Branch `l03b-text-nodes`, based on dev after L03a (PR154, all nine hosted checks green). Same local toolchain as L02b;
 MSRV 1.97.1 is checked by hosted CI. Uses std `str` search/split/replace/trim,
 `to_uppercase`/`to_lowercase` and `char_indices`; Unicode data is the toolchain's
 `char::UNICODE_VERSION`. No dependency, feature or lockfile change.
