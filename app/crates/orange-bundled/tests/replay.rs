@@ -20,8 +20,8 @@ use std::sync::{
 };
 const EVENT: &str = "40000000-0000-4000-8000-000000000001";
 const FAULT: KernelFault = KernelFault {
-    code: "acme.effects/Refused",
-    message_key: "acme.effects/refused",
+    code: orange_compiler::FaultText::Static("acme.effects/Refused"),
+    message_key: orange_compiler::FaultText::Static("acme.effects/refused"),
     message: "The operation was refused.",
 };
 #[derive(Default)]
@@ -283,6 +283,63 @@ fn async_completion_refusal_and_complete_once_order_replay_without_a_host_execut
     assert_eq!(replay.inspect().trace(), original.trace());
     assert!(request.lease.is_finished());
     assert_eq!(adapter.count.load(Ordering::Relaxed), 0);
+}
+
+#[test]
+fn shared_fault_text_is_budgeted_replayed_and_released_with_its_last_owner() {
+    for tight in [false, true] {
+        let adapter = adapter(false);
+        let (doc, snapshot, plan) = fixture(&adapter, |_| {});
+        let archive = Arc::new(Archive::default());
+        let mut limits = ReplayOptions {
+            max_entries: 128,
+            max_bytes: 1024 * 1024,
+        };
+        let probe = start(&doc, &snapshot, plan.clone(), archive.clone(), limits);
+        let fixed = probe.stats().reserved_bytes;
+        drop(probe);
+        if tight {
+            limits.max_bytes = fixed;
+        }
+        let mut run = start(&doc, &snapshot, plan, archive.clone(), limits);
+        idle(&mut run, 1);
+        let request = run.take_effect().unwrap().unwrap();
+        let code: Arc<str> = Arc::from("acme.effects/OwnedFault");
+        let weak = Arc::downgrade(&code);
+        let fault = KernelFault {
+            code: orange_compiler::FaultText::Shared(code),
+            message_key: String::from("acme.effects/owned-fault").into(),
+            message: "The operation failed.",
+        };
+        let text_bytes = fault.code.retained_bytes() + fault.message_key.retained_bytes();
+        let result = run.complete_effect(request.id, Err(fault));
+        if tight {
+            assert_eq!(result, Err(ReplayError::Full));
+            assert!(run.stats().incomplete);
+            assert_eq!(run.stats().reserved_bytes, fixed);
+            assert_eq!(run.finish().unwrap_err(), ReplayError::Incomplete);
+        } else {
+            result.unwrap();
+            assert_eq!(run.stats().reserved_bytes, fixed + text_bytes);
+            idle(&mut run, 1);
+            run.request_stop(StopMode::Immediate).unwrap();
+            idle(&mut run, 1);
+            let (original, log) = run.finish().unwrap();
+            let playback = log.replay(&doc, &snapshot, archive).unwrap();
+            assert_eq!(playback.inspect().trace(), original.trace());
+            assert!(original.trace().iter().any(|entry| {
+                entry
+                    .fault
+                    .as_ref()
+                    .is_some_and(|fault| fault.fault.code == "acme.effects/OwnedFault")
+            }));
+            drop(original);
+            drop(playback);
+            assert!(weak.upgrade().is_some(), "the log owns its saved fault");
+            drop(log);
+        }
+        assert!(weak.upgrade().is_none());
+    }
 }
 #[test]
 fn ic1_manual_timer_emit_await_watch_and_effect_replay_have_known_answers() {

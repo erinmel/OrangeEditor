@@ -1,5 +1,12 @@
 # Architecture and ownership
 
+Fault ownership (2026-11-09; ADR-03/16/21): public core `KernelFault` identifiers
+borrow built-in text or share package-owned text, while fallback messages remain
+static. Plans, previews, runtime slots, streams and replay journals retain and
+account for shared text independently of package instances. Final-owner retirement
+frees it; no global identifier table can change another package's error identity.
+The core owns this text representation without depending on the guest loader.
+
 `orange-model`, `orange-compiler` (checked plans for the supported control and data subset), `orange-bundled` (native scalar, comparison and conversion kernels), `orange-runtime` (checked-plan execution: data epochs, entropy, local/run state, calls, zones, events and time) and `orange-packages` (manifests, lifecycle state and registry transactions) are implemented Cargo packages; the remaining boundaries below are proposed. Separate a crate when dependency/lifetime/testing boundaries justify it; internal modules may start together to avoid unnecessary build overhead. Dependency arrows mean compile-time use. The project uses no game engine (ADR-02): the selected editor UI is egui, hosted by eframe in the desktop app, and core crates have no UI, window or engine dependency. Downstream products add engines, scenes and other domains in their own crates (ADR-21).
 
 Physical source placement follows [15](15-monorepo-layout.md): application libraries under `app/crates`, desktop/CLI under `app/apps`, installable expansions under `plugins`, and exported public SDK artifacts under `sdk`. These folders share one repository while preserving the dependency/runtime boundaries below. No Cargo members are created by the source-layout decision.
@@ -45,7 +52,7 @@ The host owns an input-trigger service and audio capture/playback services. Keyb
 | orange-runtime | Run/activation state, scheduler, variables, continuations, child task/resource ownership, inspection stream | UI or frame dependence |
 | orange-services | File, connection, vault, HTTP/WebSocket, input-trigger and audio playback/capture/analysis services; platform adapter modules | Graph edits or arbitrary plugin UI |
 | orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
-| orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a) | Core-crate dependency, precompiled native loading, ungranted imports |
+| orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c) | Core-crate dependency, precompiled native loading, ungranted imports |
 | orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Specialized integration request logic |
 | orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |
 | orange-editor-ui | egui editor: document commands/history, workspace/panels, view model, accessible interaction model, diagnostics projection | Engine mutation during drawing |

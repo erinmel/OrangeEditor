@@ -674,8 +674,8 @@ fn schedule(
                 None => failure(
                     node,
                     KernelFault {
-                        code: "core/OutOfRange",
-                        message_key: "core/wait-out-of-range",
+                        code: orange_compiler::FaultText::Static("core/OutOfRange"),
+                        message_key: orange_compiler::FaultText::Static("core/wait-out-of-range"),
                         message: "Wait duration is outside the clock range.",
                     },
                 ),
@@ -708,8 +708,10 @@ fn schedule(
                 None => failure(
                     node,
                     KernelFault {
-                        code: "core/OutOfRange",
-                        message_key: "core/await-event-out-of-range",
+                        code: orange_compiler::FaultText::Static("core/OutOfRange"),
+                        message_key: orange_compiler::FaultText::Static(
+                            "core/await-event-out-of-range",
+                        ),
                         message: "Await Event timeout is outside the clock range.",
                     },
                 ),
@@ -1099,7 +1101,7 @@ impl Run {
             event_template,
             seed,
             regions,
-            trace: Trace::default(),
+            trace: Trace::new(budget.clone()),
             operations: 0,
             versions: vec![0; variable_count],
             budget,
@@ -2079,8 +2081,8 @@ impl Run {
         let fault = ConstantFault {
             source: node.node(),
             fault: KernelFault {
-                code: "core/Cancelled",
-                message_key: "core/cleanup-unsafe-node",
+                code: orange_compiler::FaultText::Static("core/Cancelled"),
+                message_key: orange_compiler::FaultText::Static("core/cleanup-unsafe-node"),
                 message: "This operation is not permitted during cancellation cleanup.",
             },
         };
@@ -2292,7 +2294,7 @@ impl Run {
         for &i in plan.error_targets(owner) {
             shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] = Some(
                 FoldedValue::Value(Value::Err(Arc::new(orange_model::value::NodeError {
-                    code: fault.fault.code.into(),
+                    code: fault.fault.code.to_string(),
                     node: Some(fault.source),
                 }))),
             );

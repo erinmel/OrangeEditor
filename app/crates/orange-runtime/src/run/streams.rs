@@ -441,7 +441,7 @@ impl Run {
             .filter(|p| p.sequence == id.sequence && p.result.is_none())
             .ok_or(StreamError::Stale)?;
         let _ = pending;
-        let bytes = match outcome {
+        let bytes = match &outcome {
             Ok(Some(value)) => {
                 resource
                     .shape
@@ -453,7 +453,7 @@ impl Run {
                         _ => StreamError::Limit,
                     })?
             }
-            Err(fault) if fault.is_valid() => std::mem::size_of::<KernelFault>(),
+            Err(fault) if fault.is_valid() => fault.retained_bytes(),
             Err(_) => return Err(StreamError::Contract),
             Ok(None) => 0,
         };

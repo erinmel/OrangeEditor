@@ -8,18 +8,18 @@ use std::collections::BTreeSet;
 use ticks::{Tick, TickCursor};
 
 const LIMIT: KernelFault = KernelFault {
-    code: "core/LimitExceeded",
-    message_key: "core/event-limit-exceeded",
+    code: orange_compiler::FaultText::Static("core/LimitExceeded"),
+    message_key: orange_compiler::FaultText::Static("core/event-limit-exceeded"),
     message: "The event exceeds a run delivery limit.",
 };
 const STOPPING: KernelFault = KernelFault {
-    code: "core/RunStopping",
-    message_key: "core/event-run-stopping",
+    code: orange_compiler::FaultText::Static("core/RunStopping"),
+    message_key: orange_compiler::FaultText::Static("core/event-run-stopping"),
     message: "The run is stopping and cannot accept an event.",
 };
 const DEPTH: KernelFault = KernelFault {
-    code: "core/RunawayEventChain",
-    message_key: "core/event-cause-depth",
+    code: orange_compiler::FaultText::Static("core/RunawayEventChain"),
+    message_key: orange_compiler::FaultText::Static("core/event-cause-depth"),
     message: "The event causal depth limit was reached.",
 };
 
@@ -724,7 +724,7 @@ impl Run {
         );
         let metadata = match accepted {
             Ok(metadata) => metadata,
-            Err(LIMIT) => {
+            Err(fault) if fault == LIMIT => {
                 self.events.stats.overflows = self.events.stats.overflows.saturating_add(1);
                 return Err(IngressError::DeliveryLimit);
             }
@@ -786,7 +786,7 @@ impl Run {
         );
         let metadata = match accepted {
             Ok(metadata) => metadata,
-            Err(LIMIT) => {
+            Err(fault) if fault == LIMIT => {
                 self.events.stats.overflows = self.events.stats.overflows.saturating_add(1);
                 return Err(IngressError::DeliveryLimit);
             }

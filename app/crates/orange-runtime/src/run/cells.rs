@@ -363,8 +363,12 @@ impl Cells<'_> {
                             None => FoldedValue::Fault(ConstantFault {
                                 source: plan.states()[*index].id(),
                                 fault: KernelFault {
-                                    code: "core/UninitializedRegister",
-                                    message_key: "core/uninitialized-register",
+                                    code: orange_compiler::FaultText::Static(
+                                        "core/UninitializedRegister",
+                                    ),
+                                    message_key: orange_compiler::FaultText::Static(
+                                        "core/uninitialized-register",
+                                    ),
                                     message: "The register has not been initialized.",
                                 },
                             }),
@@ -392,8 +396,12 @@ impl Cells<'_> {
                                 source: plan.data().nodes()[plan.data().host_inputs()[i].index()]
                                     .node(),
                                 fault: KernelFault {
-                                    code: "core/UninitializedVariable",
-                                    message_key: "core/uninitialized-variable",
+                                    code: orange_compiler::FaultText::Static(
+                                        "core/UninitializedVariable",
+                                    ),
+                                    message_key: orange_compiler::FaultText::Static(
+                                        "core/uninitialized-variable",
+                                    ),
                                     message: "The variable has not been initialized.",
                                 },
                             }),
@@ -405,8 +413,10 @@ impl Cells<'_> {
                             source: plan.data().nodes()[plan.data().host_inputs()[i].index()]
                                 .node(),
                             fault: KernelFault {
-                                code: "core/OutOfRange",
-                                message_key: "core/clock-out-of-range",
+                                code: orange_compiler::FaultText::Static("core/OutOfRange"),
+                                message_key: orange_compiler::FaultText::Static(
+                                    "core/clock-out-of-range",
+                                ),
                                 message: "The run clock is beyond the duration range.",
                             },
                         }),

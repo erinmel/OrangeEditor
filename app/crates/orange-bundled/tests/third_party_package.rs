@@ -191,8 +191,8 @@ struct AcmeKernel {
 impl PureKernel for AcmeKernel {
     fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
         const OVERFLOW: KernelFault = KernelFault {
-            code: "core/Overflow",
-            message_key: "acme.math/overflow",
+            code: orange_compiler::FaultText::Static("core/Overflow"),
+            message_key: orange_compiler::FaultText::Static("acme.math/overflow"),
             message: "The result does not fit.",
         };
         let result = match (self.triple, inputs) {
@@ -200,8 +200,8 @@ impl PureKernel for AcmeKernel {
             (false, [Value::I64(a), Value::I64(b)]) => a.checked_add(*b),
             _ => {
                 return Err(KernelFault {
-                    code: "core/InternalFault",
-                    message_key: "acme.math/input-contract",
+                    code: orange_compiler::FaultText::Static("core/InternalFault"),
+                    message_key: orange_compiler::FaultText::Static("acme.math/input-contract"),
                     message: "Kernel inputs violate the resolved contract.",
                 });
             }

@@ -10,6 +10,54 @@ use std::sync::{
     atomic::{AtomicUsize, Ordering},
 };
 const ITEM: &str = "core/u64@1";
+
+#[test]
+fn shared_stream_failure_text_is_charged_and_freed_after_consumption() {
+    for tight in [false, true] {
+        let mut run = run(RunOptions::default());
+        let push = run
+            .open_push_stream(
+                &ITEM.parse().unwrap(),
+                StreamBufferOptions {
+                    capacity: 1,
+                    max_bytes: if tight { 1 } else { 1024 },
+                    overflow: StreamOverflow::Backpressure,
+                },
+            )
+            .unwrap();
+        let mut consumer = run.claim_stream(push.stream).unwrap();
+        let code: Arc<str> = Arc::from("acme.stream/Failed");
+        let weak = Arc::downgrade(&code);
+        let fault = KernelFault {
+            code: orange_compiler::FaultText::Shared(code),
+            message_key: String::from("acme.stream/failed").into(),
+            message: "The producer failed.",
+        };
+        let bytes = fault.code.retained_bytes() + fault.message_key.retained_bytes();
+        run.fail_push_stream(&push.source, fault).unwrap();
+        assert_eq!(
+            run.stream_bridge_stats(push.source.bridge())
+                .unwrap()
+                .staged_bytes,
+            if tight { 0 } else { bytes }
+        );
+        let StreamRead::Failed(fault) = run.next_stream(&mut consumer).unwrap() else {
+            panic!("terminal fault must reach the consumer")
+        };
+        assert_eq!(
+            fault.code,
+            if tight {
+                "core/LimitExceeded"
+            } else {
+                "acme.stream/Failed"
+            }
+        );
+        run.close_stream(&mut consumer).unwrap();
+        assert_eq!(run.retention().reserved_bytes, 0);
+        drop(fault);
+        assert!(weak.upgrade().is_none());
+    }
+}
 fn run(options: RunOptions) -> Run {
     let (_, _, mut run) = crate::effects::setup(true, options);
     idle(&mut run);

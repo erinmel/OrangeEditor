@@ -40,8 +40,8 @@ impl EntropyKernel for FixtureKernel {
         self.calls.fetch_add(1, Ordering::Relaxed);
         if self.fault {
             return Err(KernelFault {
-                code: "core/Domain",
-                message_key: "core/test-domain",
+                code: orange_compiler::FaultText::Static("core/Domain"),
+                message_key: orange_compiler::FaultText::Static("core/test-domain"),
                 message: "The operation failed.",
             });
         }

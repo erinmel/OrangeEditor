@@ -25,7 +25,7 @@ pub struct ControlReference<'a> {
     pub variables: BTreeMap<VariableId, Option<Value>>,
     produced: BTreeMap<(NodeId, PortKey), Value>,
     pub observations: Vec<(NodeId, &'static str)>,
-    pub faults: Vec<(NodeId, NodeId, &'static str)>,
+    pub faults: Vec<(NodeId, NodeId, String)>,
     pub now: u64,
     steps: usize,
 }
@@ -115,7 +115,7 @@ impl<'a> ControlReference<'a> {
             let id: VariableId = n.config["variable"].as_str().unwrap().parse().unwrap();
             let value = self.variables[&id].clone().ok_or(Fault {
                 source: n.id,
-                code: "core/UninitializedVariable",
+                code: "core/UninitializedVariable".into(),
             });
             self.data.supply(n.id, "value".parse().unwrap(), value);
         }
@@ -137,11 +137,11 @@ impl<'a> ControlReference<'a> {
     }
     fn failed(&mut self, node: NodeId, fault: Fault) -> Option<NodeId> {
         self.observations.push((node, "failed"));
-        self.faults.push((node, fault.source, fault.code));
+        self.faults.push((node, fault.source, fault.code.clone()));
         self.produced.insert(
             (node, "error".parse().unwrap()),
             Value::Err(Arc::new(orange_model::value::NodeError {
-                code: fault.code.into(),
+                code: fault.code,
                 node: Some(fault.source),
             })),
         );
@@ -203,7 +203,7 @@ impl<'a> ControlReference<'a> {
                                 id,
                                 Fault {
                                     source: id,
-                                    code: "core/OutOfRange",
+                                    code: "core/OutOfRange".into(),
                                 },
                             );
                             if next.is_none() {
@@ -243,7 +243,7 @@ impl<'a> ControlReference<'a> {
                             Ok(Value::Bool(true)) if iterations >= maximum => {
                                 break Some(Fault {
                                     source: id,
-                                    code: "core/LoopBudgetExceeded",
+                                    code: "core/LoopBudgetExceeded".into(),
                                 });
                             }
                             Ok(Value::Bool(true)) => {}
@@ -279,7 +279,7 @@ impl<'a> ControlReference<'a> {
                             id,
                             Fault {
                                 source: id,
-                                code: "core/OutOfRange",
+                                code: "core/OutOfRange".into(),
                             },
                         );
                         if next.is_none() {

@@ -1,7 +1,7 @@
 use super::*;
 const CONTRACT: KernelFault = KernelFault {
-    code: "core/InternalFault",
-    message_key: "core/stream-contract",
+    code: orange_compiler::FaultText::Static("core/InternalFault"),
+    message_key: orange_compiler::FaultText::Static("core/stream-contract"),
     message: "The stream item violates its checked type.",
 };
 impl Run {
@@ -87,14 +87,14 @@ impl Run {
                 branch.waiting = None;
                 return Ok(Ok(StreamStep::Item(value)));
             }
-            match hub.terminal {
+            match &hub.terminal {
                 Some(Ok(())) => {
                     branch.waiting = None;
                     Ok(Ok(StreamStep::End))
                 }
                 Some(Err(fault)) => {
                     branch.waiting = None;
-                    Ok(Err(fault))
+                    Ok(Err(fault.clone()))
                 }
                 None => Ok(Ok(StreamStep::Pending)),
             }
@@ -104,14 +104,31 @@ impl Run {
         self.reconcile_stream_bridges();
         result
     }
-    /// Core terminal failures use the existing pending enum and safe static fault
-    /// envelope without a new payload reservation, so revocation can progress at quota.
+    /// Static terminal failures can still progress at quota. Shared identifiers
+    /// require retention; exhausted admission reports a static limit fault.
     fn finish_bridge_waiter(
         &mut self,
         id: StreamNextId,
         fault: KernelFault,
     ) -> Result<(), StreamError> {
+        let limit = self.options.limits.max_stream_item_bytes;
         let resource = self.stream_resource(id.handle)?;
+        if !resource
+            .pending
+            .as_ref()
+            .is_some_and(|p| p.sequence == id.sequence && p.result.is_none())
+        {
+            return Err(StreamError::Stale);
+        }
+        let bytes = fault
+            .code
+            .retained_bytes()
+            .saturating_add(fault.message_key.retained_bytes());
+        let fault = if bytes <= limit && resource.retained.try_set(bytes) {
+            fault
+        } else {
+            LIMIT
+        };
         let pending = resource
             .pending
             .as_mut()
@@ -142,7 +159,7 @@ impl Run {
             let outcome = if let Some(value) = branch.pop() {
                 Some(Ok(Some(value)))
             } else {
-                hub.terminal.map(|t| t.map(|()| None))
+                hub.terminal.clone().map(|t| t.map(|()| None))
             };
             if let Some(outcome) = outcome {
                 branch.waiting = None;

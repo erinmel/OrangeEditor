@@ -155,12 +155,22 @@ impl Hub {
         }
     }
     fn fail(&mut self, fault: KernelFault) {
-        self.terminal = Some(Err(fault));
         self.staged = None;
         let _ = self.retained.try_set(0);
         for branch in &mut self.branches {
             branch.discard();
         }
+        let bytes = fault
+            .code
+            .retained_bytes()
+            .saturating_add(fault.message_key.retained_bytes());
+        self.terminal = Some(Err(
+            if bytes <= self.options.max_bytes && self.retained.try_set(bytes) {
+                fault
+            } else {
+                LIMIT
+            },
+        ));
     }
     fn blocked(&self) -> bool {
         self.options.overflow == StreamOverflow::Backpressure
@@ -233,18 +243,18 @@ impl Bridges {
     }
 }
 const OVERFLOW: KernelFault = KernelFault {
-    code: "core/QueueOverflow",
-    message_key: "core/stream-queue-overflow",
+    code: orange_compiler::FaultText::Static("core/QueueOverflow"),
+    message_key: orange_compiler::FaultText::Static("core/stream-queue-overflow"),
     message: "The stream queue is full.",
 };
 const LIMIT: KernelFault = KernelFault {
-    code: "core/LimitExceeded",
-    message_key: "core/stream-limit",
+    code: orange_compiler::FaultText::Static("core/LimitExceeded"),
+    message_key: orange_compiler::FaultText::Static("core/stream-limit"),
     message: "The stream exceeds a configured bound.",
 };
 const REVOKED: KernelFault = KernelFault {
-    code: "core/StaleHandle",
-    message_key: "core/stream-stale",
+    code: orange_compiler::FaultText::Static("core/StaleHandle"),
+    message_key: orange_compiler::FaultText::Static("core/stream-stale"),
     message: "The stream is closed or its demand is stale.",
 };
 

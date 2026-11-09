@@ -54,7 +54,7 @@ source freshness, cache identity, reset reasons and reuse counters are semantic
 metadata independent of locale. No new catalogue, argument or UI-language change.
 
 C05 replay boundary messages (2026-11-07): fieldless `ReplayError` uses
-`core/replay-full` ("The replay journal is full; the operation was not started."),
+`core/replay-full` ("The replay journal exceeds its configured storage bound."),
 `core/replay-unsupported` ("This plan or option is outside the supported replay
 profile."), `core/replay-incomplete` ("The recording is incomplete or was
 interrupted."), `core/replay-diverged` ("Replay diverged from its recorded command
@@ -215,7 +215,7 @@ Labels may wrap or ellipsize with accessible full text. Required controls, error
 
 Primary sources read 2026-10-20: [BCP 47 language tags, RFC 5646](https://www.rfc-editor.org/rfc/rfc5646), [lookup, RFC 4647 §3.4](https://www.rfc-editor.org/rfc/rfc4647#section-3.4), [Fluent variables](https://projectfluent.org/fluent/guide/variables.html) and [selectors](https://projectfluent.org/fluent/guide/selectors.html), [Unicode bidi algorithm](https://www.unicode.org/reports/tr9/) and [LDML numbers/plurals](https://www.unicode.org/reports/tr35/tr35-numbers.html). These support language tags, interpolation/plural design and text-direction requirements. They establish neither UI toolkit capability nor Rust dependency compatibility. Exact parser/data pins and platform demonstrations remain future evidence; all budgets and fixtures above are proposed.
 
-E1a compiler messages: CompileError exposes core/compile-* message keys with typed node/port IDs and static safe fallbacks. ConstantFault carries a bounded static namespaced code/key/fallback from trusted code, plus original producer NodeId. W-CONST-ERROR uses the shared Diagnostic envelope with host origin, core/graph-const-error and no raw value/config arguments. Compiler callback envelopes are checked for identifier/message bounds and control characters. Translation stays host-owned; neither locale nor translated text participates in lowering, provider selection or fault order.
+E1a compiler messages: CompileError exposes core/compile-* message keys with typed node/port IDs and static safe fallbacks. ConstantFault carries bounded namespaced static/shared identifiers and a static safe fallback, plus original producer NodeId. W-CONST-ERROR uses the shared Diagnostic envelope with host origin, core/graph-const-error and no raw value/config arguments. Compiler callback envelopes are checked for identifier/message bounds and control characters. Translation stays host-owned; neither locale nor translated text participates in lowering, provider selection or fault order.
 
 E2b evaluation entry/access errors expose core/evaluate-stale-document, core/evaluate-stale-registry, core/evaluate-resource-limit and core/evaluate-cancelled message keys and static safe fallbacks. They contain no graph values, configuration text or credentials. A graph's ConstantFault remains the original producer's namespaced envelope; EvaluatedExport identifies the requested output port separately. Presentation remains host-owned and does not affect snapshot selection or result order.
 
@@ -296,3 +296,17 @@ K02a/K02b guest errors (2026-11-08): `GuestError` keys are `core/guest-engine`,
 all zero-argument. Guest-reported node errors carry only a namespaced code and
 message key from the package's own catalogue; guest log text is diagnostic data,
 bounded and never shown as translated UI text.
+
+K02c (2026-11-08): a guest fault reaches graph errors as `core/PackageFault` with the
+zero-argument `GuestError` key; a guest-reported node error keeps the package's own
+namespaced code and catalogue key. Its fallback text is the host's static "A package
+node reported an error."; guest text is never shown as the message.
+
+K02c ownership correction (2026-11-09): fault codes and message keys borrow static
+host text or share owned package identifiers. They remain redacted, validated,
+locale-independent semantic metadata; no guest prose or arguments are added.
+Package identifiers are limited to 128 bytes each. Removing the global interning
+limit prevents unrelated package history from changing an error code visible to
+Try. Retention budgets include shared identifier storage; the final owner frees it.
+`WorkspaceError::message_key(&self)` returns borrowed text because a wrapped fault
+may own its key. The public Rust envelope is Clone rather than Copy.

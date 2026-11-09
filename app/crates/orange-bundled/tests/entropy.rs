@@ -43,8 +43,8 @@ fn graph(package: &MathPackage) -> GraphDocument {
         "exports":[{"id":"sample","node":NODE,"port":"value"}]}).to_string()).unwrap()
 }
 const SOURCE_FAULT: KernelFault = KernelFault {
-    code: "core/LimitExceeded",
-    message_key: "core/entropy-stream-exhausted",
+    code: orange_compiler::FaultText::Static("core/LimitExceeded"),
+    message_key: orange_compiler::FaultText::Static("core/entropy-stream-exhausted"),
     message: "The entropy stream is exhausted.",
 };
 struct Source {

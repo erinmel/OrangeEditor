@@ -23,6 +23,35 @@ pub(super) struct Watches {
     evaluations: u64,
 }
 impl Watches {
+    fn replace_fault(
+        &mut self,
+        index: usize,
+        fault: Option<ConstantFault>,
+        limit: usize,
+    ) -> Result<(), RunError> {
+        let bytes = |fault: &ConstantFault| {
+            fault
+                .fault
+                .code
+                .retained_bytes()
+                .saturating_add(fault.fault.message_key.retained_bytes())
+        };
+        let cache = self.cache.as_mut().ok_or(RunError::InvalidState)?;
+        let total = cache
+            .get()
+            .checked_sub(self.faults[index].as_ref().map_or(0, bytes))
+            .and_then(|n| n.checked_add(fault.as_ref().map_or(0, bytes)))
+            .filter(|n| {
+                n.checked_add(self.staged.as_ref().map_or(0, Tally::get))
+                    .is_some_and(|n| n <= limit)
+            })
+            .ok_or(RunError::ResourceLimit)?;
+        if !cache.try_set(total) {
+            return Err(RunError::AggregateLimit);
+        }
+        self.faults[index] = fault;
+        Ok(())
+    }
     pub fn new(
         plan: &ControlPlan,
         prepared: Option<Arc<PreparedData>>,
@@ -215,11 +244,16 @@ impl Run {
         let value = match outcome {
             Ok(value) => value,
             Err(fault) => {
-                self.watches.faults[index] = Some(fault);
+                self.watches.replace_fault(
+                    index,
+                    Some(fault),
+                    self.options.limits.max_state_bytes,
+                )?;
                 return Ok(());
             }
         };
-        self.watches.faults[index] = None;
+        self.watches
+            .replace_fault(index, None, self.options.limits.max_state_bytes)?;
         let previous = &self.watches.previous[index];
         let fires = previous.as_ref().is_some_and(|previous| {
             if watch.rising() {
@@ -286,5 +320,44 @@ impl Run {
             Err(_) => self.events.count_overflow(),
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orange_compiler::FaultText;
+
+    #[test]
+    fn last_watch_fault_text_is_admitted_transactionally_and_released_on_success() {
+        let node = "10000000-0000-4000-8000-000000000001".parse().unwrap();
+        let code: Arc<str> = Arc::from("acme/Failed");
+        let weak = Arc::downgrade(&code);
+        let fault = ConstantFault {
+            source: node,
+            fault: KernelFault {
+                code: FaultText::Shared(code),
+                message_key: "acme/failed".into(),
+                message: "The watch failed.",
+            },
+        };
+        let bytes = fault.fault.code.retained_bytes();
+        let budget = Budget::new(bytes);
+        let mut watches = Watches {
+            faults: vec![None],
+            cache: Some(Tally::new(Some(budget.clone()), 0)),
+            ..Default::default()
+        };
+        assert_eq!(
+            watches.replace_fault(0, Some(fault.clone()), bytes - 1),
+            Err(RunError::ResourceLimit)
+        );
+        assert!(watches.faults[0].is_none());
+        assert_eq!(budget.used(), 0);
+        watches.replace_fault(0, Some(fault), bytes).unwrap();
+        assert_eq!(budget.used(), bytes);
+        watches.replace_fault(0, None, bytes).unwrap();
+        assert_eq!(budget.used(), 0);
+        assert!(weak.upgrade().is_none());
     }
 }

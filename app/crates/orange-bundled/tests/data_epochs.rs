@@ -671,8 +671,8 @@ impl EntropyKernel for MutatedKernel {
                 outputs[0] = Value::U64(42);
                 if *return_fault {
                     Err(KernelFault {
-                        code: "core/Domain",
-                        message_key: "core/test-domain",
+                        code: String::from("core/Domain").into(),
+                        message_key: String::from("core/test-domain").into(),
                         message: "The operation failed.",
                     })
                 } else {
@@ -688,8 +688,8 @@ impl EntropyKernel for MutatedKernel {
                 observer.set(Arc::downgrade(&payload)).unwrap();
                 outputs[0] = Value::Json(payload);
                 Err(KernelFault {
-                    code: "core/Domain",
-                    message_key: "core/test-domain",
+                    code: String::from("core/Domain").into(),
+                    message_key: String::from("core/test-domain").into(),
                     message: "The operation failed.",
                 })
             }
@@ -819,7 +819,7 @@ fn draw_budget_fault_cannot_be_hidden_by_a_downstream_callback() {
                             .unwrap_err()
                             .fault
                             .code,
-                        error.code
+                        error.code.as_str()
                     );
                 } else {
                     assert_eq!(value, Value::U64(42));

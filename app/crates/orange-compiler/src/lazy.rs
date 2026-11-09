@@ -149,8 +149,8 @@ struct Projection {
 impl PureKernel for Projection {
     fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
         const BAD: KernelFault = KernelFault {
-            code: "core/InternalFault",
-            message_key: "core/compile-kernel-contract",
+            code: crate::FaultText::Static("core/InternalFault"),
+            message_key: crate::FaultText::Static("core/compile-kernel-contract"),
             message: "The constant selection inputs violate the checked contract.",
         };
         if inputs.len() != self.arity {

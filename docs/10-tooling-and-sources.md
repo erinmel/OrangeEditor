@@ -1,8 +1,84 @@
 # Tooling, environment and research register
 
+## K02c fault-text ownership correction — 2026-11-09
+
+User selected owned/shared identifiers instead of the process-lifetime interning
+table. Base is PR162 head `9d470beada333388f5596498ffbadedef42bf635`; evidence below
+is for the local working-tree correction, not a new hosted-CI result or merge.
+`FaultText` supports static built-in identifiers and shared `Arc<str>` package
+identifiers; equality is textual. `KernelFault` and `WorkspaceError` are no longer
+Copy. Invalid/overlong guest identifiers still fault locally; no global code cap,
+new dependency, WIT change, saved-format change or provider-lock change.
+
+Selected environment: Windows x64; rustup `1.99.1-x86_64-pc-windows-msvc`,
+`rustc 1.99.1 (58cf8f9c3 2026-10-13)`. Host lockfile SHA256 is
+`E2AB8E6108BAEBC40B8D59D3E5D0807D8B0C9AA525F573551E0FC9E29D01B14E`
+(unchanged). Workspace checks use `--all-features --locked`; pinned Wasmtime48.0.8
+normal features remain runtime/cranelift/component-model/std, with wat for tests.
+No package or toolchain dependency was changed.
+Cargo is1.99.1 (5f94df478 2026-08-27); Node.js is24.18.0.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --all-features --locked` | **1,630 passed, 0 failed, 15 optional measurements ignored**, including doctests |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass; 19 policy fixtures |
+| `node --test tools/*.test.mjs` | 17 passed, 0 failed |
+
+New regressions prove identifier equality across static/shared storage, release
+after the final owner, stability through 5,000 distinct unrelated errors, local
+identifier validation/128-byte boundaries, and replay/stream/trace/Watch retention
+admission and release. The real archive integration test retains the guest fault
+after dropping the guest package, resolver and plan, then verifies final release.
+Existing constant Try/data-fault charge coverage includes owned identifiers;
+runtime callback-fault regressions now also exercise shared identifiers.
+
+The restricted local test run hit `durable::compaction_replaces_the_log_with_one_equivalent_checkpoint`
+with `replace journal: PermissionDenied`; a targeted retry did likewise. The full
+suite passed with normal Windows file access. No journal implementation/test was
+changed. Windows/OneDrive incremental-cache hard-link warnings fell back to copies;
+they are environmental build warnings, not lint or rustdoc findings. No timing,
+RSS, release-profile, fresh SDK rebuild or new MSRV run is claimed for this change.
+External consumers retaining cloned faults own those references outside core
+budgets; identifiers are freed only after every such owner releases them.
+
+## K02c — package nodes from archives — 2026-11-08
+
+Branch `k02c-guest-nodes` from dev `1879623` (K02b PR161). Same toolchains; no new
+dependency. `orange-guest` now depends on `orange-compiler` and `orange-packages`
+(normal) and `orange-bundled` (dev, to compose with bundled math); the metadata
+policy records all three. New API: `GuestPackage::from_archive`, `WithGuests<R>`
+(implements `PureKernelResolver` and `EntropyKernelResolver`), `GuestLoadError`,
+`PLUGIN_WORLD_PREFIX` and the interning bounds.
+
+Two new tests: the probe component is packed into a canonical `.orangeplug`, read back
+with `read_archive`, installed through `PackageStore` with two decoded definitions,
+selected for new bindings, and a graph authored with `new_node_edit` chains bundled
+`org.orange.math/add` into the guest's `add`; `compile_pure` folds 42 through both
+providers, the guest's overflow keeps its node and the guest's own
+`core/NumericOverflow` / `org.example.probe/failed` identifiers, a guest panic is
+`core/PackageFault` / `core/guest-trap` on its own node, and the bundled resolver
+alone reports `KernelUnavailable`. Loading refuses an undeclared provider ID, another
+world name and a different world major version. The archive test uses the same
+`ORANGE_GUEST_PROBE` override as the plugin tests, so CI's guest job covers it.
+
+| Command | Result |
+|---|---|
+| `cargo test -p orange-guest` | 14 passed |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,623 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test`; `node --test tools/*.test.mjs` | Pass; 19 fixtures; 17 passed |
+
+Limits: Pure nodes only, one instance per binding, no instance pooling, no hot
+replacement or drain of loaded packages, no manifest-permission interpretation.
+No timing or memory probe ran.
+
 ## K02b — package interface and Rust guest — 2026-11-08
 
-Branch `k02b-guest-interface` from dev `c8afe7b` (K02a PR160). Selected by the user: a
+Merged as PR161. Branch `k02b-guest-interface` from dev `c8afe7b` (K02a PR160). Selected by the user: a
 Rust guest toolchain and the literal codec at the boundary. Guest side (separate
 `sdk/` workspace, own `rust-toolchain.toml` = 1.99.1 + `wasm32-unknown-unknown`):
 `wit-bindgen =0.63.0` (2026-10-14), `wit-component =0.262.0` (2026-10-13, the

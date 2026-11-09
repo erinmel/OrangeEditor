@@ -247,8 +247,8 @@ fn refused_result_quota_is_retryable_and_fault_uses_failed_semantics() {
         run.complete_effect(
             request.id,
             Err(KernelFault {
-                code: "invalid code",
-                message_key: "core/test",
+                code: orange_compiler::FaultText::Static("invalid code"),
+                message_key: orange_compiler::FaultText::Static("core/test"),
                 message: "Safe static fault."
             })
         ),
@@ -257,8 +257,8 @@ fn refused_result_quota_is_retryable_and_fault_uses_failed_semantics() {
     run.complete_effect(
         request.id,
         Err(KernelFault {
-            code: "core/Test",
-            message_key: "core/test",
+            code: orange_compiler::FaultText::Static("core/Test"),
+            message_key: orange_compiler::FaultText::Static("core/test"),
             message: "Inert test failure.",
         }),
     )

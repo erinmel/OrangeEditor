@@ -665,3 +665,16 @@ because the SDK must ship generated Rust bindings. Graph values cross the bounda
 codec for every type instead of a second typed encoding; WIT cannot express recursive
 values, and serialization cost is accepted until measured (performance deferred).
 Imports are linked per grant; guest-reported errors are namespaced identifiers only.
+
+Guest kernel fault amendment (2026-11-09; K02c, ADR-03/16/21, user-selected):
+`KernelFault` code and message key use `FaultText::Static(&'static str)` for built-ins
+or `FaultText::Shared(Arc<str>)` for package text. Fallback messages remain static.
+This supersedes the initial process-lifetime interning table: unrelated packages'
+error history must not consume a global identifier allowance or change graph-visible
+error identity. Identifiers compare by text regardless of storage. Faults and
+`WorkspaceError` are Clone, not Copy; `WorkspaceError::message_key` borrows its text.
+Guest identifiers remain validated and limited to 128 bytes each; invalid/overlong
+ones map to `core/PackageFault`. Retained shared text is charged by compiler, preview,
+runtime, stream and replay admission and released with its final owner. This is an
+unfrozen Rust API change, with no WIT, graph-format, provider-lock or locale change.
+Guest kernels still compose through `orange_guest::WithGuests`.

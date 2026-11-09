@@ -16,7 +16,7 @@ use orange_model::value::{ListRepr, MapRepr};
 /// guest from source and points `ORANGE_GUEST_PROBE` at the fresh component.
 const PROBE: &[u8] = include_bytes!("fixtures/probe.wasm");
 
-fn probe_bytes() -> Vec<u8> {
+pub(crate) fn probe_bytes() -> Vec<u8> {
     match std::env::var_os("ORANGE_GUEST_PROBE") {
         Some(path) => std::fs::read(path).expect("ORANGE_GUEST_PROBE names a readable component"),
         None => PROBE.to_vec(),

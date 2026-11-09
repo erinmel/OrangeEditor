@@ -718,8 +718,8 @@ fn next_preserves_some_none_and_producer_faults_or_bad_items_never_publish_succe
     idle(&mut run);
     assert_eq!(probe.closes.lock().unwrap().len(), 1);
     const FAULT: KernelFault = KernelFault {
-        code: "acme/ReadFailed",
-        message_key: "acme/read-failed",
+        code: orange_compiler::FaultText::Static("acme/ReadFailed"),
+        message_key: orange_compiler::FaultText::Static("acme/read-failed"),
         message: "The read failed.",
     };
     for bad_item in [false, true] {
@@ -750,7 +750,7 @@ fn next_preserves_some_none_and_producer_faults_or_bad_items_never_publish_succe
                     == if bad_item {
                         "core/InternalFault"
                     } else {
-                        FAULT.code
+                        FAULT.code.as_str()
                     }))
         );
         assert_eq!(probe.closes.lock().unwrap().len(), 1);

@@ -61,13 +61,14 @@ impl WorkspaceBusError {
     }
     pub(crate) fn fault(self) -> KernelFault {
         KernelFault {
-            code: match self {
+            code: (match self {
                 Self::CauseDepth => "core/RunawayEventChain",
                 Self::NotRunning | Self::Closed => "core/RunStopping",
                 Self::Limit | Self::IdentityExhausted => "core/LimitExceeded",
                 _ => "core/WorkspaceBusFailure",
-            },
-            message_key: self.message_key(),
+            })
+            .into(),
+            message_key: self.message_key().into(),
             message: "The workspace event could not be admitted.",
         }
     }

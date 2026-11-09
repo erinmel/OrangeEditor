@@ -1,5 +1,13 @@
 # Graph language and execution semantics
 
+Fault-text ownership correction (2026-11-09; ADR-03/16): faults retain the original
+producer and namespaced code/key whether those identifiers are static or shared
+owned text. Storage kind does not affect equality or Try's resulting error code.
+No process-wide identifier allowance may change a package's graph-visible fault
+because unrelated packages previously reported other errors. Finite identifier and
+retained-byte admission still applies; a local quota refusal uses the owning
+boundary's explicit resource-limit behavior. No graph or WIT format changes.
+
 The C11a/C07a/C09a execution profile below records trusted effects, runtime Watch
 and host pull streams; C08b/C09b amendments add direct resource values and graph
 stream execution. Broader normative rules remain product gates.

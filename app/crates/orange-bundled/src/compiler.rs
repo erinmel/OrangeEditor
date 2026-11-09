@@ -265,8 +265,8 @@ enum Native {
     Conversion(ResolvedConversion),
 }
 const CONTRACT: KernelFault = KernelFault {
-    code: "core/InternalFault",
-    message_key: "core/kernel-input-contract",
+    code: orange_compiler::FaultText::Static("core/InternalFault"),
+    message_key: orange_compiler::FaultText::Static("core/kernel-input-contract"),
     message: "Kernel inputs violate the resolved contract.",
 };
 impl PureKernel for Native {
@@ -277,8 +277,8 @@ impl PureKernel for Native {
                     return Err(CONTRACT);
                 };
                 *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code(),
-                    message_key: error.message_key(),
+                    code: error.code().into(),
+                    message_key: error.message_key().into(),
                     message: error.message(),
                 })?;
             }
@@ -287,8 +287,8 @@ impl PureKernel for Native {
                     return Err(CONTRACT);
                 };
                 *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code(),
-                    message_key: error.message_key(),
+                    code: error.code().into(),
+                    message_key: error.message_key().into(),
                     message: error.message(),
                 })?;
             }
@@ -297,8 +297,8 @@ impl PureKernel for Native {
                     return Err(CONTRACT);
                 };
                 *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code(),
-                    message_key: error.message_key(),
+                    code: error.code().into(),
+                    message_key: error.message_key().into(),
                     message: error.message(),
                 })?;
             }
@@ -307,8 +307,8 @@ impl PureKernel for Native {
                     return Err(CONTRACT);
                 };
                 *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code(),
-                    message_key: error.message_key(),
+                    code: error.code().into(),
+                    message_key: error.message_key().into(),
                     message: error.message(),
                 })?;
             }
@@ -317,8 +317,8 @@ impl PureKernel for Native {
                     return Err(CONTRACT);
                 };
                 *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code(),
-                    message_key: error.message_key(),
+                    code: error.code().into(),
+                    message_key: error.message_key().into(),
                     message: error.message(),
                 })?;
             }
@@ -327,8 +327,8 @@ impl PureKernel for Native {
                     return Err(CONTRACT);
                 };
                 *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code(),
-                    message_key: error.message_key(),
+                    code: error.code().into(),
+                    message_key: error.message_key().into(),
                     message: error.message(),
                 })?;
             }
@@ -337,8 +337,8 @@ impl PureKernel for Native {
                     return Err(CONTRACT);
                 };
                 *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
-                    code: error.code(),
-                    message_key: error.message_key(),
+                    code: error.code().into(),
+                    message_key: error.message_key().into(),
                     message: match error {
                         crate::KernelError::InputContract => CONTRACT.message,
                         other => other.message(),
@@ -356,8 +356,8 @@ impl PureKernel for Native {
                     return Err(CONTRACT);
                 };
                 let value = conversion.evaluate(input).map_err(|error| KernelFault {
-                    code: error.code(),
-                    message_key: error.message_key(),
+                    code: error.code().into(),
+                    message_key: error.message_key().into(),
                     message: error.message(),
                 })?;
                 match (outputs, value.loss) {

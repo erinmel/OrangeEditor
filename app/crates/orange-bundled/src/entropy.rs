@@ -158,8 +158,8 @@ impl EntropyKernel for ResolvedEntropyKernel {
         entropy: &mut dyn EntropySource,
     ) -> Result<(), KernelFault> {
         const BAD: KernelFault = KernelFault {
-            code: "core/InternalFault",
-            message_key: "core/kernel-input-contract",
+            code: orange_compiler::FaultText::Static("core/InternalFault"),
+            message_key: orange_compiler::FaultText::Static("core/kernel-input-contract"),
             message: "Kernel inputs violate the resolved contract.",
         };
         if !inputs.is_empty() {

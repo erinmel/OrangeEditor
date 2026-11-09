@@ -151,3 +151,23 @@ with the Rust toolchain in `sdk/`: `wasm32-unknown-unknown`, `wit-bindgen` 0.63.
 guest bindings and `orange-componentize` (`wit-component` 0.262.0) to produce the
 component; wit-component keeps only the imports a guest actually uses. Resources,
 streams, async, events, panels and service imports are later interface versions.
+
+Package nodes in graphs (K02c, 2026-11-08; `orange_guest`): `GuestPackage::from_archive`
+takes a `VerifiedArchive` and the files its `MemorySink` received, requires a
+`wasm-component` execution section whose world is `orange:expansion/plugin@1.x`, a
+declared provider ID and the entry file, compiles the component, and records the exact
+provider key (package ID, version, verified content digest, provider ID) the package
+store publishes for it. `WithGuests<R>` wraps a host resolver: a binding whose locked
+provider is a loaded package's key gets a guest kernel; every other binding goes to
+`R` (for example `MathPackage`), and a loaded package's provider never falls back to
+`R`. Guest bindings are Pure only, with empty config and concrete port types; each
+binding owns one guest instance, so a trap faults that node's binding and later folds
+report `core/PackageFault` / `core/guest-poisoned`. A guest node error becomes the
+kernel fault with the guest's own validated namespaced code and message key, each
+at most 128 bytes. Identifiers use shared owned text, released when the last fault,
+plan, result or journal owner drops; there is no process-wide identifier table.
+Invalid or overlong identifiers map to `core/PackageFault`; a guest fault is
+`core/PackageFault` with the `GuestError`
+key. Constant folding and data demands run guest kernels like bundled ones. Guest
+entropy, actions, async, events and generic (non-concrete) package nodes are later
+work; grants come from the host until manifest permissions are interpreted (K03).
