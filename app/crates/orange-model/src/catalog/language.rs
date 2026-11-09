@@ -339,7 +339,8 @@ mod tests {
                 | crate::catalog::Ports::Event(_)
                 | crate::catalog::Ports::ForEach
                 | crate::catalog::Ports::Manual
-                | crate::catalog::Ports::Timer => None,
+                | crate::catalog::Ports::Timer
+                | crate::catalog::Ports::Nominal(_) => None,
             };
             assert_eq!(rule.variable_access, variable_access, "{id}");
             let event_access = match definition.ports {

@@ -34,6 +34,8 @@ use crate::variable::WriteOperation;
 
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum RegistryError {
+    #[error("record/enum definition `{definition}` must be pure and non-generic")]
+    NominalKind { definition: DefinitionId },
     #[error("definition `{definition}` has incompatible volatility metadata")]
     VolatilityKind { definition: DefinitionId },
     #[error("package definition `{definition}` may declare only entropy volatility")]
@@ -682,6 +684,14 @@ fn check_definition(definition: &NodeDefinition, intrinsic: bool) -> Result<(), 
         Ports::Variable(_) => return check_variable_ports(definition),
         Ports::Event(_) => return check_event_ports(definition),
         Ports::ForEach | Ports::Manual | Ports::Timer => return Ok(()),
+        Ports::Nominal(_) => {
+            if definition.kind != NodeKind::Pure || !definition.type_params.is_empty() {
+                return Err(RegistryError::NominalKind {
+                    definition: id.clone(),
+                });
+            }
+            return Ok(());
+        }
     };
     let declared: BTreeSet<&str> = definition
         .type_params
@@ -968,7 +978,8 @@ impl Registered {
             | Ports::Event(_)
             | Ports::ForEach
             | Ports::Manual
-            | Ports::Timer => None,
+            | Ports::Timer
+            | Ports::Nominal(_) => None,
         };
         Self {
             definition,
@@ -1092,9 +1103,15 @@ impl RegistrySnapshot {
             return super::intrinsics::timer_contract(definition, node)
                 .map(|contract| Some(Cow::Owned(contract)));
         }
+        if let Ports::Nominal(access) = definition.ports {
+            return super::nominal::nominal_contract(definition, access, node, self.types())
+                .map(|contract| Some(Cow::Owned(contract)));
+        }
         let ports = match &definition.ports {
             Ports::Declared(ports) => ports.clone(),
-            Ports::ForEach | Ports::Manual | Ports::Timer => unreachable!("returned above"),
+            Ports::ForEach | Ports::Manual | Ports::Timer | Ports::Nominal(_) => {
+                unreachable!("returned above")
+            }
             Ports::Variable(access) => self.variable_ports(document, node, *access)?,
             Ports::Event(access) => self.event_ports(document, node, *access)?,
         };

@@ -8,6 +8,7 @@ pub mod definition;
 pub mod intrinsic_id;
 pub(crate) mod intrinsics;
 pub(crate) mod language;
+pub mod nominal;
 pub mod provider;
 pub mod snapshot;
 mod timer;
@@ -18,8 +19,8 @@ pub(crate) use call::{
 };
 pub use codec::{DefinitionError, DefinitionLimits};
 pub use definition::{
-    ContractError, Determinism, EventAccess, NodeContract, NodeDefinition, Ports, ReferenceError,
-    ReferenceField, ReferenceKind, TypeArgs, VariableAccess, Volatility,
+    ContractError, Determinism, EventAccess, NodeContract, NodeDefinition, NominalAccess, Ports,
+    ReferenceError, ReferenceField, ReferenceKind, TypeArgs, VariableAccess, Volatility,
 };
 pub(crate) use language::{
     implicit_port, implicit_ports, instance_port, intrinsic, is_converter_special_form,
