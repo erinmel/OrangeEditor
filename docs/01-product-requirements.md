@@ -1,5 +1,11 @@
 # Product requirements
 
+K02d1 cancellation trace (2026-11-09): FR-35/38 and NFR-06/08 gain a host-owned
+instance cancellation handle, independent of engine-wide interruption. Cancelling
+one live guest leaves a concurrently executing peer usable. The host drives epoch
+ticks; fuel remains the independent computation bound. This prerequisite does not
+implement service imports, graph lease wiring, package revocation or K03 policy.
+
 K02c fault-ownership trace (2026-11-09): FR-34/35/38/44 retain package fault codes,
 catalogue keys and original producer across compile/runtime boundaries without a
 process-wide identifier allowance. Shared error text retires with its last owner;

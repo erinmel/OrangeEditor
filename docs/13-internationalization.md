@@ -310,3 +310,10 @@ limit prevents unrelated package history from changing an error code visible to
 Try. Retention budgets include shared identifier storage; the final owner frees it.
 `WorkspaceError::message_key(&self)` returns borrowed text because a wrapped fault
 may own its key. The public Rust envelope is Clone rather than Copy.
+
+K02d1 scoped cancellation (2026-11-09): local cancellation reuses
+`core/guest-trap` for Interrupted and `core/guest-poisoned` for later calls, with
+static fallbacks and no arguments. The handle's Debug exposes only its local
+cancelled flag, never values, package text, grants or callbacks. Engine clocks,
+instance ownership and cancellation do not depend on locale. No catalogue or WIT
+change is required.

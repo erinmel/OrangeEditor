@@ -9,7 +9,7 @@ use orange_model::value::literal_codec;
 use wasmtime::component::{HasSelf, Linker};
 use wasmtime::{Store, StoreLimitsBuilder};
 
-use crate::{GuestComponent, GuestError, classify};
+use crate::{GuestCancellation, GuestComponent, GuestError, GuestTrap, classify};
 
 wasmtime::component::bindgen!({
     path: "../../../sdk/wit",
@@ -69,6 +69,7 @@ pub struct GuestPlugin {
     bindings: Plugin,
     fuel: u64,
     poisoned: bool,
+    cancellation: GuestCancellation,
 }
 
 impl std::fmt::Debug for GuestPlugin {
@@ -106,8 +107,7 @@ impl GuestPlugin {
             },
         );
         store.limiter(|state| &mut state.limits);
-        store.epoch_deadline_trap();
-        store.set_epoch_deadline(1);
+        let cancellation = GuestCancellation::install(engine, &mut store)?;
         store
             .set_fuel(limits.fuel_per_call)
             .map_err(|_| GuestError::Engine)?;
@@ -130,6 +130,7 @@ impl GuestPlugin {
             bindings,
             fuel: limits.fuel_per_call,
             poisoned: false,
+            cancellation,
         })
     }
 
@@ -146,6 +147,10 @@ impl GuestPlugin {
         if self.poisoned {
             return Err(GuestError::Poisoned);
         }
+        if self.cancellation.is_cancelled() {
+            self.poisoned = true;
+            return Err(GuestError::Trap(GuestTrap::Interrupted));
+        }
         let mut encoded = Vec::with_capacity(inputs.len());
         for (ty, value) in inputs {
             let literal =
@@ -155,7 +160,10 @@ impl GuestPlugin {
         self.store
             .set_fuel(self.fuel)
             .map_err(|_| GuestError::Engine)?;
-        self.store.set_epoch_deadline(1);
+        if let Err(error) = self.cancellation.arm(&mut self.store) {
+            self.poisoned = true;
+            return Err(error);
+        }
         let result = self
             .bindings
             .orange_expansion_nodes()
@@ -197,6 +205,10 @@ impl GuestPlugin {
 
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
+    }
+    /// Clone a cancellation handle scoped to this plugin instance's lifetime.
+    pub fn cancellation(&self) -> GuestCancellation {
+        self.cancellation.clone()
     }
 
     /// Takes the retained log entries (granted `log` only).
