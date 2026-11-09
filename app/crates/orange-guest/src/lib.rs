@@ -8,10 +8,15 @@
 //! This crate is a host boundary. Graph-core crates never depend on it, and no
 //! Wasmtime type is part of the graph model.
 
+mod nodes;
 mod plugin;
 
 use std::sync::Arc;
 
+pub use nodes::{
+    GuestLoadError, GuestPackage, MAX_FAULT_TEXT_BYTES, MAX_INTERNED_FAULT_TEXT,
+    PLUGIN_WORLD_PREFIX, WithGuests,
+};
 pub use plugin::{
     API_VERSION, Grants, GuestNodeError, GuestPlugin, MAX_LOG_BYTES, MAX_LOG_ENTRIES,
 };

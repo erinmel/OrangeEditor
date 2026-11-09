@@ -760,7 +760,10 @@ dependencies = [
 name = "orange-guest"
 version = "0.0.0"
 dependencies = [
+ "orange-bundled",
+ "orange-compiler",
  "orange-model",
+ "orange-packages",
  "serde_json",
  "thiserror",
  "wasmtime",
