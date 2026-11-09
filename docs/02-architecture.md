@@ -1,5 +1,14 @@
 # Architecture and ownership
 
+Scoped guest cancellation (K02d1, 2026-11-09): `GuestInstance` and `GuestPlugin`
+expose cloneable instance-lifetime `GuestCancellation` handles. Cancellation is
+monotonic and terminal for that instance; an old handle cannot retarget a later
+instance. Hosts periodically call `GuestEngine::advance_epoch` while workers run
+guest code. Store-local callbacks distinguish local cancellation from an explicit
+engine-wide broadcast; no library-owned ticker thread, core dependency or new
+Wasm feature is introduced. Blocking host imports still need a separate bounded
+service/cancellation protocol.
+
 Fault ownership (2026-11-09; ADR-03/16/21): public core `KernelFault` identifiers
 borrow built-in text or share package-owned text, while fallback messages remain
 static. Plans, previews, runtime slots, streams and replay journals retain and

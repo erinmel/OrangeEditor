@@ -8,10 +8,13 @@
 //! This crate is a host boundary. Graph-core crates never depend on it, and no
 //! Wasmtime type is part of the graph model.
 
+mod cancellation;
 mod nodes;
 mod plugin;
 
+pub use cancellation::GuestCancellation;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 pub use nodes::{
     GuestLoadError, GuestPackage, MAX_FAULT_TEXT_BYTES, PLUGIN_WORLD_PREFIX, WithGuests,
@@ -110,6 +113,7 @@ pub(crate) fn classify(error: &wasmtime::Error) -> GuestError {
 pub struct GuestEngine {
     engine: Engine,
     limits: GuestLimits,
+    broadcast: Arc<AtomicU64>,
 }
 
 impl std::fmt::Debug for GuestEngine {
@@ -129,7 +133,11 @@ impl GuestEngine {
             .max_wasm_stack(limits.max_wasm_stack)
             .wasm_component_model(true);
         let engine = Engine::new(&config).map_err(|_| GuestError::Engine)?;
-        Ok(Self { engine, limits })
+        Ok(Self {
+            engine,
+            limits,
+            broadcast: Arc::new(AtomicU64::new(0)),
+        })
     }
 
     pub fn limits(&self) -> GuestLimits {
@@ -146,9 +154,19 @@ impl GuestEngine {
         })
     }
 
-    /// Makes every running call on this engine trap with [`GuestTrap::Interrupted`] at its
-    /// next epoch check. Safe to call from any thread; this is the host's cancellation.
+    /// Requests engine-wide interruption and wakes epoch checks. The host must
+    /// continue [`Self::advance_epoch`] while calls run, including deadline-renewal
+    /// races. Use an instance's [`GuestCancellation`] to select only that instance.
     pub fn interrupt(&self) {
+        self.broadcast.fetch_add(1, Ordering::SeqCst);
+        self.engine.increment_epoch();
+    }
+
+    /// Advance Wasmtime's coarse interruption clock without cancelling a guest.
+    /// Drive periodically from the host while guest calls are executing on workers;
+    /// the cadence is host policy, not a wall-time cancellation guarantee. This
+    /// crate starts no background ticker. Epochs cannot preempt blocked host imports.
+    pub fn advance_epoch(&self) {
         self.engine.increment_epoch();
     }
 }
@@ -176,6 +194,7 @@ pub struct GuestInstance {
     instance: Instance,
     fuel: u64,
     poisoned: bool,
+    cancellation: GuestCancellation,
 }
 
 impl std::fmt::Debug for GuestInstance {
@@ -202,8 +221,7 @@ impl GuestInstance {
             },
         );
         store.limiter(|state| &mut state.limits);
-        store.epoch_deadline_trap();
-        store.set_epoch_deadline(1);
+        let cancellation = GuestCancellation::install(&component.engine, &mut store)?;
         store
             .set_fuel(limits.fuel_per_call)
             .map_err(|_| GuestError::Engine)?;
@@ -219,6 +237,7 @@ impl GuestInstance {
             instance,
             fuel: limits.fuel_per_call,
             poisoned: false,
+            cancellation,
         })
     }
 
@@ -236,6 +255,10 @@ impl GuestInstance {
         if self.poisoned {
             return Err(GuestError::Poisoned);
         }
+        if self.cancellation.is_cancelled() {
+            self.poisoned = true;
+            return Err(GuestError::Trap(GuestTrap::Interrupted));
+        }
         let func = self
             .instance
             .get_typed_func::<Params, Results>(&mut self.store, export)
@@ -243,7 +266,10 @@ impl GuestInstance {
         self.store
             .set_fuel(self.fuel)
             .map_err(|_| GuestError::Engine)?;
-        self.store.set_epoch_deadline(1);
+        if let Err(error) = self.cancellation.arm(&mut self.store) {
+            self.poisoned = true;
+            return Err(error);
+        }
         func.call(&mut self.store, params).map_err(|error| {
             self.poisoned = true;
             classify(&error)
@@ -252,6 +278,10 @@ impl GuestInstance {
 
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
+    }
+    /// Clone a handle for this instance only; it remains terminal across calls.
+    pub fn cancellation(&self) -> GuestCancellation {
+        self.cancellation.clone()
     }
 
     /// Fuel left after the last call.

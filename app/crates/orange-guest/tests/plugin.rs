@@ -66,6 +66,37 @@ fn typed_values_cross_the_boundary_and_node_errors_stay_data() {
 }
 
 #[test]
+fn rust_guest_cancellation_is_terminal_and_does_not_cancel_a_peer() {
+    let engine = GuestEngine::new(GuestLimits::default()).unwrap();
+    let component = engine.compile(&probe_bytes()).unwrap();
+    let mut cancelled = GuestPlugin::new(&component, LOG).unwrap();
+    let mut peer = GuestPlugin::new(&component, LOG).unwrap();
+    let handle = cancelled.cancellation();
+    handle.cancel();
+    let types = types();
+    let out = [ty("core/i64@1")];
+    assert_eq!(
+        cancelled.evaluate(&types, "org.example.probe/spin", &[], &out),
+        Err(GuestError::Trap(GuestTrap::Interrupted))
+    );
+    assert!(cancelled.is_poisoned());
+    assert_eq!(
+        cancelled.evaluate(&types, "org.example.probe/add", &i64s(&[1, 2]), &out),
+        Err(GuestError::Poisoned)
+    );
+    drop(cancelled);
+    assert_eq!(
+        peer.evaluate(&types, "org.example.probe/add", &i64s(&[20, 22]), &out),
+        Ok(Ok(vec![Value::I64(42)]))
+    );
+    handle.cancel();
+    assert_eq!(
+        peer.evaluate(&types, "org.example.probe/add", &i64s(&[21, 21]), &out),
+        Ok(Ok(vec![Value::I64(42)]))
+    );
+}
+
+#[test]
 fn nested_values_round_trip_exactly_through_the_literal_codec() {
     let types = types();
     let mut probe = plugin(GuestLimits::default(), LOG).unwrap();

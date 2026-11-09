@@ -1,5 +1,51 @@
 # Tooling, environment and research register
 
+## K02d1 — scoped guest cancellation — 2026-11-09
+
+Branch `codex/k02d1-guest-cancellation` starts from dev
+`4de171d5c2219555a0ab26107162a1eaeec70098` (PR162 merged after all nine hosted jobs
+plus aggregate rust passed for b42645e, run42645689408). No external dependency,
+lockfile, feature, WIT, SDK source or graph format changed. Selected environment is
+Windows x64, rustup Rust1.99.1, rustc1.99.1 (58cf8f9c3 2026-10-13),
+Cargo1.99.1 (5f94df478 2026-08-27), Node24.18.0. Unchanged Cargo.lock SHA256:
+`E2AB8E6108BAEBC40B8D59D3E5D0807D8B0C9AA525F573551E0FC9E29D01B14E`.
+Wasmtime48.0.8 retains runtime/cranelift/component-model/std; tests enable wat.
+
+API evidence was read from the installed, exact-version crate sources:
+`wasmtime-48.0.8/src/runtime/store.rs` (`epoch_deadline_callback`,
+`UpdateDeadline::Interrupt`/`Continue`) and `src/runtime/vm/libcalls.rs::new_epoch`.
+The latter renews the deadline after invoking the callback. An initial single-tick
+concurrent experiment stalled at that race and was interrupted; its design was
+replaced with explicit host-driven periodic epochs. The library creates no ticker
+thread. Epoch cadence remains host policy, not a measured time guarantee, and
+blocked host imports are not preempted. Fuel remains independently enforced.
+
+| Command | Result |
+|---|---|
+| `cargo test -p orange-guest --locked` | 6 unit + 15 integration tests passed |
+| `cargo test --workspace --all-features --locked` | **1,635 passed, 0 failed, 15 optional measurements ignored**, including doctests |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass;19 fixtures |
+| `node --test tools/*.test.mjs` | 17 passed, 0 failed |
+
+Four focused cancellation unit regressions cover actual concurrent guest loops on
+one engine, local cancellation with an already-running peer continuing, retained
+engine-wide broadcast behavior, stale handle isolation, cancel-before-entry,
+terminal poisoning and flag checks after renewing a deadline. A fifth integration
+regression exercises terminal cancellation and peer success with the Rust-built
+probe. Unit tests observe epoch callbacks rather than assume entry after a sleep;
+their host ticker survives panic cleanup and their waits have watchdogs. The full
+suite used normal Windows file access for the existing journal rename tests.
+OneDrive incremental hard-link warnings fell back to copies; there are no code lint
+or rustdoc findings. No new local MSRV, fresh SDK rebuild, optimized workspace or
+physical latency/RSS measurement is claimed. Hosted checks are required before merge.
+
+This is a prerequisite for K02 async/service-import cancellation, not that full
+gate: no C11 effect lease bridge, asynchronous WIT world, manifest grants, executable
+revocation/hot replacement or IC3/M1 qualification is implemented by this slice.
+
 ## K02c fault-text ownership correction — 2026-11-09
 
 User selected owned/shared identifiers instead of the process-lifetime interning

@@ -678,3 +678,15 @@ ones map to `core/PackageFault`. Retained shared text is charged by compiler, pr
 runtime, stream and replay admission and released with its final owner. This is an
 unfrozen Rust API change, with no WIT, graph-format, provider-lock or locale change.
 Guest kernels still compose through `orange_guest::WithGuests`.
+
+Scoped guest cancellation amendment (2026-11-09; K02d1, ADR-03/14/21): choose
+host-driven epoch ticks plus store-local monotonic cancellation flags. One shared
+engine must support stopping a selected instance while another guest continues;
+engine-wide interruption remains an explicit separate operation. Cancellation is
+terminal for an instance, so handles cannot later target a replacement. Wasmtime
+48.0.8 sets a renewed deadline after its callback; a single signal can race that
+renewal. Hosts therefore advance epochs periodically while guest code runs. Do not
+create hidden ticker threads or claim blocked-host-call preemption. This additive
+host Rust API changes no WIT, graph semantics, dependency/features or provider lock.
+Async/service imports, graph cancellation lease wiring and wall-time qualification
+remain open.

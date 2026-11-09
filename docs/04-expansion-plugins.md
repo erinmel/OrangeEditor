@@ -171,3 +171,23 @@ Invalid or overlong identifiers map to `core/PackageFault`; a guest fault is
 key. Constant folding and data demands run guest kernels like bundled ones. Guest
 entropy, actions, async, events and generic (non-concrete) package nodes are later
 work; grants come from the host until manifest permissions are interpreted (K03).
+
+Scoped guest cancellation (K02d1, 2026-11-09): `GuestInstance::cancellation()` and
+`GuestPlugin::cancellation()` return a cloneable `GuestCancellation` scoped to that
+instance's entire lifetime, not a reusable operation ID. `cancel()` sets a monotonic
+flag and wakes epoch checks. A cancellation observed before entry or in running
+guest code reports `GuestTrap::Interrupted`, poisons the instance, and later calls
+report `GuestError::Poisoned`. Discard that instance; handles never reset or retarget.
+An old handle may keep its engine alive but cannot cancel another store. Merely
+dropping a handle does not cancel work. `is_cancelled()` reports the local request;
+an engine-wide interruption is separately reported by the executing instance.
+
+The host must periodically call `GuestEngine::advance_epoch()` while guest workers
+run. A single wakeup can race Wasmtime's deadline renewal after a callback, so it
+is not a reliable ticker. The per-store callback interrupts only a cancelled store
+and lets peers continue. `GuestEngine::interrupt()` remains an explicit broadcast
+to calls already running; idle instances renew their broadcast baseline before a
+later call. Epoch cadence and worker ownership are host policy; there is no
+wall-time latency qualification. Fuel is still charged independently. Epochs cannot
+preempt a blocked host import. Service-import cancellation, C11 lease integration,
+manifest authority enforcement and package revocation remain separate gates.
