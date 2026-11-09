@@ -753,6 +753,32 @@ snapshot. The compiler uses ordinary PureKernel bindings for constant folds and
 dynamic data/control demands. No new intrinsic, saved format, error code or
 dependency is introduced.
 
+### 4.4 Bundled text definitions
+
+L03b (2026-11-08) adds the `org.orange.text` package, provided by the same bundled
+native build as `org.orange.math` with its own exact provider key
+(`MathPackage::text_provider_key`, ID `native-v1`, same version and digest). Every
+definition/config version is 1, Pure and deterministic, with no type parameters.
+IDs below have the `org.orange.text/` prefix; `string` is `core/string@1` and every
+output port is `result`. Semantics: [11 §5.7](11-graph-language.md).
+
+| ID suffix | Inputs | Output | Config |
+|---|---|---|---|
+| `byte-length`, `scalar-length` | `value: string` | `core/u64@1` | empty |
+| `concat` | `a`, `b: string` | string | empty |
+| `contains`, `starts-with`, `ends-with` | `text`, `pattern: string` | `core/bool@1` | empty |
+| `find` | `text`, `pattern: string` | `core/option@1<core/u64@1>` | `unit`: scalar/byte |
+| `substring` | `text: string`, `start`, `length: core/u64@1` | string | `unit`: scalar/byte |
+| `replace` | `text`, `pattern`, `replacement: string` | string | empty |
+| `trim`, `trim-start`, `trim-end`, `to-uppercase`, `to-lowercase` | `value: string` | string | empty |
+| `split` | `text`, `separator: string` | `core/list@1<core/string@1>` | empty |
+| `join` | `items: core/list@1<core/string@1>`, `separator: string` | string | empty |
+
+`unit` defaults to scalar. `TextOperation`, `ResolvedText`, `TextUnit` and
+`MathPackage::resolve_text` expose the same contracts to embedders; the math
+provider never stands in for the text provider. No new intrinsic, saved format or
+dependency is introduced.
+
 ## 5. Type and converter definitions
 
 ```json

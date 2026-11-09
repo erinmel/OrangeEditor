@@ -271,3 +271,8 @@ is not in the invariant format of the target type.") and `core/InvalidUtf8` uses
 `core/conversion-invalid-utf8` ("The bytes are not valid UTF-8."). Both have zero
 arguments and never include the text or bytes. Parse/display formats are invariant;
 locale-aware number formatting is host presentation, not a graph conversion.
+
+L03b text nodes (2026-11-08): `core/LimitExceeded` from a kernel uses
+`core/kernel-limit-exceeded` ("The result would exceed the operation's size limit.")
+with zero arguments. Text nodes never format with or read a locale; case mapping and
+trimming use Unicode default rules, not the UI language.

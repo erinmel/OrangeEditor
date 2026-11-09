@@ -450,3 +450,10 @@ converters. Grammar refusals, range limits, correctly rounded binary32 parsing,
 bit-exact float round trips, invalid UTF-8 classes and constant-fold provenance are
 verified through public APIs (11 §6). Text node vocabulary and grapheme clusters
 remain open.
+
+L03b text vocabulary trace (2026-11-08; FR-11/51, NFR-05/16): sixteen
+`org.orange.text` nodes execute lengths, concatenation, search, scalar/byte
+substring, replace, trim, locale-independent case mapping, split and join, with
+explicit units, bounds/boundary faults and a 16 MiB result limit. Known answers,
+Unicode cases, limits, properties and constant folds are verified through public
+APIs (11 §5.7, 12 §4.4). Grapheme clusters remain open (dependency decision).

@@ -993,3 +993,12 @@ carry no input text. Work is linear in the input; display output is at most a fe
 dozen bytes, and decode output is at most three times the input. Graph-level size
 quotas remain the existing value limits. Text nodes (length, substring, search,
 case, split/join) and grapheme clusters are later L03 slices.
+
+### L03b text nodes (2026-11-08)
+
+The `org.orange.text` package (12 §4.4, 11 §5.7) is bound once per node like the math
+kernels and evaluated without allocation beyond its result, registry reads or host
+calls. Concatenation, replacement, case mapping and join compute their result size
+first and fault with `core/LimitExceeded` above 16 MiB; split and substring cannot
+exceed their input. Scalar indexing walks the string, so its cost is linear in the
+index. Grapheme clusters and locale-tailored operations remain open.
