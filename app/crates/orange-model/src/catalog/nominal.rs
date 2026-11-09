@@ -42,7 +42,7 @@ pub fn nominal_target<'a>(
 ) -> Result<NominalTarget<'a>, ContractError> {
     let member = match access {
         NominalAccess::MakeRecord => None,
-        NominalAccess::GetField => Some("field"),
+        NominalAccess::GetField | NominalAccess::SetField => Some("field"),
         NominalAccess::MakeEnum | NominalAccess::EnumPayload => Some("variant"),
     };
     if config
@@ -59,7 +59,7 @@ pub fn nominal_target<'a>(
         return Err(ContractError::NominalConfig);
     };
     Ok(match access {
-        NominalAccess::MakeRecord | NominalAccess::GetField => {
+        NominalAccess::MakeRecord | NominalAccess::GetField | NominalAccess::SetField => {
             let schema = types.record(&named).ok_or(ContractError::NominalConfig)?;
             if access == NominalAccess::MakeRecord {
                 NominalTarget::Record {
@@ -134,6 +134,20 @@ pub(crate) fn nominal_contract(
                     ..PortDescriptor::data_in("value", port_ty)
                 });
             }
+            ports.push(PortDescriptor::data_out(
+                "result",
+                ty,
+                OutputSource::Computed,
+            ));
+        }
+        (NominalAccess::SetField, NominalTarget::Field { ty, field }) => {
+            ports.push(PortDescriptor::data_in("record", ty.clone()));
+            let value = if field.optional {
+                option(&field.ty)?
+            } else {
+                expr(&field.ty)?
+            };
+            ports.push(PortDescriptor::data_in("value", value));
             ports.push(PortDescriptor::data_out(
                 "result",
                 ty,

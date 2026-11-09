@@ -411,3 +411,87 @@ fn compiled_record_and_enum_chains_fold() {
         })
     );
 }
+
+#[test]
+fn set_field_replaces_one_field_and_can_clear_or_keep_present_none() {
+    let point = record(POINT, vec![Some(Value::I64(1)), Some(s("a"))]);
+    let set_x = bind(Op::SetField, json!({"type":POINT,"field":"x"}));
+    assert_eq!(set_x.input_ports(), ["record", "value"]);
+    assert_eq!(
+        set_x.evaluate(&[point.clone(), Value::I64(9)]),
+        Ok(record(POINT, vec![Some(Value::I64(9)), Some(s("a"))]))
+    );
+    let set_label = bind(Op::SetField, json!({"type":POINT,"field":"label"}));
+    assert_eq!(
+        set_label.evaluate(&[point.clone(), Value::None]),
+        Ok(record(POINT, vec![Some(Value::I64(1)), None]))
+    );
+    let holder = record(HOLDER, vec![None, Some(Value::U32(1))]);
+    let set_maybe = bind(Op::SetField, json!({"type":HOLDER,"field":"maybe"}));
+    assert_eq!(
+        set_maybe.evaluate(&[holder, Value::Some(Arc::new(Value::None))]),
+        Ok(record(HOLDER, vec![Some(Value::None), Some(Value::U32(1))]))
+    );
+    assert_eq!(
+        set_x.evaluate(&[point.clone(), s("nine")]),
+        Err(KernelError::InputContract)
+    );
+    assert_eq!(set_x.evaluate(&[point]), Err(KernelError::InputContract));
+    let (package, snapshot) = catalog();
+    assert_eq!(
+        bind_in(
+            &package,
+            snapshot,
+            Op::SetField,
+            json!({"type":SHAPE,"field":"x"})
+        )
+        .unwrap_err(),
+        BindingError::InvalidConfig
+    );
+}
+
+#[test]
+fn compiled_set_field_uses_its_derived_contract() {
+    let (package, snapshot) = catalog();
+    let doc = graph(
+        &package,
+        vec![
+            node(
+                1,
+                Op::MakeRecord,
+                json!({"type":POINT}),
+                json!({
+                "x":literal("core/i64@1", &Value::I64(1)),
+                "label":literal("core/option@1<core/string@1>", &Value::None)}),
+            ),
+            node(
+                2,
+                Op::SetField,
+                json!({"type":POINT,"field":"label"}),
+                json!({
+                "value":literal("core/option@1<core/string@1>", &s("set"))}),
+            ),
+        ],
+        vec![edge(1, 1, "result", 2, "record")],
+        vec![json!({"id":"updated","node":id(2),"port":"result"})],
+    );
+    let doc = with_signatures(doc, &snapshot);
+    let analysis = analyze(&doc, &snapshot);
+    assert!(
+        analysis.is_ready_for_lowering(&doc, &snapshot),
+        "{:?}",
+        analysis.report().diagnostics
+    );
+    let plan = compile_pure(
+        &doc,
+        snapshot.clone(),
+        &analysis,
+        &package,
+        CompileOptions::default(),
+    )
+    .unwrap();
+    assert_eq!(
+        plan.constants()[plan.exports()[0].slot.index()],
+        FoldedValue::Value(record(POINT, vec![Some(Value::I64(1)), Some(s("set"))]))
+    );
+}

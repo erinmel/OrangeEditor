@@ -75,6 +75,9 @@ pub enum NominalAccess {
     MakeRecord,
     /// `record` input, `result` of `config.field` (`option<F>` when optional).
     GetField,
+    /// `record` and `value` (F, or `option<F>` when optional) inputs, `result` record
+    /// equal to `record` except `config.field`.
+    SetField,
     /// `payload` input when `config.variant` has one, `result` enum.
     MakeEnum,
     /// `value` enum input, `result: option<P>` of `config.variant`'s payload.
