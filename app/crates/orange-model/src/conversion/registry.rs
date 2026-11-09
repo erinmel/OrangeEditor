@@ -34,54 +34,28 @@ impl ConverterRegistryBuilder {
         }
     }
 
-    /// Starts a registry with the foundational numeric conversions used by v1 authoring.
+    /// Starts a registry with a Core conversion entry for every ordered pair of distinct
+    /// numeric scalar types (11 §6): exact widening is lossless-total, integer narrowing
+    /// and float-to-integer are checked-partial, and inexact integer-to-float is lossy.
     pub fn with_core_conversions(
         types: Arc<TypeRegistry>,
     ) -> Result<Self, ConverterRegistrationError> {
         let mut builder = Self::new(types);
-        builder.register_core_entry(core_definition(
-            "core/i32-to-i64",
-            "core/i32@1",
-            "core/i64@1",
-            ConversionClass::LosslessTotal,
-            vec![],
-            vec![],
-        )?)?;
-        builder.register_core_entry(core_definition(
-            "core/i64-to-i32",
-            "core/i64@1",
-            "core/i32@1",
-            ConversionClass::CheckedPartial,
-            vec![],
-            vec![ConverterErrorCode::new("core/OutOfRange")?],
-        )?)?;
-        builder.register_core_entry(core_definition(
-            "core/f32-to-f64",
-            "core/f32@1",
-            "core/f64@1",
-            ConversionClass::LosslessTotal,
-            vec![],
-            vec![],
-        )?)?;
-        builder.register_core_entry(core_definition(
-            "core/f64-to-f32",
-            "core/f64@1",
-            "core/f32@1",
-            ConversionClass::Lossy,
-            vec![
-                NamedPolicy {
-                    name: "rounding".to_owned(),
-                    choices: vec!["nearest-even".to_owned()],
-                    default: Some("nearest-even".to_owned()),
-                },
-                NamedPolicy {
-                    name: "overflow".to_owned(),
-                    choices: vec!["reject".to_owned()],
-                    default: Some("reject".to_owned()),
-                },
-            ],
-            vec![ConverterErrorCode::new("core/OutOfRange")?],
-        )?)?;
+        for (from, to) in NUMERIC
+            .iter()
+            .flat_map(|from| NUMERIC.iter().map(move |to| (*from, *to)))
+            .filter(|(from, to)| from != to)
+        {
+            let (class, policies, errors) = numeric_contract(from, to)?;
+            builder.register_core_entry(core_definition(
+                &format!("core/{from}-to-{to}"),
+                &format!("core/{from}@1"),
+                &format!("core/{to}@1"),
+                class,
+                policies,
+                errors,
+            )?)?;
+        }
         Ok(builder)
     }
 
@@ -335,6 +309,63 @@ impl ConverterRegistryBuilder {
         }
         Ok(())
     }
+}
+
+const NUMERIC: [&str; 6] = ["i32", "i64", "u32", "u64", "f32", "f64"];
+
+type NumericContract = (ConversionClass, Vec<NamedPolicy>, Vec<ConverterErrorCode>);
+
+fn policy(name: &str, choices: &[&str], default: &str) -> NamedPolicy {
+    NamedPolicy {
+        name: name.to_owned(),
+        choices: choices.iter().map(|&choice| choice.to_owned()).collect(),
+        default: Some(default.to_owned()),
+    }
+}
+
+/// Class, policies and errors of one Core numeric entry. Bit widths decide exactness:
+/// every i32/u32 value is exact in f64, every 32-bit unsigned value fits i64.
+fn numeric_contract(from: &str, to: &str) -> Result<NumericContract, ConverterRegistrationError> {
+    let float = |ty: &str| ty.starts_with('f');
+    let out_of_range = || ConverterErrorCode::new("core/OutOfRange");
+    Ok(match (float(from), float(to)) {
+        (false, false) => match (from, to) {
+            ("i32", "i64") | ("u32", "i64") | ("u32", "u64") => {
+                (ConversionClass::LosslessTotal, vec![], vec![])
+            }
+            _ => (
+                ConversionClass::CheckedPartial,
+                vec![],
+                vec![out_of_range()?],
+            ),
+        },
+        (false, true) => match (from, to) {
+            ("i32" | "u32", "f64") => (ConversionClass::LosslessTotal, vec![], vec![]),
+            _ => (
+                ConversionClass::Lossy,
+                vec![policy("rounding", &["nearest-even"], "nearest-even")],
+                vec![],
+            ),
+        },
+        (true, false) => (
+            ConversionClass::CheckedPartial,
+            vec![policy(
+                "rounding",
+                &["truncate", "floor", "ceiling", "nearest-even"],
+                "truncate",
+            )],
+            vec![ConverterErrorCode::new("core/NonFinite")?, out_of_range()?],
+        ),
+        (true, true) if from == "f32" => (ConversionClass::LosslessTotal, vec![], vec![]),
+        (true, true) => (
+            ConversionClass::Lossy,
+            vec![
+                policy("rounding", &["nearest-even"], "nearest-even"),
+                policy("overflow", &["reject"], "reject"),
+            ],
+            vec![out_of_range()?],
+        ),
+    })
 }
 
 fn core_definition(

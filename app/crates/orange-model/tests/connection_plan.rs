@@ -136,7 +136,7 @@ fn choice_required_and_rejected_outcomes_carry_no_commands() {
     let outcome = plan(&partial, request((1, "value"), (3, "value"))).unwrap();
     assert!(matches!(outcome, ConnectionOutcome::ChoiceRequired { .. }));
 
-    let none = pair("f64", "i64");
+    let none = pair("bool", "i64");
     let outcome = plan(&none, request((1, "value"), (3, "value"))).unwrap();
     assert!(matches!(
         outcome,
@@ -226,7 +226,7 @@ fn incompatible_connections_are_refused_independently_of_cached_arguments() {
             vec![
                 source(1),
                 add(2, json!({"type_args": args})),
-                typed_source(4, "f64"),
+                typed_source(4, "bool"),
             ],
             vec![data_edge(1, (1, "value"), (2, "a"))],
         );
@@ -234,7 +234,7 @@ fn incompatible_connections_are_refused_independently_of_cached_arguments() {
         assert!(matches!(
             plan(&doc, request((4, "value"), (2, "b"))).unwrap(),
             ConnectionOutcome::Rejected(SelectionRejection::NoDirectConverter { from, to })
-                if from.as_str() == "core/f64@1" && to.as_str() == "core/i64@1"
+                if from.as_str() == "core/bool@1" && to.as_str() == "core/i64@1"
         ));
         assert_eq!(content(&doc), before);
     }

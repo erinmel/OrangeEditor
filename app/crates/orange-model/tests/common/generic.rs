@@ -138,7 +138,7 @@ pub fn document(nodes: Vec<Json>, edges: Vec<Json>) -> GraphDocument {
 
 /// A non-generic node with a single data port `value` of type `core/<ty>@1`: an output
 /// (`typed_source`) or an input (`typed_sink`). Types must be one of `TYPED`.
-pub const TYPED: [&str; 3] = ["i32", "i64", "f64"];
+pub const TYPED: [&str; 4] = ["i32", "i64", "f64", "bool"];
 
 pub fn typed_source(n: u8, ty: &str) -> Json {
     json!({"id": node_id(n), "definition_id": format!("org.test/out-{ty}"), "definition_version": 1,
