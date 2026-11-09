@@ -1,0 +1,42 @@
+/// OrangeEditor package interface (ADR-03, K02b). Versioned with the host API.
+package orange:expansion@1.0.0;
+
+/// Shared types. A `value` is one Orange literal in the `orange.value.v1` codec: the
+/// JSON text of `{"type": <canonical type>, "value": ...}`, or `"bits"` for floats
+/// (12 §6). The host checks every value against the type it expects.
+interface types {
+    type value = string;
+
+    /// A node failure the guest reports itself. `code` is a namespaced error code
+    /// (`namespace/Name`) and `message-key` a namespaced catalogue key; no free text.
+    record node-error {
+        code: string,
+        message-key: string,
+    }
+}
+
+/// Always granted: facts about the host.
+interface host {
+    /// The host API version as (major, minor).
+    api-version: func() -> tuple<u16, u16>;
+}
+
+/// Granted only with the `log` permission. The host bounds and may drop entries.
+interface log {
+    write: func(message: string);
+}
+
+/// Pure node implementations contributed by the package.
+interface nodes {
+    use types.{value, node-error};
+
+    /// Evaluates `definition` (a namespaced definition ID) on its inputs in declared
+    /// port order, returning outputs in declared port order.
+    evaluate: func(definition: string, inputs: list<value>) -> result<list<value>, node-error>;
+}
+
+world plugin {
+    import host;
+    import log;
+    export nodes;
+}

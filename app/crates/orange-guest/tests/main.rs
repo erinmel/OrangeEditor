@@ -1,5 +1,7 @@
 //! K02a probe: one engine, isolated instances, deterministic fuel, host interruption,
 //! memory limits, stack overflow and refused ungranted imports (ADR-03 falsification).
+mod plugin;
+
 use std::time::Duration;
 
 use orange_guest::{GuestEngine, GuestError, GuestInstance, GuestLimits, GuestTrap};
