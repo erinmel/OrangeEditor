@@ -144,6 +144,9 @@ diagnostics! { subject;
     ManualPayload => ("E-MANUAL-PAYLOAD", "core/graph-manual-payload", Error, {
                 "A manual entry payload must name a concrete registered type, and no other field is allowed.".into()
             });
+    NominalConfig => ("E-NOMINAL-CONFIG", "core/graph-nominal-config", Error, {
+                "A record or enum node must name a registered record or enum type and an existing field or variant, and no other field.".into()
+            });
     TimerConfig => ("E-TIMER-CONFIG", "core/graph-timer-config", Error, {
                 "A timer entry needs a positive interval or a non-negative delay in nanoseconds, and only its documented fields.".into()
             });

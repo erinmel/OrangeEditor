@@ -225,6 +225,15 @@ impl MathPackage {
                 .insert((definition.definition.clone(), definition.config_version));
             builder = builder.definition(definition);
         }
+        for definition in crate::nominal_definitions()? {
+            collections
+                .implements
+                .insert((definition.definition.clone(), definition.config_version));
+            collections
+                .specializations
+                .insert(definition.definition.clone(), vec![TypeArgs::new()]);
+            builder = builder.definition(definition);
+        }
         Ok(builder
             .provider(provider)
             .provider(text)

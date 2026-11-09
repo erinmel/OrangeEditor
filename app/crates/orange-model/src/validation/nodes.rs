@@ -429,6 +429,7 @@ pub(crate) fn contract_code(error: ContractError) -> DiagnosticCode {
         ContractError::ConverterOptions => DiagnosticCode::ConverterOptions,
         ContractError::ConverterProvider => DiagnosticCode::ProviderUnavailable,
         ContractError::ConverterPackageLockMissing => DiagnosticCode::PackageLockMissing,
+        ContractError::NominalConfig => DiagnosticCode::NominalConfig,
     }
 }
 

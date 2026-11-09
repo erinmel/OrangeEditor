@@ -202,7 +202,7 @@ pub struct ResolvedCollection {
     container: ValueShape,
 }
 
-fn check(shape: &ValueShape, value: &Value) -> Result<usize, KernelError> {
+pub(crate) fn check(shape: &ValueShape, value: &Value) -> Result<usize, KernelError> {
     shape
         .checked_charge(value, MAX_COLLECTION_BYTES)
         .map_err(|error| match error {
@@ -211,7 +211,7 @@ fn check(shape: &ValueShape, value: &Value) -> Result<usize, KernelError> {
         })
 }
 /// `option<T>` stores a present value bare unless T itself can be a bare None.
-fn some(inner: &ValueShape, value: Value) -> Value {
+pub(crate) fn some(inner: &ValueShape, value: Value) -> Value {
     if inner.unboxed_none() {
         Value::Some(Arc::new(value))
     } else {

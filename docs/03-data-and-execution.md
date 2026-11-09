@@ -1012,3 +1012,11 @@ refused above 16 MiB before they are built. Lists reuse packed storage
 (`ListBuilder`, `ListRepr::concat`); map lookups compare Core hash keys by value
 and keep insertion order. Lookups are linear. Record/enum construction and JSON
 operations are later L04 slices.
+
+### L04b record and enum nodes (2026-11-08)
+
+Record/enum nodes bind to the record or enum shape resolved from the locked schema
+(12 §4.6, 11 §5.9). Construction checks the built value against that shape, so a
+wrong field value is an internal contract fault, never a stored invalid record.
+Optional fields use the option boxing rule instead of optional ports, so the pure
+compiler needs no new port form. JSON nodes remain the last L04 slice.

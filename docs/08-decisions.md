@@ -629,3 +629,10 @@ not intrinsics; per-element graph logic stays in the existing zones. Generic nod
 list no provider specializations and bind to the concrete container shape, as the
 comparisons do; membership tests require host-executable `eq`. Results are new
 values capped at 16 MiB of nominal charge.
+
+Record/enum node amendment (2026-11-08; ADR-16/21, FR-08/12): record and enum
+construction/projection are ordinary package definitions whose ports the registry
+derives from config and the locked schema (`Ports::Nominal`), not intrinsics.
+Optional fields are `option<F>` ports, relying on 12 §7 boxing to keep missing and
+present None distinct, so no optional-port compiler form is needed. Payload-free
+variant projection is refused in favour of enum Switch.

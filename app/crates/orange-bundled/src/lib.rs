@@ -19,6 +19,7 @@ mod error;
 mod float;
 mod integer;
 mod kernel;
+mod nominal;
 mod text;
 mod text_conversion;
 
@@ -33,4 +34,5 @@ pub use error::{BindingError, CatalogError, ConversionError, KernelError};
 pub use float::{FloatOperation, ResolvedFloat, float_definitions};
 pub use integer::{IntegerOperation, ResolvedInteger, integer_definitions};
 pub use kernel::{Operation, ResolvedKernel};
+pub use nominal::{NominalOperation, ResolvedNominal, nominal_definitions};
 pub use text::{MAX_TEXT_BYTES, ResolvedText, TextOperation, TextUnit, text_definitions};

@@ -279,3 +279,8 @@ trimming use Unicode default rules, not the UI language.
 
 L04a collections (2026-11-08): collection nodes reuse `core/OutOfRange`,
 `core/LimitExceeded` and the kernel contract fault; no new message key or argument.
+
+L04b (2026-11-08): `E-NOMINAL-CONFIG` uses `core/graph-nominal-config` with zero
+arguments and the safe fallback "A record or enum node must name a registered record
+or enum type and an existing field or variant, and no other field." It never echoes
+config text.

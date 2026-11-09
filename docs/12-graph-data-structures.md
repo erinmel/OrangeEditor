@@ -811,6 +811,26 @@ container type of the first input and refuses unsupported shapes. IDs below have
 `core/option@1`.) `CollectionOperation`, `ResolvedCollection` and
 `MathPackage::resolve_collection` expose the same contracts to embedders.
 
+### 4.6 Bundled record and enum definitions
+
+L04b (2026-11-08) adds four `org.orange.collections` definitions with
+`Ports::Nominal`: version/config version 1, Pure, deterministic, no type
+parameters, and a closed config schema with a required string `type` plus `field`
+or `variant`. The registry derives each node's contract from that config
+(`orange_model::catalog::nominal`), so the saved signature must match it.
+
+| ID suffix | Config | Inputs | Output `result` |
+|---|---|---|---|
+| `make-record` | `type` | one per field (F, or `option<F>` if optional) | the record |
+| `get-field` | `type`, `field` | `record` | F, or `option<F>` if optional |
+| `make-enum` | `type`, `variant` | `payload: P` when declared | the enum |
+| `enum-payload` | `type`, `variant` (with a payload) | `value` | `option<P>` |
+
+`NominalOperation`, `ResolvedNominal` (with `input_ports`) and
+`MathPackage::resolve_nominal` expose the same contracts to embedders. The new
+`Ports::Nominal(NominalAccess)` variant and `ContractError::NominalConfig` are
+unfrozen API additions; no saved graph field changes.
+
 ## 5. Type and converter definitions
 
 ```json

@@ -67,6 +67,20 @@ pub enum EventAccess {
     Await,
 }
 
+/// Record/enum construction and projection nodes whose ports follow the registered
+/// nominal schema named by `config.type` (11 §5.9).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NominalAccess {
+    /// One input per field in schema order (optional fields as `option<F>`), `result`.
+    MakeRecord,
+    /// `record` input, `result` of `config.field` (`option<F>` when optional).
+    GetField,
+    /// `payload` input when `config.variant` has one, `result` enum.
+    MakeEnum,
+    /// `value` enum input, `result: option<P>` of `config.variant`'s payload.
+    EnumPayload,
+}
+
 /// Where a definition's ports come from.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Ports {
@@ -86,6 +100,8 @@ pub enum Ports {
     /// `core/on-timer` and `core/on-timeout`: fixed tick outputs whose schedule comes from
     /// a config checked by [`TimerSchedule::from_node`](super::TimerSchedule::from_node).
     Timer,
+    /// Pure record/enum nodes whose ports follow a registered nominal schema.
+    Nominal(NominalAccess),
 }
 
 /// Inputs needed to evaluate one volatile definition.
@@ -190,4 +206,6 @@ pub enum ContractError {
     ConverterProvider,
     #[error("converter package provider has no unique package lock entry")]
     ConverterPackageLockMissing,
+    #[error("record/enum node config must name a registered type and an existing member")]
+    NominalConfig,
 }

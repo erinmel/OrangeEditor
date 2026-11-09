@@ -1,8 +1,9 @@
 //! Trusted native adapter. The compiler itself has no bundled-provider dependency.
 use crate::{
     BindingError, CollectionOperation, Comparison, FloatOperation, IntegerOperation, MathPackage,
-    Operation, ResolvedCollection, ResolvedComparison, ResolvedConversion, ResolvedFloat,
-    ResolvedInteger, ResolvedKernel, ResolvedText, TextOperation, resolve_core_conversion,
+    NominalOperation, Operation, ResolvedCollection, ResolvedComparison, ResolvedConversion,
+    ResolvedFloat, ResolvedInteger, ResolvedKernel, ResolvedText, TextOperation,
+    resolve_core_conversion,
 };
 use orange_compiler::{
     BindingRequest, KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError,
@@ -72,6 +73,26 @@ impl PureKernelResolver for MathPackage {
                 inputs: ports(operation.input_ports())?,
                 outputs: ports(&[operation.output_port()])?,
                 kernel: Arc::new(Native::Integer(kernel)),
+            });
+        }
+        if NominalOperation::from_definition_id(definition.id.as_str()).is_some() {
+            let kernel = self
+                .resolve_nominal(
+                    request.snapshot().clone(),
+                    provider,
+                    definition,
+                    request.config_version(),
+                    request.config(),
+                )
+                .map_err(|error| match error {
+                    BindingError::UnsupportedType => ResolveError::UnsupportedType,
+                    _ => ResolveError::Unavailable,
+                })?;
+            let inputs: Vec<&str> = kernel.input_ports().iter().map(String::as_str).collect();
+            return Ok(KernelBinding {
+                inputs: ports(&inputs)?,
+                outputs: ports(&["result"])?,
+                kernel: Arc::new(Native::Nominal(kernel)),
             });
         }
         if let Some(operation) = CollectionOperation::from_definition_id(definition.id.as_str()) {
@@ -221,6 +242,7 @@ enum Native {
     Float(ResolvedFloat),
     Text(ResolvedText),
     Collection(ResolvedCollection),
+    Nominal(crate::ResolvedNominal),
     Comparison(ResolvedComparison),
     Conversion(ResolvedConversion),
 }
@@ -233,6 +255,16 @@ impl PureKernel for Native {
     fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
         match self {
             Self::Integer(kernel) => {
+                let [output] = outputs else {
+                    return Err(CONTRACT);
+                };
+                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
+                    code: error.code(),
+                    message_key: error.message_key(),
+                    message: error.message(),
+                })?;
+            }
+            Self::Nominal(kernel) => {
                 let [output] = outputs else {
                     return Err(CONTRACT);
                 };
