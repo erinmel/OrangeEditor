@@ -1,8 +1,40 @@
 # Tooling, environment and research register
 
+## K02c — package nodes from archives — 2026-11-08
+
+Branch `k02c-guest-nodes` from dev `1879623` (K02b PR161). Same toolchains; no new
+dependency. `orange-guest` now depends on `orange-compiler` and `orange-packages`
+(normal) and `orange-bundled` (dev, to compose with bundled math); the metadata
+policy records all three. New API: `GuestPackage::from_archive`, `WithGuests<R>`
+(implements `PureKernelResolver` and `EntropyKernelResolver`), `GuestLoadError`,
+`PLUGIN_WORLD_PREFIX` and the interning bounds.
+
+Two new tests: the probe component is packed into a canonical `.orangeplug`, read back
+with `read_archive`, installed through `PackageStore` with two decoded definitions,
+selected for new bindings, and a graph authored with `new_node_edit` chains bundled
+`org.orange.math/add` into the guest's `add`; `compile_pure` folds 42 through both
+providers, the guest's overflow keeps its node and the guest's own
+`core/NumericOverflow` / `org.example.probe/failed` identifiers, a guest panic is
+`core/PackageFault` / `core/guest-trap` on its own node, and the bundled resolver
+alone reports `KernelUnavailable`. Loading refuses an undeclared provider ID, another
+world name and a different world major version. The archive test uses the same
+`ORANGE_GUEST_PROBE` override as the plugin tests, so CI's guest job covers it.
+
+| Command | Result |
+|---|---|
+| `cargo test -p orange-guest` | 14 passed |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,623 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test`; `node --test tools/*.test.mjs` | Pass; 19 fixtures; 17 passed |
+
+Limits: Pure nodes only, one instance per binding, no instance pooling, no hot
+replacement or drain of loaded packages, no manifest-permission interpretation.
+No timing or memory probe ran.
+
 ## K02b — package interface and Rust guest — 2026-11-08
 
-Branch `k02b-guest-interface` from dev `c8afe7b` (K02a PR160). Selected by the user: a
+Merged as PR161. Branch `k02b-guest-interface` from dev `c8afe7b` (K02a PR160). Selected by the user: a
 Rust guest toolchain and the literal codec at the boundary. Guest side (separate
 `sdk/` workspace, own `rust-toolchain.toml` = 1.99.1 + `wasm32-unknown-unknown`):
 `wit-bindgen =0.63.0` (2026-10-14), `wit-component =0.262.0` (2026-10-13, the

@@ -296,3 +296,8 @@ K02a/K02b guest errors (2026-11-08): `GuestError` keys are `core/guest-engine`,
 all zero-argument. Guest-reported node errors carry only a namespaced code and
 message key from the package's own catalogue; guest log text is diagnostic data,
 bounded and never shown as translated UI text.
+
+K02c (2026-11-08): a guest fault reaches graph errors as `core/PackageFault` with the
+zero-argument `GuestError` key; a guest-reported node error keeps the package's own
+namespaced code and catalogue key. Its fallback text is the host's static "A package
+node reported an error."; guest text is never shown as the message.

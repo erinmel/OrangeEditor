@@ -665,3 +665,11 @@ because the SDK must ship generated Rust bindings. Graph values cross the bounda
 codec for every type instead of a second typed encoding; WIT cannot express recursive
 values, and serialization cost is accepted until measured (performance deferred).
 Imports are linked per grant; guest-reported errors are namespaced identifiers only.
+
+Guest kernel fault amendment (2026-11-08; K02c, ADR-03/16): `KernelFault` keeps its
+static-text ABI. Guest-reported error identifiers are validated, then interned into a
+bounded process-wide table (4,096 entries, 128 bytes each) rather than widening the
+compiler's fault type across about 100 sites; overflow and invalid identifiers map to
+`core/PackageFault`. Revisit with an owned/shared fault text type if packages need
+unbounded code sets or unloadable text. Guest kernels compose with the host resolver
+through `orange_guest::WithGuests`, so embedders still pass one resolver.
