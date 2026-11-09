@@ -381,6 +381,29 @@ The initial host policy form is a named finite set of string choices, with an op
 
 The four initial core converter implementations (N1b) execute i32→i64 exactly, i64→i32 with checked `core/OutOfRange`, f32→f64 losslessly and f64→f32 under the saved nearest-even/reject policies. Float widening preserves sign, signed zero, infinity and NaN signaling/quiet/payload bits; a 23-bit f32 NaN fraction maps into the high 23 bits of the f64 fraction with 29 low zero bits. Float narrowing rejects finite magnitudes greater than the exact f32 maximum, even if a native cast would round such a value down to that maximum; existing infinities are preserved. Finite in-range values use nearest-even rounding, retaining signed zero. A NaN keeps its sign and high 23 fraction bits; when truncation would produce a zero fraction, fraction 1 is used to retain NaN. The lossy success output is `loss: core/json@1` containing `{"lost": boolean}`: true exactly when widening the result back to f64 does not reproduce the original bits, including dropped NaN payload bits and underflow. It contains no raw input/output values. The other three entries have no loss output. These rules execute explicit converter nodes only and do not authorize implicit casts or compiler constant folding.
 
+L02d numeric casts (2026-11-08): the Core registry has exactly one entry for every
+ordered pair of distinct i32/i64/u32/u64/f32/f64 types (30 entries), ID
+`core/<from>-to-<to>`, contract version 1, all executed by the Core provider:
+
+| Pair | Class | Policies | Errors |
+|---|---|---|---|
+| i32→i64, u32→i64, u32→u64 | lossless-total | none | none |
+| other integer→integer | checked-partial | none | `core/OutOfRange` |
+| i32→f64, u32→f64 | lossless-total | none | none |
+| other integer→float | lossy | `rounding`: nearest-even | none |
+| float→integer | checked-partial | `rounding`: truncate (default) / floor / ceiling / nearest-even | `core/NonFinite`, `core/OutOfRange` |
+| f32→f64 / f64→f32 | lossless-total / lossy | as N1b above | as N1b above |
+
+Integer narrowing never wraps or saturates. Integer→float rounds to nearest, ties to
+even, and its `loss` output is `{"lost": true}` exactly when the result differs
+from the source integer; the comparison is exact, with no float intermediate.
+Float→integer rejects NaN and ±∞ with `core/NonFinite`, applies the saved rounding,
+then rejects a rounded value outside the target range with `core/OutOfRange`; -0
+and values that round to zero yield 0. Rounding is the explicit request, so
+float→integer reports no loss. An f32 source is widened exactly before rounding.
+Because more pairs now have a unique lossless-total entry, rule 3 auto-inserts
+visible converters for them (for example i32→f64); f64→i64 now requires a choice.
+
 ## 7. Regions, availability, ordering and determinism
 
 ### 7.1 Regions

@@ -528,7 +528,7 @@ The host authenticates the native build digest supplied to `MathPackage`; the li
 
 `resolve_core_conversion(snapshot, config, provider)` binds only the existing registered Core implementation of `core/i32-to-i64`, `core/i64-to-i32`, `core/f32-to-f64` or `core/f64-to-f32`, contract version 1. It checks endpoint types/class and complete saved options against the snapshot. It never fills new-binding defaults or substitutes Core for a selected package provider. `ResolvedConversion` retains the Arc snapshot and entry; `evaluate` accepts one Value of the source type and returns `ConversionOutput { result, loss }` or a typed `ConversionError`. Graph/node version checks and fresh analysis remain caller responsibilities. No graph compilation or constant-folding evidence is produced.
 
-The exact float range/NaN/rounding/loss rules are normative in [11 §6](11-graph-language.md). Loss metadata is always present on f64→f32 success, contains only `{"lost": boolean}` and compares original bits with exact widening of the output. It excludes raw values and is prebuilt as two shared immutable JSON Values at binding, so evaluation performs no JSON parsing, registry/name lookup or new buffer construction. Checked range failures use `core/OutOfRange`; wrong runtime Value variants use `core/InternalFault`. Integer/float widening and checked integer narrowing have no loss output. Conversions beyond these four, package execution, compiler lowering and reference graph evaluation remain separate work.
+The exact float range/NaN/rounding/loss rules are normative in [11 §6](11-graph-language.md). Loss metadata is always present on f64→f32 success, contains only `{"lost": boolean}` and compares original bits with exact widening of the output. It excludes raw values and is prebuilt as two shared immutable JSON Values at binding, so evaluation performs no JSON parsing, registry/name lookup or new buffer construction. Checked range failures use `core/OutOfRange`; wrong runtime Value variants use `core/InternalFault`. Integer/float widening and checked integer narrowing have no loss output. L02d (2026-11-08) extends Core execution to all 30 numeric pairs under the rules in 11 §6; package converter execution remains separate work.
 
 ## Definition, graph, profile and package consistency
 
@@ -972,3 +972,14 @@ cosine outside [-1, 1] report `core/Domain` under finite policy. The ten predica
 return bool for every input, NaN included, and have no policy. Boolean `xor` is an
 eager scalar kernel beside `not`. No allocation, registry read or host call occurs
 during evaluation. Only the remaining numeric casts are left in L02.
+
+### L02d numeric casts (2026-11-08)
+
+`resolve_core_conversion` now binds every Core numeric entry. It derives the
+endpoint types from the registered entry, requires the entry ID and class to match
+the fixed Core contract for that pair, and accepts exactly the declared options;
+registry metadata cannot widen an executable contract. Integer sources are compared
+through i128, so range and loss checks never use a float intermediate. Float→integer
+conversion reports `core/NonFinite` (`ConversionError::NonFinite`) before range.
+Compiler folds and runtime demands use the same binding. This completes the L02
+numeric vocabulary; strings, collections, package kernels and embedding remain.

@@ -261,3 +261,7 @@ new key or argument is added. Operand and policy values are never interpolated.
 
 L02c (2026-11-08): trigonometry reuses `core/NonFinite` and `core/Domain`; the
 predicates and XOR raise no semantic errors. No message key or argument is added.
+
+L02d conversions (2026-11-08): float→integer conversion adds `core/NonFinite` with
+key `core/conversion-non-finite` and safe fallback "The value is not finite and has
+no integer conversion." It has zero arguments and never includes the value.

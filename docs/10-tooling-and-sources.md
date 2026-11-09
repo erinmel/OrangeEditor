@@ -1,5 +1,35 @@
 # Tooling, environment and research register
 
+## L02d — numeric casts — 2026-11-08
+
+Branch `l02d-numeric-casts`, based on dev `896b91f` (L02c PR152, all nine hosted
+checks green). Same local toolchain as L02b; MSRV 1.97.1 is checked by hosted CI.
+Integer→float uses Rust `as` casts (round to nearest, ties to even, documented for
+every integer width); `round_ties_even` and `i128` are stable before 1.97.1. No
+dependency, feature or lockfile change.
+
+`ConverterRegistryBuilder::with_core_conversions` now registers 30 entries, one per
+ordered pair of distinct numeric scalars, and `resolve_core_conversion` executes all
+of them. Nine new public tests check every entry's class/policies/errors; every
+integer pair across thirteen boundary probes; ties-to-even and exact loss for
+integer→f32/f64 at 2^24 and 2^53; the four rounding modes on halves, -0 and
+integers from f32 and f64; NonFinite and range limits at ±2^63, 2^64, i32/u32
+bounds; policy refusals; and constant folds that keep converter fault provenance.
+Three 128-case properties compare i64→f64 with native rounding and loss, truncation
+against `trunc`, and u32 round trips. Two model tests that used f64→i64 as a pair
+without a converter now use bool→i64, since f64→i64 has a checked entry.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,568 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
+Limits: no wrapping/saturating cast policy and no float→integer "exact" policy; the
+editor's auto-insert rule now applies to the new lossless pairs. No timing or memory
+probe ran.
+
 ## L02c — trigonometry, float predicates and XOR — 2026-11-08
 
 Branch `l02c-float-trig-compare`, based on dev `2feae34` (L02b PR151, all nine
