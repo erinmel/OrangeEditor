@@ -1,5 +1,32 @@
 # Tooling, environment and research register
 
+## L03b — text nodes — 2026-11-08
+
+Branch `l03b-text-nodes`, stacked on L03a (PR154). Same local toolchain as L02b;
+MSRV 1.97.1 is checked by hosted CI. Uses std `str` search/split/replace/trim,
+`to_uppercase`/`to_lowercase` and `char_indices`; Unicode data is the toolchain's
+`char::UNICODE_VERSION`. No dependency, feature or lockfile change.
+
+The bundled build now publishes `org.orange.text` (16 definitions) under a second
+exact provider key. Nine public tests check known answers for all sixteen nodes;
+scalar versus byte `find`/`substring`, bounds, overflow and inside-scalar byte
+faults; empty pattern/separator rules, locale-independent case mapping, generic and
+packed list storage for `join`; 16 MiB limits for concat, replace, join and an
+expanding uppercase; binding refusals, provider separation and snapshot pinning;
+and a compiled chain folding concat→uppercase→substring/byte-length with
+`core/Domain` provenance. Three 128-case properties check split/join round trips,
+scalar substrings partitioning the text and byte `find` offsets.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass after one `explicit_auto_deref` fix |
+| `cargo test --workspace --all-features` | **1,588 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
+Limits: no grapheme unit, normalization or locale tailoring. Scalar indexing is
+linear in the index. No timing or memory probe ran.
+
 ## L03a — text conversions — 2026-11-08
 
 Branch `l03a-text-conversions`, based on dev `91ee039` (L02d PR153, all nine

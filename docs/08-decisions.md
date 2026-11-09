@@ -615,3 +615,10 @@ casts. Formats are invariant and locale-free. Float display uses shortest
 round-trip digits in an ECMAScript-like layout with signed zero kept; parsing is
 correctly rounded in the target precision. Strict and replacing UTF-8 decode are
 separate entries, so a lossy decode is never chosen implicitly.
+
+Text package amendment (2026-11-08; ADR-16/21, FR-11): string nodes live in their
+own ordinary package, `org.orange.text`, rather than the math namespace. The same
+bundled native build provides it under a second exact provider key, so embedders
+still pass one resolver. Indexing names its unit (scalar default, byte explicit);
+graphemes wait for an exact Unicode segmentation dependency. Case mapping is
+Unicode default, locale-independent. Text results are capped at 16 MiB.

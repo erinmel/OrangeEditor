@@ -359,6 +359,33 @@ Core `eq`/`ord`, so Switch, map keys and generic `equal`/`less` still refuse flo
 `core/bool@1`, no type parameters, empty config. Unlike the lazy `core/and`/`core/or`
 intrinsics, both operands are always evaluated, since both decide the result.
 
+### 5.7 Text vocabulary (L03b, 2026-11-08)
+
+[12 §4.4](12-graph-data-structures.md) lists sixteen ordinary pure `org.orange.text`
+definitions. Strings are UTF-8 `core/string@1` values; inputs are strict and nothing
+reads a machine or UI locale.
+
+- **Units.** `byte-length` counts UTF-8 bytes and `scalar-length` Unicode scalar
+  values. `find` and `substring` take `unit`: `scalar` (default) or `byte`.
+  Grapheme clusters are not a unit yet: a base letter plus a combining mark is two
+  scalars. `find` returns the first match's index in the chosen unit, or None; an
+  empty pattern is found at 0. `substring(text, start, length)` faults with
+  `core/OutOfRange` when `start + length` passes the end (or overflows), and with
+  `core/Domain` when a byte index falls inside a scalar. Indexes are `u64`.
+- **Search and edit.** `contains`, `starts-with` and `ends-with` compare scalar
+  sequences exactly, with no normalization; an empty pattern always matches.
+  `replace` replaces every non-overlapping match left to right; an empty pattern is
+  `core/Domain`. `split` returns every piece, empty ones included (`""` gives
+  `[""]`); an empty separator is `core/Domain`. `join` inserts the separator
+  between items of a `list<string>`.
+- **Unicode rules.** `trim`, `trim-start` and `trim-end` remove Unicode White_Space.
+  `to-uppercase`/`to-lowercase` use Unicode default full case mapping (`ß` → `SS`,
+  final sigma), never a locale's tailoring (no Turkish dotless i). The Unicode data
+  version is the toolchain's `char::UNICODE_VERSION`, so it is part of the locked
+  build like other provider code.
+- **Size limit.** A result longer than 16 MiB of UTF-8 (`MAX_TEXT_BYTES`) faults
+  with `core/LimitExceeded` before it is built. Work is linear in input and output.
+
 ## 6. Conversions
 
 1. The compiler never converts. Every conversion is a `core/convert` node that names a **converter registry entry**.
