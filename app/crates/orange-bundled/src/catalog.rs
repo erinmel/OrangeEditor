@@ -86,9 +86,14 @@ pub fn math_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
 
 /// A bundled build identity authenticated by the host. This API validates digest syntax;
 /// it does not hash executable bytes or authenticate the caller's build assertion.
+///
+/// One native build provides two ordinary packages: `org.orange.math` (numeric and
+/// boolean vocabulary) and `org.orange.text` (string vocabulary). Each has its own
+/// exact provider key; a graph locks whichever packages its nodes use.
 #[derive(Debug, Clone)]
 pub struct MathPackage {
     key: ProviderKey,
+    text: ProviderKey,
 }
 
 impl MathPackage {
@@ -107,6 +112,12 @@ impl MathPackage {
             key: ProviderKey {
                 package: "org.orange.math".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
+                content_digest: content_digest.clone(),
+                id: "native-v1".into(),
+            },
+            text: ProviderKey {
+                package: "org.orange.text".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
                 content_digest,
                 id: "native-v1".into(),
             },
@@ -115,6 +126,11 @@ impl MathPackage {
 
     pub fn provider_key(&self) -> &ProviderKey {
         &self.key
+    }
+
+    /// The exact provider of the `org.orange.text` definitions in this build.
+    pub fn text_provider_key(&self) -> &ProviderKey {
+        &self.text
     }
 
     /// Adds definitions and this exact provider to an unpublished builder. Duplicate
@@ -171,7 +187,19 @@ impl MathPackage {
                 .insert(definition.definition.clone(), supported);
             builder = builder.definition(definition);
         }
-        Ok(builder.provider(provider))
+        let mut text = ProviderDescriptor {
+            key: self.text.clone(),
+            implements: Default::default(),
+            specializations: Default::default(),
+        };
+        for definition in crate::text_definitions()? {
+            text.implements
+                .insert((definition.definition.clone(), definition.config_version));
+            text.specializations
+                .insert(definition.definition.clone(), vec![TypeArgs::new()]);
+            builder = builder.definition(definition);
+        }
+        Ok(builder.provider(provider).provider(text))
     }
 
     /// Resolves an exact native binding once, before execution. The caller supplies fresh

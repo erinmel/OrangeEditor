@@ -47,6 +47,7 @@ mod seeded_equivalence;
 mod stream_bridges;
 mod streams;
 mod text_conversions;
+mod texts;
 mod third_party_package;
 mod workspace_values;
 mod zone_epochs;

@@ -2,7 +2,7 @@
 use crate::{
     BindingError, Comparison, FloatOperation, IntegerOperation, MathPackage, Operation,
     ResolvedComparison, ResolvedConversion, ResolvedFloat, ResolvedInteger, ResolvedKernel,
-    resolve_core_conversion,
+    ResolvedText, TextOperation, resolve_core_conversion,
 };
 use orange_compiler::{
     BindingRequest, KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError,
@@ -72,6 +72,23 @@ impl PureKernelResolver for MathPackage {
                 inputs: ports(operation.input_ports())?,
                 outputs: ports(&[operation.output_port()])?,
                 kernel: Arc::new(Native::Integer(kernel)),
+            });
+        }
+        if let Some(operation) = TextOperation::from_definition_id(definition.id.as_str()) {
+            let kernel = self
+                .resolve_text(
+                    request.snapshot().clone(),
+                    provider,
+                    definition,
+                    request.config_version(),
+                    request.config(),
+                )
+                .map_err(|_| ResolveError::Unavailable)?;
+            let inputs: Vec<&str> = operation.inputs().iter().map(|(name, _)| *name).collect();
+            return Ok(KernelBinding {
+                inputs: ports(&inputs)?,
+                outputs: ports(&[operation.output_port()])?,
+                kernel: Arc::new(Native::Text(kernel)),
             });
         }
         if let Some(operation) = FloatOperation::from_definition_id(definition.id.as_str()) {
@@ -173,6 +190,7 @@ enum Native {
     Math(ResolvedKernel),
     Integer(ResolvedInteger),
     Float(ResolvedFloat),
+    Text(ResolvedText),
     Comparison(ResolvedComparison),
     Conversion(ResolvedConversion),
 }
@@ -185,6 +203,16 @@ impl PureKernel for Native {
     fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
         match self {
             Self::Integer(kernel) => {
+                let [output] = outputs else {
+                    return Err(CONTRACT);
+                };
+                *output = kernel.evaluate(inputs).map_err(|error| KernelFault {
+                    code: error.code(),
+                    message_key: error.message_key(),
+                    message: error.message(),
+                })?;
+            }
+            Self::Text(kernel) => {
                 let [output] = outputs else {
                     return Err(CONTRACT);
                 };
