@@ -642,3 +642,17 @@ fourth bundled package, `org.orange.json`, that navigates validated text rather
 than a parsed tree, so exact number text survives without a new serde feature.
 Duplicate keys resolve last-wins. Wrong-kind navigation is `core/Domain`, typed
 reads of another kind are None, and parse/text are Core converters.
+
+ADR-03 runtime selection (2026-11-08; K02a, selected by the user): the component
+runtime is Wasmtime **48.0.8**, an LTS release (every twelfth major version; 24 months
+of security support, MSRV 1.95.0 below ours). Normal releases (50.0.1 was current)
+are supported for two months, too short for the SDK boundary; the next LTS is 60.
+Only the `runtime`, `cranelift`, `component-model` and `std` features are enabled:
+no WASI, async runtime, compilation cache or debug support. It lives in the host
+crate `orange-guest`; graph-core crates never depend on it (ADR-21, metadata policy).
+Precompiled native artifacts are never loaded, so the crate needs no unsafe code.
+`deny.toml` now allows `Apache-2.0 WITH LLVM-exception` (Cranelift/Wasmtime) and
+`BSD-3-Clause` (required with MIT/Apache by `encoding_rs`, used for component
+string transcoding). The K02a probe (10) meets the ADR-03 isolation items for traps,
+fuel, interruption, memory limits and denied imports; host capability imports,
+package-archive loading, hot replacement and W3 benchmarks remain open.
