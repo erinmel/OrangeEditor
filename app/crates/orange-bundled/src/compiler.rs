@@ -230,14 +230,7 @@ impl PureKernel for Native {
                 let value = conversion.evaluate(input).map_err(|error| KernelFault {
                     code: error.code(),
                     message_key: error.message_key(),
-                    message: match error {
-                        crate::ConversionError::OutOfRange => {
-                            "The value is outside the target conversion range."
-                        }
-                        crate::ConversionError::InputContract => {
-                            "Converter input violates the resolved contract."
-                        }
-                    },
+                    message: error.message(),
                 })?;
                 match (outputs, value.loss) {
                     ([result], None) => *result = value.result,

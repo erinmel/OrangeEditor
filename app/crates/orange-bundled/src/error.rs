@@ -48,14 +48,26 @@ pub use orange_model::scalar::ScalarError as KernelError;
 pub enum ConversionError {
     #[error("The value is outside the target conversion range.")]
     OutOfRange,
+    #[error("The value is not finite and has no integer conversion.")]
+    NonFinite,
     #[error("Converter input violates the resolved contract.")]
     InputContract,
 }
 
 impl ConversionError {
+    /// Safe static fallback text; it never contains the converted value.
+    pub const fn message(self) -> &'static str {
+        match self {
+            Self::OutOfRange => "The value is outside the target conversion range.",
+            Self::NonFinite => "The value is not finite and has no integer conversion.",
+            Self::InputContract => "Converter input violates the resolved contract.",
+        }
+    }
+
     pub const fn code(self) -> &'static str {
         match self {
             Self::OutOfRange => "core/OutOfRange",
+            Self::NonFinite => "core/NonFinite",
             Self::InputContract => "core/InternalFault",
         }
     }
@@ -63,6 +75,7 @@ impl ConversionError {
     pub const fn message_key(self) -> &'static str {
         match self {
             Self::OutOfRange => "core/conversion-out-of-range",
+            Self::NonFinite => "core/conversion-non-finite",
             Self::InputContract => "core/conversion-input-contract",
         }
     }

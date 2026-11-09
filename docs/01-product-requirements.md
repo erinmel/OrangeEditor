@@ -436,3 +436,10 @@ provider. Predicate truth tables over NaN/±0/±∞, total-order properties, pri
 ranges, constant folds and provider pins are verified through public APIs. Rules and
 catalog: 11 §5.6 and 12 §4.3. Partial FR-10: remaining casts, strings/collections,
 package kernels and external embedding remain open.
+
+L02d numeric casts trace (2026-11-08; FR-10/44/45, NFR-05): every ordered pair of
+the six numeric scalar types has an executable Core converter with lossless,
+checked or lossy class, explicit float→integer rounding, exact loss reporting and
+safe NonFinite/OutOfRange faults. Boundary sweeps, rounding tables, properties and
+constant folds are verified through public APIs (11 §6). With L02a–c this completes
+the L02 numeric vocabulary; FR-10 strings/collections and package kernels remain.

@@ -601,3 +601,10 @@ total order are explicit `float-`/`total-order-less` definitions returning bool
 with empty config, not Core `eq`/`ord` implementations, so floats still cannot key
 maps or drive Switch. Boolean XOR is an eager ordinary definition, not a lazy
 intrinsic. Trigonometry follows the L02b finite/IEEE policy and platform scope.
+
+Numeric cast amendment (2026-11-08; ADR-16/20, FR-10): Core owns one converter entry
+per ordered pair of numeric scalars. Exact widening is lossless-total, narrowing and
+float→integer are checked-partial, and inexact integer→float is lossy with loss
+metadata. Float→integer requires a saved rounding policy (truncate by default for
+new bindings) and never saturates. Wrapping integer casts are not offered; use
+bit operations explicitly. Existing four entries keep their contracts.
