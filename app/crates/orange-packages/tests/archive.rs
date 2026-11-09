@@ -73,6 +73,58 @@ fn sample() -> (Vec<u8>, Vec<u8>) {
     )
 }
 
+#[test]
+fn reused_memory_sink_replaces_the_whole_archive_and_payloads_require_authentication() {
+    let (_, first) = pack(
+        manifest("org.example.device", json!([])),
+        &[
+            ("component.wasm", COMPONENT),
+            ("locales/en.ftl", CATALOG),
+            ("old.txt", b"old"),
+        ],
+    );
+    let changed = b"\0asm\x0d\x00\x01\x00different";
+    let (_, second) = pack(
+        manifest("org.example.device", json!([])),
+        &[("component.wasm", changed), ("locales/en.ftl", CATALOG)],
+    );
+    let mut sink = MemorySink::new();
+    let a = read_archive(&first[..], &ArchiveLimits::default(), &mut sink).unwrap();
+    a.verify_file(
+        &path("component.wasm"),
+        sink.file("component.wasm").unwrap(),
+    )
+    .unwrap();
+    let b = read_archive(&second[..], &ArchiveLimits::default(), &mut sink).unwrap();
+    assert_ne!(a.content_digest(), b.content_digest());
+    assert_eq!(sink.file("component.wasm"), Some(&changed[..]));
+    assert_eq!(sink.files().len(), 3);
+    assert!(sink.file("old.txt").is_none());
+    b.verify_file(&path("component.wasm"), changed).unwrap();
+    for wrong in [COMPONENT, &changed[..changed.len() - 1]] {
+        let error = b.verify_file(&path("component.wasm"), wrong).unwrap_err();
+        assert!(matches!(error, ArchiveError::FileMismatch(_)));
+        assert_eq!(error.message_key(), "packages/archive-file-mismatch");
+    }
+    assert!(matches!(
+        a.verify_file(&path("component.wasm"), changed),
+        Err(ArchiveError::FileMismatch(_))
+    ));
+    assert!(matches!(
+        a.verify_file(&path("absent"), changed),
+        Err(ArchiveError::MissingFile(_))
+    ));
+    assert!(
+        read_archive(
+            &second[..second.len() - 1],
+            &ArchiveLimits::default(),
+            &mut sink
+        )
+        .is_err()
+    );
+    assert!(sink.files().is_empty());
+}
+
 /// One raw entry: path bytes, kind, mode, declared size and the bytes that follow.
 struct Raw<'a>(&'a [u8], u8, u8, u64, &'a [u8]);
 

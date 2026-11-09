@@ -58,8 +58,8 @@ pub struct JournalError {
     pub reason: String,
 }
 
-/// Durable, append-only lifecycle journal supplied by the host. File-backed storage is host
-/// work; this crate performs no I/O.
+/// Durable, append-only lifecycle journal supplied by the host. The seam is inert;
+/// [`crate::FileJournal`] provides an explicit filesystem-backed implementation.
 pub trait Journal {
     /// Appends `entry`. An error means the entry is not durable and the store abandons the
     /// step that needed it.

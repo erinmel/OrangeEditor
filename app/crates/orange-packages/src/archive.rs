@@ -174,6 +174,9 @@ pub enum ArchiveError {
     /// A file the manifest names is not in the archive under exactly that path.
     #[error("manifest names missing file {0}")]
     MissingFile(Rejected),
+    /// Supplied bytes do not match a verified entry's size and SHA-256.
+    #[error("file {0} does not match its verified archive entry")]
+    FileMismatch(Rejected),
     /// A declared component entry is not a WebAssembly binary.
     #[error("execution entry {0} is not a WebAssembly binary")]
     ExecutionPayload(Rejected),
@@ -224,6 +227,7 @@ impl ArchiveError {
             Self::FileTooLarge { .. } => "packages/archive-file-too-large",
             Self::TotalTooLarge { .. } => "packages/archive-total-too-large",
             Self::MissingFile(_) => "packages/archive-missing-file",
+            Self::FileMismatch(_) => "packages/archive-file-mismatch",
             Self::ExecutionPayload(_) => "packages/archive-execution-payload",
             Self::UndeclaredNativeCode(_) => "packages/archive-undeclared-native-code",
             Self::ContentDigest { .. } => "packages/archive-content-digest",
@@ -298,6 +302,22 @@ impl VerifiedArchive {
         &self.entries
     }
 
+    /// Authenticates independently stored bytes before code loading or decoding.
+    /// A verified manifest alone does not authenticate a caller-supplied payload.
+    pub fn verify_file(&self, path: &ArchivePath, bytes: &[u8]) -> Result<(), ArchiveError> {
+        let entry = self
+            .entries
+            .iter()
+            .find(|entry| &entry.path == path)
+            .ok_or_else(|| ArchiveError::MissingFile(path.as_str().into()))?;
+        if entry.size != bytes.len() as u64
+            || entry.digest != <[u8; 32]>::from(Sha256::digest(bytes))
+        {
+            return Err(ArchiveError::FileMismatch(path.as_str().into()));
+        }
+        Ok(())
+    }
+
     /// Fails unless the content digest is `lock` (`sha256:<hex>`), the digest a document,
     /// dependency or revocation list names for this package.
     pub fn require_digest(&self, lock: &str) -> Result<(), ArchiveError> {
@@ -362,7 +382,8 @@ impl ArchiveSink for DiscardSink {
     }
 }
 
-/// A sink that holds the files in memory, bounded by [`ArchiveLimits::max_total_bytes`].
+/// A sink that holds one archive's files, bounded by [`ArchiveLimits::max_total_bytes`].
+/// Reading the next manifest replaces the previous archive, including on reuse.
 #[derive(Debug, Clone, Default)]
 pub struct MemorySink {
     files: Vec<(ArchivePath, Vec<u8>)>,
@@ -390,6 +411,9 @@ impl MemorySink {
 
 impl ArchiveSink for MemorySink {
     fn begin(&mut self, path: &ArchivePath, _size: u64) -> io::Result<()> {
+        if path.as_str() == MANIFEST_PATH {
+            self.files.clear();
+        }
         self.files.push((path.clone(), Vec::new()));
         Ok(())
     }

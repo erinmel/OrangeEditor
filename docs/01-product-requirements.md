@@ -493,3 +493,11 @@ verified through public APIs (11 §5.10, 12 §4.7). JSON construction remains op
 L04d record update trace (2026-11-08; FR-08/12): `set-field` replaces one record field,
 clearing an optional field with None and keeping a boxed present None, through the
 same schema-derived contract as get-field (11 §5.9, 12 §4.6).
+
+Review correction trace (2026-11-09; FR-34/36/37/38, NFR-08/09/13): executable
+loading authenticates the supplied entry bytes before recording a provider lock;
+memory-sink reuse replaces prior contents. Journal format 2 protects both frame
+lengths and payloads and refuses complete corruption without truncating later
+identity/revocation history. Physically interrupted tail writes still recover a
+complete checkpoint prefix (04; ADR-03/07/21). Crash/power-loss qualification and
+executable replacement/drain remain open.

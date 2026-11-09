@@ -690,3 +690,13 @@ create hidden ticker threads or claim blocked-host-call preemption. This additiv
 host Rust API changes no WIT, graph semantics, dependency/features or provider lock.
 Async/service imports, graph cancellation lease wiring and wall-time qualification
 remain open.
+
+Package integrity/recovery correction (2026-11-09; ADR-03/07/21, FR-34/36/37/38,
+NFR-08/09/13): authenticate a separately stored executable against its verified
+entry size and SHA-256 before compilation. A reused in-memory sink owns only the
+current archive. Journal format 2 adds a checksum of the declared frame length;
+complete header/payload corruption preserves and refuses the log rather than
+discarding later valid commits as a torn tail. Physically short final writes retain
+prefix recovery. This replaces the unreleased journal encoding without a legacy
+reader; package archive, graph/provider-lock and guest interface formats do not
+change. CRC detects accidental corruption; it does not authenticate journal bytes.
