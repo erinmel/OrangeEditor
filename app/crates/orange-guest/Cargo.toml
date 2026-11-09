@@ -9,6 +9,8 @@ publish.workspace = true
 autotests = false
 
 [dependencies]
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+serde_json.workspace = true
 thiserror.workspace = true
 # Only the Wasmtime features the host uses: no WASI, async runtime, cache or debug (ADR-03).
 wasmtime.workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "orange-probe-guest"
+description = "Test guest for the orange:expansion world (K02b fixture)"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+serde_json.workspace = true
+wit-bindgen.workspace = true

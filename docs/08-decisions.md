@@ -656,3 +656,12 @@ Precompiled native artifacts are never loaded, so the crate needs no unsafe code
 string transcoding). The K02a probe (10) meets the ADR-03 isolation items for traps,
 fuel, interruption, memory limits and denied imports; host capability imports,
 package-archive loading, hot replacement and W3 benchmarks remain open.
+
+ADR-03 interface amendment (2026-11-08; K02b, selected by the user): guests are built
+with a Rust toolchain (`wasm32-unknown-unknown`, pinned wit-bindgen 0.63.0 and
+wit-component 0.262.0 in the separate `sdk/` workspace), not hand-written fixtures,
+because the SDK must ship generated Rust bindings. Graph values cross the boundary as
+`orange.value.v1` literal JSON text with the declared type, reusing the one tested
+codec for every type instead of a second typed encoding; WIT cannot express recursive
+values, and serialization cost is accepted until measured (performance deferred).
+Imports are linked per grant; guest-reported errors are namespaced identifiers only.

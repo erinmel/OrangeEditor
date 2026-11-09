@@ -1,8 +1,47 @@
 # Tooling, environment and research register
 
+## K02b — package interface and Rust guest — 2026-11-08
+
+Branch `k02b-guest-interface` from dev `c8afe7b` (K02a PR160). Selected by the user: a
+Rust guest toolchain and the literal codec at the boundary. Guest side (separate
+`sdk/` workspace, own `rust-toolchain.toml` = 1.99.1 + `wasm32-unknown-unknown`):
+`wit-bindgen =0.63.0` (2026-10-14), `wit-component =0.262.0` (2026-10-13, the
+wasm-tools release paired with it), `serde_json =1.0.154`; all licenses already
+allowed. Host side: `orange-guest` now depends on `orange-model` (policy updated) and
+`serde_json`; Wasmtime 48.0.8's `component::bindgen!` generates the world from
+`sdk/wit`, and per-interface `add_to_linker::<_, HasSelf<_>>` links grants
+(verified in the 48.0.8 bindgen examples). No host dependency was added.
+
+`node tools/build-guest-fixtures.mjs` builds `sdk/guests/probe` (release, LTO,
+panic=abort, stripped) and componentizes it into
+`app/crates/orange-guest/tests/fixtures/probe.wasm` (70,093 bytes); a second local
+build was byte-identical. Builds on other OSes may differ (panic locations embed path
+separators), so CI's new `guest` job rebuilds from source and runs the host tests with
+`ORANGE_GUEST_PROBE` pointing at the fresh component; the dependency job also runs
+cargo-deny on `sdk/Cargo.toml`. Five new host tests: i64 add, overflow as a guest
+node error, host API version; exact round trip of
+`list<map<string,f64>>` with a NaN payload and -0 plus a None option; `log` refused
+without the grant and bounded at 64 entries with it; wrong output type, malformed
+error identifiers, output-count mismatch and a mistyped host input refused without
+poisoning; a guest panic traps as `Unreachable` and poisons, a spin exhausts fuel,
+and a fresh instance still works.
+
+| Command | Result |
+|---|---|
+| `cargo test -p orange-guest` (committed and rebuilt fixture) | 12 passed each |
+| `cargo fmt --all`; `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,621 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| sdk: `cargo fmt --all --check`; `cargo clippy --locked --workspace --target wasm32-unknown-unknown -- -D warnings` | Pass (after one fmt fix; fixture rebuilt) |
+| `node tools/check-cargo-metadata.mjs`; `node --test tools/*.test.mjs` | Pass; 17 passed |
+
+Limits: one `evaluate` export with whole-value serialization per call; no resources,
+streams, async, events, panels, services, archive loading or hot replacement yet.
+No timing or memory probe ran.
+
 ## K02a — guest runtime probe — 2026-11-08
 
-Branch `k02a-guest-runtime` from dev `505b880`. Selected by the user: Wasmtime
+Merged as PR160. Branch `k02a-guest-runtime` from dev `505b880`. Selected by the user: Wasmtime
 `=48.0.8` (crates.io 2026-10-29; 48.0.0 released 2026-08-20), LTS, `rust-version`
 1.95.0, license `Apache-2.0 WITH LLVM-exception`. Wasmtime's published policy
 (docs.wasmtime.dev/stability-release.html): a major release on the 20th of each

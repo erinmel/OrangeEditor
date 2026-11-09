@@ -1,0 +1,23 @@
+# Guest-side SDK workspace (docs/15-monorepo-layout.md), built separately from the host.
+[workspace]
+resolver = "3"
+members = ["guests/probe", "tools/componentize"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2024"
+rust-version = "1.97.1"
+publish = false
+
+[workspace.dependencies]
+serde_json = "=1.0.154"
+wit-bindgen = "=0.63.0"
+wit-component = "=0.262.0"
+
+[profile.release]
+codegen-units = 1
+debug = false
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true

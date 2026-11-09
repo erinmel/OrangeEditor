@@ -8,7 +8,13 @@
 //! This crate is a host boundary. Graph-core crates never depend on it, and no
 //! Wasmtime type is part of the graph model.
 
+mod plugin;
+
 use std::sync::Arc;
+
+pub use plugin::{
+    API_VERSION, Grants, GuestNodeError, GuestPlugin, MAX_LOG_BYTES, MAX_LOG_ENTRIES,
+};
 
 use thiserror::Error;
 use wasmtime::component::{Component, ComponentNamedList, Instance, Lift, Linker, Lower};
@@ -63,6 +69,10 @@ pub enum GuestError {
     Trap(GuestTrap),
     #[error("the guest instance trapped earlier and can no longer be called")]
     Poisoned,
+    #[error("a host value does not have its declared type")]
+    InputContract,
+    #[error("the guest returned values or an error outside the interface contract")]
+    OutputContract,
 }
 
 impl GuestError {
@@ -74,11 +84,13 @@ impl GuestError {
             Self::Export => "core/guest-export",
             Self::Trap(_) => "core/guest-trap",
             Self::Poisoned => "core/guest-poisoned",
+            Self::InputContract => "core/guest-input-contract",
+            Self::OutputContract => "core/guest-output-contract",
         }
     }
 }
 
-fn classify(error: &wasmtime::Error) -> GuestError {
+pub(crate) fn classify(error: &wasmtime::Error) -> GuestError {
     GuestError::Trap(match error.downcast_ref::<Trap>() {
         Some(Trap::UnreachableCodeReached) => GuestTrap::Unreachable,
         Some(Trap::OutOfFuel) => GuestTrap::OutOfFuel,

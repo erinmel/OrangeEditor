@@ -289,3 +289,10 @@ L04c (2026-11-08): `ConversionError::LimitExceeded` uses `core/LimitExceeded` wi
 `core/conversion-limit-exceeded` ("The value exceeds the conversion's size or depth
 limit."). JSON nodes reuse `core/Domain` and `core/OutOfRange`. No argument carries
 JSON text.
+
+K02a/K02b guest errors (2026-11-08): `GuestError` keys are `core/guest-engine`,
+`core/guest-compile`, `core/guest-link`, `core/guest-export`, `core/guest-trap`,
+`core/guest-poisoned`, `core/guest-input-contract` and `core/guest-output-contract`,
+all zero-argument. Guest-reported node errors carry only a namespaced code and
+message key from the package's own catalogue; guest log text is diagnostic data,
+bounded and never shown as translated UI text.

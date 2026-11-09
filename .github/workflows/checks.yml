@@ -151,6 +151,8 @@ jobs:
       # Advisory data always refreshes; licenses, bans and sources follow deny.toml.
       - name: Check advisories, bans, licenses and sources
         run: cargo deny --locked check advisories bans licenses sources
+      - name: Check the guest SDK workspace under the same policy
+        run: cargo deny --locked --manifest-path sdk/Cargo.toml --config deny.toml check advisories bans licenses sources
 
   test:
     name: 2 · test / ${{ matrix.label }}
@@ -236,6 +238,35 @@ jobs:
         if: needs.policy.outputs.extended == 'true'
         run: cargo test --workspace --release --locked
 
+  guest:
+    name: 2 · guest / probe component from source
+    needs: policy
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # sdk/rust-toolchain.toml adds the wasm32-unknown-unknown target to the shared pin.
+      - name: Install the guest toolchain
+        working-directory: sdk
+        run: |
+          rustup toolchain install
+          rustup target list --installed
+      - name: Cache guest and host dependencies
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+        with:
+          key: guest
+          workspaces: |
+            sdk
+            .
+          cache-bin: false
+          save-if: ${{ github.ref == 'refs/heads/dev' }}
+      - name: Build and componentize the probe guest
+        run: node tools/build-guest-fixtures.mjs --out "$RUNNER_TEMP/probe.wasm"
+      - name: Host plugin tests against the rebuilt component
+        run: ORANGE_GUEST_PROBE="$RUNNER_TEMP/probe.wasm" cargo test -p orange-guest --locked
+
   msrv:
     name: 2 · compatibility / MSRV ${{ needs.policy.outputs.msrv }}
     needs: policy
@@ -265,7 +296,7 @@ jobs:
   rust:
     name: rust
     if: ${{ always() }}
-    needs: [quality, policy, supply_chain, test, optimized, msrv]
+    needs: [quality, policy, supply_chain, test, optimized, guest, msrv]
     runs-on: ubuntu-24.04
     timeout-minutes: 5
     steps:
@@ -279,7 +310,7 @@ jobs:
             echo "| Stage | Job | Result |"
             echo "|---|---|---|"
             jq -r '
-              {quality: "1 quality", policy: "1 rules", supply_chain: "1 dependencies", test: "2 native behavior", optimized: "2 optimized behavior", msrv: "2 compatibility"} as $stage
+              {quality: "1 quality", policy: "1 rules", supply_chain: "1 dependencies", test: "2 native behavior", optimized: "2 optimized behavior", guest: "2 guest component", msrv: "2 compatibility"} as $stage
               | to_entries[]
               | "| \($stage[.key]) | \(.key) | \(if .value.result == "success" then "✅" else "❌" end) \(.value.result) |"' <<< "$NEEDS"
           } >> "$GITHUB_STEP_SUMMARY"
