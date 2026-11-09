@@ -131,3 +131,23 @@ SDK surface (2026-11-03): `HOST_API_VERSION` (1.0) is the host API this foundati
 Requirements: FR-09, FR-22, FR-34–38, FR-41–42, FR-44–46. Validation V03/V09 plus NFR-01/06/09 in [06](06-quality-and-validation.md). ADR-03/06/07/16 in [08](08-decisions.md).
 
 The N1a orange-bundled scalar implementation uses the shipped native exception above. Ordinary org.orange.math definitions remain replaceable through provider contracts, but its native resolver binds only the exact selected native package/version/digest and supported scalar specialization. Selecting a guest/worker provider never falls back to native math when that provider cannot be resolved. The scalar implementation adds no installer, hot-loading mechanism or permission bypass for downloaded packages.
+
+Package interface, first world (K02b, 2026-11-08; `sdk/wit/orange-expansion.wit`):
+WIT package `orange:expansion@1.0.0`, world `plugin`. It imports `host` (always
+linked: `api-version() -> (u16, u16)`, currently (1, 0)) and `log` (`write(message)`,
+linked only with the `log` grant), and exports `nodes.evaluate(definition, inputs) ->
+result<list<value>, node-error>`. A `value` is one Orange literal in the
+`orange.value.v1` codec: the JSON text of `{"type", "value"}` (or `"bits"` for floats),
+so every graph type, aggregates included, crosses with exact float bits, map order and
+None. `node-error` carries a namespaced `code` and `message-key` only. The host
+(`orange_guest::GuestPlugin`) encodes inputs with their declared types, checks the
+output count, each output's exact type and both error identifiers, and reports any
+breach as `GuestError::OutputContract` without poisoning the instance; a value that
+does not have its declared type never reaches the guest (`InputContract`). A
+guest-reported node error is data (`GuestNodeError`), not a trap. Each instance links
+only granted interfaces, so a component importing `log` without the grant fails to
+instantiate. Log entries are bounded (64 per instance, 1 KiB each). Guests are built
+with the Rust toolchain in `sdk/`: `wasm32-unknown-unknown`, `wit-bindgen` 0.63.0 for
+guest bindings and `orange-componentize` (`wit-component` 0.262.0) to produce the
+component; wit-component keeps only the imports a guest actually uses. Resources,
+streams, async, events, panels and service imports are later interface versions.
