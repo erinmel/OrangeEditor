@@ -45,6 +45,8 @@ pub enum ScalarError {
     NonFinite,
     Domain,
     OutOfRange,
+    /// A result would exceed a fixed kernel output limit.
+    LimitExceeded,
     InputContract,
 }
 
@@ -64,6 +66,7 @@ impl ScalarError {
             Self::NonFinite => "core/NonFinite",
             Self::Domain => "core/Domain",
             Self::OutOfRange => "core/OutOfRange",
+            Self::LimitExceeded => "core/LimitExceeded",
             Self::InputContract => "core/InternalFault",
         }
     }
@@ -77,6 +80,7 @@ impl ScalarError {
             Self::NonFinite => "Finite arithmetic requires finite inputs and results.",
             Self::Domain => "The operands are outside the operation's domain.",
             Self::OutOfRange => "The operand is outside the operation's range.",
+            Self::LimitExceeded => "The result would exceed the operation's size limit.",
             Self::InputContract => "Kernel inputs violate the resolved contract.",
         }
     }
@@ -88,6 +92,7 @@ impl ScalarError {
             Self::NonFinite => "core/kernel-non-finite",
             Self::Domain => "core/kernel-domain",
             Self::OutOfRange => "core/kernel-out-of-range",
+            Self::LimitExceeded => "core/kernel-limit-exceeded",
             Self::InputContract => "core/kernel-input-contract",
         }
     }
