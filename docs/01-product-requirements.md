@@ -457,3 +457,10 @@ substring, replace, trim, locale-independent case mapping, split and join, with
 explicit units, bounds/boundary faults and a 16 MiB result limit. Known answers,
 Unicode cases, limits, properties and constant folds are verified through public
 APIs (11 §5.7, 12 §4.4). Grapheme clusters remain open (dependency decision).
+
+L04a collection vocabulary trace (2026-11-08; FR-11/12/45, NFR-01/05): sixteen generic
+`org.orange.collections` nodes execute list length/get/slice/concat/append/reverse/
+contains/index-of, map length/get/contains/insert/remove/keys/values and option
+presence, with static option boxing, shape checks, bounds faults and a 16 MiB growth
+limit. Known answers, properties and a compiled generic chain are verified through
+public APIs (11 §5.8, 12 §4.5). Record/enum construction and JSON nodes remain.

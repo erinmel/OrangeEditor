@@ -1002,3 +1002,13 @@ calls. Concatenation, replacement, case mapping and join compute their result si
 first and fault with `core/LimitExceeded` above 16 MiB; split and substring cannot
 exceed their input. Scalar indexing walks the string, so its cost is linear in the
 index. Grapheme clusters and locale-tailored operations remain open.
+
+### L04a collection nodes (2026-11-08)
+
+`org.orange.collections` (12 §4.5, 11 §5.8) binds each node to the concrete container
+shape once and evaluates without registry reads or host calls. Inputs are checked
+against that shape, which also yields their nominal charge; growing results are
+refused above 16 MiB before they are built. Lists reuse packed storage
+(`ListBuilder`, `ListRepr::concat`); map lookups compare Core hash keys by value
+and keep insertion order. Lookups are linear. Record/enum construction and JSON
+operations are later L04 slices.

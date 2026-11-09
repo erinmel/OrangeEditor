@@ -622,3 +622,10 @@ bundled native build provides it under a second exact provider key, so embedders
 still pass one resolver. Indexing names its unit (scalar default, byte explicit);
 graphemes wait for an exact Unicode segmentation dependency. Case mapping is
 Unicode default, locale-independent. Text results are capped at 16 MiB.
+
+Collection package amendment (2026-11-08; ADR-16/21, FR-11): list/map/option nodes
+are an ordinary third package of the bundled build, `org.orange.collections`,
+not intrinsics; per-element graph logic stays in the existing zones. Generic nodes
+list no provider specializations and bind to the concrete container shape, as the
+comparisons do; membership tests require host-executable `eq`. Results are new
+values capped at 16 MiB of nominal charge.

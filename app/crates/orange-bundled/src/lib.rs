@@ -10,6 +10,7 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod catalog;
+mod collections;
 mod comparison;
 mod compiler;
 mod conversion;
@@ -22,6 +23,9 @@ mod text;
 mod text_conversion;
 
 pub use catalog::{MathPackage, math_definitions};
+pub use collections::{
+    CollectionOperation, MAX_COLLECTION_BYTES, ResolvedCollection, collection_definitions,
+};
 pub use comparison::{Comparison, ResolvedComparison, comparison_definitions};
 pub use conversion::{ConversionOutput, ResolvedConversion, resolve_core_conversion};
 pub use entropy::{RANDOM_U64_DEFINITION, ResolvedEntropyKernel, random_u64_definition};

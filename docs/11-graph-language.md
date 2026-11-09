@@ -386,6 +386,34 @@ reads a machine or UI locale.
 - **Size limit.** A result longer than 16 MiB of UTF-8 (`MAX_TEXT_BYTES`) faults
   with `core/LimitExceeded` before it is built. Work is linear in input and output.
 
+### 5.8 Collection vocabulary (L04a, 2026-11-08)
+
+[12 §4.5](12-graph-data-structures.md) lists sixteen ordinary pure
+`org.orange.collections` definitions. They are generic: lists and options over `T`,
+maps over `K: eq + hash` and `V`; `list-contains` and `list-index-of` require
+`T: eq` and execute only where the host implements that equality (11 §5.4), so
+floats are refused. Every result is a new immutable value; inputs are never changed.
+They complement the Map/Fold/Filter zones, which remain the way to run graph logic
+per element.
+
+- **Lists.** `list-length`; `list-get(items, index)` returns `option<T>`, None past
+  the end; `list-slice(items, start, length)` faults with `core/OutOfRange` when the
+  range passes the end; `list-concat`, `list-append` and `list-reverse`;
+  `list-contains` and `list-index-of` (first match, or None) use language equality.
+- **Maps.** `map-length`; `map-get` returns `option<V>`; `map-contains-key`;
+  `map-insert` replaces an existing key's value in place or appends a new entry;
+  `map-remove` returns the map unchanged for a missing key; `map-keys`/`map-values`
+  list entries in insertion order.
+- **Options.** `option-is-some` is true for any present value, including a present
+  None of a nested option. `core/coalesce` remains the lazy fallback.
+- **Boxing.** `option<T>` results follow the 12 §7 rule: a present value is boxed
+  only when T can itself be a bare None, so a present None element of
+  `list<option<i64>>` stays distinguishable from a missing index.
+- **Checks and limits.** Inputs are checked against the bound shape before use
+  (`core/InternalFault` on mismatch). A growing result (concat, append, insert)
+  whose nominal value charge would exceed 16 MiB (`MAX_COLLECTION_BYTES`), or an
+  input above that charge, faults with `core/LimitExceeded`.
+
 ## 6. Conversions
 
 1. The compiler never converts. Every conversion is a `core/convert` node that names a **converter registry entry**.
