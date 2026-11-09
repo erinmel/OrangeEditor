@@ -476,3 +476,7 @@ member/element access, length, typed extraction) and string↔json converters ex
 with exact source text, last-wins duplicate keys and distinct null/missing/error
 outcomes. Known answers, a serde-backed navigation property and compiled folds are
 verified through public APIs (11 §5.10, 12 §4.7). JSON construction remains open.
+
+L04d record update trace (2026-11-08; FR-08/12): `set-field` replaces one record field,
+clearing an optional field with None and keeping a boxed present None, through the
+same schema-derived contract as get-field (11 §5.9, 12 §4.6).

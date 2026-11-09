@@ -1,5 +1,20 @@
 # Tooling, environment and research register
 
+## L04d — record field update — 2026-11-08
+
+Branch `l04d-set-field`, stacked on L04c (PR158). Same toolchain; no dependency
+change. `NominalAccess::SetField` and `org.orange.collections/set-field` replace one
+record field. Two public tests check required and optional replacement, clearing
+with None, keeping a boxed present None, wrong-type and arity refusal, a non-record
+config refusal, and a compiled fold using the derived contract.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,609 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
 ## L04c — JSON reads — 2026-11-08
 
 Branch `l04c-json-nodes`, based on dev after L04b (PR157, all nine hosted checks

@@ -823,6 +823,7 @@ or `variant`. The registry derives each node's contract from that config
 |---|---|---|---|
 | `make-record` | `type` | one per field (F, or `option<F>` if optional) | the record |
 | `get-field` | `type`, `field` | `record` | F, or `option<F>` if optional |
+| `set-field` | `type`, `field` | `record`, `value` (F, or `option<F>`) | the record |
 | `make-enum` | `type`, `variant` | `payload: P` when declared | the enum |
 | `enum-payload` | `type`, `variant` (with a payload) | `value` | `option<P>` |
 

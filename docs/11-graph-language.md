@@ -430,6 +430,8 @@ type, or an unknown member reports `E-NOMINAL-CONFIG` and leaves the node incomp
   option, sets it. Missing and present None thus stay distinct (FR-08).
 - **`get-field`** takes `record` and returns the field: F for a required field,
   `option<F>` for an optional one (None when missing).
+- **`set-field`** (L04d) takes `record` and `value` (F, or `option<F>` for an optional
+  field, None clearing it) and returns the record with only that field replaced.
 - **`make-enum`** builds `config.variant`; it has a `payload` input only when the
   variant declares one.
 - **`enum-payload`** takes `value` and returns `option<P>`: the payload when the
