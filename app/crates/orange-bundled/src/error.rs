@@ -54,6 +54,8 @@ pub enum ConversionError {
     Parse,
     #[error("The bytes are not valid UTF-8.")]
     InvalidUtf8,
+    #[error("The value exceeds the conversion's size or depth limit.")]
+    LimitExceeded,
     #[error("Converter input violates the resolved contract.")]
     InputContract,
 }
@@ -66,6 +68,7 @@ impl ConversionError {
             Self::NonFinite => "The value is not finite and has no integer conversion.",
             Self::Parse => "The text is not in the invariant format of the target type.",
             Self::InvalidUtf8 => "The bytes are not valid UTF-8.",
+            Self::LimitExceeded => "The value exceeds the conversion's size or depth limit.",
             Self::InputContract => "Converter input violates the resolved contract.",
         }
     }
@@ -76,6 +79,7 @@ impl ConversionError {
             Self::NonFinite => "core/NonFinite",
             Self::Parse => "core/Parse",
             Self::InvalidUtf8 => "core/InvalidUtf8",
+            Self::LimitExceeded => "core/LimitExceeded",
             Self::InputContract => "core/InternalFault",
         }
     }
@@ -86,6 +90,7 @@ impl ConversionError {
             Self::NonFinite => "core/conversion-non-finite",
             Self::Parse => "core/conversion-parse",
             Self::InvalidUtf8 => "core/conversion-invalid-utf8",
+            Self::LimitExceeded => "core/conversion-limit-exceeded",
             Self::InputContract => "core/conversion-input-contract",
         }
     }

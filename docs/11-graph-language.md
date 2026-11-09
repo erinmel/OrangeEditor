@@ -439,6 +439,31 @@ type, or an unknown member reports `E-NOMINAL-CONFIG` and leaves the node incomp
 Results are checked against the record or enum shape before they leave the kernel.
 Recursive schemas have no executable shape and are refused at binding.
 
+### 5.10 JSON reads (L04c, 2026-11-08)
+
+[12 §4.7](12-graph-data-structures.md) lists ten ordinary pure `org.orange.json`
+definitions over `core/json@1`. A JSON value is validated text; nodes navigate that
+text, so a value they return keeps its exact source text, including number spelling
+such as `12345678901234567890.000` or `-0`. JSON null, a missing member and an
+error stay distinct (FR-08): a present `null` is a JSON value, a missing member or
+index is None, and reading the wrong kind is an error.
+
+- `kind` returns `null`, `boolean`, `number`, `string`, `array` or `object`;
+  `is-null` is true only for JSON null.
+- `get(value, key)` returns the member as `option<json>`; `at(value, index)` the
+  array element. `length` counts array elements or distinct object keys. These fault
+  with `core/Domain` on the wrong kind. Duplicate object keys resolve to the last
+  member, as `JSON.parse` does.
+- `as-bool`, `as-string` (unescaped), `as-i64`, `as-u64` and `as-f64` return None for
+  another kind. Integer reads need integer form (an optional `-` and digits; `1.0`
+  and `1e2` are `core/Domain`) and must fit (`core/OutOfRange`). `as-f64` rounds
+  once to nearest and reports overflow as `core/OutOfRange`.
+
+Core converters `core/string-to-json` (checked: `core/Parse`, or
+`core/LimitExceeded` beyond the 1 MiB / nesting limits of `JsonText`) and
+`core/json-to-string` (lossless-total, the stored text verbatim) join 11 §6.
+Building or editing JSON values is not part of this slice.
+
 ## 6. Conversions
 
 1. The compiler never converts. Every conversion is a `core/convert` node that names a **converter registry entry**.

@@ -54,7 +54,13 @@ pub(crate) enum TextConversion {
     Display(Textual),
     Parse(Textual),
     Encode,
-    Decode { replace: bool },
+    Decode {
+        replace: bool,
+    },
+    /// `string` → `json`: validates text as one JSON value within the JSON limits.
+    JsonParse,
+    /// `json` → `string`: the stored JSON text, verbatim.
+    JsonText,
 }
 
 /// Recognizes a Core text entry and checks its fixed contract. `Ok(None)` means the
@@ -66,6 +72,12 @@ pub(crate) fn bind(
 ) -> Result<Option<(TextConversion, bool)>, BindingError> {
     let (from, to) = (definition.from.as_str(), definition.to.as_str());
     let (conversion, class) = match (from, to) {
+        ("core/string@1", "core/json@1") => {
+            (TextConversion::JsonParse, ConversionClass::CheckedPartial)
+        }
+        ("core/json@1", "core/string@1") => {
+            (TextConversion::JsonText, ConversionClass::LosslessTotal)
+        }
         ("core/string@1", "core/bytes@1") => {
             (TextConversion::Encode, ConversionClass::LosslessTotal)
         }
@@ -113,6 +125,8 @@ pub(crate) fn bind(
         TextConversion::Encode => "core/string-to-bytes".into(),
         TextConversion::Decode { replace: false } => "core/bytes-to-string".into(),
         TextConversion::Decode { replace: true } => "core/bytes-to-string-lossy".into(),
+        TextConversion::JsonParse => "core/string-to-json".into(),
+        TextConversion::JsonText => "core/json-to-string".into(),
     };
     if id != expected_id || definition.class != class {
         return Err(BindingError::Unavailable);
@@ -140,6 +154,19 @@ impl TextConversion {
                 (Value::Str(Arc::new(text)), lost)
             }
             (Self::Parse(target), Value::Str(text)) => (parse(target, text)?, false),
+            (Self::JsonParse, Value::Str(text)) => {
+                use orange_model::{JsonTextError, value::JsonText};
+                let json = JsonText::try_from(text.as_str()).map_err(|error| match error {
+                    JsonTextError::TooLarge { .. } | JsonTextError::TooDeep => {
+                        ConversionError::LimitExceeded
+                    }
+                    _ => ConversionError::Parse,
+                })?;
+                (Value::Json(Arc::new(json)), false)
+            }
+            (Self::JsonText, Value::Json(json)) => {
+                (Value::Str(Arc::new(json.as_str().to_owned())), false)
+            }
             _ => return Err(ConversionError::InputContract),
         })
     }

@@ -87,15 +87,16 @@ pub fn math_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
 /// A bundled build identity authenticated by the host. This API validates digest syntax;
 /// it does not hash executable bytes or authenticate the caller's build assertion.
 ///
-/// One native build provides three ordinary packages: `org.orange.math` (numeric and
-/// boolean vocabulary), `org.orange.text` (strings) and `org.orange.collections`
-/// (lists, maps, options). Each has its own exact provider key; a graph locks
-/// whichever packages its nodes use.
+/// One native build provides four ordinary packages: `org.orange.math` (numeric and
+/// boolean vocabulary), `org.orange.text` (strings), `org.orange.collections`
+/// (lists, maps, options, records, enums) and `org.orange.json` (JSON reads). Each
+/// has its own exact provider key; a graph locks whichever packages its nodes use.
 #[derive(Debug, Clone)]
 pub struct MathPackage {
     key: ProviderKey,
     text: ProviderKey,
     collections: ProviderKey,
+    json: ProviderKey,
 }
 
 impl MathPackage {
@@ -126,6 +127,12 @@ impl MathPackage {
             collections: ProviderKey {
                 package: "org.orange.collections".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
+                content_digest: content_digest.clone(),
+                id: "native-v1".into(),
+            },
+            json: ProviderKey {
+                package: "org.orange.json".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
                 content_digest,
                 id: "native-v1".into(),
             },
@@ -144,6 +151,11 @@ impl MathPackage {
     /// The exact provider of the `org.orange.collections` definitions in this build.
     pub fn collections_provider_key(&self) -> &ProviderKey {
         &self.collections
+    }
+
+    /// The exact provider of the `org.orange.json` definitions in this build.
+    pub fn json_provider_key(&self) -> &ProviderKey {
+        &self.json
     }
 
     /// Adds definitions and this exact provider to an unpublished builder. Duplicate
@@ -234,10 +246,23 @@ impl MathPackage {
                 .insert(definition.definition.clone(), vec![TypeArgs::new()]);
             builder = builder.definition(definition);
         }
+        let mut json = ProviderDescriptor {
+            key: self.json.clone(),
+            implements: Default::default(),
+            specializations: Default::default(),
+        };
+        for definition in crate::json_definitions()? {
+            json.implements
+                .insert((definition.definition.clone(), definition.config_version));
+            json.specializations
+                .insert(definition.definition.clone(), vec![TypeArgs::new()]);
+            builder = builder.definition(definition);
+        }
         Ok(builder
             .provider(provider)
             .provider(text)
-            .provider(collections))
+            .provider(collections)
+            .provider(json))
     }
 
     /// Resolves an exact native binding once, before execution. The caller supplies fresh

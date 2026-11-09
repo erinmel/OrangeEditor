@@ -470,3 +470,9 @@ make-enum and enum-payload execute with schema-derived ports, distinct missing a
 present-None fields, payload boxing and `E-NOMINAL-CONFIG` for invalid config.
 Kernel answers, all refusal shapes and a compiled record/enum chain are verified
 through public APIs (11 §5.9, 12 §4.6). JSON nodes remain.
+
+L04c JSON trace (2026-11-08; FR-08/11): ten `org.orange.json` reads (kind, null test,
+member/element access, length, typed extraction) and string↔json converters execute
+with exact source text, last-wins duplicate keys and distinct null/missing/error
+outcomes. Known answers, a serde-backed navigation property and compiled folds are
+verified through public APIs (11 §5.10, 12 §4.7). JSON construction remains open.

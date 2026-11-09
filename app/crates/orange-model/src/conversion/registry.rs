@@ -423,6 +423,22 @@ fn text_contracts() -> Result<Vec<TextContract>, ConverterRegistrationError> {
         ));
     }
     contracts.push((
+        "core/string-to-json".into(),
+        string.clone(),
+        "core/json@1".into(),
+        ConversionClass::CheckedPartial,
+        vec![],
+        vec![ConverterErrorCode::new("core/LimitExceeded")?, parse()?],
+    ));
+    contracts.push((
+        "core/json-to-string".into(),
+        "core/json@1".into(),
+        string.clone(),
+        ConversionClass::LosslessTotal,
+        vec![],
+        vec![],
+    ));
+    contracts.push((
         "core/string-to-bytes".into(),
         string.clone(),
         bytes.clone(),
