@@ -1,8 +1,35 @@
 # Tooling, environment and research register
 
+## L04b — record and enum nodes — 2026-11-08
+
+Branch `l04b-nominal-nodes`, based on dev after L04a (PR156, all nine hosted checks
+green). Same local toolchain as L02b; MSRV 1.97.1 is checked by hosted CI. No
+dependency, feature or lockfile change.
+
+The model gains `Ports::Nominal(NominalAccess)`, `catalog::nominal` contract
+derivation from registered record/enum schemas, `ContractError::NominalConfig`,
+`RegistryError::NominalKind` and diagnostic `E-NOMINAL-CONFIG`. The bundled build
+adds four `org.orange.collections` definitions and `ResolvedNominal`. Four public
+tests check record construction and projection with missing versus present-None
+optional fields (`maybe?: option<i64>`), enum construction with and without payload
+and boxed option payloads, ten invalid configs reported both at binding and as
+`E-NOMINAL-CONFIG` in analysis, provider separation, and a compiled chain
+(make-record→make-enum→enum-payload, get-field of required and optional fields,
+payload-free make-enum) using signatures saved from the derived contracts.
+
+| Command | Result |
+|---|---|
+| `cargo fmt --all` | Pass |
+| `cargo clippy --workspace --all-targets --all-features -- -D warnings` | Pass |
+| `cargo test --workspace --all-features` | **1,601 passed, 0 failed, 15 optional measurements ignored** |
+| `cargo doc --workspace --no-deps --all-features` | Pass |
+
+Limits: no record update (with-field) node, no JSON nodes yet; recursive schemas
+are refused at binding. No timing or memory probe ran.
+
 ## L04a — collection nodes — 2026-11-08
 
-Branch `l04a-collections`, based on dev after L03b (PR155, all nine hosted checks green). Same local toolchain as L02b;
+Merged as PR156. Branch `l04a-collections`, based on dev after L03b (PR155, all nine hosted checks green). Same local toolchain as L02b;
 MSRV 1.97.1 is checked by hosted CI. Uses the model's `ValueShape`
 (`of_in`, `checked_charge`, `equal_values`, `unboxed_none`), `ListBuilder`,
 `ListRepr::concat` and `MapRepr::new`. No dependency, feature or lockfile change.

@@ -414,6 +414,31 @@ per element.
   whose nominal value charge would exceed 16 MiB (`MAX_COLLECTION_BYTES`), or an
   input above that charge, faults with `core/LimitExceeded`.
 
+### 5.9 Record and enum nodes (L04b, 2026-11-08)
+
+Four ordinary pure `org.orange.collections` definitions build and read package
+records and enums ([12 §4.6](12-graph-data-structures.md)). Their ports are derived
+from the registered schema named in config (`Ports::Nominal`), like a manual entry's
+payload: `config.type` names a registered record or enum (no type arguments), and
+`field` or `variant` names a member. Any other key, an unregistered or wrong-kind
+type, or an unknown member reports `E-NOMINAL-CONFIG` and leaves the node incomplete.
+
+- **`make-record`** has one input per field, in schema order, with the field ID as
+  port ID, and `result` of the record type. A required field's input has the field
+  type F. An optional field's input has type `option<F>`: None leaves the field
+  missing, and any present value, including a boxed present None when F is itself an
+  option, sets it. Missing and present None thus stay distinct (FR-08).
+- **`get-field`** takes `record` and returns the field: F for a required field,
+  `option<F>` for an optional one (None when missing).
+- **`make-enum`** builds `config.variant`; it has a `payload` input only when the
+  variant declares one.
+- **`enum-payload`** takes `value` and returns `option<P>`: the payload when the
+  value is `config.variant`, else None. A payload-free variant is refused; branch
+  on it with an enum Switch instead.
+
+Results are checked against the record or enum shape before they leave the kernel.
+Recursive schemas have no executable shape and are refused at binding.
+
 ## 6. Conversions
 
 1. The compiler never converts. Every conversion is a `core/convert` node that names a **converter registry entry**.
@@ -1064,7 +1089,7 @@ All variable and event declarations require concrete, well-formed types availabl
 |---|---|
 | Structure | `E-DOC-DUPLICATE-ID`, `E-PORT-UNKNOWN` (orphan edge), `E-PORT-DIRECTION`, `E-KIND-MISMATCH`, `E-FANIN-DATA`, `E-FANOUT-EXEC`, `E-FANOUT-EVENT`, `E-INPUT-REQUIRED`, `E-VARIADIC-COUNT`, `E-VARIADIC-IDENTITY`, `E-TYPE-CODEC`, `E-LITERAL-TYPE`, `E-SCOPE-EDGE` (edge between function bodies), `W-LITERAL-SHADOWED` |
 | Resolution | `E-DOMAIN-UNSUPPORTED`, `E-DOMAIN-ANALYSIS-BLOCKED`, `E-SIGNATURE-MISSING`, `E-PROVIDER-MISSING`, `E-PACKAGE-LOCK-MISSING`, `E-PROVIDER-UNAVAILABLE`, `E-DEPENDENCY-UNAVAILABLE`, `E-INTRINSIC-UNSUPPORTED`, `E-CONVERTER-CONFIG`, `E-CONVERTER-ENTRY`, `E-CONVERTER-OPTIONS` |
-| Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-TYPE-COMPLEXITY`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT` |
+| Types | `E-TYPE-MISMATCH`, `E-TYPE-AMBIGUOUS`, `E-TYPE-COMPLEXITY`, `E-CONSTRAINT-UNSATISFIED`, `E-NO-SPECIALIZATION`, `E-HANDLE-LITERAL`, `E-HANDLE-PERSIST`, `E-STREAM-FANOUT`, `E-STREAM-STORE`, `E-SIGNATURE-DRIFT`, `E-NOMINAL-CONFIG` |
 | Regions and availability | `E-REGION-AMBIGUOUS`, `E-REGION-ESCAPE`, `E-UNAVAILABLE-VALUE`, `E-CROSS-ACTIVATION`, `E-BREAK-OUTSIDE-LOOP`, `E-ZONE-STRUCTURE`, `E-SWITCH-CASE`, `E-FOR-EACH-MODE`, `E-MANUAL-PAYLOAD`, `E-TIMER-CONFIG`, `E-VARIABLE-CHANGED`, `W-UNREACHABLE` |
 | Cycles | `E-CYCLE-DATA`, `E-CYCLE-SYNC-CONTROL`, `E-RECURSION`, `E-LOOP-UNBOUNDED`, `W-BUSY-LOOP` |
 | State and concurrency | `E-VARIABLE-SCOPE`, `E-SHARED-VARIABLE-SCOPE`, `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `E-VARIABLE-PERSISTENT`, `E-REGISTER-CONFIG`, `W-CONST-ERROR` |

@@ -27,7 +27,8 @@ and strict or replacing UTF-8 decoding are explicit converters too. The
 `org.orange.text` package adds lengths, search, scalar/byte substring, replace,
 trim, case mapping, split and join ([12 §4.4](docs/12-graph-data-structures.md)).
 The `org.orange.collections` package adds generic list, map and option nodes
-([12 §4.5](docs/12-graph-data-structures.md)).
+([12 §4.5](docs/12-graph-data-structures.md)) and record/enum construction and
+projection ([12 §4.6](docs/12-graph-data-structures.md)).
 
 The compiler also supports nested options over its scalar/JSON types and constant Coalesce: only outer None demands fallback; present values, JSON null and upstream faults remain distinct. PlanType represents recursive options and exported type metadata is borrowed. Try captures pure input-cone graph faults into typed Result values with original producer identity; nested successes preserve Ok(Err) distinctly. DataActivation executes the supported pure/seeded-entropy root-data subset, including dynamic Select/And/Or/Coalesce/Try. The control runtime admits a bounded subset including Pure and seeded-volatile calls in data demands; remaining control families, clock readers and general services stay open. The same bundled crate executes the four existing explicit core converters: i32↔i64 and f32↔f64. Narrowing checks range; lossy float conversion returns JSON loss metadata. These preserve exact entry/provider choices and require complete saved policies; they introduce no implicit conversions.
 

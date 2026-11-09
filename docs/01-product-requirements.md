@@ -464,3 +464,9 @@ contains/index-of, map length/get/contains/insert/remove/keys/values and option
 presence, with static option boxing, shape checks, bounds faults and a 16 MiB growth
 limit. Known answers, properties and a compiled generic chain are verified through
 public APIs (11 §5.8, 12 §4.5). Record/enum construction and JSON nodes remain.
+
+L04b record/enum trace (2026-11-08; FR-08/11/12/45): make-record, get-field,
+make-enum and enum-payload execute with schema-derived ports, distinct missing and
+present-None fields, payload boxing and `E-NOMINAL-CONFIG` for invalid config.
+Kernel answers, all refusal shapes and a compiled record/enum chain are verified
+through public APIs (11 §5.9, 12 §4.6). JSON nodes remain.
