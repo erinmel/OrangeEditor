@@ -22,6 +22,7 @@ mod binding_request;
 mod bindings;
 mod casts;
 mod checkpoints;
+mod collections;
 mod comparisons;
 mod compile_data;
 mod compile_pure;

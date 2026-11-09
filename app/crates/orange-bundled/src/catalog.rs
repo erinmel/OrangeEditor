@@ -87,13 +87,15 @@ pub fn math_definitions() -> Result<Vec<NodeDefinition>, CatalogError> {
 /// A bundled build identity authenticated by the host. This API validates digest syntax;
 /// it does not hash executable bytes or authenticate the caller's build assertion.
 ///
-/// One native build provides two ordinary packages: `org.orange.math` (numeric and
-/// boolean vocabulary) and `org.orange.text` (string vocabulary). Each has its own
-/// exact provider key; a graph locks whichever packages its nodes use.
+/// One native build provides three ordinary packages: `org.orange.math` (numeric and
+/// boolean vocabulary), `org.orange.text` (strings) and `org.orange.collections`
+/// (lists, maps, options). Each has its own exact provider key; a graph locks
+/// whichever packages its nodes use.
 #[derive(Debug, Clone)]
 pub struct MathPackage {
     key: ProviderKey,
     text: ProviderKey,
+    collections: ProviderKey,
 }
 
 impl MathPackage {
@@ -118,6 +120,12 @@ impl MathPackage {
             text: ProviderKey {
                 package: "org.orange.text".into(),
                 version: env!("CARGO_PKG_VERSION").into(),
+                content_digest: content_digest.clone(),
+                id: "native-v1".into(),
+            },
+            collections: ProviderKey {
+                package: "org.orange.collections".into(),
+                version: env!("CARGO_PKG_VERSION").into(),
                 content_digest,
                 id: "native-v1".into(),
             },
@@ -131,6 +139,11 @@ impl MathPackage {
     /// The exact provider of the `org.orange.text` definitions in this build.
     pub fn text_provider_key(&self) -> &ProviderKey {
         &self.text
+    }
+
+    /// The exact provider of the `org.orange.collections` definitions in this build.
+    pub fn collections_provider_key(&self) -> &ProviderKey {
+        &self.collections
     }
 
     /// Adds definitions and this exact provider to an unpublished builder. Duplicate
@@ -199,7 +212,23 @@ impl MathPackage {
                 .insert(definition.definition.clone(), vec![TypeArgs::new()]);
             builder = builder.definition(definition);
         }
-        Ok(builder.provider(provider).provider(text))
+        // Generic collection nodes list no specializations: like comparisons, their
+        // binding checks the concrete container shape.
+        let mut collections = ProviderDescriptor {
+            key: self.collections.clone(),
+            implements: Default::default(),
+            specializations: Default::default(),
+        };
+        for definition in crate::collection_definitions()? {
+            collections
+                .implements
+                .insert((definition.definition.clone(), definition.config_version));
+            builder = builder.definition(definition);
+        }
+        Ok(builder
+            .provider(provider)
+            .provider(text)
+            .provider(collections))
     }
 
     /// Resolves an exact native binding once, before execution. The caller supplies fresh
