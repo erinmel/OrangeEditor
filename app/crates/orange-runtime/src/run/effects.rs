@@ -300,12 +300,12 @@ impl Run {
         if effect.shared().is_some() != shared {
             return Err(EffectError::Contract);
         }
-        if let Err(fault) = outcome {
+        if let Err(fault) = &outcome {
             bytes = plan
                 .data()
                 .fault_charge(&ConstantFault {
                     source: plan.nodes()[pending.owner.index()].node(),
-                    fault,
+                    fault: fault.clone(),
                 })
                 .ok_or(EffectError::Contract)?;
         }

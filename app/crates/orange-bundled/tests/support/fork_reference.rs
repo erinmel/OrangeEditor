@@ -35,7 +35,7 @@ pub struct ForkReference<'a> {
     root: Rc<Cancel>,
     pub vars: RefCell<BTreeMap<VariableId, Option<Value>>>,
     pub observations: RefCell<Vec<(u64, NodeId, &'static str)>>,
-    pub faults: RefCell<Vec<(NodeId, NodeId, &'static str)>>,
+    pub faults: RefCell<Vec<(NodeId, NodeId, String)>>,
 }
 impl<'a> ForkReference<'a> {
     pub fn new(
@@ -106,7 +106,7 @@ impl<'a> ForkReference<'a> {
                     .clone()
                     .ok_or(reference::Fault {
                         source: n.id,
-                        code: "core/UninitializedVariable",
+                        code: "core/UninitializedVariable".into(),
                     }),
             );
         }

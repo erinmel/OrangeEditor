@@ -1,5 +1,5 @@
 use crate::compile::{
-    Admission, ConstantFolder, FAULT_CHARGE, Incoming, admit, binding_error, charge, decode,
+    Admission, ConstantFolder, Incoming, admit, binding_error, charge, decode, fault_bytes,
     is_host_read, key, matches_abi, port_type, value_bytes,
 };
 use crate::lazy::Lazy;
@@ -84,7 +84,7 @@ impl<R: EntropyKernelResolver> Lowering<'_, R> {
         if let Some(value) = &value {
             let size = match value {
                 FoldedValue::Value(value) => value_bytes(&ty, value)?,
-                FoldedValue::Fault(_) => FAULT_CHARGE,
+                FoldedValue::Fault(fault) => fault_bytes(fault),
             };
             charge(
                 &mut self.bytes,

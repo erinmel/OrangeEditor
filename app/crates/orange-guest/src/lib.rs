@@ -14,8 +14,7 @@ mod plugin;
 use std::sync::Arc;
 
 pub use nodes::{
-    GuestLoadError, GuestPackage, MAX_FAULT_TEXT_BYTES, MAX_INTERNED_FAULT_TEXT,
-    PLUGIN_WORLD_PREFIX, WithGuests,
+    GuestLoadError, GuestPackage, MAX_FAULT_TEXT_BYTES, PLUGIN_WORLD_PREFIX, WithGuests,
 };
 pub use plugin::{
     API_VERSION, Grants, GuestNodeError, GuestPlugin, MAX_LOG_BYTES, MAX_LOG_ENTRIES,

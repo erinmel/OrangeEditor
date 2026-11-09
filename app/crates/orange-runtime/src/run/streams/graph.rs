@@ -226,14 +226,15 @@ impl Run {
 }
 pub(in crate::run) fn stream_fault(error: StreamError) -> KernelFault {
     KernelFault {
-        code: match error {
+        code: (match error {
             StreamError::Limit => "core/LimitExceeded",
             StreamError::Overflow => "core/QueueOverflow",
             StreamError::Contract => "core/InternalFault",
             StreamError::NotRunning => "core/RunStopping",
             _ => "core/StaleHandle",
-        },
-        message_key: error.message_key(),
+        })
+        .into(),
+        message_key: error.message_key().into(),
         message: "The stream is unavailable or exceeds its configured bounds.",
     }
 }

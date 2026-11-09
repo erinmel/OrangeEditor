@@ -163,9 +163,11 @@ provider is a loaded package's key gets a guest kernel; every other binding goes
 `R`. Guest bindings are Pure only, with empty config and concrete port types; each
 binding owns one guest instance, so a trap faults that node's binding and later folds
 report `core/PackageFault` / `core/guest-poisoned`. A guest node error becomes the
-kernel fault with the guest's own namespaced code and message key (interned
-process-wide, at most 4,096 identifiers of at most 128 bytes, then
-`core/PackageFault`); a guest fault is `core/PackageFault` with the `GuestError`
+kernel fault with the guest's own validated namespaced code and message key, each
+at most 128 bytes. Identifiers use shared owned text, released when the last fault,
+plan, result or journal owner drops; there is no process-wide identifier table.
+Invalid or overlong identifiers map to `core/PackageFault`; a guest fault is
+`core/PackageFault` with the `GuestError`
 key. Constant folding and data demands run guest kernels like bundled ones. Guest
 entropy, actions, async, events and generic (non-concrete) package nodes are later
 work; grants come from the host until manifest permissions are interpreted (K03).

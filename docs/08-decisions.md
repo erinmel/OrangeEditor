@@ -666,10 +666,15 @@ codec for every type instead of a second typed encoding; WIT cannot express recu
 values, and serialization cost is accepted until measured (performance deferred).
 Imports are linked per grant; guest-reported errors are namespaced identifiers only.
 
-Guest kernel fault amendment (2026-11-08; K02c, ADR-03/16): `KernelFault` keeps its
-static-text ABI. Guest-reported error identifiers are validated, then interned into a
-bounded process-wide table (4,096 entries, 128 bytes each) rather than widening the
-compiler's fault type across about 100 sites; overflow and invalid identifiers map to
-`core/PackageFault`. Revisit with an owned/shared fault text type if packages need
-unbounded code sets or unloadable text. Guest kernels compose with the host resolver
-through `orange_guest::WithGuests`, so embedders still pass one resolver.
+Guest kernel fault amendment (2026-11-09; K02c, ADR-03/16/21, user-selected):
+`KernelFault` code and message key use `FaultText::Static(&'static str)` for built-ins
+or `FaultText::Shared(Arc<str>)` for package text. Fallback messages remain static.
+This supersedes the initial process-lifetime interning table: unrelated packages'
+error history must not consume a global identifier allowance or change graph-visible
+error identity. Identifiers compare by text regardless of storage. Faults and
+`WorkspaceError` are Clone, not Copy; `WorkspaceError::message_key` borrows its text.
+Guest identifiers remain validated and limited to 128 bytes each; invalid/overlong
+ones map to `core/PackageFault`. Retained shared text is charged by compiler, preview,
+runtime, stream and replay admission and released with its final owner. This is an
+unfrozen Rust API change, with no WIT, graph-format, provider-lock or locale change.
+Guest kernels still compose through `orange_guest::WithGuests`.

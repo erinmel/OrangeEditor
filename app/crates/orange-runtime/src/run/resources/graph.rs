@@ -376,12 +376,13 @@ impl Run {
 }
 pub(in crate::run) fn resource_fault(error: ResourceError) -> KernelFault {
     KernelFault {
-        code: match error {
+        code: (match error {
             ResourceError::StaleHandle => "core/StaleHandle",
             ResourceError::WrongOwner => "core/ResourceOwner",
             _ => "core/InvalidHandle",
-        },
-        message_key: error.message_key(),
+        })
+        .into(),
+        message_key: error.message_key().into(),
         message: "The resource reference is unavailable in this scope.",
     }
 }

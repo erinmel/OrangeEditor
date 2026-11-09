@@ -58,8 +58,8 @@ impl FunctionFrame {
         FoldedValue::Fault(ConstantFault {
             source: plan.data().nodes()[plan.data().host_inputs()[input].index()].node(),
             fault: KernelFault {
-                code: "core/UninitializedVariable",
-                message_key: "core/uninitialized-variable",
+                code: orange_compiler::FaultText::Static("core/UninitializedVariable"),
+                message_key: orange_compiler::FaultText::Static("core/uninitialized-variable"),
                 message: "The variable has not been initialized.",
             },
         })

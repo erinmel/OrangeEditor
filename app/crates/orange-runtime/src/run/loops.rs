@@ -5,8 +5,8 @@
 use super::*;
 
 const LOOP_BUDGET_EXCEEDED: KernelFault = KernelFault {
-    code: "core/LoopBudgetExceeded",
-    message_key: "core/loop-budget-exceeded",
+    code: orange_compiler::FaultText::Static("core/LoopBudgetExceeded"),
+    message_key: orange_compiler::FaultText::Static("core/loop-budget-exceeded"),
     message: "The loop iteration budget is exhausted.",
 };
 

@@ -1,7 +1,6 @@
 //! Package nodes as graph kernels (K02c): a verified archive's component becomes the
 //! exact provider of that package's pure nodes, composed with the host's resolver.
 
-use std::collections::BTreeSet;
 use std::sync::{Arc, Mutex};
 
 use orange_compiler::{
@@ -19,10 +18,7 @@ use crate::{Grants, GuestComponent, GuestEngine, GuestError, GuestPlugin};
 
 /// Worlds of this major version are loadable; the host offers 1.0 (`API_VERSION`).
 pub const PLUGIN_WORLD_PREFIX: &str = "orange:expansion/plugin@1.";
-/// Distinct guest error codes and keys the process keeps; later ones become
-/// `core/PackageFault` (kernel faults carry static text, so interned text is never freed).
-pub const MAX_INTERNED_FAULT_TEXT: usize = 4096;
-/// Longest guest error code or message key that is interned.
+/// Longest guest error code or message key retained in a fault.
 pub const MAX_FAULT_TEXT_BYTES: usize = 128;
 
 const PACKAGE_FAULT: &str = "core/PackageFault";
@@ -219,8 +215,8 @@ impl std::fmt::Debug for GuestKernel {
 
 fn guest_fault(error: GuestError) -> KernelFault {
     KernelFault {
-        code: PACKAGE_FAULT,
-        message_key: error.message_key(),
+        code: PACKAGE_FAULT.into(),
+        message_key: error.message_key().into(),
         message: GUEST_FAULT_MESSAGE,
     }
 }
@@ -252,35 +248,91 @@ impl PureKernel for GuestKernel {
                 }
                 Ok(())
             }
-            Ok(Err(error)) => Err(match (intern(&error.code), intern(&error.message_key)) {
-                (Some(code), Some(message_key)) => KernelFault {
-                    code,
-                    message_key,
-                    message: NODE_ERROR_MESSAGE,
-                },
-                _ => guest_fault(GuestError::OutputContract),
-            }),
+            Ok(Err(error)) => Err(node_fault(error)),
             Err(error) => Err(guest_fault(error)),
         }
     }
 }
 
-static INTERNED: Mutex<BTreeSet<&'static str>> = Mutex::new(BTreeSet::new());
+fn node_fault(error: crate::GuestNodeError) -> KernelFault {
+    if error.code.len() > MAX_FAULT_TEXT_BYTES || error.message_key.len() > MAX_FAULT_TEXT_BYTES {
+        return guest_fault(GuestError::OutputContract);
+    }
+    let fault = KernelFault {
+        code: error.code.into(),
+        message_key: error.message_key.into(),
+        message: NODE_ERROR_MESSAGE,
+    };
+    if fault.is_valid() {
+        fault
+    } else {
+        guest_fault(GuestError::OutputContract)
+    }
+}
 
-/// Returns process-lifetime text for a guest error identifier, bounded in count and
-/// length so a guest cannot grow host memory without limit.
-fn intern(text: &str) -> Option<&'static str> {
-    if text.len() > MAX_FAULT_TEXT_BYTES {
-        return None;
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use orange_compiler::FaultText;
+
+    fn error(code: String, message_key: String) -> crate::GuestNodeError {
+        crate::GuestNodeError { code, message_key }
     }
-    let mut interned = INTERNED.lock().ok()?;
-    if let Some(existing) = interned.get(text) {
-        return Some(existing);
+
+    #[test]
+    fn unrelated_error_churn_cannot_change_identifiers_or_keep_text_alive() {
+        let original = node_fault(error(
+            "org.example/Overflow".into(),
+            "org.example/overflow".into(),
+        ));
+        let FaultText::Shared(code) = &original.code else {
+            panic!("guest text must be owned")
+        };
+        let weak = Arc::downgrade(code);
+        let retained = original.clone();
+        drop(original);
+        for i in 0..5000 {
+            let other = node_fault(error(
+                format!("org.other/Error{i}"),
+                format!("org.other/error-{i}"),
+            ));
+            assert_eq!(other.code, format!("org.other/Error{i}"));
+        }
+        let again = node_fault(error(
+            "org.example/Overflow".into(),
+            "org.example/overflow".into(),
+        ));
+        assert_eq!(retained, again);
+        assert!(weak.upgrade().is_some());
+        drop(retained);
+        assert!(
+            weak.upgrade().is_none(),
+            "no global owner retains the old text"
+        );
     }
-    if interned.len() >= MAX_INTERNED_FAULT_TEXT {
-        return None;
+
+    #[test]
+    fn identifier_limits_remain_local_and_validated() {
+        for (code, key) in [
+            ("not-namespaced".into(), "org.example/error".into()),
+            ("org.example/Bad/Code".into(), "org.example/error".into()),
+            (
+                format!("org.example/{}", "a".repeat(128)),
+                "org.example/error".into(),
+            ),
+            (
+                "org.example/Bad".into(),
+                format!("org.example/{}", "a".repeat(128)),
+            ),
+        ] {
+            let fault = node_fault(error(code, key));
+            assert_eq!(fault.code, "core/PackageFault");
+            assert_eq!(fault.message_key, "core/guest-output-contract");
+        }
+        let exact = format!(
+            "org.example/{}",
+            "a".repeat(MAX_FAULT_TEXT_BYTES - "org.example/".len())
+        );
+        assert_eq!(node_fault(error(exact.clone(), exact.clone())).code, exact);
     }
-    let leaked: &'static str = Box::leak(text.to_owned().into_boxed_str());
-    interned.insert(leaked);
-    Some(leaked)
 }

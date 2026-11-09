@@ -1168,7 +1168,11 @@ fn compare_source_control(
     let faults: Vec<_> = run
         .trace()
         .iter()
-        .filter_map(|e| e.fault.as_ref().map(|f| (e.node, f.source, f.fault.code)))
+        .filter_map(|e| {
+            e.fault
+                .as_ref()
+                .map(|f| (e.node, f.source, f.fault.code.to_string()))
+        })
         .collect();
     assert_eq!(faults, oracle.faults);
     assert_eq!(run.now(), oracle.now);

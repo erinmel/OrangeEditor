@@ -126,8 +126,8 @@ impl Cells<'_> {
             None => Err(failure(
                 node,
                 KernelFault {
-                    code: "core/UninitializedVariable",
-                    message_key: "core/uninitialized-variable",
+                    code: orange_compiler::FaultText::Static("core/UninitializedVariable"),
+                    message_key: orange_compiler::FaultText::Static("core/uninitialized-variable"),
                     message: "The variable has not been initialized.",
                 },
             )),
@@ -352,8 +352,8 @@ fn equal_checked(ty: &ValueShape, old: &Value, expected: &Value) -> Option<bool>
 }
 fn internal() -> KernelFault {
     KernelFault {
-        code: "core/InternalFault",
-        message_key: "core/kernel-input-contract",
+        code: orange_compiler::FaultText::Static("core/InternalFault"),
+        message_key: orange_compiler::FaultText::Static("core/kernel-input-contract"),
         message: "Update inputs violate the resolved contract.",
     }
 }
@@ -395,8 +395,8 @@ fn compute(
             &[old.clone(), value.clone()],
         )
         .map_err(|error| KernelFault {
-            code: error.code(),
-            message_key: error.message_key(),
+            code: error.code().into(),
+            message_key: error.message_key().into(),
             message: match error {
                 orange_model::scalar::ScalarError::InputContract => {
                     "Update inputs violate the resolved contract."
@@ -421,8 +421,8 @@ fn compute(
         }
         UpdateOperation::Append => {
             let failure = || KernelFault {
-                code: "core/LimitExceeded",
-                message_key: "core/update-limit-exceeded",
+                code: orange_compiler::FaultText::Static("core/LimitExceeded"),
+                message_key: orange_compiler::FaultText::Static("core/update-limit-exceeded"),
                 message: "The updated value exceeds its state limit.",
             };
             let a = ty.checked_charge(old, limit).map_err(|_| failure())?;

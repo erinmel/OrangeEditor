@@ -56,7 +56,7 @@ impl Default for WorkspaceLimits {
         }
     }
 }
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum WorkspaceError {
     #[error("The workspace schema or value violates its checked contract.")]
     Contract,
@@ -76,7 +76,7 @@ pub enum WorkspaceError {
     Failed(KernelFault),
 }
 impl WorkspaceError {
-    pub const fn message_key(self) -> &'static str {
+    pub fn message_key(&self) -> &str {
         match self {
             Self::Contract => "core/workspace-contract",
             Self::UnknownVariable => "core/workspace-unknown-variable",
@@ -85,7 +85,7 @@ impl WorkspaceError {
             Self::IdentityExhausted => "core/workspace-identity-exhausted",
             Self::SchemaMismatch => "core/workspace-schema-mismatch",
             Self::DomainUnsupported => "core/workspace-domain-unsupported",
-            Self::Failed(f) => f.message_key,
+            Self::Failed(f) => &f.message_key,
         }
     }
 }

@@ -8,23 +8,89 @@ use orange_model::document::{ConfigValue, DefinitionRef, NodeInstance, Signature
 use orange_model::id::{NodeId, PortKey};
 use orange_model::{GraphDocument, Value};
 
-/// Safe static error envelope. No input data belongs in these fields. The compiler
+/// Fault identifiers borrow built-in text or share package-owned text. Clones retain
+/// the allocation only while an error, plan or result still needs it.
+#[derive(Debug, Clone, Eq)]
+pub enum FaultText {
+    Static(&'static str),
+    Shared(Arc<str>),
+}
+impl PartialEq for FaultText {
+    fn eq(&self, other: &Self) -> bool {
+        self.as_str() == other.as_str()
+    }
+}
+impl FaultText {
+    pub fn as_str(&self) -> &str {
+        match self {
+            Self::Static(text) => text,
+            Self::Shared(text) => text,
+        }
+    }
+    /// Conservative retained charge, including the shared allocation header.
+    pub fn retained_bytes(&self) -> usize {
+        match self {
+            Self::Static(_) => 0,
+            Self::Shared(text) => text.len().saturating_add(2 * size_of::<usize>()),
+        }
+    }
+}
+impl std::ops::Deref for FaultText {
+    type Target = str;
+    fn deref(&self) -> &str {
+        self.as_str()
+    }
+}
+impl From<&'static str> for FaultText {
+    fn from(text: &'static str) -> Self {
+        Self::Static(text)
+    }
+}
+impl From<String> for FaultText {
+    fn from(text: String) -> Self {
+        Self::Shared(text.into())
+    }
+}
+impl PartialEq<&str> for FaultText {
+    fn eq(&self, other: &&str) -> bool {
+        self.as_str() == *other
+    }
+}
+impl PartialEq<String> for FaultText {
+    fn eq(&self, other: &String) -> bool {
+        self.as_str() == other
+    }
+}
+impl std::fmt::Display for FaultText {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+/// Safe redacted error envelope. No input data belongs in these fields. The compiler
 /// checks bounded identifiers and retains the original producer's node as provenance.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct KernelFault {
-    pub code: &'static str,
-    pub message_key: &'static str,
+    pub code: FaultText,
+    pub message_key: FaultText,
     pub message: &'static str,
 }
 impl KernelFault {
-    /// Whether this static redacted envelope satisfies the shared bounded ABI.
-    pub fn is_valid(self) -> bool {
+    /// Whether this redacted envelope satisfies the shared bounded ABI.
+    pub fn is_valid(&self) -> bool {
         crate::compile::valid_fault(self)
+    }
+    /// Conservative per-fault charge; shared identifiers are charged per retention,
+    /// so clones cannot bypass a plan or activation's independent admission budget.
+    pub fn retained_bytes(&self) -> usize {
+        size_of::<Self>()
+            .saturating_add(self.code.retained_bytes())
+            .saturating_add(self.message_key.retained_bytes())
     }
     /// Shared by Count loops and Repeat zones.
     pub const NEGATIVE_COUNT: Self = Self {
-        code: "core/OutOfRange",
-        message_key: "core/count-out-of-range",
+        code: FaultText::Static("core/OutOfRange"),
+        message_key: FaultText::Static("core/count-out-of-range"),
         message: "Loop count must be nonnegative.",
     };
 }
@@ -239,6 +305,25 @@ impl<T: EntropyKernelResolver + ?Sized> ResolveEntropyInDocument for T {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn fault_text_equality_validation_and_lifetime_ignore_storage_kind() {
+        let shared: Arc<str> = Arc::from("acme/Overflow");
+        let weak = Arc::downgrade(&shared);
+        let fault = KernelFault {
+            code: FaultText::Shared(shared),
+            message_key: String::from("acme/overflow").into(),
+            message: "The operation failed.",
+        };
+        assert!(fault.is_valid());
+        assert_eq!(fault.code, FaultText::Static("acme/Overflow"));
+        assert!(fault.retained_bytes() > size_of::<KernelFault>());
+        let retained = fault.clone();
+        drop(fault);
+        assert!(weak.upgrade().is_some());
+        drop(retained);
+        assert!(weak.upgrade().is_none());
+    }
 
     struct DebugTrap;
     impl Debug for DebugTrap {

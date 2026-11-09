@@ -129,8 +129,10 @@ pub(crate) fn charge(used: &mut usize, amount: usize, limit: usize) -> Result<()
         .ok_or(CompileError::ResourceLimit)?;
     Ok(())
 }
-/// Retained bytes of one published constant fault: static code, key, message and producer.
-pub(crate) const FAULT_CHARGE: usize = 64;
+/// Retained bytes of one published fault, including shared identifiers and producer.
+pub(crate) fn fault_bytes(fault: &ConstantFault) -> usize {
+    size_of::<NodeId>().saturating_add(fault.fault.retained_bytes())
+}
 
 /// Nominal retained bytes of a constant, already checked against its shape.
 pub(crate) fn value_bytes(ty: &ValueShape, value: &Value) -> Result<usize, CompileError> {
@@ -184,7 +186,7 @@ fn push_slot(
     let index = u32::try_from(plan.constants.len()).map_err(|_| CompileError::ResourceLimit)?;
     let size = match &value {
         FoldedValue::Value(v) => value_bytes(&ty, v)?,
-        FoldedValue::Fault(_) => FAULT_CHARGE,
+        FoldedValue::Fault(fault) => fault_bytes(fault),
     };
     charge(bytes, size, options.limits.max_constant_bytes)?;
     plan.slot_calls.push(call);
@@ -288,9 +290,9 @@ fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Opt
     };
     Some(limit - remaining)
 }
-pub(crate) fn valid_fault(fault: KernelFault) -> bool {
-    is_error_code(fault.code)
-        && is_error_code(fault.message_key)
+pub(crate) fn valid_fault(fault: &KernelFault) -> bool {
+    is_error_code(&fault.code)
+        && is_error_code(&fault.message_key)
         && !fault.message.is_empty()
         && fault.message.len() <= 512
         && !fault.message.chars().any(char::is_control)
@@ -861,7 +863,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     Some(crate::lazy::Lazy::Try)
                 ) {
                     output_values[0] = Value::Err(Arc::new(orange_model::value::NodeError {
-                        code: fault.fault.code.to_owned(),
+                        code: fault.fault.code.to_string(),
                         node: Some(fault.source),
                     }));
                     None
@@ -908,7 +910,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                 match outcome {
                     Ok(()) => None,
                     Err(fault) => {
-                        if !valid_fault(fault) {
+                        if !valid_fault(&fault) {
                             return Err(CompileError::KernelContract { node: node_id });
                         }
                         plan.diagnostics.push(Diagnostic::new(

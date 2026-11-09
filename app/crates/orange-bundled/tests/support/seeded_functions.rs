@@ -167,8 +167,8 @@ fn argument_fault_skips_entropy_and_preserves_the_first_live_invocation() {
     let fault = ConstantFault {
         source: id(2).parse().unwrap(),
         fault: KernelFault {
-            code: "core/TestFault",
-            message_key: "core/test-fault",
+            code: orange_compiler::FaultText::Static("core/TestFault"),
+            message_key: orange_compiler::FaultText::Static("core/test-fault"),
             message: "test",
         },
     };

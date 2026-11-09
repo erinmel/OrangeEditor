@@ -531,8 +531,10 @@ impl Run {
                             FunctionReturn::Fault(ConstantFault {
                                 source: node.node(),
                                 fault: KernelFault {
-                                    code: "core/MissingReturn",
-                                    message_key: "core/function-missing-return",
+                                    code: orange_compiler::FaultText::Static("core/MissingReturn"),
+                                    message_key: orange_compiler::FaultText::Static(
+                                        "core/function-missing-return",
+                                    ),
                                     message: "The function ended without returning its declared results.",
                                 },
                             })

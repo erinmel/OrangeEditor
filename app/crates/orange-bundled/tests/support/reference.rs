@@ -15,7 +15,7 @@ use std::sync::Arc;
 #[derive(Debug, Clone, PartialEq)]
 pub struct Fault {
     pub source: NodeId,
-    pub code: &'static str,
+    pub code: String,
 }
 pub type Outcome = Result<Value, Fault>;
 
@@ -226,7 +226,7 @@ impl<'a> Reference<'a> {
         let result = if let Some(fault) = first_fault {
             if node.definition.id.as_str() == "core/try" {
                 Ok(vec![Value::Err(Arc::new(orange_model::value::NodeError {
-                    code: fault.code.into(),
+                    code: fault.code,
                     node: Some(fault.source),
                 }))])
             } else {
@@ -281,7 +281,7 @@ impl<'a> Reference<'a> {
             };
             values.map_err(|code| Fault {
                 source: node_id,
-                code,
+                code: code.into(),
             })
         };
         let ports: Vec<_> = signature

@@ -229,8 +229,8 @@ fn strict_unused_argument_fault_prevents_body_work_and_keeps_original_source() {
     let fault = ConstantFault {
         source: id(3).parse().unwrap(),
         fault: KernelFault {
-            code: "core/TestFault",
-            message_key: "core/test-fault",
+            code: orange_compiler::FaultText::Static("core/TestFault"),
+            message_key: orange_compiler::FaultText::Static("core/test-fault"),
             message: "test",
         },
     };

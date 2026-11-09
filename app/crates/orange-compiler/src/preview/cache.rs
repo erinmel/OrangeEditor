@@ -151,16 +151,14 @@ impl Cache {
                     outputs.clone_from_slice(values);
                     Ok(())
                 }
-                Err(fault) => Err(*fault),
+                Err(fault) => Err(fault.clone()),
             });
         }
         self.stats.folded += 1;
         let outcome = binding.kernel.fold(inputs, outputs);
         let mut output_bytes = Some(0usize);
-        match outcome {
-            Err(fault) if fault.is_valid() => {
-                output_bytes = Some(std::mem::size_of::<KernelFault>())
-            }
+        match &outcome {
+            Err(fault) if fault.is_valid() => output_bytes = Some(fault.retained_bytes()),
             Err(_) => return Err(CompileError::KernelContract { node: key.node.id }),
             Ok(()) => {
                 if shapes.len() != outputs.len() {
@@ -206,7 +204,9 @@ impl Cache {
                 inputs: inputs.into(),
                 input_ports: binding.inputs.clone(),
                 output_ports: binding.outputs.clone(),
-                outcome: outcome.map(|()| outputs.to_vec().into_boxed_slice()),
+                outcome: outcome
+                    .clone()
+                    .map(|()| outputs.to_vec().into_boxed_slice()),
                 bytes,
                 seen: self.stats.request,
             },

@@ -12,7 +12,7 @@ impl RecordedRun {
                 budget,
                 result: Some(result),
             },
-        );
+        )?;
         Ok(result?)
     }
     pub fn advance_to(&mut self, now: u64) -> Result<(), ReplayError> {
@@ -26,7 +26,7 @@ impl RecordedRun {
                 now,
                 result: Some(result),
             },
-        );
+        )?;
         Ok(result?)
     }
     pub fn request_stop(&mut self, mode: StopMode) -> Result<(), ReplayError> {
@@ -38,7 +38,7 @@ impl RecordedRun {
                 mode,
                 result: Some(result),
             },
-        );
+        )?;
         Ok(result?)
     }
     /// Abandon the recording and request immediate stop independently of journal
@@ -65,7 +65,7 @@ impl RecordedRun {
                 event,
                 result: Some(result.map(|s| s.id())),
             },
-        );
+        )?;
         Ok(result?)
     }
     pub fn revoke_event_source(&mut self, token: &RunEventSource) -> Result<bool, ReplayError> {
@@ -81,7 +81,7 @@ impl RecordedRun {
                 source,
                 result: Some(result),
             },
-        );
+        )?;
         Ok(result?)
     }
     pub fn ingest_event(
@@ -114,7 +114,7 @@ impl RecordedRun {
                 wall,
                 result: Some(result),
             },
-        );
+        )?;
         Ok(result?)
     }
     pub fn trigger(
@@ -141,7 +141,7 @@ impl RecordedRun {
                 wall,
                 result: Some(result),
             },
-        );
+        )?;
         Ok(result?)
     }
     pub fn take_effect(&mut self) -> Result<Option<EffectRequest>, ReplayError> {
@@ -153,7 +153,7 @@ impl RecordedRun {
             Entry::Take {
                 result: Some(saved),
             },
-        );
+        )?;
         Ok(result)
     }
     pub fn complete_effect(
@@ -164,8 +164,8 @@ impl RecordedRun {
         // Reserve first, then capture. An archive refusal invalidates this
         // recording; no completion has been admitted to the actor yet.
         const SAFE: KernelFault = KernelFault {
-            code: "core/InternalFault",
-            message_key: "core/replay-incomplete",
+            code: orange_compiler::FaultText::Static("core/InternalFault"),
+            message_key: orange_compiler::FaultText::Static("core/replay-incomplete"),
             message: "The recording is incomplete.",
         };
         let foreign = id.run != self.run.id();
@@ -175,9 +175,9 @@ impl RecordedRun {
             outcome: Err(SAFE),
             result: None,
         })?;
-        let saved = match outcome {
+        let saved = match &outcome {
             Ok(values) => Ok(self.session()?.capture(values)?),
-            Err(fault) if fault.is_valid() => Err(fault),
+            Err(fault) if fault.is_valid() => Err(fault.clone()),
             Err(_) => {
                 self.session()?.failed = true;
                 return Err(ReplayError::Effect(EffectError::Contract));
@@ -192,7 +192,7 @@ impl RecordedRun {
                 outcome: saved,
                 result: Some(result),
             },
-        );
+        )?;
         Ok(result?)
     }
 }

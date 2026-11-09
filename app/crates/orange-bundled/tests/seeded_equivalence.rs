@@ -17,7 +17,7 @@ fn pull(frame: &mut DataActivation, index: usize) -> Outcome {
     let export = frame.export(index).unwrap().unwrap();
     export.outcome.cloned().map_err(|fault| Fault {
         source: fault.source,
-        code: fault.fault.code,
+        code: fault.fault.code.to_string(),
     })
 }
 

@@ -42,7 +42,7 @@ pub use effects::{ActionKernel, ControlEffect, EffectBinding, EffectResolver, Sh
 pub use error::CompileError;
 pub use evaluate::{EvaluatedExport, EvaluationError, EvaluationOptions, PureEvaluation};
 pub use kernel::{
-    BindingRequest, EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource,
+    BindingRequest, EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource, FaultText,
     KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveEntropyInDocument,
     ResolveError, ResolveInDocument,
 };

@@ -115,7 +115,7 @@ impl std::fmt::Debug for SharedReceipt {
 }
 impl SharedReceipt {
     pub fn commit(&self) -> Result<&WorkspaceCommit, WorkspaceError> {
-        self.outcome.as_ref().map_err(|e| *e)
+        self.outcome.as_ref().map_err(Clone::clone)
     }
 }
 pub(super) struct Attachment {
@@ -200,13 +200,13 @@ fn fault(error: WorkspaceError) -> KernelFault {
     match error {
         WorkspaceError::Failed(f) => f,
         WorkspaceError::Uninitialized => KernelFault {
-            code: "core/UninitializedVariable",
-            message_key: "core/uninitialized-variable",
+            code: orange_compiler::FaultText::Static("core/UninitializedVariable"),
+            message_key: orange_compiler::FaultText::Static("core/uninitialized-variable"),
             message: "The variable has not been initialized.",
         },
         _ => KernelFault {
-            code: "core/WorkspaceFailure",
-            message_key: error.message_key(),
+            code: orange_compiler::FaultText::Static("core/WorkspaceFailure"),
+            message_key: error.message_key().to_owned().into(),
             message: "The workspace operation failed.",
         },
     }
@@ -325,7 +325,7 @@ impl Run {
                     }
                     Ok(values.as_slice())
                 }
-                Err(error) => Err(fault(*error)),
+                Err(error) => Err(fault(error.clone())),
             };
             self.complete_effect_kind(receipt.request.0.id, outcome, true)?;
             // Completion is only queued. Install before any continuation can run.

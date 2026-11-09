@@ -264,7 +264,7 @@ panic, including when that command was the last entry and no Run pump had starte
 `ReplayArchive` is an explicit trusted host sensitivity/integrity boundary. It
 captures values under host policy and resolves immutable `ReplayPayloadRef`
 identities; both callbacks must be bounded/nonblocking. Journal entries contain
-references, scalar metadata and safe static fault envelopes, never captured values,
+references, scalar metadata and safe redacted fault envelopes, never captured values,
 credentials, formatted payloads or an archive owner. The archive must preserve exact
 values or return `Excluded`; changing a string to a redacted string changes graph
 semantics and cannot qualify exact replay. Missing references and invalid typed
@@ -273,11 +273,14 @@ quotas remain host-owned, outside Run/journal accounting. Plan/context reference
 remain pinned in memory; no credential bytes are exported as a log format. Debug
 shows metadata/counts only and never invokes archive/provider formatters.
 
-`ReplayOptions` defaults to 8192 fixed entries/2 MiB of entry storage. Count/byte
+`ReplayOptions` defaults to 8192 fixed entries/2 MiB of entry and fault-text storage. Count/byte
 overflow or allocation refusal is checked before Run starts. A full journal refuses
 a host command before mutation and increments `full_refusals`; it never evicts old
 records. If an Action cannot reserve inside a pump, it does not run and the run
-faults `RunError::ReplayFailed`, leaving the journal incomplete. Archive exclusion/
+faults `RunError::ReplayFailed`, leaving the journal incomplete. Shared fault
+identifiers count toward `max_bytes` as well as fixed entry storage. A fault-result
+storage refusal after a callback/completion invalidates the recording; the effect
+may already have executed and must never be retried to repair the journal. Archive exclusion/
 failure after an already executed callback also invalidates the recording; it cannot
 undo that real effect. Placeholders and the pump interruption guard prevent sealing
 after a caught panic. `finish` seals a complete prefix and returns the original live
@@ -305,7 +308,9 @@ type, item/aggregate quota or Backpressure/Full refusal changes neither queues n
 accepted sequence, so the same sequence can be corrected/retried. A deliberate
 drop accepts its sequence. `finish_push_stream` stops admission and drains accepted
 queues before End; `fail_push_stream` discards unread queues and supplies a safe
-static producer fault. New items require Running; finish/fail also work while
+redacted producer fault. Shared fault identifiers count toward bridge and pending
+delivery retention; insufficient space produces a static `core/LimitExceeded`
+fault while preserving bounded cleanup. New items require Running; finish/fail also work while
 Draining so an already accepted read can terminate. The source's monotonic
 `is_closed` signal means its consumer resource has closed, and owns no queued data.
 
@@ -451,7 +456,8 @@ hands each command out once with Arc-owned typed inputs, an opaque `EffectId`
 and a monotonic read-only lifetime lease. The identity combines the existing
 process-unique Run ID and a checked, never-reused operation sequence. The host
 executes on its own bounded executor and calls `complete_effect` with borrowed
-results or a static safe `KernelFault`. Whole-result type/count/byte/state/aggregate
+results or a safe `KernelFault` with bounded static/shared identifiers and a static
+fallback. Whole-result type/count/byte/state/aggregate
 admission precedes any copy or mutation. A rejected result can be corrected and
 retried; an accepted result is complete-once. Admission does not run a continuation;
 one later pump work item publishes the result and follows `then` or `failed`.

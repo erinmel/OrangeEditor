@@ -252,6 +252,23 @@ fn an_archived_guest_node_compiles_beside_bundled_math_and_keeps_fault_sources()
         ),
         Err(CompileError::KernelUnavailable { .. })
     ));
+
+    // A retained graph fault outlives the package/resolver/plan, but no process-wide
+    // owner keeps its identifiers after the final graph consumer releases them.
+    let orange_compiler::FaultText::Shared(code) = &overflow.fault.code else {
+        panic!("guest error identifiers must be owned")
+    };
+    let weak = Arc::downgrade(code);
+    let retained = overflow.fault.clone();
+    drop(overflow);
+    drop(plan);
+    drop(resolver);
+    drop(guest);
+    assert_eq!(retained.code, "core/NumericOverflow");
+    assert_eq!(retained.message_key, "org.example.probe/failed");
+    assert!(weak.upgrade().is_some());
+    drop(retained);
+    assert!(weak.upgrade().is_none());
 }
 
 #[test]

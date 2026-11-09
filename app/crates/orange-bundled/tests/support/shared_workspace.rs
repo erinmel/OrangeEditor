@@ -360,8 +360,8 @@ fn host_rejection_routes_a_validated_graph_fault_without_committing() {
     idle(&mut run, 1);
     let request = run.take_shared().unwrap().unwrap();
     let bad = orange_compiler::KernelFault {
-        code: "secret-invalid",
-        message_key: "bad",
+        code: orange_compiler::FaultText::Static("secret-invalid"),
+        message_key: orange_compiler::FaultText::Static("bad"),
         message: "hidden",
     };
     let refused = run.fail_shared(request, bad).unwrap_err();
@@ -369,8 +369,8 @@ fn host_rejection_routes_a_validated_graph_fault_without_committing() {
     run.fail_shared(
         refused.value,
         orange_compiler::KernelFault {
-            code: "core/Refused",
-            message_key: "core/shared-refused",
+            code: orange_compiler::FaultText::Static("core/Refused"),
+            message_key: orange_compiler::FaultText::Static("core/shared-refused"),
             message: "The shared operation was refused.",
         },
     )
@@ -596,8 +596,8 @@ fn actor_quota_refusal_preserves_the_original_request_and_committed_state() {
     run.fail_shared(
         refused.value,
         orange_compiler::KernelFault {
-            code: "core/Refused",
-            message_key: "core/shared-refused",
+            code: orange_compiler::FaultText::Static("core/Refused"),
+            message_key: orange_compiler::FaultText::Static("core/shared-refused"),
             message: "The shared operation was refused.",
         },
     )
@@ -667,8 +667,8 @@ fn completion_quota_refusal_keeps_receipt_pending_without_rolling_back_the_host_
     // retire it with a bounded fault, without minting another mutation command.
     let refused = run.complete_shared(refused.value).unwrap_err();
     let fault = orange_compiler::KernelFault {
-        code: "core/Refused",
-        message_key: "core/shared-refused",
+        code: orange_compiler::FaultText::Static("core/Refused"),
+        message_key: orange_compiler::FaultText::Static("core/shared-refused"),
         message: "The shared operation was refused.",
     };
     // Even fault metadata may exceed this deliberately tiny effect limit.
@@ -721,8 +721,8 @@ fn host_can_retire_an_oversized_committed_receipt_with_a_small_graph_fault() {
     run.fail_shared_receipt(
         refused.value,
         orange_compiler::KernelFault {
-            code: "core/Refused",
-            message_key: "core/shared-refused",
+            code: orange_compiler::FaultText::Static("core/Refused"),
+            message_key: orange_compiler::FaultText::Static("core/shared-refused"),
             message: "The shared operation was refused.",
         },
     )

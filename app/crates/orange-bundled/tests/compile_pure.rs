@@ -302,7 +302,7 @@ proptest::proptest! {
         for (actual,expected) in plan.evaluate(&doc,&snapshot,EvaluationOptions::default()).unwrap().exports().zip(expected) {
             match (actual.unwrap().outcome,expected) {
                 (Ok(actual),Ok(expected))=>proptest::prop_assert_eq!(actual,&expected),
-                (Err(actual),Err(expected))=>{proptest::prop_assert_eq!(actual.source,expected.source);proptest::prop_assert_eq!(actual.fault.code,expected.code);}
+                (Err(actual),Err(expected))=>{proptest::prop_assert_eq!(actual.source,expected.source);proptest::prop_assert_eq!(actual.fault.code.as_str(),expected.code);}
                 _=>proptest::prop_assert!(false,"try oracle mismatch"),
             }
         }
@@ -687,8 +687,8 @@ struct DeliberateFault;
 impl PureKernel for DeliberateFault {
     fn fold(&self, _: &[Value], _: &mut [Value]) -> Result<(), KernelFault> {
         Err(KernelFault {
-            code: "core/DeliberateFault",
-            message_key: "core/test-fault",
+            code: orange_compiler::FaultText::Static("core/DeliberateFault"),
+            message_key: orange_compiler::FaultText::Static("core/test-fault"),
             message: "Test kernel failed.",
         })
     }
@@ -1597,8 +1597,8 @@ impl PureKernel for InvalidKernel {
     fn fold(&self, _: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
         if self.invalid_fault {
             return Err(KernelFault {
-                code: "/",
-                message_key: "core/fault",
+                code: orange_compiler::FaultText::Static("/"),
+                message_key: orange_compiler::FaultText::Static("core/fault"),
                 message: "Safe fallback.",
             });
         }

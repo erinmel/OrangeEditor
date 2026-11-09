@@ -594,7 +594,7 @@ proptest::proptest! {
             }
             observations.sort();let mut expected=oracle.observations.borrow().clone();expected.sort();
             assert_eq!(observations,expected);
-            let mut faults:Vec<_>=run.trace().iter().filter_map(|e|e.fault.as_ref().map(|f|(e.node,f.source,f.fault.code))).collect();
+            let mut faults:Vec<_>=run.trace().iter().filter_map(|e|e.fault.as_ref().map(|f|(e.node,f.source,f.fault.code.to_string()))).collect();
             faults.sort();let mut expected=oracle.faults.borrow().clone();expected.sort();assert_eq!(faults,expected);
             assert_eq!(run.ownership().activations,0);assert_eq!(run.ownership().regions,0);
         }

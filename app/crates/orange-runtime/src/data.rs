@@ -970,7 +970,7 @@ impl Frame {
             Err(fault) => {
                 if matches!(node.operation(), DataOperation::Try { .. }) {
                     let value = Value::Err(Arc::new(orange_model::value::NodeError {
-                        code: fault.fault.code.into(),
+                        code: fault.fault.code.to_string(),
                         node: Some(fault.source),
                     }));
                     return self.publish_value(plan, node, value);
@@ -1130,31 +1130,31 @@ impl EntropySource for ScopedSource<'_> {
         if self.cancel.is_some_and(CancelToken::is_cancelled) {
             self.cancelled = true;
             return Err(KernelFault {
-                code: "core/Cancelled",
-                message_key: "core/data-cancelled",
+                code: orange_compiler::FaultText::Static("core/Cancelled"),
+                message_key: orange_compiler::FaultText::Static("core/data-cancelled"),
                 message: "Data evaluation was cancelled.",
             });
         }
-        if let Some(fault) = self.fault {
-            return Err(fault);
+        if let Some(fault) = &self.fault {
+            return Err(fault.clone());
         }
         if self.remaining == 0 {
             let fault = KernelFault {
-                code: "core/LimitExceeded",
-                message_key: "core/entropy-draw-limit",
+                code: orange_compiler::FaultText::Static("core/LimitExceeded"),
+                message_key: orange_compiler::FaultText::Static("core/entropy-draw-limit"),
                 message: "The node entropy draw budget is exhausted.",
             };
-            self.fault = Some(fault);
+            self.fault = Some(fault.clone());
             return Err(fault);
         }
         self.remaining -= 1;
         self.stream.next_u64().map_err(|_| {
             let fault = KernelFault {
-                code: "core/LimitExceeded",
-                message_key: "core/entropy-stream-exhausted",
+                code: orange_compiler::FaultText::Static("core/LimitExceeded"),
+                message_key: orange_compiler::FaultText::Static("core/entropy-stream-exhausted"),
                 message: "The entropy stream is exhausted.",
             };
-            self.fault = Some(fault);
+            self.fault = Some(fault.clone());
             fault
         })
     }

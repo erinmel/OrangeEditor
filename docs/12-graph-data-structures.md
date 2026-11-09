@@ -1,5 +1,15 @@
 # Graph data structures
 
+Fault text (2026-11-09): `KernelFault` retains code/key through allocation-free
+static text or shared `Arc<str>` identifiers; its safe fallback remains static.
+Constant-fault admission includes the producer, envelope and shared identifier
+charges. Data slots, preview caches, effect/stream completions, last Watch faults,
+trace entries and replay journals retain shared text under their owning budgets.
+Shared allocations are charged conservatively per retained owner rather than
+discounted by pointer identity. Trace admission may drop an entry and increment
+`trace_dropped` if its identifier storage cannot fit; it never rewrites a fault.
+No persistence schema changes; Try materializes the same producer and code.
+
 ## C13 persistent-value representation (2026-11-08)
 
 ValueCheckpoint privately owns a closed version1 document and host-chosen limits.
@@ -133,7 +143,9 @@ saved graph schema, provider lock, dependency or feature changes are introduced.
 `RecordedRun` owns the sole mutable Run. A private optional Session owns fixed-size
 command entries and the explicit host archive reference. Preallocated entry storage
 has independent count/nominal byte caps; entries carry scalar identity/order/time,
-typed outcomes, payload references and safe static faults, with no Value buffers.
+typed outcomes, payload references and safe redacted faults, with no Value buffers.
+Fault identifiers may use shared owned text; journal byte admission includes those
+allocations in addition to entry storage, and final-owner retirement releases them.
 Pump and Action entries start incomplete, then seal after execution/capture. The
 Action hook sits at the existing effect dispatch boundary; ordinary runs with no
 Session keep their original callback path. Complete-once effect and ingress

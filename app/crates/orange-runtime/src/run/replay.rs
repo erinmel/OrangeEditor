@@ -32,7 +32,7 @@ pub trait ReplayArchive: Send + Sync + 'static {
 #[derive(Debug, Clone, Copy)]
 pub struct ReplayOptions {
     pub max_entries: usize,
-    /// Fixed entry storage only; archive and pinned compiled plan are host owned.
+    /// Entry storage and shared fault identifiers; archive and pinned plan are host owned.
     pub max_bytes: usize,
 }
 impl Default for ReplayOptions {
@@ -45,7 +45,7 @@ impl Default for ReplayOptions {
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
 pub enum ReplayError {
-    #[error("The replay journal is full; the operation was not started.")]
+    #[error("The replay journal exceeds its configured storage bound.")]
     Full,
     #[error("This plan or option is outside the supported replay profile.")]
     Unsupported,
@@ -107,7 +107,7 @@ impl Source {
         }
     }
 }
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 enum Entry {
     Pump {
         budget: usize,
@@ -156,11 +156,32 @@ enum Entry {
         outcome: Option<SavedOutcome>,
     },
 }
+impl Entry {
+    fn text_bytes(&self) -> usize {
+        let fault = match self {
+            Self::Complete {
+                outcome: Err(fault),
+                ..
+            }
+            | Self::Action {
+                outcome: Some(Err(fault)),
+                ..
+            } => fault,
+            _ => return 0,
+        };
+        fault
+            .code
+            .retained_bytes()
+            .saturating_add(fault.message_key.retained_bytes())
+    }
+}
 enum Mode {
     Record {
         entries: Vec<Entry>,
         max: usize,
         full: u64,
+        text_bytes: usize,
+        max_bytes: usize,
     },
     Replay {
         entries: Arc<[Entry]>,
@@ -177,7 +198,10 @@ impl Session {
         if self.failed {
             return Err(ReplayError::Incomplete);
         }
-        let Mode::Record { entries, max, full } = &mut self.mode else {
+        let Mode::Record {
+            entries, max, full, ..
+        } = &mut self.mode
+        else {
             return Err(ReplayError::Diverged);
         };
         if entries.len() == *max {
@@ -188,10 +212,34 @@ impl Session {
         entries.push(entry);
         Ok(index)
     }
-    fn set(&mut self, index: usize, entry: Entry) {
-        if let Mode::Record { entries, .. } = &mut self.mode {
+    fn set(&mut self, index: usize, entry: Entry) -> Result<(), ReplayError> {
+        if let Mode::Record {
+            entries,
+            text_bytes,
+            max_bytes,
+            full,
+            ..
+        } = &mut self.mode
+        {
+            let next = text_bytes
+                .saturating_sub(entries[index].text_bytes())
+                .checked_add(entry.text_bytes())
+                .filter(|bytes| {
+                    entries
+                        .capacity()
+                        .checked_mul(size_of::<Entry>())
+                        .and_then(|fixed| fixed.checked_add(*bytes))
+                        .is_some_and(|total| total <= *max_bytes)
+                });
+            let Some(next) = next else {
+                *full = full.saturating_add(1);
+                self.failed = true;
+                return Err(ReplayError::Full);
+            };
+            *text_bytes = next;
             entries[index] = entry;
         }
+        Ok(())
     }
     fn next(&mut self) -> Result<Option<Entry>, ReplayError> {
         if self.failed {
@@ -200,7 +248,7 @@ impl Session {
         let Mode::Replay { entries, cursor } = &mut self.mode else {
             return Err(ReplayError::Diverged);
         };
-        let entry = entries.get(*cursor).copied();
+        let entry = entries.get(*cursor).cloned();
         *cursor += usize::from(entry.is_some());
         Ok(entry)
     }
@@ -232,12 +280,12 @@ impl Session {
                         outcome: None,
                     })?;
                     let outcome = action.execute(inputs, outputs);
-                    let saved = match outcome {
+                    let saved = match &outcome {
                         Ok(()) => {
                             check_outputs(shapes, outputs, limit)?;
                             Ok(self.capture(outputs)?)
                         }
-                        Err(fault) if fault.is_valid() => Err(fault),
+                        Err(fault) if fault.is_valid() => Err(fault.clone()),
                         Err(_) => return Err(ReplayError::Diverged),
                     };
                     self.set(
@@ -246,7 +294,7 @@ impl Session {
                             node,
                             outcome: Some(saved),
                         },
-                    );
+                    )?;
                     return Ok(outcome);
                 }
                 Mode::Replay { .. } => match self.next()? {
@@ -280,7 +328,11 @@ impl Session {
         ReplayStats {
             version: 1,
             entries,
-            reserved_bytes: capacity * std::mem::size_of::<Entry>(),
+            reserved_bytes: capacity * std::mem::size_of::<Entry>()
+                + match &self.mode {
+                    Mode::Record { text_bytes, .. } => *text_bytes,
+                    Mode::Replay { entries, .. } => entries.iter().map(Entry::text_bytes).sum(),
+                },
             full_refusals: full,
             incomplete: self.failed || self.incomplete_entries(),
         }
@@ -458,6 +510,8 @@ impl RecordedRun {
                 entries,
                 max: limits.max_entries,
                 full: 0,
+                text_bytes: 0,
+                max_bytes: limits.max_bytes,
             },
             archive,
             failed: false,
@@ -481,7 +535,8 @@ impl RecordedRun {
             return Err(ReplayError::Incomplete);
         };
         let entries: Arc<[Entry]> = entries.into();
-        stats.reserved_bytes = entries.len() * std::mem::size_of::<Entry>();
+        stats.reserved_bytes = entries.len() * std::mem::size_of::<Entry>()
+            + entries.iter().map(Entry::text_bytes).sum::<usize>();
         Ok((
             self.run,
             ReplayLog {

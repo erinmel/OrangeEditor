@@ -1,5 +1,12 @@
 # Product requirements
 
+K02c fault-ownership trace (2026-11-09): FR-34/35/38/44 retain package fault codes,
+catalogue keys and original producer across compile/runtime boundaries without a
+process-wide identifier allowance. Shared error text retires with its last owner;
+NFR-08 admission includes it in constant, preview, run, stream and replay budgets.
+Guest identifier length/redaction rules remain bounded (04/13), and exact provider
+locks are unchanged. Focused regression evidence and limitations are recorded in10.
+
 C13 trace addition (2026-11-08): FR-13/05 now have a versioned bounded value
 checkpoint and atomic fresh-actor restore contract. Explicit persistent selection,
 exact type/schema/codec/provider compatibility, safe stopped/host boundaries and

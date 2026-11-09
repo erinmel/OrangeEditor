@@ -158,7 +158,17 @@ fn constant_try_and_direct_exports_preserve_original_faults_and_warnings() {
         panic!("direct fault absent")
     };
     assert_eq!(fault.source, id(1).parse().unwrap());
-    assert_eq!(plan.fault_charge(fault), Some(64));
+    let base = size_of::<orange_model::id::NodeId>() + size_of::<orange_compiler::KernelFault>();
+    assert_eq!(plan.fault_charge(fault), Some(base));
+    let mut owned = fault.clone();
+    owned.fault.code = owned.fault.code.to_string().into();
+    owned.fault.message_key = owned.fault.message_key.to_string().into();
+    assert_eq!(owned, *fault);
+    assert_eq!(
+        plan.fault_charge(&owned),
+        Some(size_of::<orange_model::id::NodeId>() + owned.fault.retained_bytes())
+    );
+    assert!(plan.fault_charge(&owned).unwrap() > base);
 }
 
 #[test]

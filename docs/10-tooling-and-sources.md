@@ -1,5 +1,49 @@
 # Tooling, environment and research register
 
+## K02c fault-text ownership correction — 2026-11-09
+
+User selected owned/shared identifiers instead of the process-lifetime interning
+table. Base is PR162 head `9d470beada333388f5596498ffbadedef42bf635`; evidence below
+is for the local working-tree correction, not a new hosted-CI result or merge.
+`FaultText` supports static built-in identifiers and shared `Arc<str>` package
+identifiers; equality is textual. `KernelFault` and `WorkspaceError` are no longer
+Copy. Invalid/overlong guest identifiers still fault locally; no global code cap,
+new dependency, WIT change, saved-format change or provider-lock change.
+
+Selected environment: Windows x64; rustup `1.99.1-x86_64-pc-windows-msvc`,
+`rustc 1.99.1 (58cf8f9c3 2026-10-13)`. Host lockfile SHA256 is
+`E2AB8E6108BAEBC40B8D59D3E5D0807D8B0C9AA525F573551E0FC9E29D01B14E`
+(unchanged). Workspace checks use `--all-features --locked`; pinned Wasmtime48.0.8
+normal features remain runtime/cranelift/component-model/std, with wat for tests.
+No package or toolchain dependency was changed.
+Cargo is1.99.1 (5f94df478 2026-08-27); Node.js is24.18.0.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --all-features --locked` | **1,630 passed, 0 failed, 15 optional measurements ignored**, including doctests |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass; 19 policy fixtures |
+| `node --test tools/*.test.mjs` | 17 passed, 0 failed |
+
+New regressions prove identifier equality across static/shared storage, release
+after the final owner, stability through 5,000 distinct unrelated errors, local
+identifier validation/128-byte boundaries, and replay/stream/trace/Watch retention
+admission and release. The real archive integration test retains the guest fault
+after dropping the guest package, resolver and plan, then verifies final release.
+Existing constant Try/data-fault charge coverage includes owned identifiers;
+runtime callback-fault regressions now also exercise shared identifiers.
+
+The restricted local test run hit `durable::compaction_replaces_the_log_with_one_equivalent_checkpoint`
+with `replace journal: PermissionDenied`; a targeted retry did likewise. The full
+suite passed with normal Windows file access. No journal implementation/test was
+changed. Windows/OneDrive incremental-cache hard-link warnings fell back to copies;
+they are environmental build warnings, not lint or rustdoc findings. No timing,
+RSS, release-profile, fresh SDK rebuild or new MSRV run is claimed for this change.
+External consumers retaining cloned faults own those references outside core
+budgets; identifiers are freed only after every such owner releases them.
+
 ## K02c — package nodes from archives — 2026-11-08
 
 Branch `k02c-guest-nodes` from dev `1879623` (K02b PR161). Same toolchains; no new
