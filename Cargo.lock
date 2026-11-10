@@ -764,6 +764,7 @@ dependencies = [
  "orange-compiler",
  "orange-model",
  "orange-packages",
+ "orange-runtime",
  "serde_json",
  "thiserror",
  "wasmtime",

@@ -1,11 +1,13 @@
 //! Package nodes as graph kernels (K02c): a verified archive's component becomes the
-//! exact provider of that package's pure nodes, composed with the host's resolver.
+//! exact provider of that package's pure, action and async nodes, composed with the
+//! host's resolvers.
 
 use std::sync::{Arc, Mutex};
 
 use orange_compiler::{
-    BindingRequest, EntropyBinding, EntropyKernelResolver, KernelBinding, KernelFault, PureKernel,
-    PureKernelResolver, ResolveError,
+    ActionKernel, BindingRequest, EffectBinding, EffectResolver, EntropyBinding,
+    EntropyKernelResolver, KernelBinding, KernelFault, PureKernel, PureKernelResolver,
+    ResolveError,
 };
 use orange_model::Value;
 use orange_model::catalog::{ProviderKey, RegistrySnapshot};
@@ -14,7 +16,7 @@ use orange_model::id::{PortKey, TypeExpr};
 use orange_packages::{Execution, MemorySink, VerifiedArchive};
 use thiserror::Error;
 
-use crate::{Grants, GuestComponent, GuestEngine, GuestError, GuestPlugin};
+use crate::{Grants, GuestCancellation, GuestComponent, GuestEngine, GuestError, GuestPlugin};
 
 /// Worlds of this major version are loadable; the host offers 1.0 (`API_VERSION`).
 pub const PLUGIN_WORLD_PREFIX: &str = "orange:expansion/plugin@1.";
@@ -138,6 +140,63 @@ impl<R: PureKernelResolver> PureKernelResolver for WithGuests<R> {
         let Some(package) = self.package(request) else {
             return self.host.resolve_binding(request);
         };
+        if request.signature().kind != NodeKind::Pure {
+            return Err(ResolveError::Contract);
+        }
+        let (inputs, outputs, node) = package.node(request, false)?;
+        Ok(KernelBinding {
+            inputs,
+            outputs,
+            kernel: Arc::new(GuestKernel(node)),
+        })
+    }
+}
+
+impl<R: EffectResolver> EffectResolver for WithGuests<R> {
+    /// An action node runs inline through its kernel. An async node is submitted to the
+    /// host, which finds its implementation with [`guest_effect`] on the request context.
+    fn resolve_effect(&self, request: &BindingRequest<'_>) -> Result<EffectBinding, ResolveError> {
+        let Some(package) = self.package(request) else {
+            return self.host.resolve_effect(request);
+        };
+        let kind = request.signature().kind;
+        if !matches!(kind, NodeKind::Action | NodeKind::Async) {
+            return Err(ResolveError::Contract);
+        }
+        let (inputs, outputs, node) = package.node(request, true)?;
+        let effect = Arc::new(GuestEffect(node));
+        Ok(EffectBinding {
+            route: 0,
+            inputs,
+            outputs,
+            action: (kind == NodeKind::Action)
+                .then(|| Arc::new(GuestAction(effect.clone())) as Arc<dyn ActionKernel>),
+            context: effect,
+        })
+    }
+}
+
+impl<R: EntropyKernelResolver> EntropyKernelResolver for WithGuests<R> {
+    fn resolve_entropy_binding(
+        &self,
+        request: &BindingRequest<'_>,
+    ) -> Result<EntropyBinding, ResolveError> {
+        // Guest entropy sources are not part of the 1.0 world.
+        if self.package(request).is_some() {
+            return Err(ResolveError::Unavailable);
+        }
+        self.host.resolve_entropy_binding(request)
+    }
+}
+
+impl GuestPackage {
+    /// One node binding's own guest instance and its data ports in declared order.
+    /// `control` admits the exec ports of an action or async node, which carry no value.
+    fn node(
+        &self,
+        request: &BindingRequest<'_>,
+        control: bool,
+    ) -> Result<(Box<[PortKey]>, Box<[PortKey]>, GuestNode), ResolveError> {
         let provider = request.provider().ok_or(ResolveError::Unavailable)?;
         if !request
             .snapshot()
@@ -145,15 +204,16 @@ impl<R: PureKernelResolver> PureKernelResolver for WithGuests<R> {
         {
             return Err(ResolveError::Unavailable);
         }
-        let signature = request.signature();
-        if signature.kind != NodeKind::Pure || !request.config().is_empty() {
+        if !request.config().is_empty() {
             return Err(ResolveError::Contract);
         }
         let (mut inputs, mut input_types) = (Vec::new(), Vec::new());
         let (mut outputs, mut output_types) = (Vec::new(), Vec::new());
-        for port in &signature.ports {
-            if port.kind != PortKind::Data {
-                return Err(ResolveError::Contract);
+        for port in &request.signature().ports {
+            match port.kind {
+                PortKind::Data => {}
+                PortKind::Exec if control => continue,
+                _ => return Err(ResolveError::Contract),
             }
             let ty = port.ty.clone().ok_or(ResolveError::Contract)?;
             if ty.as_str().contains('$') {
@@ -172,47 +232,37 @@ impl<R: PureKernelResolver> PureKernelResolver for WithGuests<R> {
                 output_types.push(ty);
             }
         }
-        let plugin = GuestPlugin::new(&package.component, package.grants)
+        let plugin = GuestPlugin::new(&self.component, self.grants)
             .map_err(|_| ResolveError::Unavailable)?;
-        Ok(KernelBinding {
-            inputs: inputs.into(),
-            outputs: outputs.into(),
-            kernel: Arc::new(GuestKernel {
+        let cancellation = plugin.cancellation();
+        Ok((
+            inputs.into(),
+            outputs.into(),
+            GuestNode {
                 plugin: Mutex::new(plugin),
+                cancellation,
                 snapshot: request.snapshot().clone(),
                 definition: request.definition().id.as_str().to_owned(),
                 inputs: input_types,
                 outputs: output_types,
-            }),
-        })
-    }
-}
-
-impl<R: EntropyKernelResolver> EntropyKernelResolver for WithGuests<R> {
-    fn resolve_entropy_binding(
-        &self,
-        request: &BindingRequest<'_>,
-    ) -> Result<EntropyBinding, ResolveError> {
-        // Guest entropy sources are not part of the 1.0 world.
-        if self.package(request).is_some() {
-            return Err(ResolveError::Unavailable);
-        }
-        self.host.resolve_entropy_binding(request)
+            },
+        ))
     }
 }
 
 /// One node binding's own guest instance. A trap poisons only this binding.
-struct GuestKernel {
+struct GuestNode {
     plugin: Mutex<GuestPlugin>,
+    cancellation: GuestCancellation,
     snapshot: Arc<RegistrySnapshot>,
     definition: String,
     inputs: Vec<TypeExpr>,
     outputs: Vec<TypeExpr>,
 }
 
-impl std::fmt::Debug for GuestKernel {
+impl std::fmt::Debug for GuestNode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("GuestKernel")
+        f.debug_struct("GuestNode")
             .field("definition", &self.definition)
             .finish_non_exhaustive()
     }
@@ -226,9 +276,9 @@ fn guest_fault(error: GuestError) -> KernelFault {
     }
 }
 
-impl PureKernel for GuestKernel {
-    fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
-        if inputs.len() != self.inputs.len() || outputs.len() != self.outputs.len() {
+impl GuestNode {
+    fn call(&self, effect: bool, inputs: &[Value]) -> Result<Vec<Value>, KernelFault> {
+        if inputs.len() != self.inputs.len() {
             return Err(guest_fault(GuestError::InputContract));
         }
         let typed: Vec<(TypeExpr, Value)> = self
@@ -241,21 +291,72 @@ impl PureKernel for GuestKernel {
             .plugin
             .lock()
             .map_err(|_| guest_fault(GuestError::Poisoned))?;
-        match plugin.evaluate(
-            self.snapshot.types().as_ref(),
-            &self.definition,
-            &typed,
-            &self.outputs,
-        ) {
-            Ok(Ok(values)) => {
-                for (slot, value) in outputs.iter_mut().zip(values) {
-                    *slot = value;
-                }
-                Ok(())
-            }
+        let types = self.snapshot.types();
+        let result = if effect {
+            plugin.execute(types.as_ref(), &self.definition, &typed, &self.outputs)
+        } else {
+            plugin.evaluate(types.as_ref(), &self.definition, &typed, &self.outputs)
+        };
+        match result {
+            Ok(Ok(values)) => Ok(values),
             Ok(Err(error)) => Err(node_fault(error)),
             Err(error) => Err(guest_fault(error)),
         }
+    }
+    fn call_into(
+        &self,
+        effect: bool,
+        inputs: &[Value],
+        outputs: &mut [Value],
+    ) -> Result<(), KernelFault> {
+        if outputs.len() != self.outputs.len() {
+            return Err(guest_fault(GuestError::InputContract));
+        }
+        for (slot, value) in outputs.iter_mut().zip(self.call(effect, inputs)?) {
+            *slot = value;
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug)]
+struct GuestKernel(GuestNode);
+impl PureKernel for GuestKernel {
+    fn fold(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
+        self.0.call_into(false, inputs, outputs)
+    }
+}
+
+/// The guest implementation of one action or async node. For an async node the host
+/// receives it as the context of that node's effect requests (see [`guest_effect`])
+/// and runs it off the run's thread. Every request of one node in one compiled plan
+/// reaches the same instance, so the guest may keep state; calls are serialized.
+#[derive(Debug)]
+pub struct GuestEffect(GuestNode);
+impl GuestEffect {
+    /// Runs the node once on `inputs` in declared port order. The result is what the
+    /// host passes to `Run::complete_effect`.
+    pub fn run(&self, inputs: &[Value]) -> Result<Vec<Value>, KernelFault> {
+        self.0.call(true, inputs)
+    }
+    /// Interrupts this node's instance, for an effect whose lease was cancelled.
+    /// Cancellation is terminal for the instance.
+    pub fn cancellation(&self) -> GuestCancellation {
+        self.0.cancellation.clone()
+    }
+}
+
+/// The guest implementation behind an effect request's `context`, if a loaded package
+/// provides that node. Other contexts belong to the host's own effect adapters.
+pub fn guest_effect(context: &Arc<dyn std::any::Any + Send + Sync>) -> Option<Arc<GuestEffect>> {
+    context.clone().downcast().ok()
+}
+
+#[derive(Debug)]
+struct GuestAction(Arc<GuestEffect>);
+impl ActionKernel for GuestAction {
+    fn execute(&self, inputs: &[Value], outputs: &mut [Value]) -> Result<(), KernelFault> {
+        self.0.0.call_into(true, inputs, outputs)
     }
 }
 

@@ -19,6 +19,8 @@ wasmtime.workspace = true
 
 [dev-dependencies]
 orange-bundled = { path = "../orange-bundled", version = "=0.0.0" }
+# Guest effects are exercised through a real compiled run.
+orange-runtime = { path = "../orange-runtime", version = "=0.0.0" }
 # Tests author components in the component text format.
 wasmtime = { workspace = true, features = ["wat"] }
 

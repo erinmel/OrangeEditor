@@ -1,5 +1,6 @@
 //! The `orange:expansion/plugin@1.0.0` world (sdk/wit): grant-scoped host imports and
-//! node evaluation with values in the `orange.value.v1` literal codec (K02b).
+//! node evaluation. Values cross as `orange.value.v1` literals, or in a binary case
+//! for bytes and dense numeric lists (K02b).
 
 use crate::limits::InstanceLimits;
 use orange_model::Value;
@@ -17,7 +18,10 @@ wasmtime::component::bindgen!({
     world: "plugin",
 });
 
+use orange::expansion::types::Value as Wire;
 use orange::expansion::{host, log};
+use orange_model::value::ListRepr;
+use std::sync::Arc;
 
 /// The host API version offered through `host.api-version` (04 SDK surface).
 pub const API_VERSION: (u16, u16) = (1, 0);
@@ -92,6 +96,83 @@ fn namespaced(text: &str) -> bool {
     })
 }
 
+#[derive(Clone, Copy)]
+enum Export {
+    Evaluate,
+    Execute,
+}
+
+const BYTES: &str = "core/bytes@1";
+
+/// The binary wire case of a dense numeric list, for exactly its own list type.
+macro_rules! dense_lists {
+    ($($repr:ident, $wire:ident, $ty:literal;)*) => {
+        fn dense_to_wire(ty: &str, list: &ListRepr) -> Option<Wire> {
+            match (ty, list) {
+                $(($ty, ListRepr::$repr(items)) => Some(Wire::$wire(items.to_vec())),)*
+                _ => None,
+            }
+        }
+        fn dense_from_wire(wire: Wire, ty: &str) -> Result<Value, GuestError> {
+            match (wire, ty) {
+                $((Wire::$wire(items), $ty) => {
+                    Ok(Value::List(Arc::new(ListRepr::$repr(items.into_boxed_slice()))))
+                })*
+                _ => Err(GuestError::OutputContract),
+            }
+        }
+    };
+}
+dense_lists! {
+    I32, I32List, "core/list@1<core/i32@1>";
+    I64, I64List, "core/list@1<core/i64@1>";
+    U32, U32List, "core/list@1<core/u32@1>";
+    U64, U64List, "core/list@1<core/u64@1>";
+    F32, F32List, "core/list@1<core/f32@1>";
+    F64, F64List, "core/list@1<core/f64@1>";
+}
+
+/// Bytes and dense numeric lists cross without text conversion; everything else, and
+/// a list the host does not hold densely, crosses as a literal.
+fn to_wire(ty: &TypeExpr, value: &Value, types: &TypeRegistry) -> Result<Wire, GuestError> {
+    let binary = match value {
+        Value::Bytes(bytes) if ty.as_str() == BYTES => Some(Wire::Bytes(bytes.to_vec())),
+        Value::List(list) => dense_to_wire(ty.as_str(), list),
+        _ => None,
+    };
+    if let Some(wire) = binary {
+        return Ok(wire);
+    }
+    let literal = literal_codec::encode(ty, value, types).map_err(|_| GuestError::InputContract)?;
+    serde_json::to_string(&literal)
+        .map(Wire::Literal)
+        .map_err(|_| GuestError::InputContract)
+}
+
+/// A guest value for an output of type `ty`. The caller still checks its shape and
+/// charges it; a binary case is accepted only for exactly its own type.
+fn from_wire(
+    wire: Wire,
+    ty: &TypeExpr,
+    types: &TypeRegistry,
+    budget: usize,
+) -> Result<Value, GuestError> {
+    match wire {
+        Wire::Literal(text) => {
+            let literal: Literal =
+                serde_json::from_str(&text).map_err(|_| GuestError::OutputContract)?;
+            if &literal.ty != ty {
+                return Err(GuestError::OutputContract);
+            }
+            literal_codec::decode_with_budget(&literal, types, budget)
+                .map_err(|_| GuestError::OutputContract)
+        }
+        Wire::Bytes(bytes) if ty.as_str() == BYTES => Ok(Value::Bytes(Arc::new(bytes))),
+        Wire::Bytes(_) => Err(GuestError::OutputContract),
+        dense => dense_from_wire(dense, ty.as_str()),
+    }
+}
+
 impl GuestPlugin {
     /// Instantiates `component` as an `orange:expansion/plugin` with exactly `grants`.
     pub fn new(component: &GuestComponent, grants: Grants) -> Result<Self, GuestError> {
@@ -134,11 +215,34 @@ impl GuestPlugin {
         })
     }
 
-    /// Evaluates `definition` with typed inputs and checks each output against
-    /// `outputs`. Values cross as `orange.value.v1` literals resolved through `types`.
-    /// The outer error is a host/guest fault; the inner one a guest-reported node error.
+    /// Evaluates a pure node: `definition` with typed inputs, each output checked
+    /// against `outputs`. The outer error is a host/guest fault; the inner one a
+    /// guest-reported node error.
     pub fn evaluate(
         &mut self,
+        types: &TypeRegistry,
+        definition: &str,
+        inputs: &[(TypeExpr, Value)],
+        outputs: &[TypeExpr],
+    ) -> Result<Result<Vec<Value>, GuestNodeError>, GuestError> {
+        self.call(Export::Evaluate, types, definition, inputs, outputs)
+    }
+
+    /// Runs an action or async node once. Same value and error contract as
+    /// `evaluate`, but the guest may keep state between calls on this instance.
+    pub fn execute(
+        &mut self,
+        types: &TypeRegistry,
+        definition: &str,
+        inputs: &[(TypeExpr, Value)],
+        outputs: &[TypeExpr],
+    ) -> Result<Result<Vec<Value>, GuestNodeError>, GuestError> {
+        self.call(Export::Execute, types, definition, inputs, outputs)
+    }
+
+    fn call(
+        &mut self,
+        export: Export,
         types: &TypeRegistry,
         definition: &str,
         inputs: &[(TypeExpr, Value)],
@@ -153,9 +257,7 @@ impl GuestPlugin {
         }
         let mut encoded = Vec::with_capacity(inputs.len());
         for (ty, value) in inputs {
-            let literal =
-                literal_codec::encode(ty, value, types).map_err(|_| GuestError::InputContract)?;
-            encoded.push(serde_json::to_string(&literal).map_err(|_| GuestError::InputContract)?);
+            encoded.push(to_wire(ty, value, types)?);
         }
         self.store
             .set_fuel(self.fuel)
@@ -164,14 +266,22 @@ impl GuestPlugin {
             self.poisoned = true;
             return Err(error);
         }
-        let result = self
-            .bindings
-            .orange_expansion_nodes()
-            .call_evaluate(&mut self.store, definition, &encoded)
-            .map_err(|error| {
-                self.poisoned = true;
-                classify(&error)
-            })?;
+        let called = match export {
+            Export::Evaluate => self.bindings.orange_expansion_nodes().call_evaluate(
+                &mut self.store,
+                definition,
+                &encoded,
+            ),
+            Export::Execute => self.bindings.orange_expansion_effects().call_execute(
+                &mut self.store,
+                definition,
+                &encoded,
+            ),
+        };
+        let result = called.map_err(|error| {
+            self.poisoned = true;
+            classify(&error)
+        })?;
         match result {
             Err(error) => {
                 if !namespaced(&error.code) || !namespaced(&error.message_key) {
@@ -188,14 +298,8 @@ impl GuestPlugin {
                 }
                 let mut decoded = Vec::with_capacity(values.len());
                 let mut remaining = self.output_bytes;
-                for (text, ty) in values.iter().zip(outputs) {
-                    let literal: Literal =
-                        serde_json::from_str(text).map_err(|_| GuestError::OutputContract)?;
-                    if &literal.ty != ty {
-                        return Err(GuestError::OutputContract);
-                    }
-                    let value = literal_codec::decode_with_budget(&literal, types, remaining)
-                        .map_err(|_| GuestError::OutputContract)?;
+                for (wire, ty) in values.into_iter().zip(outputs) {
+                    let value = from_wire(wire, ty, types, remaining)?;
                     let charge = orange_model::value::shape::ValueShape::of_in(ty, types)
                         .ok_or(GuestError::OutputContract)?
                         .checked_charge(&value, remaining)
