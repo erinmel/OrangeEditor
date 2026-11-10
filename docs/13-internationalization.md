@@ -329,3 +329,8 @@ existing `core/guest-trap` envelope (`GuestTrap::Other`) and terminal poisoning;
 decoded-output admission keeps `core/guest-output-contract` without poisoning.
 Neither publishes partial values or guest failure text. Memory/table policy, codec
 budgets and cancellation readiness are locale-independent and add no WIT/text keys.
+
+Error-output admission (2026-11-09): copied graph error values retain the original
+code and producer under normal retention budgets. Refusal uses the existing
+state/aggregate infrastructure classifications; no locale-dependent substitution,
+new catalogue key or package fault rewriting is introduced.

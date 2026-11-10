@@ -909,6 +909,15 @@ The supported control profile executes Switch for exact Core bool/i32/i64/u32/u6
 
 Match-result consumes one checked result, then publishes only its selected value/error projection. Ordinary Err takes err with the original producer; an uncaptured input-cone fault takes failed. Recursive result/error/option boxing follows the shared PlanType representation, so Ok(error), nested results and present None remain distinct. Explicit error projections do not allocate a duplicate implicit error host slot. Match payload replacement reserves nominal retained bytes before publication, releases replaced/cleared values and shares the activation state limit with local variables. These are value budgets, not complete allocator/RSS bounds.
 
+Error projection correction (2026-11-09; FR-16/47/51, NFR-05/14): implicit fault
+outputs and Match-result errors use the same transactional publication/admission
+as ordinary values. Their copied error code and envelope reserve activation-state
+and run-aggregate bytes before output mutation. Match-result replaces value/error
+projections together, crediting the old arm before admitting the new one. Function
+retirement refunds owned error projections, and repeated publication/stop retain
+normal replacement/release rules. State/aggregate exhaustion remains an
+infrastructure error, not a catchable graph fault; producer identity is unchanged.
+
 Both controls reuse host-sliced data pulls, frozen input snapshots, cleanup fuel and cancellation. Source and fault IDs remain original; case/error payloads are omitted from default plan/operation Debug summaries. Action/async function frames, remaining state controls/iterators/zones, enum/custom dispatch and broader core/service work remain open.
 
 Control-dispatch review correction: semantic case validation now enforces all four Core integer ranges with E-SWITCH-CASE and uses borrowed JSON-value hash membership for duplicate detection. Values and diagnostics keep their existing equality/order semantics; there is no JSON serialization or copied-payload set. The pinned serde_json1.0.154 Value Hash/Eq implementation was verified in local versioned source.

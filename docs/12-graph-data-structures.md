@@ -1127,6 +1127,14 @@ Value shape ownership (2026-10-27; `core/data-shape`):
   - the error-code rule;
   - the option/result boxing rule above.
 - `ListBuilder` is the one list packing. The literal codec and runtime builders both use it, so every producer stores scalar and string elements natively.
+
+Runtime error projection accounting (2026-11-09): an execution output containing
+`Value::Err` has the same checked `ERROR_CHARGE + code.len()` nominal cost as that
+value elsewhere. Implicit fault outputs and Match-result error arms reserve it
+against activation state and aggregate retention before mutation. A Match-result
+arm switch stages both value/error projection replacements together; retired
+function scopes refund error projections with their other owned outputs. Codes
+and producer IDs remain unchanged; no saved representation changes.
 - `Value`, `ListRepr`, `ValueShape`, `ValueCheckError` and `ListPushError` are `#[non_exhaustive]`, because they will grow with records, enums, handles and OPEN-15. Language-closed enums stay exhaustive: node kind, port kind, output source and zone kind.
 - Package handles still have no executable shape. The compiler refuses them before binding.
 - A package record has a shape only through schemas (2026-11-06): `ValueShape::Record(Arc<RecordShape>)` holds the canonical nominal type plus each field's ID, shape and optional flag in schema order. `RecordShape::index` maps a field ID to its compiled index, and `field` returns the shape and optional flag at an index. Records and enums share one resolution with one memo, cycle guard and height rule, so recursion through either kind has no shape. A value checks when `RecordRepr::ty` equals the shape's type, `fields` has exactly the schema's length, every required slot is present and every present field checks. The check charges `VALUE_CHARGE`, the type text's bytes, and for each slot its field's charge or, when absent, `VALUE_CHARGE`. The compiler's literal pre-charge applies the same rule. `Schemas::derives_key` also marks a record a map key when every field is one. `MapCheck` does not remember maps with nominal key or value shapes.

@@ -2086,7 +2086,14 @@ impl Run {
                 message: "This operation is not permitted during cancellation cleanup.",
             },
         };
-        Self::publish_error(plan, &self.layout, shared, ix, &fault)?;
+        Self::publish_error(
+            plan,
+            &self.layout,
+            shared,
+            ix,
+            &fault,
+            self.options.limits.max_state_bytes,
+        )?;
         self.record(RunEvent {
             activation: activation.sequence,
             node: node.node(),
@@ -2113,7 +2120,14 @@ impl Run {
         activation.pull.reset();
         activation.reenter = None;
         if let Some(fault) = &fault {
-            Self::publish_error(plan, &self.layout, shared, ix, fault)?;
+            Self::publish_error(
+                plan,
+                &self.layout,
+                shared,
+                ix,
+                fault,
+                self.options.limits.max_state_bytes,
+            )?;
         }
         if outcome == ControlOutcome::Failed && next.is_none() {
             activation.stack.clear();
@@ -2230,9 +2244,29 @@ impl Run {
         value: impl Fn(HostSource) -> Option<Value>,
         limit: usize,
     ) -> Result<(), RunError> {
+        Self::publish_projections(
+            plan,
+            layout,
+            shared,
+            owner,
+            plan.value_targets(owner).iter().copied(),
+            value,
+            limit,
+        )
+    }
+    /// Admits replacement of all selected projections together before mutation.
+    fn publish_projections(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        targets: impl Iterator<Item = usize> + Clone,
+        value: impl Fn(HostSource) -> Option<Value>,
+        limit: usize,
+    ) -> Result<(), RunError> {
         let mut old = 0usize;
         let mut new = 0usize;
-        for &i in plan.value_targets(owner) {
+        for i in targets.clone() {
             let slot = plan.data().nodes()[plan.data().host_inputs()[i].index()].outputs()[0];
             let cell = layout.outputs[i].ok_or(RunError::InvalidState)?;
             let charge = |value: &Value| {
@@ -2265,7 +2299,7 @@ impl Run {
             })
             .ok_or(RunError::ResourceLimit)?;
         shared.retained(retained)?;
-        for &i in plan.value_targets(owner) {
+        for i in targets {
             shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
                 value(plan.host_sources()[i]).map(FoldedValue::Value);
         }
@@ -2290,16 +2324,24 @@ impl Run {
         shared: &mut ActivationState,
         owner: ControlIx,
         fault: &ConstantFault,
+        limit: usize,
     ) -> Result<(), RunError> {
-        for &i in plan.error_targets(owner) {
-            shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] = Some(
-                FoldedValue::Value(Value::Err(Arc::new(orange_model::value::NodeError {
-                    code: fault.fault.code.to_string(),
-                    node: Some(fault.source),
-                }))),
-            );
+        if plan.error_targets(owner).is_empty() {
+            return Ok(());
         }
-        Ok(())
+        let error = Value::Err(Arc::new(orange_model::value::NodeError {
+            code: fault.fault.code.to_string(),
+            node: Some(fault.source),
+        }));
+        Self::publish_projections(
+            plan,
+            layout,
+            shared,
+            owner,
+            plan.error_targets(owner).iter().copied(),
+            |_| Some(error.clone()),
+            limit,
+        )
     }
     pub fn stop(&mut self) -> Result<(), RunError> {
         self.request_stop(StopMode::Immediate)
