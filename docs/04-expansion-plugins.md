@@ -24,6 +24,18 @@ Binding request (2026-10-27): host kernel resolvers should implement `PureKernel
 
 ## Contribution surface
 
+The table below is the selected extension contract. Current installed guest
+execution implements only Pure nodes with concrete port types and empty config
+(K02c). Trusted host type registration implements records, enums and handle kinds;
+arbitrary package scalar representations/codecs and complete archive contribution
+activation remain open. Metadata registration alone does not prove execution support.
+
+An ordinary node declares ports, types, configuration and effects within an existing
+execution class. Special control rules belong to the host language release; a
+separate evaluation model belongs to a trusted downstream domain. Typed domain
+registration/dispatch and its external consumer probe remain the ADR-21 pre-G2 gate.
+Backend replacement uses an existing slot contract and grants no scheduler authority.
+
 | Contribution / replaceable slot | Wasm component | Trusted worker | Bundled native |
 |---|---|---|---|
 | Node implementation, types, codecs, reusable graph | Yes; bounded values/calls | Yes; same contracts over IPC | Yes; shared definitions |

@@ -1402,10 +1402,10 @@ impl Run {
                 remaining = remaining.saturating_sub(charged);
                 continue;
             }
-            if let Some(timer) = self.timers.pop_due(self.now) {
-                remaining -= 1;
+            if let Some((key, timer)) = self.timers.pop_due(self.now) {
                 match timer {
                     TimerTarget::Wait(timer) => {
+                        remaining -= 1;
                         if timer.run != self.id {
                             return self.fail(RunError::InvalidState);
                         }
@@ -1420,6 +1420,7 @@ impl Run {
                         self.ready.push_back(timer.activation.id, timer.activation);
                     }
                     TimerTarget::Await { run, token } => {
+                        remaining -= 1;
                         if run != self.id {
                             return self.fail(RunError::InvalidState);
                         }
@@ -1431,8 +1432,8 @@ impl Run {
                         if run != self.id {
                             return self.fail(RunError::InvalidState);
                         }
-                        match self.fire_timer_entry(timer, at) {
-                            Ok(attempts) => remaining = remaining.saturating_sub(attempts - 1),
+                        match self.fire_timer_entry(timer, at, key) {
+                            Ok(work) => remaining = remaining.saturating_sub(work),
                             Err(error) => return self.fail(error),
                         }
                     }
@@ -1816,6 +1817,7 @@ impl Run {
         self.stop_ready.clear();
         self.ready.clear();
         self.timers.clear();
+        self.events.clear_tick_windows();
         self.effects.clear();
         self.graph_streams.clear();
         self.watches.clear();
@@ -2369,6 +2371,7 @@ impl Run {
                 self.watches.clear();
                 self.close_host_sources();
                 self.timers.remove_entries();
+                self.events.clear_tick_windows();
                 self.deadline = Some(deadline);
                 while let Some(strand) = self.stop_ready.pop_front() {
                     self.ready.push_back(strand.id, strand);
@@ -2386,6 +2389,7 @@ impl Run {
         self.transition(RunState::Cancelling);
         self.events.clear();
         self.timers.remove_entries();
+        self.events.clear_tick_windows();
         self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
         self.stop_ready.clear();
         let roots = self.regions.roots();

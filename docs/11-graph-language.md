@@ -882,6 +882,15 @@ The Run actor resolves event/timeout races by its existing order: due timers are
 
 Causal depth belongs to each strand, not shared activation state. Event-root strands start at the accepted envelope depth; Fork/function/body continuations inherit their lineage; an Await event resumes at `max(prior strand depth, event cause depth)`, while timeout preserves the prior depth. Emit validates the executing strand's depth plus one for the new envelope without changing that strand's lineage; sequential independent Emits therefore retain the same source depth. Serial joins/returns preserve the maximum contributing lineage so Await cannot reset a chain and concurrent siblings cannot rewrite each other's depth. Each completed waiter publication consumes one cooperative pump work item after due timers and before handler dispatch or graph nodes; an Emit that exhausts the pump budget leaves accepted completions pending for the next pump or cancellation. This is the supported C03 contract; execution evidence is recorded in 10, while full FR/NFR qualification remains separate.
 
+Timer catch-up admission is resumable (review correction, 2026-11-09). Each
+attempt, including a dropped or quota-refused tick, consumes one pump work item.
+The selected catch-up window stays fixed across host slices; a later clock advance
+is considered after that window completes. A pending window retains the entry's
+original timer ordering key, so equal-deadline ordering does not depend on slice
+size. Completing a window arms its next tick with the ordinary fresh insertion
+sequence. Cancellation is observed between attempts; stop/fault clears pending
+windows with the timer entries. `pump(0)` performs no timer admission.
+
 ## 11. State
 
 ### 11.1 Variables

@@ -514,3 +514,9 @@ as graph error values reserve state/aggregate capacity before publication, prese
 the original producer, credit replaced storage and release it on function retirement
 and stop. Match-result switches arms with joint value/error admission; an exhausted
 quota refuses infrastructure progress before the next Wait or graph continuation.
+
+Timer budget trace (2026-11-09; FR-14/16/47, NFR-05/06): catch-up admission
+retains a fixed selected window and original timer ordering across host slices,
+charges every attempted tick as one work item and observes cancellation between
+attempts. Stop/fault retires unfinished windows. Large saved catch-up maxima do
+not bypass the pump or run operation limit; no saved-format change is needed.

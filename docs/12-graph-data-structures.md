@@ -1245,6 +1245,13 @@ Native prerequisite (N1a): `orange-bundled::math_definitions()` supplies the ord
 
 ## 10. Runtime structures
 
+Timer catch-up cursor (review correction, 2026-11-09): each run timer entry may
+retain one fixed-size pending window (next/last ordinal, latest scheduled time and
+interval). The timer directory keeps the original ordering key until that window
+finishes. One actor turn admits one tick, then requeues the same owner or arms its
+next schedule normally. The cursor adds no per-tick queue and is cleared on stop
+or fault. This is private runtime state; saved graph/provider formats are unchanged.
+
 Structured-concurrency implementation separates activation-owned data evaluation, local cells and execution outputs from strand-owned control cursors, pending input snapshots and waits. The actor lends one shared activation state exclusively while executing a strand; it introduces no shared-state lock or new provider interface. A Fork must not initialize another activation or replenish its entropy/fuel.
 
 Live region instances now retain suspended structured continuations explicitly. Sequence steps and loop bodies retire before their caller resumes; their frames preserve the logical strand identity. `RunLimits::max_strands` (default 4096, including suspended continuation frames) and `max_regions` (8192) bound retained ownership, including the separately reserved On Stop entries. These additive unfrozen Rust fields require updates to exhaustive host struct literals; saved graph JSON is unchanged.

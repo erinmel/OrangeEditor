@@ -228,6 +228,14 @@ entry. This avoids per-node futures, a second executor and independent alias clo
 Tee/push bridges and concrete adapters remain later units; physical performance
 qualification is deferred while correctness/native/MSRV checks remain mandatory.
 
+Timer budget correction (2026-11-09; FR-14/16/47, NFR-05/06; ADR-14): perform
+one catch-up admission attempt per actor work item. Retain the selected window and
+its original ordering key across slices; completed windows use ordinary timer
+rearming. This keeps cancellation and operation limits effective without reducing
+the saved catch-up maximum, adding an executor or changing graph format. Focused
+tests must compare small/large slices, later clock advances, queue refusals and
+stop. Trusted callbacks remain outside a wall-time preemption guarantee.
+
 ## ADR-15 — Structured regions, value availability and cycle classes
 
 **Selected.** Exec nodes belong to exactly one region. Exec edges cannot leave regions except through terminators. An `execution` output may be consumed only where its outcome dominates the consumer. A data cycle is legal only through a state boundary (register, variable), a zone or a loop. A control cycle must contain a `suspends: always` node. Event and reactive cycles are bounded by causal depth. Synchronous recursion is rejected in v1 ([11 §7–8](11-graph-language.md)). Alternatives: unstructured exec wiring with stale or default outputs (a common source of node-editor bugs); a pure DAG with no cycles (cannot express counters, polling or feedback); bounded synchronous recursion (needs dynamic frame sizes, breaks NFR-05 allocation-free frames and fixed memory). Consequences: some wirings need a local, register or `select`, and diagnostics must suggest them. Loops and feedback are explicit and analyzable. Frames have static size. **Falsification:** G-04–07, G-10, G-12, G-16, G-24, G-26, G-27; representative workflow trials in 02b/05a. If users cannot express listed workflows (01 workflows 1–4) without excessive workarounds, revise the rule by ADR with a focused regression test. Owner language lead; G2/G3.
@@ -305,6 +313,10 @@ The core must therefore be strong and general on its own, and expandable without
 4. **Host adapter interfaces.** `Clock`, services and a scene/object bridge ([02](02-architecture.md)), so any Rust host can embed the runtime: the reference editor, a headless runner, a music or VTuber product, a game engine, later a C ABI or Wasm. The project has no Bevy dependency (ADR-02); an engine-based product embeds the core on its own side.
 
 **Extension seams the core guarantees:**
+
+These are delivery requirements. Current typed domain registration/dispatch and
+arbitrary scalar/codec registration remain undelivered; the implementation-status
+clarification below and [04](04-expansion-plugins.md) describe the executable subset.
 
 | Seam | Who uses it | Contract |
 |---|---|---|
