@@ -126,7 +126,9 @@ impl Run {
         let latest_at = at + (due - 1) * interval;
         let (first, count) = match policy {
             MissedTicks::Coalesce => (last, 1),
-            MissedTicks::Skip => (last, u64::from(latest_at == self.now)),
+            // One due tick was handled before the next came due, however late within
+            // its interval. Several due ticks mean the run fell behind: drop them all.
+            MissedTicks::Skip => (last, u64::from(due == 1)),
             MissedTicks::CatchUp(max) => {
                 let count = due.min(u64::from(max.get()));
                 (last + 1 - count, count)
