@@ -18,12 +18,14 @@ mod budget;
 mod cancel;
 mod checkpoint;
 mod data;
+mod driver;
 mod entropy;
 mod run;
 mod workspace;
 pub use cancel::CancelToken;
 pub use checkpoint::{CheckpointError, CheckpointLimits, CheckpointScope, ValueCheckpoint};
 pub use data::{DataActivation, DataError, DataLimits, DataOptions, DataPoll};
+pub use driver::{DriverTurn, HostInput, InboxError, Refused, RefusedReason, RunDriver, RunInbox};
 pub use entropy::{
     ActivationEntropy, ENTROPY_ALGORITHM, EntropyError, EntropyKey, EntropyLayout,
     EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,

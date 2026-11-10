@@ -150,6 +150,13 @@ optional paused rejection: the entry decides what the graph keeps, the source
 whether its sender can be told "not now". The field is omitted when default, so
 saved format v1 documents are unchanged. No dependency or provider ABI changes.
 
+Driver amendment (2026-11-10): the run stays a single-owner actor, and
+`orange-runtime` supplies the one place where input from other threads meets it:
+`RunDriver` with a bounded `RunInbox` (03). Cross-source order, fairness between
+input and graph work, and pause-aware host time are decided there once instead of
+by each embedder. It uses only `std`, starts no thread and reads no clock, so the
+planned `orange-host` composition root builds on it without changing the actor.
+
 C13 amendment (2026-11-08; also ADR-16/21): portable checkpoints contain only
 explicitly selected persistent values and a versioned compatibility seal. Reuse
 bounded native codecs and metadata-only type/provider checks; never deserialize

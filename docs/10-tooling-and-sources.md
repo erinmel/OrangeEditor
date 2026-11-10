@@ -1,5 +1,25 @@
 # Tooling, environment and research register
 
+## Run driver and mailbox — 2026-11-10
+
+Branch `feat/run-driver` from local dev `86e7e80`. Same environment as the entries
+below; `std::sync::mpsc::sync_channel` only, no dependency, lockfile, feature, WIT
+or graph format change. Contract in 03; ADR-14 driver amendment.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,691 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1 and hosted checks were not run. The
+multi-thread test joins its senders before turning, so it checks delivery and
+thread safety, not interleaving under contention. Effect results through the
+mailbox share the tested dispatch but have no test of their own. No workspace-bus
+or stream support, and no timing was measured.
+
 ## Activation fuel refills at suspension — 2026-11-10
 
 Branch `feat/run-pause`. Same environment as the entries below; no dependency,

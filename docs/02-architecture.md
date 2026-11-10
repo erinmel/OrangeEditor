@@ -1,5 +1,11 @@
 # Architecture and ownership
 
+Run driver (2026-11-10; ADR-14): `orange-runtime` exposes `RunDriver`/`RunInbox`, a
+bounded thread-safe mailbox and a bounded `turn` that owns one `Run`. Host threads
+(sockets, hotkeys, effect workers) send inputs; the owning thread turns. It needs no
+async runtime and adds no dependency; `orange-host` remains the planned composition
+root for services and reactors.
+
 Scoped guest cancellation (K02d1, 2026-11-09): `GuestInstance` and `GuestPlugin`
 expose cloneable instance-lifetime `GuestCancellation` handles. Cancellation is
 monotonic and terminal for that instance; an old handle cannot retarget a later
