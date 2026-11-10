@@ -13,8 +13,13 @@ pub struct EffectId {
 /// Read-only lifetime signal for a host adapter. Cancellation is monotonic and
 /// signals intent; the host remains responsible for cancelling its external work.
 #[derive(Clone)]
-pub struct EffectLease(Arc<AtomicU8>);
+pub struct EffectLease(Arc<AtomicU8>, Arc<std::sync::atomic::AtomicBool>);
 impl EffectLease {
+    /// The owning run is paused and this work is still wanted. Advisory: the host may
+    /// hold long work such as a transfer or playback; its result is admitted either way.
+    pub fn is_paused(&self) -> bool {
+        !self.is_finished() && self.1.load(Ordering::Relaxed)
+    }
     pub fn is_cancelled(&self) -> bool {
         self.0.load(Ordering::Relaxed) == 1
     }
@@ -52,6 +57,7 @@ impl std::fmt::Debug for EffectRequest {
 }
 /// Payload-free refusal. A refusal leaves the pending operation and quotas unchanged.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum EffectError {
     #[error("The effect belongs to another run.")]
     WrongRun,
@@ -103,8 +109,13 @@ pub(super) struct Effects {
     ready: VecDeque<u64>,
     commands: VecDeque<u64>,
     bytes: usize,
+    /// Shared by every lease this run issues.
+    paused: Arc<std::sync::atomic::AtomicBool>,
 }
 impl Effects {
+    pub fn set_paused(&self, paused: bool) {
+        self.paused.store(paused, Ordering::Relaxed);
+    }
     pub fn len(&self) -> usize {
         self.by_id.len()
     }
@@ -199,7 +210,7 @@ impl Run {
         if id.run != self.id {
             return Err(EffectError::WrongRun);
         }
-        if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
+        if self.pump_open || !self.accepts_results() {
             return Err(EffectError::NotRunning);
         }
         let pending = self
@@ -279,7 +290,7 @@ impl Run {
         if id.run != self.id {
             return Err(EffectError::WrongRun);
         }
-        if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
+        if self.pump_open || !self.accepts_results() {
             return Err(EffectError::NotRunning);
         }
         let pending = self
@@ -379,7 +390,7 @@ impl Run {
                 owner: prepared.owner,
                 inputs: prepared.values,
                 hold: prepared.hold,
-                lease: EffectLease(Arc::new(AtomicU8::new(0))),
+                lease: EffectLease(Arc::new(AtomicU8::new(0)), self.effects.paused.clone()),
                 issued: false,
                 completion: None,
                 revoked: None,

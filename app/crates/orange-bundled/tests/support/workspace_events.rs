@@ -850,3 +850,21 @@ fn receiving_handler_drop_policy_is_separate_from_successful_bus_transport() {
     idle(&mut r, &mut b, 1);
     assert_eq!(r.variable(id(100).parse().unwrap()), Some(&Value::U64(1)));
 }
+#[test]
+fn a_paused_run_keeps_its_bus_endpoint_and_handles_deliveries_after_resume() {
+    let p = producer(&[7]);
+    let target = receiver();
+    let (w, mut b) = host(&p, WorkspaceBusLimits::default());
+    let mut a = start(&p, &w, &mut b, WorkspaceQueue::default());
+    let mut r = start(&target, &w, &mut b, WorkspaceQueue::default());
+    r.pause().unwrap();
+    idle(&mut a, &mut b, 64);
+    let m = r.take_workspace_delivery(&mut b).unwrap().unwrap();
+    r.ingest_workspace(m).unwrap();
+    assert_eq!(r.pump_with_workspace_bus(&mut b, 64).unwrap().operations, 0);
+    assert!(r.variable(id(100).parse().unwrap()).is_none());
+    r.resume().unwrap();
+    r.pump_with_workspace_bus(&mut b, 1).unwrap();
+    idle(&mut r, &mut b, 64);
+    assert_eq!(r.variable(id(100).parse().unwrap()), Some(&Value::U64(7)));
+}

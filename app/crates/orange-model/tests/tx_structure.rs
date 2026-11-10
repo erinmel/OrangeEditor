@@ -575,6 +575,7 @@ fn activation_policies_are_set_cleared_and_undone() {
         overflow: OverflowPolicy::DropOldest,
         on_fault: FaultPolicy::Continue,
         order: 0,
+        while_paused: Default::default(),
         extensions: Default::default(),
     };
 

@@ -702,3 +702,31 @@ fn direct_handle_profile_refuses_manual_payloads_and_register_storage() {
         ));
     }
 }
+
+#[test]
+fn a_resource_acquired_while_paused_is_paused_as_it_is_taken() {
+    struct Held(Arc<Mutex<Vec<&'static str>>>);
+    impl RunResource for Held {
+        fn close(self: Box<Self>, _: CloseReason) {}
+        fn pause(&self) {
+            self.0.lock().unwrap().push("pause");
+        }
+        fn resume(&self) {
+            self.0.lock().unwrap().push("resume");
+        }
+    }
+    let holds = Arc::new(Mutex::new(Vec::new()));
+    let mut run = setup(RunOptions::default(), |_| {});
+    idle(&mut run);
+    let request = run.take_effect().unwrap();
+    run.pause().unwrap();
+    run.complete_effect_resource(
+        request.id,
+        &KIND.parse().unwrap(),
+        Box::new(Held(holds.clone())),
+    )
+    .unwrap();
+    assert_eq!(*holds.lock().unwrap(), ["pause"]);
+    run.resume().unwrap();
+    assert_eq!(*holds.lock().unwrap(), ["pause", "resume"]);
+}

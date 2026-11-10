@@ -45,7 +45,7 @@ impl Run {
         delivery: WorkspaceDelivery,
     ) -> Result<EventMetadata, Box<WorkspaceDeliveryRefused>> {
         let result = (|| {
-            if self.pump_open || self.state != RunState::Running {
+            if self.pump_open || !self.accepts_input() {
                 return Err(Error::NotRunning);
             }
             let lease = self.workspace_bus.as_ref().ok_or(Error::NotAttached)?;

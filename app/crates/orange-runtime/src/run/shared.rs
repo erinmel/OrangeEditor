@@ -216,7 +216,7 @@ impl Run {
         self.workspace.as_ref().map(|a| &a.snapshot)
     }
     fn prepare_workspace(&self, snapshot: &WorkspaceSnapshot) -> Result<Attachment, SharedError> {
-        if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
+        if self.pump_open || !self.accepts_results() {
             return Err(SharedError::NotRunning);
         }
         let old = self.workspace.as_ref().ok_or(SharedError::WrongWorkspace)?;

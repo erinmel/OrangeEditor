@@ -1646,3 +1646,6 @@ mod run_resources;
 mod variable_changed;
 #[path = "support/watch.rs"]
 mod watch;
+
+#[path = "support/run_pause.rs"]
+mod run_pause;
