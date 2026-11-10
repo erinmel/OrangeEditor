@@ -85,6 +85,12 @@ and failure; OS process exit releases it. The standard library suffices, with no
 dependency or journal-format change. Cross-process and compaction tests verify the
 ownership boundary; same-OS-user tampering remains outside guest isolation.
 
+Writer retirement follow-up (2026-11-09): hold the OS lock in a private RAII
+guard that explicitly unlocks after the journal append handle closes. Close-only
+release can be delayed by a duplicate descriptor inherited during process startup
+on Linux. A deterministic duplicate-descriptor unit case checks this lifetime
+rule alongside unchanged separate-owner exclusion; no sleeps or test serialization.
+
 ## ADR-08 — Incremental desktop editor and accessible declarative contributions
 
 **Selected, adapter conditional.** Persistent view state keyed by document IDs, transaction change sets, spatial index/culling, retained text edit session and virtualized controls. Guest UI is declarative with host accessibility labels/actions, not native widget pointers. Alternatives: full scene/UI rebuild on every graph change; raw guest widgets; draw-only canvas without accessibility model. Consequence: host provides a bounded widget vocabulary and versioned extension events; advanced widgets may require new host primitives.

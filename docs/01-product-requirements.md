@@ -527,6 +527,8 @@ Compaction retains the same writer lease; a second owner refuses before touching
 recovery files. Process termination releases OS ownership without deleting the
 stable lock file. Registry identity/revocation history cannot be overwritten by a
 second cooperating store with an independently recovered checkpoint.
+Writer retirement explicitly unlocks after the append handle closes, including
+when another descriptor temporarily retains the underlying OS file description.
 
 Bundled construction trace (2026-11-09; FR-08, NFR-05/08): Text Split admits
 the complete nominal collection before allocating owned pieces, including empty

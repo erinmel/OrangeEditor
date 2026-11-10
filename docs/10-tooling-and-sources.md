@@ -5062,3 +5062,35 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
 - Limits remain nominal construction/retention allowances, not allocator/RSS or
   physical latency qualification. Split scans twice only after successful preflight;
   over-limit construction returns before allocating its piece vector/owned strings.
+
+#### Linux journal retirement follow-up
+
+- Initial PR170 run42757294374 passed Windows/macOS and the other independent
+  jobs, but two Linux journal tests refused immediate reopen after owner drop.
+  The earlier PR169 run had passed; this later failure was investigated rather
+  than retried unchanged. No exclusivity check was weakened or serialized.
+- Pinned Rust1.99.1 `library/std/src/sys/fs/unix.rs` implements locking through
+  `flock`. The [Linux locking contract](https://man7.org/linux/man-pages/man2/flock.2.html)
+  associates the lock with the open file description: duplicate/inherited
+  descriptors retain it after one handle closes. Concurrent child startup is
+  consistent with the observed parallel-test failure; no system-call trace was
+  captured. A private `WriterLock` explicitly unlocks on retirement, after the
+  journal append handle closes, including early-open error paths.
+- The new Linux-only unit retains a `File::try_clone` duplicate, drops the guard
+  and requires immediate acquisition through a fresh descriptor. It directly
+  exercises the lifetime case without process timing, sleeps, retries or unsafe
+  code. The original separate-process exclusion/exit tests remain unchanged.
+  Both lock and unlock APIs are stable since1.89 and fit MSRV1.97.1. No format,
+  dependency, public signature or diagnostic changes. Local Debian WSL was
+  registered but unavailable (`Wsl/Service/E_UNEXPECTED`); its environment was
+  not repaired as part of the fix. Hosted Linux must execute this regression.
+- A local rerun initially reused binaries whose compiled fixture path named a
+  retired worktree. Rebuilding only first-party Cargo outputs restored current
+  checkout paths; no model fixture/validator behavior was changed. The failing log
+  and generated property seed remain ignored diagnostic evidence.
+- After the explicit-release correction and first-party rebuild, the full Windows
+  all-feature suite passed again (1,663 top-level tests plus the child probe,
+  zero failures,15 ignored), with full warnings-denied Clippy/rustdoc and fmt/diff.
+  A separate read-only source review checked acquisition/error/drop/compaction
+  ownership. The Linux-only unit remains a required hosted check; no local Linux
+  pass is claimed.
