@@ -4958,3 +4958,36 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
 - Limitations: nominal retained-value accounting, not RSS or timing qualification.
   Other physical/application/package-lifecycle gates remain open. Required final-head
   hosted native/MSRV/security/guest validation remains a separate merge gate.
+
+### Timer catch-up budget correction — 2026-11-09
+
+- R1; FR-14/16/47, NFR-05/06; ADR-14. Each timer admission attempt is one
+  cooperative work item. A fixed-size cursor retains the selected window and its
+  original timer key across slices; normal rearming gets a fresh sequence.
+  Stop/fault clears pending windows. Graph formats, dependencies, WIT and public
+  signatures are unchanged. Development policy now explicitly replaces unreleased
+  data formats without historical readers; extension status distinguishes selected
+  domain/scalar seams from delivered APIs (04/08/14).
+- Environment: Windows x64 MSVC, rustc1.99.1 (58cf8f9c3,2026-10-13),
+  cargo1.99.1 (5f94df478,2026-08-27), Node24.18.0. Root lock SHA-256 remains
+  E2AB8E6108BAEBC40B8D59D3E5D0807D8B0C9AA525F573551E0FC9E29D01B14E.
+  Wasmtime48.0.8 remains default-features=false with runtime/cranelift/component-model/
+  std; existing test WAT support is unchanged. MSRV remains1.97.1.
+- PASS: `cargo test -p orange-bundled --test integration timer_entry:: --locked`
+  (15 tests); `cargo test --workspace --all-features --locked`
+  (**1,656 passed,0 failed,15 optional measurements ignored**);
+  `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`;
+  `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features --locked`;
+  `cargo fmt --all --check`; `git diff --check`. Full tests used normal filesystem
+  access for Windows journal replacement. Guest tests used the checked-in probe.
+- PASS: metadata policy plus19 self-test fixtures; all17 Node tooling tests;
+  pinned cargo-deny0.20.2 refreshed advisories and passed advisories/bans/licenses/
+  sources for both root and SDK locks. Transitive duplicate-version warnings remain
+  policy warnings; no ignore or weaker check was added.
+- Six new regressions cover1000 one-item slices and zero budget, fixed window under
+  clock advance, equal-due entries, mixed Wait/next-tick ordering, stop cleanup and
+  the run operation ceiling. Lead review corrected future timer arrival ordering;
+  a separate read-only source review found no further timer flaw in its examined
+  arithmetic/ordering/cleanup scope. This is engineering review, not independent
+  human approval or physical timing qualification. Hosted final-head checks remain
+  required before merge; other domain/package/embedding gates remain open.

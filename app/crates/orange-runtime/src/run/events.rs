@@ -543,6 +543,22 @@ impl Events {
             .next = ordinal;
         Ok(())
     }
+    pub(super) fn set_tick_pending(
+        &mut self,
+        timer: usize,
+        pending: Option<super::ticks::TickWindow>,
+    ) -> Result<(), RunError> {
+        self.ticks
+            .get_mut(timer)
+            .ok_or(RunError::InvalidState)?
+            .pending = pending;
+        Ok(())
+    }
+    pub(super) fn clear_tick_windows(&mut self) {
+        for cursor in &mut self.ticks {
+            cursor.pending = None;
+        }
+    }
     pub(super) fn count_overflow(&mut self) {
         self.stats.overflows = self.stats.overflows.saturating_add(1);
     }

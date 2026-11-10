@@ -157,6 +157,180 @@ fn catch_up_delivers_the_latest_ticks_oldest_first() {
 }
 
 #[test]
+fn catch_up_windows_are_charged_one_tick_per_pump_slice() {
+    let mut run = timer_run(
+        "on-timer",
+        json!({"interval": "1", "missed": "catch-up", "catch_up_max": 1000}),
+        1,
+        "drop-newest",
+    );
+    run.advance_to(1000).unwrap();
+
+    let progress = run.pump(1).unwrap();
+    assert_eq!(progress.operations, 1);
+    assert_eq!(run.event_stats().accepted + run.event_stats().dropped, 1);
+    assert_eq!(run.event_stats().accepted, 1);
+
+    // Zero budget does not advance the retained window.
+    let before = run.event_stats();
+    assert_eq!(run.pump(0).unwrap().operations, 0);
+    assert_eq!(run.event_stats(), before);
+
+    for expected_attempts in 2..=1000 {
+        let progress = run.pump(1).unwrap();
+        assert_eq!(progress.operations, 1);
+        assert_eq!(
+            run.event_stats().accepted + run.event_stats().dropped,
+            expected_attempts
+        );
+    }
+    let stats = run.event_stats();
+    assert_eq!((stats.accepted, stats.dropped), (1, 999));
+    assert_eq!(run.state(), RunState::Running);
+}
+
+#[test]
+fn clock_advance_does_not_replace_a_partially_processed_window() {
+    let mut run = timer_run(
+        "on-timer",
+        json!({"interval": "1", "missed": "catch-up", "catch_up_max": 5}),
+        32,
+        "fault",
+    );
+    run.advance_to(10).unwrap();
+    assert_eq!(run.pump(1).unwrap().operations, 1);
+    assert_eq!(run.pump(1).unwrap().operations, 1);
+    assert_eq!(run.last_event().unwrap().source_seq, 7);
+
+    // The selected 6..=10 window completes before the newly due 16..=20 window starts.
+    run.advance_to(20).unwrap();
+    for expected in 8..=10 {
+        assert_eq!(run.pump(1).unwrap().operations, 1);
+        assert_eq!(run.last_event().unwrap().source_seq, expected);
+    }
+    assert_eq!(run.pump(1).unwrap().operations, 1);
+    assert_eq!(run.last_event().unwrap().source_seq, 16);
+}
+
+#[test]
+fn sliced_catch_up_keeps_its_original_order_ahead_of_equal_due_timers() {
+    let nodes = vec![
+        timer(
+            1,
+            "on-timer",
+            json!({"interval": "1", "missed": "catch-up", "catch_up_max": 3}),
+            8,
+            "fault",
+        ),
+        timer(
+            2,
+            "on-timer",
+            json!({"interval": "1", "missed": "catch-up", "catch_up_max": 1}),
+            8,
+            "fault",
+        ),
+    ];
+    let (doc, plan) = compile(nodes, vec![], vec![]);
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        0,
+        RunOptions::default(),
+    )
+    .unwrap();
+    run.advance_to(3).unwrap();
+
+    for expected_seq in 1..=3 {
+        assert_eq!(run.pump(1).unwrap().operations, 1);
+        let event = run.last_event().unwrap();
+        assert_eq!(event.target, EventTarget::Timer(node_id(1)));
+        assert_eq!(event.source_seq, expected_seq);
+    }
+    assert_eq!(run.pump(1).unwrap().operations, 1);
+    let event = run.last_event().unwrap();
+    assert_eq!(event.target, EventTarget::Timer(node_id(2)));
+    assert_eq!(event.source_seq, 3);
+}
+
+#[test]
+fn rearmed_timer_uses_normal_arrival_order_against_a_wait_at_the_next_tick() {
+    let (doc, plan) = compile(
+        vec![
+            core(1, "on-start"),
+            wait_node(2, 4),
+            timer(10, "on-timer", json!({"interval": "2"}), 8, "fault"),
+        ],
+        vec![edge(1, 1, "then", 2, "in")],
+        vec![],
+    );
+    let mut run = Run::start(
+        plan.clone(),
+        &doc,
+        plan.data().snapshot(),
+        0,
+        RunOptions::default(),
+    )
+    .unwrap();
+    pump_until_idle(&mut run);
+
+    run.advance_to(2).unwrap();
+    assert_eq!(run.pump(1).unwrap().operations, 1);
+    assert_eq!(run.event_stats().accepted, 1);
+
+    // The Wait was parked before the timer's next interval was armed, so at equal wake
+    // times it keeps the earlier arrival sequence and resumes first.
+    run.advance_to(4).unwrap();
+    assert_eq!(run.pump(1).unwrap().operations, 1);
+    assert!(run
+        .trace()
+        .iter()
+        .any(|item| item.node == id(2).parse().unwrap() && item.outcome == ControlOutcome::Then));
+    assert_eq!(run.event_stats().accepted, 1);
+
+    assert_eq!(run.pump(1).unwrap().operations, 1);
+    assert_eq!(run.event_stats().accepted, 2);
+}
+
+#[test]
+fn max_operations_stops_a_large_catch_up_after_three_attempts() {
+    let mut options = RunOptions::default();
+    options.limits.max_operations = 3;
+    let mut run = timer_run_with(
+        "on-timer",
+        json!({"interval": "1", "missed": "catch-up", "catch_up_max": 100000}),
+        1,
+        "drop-newest",
+        options,
+    )
+    .unwrap();
+    run.advance_to(100_000).unwrap();
+
+    assert_eq!(run.pump(100), Err(orange_runtime::RunError::ResourceLimit));
+    let stats = run.event_stats();
+    assert_eq!(stats.accepted, 1);
+    assert_eq!(stats.overflows, 2);
+}
+
+#[test]
+fn stopping_discards_a_partially_processed_catch_up_window() {
+    let mut run = timer_run(
+        "on-timer",
+        json!({"interval": "1", "missed": "catch-up", "catch_up_max": 100}),
+        16,
+        "fault",
+    );
+    run.advance_to(100).unwrap();
+    assert_eq!(run.pump(1).unwrap().operations, 1);
+    assert_eq!(run.event_stats().accepted, 1);
+
+    run.stop().unwrap();
+    assert_eq!(run.ownership().timers, 0);
+    assert_eq!(run.state(), RunState::Stopped);
+    assert_eq!(run.event_stats().accepted, 1);
+}
+
+#[test]
 fn a_refused_tick_is_counted_as_missed_on_the_next_admitted_one() {
     let mut run = timer_run(
         "on-timer",

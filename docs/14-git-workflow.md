@@ -84,6 +84,14 @@ PR validation runs in stages: stage 1 groups repository rules (format, Cargo arc
 
 ## 6. Releases, hotfixes and compatibility
 
+Current `0.0.0` development has no historical data-format support requirement.
+When a format is replaced, update its reader, writer, schemas, fixtures and contracts
+together and refuse the earlier format. Do not retain an older reader, migration
+layer or dual-write path unless the user explicitly selects a compatibility
+requirement. Release-line maintenance below applies when a supported release exists.
+Running provider snapshots still retain their exact executable generation through
+the ordinary update and ownership barriers (ADR-06/07).
+
 Use immutable annotated tags: `v0.1.0-alpha.1`, `v0.1.0-rc.1`, `v0.1.0` are naming examples, not scheduled releases. Tag only the exact qualified commit and record tag, full commit ID, toolchain, lockfile/features, artifact digests and gate evidence. A published tag is never moved or reused; corrections receive a new version. Restrict tag creation/update/deletion to the release role when hosting is configured.
 
 [Release CD](../.github/workflows/release.yml) accepts annotated application tags whose version matches the configured executable package and whose commit is reachable from `main`; manual dispatch uses the same tagged identity. It validates before building, builds without a dependency cache, packages/signs and checks installation/launch natively, verifies digests, attests and publishes those exact files without rebuilding. Separate release jobs/environments hold packaging credentials and publication authority; PR/build jobs receive neither. Live tag identity is checked again before publication, and release concurrency does not cancel an active release. The [release contract](../tools/release/README.md) defines adapter output and required evidence. `.github/release.json` remains unconfigured/unqualified: no desktop binary, native packaging adapters or signing identities exist, so preflight must fail. This is automation preparation, not product release qualification; environment restrictions and real signing/installation evidence remain required before activation. Release-line support beyond main ancestry needs an explicit extension.

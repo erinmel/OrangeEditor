@@ -106,11 +106,11 @@ impl Timers {
         Ok((at, sequence))
     }
     /// Removes and returns the earliest timer if it is due at `now`.
-    pub fn pop_due(&mut self, now: u64) -> Option<TimerTarget> {
+    pub fn pop_due(&mut self, now: u64) -> Option<(TimerKey, TimerTarget)> {
         if !self.is_due(now) {
             return None;
         }
-        let (_, timer) = self.order.pop_first()?;
+        let (key, timer) = self.order.pop_first()?;
         match &timer {
             TimerTarget::Wait(timer) => {
                 self.by_strand.remove(&timer.activation.id);
@@ -122,7 +122,13 @@ impl Timers {
                 self.by_entry.remove(timer);
             }
         }
-        Some(timer)
+        Some((key, timer))
+    }
+    /// Requeues a partially processed entry at its original ordering key.
+    pub fn requeue_entry(&mut self, key: TimerKey, run: u64, timer: usize, at: u64) {
+        self.by_entry.insert(timer, key);
+        self.order
+            .insert(key, TimerTarget::Entry { run, timer, at });
     }
     /// Detaches `strand`'s timer from the directory; [`remove`](Self::remove) takes it out
     /// of the order. Cancellation collects keys first so it can retire them in order.
