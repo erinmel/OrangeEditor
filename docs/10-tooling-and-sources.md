@@ -4873,3 +4873,11 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   OneDrive fell back from incremental hard links to copies; no code lint/doc warning.
   Physical power-loss/filesystem qualification and the other review corrections
   remain separate work. Final-head hosted validation is required before merge.
+
+- Hosted evidence on package correction heada214288: all nine jobs plus `rust`
+  passed in unchanged workflow-dispatch run42745031279, including Windows/Linux/
+  macOS, MSRV1.97.1, optimized behavior and a freshly rebuilt Rust guest. Earlier
+  PR run42670897012/retries encountered GitHub internal-server/abandoned-job states.
+  The protected branch still requires a successful PR-triggered run; manual success
+  did not authorize merging and no protection was bypassed. This evidence update
+  triggers fresh PR validation with unchanged product code.
