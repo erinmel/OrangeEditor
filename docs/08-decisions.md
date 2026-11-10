@@ -715,3 +715,11 @@ Use the synchronized live-store cancellation tests in place of sleep-based readi
 Per-binding mutable instances remain shared by plan users; asynchronous run-lease
 integration must first define an operation/activation owner and must not cancel a
 shared binding for one run. Pooling remains deferred.
+
+Error-output admission correction (2026-11-09; ADR-14/16/21): include error-as-value
+execution projections in the same nominal retention contract as successful output
+values. A selected Match-result arm replaces both projection sets in one staged
+admission; function retirement releases the callee's error charge. This completes
+the ownership correction for these paths without changing error identity, graph
+semantics, public Rust signatures, WIT or dependencies. Quota refusals remain
+infrastructure errors and never become an ordinary error arm or partial publication.

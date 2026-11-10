@@ -169,6 +169,7 @@ impl Frames {
                     | HostSource::Update(_, _)
                     | HostSource::CallOutput(_, _)
                     | HostSource::EffectOutput(_, _)
+                    | HostSource::Error(_)
             ) && let Some(FoldedValue::Value(value)) = &shared.outputs[cell]
             {
                 let slot =

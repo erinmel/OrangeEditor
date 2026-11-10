@@ -4924,3 +4924,37 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   bounded. No process RSS, physical latency, blocked-import preemption, guest
   execution pooling or Run lease integration claim. Hosted final-head native/MSRV/
   rebuilt-guest/security checks remain required before merge.
+
+- Hosted final guest head e692148 passed all nine jobs plus `rust` in PR-triggered
+  run42746473715: native Windows/Linux/macOS, MSRV1.97.1, optimized behavior,
+  rebuilt Rust guest, quality, dependency and repository checks. PR166 merged
+  normally as 599d976; no submitted reviews, review threads or protection bypass.
+
+### Runtime error-publication review correction — 2026-11-09
+
+- Scope: F5; FR-16/47/51, NFR-05/14; ADR-14/16/21. Implicit fault outputs and
+  Match-result errors now use ordinary transactional state/aggregate admission.
+  Joint arm replacement credits the cleared error/value storage, and function
+  retirement refunds owned error projections. Code and producer identity survive;
+  quota exhaustion stays infrastructure failure. No public signature, saved format,
+  dependency, lockfile or WIT change. README's superseded pending-capability notes
+  now agree with implemented ingress, workspace, events, calls and stream behavior.
+- PASS: `cargo test --workspace --all-features --locked`: **1,650 passed, 0 failed,
+  15 optional measurements ignored**. Focused bundled/runtime suites and four new
+  regressions passed. Warnings-denied all-target/all-feature Clippy and rustdoc,
+  fmt/diff checks, metadata policy plus 19 fixtures, and 17 tooling tests passed.
+  Windows x64 MSVC; the exact Rust1.99.1/toolchain/features and unchanged lock are
+  those recorded in the preceding correction entries. The full suite uses normal
+  Windows file access for journal replacement.
+- Regressions: state and aggregate refusal before a failed Count can reach Wait;
+  exact-budget retention and source identity; repeated fault publication across
+  16 waits credits its prior output; stop/disposal release it; Match-result switches
+  Err→Ok at a limit that cannot hold both; an async function returns a captured
+  error and refunds its own projection before its caller waits.
+- Initial new test setup errors (an integer initializer encoded as a JSON number,
+  pumping an already stopped run, and an omitted successful Return path) were
+  corrected before passing evidence. No product validator or lifecycle rule was
+  weakened. OneDrive emitted incremental hard-link fallback notices only.
+- Limitations: nominal retained-value accounting, not RSS or timing qualification.
+  Other physical/application/package-lifecycle gates remain open. Required final-head
+  hosted native/MSRV/security/guest validation remains a separate merge gate.

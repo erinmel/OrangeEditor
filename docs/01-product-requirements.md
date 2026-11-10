@@ -508,3 +508,9 @@ admission. Plugin decoding shares a total value budget across outputs and includ
 absent record slots/identity text before allocating container storage. Verified
 refusals and live-callback cancellation tests cover the selected policy; process RSS,
 wall-time latency, service imports and complete package authority remain open (04).
+
+Runtime error-output trace (2026-11-09; FR-16/47/51, NFR-05/14): faults projected
+as graph error values reserve state/aggregate capacity before publication, preserve
+the original producer, credit replaced storage and release it on function retirement
+and stop. Match-result switches arms with joint value/error admission; an exhausted
+quota refuses infrastructure progress before the next Wait or graph continuation.
