@@ -1,5 +1,14 @@
 # Architecture and ownership
 
+Kernel interface crate (2026-11-10; ADR-03/21): `orange-kernel` holds what a native
+node implementation is written against: `PureKernel`, `EntropyKernel`, `ActionKernel`,
+`EffectBinding`, `KernelFault` and their resolvers. It depends only on `orange-model`.
+`orange-compiler` depends on it and re-exports the same names; `orange-bundled` and
+`orange-guest` depend on it in product builds and use the compiler only in tests. A
+provider or package loader therefore needs neither the compiler nor the runtime. This
+is not the planned `orange-contracts` crate, which remains the versioned wire and
+component contract for external code.
+
 Run driver (2026-11-10; ADR-14): `orange-runtime` exposes `RunDriver`/`RunInbox`, a
 bounded thread-safe mailbox and a bounded `turn` that owns one `Run`. Host threads
 (sockets, hotkeys, effect workers) send inputs; the owning thread turns. It needs no
@@ -72,11 +81,12 @@ The host owns an input-trigger service and audio capture/playback services. Keyb
 |---|---|---|
 | orange-model | GraphDocument, stable IDs, type schemas, package locks, migrations and document edits | Engine or UI entities, sockets, credentials, runtime futures |
 | orange-contracts | Versioned wire/component contracts, errors, handles, permission vocabulary, declarative editor schema, TextRef/MessageRef | Concrete UI widgets or Rust trait objects crossing package boundaries |
+| orange-kernel | Rust interface for trusted native node implementations: kernels, effect bindings, fault envelope and exact-provider resolvers | Plans, scheduling, guest loading, any dependency beyond the model |
 | orange-compiler | Validation, monomorphized type resolution, control/effect regions, compact immutable ExecutionPlan | Network/audio actions, editor state |
 | orange-runtime | Run/activation state, scheduler, variables, continuations, child task/resource ownership, inspection stream | UI or frame dependence |
 | orange-services | File, connection, vault, HTTP/WebSocket, input-trigger and audio playback/capture/analysis services; platform adapter modules | Graph edits or arbitrary plugin UI |
 | orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
-| orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c) | Core-crate dependency, precompiled native loading, ungranted imports |
+| orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c); guest action kernels and async effect implementations with binary bulk values (2026-11-10) | Core-crate dependency, precompiled native loading, ungranted imports |
 | orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Specialized integration request logic |
 | orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |
 | orange-editor-ui | egui editor: document commands/history, workspace/panels, view model, accessible interaction model, diagnostics projection | Engine mutation during drawing |

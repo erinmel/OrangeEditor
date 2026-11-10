@@ -45,6 +45,18 @@ Why egui:
 
 ## ADR-03 — Component-first expansion, trusted worker escape hatch
 
+Plugin boundary amendment (2026-11-10; also ADR-21): the unreleased plugin world is
+replaced in place. Values gain binary cases for bytes and dense numeric lists, so
+bulk data does not cross as text, and packages may implement Action and Async nodes
+through an `effects` export. An async package node is an ordinary effect request the
+host runs off the run actor, so the run-side effect contract is unchanged and guest
+code never executes on a path the actor cannot bound. Package entries, iterators,
+resources and host service imports remain undelivered. The Rust interface for
+trusted native implementations moves to `orange-kernel` (02), so providers and the
+package loader no longer depend on the compiler. Generic second-domain dispatch stays
+deferred until a real per-sample or shader domain needs it; handle-backed buffers are
+the next data-plane step for images and long audio.
+
 **Selected, performance/SDK conditional.** Wasm components are normal installable code, importing only versioned host capabilities. Trusted external workers permit unsupported native/library integrations and register service adapters through the same broker-facing contracts. Statically linked built-in kernels/backends are explicit privileged exceptions. Alternatives: Rust dylib ABI, C ABI plugins, all workers, rebuilding Bevy crates. Components give portable hot addition and a guest memory boundary; workers supply practical native reach at IPC/trust cost. C ABI can stabilize a call layout but cannot isolate host crashes or revoke native OS authority.
 
 Consequences: no arbitrary raw ECS/render/widget injection; custom panels/value editors use declarative schema; scene changes use handles; tiny guest calls need batching; native workers are not sandboxed by a manifest. Evidence: [Rust external ABI](https://doc.rust-lang.org/reference/items/functions.html#extern-function-qualifier), [Wasmtime security](https://docs.wasmtime.dev/security.html), [interruption caveats](https://docs.wasmtime.dev/api/wasmtime/struct.Config.html); specific dependency version still pending. **Falsification:** WU-03 installs without restart, traps an isolated guest, kills worker, denies ungranted imports, adds a panel/type/service and benchmarks W3. If essential expansion cannot fit these boundaries, revise the public interface before SDK freeze. Owner SDK lead; G1/G2.

@@ -25,8 +25,10 @@ Binding request (2026-10-27): host kernel resolvers should implement `PureKernel
 ## Contribution surface
 
 The table below is the selected extension contract. Current installed guest
-execution implements only Pure nodes with concrete port types and empty config
-(K02c). Trusted host type registration implements records, enums and handle kinds;
+execution implements Pure, Action and Async nodes with concrete port types and empty
+config (K02c; effects 2026-11-10). Entries (event sources), iterators, resources and
+host service imports are not implemented, so a package cannot yet reach the network,
+files or devices. Trusted host type registration implements records, enums and handle kinds;
 arbitrary package scalar representations/codecs and complete archive contribution
 activation remain open. Metadata registration alone does not prove execution support.
 
@@ -175,6 +177,31 @@ guest bindings and `orange-componentize` (`wit-component` 0.262.0) to produce th
 component; wit-component keeps only the imports a guest actually uses. Resources,
 streams, async, events, panels and service imports are later interface versions.
 
+Binary values and effects (2026-11-10, replacing the first unreleased world in place):
+`value` is a variant. `literal(string)` is the `orange.value.v1` text above and can
+carry any value. `bytes(list<u8>)` carries `core/bytes@1`, and `i32-list`, `i64-list`,
+`u32-list`, `u64-list`, `f32-list` and `f64-list` carry `core/list@1<T>` of that
+scalar, so audio blocks and pixel data cross without text conversion. The host sends
+these types in their binary case whenever it holds them densely and as a literal
+otherwise; a guest may return either form. A binary case is accepted only for exactly
+its own type; any other use is `OutputContract`. The world also exports
+`effects.execute(definition, inputs) -> result<list<value>, node-error>` for Action
+and Async nodes. Unlike `evaluate` it is never folded, cached or repeated, so a guest
+may keep state in its instance. `GuestPlugin::execute` shares the value, error, fuel,
+transfer and cancellation contract of `evaluate`.
+
+Package effect nodes in graphs (2026-11-10): `WithGuests<R>` also implements
+`EffectResolver`. An Action node of a loaded package gets an inline action kernel and
+runs on the run's own thread inside a pump. An Async node gets no kernel: the run
+issues an ordinary effect request whose `context` is that node's `GuestEffect`. The
+host recovers it with `guest_effect(&request.context)`, calls `GuestEffect::run` off
+the run's thread and passes the result to `Run::complete_effect`; `cancellation()`
+interrupts it when the effect's lease is cancelled. Each node binding owns one guest
+instance for the life of its plan and calls on it are serialized, so every request of
+one node reaches the same state. A guest-reported error becomes the node's own fault
+and takes its `failed` route. Exec ports carry no value and are not passed to the
+guest; event ports and non-empty config are refused at binding.
+
 Package nodes in graphs (K02c, 2026-11-08; `orange_guest`): `GuestPackage::from_archive`
 takes a `VerifiedArchive` and the files its `MemorySink` received, requires a
 `wasm-component` execution section whose world is `orange:expansion/plugin@1.x`, a
@@ -183,7 +210,7 @@ provider key (package ID, version, verified content digest, provider ID) the pac
 store publishes for it. `WithGuests<R>` wraps a host resolver: a binding whose locked
 provider is a loaded package's key gets a guest kernel; every other binding goes to
 `R` (for example `MathPackage`), and a loaded package's provider never falls back to
-`R`. Guest bindings are Pure only, with empty config and concrete port types; each
+`R`. Pure guest bindings (effect bindings are described above) need empty config and concrete port types; each
 binding owns one guest instance, so a trap faults that node's binding and later folds
 report `core/PackageFault` / `core/guest-poisoned`. A guest node error becomes the
 kernel fault with the guest's own validated namespaced code and message key, each
