@@ -5,17 +5,20 @@ import {execFileSync} from 'node:child_process';
 // (ADR-21). A new member fails the check until it is classified here.
 const policy = {
   'orange-model': {core: true, normal: []},
-  'orange-compiler': {core: true, normal: ['orange-model']},
+  // The interface native node implementations are written against; model only.
+  'orange-kernel': {core: true, normal: ['orange-model']},
+  'orange-compiler': {core: true, normal: ['orange-model', 'orange-kernel']},
   'orange-runtime': {core: true, normal: ['orange-model', 'orange-compiler']},
   // Tests may install synthetic third-party packages through the package store (G2).
-  'orange-bundled': {core: true, normal: ['orange-model', 'orange-compiler'], dev: ['orange-runtime', 'orange-packages']},
+  // The library only implements kernels; its tests and examples compile and run graphs.
+  'orange-bundled': {core: true, normal: ['orange-model', 'orange-kernel'], dev: ['orange-compiler', 'orange-runtime', 'orange-packages']},
   // Package store and registry transactions over model snapshots (02 boundaries); no runtime edge.
   'orange-packages': {core: true, normal: ['orange-model']},
   // Development measurement binary; never part of an embedding host's dependency graph.
   'orange-measure': {core: false, normal: ['orange-model', 'orange-compiler', 'orange-runtime', 'orange-bundled']},
   // Host-side Wasm component execution (ADR-03); graph core never depends on it.
   // Tests compose guest kernels with the bundled resolver and run guest effects in a run.
-  'orange-guest': {core: false, normal: ['orange-model', 'orange-compiler', 'orange-packages'], dev: ['orange-bundled', 'orange-runtime']},
+  'orange-guest': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-packages'], dev: ['orange-bundled', 'orange-compiler', 'orange-runtime']},
 };
 // UI, window, renderer and engine frameworks that graph-core crates must never depend on
 // (ADR-01, ADR-02, ADR-21). Host applications may use them.
@@ -188,10 +191,12 @@ function selfTest() {
   check('core depending on a host crate is rejected', fixtureMetadata([core, compiler, toHost, measure], [...ids, measure.id], {...allowedEdges, [toHost.id]: [core.id, compiler.id, measure.id], [measure.id]: [core.id]}), 1);
   const stray = first('stray 0.0.0', 'orange-stray', [['orange-model']]);
   check('an unclassified member is rejected', fixtureMetadata([core, stray], [core.id, stray.id], {[stray.id]: [core.id]}), 1);
-  const bundledDev = first('bundled 0.0.0', 'orange-bundled', [['orange-model'], ['orange-compiler'], ['orange-runtime', 'dev']]);
-  check('bundled may use the runtime in its tests', fixtureMetadata([...workspace, bundledDev], [...ids, bundledDev.id], {...allowedEdges, [bundledDev.id]: [core.id, compiler.id, `dev:${runtime.id}`]}), 0);
-  const bundledNormal = first('bundled 0.0.0', 'orange-bundled', [['orange-model'], ['orange-compiler'], ['orange-runtime']]);
-  check('bundled may not ship depending on the runtime', fixtureMetadata([...workspace, bundledNormal], [...ids, bundledNormal.id], {...allowedEdges, [bundledNormal.id]: [core.id, compiler.id, runtime.id]}), 1);
+  const bundledDev = first('bundled 0.0.0', 'orange-bundled', [['orange-model'], ['orange-compiler', 'dev'], ['orange-runtime', 'dev']]);
+  check('bundled may use the runtime in its tests', fixtureMetadata([...workspace, bundledDev], [...ids, bundledDev.id], {...allowedEdges, [bundledDev.id]: [core.id, `dev:${compiler.id}`, `dev:${runtime.id}`]}), 0);
+  const bundledNormal = first('bundled 0.0.0', 'orange-bundled', [['orange-model'], ['orange-compiler', 'dev'], ['orange-runtime']]);
+  check('bundled may not ship depending on the runtime', fixtureMetadata([...workspace, bundledNormal], [...ids, bundledNormal.id], {...allowedEdges, [bundledNormal.id]: [core.id, `dev:${compiler.id}`, runtime.id]}), 1);
+  const bundledCompiler = first('bundled 0.0.0', 'orange-bundled', [['orange-model'], ['orange-compiler']]);
+  check('bundled may not ship depending on the compiler', fixtureMetadata([...workspace, bundledCompiler], [...ids, bundledCompiler.id], {...allowedEdges, [bundledCompiler.id]: [core.id, compiler.id]}), 1);
   const packages = first('packages 0.0.0', 'orange-packages', [['orange-model'], ['orange-runtime']]);
   check('packages may not depend on the runtime', fixtureMetadata([...workspace, packages], [...ids, packages.id], {...allowedEdges, [packages.id]: [core.id, runtime.id]}), 1);
   check('a core crate with a transitive async runtime is rejected', fixtureMetadata([core, transitive, tokio], [core.id], {[core.id]: [transitive.id], [transitive.id]: [tokio.id]}), 1);

@@ -4,7 +4,7 @@
 
 use std::sync::{Arc, Mutex};
 
-use orange_compiler::{
+use orange_kernel::{
     ActionKernel, BindingRequest, EffectBinding, EffectResolver, EntropyBinding,
     EntropyKernelResolver, KernelBinding, KernelFault, PureKernel, PureKernelResolver,
     ResolveError,
@@ -378,7 +378,7 @@ fn node_fault(error: crate::GuestNodeError) -> KernelFault {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use orange_compiler::FaultText;
+    use orange_kernel::FaultText;
 
     fn error(code: String, message_key: String) -> crate::GuestNodeError {
         crate::GuestNodeError { code, message_key }
