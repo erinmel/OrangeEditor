@@ -4991,3 +4991,40 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   arithmetic/ordering/cleanup scope. This is engineering review, not independent
   human approval or physical timing qualification. Hosted final-head checks remain
   required before merge; other domain/package/embedding gates remain open.
+
+- Hosted timer head5838a22 passed all nine jobs plus `rust` in PR run42755711635,
+  including native Windows/Linux/macOS, MSRV1.97.1, optimized behavior and the
+  rebuilt Rust guest. PR168 merged normally as6e053b6; no review threads or
+  submitted reviews remained and no protection was bypassed.
+
+### Durable journal writer ownership — 2026-11-09
+
+- R2; FR-34/38, NFR-06/08; ADR-07. `FileJournal::open` takes one
+  nonblocking exclusive OS writer lock on `packages.journal.lock` before recovery
+  or stale-temp cleanup. The separate guard survives journal replacement and
+  failed compaction/reopen; drop/process exit releases OS ownership. The lock file
+  stays on disk. Journal format2 remains the only reader; no dependency, lockfile,
+  migration layer, public signature or message key changes.
+- Versioned API evidence: local Rust1.99.1 rustdoc `std/fs/struct.File.html`
+  (`try_lock`) and `library/std/src/fs.rs` identify `file_lock` as stable since
+  Rust1.89.0, within the1.97.1 MSRV. The selected implementation uses
+  `File::try_lock`/`TryLockError`, not a crate or an unsupported newer API.
+- PASS on Windows x64/Rust1.99.1: `cargo test -p orange-packages --all-features
+  --locked` (7 unit tests,76 top-level integration tests, zero failures; the
+  cross-process child runs its filtered probe separately); package all-target/
+  all-feature Clippy with `-D warnings`; fmt/diff checks. Normal filesystem access
+  passed both successful-compaction tests. Restricted access had refused Windows
+  rename with PermissionDenied; no product fallback or weakened test was added.
+- Regressions cover same/different directories, refusal before recovery-file
+  mutation, successful/failed compaction, lock release on drop and process exit
+  without Rust destructors, and separate-process exclusion. The existing compaction
+  test still proves one equivalent checkpoint and append through the original
+  owner. Lead review preserved these assertions and removed duplicate reopen code.
+- Root dependency lock/features/toolchain remain unchanged from the timer correction.
+  On rebased dev6e053b6, `cargo test --workspace --all-features --locked` passed
+  **1,661 top-level tests plus the child probe,0 failures,15 ignored**. All-target/
+  all-feature Clippy and rustdoc with warnings denied, fmt/diff and metadata policy
+  passed. Root/SDK cargo-deny checks and17 tooling tests passed earlier in this
+  same-lock correction cohort. Hosted native/MSRV/rebuilt-guest checks remain
+  required before merge. The lock coordinates cooperating hosts, not malicious
+  same-OS-user path replacement; power-loss/filesystem qualification remains open.

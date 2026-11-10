@@ -77,6 +77,14 @@ Evidence: lifecycle design [04](04-expansion-plugins.md); recovery atomicity, ch
 
 K01 archive amendment (2026-11-06; ADR-03/06/07): the installable archive is a std-only canonical layout without compression, so every set of files has one byte encoding, cross-language vectors are exact and unpacked bytes never exceed archive bytes; deflate was rejected because its output is not unique without pinning one encoder. The lock digest is a domain-separated SHA-256 over the RFC 8785 manifest without `integrity` plus each file's path, size and SHA-256, so metadata and dependency locks are covered and the declared digest can live in the manifest. Signatures, when added, are detached over that digest. Verification streams under byte/entry quotas and finishes before any staged byte is usable. Contract in [04](04-expansion-plugins.md), evidence in [10](10-tooling-and-sources.md).
 
+Journal ownership correction (2026-11-09; ADR-07, FR-34/38, NFR-06/08): use
+one nonblocking OS writer lease on a stable sibling file for the full `FileJournal`
+lifetime, acquired before recovery. Locking individual appends cannot protect two
+stores' independently recovered identity histories. The guard survives compaction
+and failure; OS process exit releases it. The standard library suffices, with no
+dependency or journal-format change. Cross-process and compaction tests verify the
+ownership boundary; same-OS-user tampering remains outside guest isolation.
+
 ## ADR-08 — Incremental desktop editor and accessible declarative contributions
 
 **Selected, adapter conditional.** Persistent view state keyed by document IDs, transaction change sets, spatial index/culling, retained text edit session and virtualized controls. Guest UI is declarative with host accessibility labels/actions, not native widget pointers. Alternatives: full scene/UI rebuild on every graph change; raw guest widgets; draw-only canvas without accessibility model. Consequence: host provides a bounded widget vocabulary and versioned extension events; advanced widgets may require new host primitives.

@@ -25,7 +25,7 @@
 //! migrated: before the first release there are no historical journal readers.
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File, OpenOptions, TryLockError};
 use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
@@ -41,6 +41,7 @@ use crate::manifest::{PackageId, PackageKey, PackageVersion};
 pub const JOURNAL_FILE: &str = "packages.journal";
 /// The temporary file a compaction writes before renaming it over the log.
 pub const JOURNAL_TEMP_FILE: &str = "packages.journal.tmp";
+const JOURNAL_LOCK_FILE: &str = "packages.journal.lock";
 /// Largest record accepted, in bytes: a full checkpoint must fit.
 pub const MAX_JOURNAL_RECORD_BYTES: u32 = 64 << 20;
 
@@ -52,6 +53,9 @@ const FRAME_HEADER_BYTES: usize = 12;
 pub struct FileJournal {
     directory: PathBuf,
     file: Option<File>,
+    // A stable sibling file keeps the OS lock identity unchanged when compaction
+    // replaces the journal itself. Dropping this handle releases writer ownership.
+    _lock: File,
     length: u64,
 }
 
@@ -81,9 +85,28 @@ fn invalid(what: &str) -> JournalError {
 }
 
 impl FileJournal {
-    /// Opens or creates the journal in `directory`, which must exist. Replays complete
-    /// records, truncates a torn tail and removes a stale compaction file.
+    /// Opens or creates the journal in `directory`, which must exist. It refuses to open
+    /// while another process or handle owns that directory's journal. The exclusive
+    /// writer lock is held until the returned journal is dropped. Replays complete records,
+    /// truncates a torn tail and removes a stale compaction file.
     pub fn open(directory: &Path) -> Result<OpenedJournal, JournalError> {
+        let lock = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create(true)
+            .truncate(false)
+            .open(directory.join(JOURNAL_LOCK_FILE))
+            .map_err(|error| failure("open journal writer lock", &error))?;
+        match lock.try_lock() {
+            Ok(()) => {}
+            Err(TryLockError::WouldBlock) => {
+                return Err(invalid("journal already has a writer"));
+            }
+            Err(TryLockError::Error(error)) => {
+                return Err(failure("lock journal writer", &error));
+            }
+        }
+
         let temp = directory.join(JOURNAL_TEMP_FILE);
         match fs::remove_file(&temp) {
             Ok(()) => {}
@@ -105,7 +128,7 @@ impl FileJournal {
         if bytes.len() < HEADER.len() && HEADER.starts_with(&bytes) {
             write_new(&path, &HEADER).map_err(|error| failure("create journal", &error))?;
             return Ok(OpenedJournal {
-                journal: Self::reopen(directory, HEADER.len() as u64)?,
+                journal: Self::reopen(directory, HEADER.len() as u64, lock)?,
                 entries: Vec::new(),
                 discarded_tail_bytes: 0,
             });
@@ -133,20 +156,18 @@ impl FileJournal {
                 .map_err(|error| failure("truncate torn record", &error))?;
         }
         Ok(OpenedJournal {
-            journal: Self::reopen(directory, offset as u64)?,
+            journal: Self::reopen(directory, offset as u64, lock)?,
             entries,
             discarded_tail_bytes: discarded,
         })
     }
 
-    fn reopen(directory: &Path, length: u64) -> Result<Self, JournalError> {
-        let file = OpenOptions::new()
-            .append(true)
-            .open(directory.join(JOURNAL_FILE))
-            .map_err(|error| failure("open journal", &error))?;
+    fn reopen(directory: &Path, length: u64, lock: File) -> Result<Self, JournalError> {
+        let file = open_append(directory)?;
         Ok(Self {
             directory: directory.to_owned(),
             file: Some(file),
+            _lock: lock,
             length,
         })
     }
@@ -199,11 +220,12 @@ impl Journal for FileJournal {
         self.file = None;
         if let Err(error) = fs::rename(&temp, self.directory.join(JOURNAL_FILE)) {
             let _ = fs::remove_file(&temp);
-            *self = Self::reopen(&self.directory, self.length)?;
+            self.file = Some(open_append(&self.directory)?);
             return Err(failure("replace journal", &error));
         }
         sync_directory(&self.directory);
-        *self = Self::reopen(&self.directory, bytes.len() as u64)?;
+        self.file = Some(open_append(&self.directory)?);
+        self.length = bytes.len() as u64;
         Ok(())
     }
 }
@@ -217,6 +239,13 @@ fn write_new(path: &Path, bytes: &[u8]) -> io::Result<()> {
         .open(path)?;
     file.write_all(bytes)?;
     file.sync_all()
+}
+
+fn open_append(directory: &Path) -> Result<File, JournalError> {
+    OpenOptions::new()
+        .append(true)
+        .open(directory.join(JOURNAL_FILE))
+        .map_err(|error| failure("open journal", &error))
 }
 
 /// Flushes the directory entry of a rename where the platform allows opening directories.

@@ -334,3 +334,8 @@ Error-output admission (2026-11-09): copied graph error values retain the origin
 code and producer under normal retention budgets. Refusal uses the existing
 state/aggregate infrastructure classifications; no locale-dependent substitution,
 new catalogue key or package fault rewriting is introduced.
+
+Journal writer ownership (2026-11-09): contention and lock I/O failures use the
+existing `packages/transaction-journal` envelope. Reasons contain only static
+operation text and I/O kind, with no path or checkpoint data. Lock ownership and
+recovery selection are independent of locale; no new message key is introduced.

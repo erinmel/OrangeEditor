@@ -121,6 +121,15 @@ Converter pair slots may contain distinct semantic entry contracts. An override 
 
 ## Hot update/removal semantics
 
+The durable package store has one cooperating writer per directory. `FileJournal`
+acquires a nonblocking exclusive OS lock on the stable sibling
+`packages.journal.lock` before reading recovery state or removing stale compaction
+files. It retains that ownership through writes, compaction and failed reopen paths
+until the journal is dropped. Another owner refuses with a redacted journal error.
+The lock file remains on disk; OS ownership releases on process exit, so its presence
+is not a stale-lock indicator. Hosts must keep the store directory under their control.
+The record format remains 2 with no historical reader.
+
 Hot addition immediately publishes new contributions. **Hot replacement of running code is separate:** existing runs retain old snapshots/component instances; new graphs or explicitly rebound graphs select the new package version. A graph edit normally prepares a new run; live swapping an executing continuation is not supported in 1.0. Existing pending external side effects are never replayed to imitate migration.
 
 Update sequence: stage new immutable version → dependency/API/authority validation → request only new grants → instantiate → atomic registry publication → optional explicit graph migration/rebind → old generation drains. State migration occurs only at a declared stopped/checkpoint boundary with schema/handle validation; arbitrary continuation stacks, raw pointers, sockets and audio callbacks do not migrate. New authority cannot be silently inherited from old grants.
