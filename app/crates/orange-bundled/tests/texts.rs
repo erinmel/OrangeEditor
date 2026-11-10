@@ -2,8 +2,8 @@
 use std::sync::Arc;
 
 use orange_bundled::{
-    BindingError, KernelError, MAX_TEXT_BYTES, MathPackage, ResolvedText, TextOperation as Op,
-    TextUnit, text_definitions,
+    BindingError, KernelError, MAX_COLLECTION_BYTES, MAX_TEXT_BYTES, MathPackage, ResolvedText,
+    TextOperation as Op, TextUnit, text_definitions,
 };
 use orange_compiler::{CompileOptions, FoldedValue, compile_pure};
 use orange_model::catalog::RegistrySnapshot;
@@ -208,6 +208,41 @@ fn results_beyond_the_text_limit_fail_before_they_are_built() {
         KernelError::LimitExceeded.message_key(),
         "core/kernel-limit-exceeded"
     );
+}
+
+#[test]
+fn split_preflights_the_nominal_list_charge_before_building_pieces() {
+    let exact = s(&"x".repeat(MAX_COLLECTION_BYTES - 2 * 16));
+    let Value::List(items) = eval(Op::Split, &[exact, s(",")]).unwrap() else {
+        panic!("split returns a list")
+    };
+    assert_eq!(items.len(), 1);
+    assert!(matches!(
+        items.get(0),
+        Some(Value::Str(text)) if text.len() == MAX_COLLECTION_BYTES - 32
+    ));
+    assert_eq!(
+        eval(
+            Op::Split,
+            &[s(&"x".repeat(MAX_COLLECTION_BYTES - 31)), s(",")]
+        ),
+        Err(KernelError::LimitExceeded),
+        "one additional payload byte exceeds the nominal collection allowance"
+    );
+
+    // The comma-only source produces one more empty value than the nominal
+    // list-header + per-string charge permits. No owned pieces should be built.
+    let many_empty = s(&",".repeat(MAX_COLLECTION_BYTES / 16));
+    assert_eq!(
+        eval(Op::Split, &[many_empty, s(",")]),
+        Err(KernelError::LimitExceeded)
+    );
+    assert_eq!(
+        eval(Op::Split, &[s("naïf☃fin"), s("☃")]),
+        Ok(list(&["naïf", "fin"]))
+    );
+    let parts = eval(Op::Split, &[s("a,,b"), s(",")]).unwrap();
+    assert_eq!(eval(Op::Join, &[parts, s(",")]), Ok(s("a,,b")));
 }
 
 #[test]

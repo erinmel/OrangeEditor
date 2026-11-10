@@ -9,7 +9,7 @@ use orange_model::document::{
     ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor, TypeParam,
 };
 use orange_model::id::TypeExpr;
-use orange_model::value::shape::{ValueCheckError, ValueShape};
+use orange_model::value::shape::{VALUE_CHARGE, ValueCheckError, ValueShape};
 use orange_model::value::{ListBuilder, MapRepr};
 use serde_json::json;
 
@@ -218,6 +218,13 @@ pub(crate) fn some(inner: &ValueShape, value: Value) -> Value {
         value
     }
 }
+fn admit_result_charge(charge: Option<usize>) -> Result<(), KernelError> {
+    if charge.is_some_and(|charge| charge <= MAX_COLLECTION_BYTES) {
+        Ok(())
+    } else {
+        Err(KernelError::LimitExceeded)
+    }
+}
 fn list_from(
     element: &ValueShape,
     len: usize,
@@ -296,9 +303,11 @@ impl ResolvedCollection {
                     }
                     ListConcat => {
                         let other = check(container, &inputs[1])?;
-                        if charged.saturating_add(other) > MAX_COLLECTION_BYTES {
-                            return Err(KernelError::LimitExceeded);
-                        }
+                        admit_result_charge(
+                            charged
+                                .checked_add(other)
+                                .and_then(|total| total.checked_sub(VALUE_CHARGE)),
+                        )?;
                         let Value::List(other) = &inputs[1] else {
                             return Err(KernelError::InputContract);
                         };
@@ -381,13 +390,20 @@ impl ResolvedCollection {
                         }
                     }
                     MapInsert => {
-                        let added = check(key_shape, &inputs[1])?
-                            .saturating_add(check(value_shape, &inputs[2])?);
-                        if charged.saturating_add(added) > MAX_COLLECTION_BYTES {
-                            return Err(KernelError::LimitExceeded);
-                        }
+                        let key_charge = check(key_shape, &inputs[1])?;
+                        let value_charge = check(value_shape, &inputs[2])?;
+                        let at = position(&inputs[1]);
+                        let result_charge = match at {
+                            Some(index) => charged
+                                .checked_sub(check(value_shape, &entries[index].1)?)
+                                .and_then(|total| total.checked_add(value_charge)),
+                            None => charged
+                                .checked_add(key_charge)
+                                .and_then(|total| total.checked_add(value_charge)),
+                        };
+                        admit_result_charge(result_charge)?;
                         let mut entries = entries.to_vec();
-                        match position(&inputs[1]) {
+                        match at {
                             // An existing key keeps its position; only the value changes.
                             Some(i) => entries[i].1 = inputs[2].clone(),
                             None => entries.push((inputs[1].clone(), inputs[2].clone())),

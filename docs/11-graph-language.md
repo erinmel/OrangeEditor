@@ -393,6 +393,10 @@ reads a machine or UI locale.
   build like other provider code.
 - **Size limit.** A result longer than 16 MiB of UTF-8 (`MAX_TEXT_BYTES`) faults
   with `core/LimitExceeded` before it is built. Work is linear in input and output.
+  Split additionally admits its complete nominal list charge against
+  `MAX_COLLECTION_BYTES` before reserving the list or creating owned pieces:
+  one list header, one value header per string, and each piece's UTF-8 bytes.
+  This includes empty pieces. Exceeding that allowance is `core/LimitExceeded`.
 
 ### 5.8 Collection vocabulary (L04a, 2026-11-08)
 
@@ -421,6 +425,9 @@ per element.
   (`core/InternalFault` on mismatch). A growing result (concat, append, insert)
   whose nominal value charge would exceed 16 MiB (`MAX_COLLECTION_BYTES`), or an
   input above that charge, faults with `core/LimitExceeded`.
+  Admission counts the resulting value: concatenation has one list header;
+  replacing a map value credits that value's old charge while retaining the
+  existing key and position. A refusal leaves both inputs unchanged.
 
 ### 5.9 Record and enum nodes (L04b, 2026-11-08)
 

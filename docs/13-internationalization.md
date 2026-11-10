@@ -339,3 +339,8 @@ Journal writer ownership (2026-11-09): contention and lock I/O failures use the
 existing `packages/transaction-journal` envelope. Reasons contain only static
 operation text and I/O kind, with no path or checkpoint data. Lock ownership and
 recovery selection are independent of locale; no new message key is introduced.
+
+Bundled construction limits (2026-11-09): oversized Split collections and
+collection growth use the existing `core/LimitExceeded` fault and static safe
+fallback. Nominal charge and replacement credit never depend on rendered text or
+locale. No payload, separator or map key is copied into error arguments.

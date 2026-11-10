@@ -18,6 +18,7 @@ use crate::data_graph::{catalog, edge, id};
 
 const LIST_I64: &str = "core/list@1<core/i64@1>";
 const MAP_STR_I64: &str = "core/map@1<core/string@1,core/i64@1>";
+const MAP_STR_STR: &str = "core/map@1<core/string@1,core/string@1>";
 
 fn bind_in(
     package: &MathPackage,
@@ -53,6 +54,9 @@ fn map(entries: &[(&str, i64)]) -> Value {
         .map(|(k, v)| (s(k), Value::I64(*v)))
         .collect();
     Value::Map(Arc::new(MapRepr::new(entries).unwrap()))
+}
+fn string_map(key: &str, value: &str) -> Value {
+    Value::Map(Arc::new(MapRepr::new(vec![(s(key), s(value))]).unwrap()))
 }
 fn strings(items: &[&str]) -> Value {
     let items: Vec<Arc<String>> = items.iter().map(|i| Arc::new(i.to_string())).collect();
@@ -206,6 +210,82 @@ fn inputs_are_checked_against_the_bound_shape_and_growth_is_limited() {
         bind(Op::ListLength, "core/list@1<core/string@1>").evaluate(&[over]),
         Err(KernelError::LimitExceeded)
     );
+}
+
+#[test]
+fn collection_admission_uses_the_resulting_value_charge() {
+    let insert = bind(Op::MapInsert, MAP_STR_STR);
+    for (old_len, replacement_len) in [
+        (9 * 1024 * 1024, 9 * 1024 * 1024),
+        (9 * 1024 * 1024, 8 * 1024 * 1024),
+        (8 * 1024 * 1024, 9 * 1024 * 1024),
+        (8 * 1024 * 1024, 8 * 1024 * 1024 + 1),
+    ] {
+        let old = "x".repeat(old_len);
+        let replacement = "y".repeat(replacement_len);
+        let original = string_map("stored-key", &old);
+        let Value::Map(updated) = insert
+            .evaluate(&[original.clone(), s("stored-key"), s(&replacement)])
+            .unwrap()
+        else {
+            panic!("map insert returns a map")
+        };
+        assert_eq!(updated.entries()[0].0, s("stored-key"));
+        assert_eq!(updated.entries()[0].1, s(&replacement));
+        assert_eq!(
+            match original {
+                Value::Map(map) => map.entries()[0].1.clone(),
+                _ => unreachable!(),
+            },
+            s(&old),
+            "replacement must leave the input map unchanged"
+        );
+    }
+
+    // One map entry costs one map header, the key/value headers, and their
+    // UTF-8 bytes. The per-entry minimum is a preflight, not an extra charge.
+    let exact_value = "x".repeat(MAX_COLLECTION_BYTES - 49);
+    let exact_map = string_map("a", &exact_value);
+    let list_concat = bind(Op::ListConcat, "core/list@1<core/string@1>");
+    let exact_list = strings(&[&"x".repeat(MAX_COLLECTION_BYTES - 32)]);
+    let empty_list = strings(&[]);
+    assert_eq!(
+        list_concat.evaluate(&[exact_list.clone(), empty_list]),
+        Ok(exact_list.clone())
+    );
+    assert_eq!(
+        list_concat.evaluate(&[exact_list, strings(&[""])]),
+        Err(KernelError::LimitExceeded)
+    );
+
+    assert_eq!(
+        insert.evaluate(&[
+            exact_map.clone(),
+            s("a"),
+            s(&("y".repeat(exact_value.len() + 1)))
+        ]),
+        Err(KernelError::LimitExceeded)
+    );
+    // A new key adds its key and value charges; the map checker has already
+    // accounted for the entry minimum in its preflight.
+    assert_eq!(
+        insert.evaluate(&[exact_map, s("b"), s("")]),
+        Err(KernelError::LimitExceeded)
+    );
+
+    // A new key whose resulting map lands exactly at the limit is admitted.
+    let exact_new_value = "y".repeat(MAX_COLLECTION_BYTES - 49);
+    let Value::Map(new_key_map) = insert
+        .evaluate(&[
+            Value::Map(Arc::new(MapRepr::default())),
+            s("a"),
+            s(&exact_new_value),
+        ])
+        .unwrap()
+    else {
+        panic!("map insert returns a map")
+    };
+    assert_eq!(new_key_map.entries(), &[(s("a"), s(&exact_new_value))]);
 }
 
 #[test]
