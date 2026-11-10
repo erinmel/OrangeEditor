@@ -85,6 +85,12 @@ and failure; OS process exit releases it. The standard library suffices, with no
 dependency or journal-format change. Cross-process and compaction tests verify the
 ownership boundary; same-OS-user tampering remains outside guest isolation.
 
+Writer retirement follow-up (2026-11-09): hold the OS lock in a private RAII
+guard that explicitly unlocks after the journal append handle closes. Close-only
+release can be delayed by a duplicate descriptor inherited during process startup
+on Linux. A deterministic duplicate-descriptor unit case checks this lifetime
+rule alongside unchanged separate-owner exclusion; no sleeps or test serialization.
+
 ## ADR-08 — Incremental desktop editor and accessible declarative contributions
 
 **Selected, adapter conditional.** Persistent view state keyed by document IDs, transaction change sets, spatial index/culling, retained text edit session and virtualized controls. Guest UI is declarative with host accessibility labels/actions, not native widget pointers. Alternatives: full scene/UI rebuild on every graph change; raw guest widgets; draw-only canvas without accessibility model. Consequence: host provides a bounded widget vocabulary and versioned extension events; advanced widgets may require new host primitives.
@@ -280,6 +286,13 @@ Converter identity clarification (00c.5a): semantic entries and exact implementa
 
 `core/convert` resolution clarification (00d.2b): the converter node is a host-owned registry special form, distinct from both ordinary fixed-control intrinsics and installable package definitions. Its exact entry derives ports; version-1 config and signature are required. Missing provider selects only `Core`; package bindings use the exact document lock and provider digest. Persisted options must contain every resolved choice and are checked without adopting updated defaults. Available metadata is authoritative, while a missing package leaves the saved snapshot usable for offline edge inspection and the node incomplete ([11 §6/§17](11-graph-language.md), [12 §5/I-4](12-graph-data-structures.md)).
 Pin clarification (00c.4a): an explicit user type choice is a **pin** stored in `type_pins`; `type_args` holds the resolved value of every parameter (pinned or inferred) and is only a cache. Inference seeds from pins, typed literals, edges and concrete port types, never from persisted `type_args`, so a disconnect cannot leave a stale binding that behaves like a pin. Documents without `type_pins` load with no pins ([11 §5.5](11-graph-language.md), [12 §3.1](12-graph-data-structures.md)). Connection selection follows the same rule: re-infer endpoint types after removing replaced wires, excluding the newly shadowed target literal. Reusing an edge ID invalidates inference at both old and new endpoints (00c review correction); pins and other surviving evidence remain authoritative.
+
+Collection admission correction (2026-11-09; ADR-16/21, FR-08, NFR-05/08):
+reuse the model's nominal value charges when constructing bundled collections.
+Text Split preflights all pieces before owned allocation; List Concat counts one
+result header; Map Insert credits the replaced value while preserving its key.
+Small checked arithmetic helpers retain the existing typed kernel interfaces.
+No generic allocation framework, dependency or saved-format change is needed.
 
 ## ADR-17 — Host-owned localization, stable graph semantics
 

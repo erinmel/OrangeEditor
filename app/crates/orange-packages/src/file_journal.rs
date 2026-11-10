@@ -48,14 +48,26 @@ pub const MAX_JOURNAL_RECORD_BYTES: u32 = 64 << 20;
 const HEADER: [u8; 10] = *b"OJOURNAL\x02\x00";
 const FRAME_HEADER_BYTES: usize = 12;
 
+/// Releases flock ownership explicitly, even if a process transiently inherited a
+/// duplicate descriptor while another process was being spawned.
+#[derive(Debug)]
+struct WriterLock(File);
+
+impl Drop for WriterLock {
+    fn drop(&mut self) {
+        // A duplicate descriptor can keep a flock alive after this File closes.
+        // Unlock first so process-spawn races cannot extend writer ownership.
+        let _ = self.0.unlock();
+    }
+}
+
 /// A journal stored in [`JOURNAL_FILE`] inside a host-chosen directory.
 #[derive(Debug)]
 pub struct FileJournal {
     directory: PathBuf,
     file: Option<File>,
-    // A stable sibling file keeps the OS lock identity unchanged when compaction
-    // replaces the journal itself. Dropping this handle releases writer ownership.
-    _lock: File,
+    // Declared after `file` so the append handle closes before WriterLock unlocks.
+    _lock: WriterLock,
     length: u64,
 }
 
@@ -90,14 +102,14 @@ impl FileJournal {
     /// writer lock is held until the returned journal is dropped. Replays complete records,
     /// truncates a torn tail and removes a stale compaction file.
     pub fn open(directory: &Path) -> Result<OpenedJournal, JournalError> {
-        let lock = OpenOptions::new()
+        let lock_file = OpenOptions::new()
             .read(true)
             .write(true)
             .create(true)
             .truncate(false)
             .open(directory.join(JOURNAL_LOCK_FILE))
             .map_err(|error| failure("open journal writer lock", &error))?;
-        match lock.try_lock() {
+        match lock_file.try_lock() {
             Ok(()) => {}
             Err(TryLockError::WouldBlock) => {
                 return Err(invalid("journal already has a writer"));
@@ -106,6 +118,7 @@ impl FileJournal {
                 return Err(failure("lock journal writer", &error));
             }
         }
+        let lock = WriterLock(lock_file);
 
         let temp = directory.join(JOURNAL_TEMP_FILE);
         match fs::remove_file(&temp) {
@@ -162,7 +175,7 @@ impl FileJournal {
         })
     }
 
-    fn reopen(directory: &Path, length: u64, lock: File) -> Result<Self, JournalError> {
+    fn reopen(directory: &Path, length: u64, lock: WriterLock) -> Result<Self, JournalError> {
         let file = open_append(directory)?;
         Ok(Self {
             directory: directory.to_owned(),
@@ -525,5 +538,43 @@ mod tests {
     fn crc32_matches_the_ieee_check_value() {
         assert_eq!(crc32(b"123456789"), 0xcbf4_3926);
         assert_eq!(crc32(b""), 0);
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn writer_guard_unlocks_while_a_duplicate_descriptor_remains_open() {
+        use super::{JOURNAL_LOCK_FILE, WriterLock};
+        use std::fs::{self, File, OpenOptions};
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "orange-journal-lock-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join(JOURNAL_LOCK_FILE);
+
+        let locked = OpenOptions::new()
+            .read(true)
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        locked.try_lock().unwrap();
+        let guard = WriterLock(locked);
+        let inherited_duplicate = guard.0.try_clone().unwrap();
+
+        drop(guard);
+        let reacquired = File::open(&path).unwrap();
+        assert!(
+            reacquired.try_lock().is_ok(),
+            "Drop must unlock while an inherited duplicate fd remains open"
+        );
+        drop((reacquired, inherited_duplicate));
+        fs::remove_dir_all(directory).unwrap();
     }
 }

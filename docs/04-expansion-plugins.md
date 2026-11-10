@@ -126,6 +126,8 @@ acquires a nonblocking exclusive OS lock on the stable sibling
 `packages.journal.lock` before reading recovery state or removing stale compaction
 files. It retains that ownership through writes, compaction and failed reopen paths
 until the journal is dropped. Another owner refuses with a redacted journal error.
+Retirement explicitly unlocks after closing the append handle, so an inherited
+duplicate descriptor cannot prolong the writer's ownership beyond that retirement.
 The lock file remains on disk; OS ownership releases on process exit, so its presence
 is not a stale-lock indicator. Hosts must keep the store directory under their control.
 The record format remains 2 with no historical reader.

@@ -791,6 +791,12 @@ output port is `result`. Semantics: [11 §5.7](11-graph-language.md).
 provider never stands in for the text provider. No new intrinsic, saved format or
 dependency is introduced.
 
+Text split construction (review correction, 2026-11-09) preflights its full
+nominal `list<string>` charge using the model's `VALUE_CHARGE` before allocation,
+under `MAX_COLLECTION_BYTES`. The input is scanned without owned pieces; only an
+admitted count reserves storage. Empty pieces cost a value slot even with no UTF-8
+payload. The existing `core/LimitExceeded` fault covers refusal.
+
 ### 4.5 Bundled collection definitions
 
 L04a (2026-11-08) adds `org.orange.collections`, a third package of the same bundled
@@ -822,6 +828,12 @@ container type of the first input and refuses unsupported shapes. IDs below have
 (`list`, `map` and `option` abbreviate `core/list@1`, `core/map@1` and
 `core/option@1`.) `CollectionOperation`, `ResolvedCollection` and
 `MathPackage::resolve_collection` expose the same contracts to embedders.
+
+Collection result admission (review correction, 2026-11-09) uses one result
+container header for List Concat. Map Insert resolves an existing key before
+admission and credits only its replaced value; a new key adds its checked key and
+value charges. The model's map-entry minimum is a preflight, not an extra charge.
+Checked arithmetic and admission precede result construction; inputs stay immutable.
 
 ### 4.6 Bundled record and enum definitions
 

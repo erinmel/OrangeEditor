@@ -5028,3 +5028,69 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   same-lock correction cohort. Hosted native/MSRV/rebuilt-guest checks remain
   required before merge. The lock coordinates cooperating hosts, not malicious
   same-OS-user path replacement; power-loss/filesystem qualification remains open.
+
+- Hosted journal headb636878 passed all nine jobs plus `rust` in PR run42756694626,
+  including separate-process lock tests on Windows/Linux/macOS, MSRV1.97.1,
+  optimized behavior and the rebuilt Rust guest. PR169 merged normally as79d6e87,
+  with no submitted reviews or review threads and no protection bypass.
+
+### Bundled construction admission — 2026-11-09
+
+- R3/R4; FR-08, NFR-05/08; ADR-16/21. Split checks its complete nominal
+  collection charge before reserving or creating owned strings. List Concat counts
+  one result container; Map Insert credits only a replaced value and retains its
+  existing key/position. Checked arithmetic shares model charges and the existing
+  LimitExceeded failure. No kernel framework, dependency, public signature, saved
+  format, migration reader or WIT change.
+- Lead-reviewed boundaries include exact-limit success, one-byte excess, many
+  empty pieces, a multibyte separator, split/join identity, exact new-key admission,
+  equal/shrinking/growing map replacement and immutable inputs on refusal. The
+  map-entry minimum is only a preflight: lead review corrected an initial extra
+  charge rather than changing the model's value rules. Large test inputs are built
+  one case at a time.
+- PASS on Windows x64/Rust1.99.1: focused text and collection suites (10 tests
+  each); `cargo test -p orange-bundled --all-features --locked` (797 passed,
+  zero failures,6 optional measurements ignored); package all-target/all-feature
+  warnings-denied Clippy; fmt/diff checks. Toolchain, features and exact dependency
+  lock remain those recorded in the timer correction. The combined candidate on
+  reviewed journal headb636878 passed `cargo test --workspace --all-features
+  --locked`: **1,663 top-level tests plus the child probe,0 failures,15 ignored**.
+  Full all-target/all-feature Clippy and rustdoc with warnings denied also passed.
+  After PR169 squash merge, replaying only this slice onto dev79d6e87 preserved
+  the tested app/SDK sources and lockfiles exactly; only verification notes changed.
+  Hosted final-head native/MSRV/rebuilt-guest checks remain required before merge.
+- Limits remain nominal construction/retention allowances, not allocator/RSS or
+  physical latency qualification. Split scans twice only after successful preflight;
+  over-limit construction returns before allocating its piece vector/owned strings.
+
+#### Linux journal retirement follow-up
+
+- Initial PR170 run42757294374 passed Windows/macOS and the other independent
+  jobs, but two Linux journal tests refused immediate reopen after owner drop.
+  The earlier PR169 run had passed; this later failure was investigated rather
+  than retried unchanged. No exclusivity check was weakened or serialized.
+- Pinned Rust1.99.1 `library/std/src/sys/fs/unix.rs` implements locking through
+  `flock`. The [Linux locking contract](https://man7.org/linux/man-pages/man2/flock.2.html)
+  associates the lock with the open file description: duplicate/inherited
+  descriptors retain it after one handle closes. Concurrent child startup is
+  consistent with the observed parallel-test failure; no system-call trace was
+  captured. A private `WriterLock` explicitly unlocks on retirement, after the
+  journal append handle closes, including early-open error paths.
+- The new Linux-only unit retains a `File::try_clone` duplicate, drops the guard
+  and requires immediate acquisition through a fresh descriptor. It directly
+  exercises the lifetime case without process timing, sleeps, retries or unsafe
+  code. The original separate-process exclusion/exit tests remain unchanged.
+  Both lock and unlock APIs are stable since1.89 and fit MSRV1.97.1. No format,
+  dependency, public signature or diagnostic changes. Local Debian WSL was
+  registered but unavailable (`Wsl/Service/E_UNEXPECTED`); its environment was
+  not repaired as part of the fix. Hosted Linux must execute this regression.
+- A local rerun initially reused binaries whose compiled fixture path named a
+  retired worktree. Rebuilding only first-party Cargo outputs restored current
+  checkout paths; no model fixture/validator behavior was changed. The failing log
+  and generated property seed remain ignored diagnostic evidence.
+- After the explicit-release correction and first-party rebuild, the full Windows
+  all-feature suite passed again (1,663 top-level tests plus the child probe,
+  zero failures,15 ignored), with full warnings-denied Clippy/rustdoc and fmt/diff.
+  A separate read-only source review checked acquisition/error/drop/compaction
+  ownership. The Linux-only unit remains a required hosted check; no local Linux
+  pass is claimed.
