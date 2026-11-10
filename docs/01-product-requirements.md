@@ -520,3 +520,10 @@ retains a fixed selected window and original timer ordering across host slices,
 charges every attempted tick as one work item and observes cancellation between
 attempts. Stop/fault retires unfinished windows. Large saved catch-up maxima do
 not bypass the pump or run operation limit; no saved-format change is needed.
+
+Journal ownership trace (2026-11-09; FR-34/38, NFR-06/08): one process/handle
+owns the durable store directory from recovery through journal retirement.
+Compaction retains the same writer lease; a second owner refuses before touching
+recovery files. Process termination releases OS ownership without deleting the
+stable lock file. Registry identity/revocation history cannot be overwritten by a
+second cooperating store with an independently recovered checkpoint.

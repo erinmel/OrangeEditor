@@ -2,6 +2,7 @@
 //! recovery sees a complete committed set, and compaction replaces the log atomically.
 
 use std::fs;
+use std::process::Command;
 
 use orange_packages::{
     FileJournal, JOURNAL_FILE, JOURNAL_TEMP_FILE, Journal, JournalEntry, PackageKey, PackageState,
@@ -152,6 +153,7 @@ fn appending_after_a_truncated_tail_keeps_the_log_readable() {
         })
         .unwrap();
     assert!(log(&dir).len() > complete);
+    drop(opened.journal);
     let reopened = FileJournal::open(dir.path()).unwrap();
     assert_eq!(reopened.entries.len(), count + 1);
     assert_eq!(reopened.discarded_tail_bytes, 0);
@@ -164,22 +166,141 @@ fn compaction_replaces_the_log_with_one_equivalent_checkpoint() {
     store.install(device("1.0.0", HEX_1)).unwrap();
     store.install(device("2.0.0", HEX_2)).unwrap();
     store.revoke(&pkg(PACKAGE, "1.0.0")).unwrap();
-    let (before, _) = recover(dir.path());
+    let (before, _) = recover_copied_log(&log(&dir));
     let long = log(&dir).len();
 
     store.compact_journal().unwrap();
-    let opened = FileJournal::open(dir.path()).unwrap();
-    assert_eq!(opened.entries.len(), 1);
+    assert!(FileJournal::open(dir.path()).is_err());
     assert!(log(&dir).len() < long);
-    assert_eq!(Recovery::from_entries(&opened.entries), before);
-    drop(opened);
+    let (compacted, count) = recover_copied_log(&log(&dir));
+    assert_eq!(count, 1);
+    assert_eq!(compacted, before);
 
-    // The store keeps appending to the replaced log.
+    // The original FileJournal remains usable after replacing the log.
     store.remove(&pkg(PACKAGE, "2.0.0")).unwrap();
     drop(store);
     let (after, _) = recover(dir.path());
     assert_eq!(after.committed.as_deref(), Some(&[] as &[PackageKey]));
     assert_eq!(after.revoked, before.revoked);
+}
+
+#[test]
+fn writer_lock_is_exclusive_per_directory_and_does_not_touch_recovery_files() {
+    let first_dir = TempDir::new("writer-lock-first");
+    let other_dir = TempDir::new("writer-lock-other");
+    let first = FileJournal::open(first_dir.path()).unwrap();
+    let other = FileJournal::open(other_dir.path()).unwrap();
+
+    let stale = first_dir.path().join(JOURNAL_TEMP_FILE);
+    fs::write(&stale, b"stale temp must survive refused open").unwrap();
+    let error = FileJournal::open(first_dir.path()).unwrap_err();
+    assert_eq!(error.reason, "journal already has a writer");
+    assert_eq!(
+        fs::read(&stale).unwrap(),
+        b"stale temp must survive refused open"
+    );
+    assert_eq!(
+        fs::read(first_dir.path().join(JOURNAL_FILE)).unwrap(),
+        b"OJOURNAL\x02\x00"
+    );
+
+    drop(first);
+    let reopened = FileJournal::open(first_dir.path()).unwrap();
+    drop((reopened, other));
+}
+
+#[test]
+fn writer_lock_survives_failed_compaction() {
+    let failing_dir = TempDir::new("writer-lock-compact-failure");
+    let mut opened = FileJournal::open(failing_dir.path()).unwrap();
+    fs::create_dir(failing_dir.path().join(JOURNAL_TEMP_FILE)).unwrap();
+    assert!(opened.journal.compact(checkpoint()).is_err());
+    fs::remove_dir(failing_dir.path().join(JOURNAL_TEMP_FILE)).unwrap();
+    assert_eq!(
+        FileJournal::open(failing_dir.path()).unwrap_err().reason,
+        "journal already has a writer"
+    );
+    drop(opened);
+    drop(FileJournal::open(failing_dir.path()).unwrap());
+}
+
+#[test]
+fn writer_lock_survives_successful_compaction() {
+    let dir = TempDir::new("writer-lock-compact");
+    let mut opened = FileJournal::open(dir.path()).unwrap();
+    opened.journal.compact(checkpoint()).unwrap();
+    assert_eq!(
+        FileJournal::open(dir.path()).unwrap_err().reason,
+        "journal already has a writer"
+    );
+    drop(opened);
+    drop(FileJournal::open(dir.path()).unwrap());
+}
+
+#[test]
+fn writer_lock_is_exclusive_across_processes_and_released_on_process_exit() {
+    let dir = TempDir::new("writer-lock-process");
+    let opened = FileJournal::open(dir.path()).unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "durable::child_process_journal_lock_probe"])
+        .env("ORANGE_JOURNAL_LOCK_PROBE_DIR", dir.path())
+        .env("ORANGE_JOURNAL_LOCK_PROBE_MODE", "must-refuse")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    drop(opened);
+
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "durable::child_process_journal_lock_probe"])
+        .env("ORANGE_JOURNAL_LOCK_PROBE_DIR", dir.path())
+        .env("ORANGE_JOURNAL_LOCK_PROBE_MODE", "acquire-and-exit")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    drop(FileJournal::open(dir.path()).unwrap());
+}
+
+#[test]
+fn child_process_journal_lock_probe() {
+    let (Ok(path), Ok(mode)) = (
+        std::env::var("ORANGE_JOURNAL_LOCK_PROBE_DIR"),
+        std::env::var("ORANGE_JOURNAL_LOCK_PROBE_MODE"),
+    ) else {
+        return;
+    };
+    if mode == "must-refuse" {
+        assert_eq!(
+            FileJournal::open(std::path::Path::new(&path))
+                .unwrap_err()
+                .reason,
+            "journal already has a writer"
+        );
+    } else {
+        assert_eq!(mode, "acquire-and-exit");
+        let _opened = FileJournal::open(std::path::Path::new(&path)).unwrap();
+        // Verify the OS releases ownership on process termination without Rust Drop.
+        std::process::exit(0);
+    }
+}
+
+fn checkpoint() -> JournalEntry {
+    JournalEntry::Committed {
+        generation: 1,
+        active: vec![],
+        published: Default::default(),
+        revoked: Default::default(),
+        defaults: Default::default(),
+    }
+}
+
+fn recover_copied_log(bytes: &[u8]) -> (Recovery, usize) {
+    let mirror = TempDir::new("recovery-snapshot");
+    fs::write(mirror.path().join(JOURNAL_FILE), bytes).unwrap();
+    let opened = FileJournal::open(mirror.path()).unwrap();
+    (
+        Recovery::from_entries(&opened.entries),
+        opened.entries.len(),
+    )
 }
 
 #[test]
