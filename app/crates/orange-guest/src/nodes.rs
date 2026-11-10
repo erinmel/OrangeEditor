@@ -189,14 +189,13 @@ impl<R: EntropyKernelResolver> EntropyKernelResolver for WithGuests<R> {
     }
 }
 
+/// A node binding: its input and output data ports in declared order, and its instance.
+type BoundNode = (Box<[PortKey]>, Box<[PortKey]>, GuestNode);
+
 impl GuestPackage {
     /// One node binding's own guest instance and its data ports in declared order.
     /// `control` admits the exec ports of an action or async node, which carry no value.
-    fn node(
-        &self,
-        request: &BindingRequest<'_>,
-        control: bool,
-    ) -> Result<(Box<[PortKey]>, Box<[PortKey]>, GuestNode), ResolveError> {
+    fn node(&self, request: &BindingRequest<'_>, control: bool) -> Result<BoundNode, ResolveError> {
         let provider = request.provider().ok_or(ResolveError::Unavailable)?;
         if !request
             .snapshot()
