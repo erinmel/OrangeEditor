@@ -4881,3 +4881,46 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
   The protected branch still requires a successful PR-triggered run; manual success
   did not authorize merging and no protection was bypassed. This evidence update
   triggers fresh PR validation with unchanged product code.
+- Final package PR head701aa01 passed all nine jobs plus `rust` in PR-triggered
+  run42745765135. PR165 merged normally as e579fc7 with branch protection intact.
+
+### Guest resource and transfer review corrections — 2026-11-09
+
+- Scope: F2/F3/F4/F7; FR-08/35/38, NFR-05/06/08; ADR-03/14/21. Both constructors
+  now use a store-local aggregate limiter for initial memory/table allocation and
+  growth, rollback on allocation failure, and finite memory/table/instance counts.
+  Defaults:64 MiB memory,65,536 table elements,64 of each object,1 MiB canonical
+  transfer allowance. `GuestLimits` adds four unfrozen fields; no dependency,
+  lock, WIT or saved-format change.
+- Corrected review evidence: pinned Wasmtime48.0.8
+  `src/runtime/component/store.rs` documents `Store::set_hostcall_fuel` and its
+  existing128 MiB default. `src/runtime/component/func/options.rs` and `typed.rs`
+  charge list storage/strings before allocation. The review's "unbounded" statement
+  was too broad; OrangeEditor now selects an explicit per-import/result allowance.
+  Owning bindings retain automatic post-return cleanup. The synchronous limiter
+  callbacks and failure-refund contracts were checked in that release's
+  `src/runtime/limits.rs`. No latest-version examples substituted for source.
+- Plugin decoded outputs share one additional nominal value budget. Codec list/map
+  minimum-slot checks precede reserve; records include type text and missing field
+  slots. This closes a schema-driven allocation gap as well as the canonical-copy
+  policy gap. The redundant100ms-sleep broadcast test was removed; live-callback,
+  ticker-driven, watchdog-protected instance/broadcast cancellation tests remain.
+- Environment unchanged from the package correction above: Windows x64 MSVC,
+  Rust/Cargo1.99.1, exact unchanged root lock and Wasmtime48.0.8 feature profile.
+  PASS: focused guest/model tests and `cargo test --workspace --all-features
+  --locked` (**1,646 passed,0 failed,15 optional measurements ignored**); all-target/
+  all-feature Clippy and rustdoc with warnings denied; fmt/diff checks; metadata
+  policy19 fixtures;17 tooling tests.
+- Regressions cover two initial memories exceeding the total, shared aggregate
+  growth, per-object maximum refusal leaving peer capacity, initial/grown tables,
+  finite object counts and oversized default tables; shared-memory refusal in the
+  selected no-threads profile; synthetic allocation-failure refunds; alias-amplified
+  result refusal in raw/plugin calls and admission with a larger budget; oversized
+  imported logs; decoded aggregate refusal and exact-bound admission through the
+  Rust probe; record-slot budget and impossible container counts before decoding.
+- Limits: nominal transfer charges include runtime descriptors/encoded text, not
+  exact transcoding/allocator peaks; each import/result has its own allowance, not
+  one invocation-wide total. Retained logs and decoded outputs are separately
+  bounded. No process RSS, physical latency, blocked-import preemption, guest
+  execution pooling or Run lease integration claim. Hosted final-head native/MSRV/
+  rebuilt-guest/security checks remain required before merge.

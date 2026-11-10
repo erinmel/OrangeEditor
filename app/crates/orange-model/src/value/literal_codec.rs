@@ -280,6 +280,19 @@ impl<'a, S: Schemas> Codec<'a, S> {
         Ok(())
     }
 
+    /// Reject impossible container storage before reserving its element slots.
+    fn minimum(&self, count: usize, per_item: usize, term: &TypeTerm) -> Result<(), LiteralError> {
+        if count
+            .checked_mul(per_item)
+            .is_none_or(|n| n > self.budget.get())
+        {
+            return Err(LiteralError::TooLarge {
+                ty: term.to_string(),
+            });
+        }
+        Ok(())
+    }
+
     fn decode(&self, json: &Json, term: &TypeTerm, depth: usize) -> Result<Value, LiteralError> {
         if depth > MAX_NESTING {
             return Err(LiteralError::TooDeep);
@@ -339,6 +352,7 @@ impl<'a, S: Schemas> Codec<'a, S> {
             ("list", items) => {
                 let [element] = args(term, items)?;
                 let array = json.as_array().ok_or_else(|| mismatch(term))?;
+                self.minimum(array.len(), VALUE_CHARGE, term)?;
                 let list_error = |error| match error {
                     ListPushError::Mismatch => mismatch(term),
                     ListPushError::Capacity => LiteralError::TooLarge {
@@ -357,6 +371,7 @@ impl<'a, S: Schemas> Codec<'a, S> {
                 let [key, value] = args(term, items)?;
                 self.schemas.validate_map_key(key)?;
                 let pairs = json.as_array().ok_or_else(|| mismatch(term))?;
+                self.minimum(pairs.len(), 2 * VALUE_CHARGE, term)?;
                 let mut entries: Vec<(Value, Value)> = Vec::with_capacity(pairs.len());
                 for pair in pairs {
                     let [k, v] = pair
@@ -416,6 +431,9 @@ impl<'a, S: Schemas> Codec<'a, S> {
     ) -> Result<Value, LiteralError> {
         let object = json.as_object().ok_or_else(|| mismatch(term))?;
         if let Some(schema) = self.schemas.record(named) {
+            let ty = term.to_type_expr();
+            self.charge(ty.as_str().len(), term)?;
+            self.minimum(schema.fields.len(), VALUE_CHARGE, term)?;
             if let Some(field) = object
                 .keys()
                 .find(|key| !schema.fields.iter().any(|f| &f.field_id == *key))
@@ -429,13 +447,12 @@ impl<'a, S: Schemas> Codec<'a, S> {
                 .iter()
                 .map(|field| match object.get(&field.field_id) {
                     Some(value) => self.decode(value, &field.ty, depth + 1).map(Some),
-                    None if field.optional => Ok(None),
+                    None if field.optional => self.charge(VALUE_CHARGE, term).map(|()| None),
                     None => Err(LiteralError::MissingField {
                         field: field.field_id.clone(),
                     }),
                 })
                 .collect::<Result<_, _>>()?;
-            let ty = term.to_type_expr();
             return Ok(Value::Record(Arc::new(RecordRepr { ty, fields })));
         }
         if let Some(schema) = self.schemas.enumeration(named) {

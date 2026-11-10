@@ -9,6 +9,15 @@ engine-wide broadcast; no library-owned ticker thread, core dependency or new
 Wasm feature is introduced. Blocking host imports still need a separate bounded
 service/cancellation protocol.
 
+Guest admission (review correction, 2026-11-09): raw and plugin stores share
+aggregate initial/growth limits for memory and table elements and finite object
+counts. Canonical imports/results use an explicit hostcall transfer allowance;
+decoded plugin outputs share an additional nominal budget under that policy.
+Compiled components are immutable/shareable. The current Pure binding's mutable
+instance is serialized across its plan users; future run-lease cancellation must
+first provide a distinct operation/activation owner rather than cancel that shared
+instance. This correction adds no async service or instance-pooling implementation.
+
 Fault ownership (2026-11-09; ADR-03/16/21): public core `KernelFault` identifiers
 borrow built-in text or share package-owned text, while fallback messages remain
 static. Plans, previews, runtime slots, streams and replay journals retain and

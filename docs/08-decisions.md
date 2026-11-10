@@ -700,3 +700,18 @@ discarding later valid commits as a torn tail. Physically short final writes ret
 prefix recovery. This replaces the unreleased journal encoding without a legacy
 reader; package archive, graph/provider-lock and guest interface formats do not
 change. CRC detects accidental corruption; it does not authenticate journal bytes.
+
+Guest resource admission amendment (2026-11-09; ADR-03/14/21): raw and plugin
+stores share one limiter for aggregate memory and table elements, including initial
+allocation and failed-growth refunds, plus finite object counts. Use Wasmtime48.0.8
+`Store::set_hostcall_fuel` for bounded canonical lifting; its128MiB default was
+present but not selected by OrangeEditor. Choose an explicit1MiB default and an
+aggregate decoded-output check under that policy. Keep owning generated bindings
+so post-return cleanup cannot invalidate lazy borrowed results. No custom unsafe
+lifting, new dependency or encoding is needed. Check container minimum storage
+before reserve and include absent record slots/identity text in codec admission.
+Each import/result has its own nominal allowance; no RSS/wall-time claim is added.
+Use the synchronized live-store cancellation tests in place of sleep-based readiness.
+Per-binding mutable instances remain shared by plan users; asynchronous run-lease
+integration must first define an operation/activation owner and must not cancel a
+shared binding for one run. Pooling remains deferred.

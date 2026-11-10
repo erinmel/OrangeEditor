@@ -1056,6 +1056,14 @@ Implementation notes (WU-00/00b.4, `orange_model::value::literal_codec`):
 - **Map keys:** maps are built only by `MapRepr::new` (or empty by `Default`), which rejects a repeated key (`DuplicateKey`; the codec reports `LiteralError::DuplicateMapKey`). Up to 16 entries are compared pairwise; larger maps use one presized hash set. `Value` implements `Eq` and `Hash` consistently with its structural equality, so the check takes expected linear time. Because keys are unique by construction, encoding, shape checks and equality never search for duplicates.
 - **Map check memo:** each `MapRepr` allocation keeps its first complete shape check (key shape, value shape, depth, entry charge). Immutable entries can only check the same way against the same shapes, so a later check of that allocation with equal shapes at the same or a smaller depth returns the remembered charge and still applies the caller's byte limit. Failed or partial checks are never remembered, other shapes walk the entries again, and equality, hashing and debug output ignore the memo. The memo is two words (an exact preorder code of both shapes with the depth, and the charge), so it never allocates; enum shapes and shapes over eleven nodes are not coded and always walk. It is derived in-memory data inside one allocation, never persisted and never keyed by address.
 
+Literal admission correction (2026-11-09; FR-08/35/38, NFR-05/08): decoded lists
+and maps check their minimum element storage before reserve. Records charge their
+retained type identity and every absent optional field slot as well as present
+values. `decode_with_budget` remains conservative; the first exhausted container
+can be refused before visiting a mistyped element. Plugin output decoding shares
+one nominal budget across its complete result vector (04); refusal publishes no
+partial values. Wire encodings and type/provider identities are unchanged.
+
 ### 6.2 Presentation message wire contract
 
 TextRef and MessageRef policy is owned by [13](13-internationalization.md). `MessageRef` has required `origin`, `key`, `args`, `fallback`. `MessageOrigin` is one of:

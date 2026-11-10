@@ -9,6 +9,7 @@
 //! Wasmtime type is part of the graph model.
 
 mod cancellation;
+mod limits;
 mod nodes;
 mod plugin;
 
@@ -23,9 +24,10 @@ pub use plugin::{
     API_VERSION, Grants, GuestNodeError, GuestPlugin, MAX_LOG_BYTES, MAX_LOG_ENTRIES,
 };
 
+use limits::InstanceLimits;
 use thiserror::Error;
 use wasmtime::component::{Component, ComponentNamedList, Instance, Lift, Linker, Lower};
-use wasmtime::{Config, Engine, Store, StoreLimits, StoreLimitsBuilder, Trap};
+use wasmtime::{Config, Engine, Store, Trap};
 
 /// Per-instance resource limits (04 proposals: 64 MiB linear memory, finite fuel).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -36,6 +38,17 @@ pub struct GuestLimits {
     pub fuel_per_call: u64,
     /// Core instances one component instantiation may create.
     pub instances: usize,
+    /// Most linear memories in one instance's store.
+    pub memories: usize,
+    /// Most tables in one instance's store.
+    pub tables: usize,
+    /// Total table elements across the store, including initial allocations.
+    pub table_elements: usize,
+    /// Canonical lifting budget for each guest-to-host import or returned result.
+    /// Includes list descriptors and encoded strings, using Wasmtime's nominal
+    /// hostcall fuel charge. Separate from execution fuel and retained log limits.
+    /// Also bounds the aggregate nominal decoded output values of a plugin call.
+    pub transfer_bytes: usize,
     /// Native stack bytes guest code may use before trapping.
     pub max_wasm_stack: usize,
 }
@@ -46,6 +59,10 @@ impl Default for GuestLimits {
             memory_bytes: 64 * 1024 * 1024,
             fuel_per_call: 10_000_000,
             instances: 64,
+            memories: 64,
+            tables: 64,
+            table_elements: 65_536,
+            transfer_bytes: 1024 * 1024,
             max_wasm_stack: 512 * 1024,
         }
     }
@@ -185,7 +202,7 @@ impl std::fmt::Debug for GuestComponent {
 }
 
 struct HostState {
-    limits: StoreLimits,
+    limits: InstanceLimits,
 }
 
 /// One isolated instance with its own store and limits.
@@ -213,14 +230,11 @@ impl GuestInstance {
         let mut store = Store::new(
             &component.engine.engine,
             HostState {
-                limits: StoreLimitsBuilder::new()
-                    .memory_size(limits.memory_bytes)
-                    .instances(limits.instances)
-                    .trap_on_grow_failure(false)
-                    .build(),
+                limits: InstanceLimits::new(limits),
             },
         );
         store.limiter(|state| &mut state.limits);
+        store.set_hostcall_fuel(limits.transfer_bytes);
         let cancellation = GuestCancellation::install(&component.engine, &mut store)?;
         store
             .set_fuel(limits.fuel_per_call)
