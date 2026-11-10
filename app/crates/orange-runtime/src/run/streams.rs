@@ -101,6 +101,7 @@ impl std::fmt::Debug for StreamRead {
     }
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum StreamError {
     #[error("The stream queue is full; retry when the consumer frees space.")]
     Full,
@@ -414,7 +415,7 @@ impl Run {
         if !id.handle.resource.belongs_to(self.id) {
             return Err(StreamError::WrongRun);
         }
-        if self.pump_open || !matches!(self.state, RunState::Running | RunState::Draining) {
+        if self.pump_open || !self.accepts_results() {
             return Err(StreamError::NotRunning);
         }
         if self.stream_resource(id.handle)?.bridge.is_some() {
@@ -430,7 +431,7 @@ impl Run {
         if !id.handle.resource.belongs_to(self.id) {
             return Err(StreamError::WrongRun);
         }
-        if !matches!(self.state, RunState::Running | RunState::Draining) {
+        if !self.accepts_results() {
             return Err(StreamError::NotRunning);
         }
         let limit = self.options.limits.max_stream_item_bytes;

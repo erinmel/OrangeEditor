@@ -380,6 +380,7 @@ pub struct ActivationPolicy {
     pub mode: ReentrancyMode,                // Queue | Drop | Replace | Parallel{max}
     pub capacity: u32, pub overflow: OverflowPolicy,
     pub on_fault: FaultPolicy, pub order: u32,
+    pub while_paused: PausedPolicy,          // Buffer (default, omitted) | Latest | Drop; 11 §10.1
 }
 ```
 

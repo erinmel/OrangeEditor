@@ -10,8 +10,8 @@ use orange_model::catalog::RegistrySnapshot;
 use orange_model::catalog::TimerSchedule;
 use orange_model::catalog::intrinsic_id as ids;
 use orange_model::document::{
-    EventScope, FaultPolicy, NodeKind, OverflowPolicy, PortDirection, PortKind, ReentrancyMode,
-    VarScope,
+    EventScope, FaultPolicy, NodeKind, OverflowPolicy, PausedPolicy, PortDirection, PortKind,
+    ReentrancyMode, VarScope,
 };
 use orange_model::edit::DeclId;
 use orange_model::id::{EventDeclId, NodeId, VariableId};
@@ -363,6 +363,7 @@ pub struct EventHandler {
     capacity: usize,
     overflow: OverflowPolicy,
     mode: ReentrancyMode,
+    while_paused: PausedPolicy,
     max_parallel: usize,
 }
 impl EventHandler {
@@ -378,6 +379,10 @@ impl EventHandler {
     }
     pub fn overflow(&self) -> OverflowPolicy {
         self.overflow
+    }
+    /// What the entry keeps of input admitted while its run is paused.
+    pub fn while_paused(&self) -> PausedPolicy {
+        self.while_paused
     }
     /// Checked entry reentrancy policy.
     pub fn mode(&self) -> ReentrancyMode {
@@ -1265,6 +1270,7 @@ fn entry_handler(
         },
         overflow: policy.overflow,
         mode: policy.mode,
+        while_paused: policy.while_paused,
         max_parallel,
     };
     Ok((policy.order, handler))

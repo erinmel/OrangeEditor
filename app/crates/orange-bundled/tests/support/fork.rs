@@ -542,7 +542,7 @@ fn race_cleanup_finishes_before_enclosing_sequence_and_preserves_normal_fuel() {
                 .collect(),
         );
         let mut options = RunOptions::default();
-        options.data.limits.max_activation_operations = 3;
+        options.data.limits.max_activation_operations = 1;
         options.max_cleanup_operations = 8;
         let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
         drain(&mut run, budget);
@@ -773,6 +773,7 @@ fn completed_cleanup_cannot_replenish_surviving_activation_fuel() {
             wait(5, 1),
             set_bool(6, 100, true),
             set_bool(7, 101, true),
+            set_bool(8, 102, true),
         ],
         vec![
             edge(1, 1, "then", 2, "in"),
@@ -781,13 +782,16 @@ fn completed_cleanup_cannot_replenish_surviving_activation_fuel() {
             edge(4, 3, "branch#1", 5, "in"),
             edge(5, 4, "cancelled", 6, "in"),
             edge(6, 2, "then#1", 7, "in"),
+            edge(7, 7, "then", 8, "in"),
         ],
-        (100..102)
+        (100..103)
             .map(|n| variable(n, "run", "core/bool@1", Some(json!(false))))
             .collect(),
     );
+    // Each wait refills the activation, so the budget covers one node after them. The
+    // cleanup between runs on its own budget and must leave that one unit unchanged.
     let mut options = RunOptions::default();
-    options.data.limits.max_activation_operations = 2;
+    options.data.limits.max_activation_operations = 1;
     let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
     drain(&mut run, 1);
     run.advance_to(1).unwrap();
@@ -807,7 +811,8 @@ fn completed_cleanup_cannot_replenish_surviving_activation_fuel() {
         Some(RunError::Data(orange_runtime::DataError::FuelExhausted))
     );
     assert!(flag(&run, 100));
-    assert!(!flag(&run, 101));
+    assert!(flag(&run, 101));
+    assert!(!flag(&run, 102));
     assert_eq!(run.ownership().regions, 0);
 }
 
@@ -854,4 +859,62 @@ fn later_cancellations_do_not_inherit_an_expired_prior_cleanup_deadline() {
     );
     assert_eq!(run.cleanup_truncated(), 0);
     assert_eq!(run.ownership().regions, 0);
+}
+
+/// Fifty iterations, each `wait`ing one tick or not at all, under a fuel budget far
+/// smaller than their total work.
+fn looping_run(waits: bool) -> (Run, Option<RunError>) {
+    let mut nodes = vec![core(1, "on-start"), count(2, 50), set_bool(4, 100, true)];
+    let mut edges = vec![
+        edge(1, 1, "then", 2, "in"),
+        edge(4, 2, "completed", 4, "in"),
+    ];
+    if waits {
+        nodes.push(wait(3, 1));
+        edges.push(edge(2, 2, "body", 3, "in"));
+    } else {
+        nodes.push(set_bool(3, 101, true));
+        edges.push(edge(2, 2, "body", 3, "in"));
+    }
+    let (doc, plan) = state_plan(
+        nodes,
+        edges,
+        (100..102)
+            .map(|n| variable(n, "run", "core/bool@1", Some(json!(false))))
+            .collect(),
+    );
+    let mut options = RunOptions::default();
+    options.data.limits.max_activation_operations = 8;
+    let mut run = Run::start(plan.clone(), &doc, plan.data().snapshot(), 1, options).unwrap();
+    for now in 1..=60 {
+        loop {
+            match run.pump(64) {
+                Ok(progress) if progress.ready => {}
+                Ok(_) => break,
+                Err(error) => return (run, Some(error)),
+            }
+        }
+        if run.state() != orange_runtime::RunState::Running {
+            break;
+        }
+        run.advance_to(now).unwrap();
+    }
+    (run, None)
+}
+
+#[test]
+fn a_loop_that_waits_each_iteration_outlives_its_fuel_budget() {
+    let (run, error) = looping_run(true);
+    assert_eq!(error, None);
+    assert!(flag(&run, 100));
+}
+
+#[test]
+fn a_loop_that_never_suspends_still_exhausts_its_fuel() {
+    let (run, error) = looping_run(false);
+    assert_eq!(
+        error,
+        Some(RunError::Data(orange_runtime::DataError::FuelExhausted))
+    );
+    assert!(!flag(&run, 100));
 }

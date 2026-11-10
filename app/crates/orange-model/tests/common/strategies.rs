@@ -61,6 +61,7 @@ pub fn activation() -> impl Strategy<Value = ActivationPolicy> {
         overflow: OverflowPolicy::DropOldest,
         on_fault: FaultPolicy::StopRun,
         order,
+        while_paused: Default::default(),
         extensions: Default::default(),
     })
 }

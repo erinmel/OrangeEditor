@@ -96,8 +96,30 @@ pub struct ActivationPolicy {
     pub overflow: OverflowPolicy,
     pub on_fault: FaultPolicy,
     pub order: u32,
+    /// What the entry keeps of input that arrives while its run is paused.
+    #[serde(default, skip_serializing_if = "PausedPolicy::is_buffer")]
+    pub while_paused: PausedPolicy,
     #[serde(flatten)]
     pub extensions: Extensions,
+}
+
+/// 11 §10.1. Input admitted to an entry while its run is paused. The default keeps the
+/// ordinary queue; saved documents omit it.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum PausedPolicy {
+    /// Queue as usual, under the entry's capacity and overflow policy.
+    #[default]
+    Buffer,
+    /// Keep only the newest pending delivery.
+    Latest,
+    /// Discard the delivery.
+    Drop,
+}
+impl PausedPolicy {
+    fn is_buffer(&self) -> bool {
+        *self == Self::Buffer
+    }
 }
 
 /// 11 §10.1. Packages cannot add modes (11 §16), so the set is closed.
@@ -162,5 +184,25 @@ mod tests {
         assert_eq!(pinned.type_pins["T"].as_str(), "core/f64@1");
         let encoded = serde_json::to_value(pinned).unwrap();
         assert_eq!(encoded["type_pins"]["T"], "core/f64@1");
+    }
+
+    #[test]
+    fn paused_policy_defaults_to_buffer_and_is_saved_only_when_set() {
+        use super::{ActivationPolicy, PausedPolicy};
+        let mut value = json!({
+            "mode": "queue", "capacity": 4, "overflow": "fault",
+            "on_fault": "continue", "order": 0
+        });
+        let policy: ActivationPolicy = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(policy.while_paused, PausedPolicy::Buffer);
+        assert_eq!(serde_json::to_value(&policy).unwrap(), value);
+
+        value["while_paused"] = json!("latest");
+        let policy: ActivationPolicy = serde_json::from_value(value.clone()).unwrap();
+        assert_eq!(policy.while_paused, PausedPolicy::Latest);
+        assert_eq!(serde_json::to_value(&policy).unwrap(), value);
+
+        value["while_paused"] = json!("sometimes");
+        assert!(serde_json::from_value::<ActivationPolicy>(value).is_err());
     }
 }

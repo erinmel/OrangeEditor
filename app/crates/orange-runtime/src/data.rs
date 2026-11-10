@@ -27,9 +27,11 @@ pub struct DataLimits {
     pub max_work_items: usize,
     /// Evaluated nodes and zone iteration boundaries per consumption epoch.
     pub max_operations: usize,
-    /// Fuel for the whole activation: each epoch start and each evaluated node
-    /// and each zone iteration cost one unit. Never refilled, so repeated epochs
-    /// and loops still end.
+    /// Fuel for one uninterrupted stretch of an activation: each epoch start, each
+    /// evaluated node and each zone iteration cost one unit, so repeated epochs and
+    /// loops still end. A standalone `DataActivation` never refills. A `Run` refills
+    /// an activation when one of its strands suspends on a wait, an event, an effect
+    /// or a stream read, so a long-lived handler that keeps waiting is not ended.
     pub max_activation_operations: usize,
     pub max_retained_bytes: usize,
     /// Per entropy callback invocation. A request beyond this budget faults the
@@ -416,12 +418,18 @@ impl DataActivation {
     pub fn document_revision(&self) -> u64 {
         self.document_revision
     }
-    /// Activation fuel left, in operation units. It never refills.
+    /// Activation fuel left, in operation units. A standalone activation never refills;
+    /// a run refills its activations when one of their strands really suspends.
     pub fn fuel_remaining(&self) -> usize {
         self.state
             .limits
             .max_activation_operations
             .saturating_sub(self.state.fuel_used)
+    }
+    /// Fuel measures work done without giving control back, so a strand that waits
+    /// for time, an event or the host starts its next stretch with a full budget.
+    pub(crate) fn refuel(&mut self) {
+        self.state.fuel_used = 0;
     }
     /// A run-owned cancellation transition reserves distinct bounded cleanup fuel.
     /// Preserve entropy identities; ordinary callers cannot revive failed epochs.

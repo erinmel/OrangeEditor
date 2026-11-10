@@ -702,3 +702,29 @@ fn return_cancels_a_detached_effect_before_resuming_its_caller() {
         Err(EffectError::Stale)
     );
 }
+
+#[test]
+fn a_paused_run_issues_no_effect_and_holds_an_admitted_completion() {
+    let (_, _, mut run) = setup(false, RunOptions::default());
+    idle(&mut run);
+    run.pause().unwrap();
+    assert!(run.take_effect().is_none());
+    run.resume().unwrap();
+    let request = run.take_effect().unwrap();
+    assert!(!request.lease.is_paused());
+
+    run.pause().unwrap();
+    assert!(request.lease.is_paused());
+    run.complete_effect(request.id, Ok(&[Value::U64(42)]))
+        .unwrap();
+    assert_eq!(run.pump(64).unwrap().operations, 0);
+    assert_eq!(result(&run), None);
+
+    run.resume().unwrap();
+    assert!(!request.lease.is_paused());
+    idle(&mut run);
+    assert_eq!(result(&run), Some(&Value::U64(42)));
+    // Finished work is never reported as held, even if the run pauses again.
+    run.pause().unwrap();
+    assert!(request.lease.is_finished() && !request.lease.is_paused());
+}

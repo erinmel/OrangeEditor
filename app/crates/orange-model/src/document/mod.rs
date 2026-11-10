@@ -28,8 +28,8 @@ pub use declaration::{
 };
 pub use graph::{BodyRef, GraphBody, GraphDocument, GraphExport, PackageLockEntry, TypeLockEntry};
 pub use node::{
-    ActivationPolicy, DefinitionRef, FaultPolicy, NodeInstance, OverflowPolicy, ProviderBinding,
-    ReentrancyMode, StreamOverflow, VariadicState,
+    ActivationPolicy, DefinitionRef, FaultPolicy, NodeInstance, OverflowPolicy, PausedPolicy,
+    ProviderBinding, ReentrancyMode, StreamOverflow, VariadicState,
 };
 pub use port::{
     Edge, NodeKind, OutputSource, PortDescriptor, PortDirection, PortKind, PortRef, Sensitivity,

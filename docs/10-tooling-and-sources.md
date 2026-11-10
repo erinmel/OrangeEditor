@@ -1,5 +1,112 @@
 # Tooling, environment and research register
 
+## Run driver and mailbox — 2026-11-10
+
+Branch `feat/run-driver` from local dev `86e7e80`. Same environment as the entries
+below; `std::sync::mpsc::sync_channel` only, no dependency, lockfile, feature, WIT
+or graph format change. Contract in 03; ADR-14 driver amendment.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,691 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1 and hosted checks were not run. The
+multi-thread test joins its senders before turning, so it checks delivery and
+thread safety, not interleaving under contention. Effect results through the
+mailbox share the tested dispatch but have no test of their own. No workspace-bus
+or stream support, and no timing was measured.
+
+## Activation fuel refills at suspension — 2026-11-10
+
+Branch `feat/run-pause`. Same environment as the entries below; no dependency,
+lockfile, feature, WIT or graph format change. A `Run` refills an activation when
+one of its strands parks on a Wait, Await Event, effect or stream read (03,
+activation fuel). Two existing tests assumed fuel never refilled and were adapted
+to keep their intent: `completed_cleanup_cannot_replenish_surviving_activation_fuel`
+now spends its post-wait budget before the refused node, and
+`cleanup_entry_failure_retires_all_owned_work` spends fuel in a sibling Fork branch
+so the cleanup reservation still overflows.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,685 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1 and hosted checks were not run. The refill is
+tested for Wait only; Await, effect and stream suspension share the same branch
+without their own test. A handler that loops on Yield without waiting still ends
+when its fuel or the run burst limit is reached.
+
+## Paused-input policy, source rejection and paused stream overflow — 2026-11-10
+
+Branch `feat/run-pause` from dev `e08de9ff724f49d549faee10fade2f8858d77675`. Same
+environment as the entries below; no dependency, lockfile, feature or WIT change.
+`ActivationPolicy::while_paused` is optional and omitted when `buffer`, so saved
+format v1 documents are byte-identical. Contracts: 11 §10.1/§10.3, 12, 03, ADR-14
+amendment, FR-57. This supersedes the "not implemented" limits of the two entries
+below for per-entry policy, source rejection and the paused `fault` push stream.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,683 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1 and hosted checks were not run. The paused
+policy is exercised through manual entries and one declared event; workspace
+deliveries and `parallel` entries share the same admission code but have no
+paused-policy test. Push streams have no per-stream paused policy. No editor
+exposes the field yet, and no timing was measured.
+
+## Resource pause hooks — 2026-11-10
+
+Local working tree on branch `feat/run-pause` at `0a2626e`, uncommitted. Same
+environment as the entry below; no dependency, lockfile, feature, WIT or graph
+format change. `RunResource::pause`/`resume` (default no-ops) and
+`EffectLease::is_paused` are described in 03 and the ADR-14 amendment. This
+supersedes "resource pause hooks ... not implemented" in the entry below.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,677 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1, hosted checks and the Node helpers were not
+run. A panicking hook is caught so the other resources are still told, then
+re-raised; that path has no test. Stream producers (`PullStream`) receive no pause
+signal. Per-entry paused-input policy, source rejection and the paused
+`fault`-overflow push stream remain unimplemented.
+
+## Host pause and per-burst operation limit — 2026-11-09
+
+Local working tree on dev `e08de9ff724f49d549faee10fade2f8858d77675`, uncommitted.
+Windows x64, rustup Rust 1.99.1. No dependency, lockfile, feature, WIT or graph
+format change. `Run::pause`/`Run::resume`, `RunState::Paused`, `RunError::Paused`
+and the per-burst `RunLimits::max_operations` are described in 03; five runtime
+enums became `#[non_exhaustive]` (ADR-14 amendment).
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,674 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1, hosted checks and the metadata/release
+Node helpers were not run. Per-entry paused-input policy, source rejection, resource
+pause hooks and the paused `fault`-overflow push stream are not implemented. No
+timing was measured.
+
 ## K02d1 — scoped guest cancellation — 2026-11-09
 
 Branch `codex/k02d1-guest-cancellation` starts from dev

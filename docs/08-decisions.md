@@ -136,6 +136,27 @@ Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the reg
 
 ## ADR-14 — One cooperative actor per run
 
+Pause amendment (2026-11-09): a host may hold a Running run in `Paused` and resume
+it. The actor model makes this immediate and lossless: nothing interleaves, so
+owned work stays owned. A paused run does no graph work and observes no time;
+admission of input and of results for already issued work continues under the
+existing bounded policies, and stop/cancellation still reach it. This replaces the
+earlier "pause is not supported in 1.0" position in 03. `RunState`, `RunError`,
+`IngressError`, `EffectError` and `StreamError` are now `#[non_exhaustive]` so
+later lifecycle additions are not breaking. `RunResource` gains default no-op
+`pause`/`resume` hooks, and `EffectLease` gains `is_paused` (2026-11-10). Entries gain an optional
+`while_paused` policy (`buffer` default, `latest`, `drop`) and host sources an
+optional paused rejection: the entry decides what the graph keeps, the source
+whether its sender can be told "not now". The field is omitted when default, so
+saved format v1 documents are unchanged. No dependency or provider ABI changes.
+
+Driver amendment (2026-11-10): the run stays a single-owner actor, and
+`orange-runtime` supplies the one place where input from other threads meets it:
+`RunDriver` with a bounded `RunInbox` (03). Cross-source order, fairness between
+input and graph work, and pause-aware host time are decided there once instead of
+by each embedder. It uses only `std`, starts no thread and reads no clock, so the
+planned `orange-host` composition root builds on it without changing the actor.
+
 C13 amendment (2026-11-08; also ADR-16/21): portable checkpoints contain only
 explicitly selected persistent values and a versioned compatibility seal. Reuse
 bounded native codecs and metadata-only type/provider checks; never deserialize

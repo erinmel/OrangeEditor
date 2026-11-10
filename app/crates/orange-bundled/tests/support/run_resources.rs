@@ -263,3 +263,56 @@ fn immediate_stop_fault_and_drop_each_close_with_their_reason() {
         ]
     );
 }
+
+type Holds = Arc<Mutex<Vec<(u8, &'static str)>>>;
+struct Held(Holds, u8);
+impl RunResource for Held {
+    fn close(self: Box<Self>, _: CloseReason) {
+        self.0.lock().unwrap().push((self.1, "close"));
+    }
+    fn pause(&self) {
+        self.0.lock().unwrap().push((self.1, "pause"));
+    }
+    fn resume(&self) {
+        self.0.lock().unwrap().push((self.1, "resume"));
+    }
+}
+fn held_pair(holds: &Holds) -> Run {
+    let mut run = waiting_run(RunOptions::default(), false);
+    for tag in [1, 2] {
+        acquire(&mut run, SESSION, Box::new(Held(holds.clone(), tag)));
+    }
+    run
+}
+
+#[test]
+fn pause_holds_resources_newest_first_and_resume_releases_oldest_first() {
+    let holds = Holds::default();
+    let mut run = held_pair(&holds);
+    run.pause().unwrap();
+    assert_eq!(*holds.lock().unwrap(), [(2, "pause"), (1, "pause")]);
+    holds.lock().unwrap().clear();
+    run.resume().unwrap();
+    assert_eq!(*holds.lock().unwrap(), [(1, "resume"), (2, "resume")]);
+}
+
+#[test]
+fn graceful_stop_resumes_held_resources_and_immediate_stop_only_closes_them() {
+    let holds = Holds::default();
+    let mut graceful = held_pair(&holds);
+    graceful.pause().unwrap();
+    holds.lock().unwrap().clear();
+    graceful
+        .request_stop(orange_runtime::StopMode::Graceful)
+        .unwrap();
+    assert_eq!(*holds.lock().unwrap(), [(1, "resume"), (2, "resume")]);
+
+    let holds = Holds::default();
+    let mut immediate = held_pair(&holds);
+    immediate.pause().unwrap();
+    holds.lock().unwrap().clear();
+    immediate.stop().unwrap();
+    pump_until_idle(&mut immediate);
+    assert_eq!(immediate.state(), RunState::Stopped);
+    assert_eq!(*holds.lock().unwrap(), [(2, "close"), (1, "close")]);
+}

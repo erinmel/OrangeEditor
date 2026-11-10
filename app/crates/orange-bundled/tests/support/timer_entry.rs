@@ -313,6 +313,20 @@ fn max_operations_stops_a_large_catch_up_after_three_attempts() {
 }
 
 #[test]
+fn max_operations_bounds_one_burst_not_the_run_lifetime() {
+    let mut options = RunOptions::default();
+    options.limits.max_operations = 16;
+    let mut run =
+        timer_run_with("on-timer", json!({"interval": "10"}), 4, "fault", options).unwrap();
+    // Far more total work than the limit, but the run idles between ticks.
+    for tick in 1..=200 {
+        advance(&mut run, tick * 10);
+    }
+    assert_eq!(run.state(), orange_runtime::RunState::Running);
+    assert_eq!(seen(&run), (Some(2000), 0, 200));
+}
+
+#[test]
 fn stopping_discards_a_partially_processed_catch_up_window() {
     let mut run = timer_run(
         "on-timer",
