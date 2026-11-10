@@ -3,15 +3,18 @@
 //! One log file per store directory, all integers little-endian:
 //!
 //! ```text
-//! header  "OJOURNAL" | version u16 = 1
-//! record  length u32 | crc32 u32 | length bytes of JSON
+//! header  "OJOURNAL" | version u16 = 2
+//! record  length u32 | header_crc32 u32 | payload_crc32 u32 | length bytes of JSON
 //! ```
 //!
 //! `append` writes one whole record at the end of the file and flushes it before returning.
 //! A crash can therefore leave at most one torn record, always at the tail: opening the log
-//! replays records up to the first one that is short or fails its CRC-32 and truncates the
-//! file there, so recovery sees exactly the appends that returned `Ok`. A failed append
-//! truncates its own partial bytes before returning the error.
+//! replays complete records and truncates only a physically short final frame. The
+//! header checksum protects its declared length; a full header or payload with a bad
+//! checksum is corruption and refuses open without truncation. Recovery includes all
+//! complete committed records (including a write flushed just before a crash, even if
+//! the caller never observed its acknowledgement). A failed append truncates its own
+//! partial bytes before returning the error.
 //!
 //! `compact` writes the header and one checkpoint record to a sibling temporary file,
 //! flushes it, and renames it over the log. A crash before the rename leaves the old,
@@ -41,7 +44,8 @@ pub const JOURNAL_TEMP_FILE: &str = "packages.journal.tmp";
 /// Largest record accepted, in bytes: a full checkpoint must fit.
 pub const MAX_JOURNAL_RECORD_BYTES: u32 = 64 << 20;
 
-const HEADER: [u8; 10] = *b"OJOURNAL\x01\x00";
+const HEADER: [u8; 10] = *b"OJOURNAL\x02\x00";
+const FRAME_HEADER_BYTES: usize = 12;
 
 /// A journal stored in [`JOURNAL_FILE`] inside a host-chosen directory.
 #[derive(Debug)]
@@ -112,7 +116,7 @@ impl FileJournal {
 
         let mut entries = Vec::new();
         let mut offset = HEADER.len();
-        while let Some((record, next)) = record_at(&bytes, offset) {
+        while let Some((record, next)) = record_at(&bytes, offset)? {
             let wire: WireEntry = serde_json::from_slice(record)
                 .map_err(|_| invalid("journal record has an unsupported shape"))?;
             entries.push(wire.into_entry()?);
@@ -228,18 +232,32 @@ fn sync_directory(directory: &Path) {
 fn sync_directory(_directory: &Path) {}
 
 /// The complete record at `offset` and the offset after it, or `None` at the end or at a
-/// torn record.
-fn record_at(bytes: &[u8], offset: usize) -> Option<(&[u8], usize)> {
-    let header = bytes.get(offset..offset.checked_add(8)?)?;
-    let length = u32::from_le_bytes(header[..4].try_into().ok()?);
-    let crc = u32::from_le_bytes(header[4..].try_into().ok()?);
-    if length > MAX_JOURNAL_RECORD_BYTES {
-        return None;
+/// physically short final frame. A corrupt complete header/payload is refused.
+fn record_at(bytes: &[u8], offset: usize) -> Result<Option<(&[u8], usize)>, JournalError> {
+    let Some(header) = bytes.get(offset..offset.saturating_add(FRAME_HEADER_BYTES)) else {
+        return Ok(None);
+    };
+    let length_bytes = [header[0], header[1], header[2], header[3]];
+    let length = u32::from_le_bytes(length_bytes);
+    let header_crc = u32::from_le_bytes([header[4], header[5], header[6], header[7]]);
+    if crc32(&length_bytes) != header_crc {
+        return Err(invalid("journal record header checksum mismatch"));
     }
-    let start = offset + 8;
-    let end = start.checked_add(length as usize)?;
-    let record = bytes.get(start..end)?;
-    (crc32(record) == crc).then_some((record, end))
+    let crc = u32::from_le_bytes([header[8], header[9], header[10], header[11]]);
+    if length > MAX_JOURNAL_RECORD_BYTES {
+        return Err(invalid("journal record exceeds the size limit"));
+    }
+    let start = offset + FRAME_HEADER_BYTES;
+    let Some(end) = start.checked_add(length as usize) else {
+        return Err(invalid("journal record exceeds the size limit"));
+    };
+    let Some(record) = bytes.get(start..end) else {
+        return Ok(None);
+    };
+    if crc32(record) != crc {
+        return Err(invalid("journal record payload checksum mismatch"));
+    }
+    Ok(Some((record, end)))
 }
 
 fn frame(entry: &JournalEntry) -> Result<Vec<u8>, JournalError> {
@@ -249,8 +267,10 @@ fn frame(entry: &JournalEntry) -> Result<Vec<u8>, JournalError> {
         .ok()
         .filter(|length| *length <= MAX_JOURNAL_RECORD_BYTES)
         .ok_or_else(|| invalid("journal record exceeds the size limit"))?;
-    let mut frame = Vec::with_capacity(payload.len() + 8);
-    frame.extend_from_slice(&length.to_le_bytes());
+    let mut frame = Vec::with_capacity(payload.len() + FRAME_HEADER_BYTES);
+    let length = length.to_le_bytes();
+    frame.extend_from_slice(&length);
+    frame.extend_from_slice(&crc32(&length).to_le_bytes());
     frame.extend_from_slice(&crc32(&payload).to_le_bytes());
     frame.extend_from_slice(&payload);
     Ok(frame)

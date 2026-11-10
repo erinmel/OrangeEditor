@@ -88,9 +88,9 @@ fn every_torn_prefix_recovers_a_complete_committed_set() {
     let mut start = before.len();
     while start < after.len() {
         let length = u32::from_le_bytes(after[start..start + 4].try_into().unwrap()) as usize;
-        let end = start + 8 + length;
-        cuts.extend(start..start + 9);
-        cuts.extend([start + 8 + length / 2, end - 1]);
+        let end = start + 12 + length;
+        cuts.extend(start..start + 13);
+        cuts.extend([start + 12 + length / 2, end - 1]);
         start = end;
     }
     cuts.push(after.len());
@@ -190,7 +190,7 @@ fn an_interrupted_compaction_leaves_the_complete_old_log() {
     drop(store);
     let (before, _) = recover(dir.path());
     // A crash before the rename leaves a partial temporary file beside the log.
-    fs::write(dir.path().join(JOURNAL_TEMP_FILE), b"OJOURNAL\x01\x00\xff").unwrap();
+    fs::write(dir.path().join(JOURNAL_TEMP_FILE), b"OJOURNAL\x02\x00\xff").unwrap();
     let (after, discarded) = recover(dir.path());
     assert_eq!(after, before);
     assert_eq!(discarded, 0);
@@ -203,6 +203,7 @@ fn other_formats_are_refused_not_migrated() {
     let path = dir.path().join(JOURNAL_FILE);
     for bytes in [
         &b"OJOURNAL\x00\x00"[..],
+        b"OJOURNAL\x01\x00",
         b"{\"entries\":[]}",
         b"OJOURNAX\x01\x00",
     ] {
@@ -213,8 +214,10 @@ fn other_formats_are_refused_not_migrated() {
 
     // A whole, CRC-valid record of an unknown shape is not a torn write.
     let payload = br#"{"entry":"checkpoint_v0","active":[]}"#;
-    let mut bytes = b"OJOURNAL\x01\x00".to_vec();
-    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    let mut bytes = b"OJOURNAL\x02\x00".to_vec();
+    let length = (payload.len() as u32).to_le_bytes();
+    bytes.extend_from_slice(&length);
+    bytes.extend_from_slice(&crc32(&length).to_le_bytes());
     bytes.extend_from_slice(&crc32(payload).to_le_bytes());
     bytes.extend_from_slice(payload);
     fs::write(&path, &bytes).unwrap();
@@ -226,7 +229,64 @@ fn other_formats_are_refused_not_migrated() {
     fs::write(&path, b"OJOU").unwrap();
     let opened = FileJournal::open(dir.path()).unwrap();
     assert!(opened.entries.is_empty());
-    assert_eq!(fs::read(&path).unwrap(), b"OJOURNAL\x01\x00");
+    assert_eq!(fs::read(&path).unwrap(), b"OJOURNAL\x02\x00");
+}
+
+#[test]
+fn corrupt_headers_and_complete_payloads_preserve_the_log_and_later_revocations() {
+    let dir = TempDir::new("corruption");
+    let mut store = store(&dir);
+    store.install(device("1.0.0", HEX_1)).unwrap();
+    store.revoke(&pkg(PACKAGE, "1.0.0")).unwrap();
+    drop(store);
+    let original = log(&dir);
+    let (expected, _) = recover(dir.path());
+    assert!(!expected.revoked.is_empty());
+    let first = 10;
+    let first_length = u32::from_le_bytes(original[first..first + 4].try_into().unwrap()) as usize;
+    let mut last = first;
+    let mut cursor = first;
+    while cursor < original.len() {
+        last = cursor;
+        let length = u32::from_le_bytes(original[cursor..cursor + 4].try_into().unwrap()) as usize;
+        cursor += 12 + length;
+    }
+    // Interior payload, declared length (including a length hiding the suffix),
+    // header checksum, payload checksum, and a complete final payload.
+    for (offset, mask) in [
+        (first + 12 + first_length / 2, 1),
+        (first, 1),
+        (first + 2, 1),
+        (first + 4, 1),
+        (first + 8, 1),
+        (last + 12, 1),
+    ] {
+        let mut bytes = original.clone();
+        bytes[offset] ^= mask;
+        fs::write(dir.path().join(JOURNAL_FILE), &bytes).unwrap();
+        let error = FileJournal::open(dir.path()).unwrap_err();
+        assert!(
+            error.reason.contains("checksum mismatch"),
+            "{offset}: {error}"
+        );
+        assert_eq!(
+            log(&dir),
+            bytes,
+            "corruption must not truncate the identity history"
+        );
+    }
+    let mut oversized = original.clone();
+    let length = (orange_packages::MAX_JOURNAL_RECORD_BYTES + 1).to_le_bytes();
+    oversized[first..first + 4].copy_from_slice(&length);
+    oversized[first + 4..first + 8].copy_from_slice(&crc32(&length).to_le_bytes());
+    fs::write(dir.path().join(JOURNAL_FILE), &oversized).unwrap();
+    assert_eq!(
+        FileJournal::open(dir.path()).unwrap_err().reason,
+        "journal record exceeds the size limit"
+    );
+    assert_eq!(log(&dir), oversized);
+    fs::write(dir.path().join(JOURNAL_FILE), &original).unwrap();
+    assert_eq!(recover(dir.path()).0, expected);
 }
 
 #[test]

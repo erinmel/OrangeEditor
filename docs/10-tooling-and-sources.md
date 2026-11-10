@@ -4843,3 +4843,41 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
 - Limits: Watch, live preview, workspace variables and package-implemented `eq` remain
   open. Writes during Draining or cancellation never notify. No timing or memory probe
   ran.
+
+### Package integrity and journal review corrections — 2026-11-09
+
+- Scope: review F1/F6, FR-34/36/37/38, NFR-08/09/13; ADR-03/07/21.
+  `VerifiedArchive::verify_file` authenticates size/SHA-256 before guest loading;
+  reused memory staging replaces all prior paths. Journal encoding2 protects its
+  frame length separately from its payload and refuses complete corruption without
+  truncation. It replaces unreleased1; no historical reader, archive/WIT/provider
+  lock change or external dependency is introduced.
+- Environment: Windows x86_64 MSVC, rustc1.99.1 (58cf8f9c3 2026-10-13),
+  cargo1.99.1 (5f94df478 2026-08-27), toolchain1.99.1; unchanged Cargo.lock SHA-256
+  `E2AB8E6108BAEBC40B8D59D3E5D0807D8B0C9AA525F573551E0FC9E29D01B14E`.
+  Wasmtime48.0.8 runtime/cranelift/component-model/std, test-only wat.
+- PASS: `cargo test -p orange-packages -p orange-guest --locked`; complete
+  `cargo test --workspace --all-features --locked`: **1,638 passed,0 failed,15
+  optional measurements ignored**. `cargo clippy --workspace --all-targets
+  --all-features --locked -- -D warnings`; `RUSTDOCFLAGS=-D warnings cargo doc
+  --workspace --no-deps --all-features --locked`; `cargo fmt --all --check`;
+  `git diff --check`; metadata policy and19 fixtures; `node --test tools/*.test.mjs`
+  (17 tests).
+- Regressions require mismatched/short payload refusal before compilation, correct
+  sink replacement and failure cleanup, preservation of logs with corrupt interior
+  payloads, corrupt length/header/payload checksums and corrupt complete final
+  records. Existing cuts through every frame header/payload still recover a complete
+  checkpoint prefix, and compaction retains revocations.
+- The first restricted-access run hit the existing Windows replace-journal
+  PermissionDenied; focused and full suites passed with normal Windows file access.
+  OneDrive fell back from incremental hard links to copies; no code lint/doc warning.
+  Physical power-loss/filesystem qualification and the other review corrections
+  remain separate work. Final-head hosted validation is required before merge.
+
+- Hosted evidence on package correction heada214288: all nine jobs plus `rust`
+  passed in unchanged workflow-dispatch run42745031279, including Windows/Linux/
+  macOS, MSRV1.97.1, optimized behavior and a freshly rebuilt Rust guest. Earlier
+  PR run42670897012/retries encountered GitHub internal-server/abandoned-job states.
+  The protected branch still requires a successful PR-triggered run; manual success
+  did not authorize merging and no protection was bypassed. This evidence update
+  triggers fresh PR validation with unchanged product code.

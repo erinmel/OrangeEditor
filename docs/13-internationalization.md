@@ -317,3 +317,9 @@ static fallbacks and no arguments. The handle's Debug exposes only its local
 cancelled flag, never values, package text, grants or callbacks. Engine clocks,
 instance ownership and cancellation do not depend on locale. No catalogue or WIT
 change is required.
+
+Package integrity correction (2026-11-09): `packages/archive-file-mismatch` reports
+supplied bytes that differ from their verified entry. Paths remain `Rejected` text;
+the host owns authorized display. Loader `GuestLoadError::Integrity` is a static,
+redacted classification. Journal checksum/size refusals contain no payload, path or
+digest contents and use the existing transaction journal presentation contract.

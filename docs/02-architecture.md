@@ -43,7 +43,7 @@ flowchart TD
 
 Implemented native prerequisite (N1a): `orange-bundled` depends on `orange-model` and publishes ordinary `org.orange.math` definition/provider metadata plus resolved scalar kernels. Resolution checks exact provider/build digest, definition/config version and specialization before execution. A resolved kernel retains its immutable registry snapshot and performs scalar dispatch without parsing or registry lookup. This is not the final compiler/runtime kernel ABI, package loader or service layer; the full crate graph above remains the target architecture.
 
-Implemented package prerequisite (2026-11-03): `orange-packages` depends on `orange-model` only. It validates format 1 manifests and publishes install, update, removal, revocation and rollback as immutable registry generations, journaled through a host-supplied seam. It performs no I/O and loads no code; archives, grants, component instances, `orange-contracts` and non-node slots remain later work.
+Implemented package storage (updated 2026-11-09): `orange-packages` depends on `orange-model` and validates manifests/archives and registry transactions. Its `Journal` seam is inert; explicit `DirectorySink` and `FileJournal` adapters perform filesystem staging and persistence. Independently stored executable bytes must match their verified entry before loading. Journal format 2 protects frame lengths and payloads; complete corruption is refused without truncating identity history. Package code loading belongs to `orange-guest`; manifest grants, executable draining, `orange-contracts` and non-node slots remain later work.
 
 ## Foundation application and general capabilities
 

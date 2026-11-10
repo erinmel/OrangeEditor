@@ -75,6 +75,31 @@ fn archive(mut manifest: Json) -> (VerifiedArchive, MemorySink) {
     (verified, sink)
 }
 
+#[test]
+fn loading_authenticates_the_component_bytes_before_compilation() {
+    let engine = GuestEngine::new(GuestLimits::default()).unwrap();
+    let (verified, _) = archive(manifest("orange:expansion/plugin@1.0.0"));
+    // A second valid archive carrying a different, valid empty component.
+    let component = b"\0asm\x0d\x00\x01\x00";
+    let files =
+        ArchiveFiles::new(vec![("component.wasm".parse().unwrap(), &component[..])]).unwrap();
+    let mut metadata = manifest("orange:expansion/plugin@1.0.0");
+    let digest = files
+        .content_digest(&serde_json::to_vec(&metadata).unwrap())
+        .unwrap();
+    metadata["integrity"]["content_digest"] = json!(digest.strip_prefix("sha256:").unwrap());
+    let bytes = files.encode(&serde_json::to_vec(&metadata).unwrap());
+    let mut wrong = MemorySink::new();
+    let other = read_archive(&bytes[..], &ArchiveLimits::default(), &mut wrong).unwrap();
+    assert_ne!(verified.content_digest(), other.content_digest());
+    assert_eq!(
+        GuestPackage::from_archive(&engine, &verified, &wrong, "guest", Grants::default())
+            .unwrap_err(),
+        GuestLoadError::Integrity
+    );
+    GuestPackage::from_archive(&engine, &other, &wrong, "guest", Grants::default()).unwrap();
+}
+
 fn definition(id: &str, inputs: &[&str]) -> NodeDefinition {
     let mut ports: Vec<Json> = inputs
         .iter()
