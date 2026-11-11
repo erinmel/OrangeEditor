@@ -864,6 +864,17 @@ C05 refuses this external profile. Contracts/limits/verification are in03/10/12.
 
 **Graph resources (C08a/C08b, 2026-11-07).** A run owns registered handle-kind resources through a generation-checked table. Direct `core/handle@1<K>` values are admitted on trusted effect ports, Action/Async function interfaces and `core/close-handle@1`; a handle-valued effect must have exactly one data result. Async acquisition through `complete_effect_resource` belongs to the executing dynamic region, while `resource_value` on an existing host resource preserves its run owner. Descendants borrow ancestor handles; sibling resources are unavailable. Successful Return transfers returned callee-owned handles to the caller; unreturned resources close on scope retirement. Cancellation retains acquired objects through connected bounded cleanup, then closes them once. The generic Close Handle Action has one required `handle` input, no data outputs/config, ordinary `then`/`failed`, never suspends and is cleanup-safe; authentic already-closed aliases close idempotently. Host revocation invalidates aliases and pending dependent completions. Consumption and publication authenticate issuer, run, generation, exact kind and owner ancestry; a stale reference faults `core/StaleHandle`, wrong owner `core/ResourceOwner`, other invalid references `core/InvalidHandle`. The bounded executable profile excludes resource containers, variables/registers/events, pure handle kernels, serialization and graph streams. [03](03-data-and-execution.md#graph-resource-ownership-c08b-2026-11-07) defines host admission, quotas and cleanup; verification is in 10.
 
+**Package entries (2026-11-10; FR-61).** A package or service may define an entry
+node: a definition of kind `entry` with the implicit `then` outcome and at most one
+data output, named `payload`, of a concrete non-handle, non-stream type. It is valid at
+the root only, carries an activation policy like every entry, and must be bound to an
+exact provider that offers it. The run treats it exactly as `core/on-manual`: the host
+fires it by node with a payload of the declared type, and admission, reentrancy,
+overflow and `while_paused` are the entry's own policy. What fires it is outside the
+graph and outside this document: the provider's source (02). Any other port on a
+package entry is `UnsupportedPort`; an entry inside a function or without a provider is
+`UnsupportedNode`.
+
 ### 10.3 Envelope and causal depth
 
 An event envelope carries run-assigned `ingestion_seq`, an `EventDeclId`, tagged origin, per-source `source_seq`, optional cause activation, `cause_depth`, monotonic time, optional wall time, payload and nominal payload charge. Graph Emit origin carries its source node and static scope, with `cause: Some(activation)`; host origin carries a registered `HostSourceId` and has no fabricated graph node/scope or cause (`cause: None`). Envelopes accepted from host sources have depth zero, use `Run::now()` for monotonic time, and use wall time only when the host explicitly supplies it. Runtime does not read an OS clock. Emit, variable change and Watch envelopes derive their depth from the executing strand's depth plus one; creating an envelope does not itself advance that strand's lineage. Above `max_cause_depth` (run setting; proposed 64; NFR-02 tuning), an Emit fails with `core/RunawayEventChain`, and a notification or Watch is suppressed with a counter and diagnostic. Perpetual behaviour belongs in a timer or a control cycle through Wait, not in an unbounded event chain.
@@ -1159,8 +1170,8 @@ undo. Pasted nodes bring the connections they reference under the same ID, added
 where the target lacks it, because a connection's identity is what makes it shared.
 
 Not specified yet: a connection as a parameter of a graph function, so a
-graph-implemented package node cannot use one; adapter compatibility in validation; and
-nodes that receive from a connection, which need package entries.
+graph-implemented package node cannot use one; and adapter compatibility in validation.
+A node that receives from a connection is a package entry (§10.2).
 
 ## 17. Diagnostics catalog
 

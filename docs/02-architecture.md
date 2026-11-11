@@ -27,11 +27,19 @@ settings, owned by that flow; a shared one from settings given to
 worker thread with its inputs, its session and the effect lease, and its result or
 fault returns through the flow's mailbox, so no service code runs on a flow thread. A
 connection the host cannot provide refuses the document before anything runs.
+A service package also contributes entry nodes with a `ServiceSource` each. When a
+flow opens, the host starts the source of every package entry in the document, giving
+it the entry's session and an `Emitter` bound to that node and flow. `Emitter::emit`
+is a bounded, non-blocking send to the flow's mailbox (`Busy` when full, `Closed` once
+the flow has ended); the entry's activation policy then decides what a busy or paused
+flow does with it. The source returns a guard that the host drops when the flow is
+closed. An entry no service provides refuses the document. `FlowInfo::manual_entries`
+lists only `core/on-manual` entries, since package entries are not for a user to fire.
 `orange-net` is the first service package and the only crate with a network client.
 Package nodes implemented as graphs are linked into an in-memory copy of the document
 as function calls when it is checked or opened (04). Not
 yet in the host: editing a document that is running, shared workspaces between flows,
-persistent package storage, connections that receive, and pausing or closing sessions with their flow.
+persistent package storage, and pausing or closing sessions with their flow.
 
 Kernel interface crate (2026-11-10; ADR-03/21): `orange-kernel` holds what a native
 node implementation is written against: `PureKernel`, `EntropyKernel`, `ActionKernel`,
@@ -121,7 +129,7 @@ The host owns an input-trigger service and audio capture/playback services. Keyb
 | orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
 | orange-host | Session API: package installation, flows (one run per thread), effect workers, bounded observation | UI, windows, rendering; graph semantics |
 | orange-cli | `orange` terminal front end over `orange-host` and the service packages it builds in | Any direct use of compiler, runtime or packages |
-| orange-net | Base network service package: HTTP adapter and request node over a blocking client | Graph semantics; anything the host's service interface does not expose |
+| orange-net | Base network service package: HTTP and WebSocket adapters, request and send nodes, and the message entry | Graph semantics; anything the host's service interface does not expose |
 | orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c); guest action kernels and async effect implementations with binary bulk values (2026-11-10) | Core-crate dependency, precompiled native loading, ungranted imports |
 | orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Specialized integration request logic |
 | orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |

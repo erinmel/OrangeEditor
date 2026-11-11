@@ -1,5 +1,32 @@
 # Tooling, environment and research register
 
+## Package entries and WebSocket — 2026-11-10
+
+Same branch and toolchain as the entries below. New pinned dependency: `tungstenite`
+=0.30.0, `default-features = false`, features `handshake` and
+`rustls-tls-webpki-roots`; version from `cargo search`, usage checked against the
+v0.30.0 README (`connect`, `accept`, `read`, `send`) and by compilation. Lockfile
+additions read from `cargo metadata`: tungstenite 0.30.0 and sha1 0.11.0 (MIT OR
+Apache-2.0), data-encoding 2.11.1 (MIT), webpki-roots 0.26.11 (CDLA-Permissive-2.0);
+highest declared MSRV 1.85.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,712 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`; `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: Windows only; `cargo-deny`, `--all-features` and MSRV 1.97.1 not run locally.
+WebSocket is tested against an in-process loopback server over `ws://` only; `wss://`
+compiles against the same rustls stack but no TLS WebSocket was contacted. Not tested:
+a server that drops an established socket, the 256-message bound, a full flow mailbox,
+binary frames, large messages, or many listeners. Package entries have no compiler
+test of their own: they are exercised only through the WebSocket message entry, and
+the refusals (extra ports, an entry in a function, a missing provider or source) are
+untested. Timing was not measured; an idle socket adds up to 10 ms before a queued
+message is written.
+
 ## HTTPS in the network package — 2026-11-10
 
 `ureq` =3.5.1 now builds with `default-features = false, features = ["rustls"]`, which

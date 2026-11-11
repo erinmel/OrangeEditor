@@ -34,9 +34,24 @@ takes the node's `failed` route with an `org.orange.net/*` code. `http://` and
 `https://` endpoints work. TLS is rustls with the ring provider; certificates and host
 names are verified against the bundled Mozilla roots (`webpki-roots`), not the system
 trust store, and verification cannot be turned off. Pinned CAs, mTLS and system trust
-are not implemented. Nothing else in this section is
+are not implemented.
+
+WebSocket (2026-11-10): adapter `org.orange.net/websocket`, setting `url` (`ws://` or
+`wss://`, same TLS stack). A session is one socket with its own I/O thread, started
+when the connection is opened; it connects in the background and reconnects with
+backoff from 250 ms to 5 s. `org.orange.net/ws-send` queues one text message (input
+`text`) and completes at once: `then` means queued, not delivered. Up to 256 messages
+wait while the socket is down or busy and are written in order when it is up; beyond
+that the node fails with `org.orange.net/Busy`. The entry `org.orange.net/ws-message`
+fires once per received text message with the text as `payload`, for every diagram
+listening on that session, so diagrams sharing a connection share one socket and all
+hear each message. A diagram whose mailbox is full misses that message. Binary
+messages are ignored; ping/pong is answered by the library. Not implemented: binary
+payloads, subprotocols and headers, connection-state events (opened, closed, failed),
+per-message acknowledgement, and messages that arrived before a diagram started
+listening. Nothing else in this section is
 implemented: no credentials or vault, profiles and revisions, leases, pooling policy,
-retries, redirects policy, proxy or DNS rules, Test Connection, or WebSocket. The text
+retries, redirects policy, proxy or DNS rules, or Test Connection. The text
 below remains a proposal.
 
 Profiles store versioned adapter ID/schema, endpoint, typed options, TLS/auth policy, credential references and retry/deadline policy. App scope is per-user storage; workspace scope is separately authorized and can shadow an app display name but never its stable ID. Exports omit credentials, auth headers and secret-bearing query/options, preserving remappable placeholders; opaque extension options declare sensitivity. Import does not activate sessions or grant network authority.
