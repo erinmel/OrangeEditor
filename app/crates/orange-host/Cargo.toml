@@ -1,0 +1,24 @@
+[package]
+name = "orange-host"
+description = "OrangeEditor session host: packages, concurrent graph runs and effect workers behind one API"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orange-bundled = { path = "../orange-bundled", version = "=0.0.0" }
+orange-compiler = { path = "../orange-compiler", version = "=0.0.0" }
+orange-guest = { path = "../orange-guest", version = "=0.0.0" }
+orange-kernel = { path = "../orange-kernel", version = "=0.0.0" }
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+orange-packages = { path = "../orange-packages", version = "=0.0.0" }
+orange-runtime = { path = "../orange-runtime", version = "=0.0.0" }
+sha2.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true
+
+[lints]
+workspace = true

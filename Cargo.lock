@@ -749,6 +749,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "orange-cli"
+version = "0.0.0"
+dependencies = [
+ "orange-host",
+]
+
+[[package]]
 name = "orange-compiler"
 version = "0.0.0"
 dependencies = [
@@ -771,6 +778,22 @@ dependencies = [
  "serde_json",
  "thiserror",
  "wasmtime",
+]
+
+[[package]]
+name = "orange-host"
+version = "0.0.0"
+dependencies = [
+ "orange-bundled",
+ "orange-compiler",
+ "orange-guest",
+ "orange-kernel",
+ "orange-model",
+ "orange-packages",
+ "orange-runtime",
+ "serde_json",
+ "sha2 0.11.1",
+ "thiserror",
 ]
 
 [[package]]

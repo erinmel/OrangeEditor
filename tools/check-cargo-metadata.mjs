@@ -19,6 +19,10 @@ const policy = {
   // Host-side Wasm component execution (ADR-03); graph core never depends on it.
   // Tests compose guest kernels with the bundled resolver and run guest effects in a run.
   'orange-guest': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-packages'], dev: ['orange-bundled', 'orange-compiler', 'orange-runtime']},
+  // Session host: composes every layer into running flows. Front ends depend on it alone.
+  'orange-host': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-compiler', 'orange-runtime', 'orange-bundled', 'orange-packages', 'orange-guest']},
+  // Terminal front end; reaches the product only through the host.
+  'orange-cli': {core: false, normal: ['orange-host']},
 };
 // UI, window, renderer and engine frameworks that graph-core crates must never depend on
 // (ADR-01, ADR-02, ADR-21). Host applications may use them.
