@@ -1,17 +1,21 @@
-//! The base network package: HTTP connections and a request node.
+//! The base network package: HTTP and WebSocket connections and the nodes that use them.
 //!
 //! It is an ordinary [`ServicePackage`]: an application adds [`package`] to its host and
-//! documents can then declare `org.orange.net/http` connections and use
-//! `org.orange.net/http-request`. Nothing here is special to the host; another crate can
+//! documents can then declare `org.orange.net/http` and `org.orange.net/websocket`
+//! connections and use the request, send and message nodes. Nothing here is special to the host; another crate can
 //! provide a better HTTP node, or a different protocol, the same way.
 //!
-//! `http://` and `https://` endpoints are supported. TLS is rustls with the ring
+//! `http://`, `https://`, `ws://` and `wss://` endpoints are supported. TLS is rustls with the ring
 //! provider; server certificates are verified against the bundled Mozilla roots
 //! (`webpki-roots`), not the operating system's store, and there is no way to disable
 //! verification.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
+
+mod ws;
+
+pub use ws::MAX_QUEUED_MESSAGES;
 
 use orange_host::{
     Call, ConnectionAdapter, FaultText, KernelFault, ServiceNode, ServicePackage, Session, Value,
@@ -32,11 +36,24 @@ pub const HTTP_ADAPTER: &str = "org.orange.net/http";
 /// `status` and `response`. Any HTTP status is a result, not a failure.
 pub const HTTP_REQUEST: &str = "org.orange.net/http-request";
 
+/// Adapter kind of a WebSocket connection. Setting: `url` (required, `ws://…` or
+/// `wss://…`). The session connects in the background and reconnects with backoff.
+pub const WS_ADAPTER: &str = "org.orange.net/websocket";
+/// Queues one text message on a WebSocket connection. Input `text`.
+pub const WS_SEND: &str = "org.orange.net/ws-send";
+/// Entry fired once per text message received on a WebSocket connection, with the
+/// text as `payload`.
+pub const WS_MESSAGE: &str = "org.orange.net/ws-message";
+
 /// Largest response body a request node returns.
 pub const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 
-const fn fault(code: &'static str, key: &'static str, message: &'static str) -> KernelFault {
+pub(crate) const fn fault(
+    code: &'static str,
+    key: &'static str,
+    message: &'static str,
+) -> KernelFault {
     KernelFault {
         code: FaultText::Static(code),
         message_key: FaultText::Static(key),
@@ -162,7 +179,10 @@ const HTTP_REQUEST_DEFINITION: &str = r#"{
 pub fn package() -> ServicePackage {
     let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
         .adapter(HTTP_ADAPTER, HttpAdapter)
-        .node(HTTP_REQUEST_DEFINITION, HttpRequest);
+        .adapter(WS_ADAPTER, ws::WsAdapter)
+        .node(HTTP_REQUEST_DEFINITION, HttpRequest)
+        .and_then(|package| package.node(ws::WS_SEND_DEFINITION, ws::WsSend))
+        .and_then(|package| package.source(ws::WS_MESSAGE_DEFINITION, ws::WsMessage));
     match package {
         Ok(package) => package,
         // The definition is a constant of this crate, checked by its tests.
