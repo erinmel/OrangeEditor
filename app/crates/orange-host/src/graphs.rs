@@ -35,6 +35,20 @@ pub(crate) struct GraphNode {
     /// The stand-in connection ID the body's nodes name, when the node uses a
     /// connection. Each use of the node replaces it with the connection it names.
     connection: Option<String>,
+    /// Set for an entry node, which is a fragment of root nodes and has no function.
+    trigger: Option<Trigger>,
+}
+
+/// The body of an entry node made as a graph: root nodes that start at some other
+/// entry and end by emitting `event`, whose payload is the node's `payload` output.
+#[derive(Debug)]
+struct Trigger {
+    nodes: Vec<Json>,
+    edges: Vec<Json>,
+    /// Stand-in ID of the event the fragment emits. Each use gets its own event.
+    event: String,
+    /// Type of the node's `payload` output.
+    payload: Json,
 }
 
 fn data_ports<'a>(ports: impl Iterator<Item = &'a Json>) -> BTreeSet<(String, String, String)> {
@@ -63,6 +77,42 @@ impl GraphNode {
         if file["format"] != GRAPH_NODE_FORMAT || file["format_version"] != 1 {
             return Err(format!("expected format `{GRAPH_NODE_FORMAT}` version 1"));
         }
+        let list = |value: &Json| value.as_array().cloned().unwrap_or_default();
+        let connection = match file.get("connection") {
+            None => None,
+            Some(id) => Some(id.as_str().ok_or("`connection` must be an ID")?.to_owned()),
+        };
+        if connection.is_some() != (definition["connection"] == true) {
+            return Err("the graph and the node definition disagree on using a connection".into());
+        }
+        if definition["kind"] == "entry" {
+            let trigger = file
+                .get("trigger")
+                .filter(|trigger| trigger.is_object())
+                .ok_or("an entry node needs a `trigger`")?;
+            let payload = list(&definition["ports"])
+                .into_iter()
+                .find(|port| port["port_id"] == "payload" && port["direction"] == "output")
+                .map(|port| port["type"].clone())
+                .filter(Json::is_string)
+                .ok_or("an entry node made as a graph needs a `payload` output")?;
+            return Ok(Self {
+                function: Json::Null,
+                variables: Vec::new(),
+                signatures: file["signatures"].as_object().cloned().unwrap_or_default(),
+                package_lock: list(&file["package_lock"]),
+                connection,
+                trigger: Some(Trigger {
+                    nodes: list(&trigger["nodes"]),
+                    edges: list(&trigger["edges"]),
+                    event: trigger["event"]
+                        .as_str()
+                        .ok_or("the trigger names no `event`")?
+                        .to_owned(),
+                    payload,
+                }),
+            });
+        }
         let function = file
             .get("function")
             .filter(|function| function.is_object())
@@ -74,7 +124,6 @@ impl GraphNode {
         if function["kind"] != definition["kind"] {
             return Err("the function's kind differs from the node definition".into());
         }
-        let list = |value: &Json| value.as_array().cloned().unwrap_or_default();
         let (inputs, outputs) = (list(&function["inputs"]), list(&function["outputs"]));
         let declared = list(&definition["ports"]);
         if data_ports(inputs.iter().chain(&outputs)) != data_ports(declared.iter()) {
@@ -87,19 +136,13 @@ impl GraphNode {
         {
             return Err("a graph node may declare local variables only".into());
         }
-        let connection = match file.get("connection") {
-            None => None,
-            Some(id) => Some(id.as_str().ok_or("`connection` must be an ID")?.to_owned()),
-        };
-        if connection.is_some() != (definition["connection"] == true) {
-            return Err("the graph and the node definition disagree on using a connection".into());
-        }
         Ok(Self {
             function,
             variables,
             signatures: file["signatures"].as_object().cloned().unwrap_or_default(),
             package_lock: list(&file["package_lock"]),
             connection,
+            trigger: None,
         })
     }
 }
@@ -178,14 +221,84 @@ fn retarget(node: &mut Map<String, Json>, function: &Json) {
     let _ = node.remove("signature");
 }
 
-fn retarget_all(nodes: Option<&mut Json>, graphs: &Graphs, used: &mut Vec<(Arc<GraphNode>, Json)>) {
+/// What linking one node adds to the document.
+enum Linked {
+    Function(Json),
+    /// Root nodes and edges, and the event they emit.
+    Fragment(Vec<Json>, Vec<Json>, Json),
+}
+
+/// The fragment of one use of an entry node: its own node, edge and event IDs, derived
+/// from the using node, and the connection that node names.
+fn fragment_for(
+    graph: &GraphNode,
+    trigger: &Trigger,
+    user: &str,
+    connection: Option<&str>,
+) -> Linked {
+    let rename = |value: &mut Json| {
+        if let Some(id) = value.as_str() {
+            *value = json!(derived(id, user));
+        }
+    };
+    let event = derived(&trigger.event, user);
+    let mut nodes = trigger.nodes.clone();
+    for node in &mut nodes {
+        rename(&mut node["id"]);
+        if node["config"]["event"] == trigger.event.as_str() {
+            node["config"]["event"] = json!(event);
+        }
+        if let (Some(stand_in), Some(actual)) = (graph.connection.as_deref(), connection)
+            && node["config"]["connection"] == stand_in
+        {
+            node["config"]["connection"] = json!(actual);
+        }
+    }
+    let mut edges = trigger.edges.clone();
+    for edge in &mut edges {
+        rename(&mut edge["id"]);
+        rename(&mut edge["from"]["node"]);
+        rename(&mut edge["to"]["node"]);
+    }
+    let declaration = json!({"id": event, "name": format!("trigger-{event}"),
+        "payload": trigger.payload, "scope": "run"});
+    Linked::Fragment(nodes, edges, declaration)
+}
+
+fn retarget_all(
+    nodes: Option<&mut Json>,
+    graphs: &Graphs,
+    root: bool,
+    used: &mut Vec<(Arc<GraphNode>, Linked)>,
+) {
     for node in nodes.and_then(Json::as_array_mut).into_iter().flatten() {
         if let Some(graph) = graph_of(node, graphs) {
             let connection = node["config"]["connection"].as_str().map(str::to_owned);
+            if let Some(trigger) = &graph.trigger {
+                // An entry exists at the root only; elsewhere the node stays as it is
+                // and validation refuses it.
+                let user = node["id"].as_str().map(str::to_owned);
+                let (true, Some(user), Some(fields)) = (root, user, node.as_object_mut()) else {
+                    continue;
+                };
+                let linked = fragment_for(&graph, trigger, &user, connection.as_deref());
+                if let Linked::Fragment(_, _, event) = &linked {
+                    // The node becomes the handler of the fragment's event: the same
+                    // `then` outcome and `payload` output, so its edges stay.
+                    let _ = fields.insert("definition_id".into(), json!("core/on-event"));
+                    let _ = fields.insert("definition_version".into(), json!(1));
+                    let _ = fields.insert("config_version".into(), json!(1));
+                    let _ = fields.insert("config".into(), json!({"event": event["id"]}));
+                    let _ = fields.remove("provider");
+                    let _ = fields.remove("signature");
+                }
+                used.push((graph, linked));
+                continue;
+            }
             let function = function_for(&graph, connection.as_deref());
             if let Some(fields) = node.as_object_mut() {
                 retarget(fields, &function);
-                used.push((graph, function));
+                used.push((graph, Linked::Function(function)));
             }
         }
     }
@@ -237,16 +350,25 @@ pub(crate) fn link(document: &mut Json, graphs: &Graphs) {
     // Each pass rewrites at least one node and a function is added once, so this ends.
     loop {
         let mut used = Vec::new();
-        retarget_all(root.get_mut("nodes"), graphs, &mut used);
+        retarget_all(root.get_mut("nodes"), graphs, true, &mut used);
         let functions = root.get_mut("functions").and_then(Json::as_array_mut);
         for function in functions.into_iter().flatten() {
-            retarget_all(function.get_mut("nodes"), graphs, &mut used);
+            retarget_all(function.get_mut("nodes"), graphs, false, &mut used);
         }
         if used.is_empty() {
             return;
         }
-        for (graph, function) in used {
-            add_missing(root, "functions", std::slice::from_ref(&function));
+        for (graph, linked) in used {
+            match linked {
+                Linked::Function(function) => {
+                    add_missing(root, "functions", std::slice::from_ref(&function));
+                }
+                Linked::Fragment(nodes, edges, event) => {
+                    add_missing(root, "nodes", &nodes);
+                    add_missing(root, "edges", &edges);
+                    add_missing(root, "events", std::slice::from_ref(&event));
+                }
+            }
             add_support(root, &graph);
         }
     }
@@ -258,7 +380,15 @@ pub(crate) fn scratch(empty_document: &str, graphs: &[Arc<GraphNode>]) -> Option
     let mut document: Json = serde_json::from_str(empty_document).ok()?;
     let root = document.as_object_mut()?;
     for graph in graphs {
-        add_missing(root, "functions", std::slice::from_ref(&graph.function));
+        if let Some(trigger) = &graph.trigger {
+            add_missing(root, "nodes", &trigger.nodes);
+            add_missing(root, "edges", &trigger.edges);
+            let event = json!({"id": trigger.event, "name": "trigger",
+                "payload": trigger.payload, "scope": "run"});
+            add_missing(root, "events", std::slice::from_ref(&event));
+        } else {
+            add_missing(root, "functions", std::slice::from_ref(&graph.function));
+        }
         add_support(root, graph);
         if let Some(stand_in) = &graph.connection {
             let declaration = json!({"id": stand_in, "name": "connection",

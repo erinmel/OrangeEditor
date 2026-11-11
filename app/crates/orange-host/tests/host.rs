@@ -663,3 +663,129 @@ fn the_base_nodes_can_be_left_out() {
         read_total(&host, flow) == Some(Value::I64(7))
     });
 }
+
+const ON_POKE: &str = "org.example.triggers/on-poke";
+
+/// A package with no code whose one node is a trigger: its fragment starts at a manual
+/// entry and emits what it received.
+fn trigger_package(with_event: bool) -> Result<Vec<u8>, HostError> {
+    let manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": "org.example.triggers", "version": "1.0.0", "publisher": "org.example",
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+        "dependencies": [],
+        "contributions": {
+            "nodes": [ON_POKE],
+            "providers": [{"slot": format!("node:{ON_POKE}@1"), "id": orange_host::GRAPH_PROVIDER}]
+        },
+        "permissions": [],
+        "license": "MIT"
+    });
+    let definition = json!({"definition_id": ON_POKE, "definition_version": 1,
+        "config_version": 1, "kind": "entry", "determinism": "external",
+        "ports": [{"port_id": "payload", "direction": "output", "kind": "data", "type": I64,
+            "source": "payload"}]});
+    let mut inner = core(301, "on-manual");
+    inner["config"] = json!({"payload": I64});
+    let mut emit = core(302, "emit");
+    emit["config"] = json!({"event": if with_event { id(310) } else { id(311) }});
+    let graph = json!({
+        "format": orange_host::GRAPH_NODE_FORMAT, "format_version": 1,
+        "trigger": {
+            "event": id(310),
+            "nodes": [inner, emit],
+            "edges": [
+                edge(301, 301, "then", 302, "in"),
+                edge(302, 301, "payload", 302, "payload"),
+            ]
+        }
+    });
+    orange_host::pack(
+        manifest.to_string().as_bytes(),
+        &[
+            (
+                "nodes/on-poke.json".into(),
+                definition.to_string().into_bytes(),
+            ),
+            ("graphs/on-poke.json".into(), graph.to_string().into_bytes()),
+        ],
+    )
+}
+
+#[test]
+fn a_trigger_made_as_a_graph_starts_the_documents_own_nodes() {
+    // A fragment that emits an event it does not own is refused.
+    let (mut strict, _events) = Host::new(HostOptions::default()).unwrap();
+    assert!(
+        strict
+            .install(&trigger_package(false).unwrap(), Grants::default())
+            .is_err()
+    );
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let _ = host
+        .install(&trigger_package(true).unwrap(), Grants::default())
+        .unwrap();
+
+    // Two uses of the trigger, each writing its own variable.
+    let mut document = empty(1);
+    for n in [1, 3] {
+        let poke = NewNode::new(
+            node(n),
+            DefinitionRef {
+                id: ON_POKE.parse().unwrap(),
+                version: 1,
+            },
+        );
+        let edit = new_node_edit(&document, host.registry(), poke).unwrap();
+        let _ = document.apply(edit.commands).unwrap();
+    }
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    for entry in saved["nodes"].as_array_mut().unwrap() {
+        entry["activation"] = core(0, "on-manual")["activation"].clone();
+    }
+    let mut first = core(2, "set-variable");
+    first["config"] = json!({"variable": id(TOTAL)});
+    let mut second = core(4, "set-variable");
+    second["config"] = json!({"variable": id(TOTAL + 1)});
+    saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([first, second]);
+    saved["edges"] = json!([
+        edge(1, 1, "then", 2, "in"),
+        edge(2, 1, "payload", 2, "value"),
+        edge(3, 3, "then", 4, "in"),
+        edge(4, 3, "payload", 4, "value"),
+    ]);
+    saved["variables"] = json!([
+        {"id": id(TOTAL), "name": "total", "type": I64, "scope": "run"},
+        {"id": id(TOTAL + 1), "name": "other", "type": I64, "scope": "run"}
+    ]);
+    let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
+    assert!(!text.contains("core/emit"));
+    let diagnostics = host.check(&text).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let flow = host.open(&text).unwrap();
+    // Each use has its own inner entry; firing them reaches only that use's nodes.
+    let inner = host.info(flow).unwrap().manual_entries.clone();
+    assert_eq!(inner.len(), 2);
+    host.trigger(flow, inner[0].0, Some(Value::I64(5))).unwrap();
+    host.trigger(flow, inner[1].0, Some(Value::I64(6))).unwrap();
+    let other: VariableId = id(TOTAL + 1).parse().unwrap();
+    until("both uses", || {
+        read_total(&host, flow).is_some()
+            && host
+                .inspect(flow, move |run| run.variable(other).cloned())
+                .unwrap()
+                .is_some()
+    });
+    let mut seen = vec![
+        read_total(&host, flow).unwrap(),
+        host.inspect(flow, move |run| run.variable(other).cloned())
+            .unwrap()
+            .unwrap(),
+    ];
+    seen.sort_by_key(|value| format!("{value:?}"));
+    assert_eq!(seen, [Value::I64(5), Value::I64(6)]);
+}
