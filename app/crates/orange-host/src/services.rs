@@ -1,174 +1,13 @@
-//! Trusted native services: nodes the host process implements itself, and the
-//! connections they use.
-//!
-//! This is the tier for work that needs the operating system: sockets, files, devices.
-//! A [`ServicePackage`] is compiled into the application, not installed, and its nodes
-//! are asynchronous: a run issues a request and a worker thread performs it, so no
-//! service code runs on a flow's own thread.
-//!
-//! A connection is declared in a document or shared through the host. An adapter turns
-//! its settings into a [`Session`]; nodes that declare they use a connection receive the
-//! session the node's `connection` config field names.
-use orange_kernel::{BindingRequest, EffectBinding, KernelFault, ResolveError};
-use orange_model::Value;
-use orange_model::catalog::{NodeDefinition, ProviderKey};
+//! How the host runs the native service packages an application builds in. The types a
+//! package implements are in `orange-sdk`.
+use orange_kernel::{BindingRequest, EffectBinding, ResolveError};
+use orange_model::catalog::ProviderKey;
 use orange_model::document::{DefinitionRef, NodeKind, PortDirection, PortKind};
-use orange_model::id::NodeId;
 use orange_model::id::{ConnectionId, PortKey};
-use orange_runtime::{EffectLease, HostInput, InboxError, RunInbox};
-use serde_json::{Map, Value as Json};
-use std::any::Any;
+use orange_sdk::{ServiceNode, ServicePackage, ServiceSource};
+use serde_json::Value as Json;
 use std::collections::BTreeMap;
 use std::sync::Arc;
-use std::thread::Thread;
-
-/// Provider ID of every node a service package implements.
-pub const SERVICE_PROVIDER: &str = "native";
-
-/// A live connection. The adapter that opened it defines what it holds; its nodes get
-/// it back through [`Session::as_any`]. Dropping the last reference closes it.
-pub trait Session: std::fmt::Debug + Send + Sync + 'static {
-    fn as_any(&self) -> &dyn Any;
-}
-
-/// Opens sessions of one adapter kind from declared settings.
-///
-/// `open` runs on the thread that opens a document and must not block on the network:
-/// an adapter that needs a handshake performs it on first use, from a worker.
-pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
-    fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String>;
-}
-
-/// One execution of a service node, on a worker thread.
-pub struct Call<'a> {
-    /// The node's data inputs in declared order.
-    pub inputs: &'a [Value],
-    /// The session of the connection the node names, when its definition uses one.
-    pub session: Option<&'a dyn Session>,
-    /// Cancelled when the run no longer wants the result; long work should poll it.
-    pub lease: &'a EffectLease,
-}
-impl std::fmt::Debug for Call<'_> {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("Call")
-            .field("inputs", &self.inputs.len())
-            .field("session", &self.session.is_some())
-            .finish_non_exhaustive()
-    }
-}
-
-/// The implementation of one asynchronous service node. It returns the node's data
-/// outputs in declared order, or a fault that takes the node's `failed` route.
-pub trait ServiceNode: Send + Sync + 'static {
-    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault>;
-}
-
-/// Why an [`Emitter`] did not deliver.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EmitError {
-    /// The flow's mailbox is full. The source decides whether to retry or drop.
-    Busy,
-    /// The flow has ended; the source should stop.
-    Closed,
-}
-
-/// Fires one entry node of one flow. Cloneable and usable from any thread; firing never
-/// blocks. What a paused or busy flow does with a firing is the entry's own policy.
-#[derive(Debug, Clone)]
-pub struct Emitter {
-    pub(crate) inbox: RunInbox,
-    pub(crate) node: NodeId,
-    pub(crate) flow: Thread,
-}
-impl Emitter {
-    /// Fires the entry with its payload, or `None` for an entry that declares none.
-    pub fn emit(&self, payload: Option<Value>) -> Result<(), EmitError> {
-        let wall_ns = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .ok()
-            .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok());
-        let input = HostInput::Trigger {
-            node: self.node,
-            payload,
-            wall_ns,
-        };
-        self.inbox.send(input).map_err(|error| match error {
-            InboxError::Full(_) => EmitError::Busy,
-            InboxError::Closed(_) => EmitError::Closed,
-        })?;
-        self.flow.unpark();
-        Ok(())
-    }
-}
-
-/// The implementation of one entry node: something outside the graph that fires it.
-///
-/// `start` is called once per entry node when its flow opens and must not block. It
-/// returns a guard; dropping the guard stops the source for that node.
-pub trait ServiceSource: Send + Sync + 'static {
-    fn start(
-        &self,
-        session: Option<Arc<dyn Session>>,
-        emitter: Emitter,
-    ) -> Result<Box<dyn Send>, String>;
-}
-
-/// A set of native nodes and connection adapters built into the application.
-pub struct ServicePackage {
-    pub(crate) id: String,
-    pub(crate) version: String,
-    pub(crate) nodes: Vec<(NodeDefinition, Arc<dyn ServiceNode>)>,
-    pub(crate) sources: Vec<(NodeDefinition, Arc<dyn ServiceSource>)>,
-    pub(crate) adapters: Vec<(String, Arc<dyn ConnectionAdapter>)>,
-}
-impl std::fmt::Debug for ServicePackage {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("ServicePackage")
-            .field("id", &self.id)
-            .field("version", &self.version)
-            .field("nodes", &self.nodes.len())
-            .field("adapters", &self.adapters.len())
-            .finish()
-    }
-}
-impl ServicePackage {
-    /// `id` is the package namespace its definitions and adapter kinds live in.
-    pub fn new(id: impl Into<String>, version: impl Into<String>) -> Self {
-        Self {
-            id: id.into(),
-            version: version.into(),
-            nodes: Vec::new(),
-            sources: Vec::new(),
-            adapters: Vec::new(),
-        }
-    }
-    /// Adds an asynchronous node from its definition file text.
-    pub fn node(
-        mut self,
-        definition: &str,
-        node: impl ServiceNode,
-    ) -> Result<Self, orange_model::catalog::DefinitionError> {
-        let definition = NodeDefinition::from_json(definition)?;
-        self.nodes.push((definition, Arc::new(node)));
-        Ok(self)
-    }
-    /// Adds an entry node from its definition file text. The definition's kind is
-    /// `entry`; it has a `then` outcome and at most one data output, `payload`.
-    pub fn source(
-        mut self,
-        definition: &str,
-        source: impl ServiceSource,
-    ) -> Result<Self, orange_model::catalog::DefinitionError> {
-        let definition = NodeDefinition::from_json(definition)?;
-        self.sources.push((definition, Arc::new(source)));
-        Ok(self)
-    }
-    /// Adds the adapter for connections whose `adapter` is `kind`.
-    pub fn adapter(mut self, kind: impl Into<String>, adapter: impl ConnectionAdapter) -> Self {
-        self.adapters.push((kind.into(), Arc::new(adapter)));
-        self
-    }
-}
 
 /// What a run's effect request carries for a service node.
 pub(crate) struct ServiceEffect {
@@ -191,14 +30,14 @@ impl std::fmt::Debug for Services {
 }
 impl Services {
     pub fn add(&mut self, provider: &ProviderKey, package: &ServicePackage) {
-        for (definition, node) in &package.nodes {
+        for (definition, node) in package.nodes() {
             let uses_connection = !definition.references.is_empty();
             let _ = self.nodes.insert(
                 (provider.clone(), definition.definition.clone()),
                 (Arc::clone(node), uses_connection),
             );
         }
-        for (definition, source) in &package.sources {
+        for (definition, source) in package.sources() {
             let uses_connection = !definition.references.is_empty();
             let _ = self.sources.insert(
                 (provider.clone(), definition.definition.clone()),

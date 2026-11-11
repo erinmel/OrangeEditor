@@ -20,13 +20,16 @@ const policy = {
   // Tests compose guest kernels with the bundled resolver and run guest effects in a run.
   'orange-guest': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-packages'], dev: ['orange-bundled', 'orange-compiler', 'orange-runtime']},
   // Session host: composes every layer into running flows. Front ends depend on it alone.
-  'orange-host': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-compiler', 'orange-runtime', 'orange-bundled', 'orange-packages', 'orange-guest']},
+  'orange-host': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-compiler', 'orange-runtime', 'orange-bundled', 'orange-packages', 'orange-guest', 'orange-sdk']},
+  // Plugin SDK: the traits and types a native plugin crate implements. No package
+  // store, guest engine or front end.
+  'orange-sdk': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-runtime']},
   // Terminal front end; reaches the product only through the host and the service
   // packages it builds in.
   'orange-cli': {core: false, normal: ['orange-host', 'orange-net']},
-  // Base network service package: the only crate with a network client. It reaches the
-  // product through the host's service interface.
-  'orange-net': {core: false, normal: ['orange-host'], dev: ['orange-model']},
+  // Base network service package: the only crate with a network client. It is built on
+  // the plugin SDK alone; its tests run it in a host.
+  'orange-net': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
 };
 // UI, window, renderer and engine frameworks that graph-core crates must never depend on
 // (ADR-01, ADR-02, ADR-21). Host applications may use them.

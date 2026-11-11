@@ -27,9 +27,7 @@ use orange_kernel::{
     BindingRequest, EffectBinding, EffectResolver, EntropyBinding, EntropyKernelResolver,
     KernelBinding, PureKernelResolver, ResolveError,
 };
-use orange_model::catalog::{
-    NodeDefinition, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistrySnapshot,
-};
+use orange_model::catalog::{ProviderDescriptor, RegistryBuilder, RegistrySnapshot};
 use orange_model::document::{ConnectionDecl, ConnectionScope};
 use orange_model::validation::{Diagnostic, HostOrigin};
 use orange_model::validation::{LeafEffects, ValidationAnalysis};
@@ -52,6 +50,8 @@ pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use orange_guest::{Grants, GuestLimits};
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
+pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextRef};
+pub use orange_model::document::DefinitionRef;
 pub use orange_model::id::ConnectionId;
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
 pub use orange_packages::PackageKey;
@@ -59,7 +59,7 @@ pub use orange_runtime::EffectLease;
 pub use orange_runtime::{
     ControlOutcome, RefusedReason, RunError, RunEvent, RunOptions, RunState, StopMode,
 };
-pub use services::{
+pub use orange_sdk::{
     Call, ConnectionAdapter, EmitError, Emitter, SERVICE_PROVIDER, ServiceNode, ServicePackage,
     ServiceSource, Session,
 };
@@ -93,6 +93,11 @@ pub enum FlowEvent {
     Refused(RefusedReason),
     /// The run reported an error while being driven.
     Fault(RunError),
+    /// Variables whose value differs from the last one reported, with the value now
+    /// (`None` while unset). Sent only while the flow is observed; the first one after
+    /// observation starts holds every variable the graph uses. Several writes between
+    /// two reports appear as the latest value only.
+    Variables(Vec<(VariableId, Option<Value>)>),
     /// The flow's graph was replaced by an edited version. Events after this come
     /// from the new graph, starting with its state.
     Updated {
@@ -312,6 +317,19 @@ impl Flow {
     }
 }
 
+/// One node a document can use, as [`Host::nodes`] lists it.
+#[derive(Debug, Clone, Copy)]
+pub struct NodeInfo<'a> {
+    /// Identity, kind and ports.
+    pub definition: &'a NodeDefinition,
+    /// Label, description and category from the node's definition file. `None` for
+    /// core and bundled nodes, whose text comes from the host application's catalogue.
+    pub presentation: Option<&'a Presentation>,
+    /// The implementation a newly placed node binds to. `None` for core nodes, which
+    /// the language implements, and for a definition nothing implements.
+    pub provider: Option<&'a ProviderKey>,
+}
+
 /// See the crate documentation.
 #[derive(Debug)]
 pub struct Host {
@@ -323,6 +341,7 @@ pub struct Host {
     adapters: BTreeMap<String, Arc<dyn ConnectionAdapter>>,
     shared: BTreeMap<ConnectionId, SharedConnection>,
     store: PackageStore<MemoryJournal>,
+    presentations: BTreeMap<DefinitionRef, Presentation>,
     pool: Pool,
     sink: Sink,
     clock: Instant,
@@ -369,11 +388,13 @@ impl Host {
             .map_err(|e| start(&e))?;
         let mut services = Services::default();
         let mut adapters = BTreeMap::new();
+        let mut presentations = BTreeMap::new();
         for package in &packages {
+            presentations.extend(package.presentations().iter().cloned());
             let key = ProviderKey {
-                package: package.id.clone(),
-                version: package.version.clone(),
-                content_digest: built_in_digest(&package.id),
+                package: package.id().to_owned(),
+                version: package.version().to_owned(),
+                content_digest: built_in_digest(package.id()),
                 id: SERVICE_PROVIDER.to_owned(),
             };
             let mut provider = ProviderDescriptor {
@@ -382,10 +403,10 @@ impl Host {
                 specializations: Default::default(),
             };
             let definitions = package
-                .nodes
+                .nodes()
                 .iter()
                 .map(|(definition, _)| definition)
-                .chain(package.sources.iter().map(|(definition, _)| definition));
+                .chain(package.sources().iter().map(|(definition, _)| definition));
             for definition in definitions {
                 let _ = provider
                     .implements
@@ -399,7 +420,7 @@ impl Host {
             }
             builder = builder.provider(provider);
             services.add(&key, package);
-            for (kind, adapter) in &package.adapters {
+            for (kind, adapter) in package.adapters() {
                 let _ = adapters.insert(kind.clone(), Arc::clone(adapter));
             }
         }
@@ -415,6 +436,7 @@ impl Host {
             guests: Vec::new(),
             graphs: Graphs::new(),
             store: PackageStore::new(base, HOST_API_VERSION, MemoryJournal::new()),
+            presentations,
             pool,
             sink: Sink {
                 events,
@@ -536,13 +558,15 @@ impl Host {
         let local = |name: &str| name.rsplit('/').next().unwrap_or(name).to_owned();
 
         let mut definitions = Vec::with_capacity(manifest.nodes().len());
+        let mut described = Vec::with_capacity(manifest.nodes().len());
         let mut definition_text = BTreeMap::new();
         for node in manifest.nodes() {
             let name = node.to_string();
             let path = format!("nodes/{}.json", local(&name));
             let text = read(&path)?;
-            let definition = NodeDefinition::from_json(text)
+            let (definition, presentation) = NodeDefinition::described(text)
                 .map_err(|error| HostError::Definition(error.to_string()))?;
+            described.push((definition.definition.clone(), presentation));
             if definition.definition.id != *node {
                 return Err(HostError::Definition(format!(
                     "`{path}` does not define `{name}`"
@@ -639,6 +663,7 @@ impl Host {
         }
         self.guests.extend(guests);
         self.graphs.extend(graphs);
+        self.presentations.extend(described);
         Ok(key)
     }
 
@@ -772,14 +797,24 @@ impl Host {
     /// already started are stopped again.
     fn feed(flow: &mut Flow, feeds: Vec<Feed>) -> Result<(), HostError> {
         for (node, source, session) in feeds {
-            let emitter = Emitter {
-                inbox: flow.inbox.clone(),
-                node,
-                flow: flow
-                    .thread
-                    .as_ref()
-                    .map_or_else(thread::current, |t| t.thread().clone()),
-            };
+            let inbox = flow.inbox.clone();
+            let thread = flow
+                .thread
+                .as_ref()
+                .map_or_else(thread::current, |t| t.thread().clone());
+            let emitter = Emitter::new(move |payload| {
+                let input = HostInput::Trigger {
+                    node,
+                    payload,
+                    wall_ns: wall_ns(),
+                };
+                inbox.send(input).map_err(|error| match error {
+                    InboxError::Full(_) => EmitError::Busy,
+                    InboxError::Closed(_) => EmitError::Closed,
+                })?;
+                thread.unpark();
+                Ok(())
+            });
             match source.start(session, emitter) {
                 Ok(guard) => flow.feeds.push(guard),
                 Err(reason) => {
@@ -817,6 +852,7 @@ impl Host {
             state: Mutex::new(driver.run().state()),
             queries: Mutex::new(Some(VecDeque::new())),
             closing: AtomicBool::new(false),
+            observed: AtomicBool::new(false),
             swap: Mutex::new(None),
         });
         let context = Context {
@@ -1002,6 +1038,29 @@ impl Host {
                 wall_ns: wall_ns(),
             },
         )
+    }
+
+    /// Every node a document can use, ordered by ID and version: the core language, the
+    /// bundled and built-in service packages and every installed package. This is the
+    /// data of a node palette; a node's ports are in its definition.
+    pub fn nodes(&self) -> impl Iterator<Item = NodeInfo<'_>> {
+        let registry = self.store.current();
+        registry.definitions().map(move |definition| NodeInfo {
+            definition,
+            presentation: self.presentations.get(&definition.definition),
+            provider: registry.new_binding_default(&definition.definition),
+        })
+    }
+
+    /// Turns reporting of the flow's variable values on or off. While on, the flow
+    /// sends [`FlowEvent::Variables`] after each turn in which a value differs from the
+    /// last one reported, starting with every variable. It costs one comparison per
+    /// variable per turn, so a front end observes the flows it is showing.
+    pub fn observe(&self, flow: FlowId, on: bool) -> Result<(), HostError> {
+        let flow = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
+        flow.shared.observed.store(on, Ordering::Relaxed);
+        flow.wake();
+        Ok(())
     }
 
     /// Reads from the flow's run on its own thread, between two turns, and returns the

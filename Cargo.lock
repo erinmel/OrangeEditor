@@ -831,6 +831,7 @@ dependencies = [
  "orange-model",
  "orange-packages",
  "orange-runtime",
+ "orange-sdk",
  "serde_json",
  "sha2 0.11.1",
  "thiserror",
@@ -874,6 +875,7 @@ version = "0.0.0"
 dependencies = [
  "orange-host",
  "orange-model",
+ "orange-sdk",
  "serde_json",
  "tungstenite",
  "ureq",
@@ -900,6 +902,16 @@ dependencies = [
  "serde_json",
  "sha2 0.11.1",
  "thiserror",
+]
+
+[[package]]
+name = "orange-sdk"
+version = "0.0.0"
+dependencies = [
+ "orange-kernel",
+ "orange-model",
+ "orange-runtime",
+ "serde_json",
 ]
 
 [[package]]

@@ -4,19 +4,21 @@
 //! query the thread executes between turns, so a run needs no lock and two flows never
 //! wait on each other.
 use crate::effects::Pool;
-use crate::services::{Call, ServiceEffect, Session};
+use crate::services::ServiceEffect;
 use crate::{FlowEvent, FlowId, HostEvent};
 use orange_compiler::ControlPlan;
 use orange_guest::{GuestCancellation, guest_effect};
 use orange_kernel::{FaultText, KernelFault};
 use orange_model::GraphDocument;
+use orange_model::Value;
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::VarScope;
-use orange_model::id::{ConnectionId, EventDeclId};
+use orange_model::id::{ConnectionId, EventDeclId, VariableId};
 use orange_runtime::{
     EffectLease, EffectRequest, HostInput, InboxError, Refused, Run, RunDriver, RunError,
     RunEventSource, RunInbox, RunOptions, RunState, SourceOptions, StopMode,
 };
+use orange_sdk::{Call, Session};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
@@ -40,6 +42,8 @@ pub(crate) struct Shared {
     /// `None` once the thread has ended; queries are then refused instead of lost.
     pub queries: Mutex<Option<VecDeque<Query>>>,
     pub closing: AtomicBool,
+    /// Whether variable values are reported as they change.
+    pub observed: AtomicBool,
     /// An edited document waiting to replace the running one.
     pub swap: Mutex<Option<Swap>>,
 }
@@ -232,6 +236,8 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let mut guest_work: Vec<(EffectLease, GuestCancellation)> = Vec::new();
     let mut errors = 0u8;
     let mut closing_since: Option<Instant> = None;
+    // The value of each variable as last reported to the observer.
+    let mut reported: BTreeMap<VariableId, Option<Value>> = BTreeMap::new();
     loop {
         if closing_since.is_none() && cx.shared.closing.load(Ordering::Relaxed) {
             closing_since = Some(Instant::now());
@@ -253,6 +259,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                 }
                 recorded = 0;
                 last_state = None;
+                reported.clear();
                 cx.sink.send(
                     cx.id,
                     FlowEvent::Updated {
@@ -333,6 +340,22 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             cx.sink.send(cx.id, FlowEvent::Node(event.clone()));
         }
         recorded = total;
+
+        if cx.shared.observed.load(Ordering::Relaxed) {
+            let mut changed = Vec::new();
+            for cell in cx.plan.variables() {
+                let value = run.variable(cell.id()).cloned();
+                if reported.get(&cell.id()) != Some(&value) {
+                    let _ = reported.insert(cell.id(), value.clone());
+                    changed.push((cell.id(), value));
+                }
+            }
+            if !changed.is_empty() {
+                cx.sink.send(cx.id, FlowEvent::Variables(changed));
+            }
+        } else if !reported.is_empty() {
+            reported.clear();
+        }
 
         let queries = cx
             .shared

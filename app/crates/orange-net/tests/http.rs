@@ -431,3 +431,20 @@ fn a_node_made_as_a_graph_uses_whichever_connection_each_use_names() {
     assert_eq!(read(&host, flow, 100), Some(Value::I64(201)));
     assert_eq!(read(&host, flow, 101), Some(Value::I64(202)));
 }
+
+#[test]
+fn a_plugin_node_is_listed_with_the_text_its_definition_gives() {
+    let host = host();
+    let listed = host
+        .nodes()
+        .find(|node| node.definition.definition.id.as_str() == orange_net::HTTP_REQUEST)
+        .expect("the request node is listed");
+    let shown = listed.presentation.expect("its definition has a label");
+    assert_eq!(shown.label.as_ref().unwrap().fallback, "HTTP request");
+    assert_eq!(
+        shown.category_id.as_deref(),
+        Some("org.orange.net/category-network")
+    );
+    assert_eq!(shown.category.as_ref().unwrap().fallback, "Network");
+    assert_eq!(listed.provider.unwrap().package, orange_net::PACKAGE);
+}

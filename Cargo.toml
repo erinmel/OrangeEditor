@@ -1,7 +1,7 @@
 # Host application workspace (docs/15-monorepo-layout.md). Installable plugins build independently.
 [workspace]
 resolver = "3"
-members = ["app/crates/orange-model", "app/crates/orange-kernel", "app/crates/orange-bundled", "app/crates/orange-compiler", "app/crates/orange-runtime", "app/crates/orange-measure", "app/crates/orange-packages", "app/crates/orange-guest", "app/crates/orange-host", "app/crates/orange-cli", "app/crates/orange-net"]
+members = ["app/crates/orange-model", "app/crates/orange-kernel", "app/crates/orange-bundled", "app/crates/orange-compiler", "app/crates/orange-runtime", "app/crates/orange-measure", "app/crates/orange-packages", "app/crates/orange-guest", "app/crates/orange-host", "app/crates/orange-cli", "app/crates/orange-net", "app/crates/orange-sdk"]
 exclude = ["plugins"]
 
 [workspace.package]

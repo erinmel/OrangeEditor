@@ -5,7 +5,7 @@
 //! listen. Nodes never touch the socket: sending queues a message and returns, and a
 //! listener is fired through its emitter, so a slow or paused flow cannot stall the
 //! socket and the socket cannot stall a flow.
-use orange_host::{
+use orange_sdk::{
     Call, ConnectionAdapter, EmitError, Emitter, KernelFault, ServiceNode, ServiceSource, Session,
     Value,
 };
@@ -241,6 +241,9 @@ impl ServiceSource for WsMessage {
 
 pub(crate) const WS_SEND_DEFINITION: &str = r#"{
   "definition_id": "org.orange.net/ws-send",
+  "label": {"key": "org.orange.net/ws-send-label", "fallback": "Send WebSocket message"},
+  "editor": {"category_id": "org.orange.net/category-network",
+    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
   "definition_version": 1,
   "config_version": 1,
   "kind": "async",
@@ -254,6 +257,9 @@ pub(crate) const WS_SEND_DEFINITION: &str = r#"{
 
 pub(crate) const WS_MESSAGE_DEFINITION: &str = r#"{
   "definition_id": "org.orange.net/ws-message",
+  "label": {"key": "org.orange.net/ws-message-label", "fallback": "On WebSocket message"},
+  "editor": {"category_id": "org.orange.net/category-network",
+    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
   "definition_version": 1,
   "config_version": 1,
   "kind": "entry",

@@ -489,3 +489,60 @@ fn a_refused_edit_leaves_the_flow_running_and_a_paused_flow_stays_paused() {
         read_total(&host, flow) == Some(Value::I64(9))
     });
 }
+
+#[test]
+fn the_host_lists_every_node_a_document_can_use() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let find = |host: &Host, id: &str| {
+        host.nodes()
+            .find(|node| node.definition.definition.id.as_str() == id)
+            .map(|node| (node.provider.cloned(), node.presentation.cloned()))
+    };
+    // A core node is implemented by the language, so it names no provider.
+    assert_eq!(find(&host, "core/on-manual"), Some((None, None)));
+    assert_eq!(find(&host, ACCUMULATE), None);
+
+    let key = host
+        .install(&probe_archive(), Grants { log: true })
+        .unwrap();
+    let (provider, _) = find(&host, ACCUMULATE).expect("an installed node is listed");
+    assert_eq!(provider.unwrap().package, key.id.as_str());
+}
+
+#[test]
+fn an_observed_flow_reports_its_variable_values_as_they_change() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let flow = host.open(&manual_graph(1)).unwrap();
+    let quiet = host.open(&manual_graph(2)).unwrap();
+    host.observe(flow, true).unwrap();
+    for flow in [flow, quiet] {
+        host.trigger(flow, node(1), None).unwrap();
+        until("the value", || {
+            read_total(&host, flow) == Some(Value::I64(7))
+        });
+        host.stop(flow, StopMode::Graceful).unwrap();
+    }
+    let seen = finished(&events, &[flow, quiet]);
+    let reports: Vec<_> = seen
+        .iter()
+        .filter_map(|event| match &event.kind {
+            FlowEvent::Variables(values) => Some((event.flow, values.clone())),
+            _ => None,
+        })
+        .collect();
+    // Only the observed flow reports, each report names the one variable, and the last
+    // one holds the value the graph wrote.
+    assert!(!reports.is_empty());
+    assert!(
+        reports
+            .iter()
+            .all(|(from, values)| *from == flow && values.len() == 1 && values[0].0 == total())
+    );
+    assert_eq!(reports.last().unwrap().1[0].1, Some(Value::I64(7)));
+    // A value is reported once, not on every turn.
+    let sevens = reports
+        .iter()
+        .filter(|(_, values)| values[0].1 == Some(Value::I64(7)))
+        .count();
+    assert_eq!(sevens, 1);
+}

@@ -17,7 +17,7 @@ mod ws;
 
 pub use ws::MAX_QUEUED_MESSAGES;
 
-use orange_host::{
+use orange_sdk::{
     Call, ConnectionAdapter, FaultText, KernelFault, ServiceNode, ServicePackage, Session, Value,
 };
 use serde_json::{Map, Value as Json};
@@ -158,6 +158,9 @@ impl ServiceNode for HttpRequest {
 
 const HTTP_REQUEST_DEFINITION: &str = r#"{
   "definition_id": "org.orange.net/http-request",
+  "label": {"key": "org.orange.net/http-request-label", "fallback": "HTTP request"},
+  "editor": {"category_id": "org.orange.net/category-network",
+    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
   "definition_version": 1,
   "config_version": 1,
   "kind": "async",
