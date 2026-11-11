@@ -37,6 +37,8 @@ package is built in: adapters `org.orange.net/http` and `org.orange.net/websocke
 `--package` are saved there, and later commands with the same `--store` have them
 without `--package`.
 
+`--no-base` leaves out the bundled base nodes and `--no-net` the network package.
+
 `--grant-log` lets installed package code write log lines. `--for` stops after a time.";
 
 struct Arguments {
@@ -47,6 +49,8 @@ struct Arguments {
     grants: Grants,
     duration: Option<Duration>,
     store: Option<String>,
+    base_nodes: bool,
+    network: bool,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -60,6 +64,8 @@ fn arguments() -> Result<Arguments, String> {
         grants: Grants::default(),
         duration: None,
         store: None,
+        base_nodes: true,
+        network: true,
     };
     while let Some(word) = words.next() {
         match word.as_str() {
@@ -75,6 +81,8 @@ fn arguments() -> Result<Arguments, String> {
                 parsed.shared.push([next()?, next()?, next()?]);
             }
             "--grant-log" => parsed.grants.log = true,
+            "--no-base" => parsed.base_nodes = false,
+            "--no-net" => parsed.network = false,
             "--store" => parsed.store = Some(words.next().ok_or("--store needs a directory")?),
             "--for" => {
                 let text = words.next().ok_or("--for needs milliseconds")?;
@@ -296,9 +304,14 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let services = vec![orange_net::package()];
+    let services = if arguments.network {
+        vec![orange_net::package()]
+    } else {
+        Vec::new()
+    };
     let options = HostOptions {
         package_dir: arguments.store.as_ref().map(Into::into),
+        base_nodes: arguments.base_nodes,
         ..HostOptions::default()
     };
     let (mut host, events) = match Host::with_services(options, services) {

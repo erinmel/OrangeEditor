@@ -133,6 +133,10 @@ pub struct HostOptions {
     /// installation is saved there and a host started on it installs them again.
     /// `None` keeps packages for this session only.
     pub package_dir: Option<PathBuf>,
+    /// Whether the bundled base nodes (arithmetic, comparison, text and collection
+    /// operations) are registered. Without them a document can use only the core
+    /// language and what the application and installed packages provide.
+    pub base_nodes: bool,
 }
 impl Default for HostOptions {
     fn default() -> Self {
@@ -145,6 +149,7 @@ impl Default for HostOptions {
             run: RunOptions::default(),
             guest: GuestLimits::default(),
             package_dir: None,
+            base_nodes: true,
         }
     }
 }
@@ -398,9 +403,10 @@ impl Host {
         let math = MathPackage::new(built_in_digest("orange-bundled")).map_err(|e| start(&e))?;
         let origin = HostOrigin::new(env!("CARGO_PKG_VERSION"), built_in_digest("orange-host"))
             .map_err(|e| start(&e))?;
-        let mut builder = math
-            .register(RegistryBuilder::core(origin))
-            .map_err(|e| start(&e))?;
+        let mut builder = RegistryBuilder::core(origin);
+        if options.base_nodes {
+            builder = math.register(builder).map_err(|e| start(&e))?;
+        }
         let mut services = Services::default();
         let mut adapters = BTreeMap::new();
         let mut presentations = BTreeMap::new();

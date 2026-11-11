@@ -636,3 +636,30 @@ fn installed_packages_are_there_again_after_a_restart() {
     drop(host);
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn the_base_nodes_can_be_left_out() {
+    let packages = |base_nodes| {
+        let options = HostOptions {
+            base_nodes,
+            ..HostOptions::default()
+        };
+        let (host, _events) = Host::new(options).unwrap();
+        host.nodes()
+            .filter(|node| !node.definition.definition.id.is_core())
+            .count()
+    };
+    assert!(packages(true) > 0);
+    assert_eq!(packages(false), 0);
+    // The core language alone still runs a graph.
+    let options = HostOptions {
+        base_nodes: false,
+        ..HostOptions::default()
+    };
+    let (mut host, _events) = Host::new(options).unwrap();
+    let flow = host.open(&manual_graph(1)).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the value", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+}
