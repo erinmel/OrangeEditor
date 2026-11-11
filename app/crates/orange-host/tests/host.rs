@@ -592,3 +592,47 @@ fn an_observed_flow_reports_the_values_on_its_wires() {
     let values: Vec<_> = on_wire.into_iter().map(|(_, _, value)| value).collect();
     assert_eq!(values, [Value::I64(5), Value::I64(6)]);
 }
+
+#[test]
+fn installed_packages_are_there_again_after_a_restart() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-store-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = || HostOptions {
+        package_dir: Some(directory.clone()),
+        ..HostOptions::default()
+    };
+    let listed = |host: &Host| {
+        host.nodes()
+            .any(|node| node.definition.definition.id.as_str() == REMEMBER)
+    };
+    {
+        let (mut host, _events) = Host::new(options()).unwrap();
+        assert!(!listed(&host));
+        let _ = host
+            .install(&graph_package(I64, true).unwrap(), Grants::default())
+            .unwrap();
+        // A refused package is not stored.
+        assert!(host.install(b"not an archive", Grants::default()).is_err());
+    }
+    {
+        let (host, _events) = Host::new(options()).unwrap();
+        assert!(host.not_restored().is_empty());
+        assert!(listed(&host));
+    }
+    // A stored archive that no longer verifies is reported and the host still starts.
+    let archive = std::fs::read_dir(&directory)
+        .unwrap()
+        .map(|entry| entry.unwrap().path())
+        .find(|path| path.extension().is_some_and(|e| e == "orangeplug"))
+        .unwrap();
+    std::fs::write(&archive, b"damaged").unwrap();
+    let (host, _events) = Host::new(options()).unwrap();
+    assert_eq!(host.not_restored().len(), 1);
+    assert!(!listed(&host));
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}

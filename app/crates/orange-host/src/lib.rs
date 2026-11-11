@@ -15,6 +15,7 @@
 mod effects;
 mod flow;
 mod graphs;
+mod persist;
 mod services;
 
 use effects::Pool;
@@ -40,6 +41,7 @@ use orange_runtime::{HostInput, InboxError, Run, RunDriver, RunEventSource};
 use services::Services;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -127,6 +129,10 @@ pub struct HostOptions {
     pub turn_budget: usize,
     pub run: RunOptions,
     pub guest: GuestLimits,
+    /// Where installed packages are kept between sessions. With a directory, every
+    /// installation is saved there and a host started on it installs them again.
+    /// `None` keeps packages for this session only.
+    pub package_dir: Option<PathBuf>,
 }
 impl Default for HostOptions {
     fn default() -> Self {
@@ -138,6 +144,7 @@ impl Default for HostOptions {
             turn_budget: 1024,
             run: RunOptions::default(),
             guest: GuestLimits::default(),
+            package_dir: None,
         }
     }
 }
@@ -147,6 +154,8 @@ impl Default for HostOptions {
 pub enum HostError {
     #[error("the host could not start: {0}")]
     Start(String),
+    #[error("installed packages could not be stored: {0}")]
+    Storage(String),
     #[error("the package archive was refused: {0}")]
     Archive(String),
     #[error("the package has no definition file `{0}`")]
@@ -347,6 +356,7 @@ pub struct Host {
     shared: BTreeMap<ConnectionId, SharedConnection>,
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
+    not_restored: Vec<(String, HostError)>,
     pool: Pool,
     sink: Sink,
     clock: Instant,
@@ -442,6 +452,7 @@ impl Host {
             graphs: Graphs::new(),
             store: PackageStore::new(base, HOST_API_VERSION, MemoryJournal::new()),
             presentations,
+            not_restored: Vec::new(),
             pool,
             sink: Sink {
                 events,
@@ -452,6 +463,19 @@ impl Host {
             next_flow: 1,
             options,
         };
+        let mut host = host;
+        if let Some(directory) = host.options.package_dir.clone() {
+            let saved = persist::load(&directory).map_err(HostError::Storage)?;
+            for package in saved {
+                let installed = package
+                    .archive
+                    .map_err(HostError::Storage)
+                    .and_then(|archive| host.install_archive(&archive, package.grants));
+                if let Err(error) = installed {
+                    host.not_restored.push((package.file, error));
+                }
+            }
+        }
         Ok((host, observer))
     }
 
@@ -543,7 +567,24 @@ impl Host {
     /// `nodes/<name>.json`. A package provider becomes the choice for new nodes only
     /// where no provider is chosen yet; an existing choice is never replaced here.
     /// `grants` are the host capabilities the user approved for the package's code.
+    ///
+    /// With [`HostOptions::package_dir`] the archive is then saved. If saving fails the
+    /// package stays installed for this session and the error says it was not stored.
     pub fn install(&mut self, archive: &[u8], grants: Grants) -> Result<PackageKey, HostError> {
+        let key = self.install_archive(archive, grants)?;
+        if let Some(directory) = &self.options.package_dir {
+            persist::save(directory, archive, grants).map_err(HostError::Storage)?;
+        }
+        Ok(key)
+    }
+
+    /// Saved packages that could not be installed again when this host started, by
+    /// archive file name. The others are installed; these stay on disk untouched.
+    pub fn not_restored(&self) -> &[(String, HostError)] {
+        &self.not_restored
+    }
+
+    fn install_archive(&mut self, archive: &[u8], grants: Grants) -> Result<PackageKey, HostError> {
         let mut files = MemorySink::new();
         let verified = read_archive(archive, &ArchiveLimits::default(), &mut files)
             .map_err(|error| HostError::Archive(error.to_string()))?;
