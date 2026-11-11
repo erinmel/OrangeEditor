@@ -14,11 +14,9 @@ orange-kernel = { path = "../orange-kernel", version = "=0.0.0" }
 orange-model = { path = "../orange-model", version = "=0.0.0" }
 orange-packages = { path = "../orange-packages", version = "=0.0.0" }
 orange-runtime = { path = "../orange-runtime", version = "=0.0.0" }
+serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
-
-[dev-dependencies]
-serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -253,3 +253,133 @@ fn an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow() {
         .count();
     assert_eq!(calls, 3, "{seen:?}");
 }
+
+const REMEMBER: &str = "org.example.tools/remember";
+
+/// A package with no code: its one node is a graph that stores its input in a local
+/// variable of its own and returns what it reads back.
+fn graph_package(output_type: &str, with_variable: bool) -> Result<Vec<u8>, HostError> {
+    let port = |name: &str, direction: &str, ty: &str| json!({"port_id": name, "direction": direction, "kind": "data", "type": ty});
+    let manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": "org.example.tools", "version": "1.0.0", "publisher": "org.example",
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+        "dependencies": [],
+        "contributions": {
+            "nodes": [REMEMBER],
+            "providers": [{"slot": format!("node:{REMEMBER}@1"), "id": orange_host::GRAPH_PROVIDER}]
+        },
+        "permissions": [],
+        "license": "MIT"
+    });
+    let definition = json!({"definition_id": REMEMBER, "definition_version": 1,
+    "config_version": 1, "kind": "action", "suspends": "never", "determinism": "external",
+    "ports": [
+        port("value", "input", I64),
+        {"port_id": "result", "direction": "output", "kind": "data", "type": output_type,
+            "source": "execution", "available_on": ["then"]}
+    ]});
+    let mut keep = core(203, "set-variable");
+    keep["config"] = json!({"variable": id(210)});
+    let mut read = core(204, "get-variable");
+    read["config"] = json!({"variable": id(210)});
+    let variables = if with_variable {
+        json!([{"id": id(210), "name": "kept", "type": I64, "scope": "local",
+            "init": {"type": I64, "value": "0"}}])
+    } else {
+        json!([])
+    };
+    let graph = json!({
+        "format": orange_host::GRAPH_NODE_FORMAT, "format_version": 1,
+        "function": {"id": id(200), "name": "remember", "kind": "action",
+            "inputs": [port("value", "input", I64)],
+            "outputs": [port("result", "output", I64)],
+            "nodes": [core(201, "function-entry"), keep, read, core(205, "return")],
+            "edges": [
+                edge(201, 201, "then", 203, "in"),
+                edge(202, 201, "value", 203, "value"),
+                edge(203, 203, "then", 205, "in"),
+                edge(204, 204, "value", 205, "result"),
+            ]},
+        "variables": variables
+    });
+    orange_host::pack(
+        manifest.to_string().as_bytes(),
+        &[
+            (
+                "nodes/remember.json".into(),
+                definition.to_string().into_bytes(),
+            ),
+            (
+                "graphs/remember.json".into(),
+                graph.to_string().into_bytes(),
+            ),
+        ],
+    )
+}
+
+#[test]
+fn a_package_node_made_as_a_graph_runs_like_any_other_node() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let key = host
+        .install(&graph_package(I64, true).unwrap(), Grants::default())
+        .unwrap();
+    assert_eq!(key.id.as_str(), "org.example.tools");
+
+    // The document holds a locked package node; it knows nothing of the graph behind it.
+    let mut document = empty(4);
+    let mut call = NewNode::new(
+        node(3),
+        DefinitionRef {
+            id: REMEMBER.parse().unwrap(),
+            version: 1,
+        },
+    );
+    call.inputs = serde_json::from_value(json!({"value": {"type": I64, "value": "5"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), call).unwrap();
+    assert_eq!(edit.provider.id, orange_host::GRAPH_PROVIDER);
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    let mut set = core(4, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    let text = with_total(
+        saved,
+        vec![core(1, "on-manual"), set],
+        json!([
+            edge(1, 1, "then", 3, "in"),
+            edge(2, 3, "then", 4, "in"),
+            edge(3, 3, "result", 4, "value"),
+        ]),
+    );
+    assert!(text.contains(REMEMBER) && !text.contains("core/call"));
+    assert!(host.check(&text).unwrap().is_empty());
+
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the graph node's result", || {
+        read_total(&host, flow) == Some(Value::I64(5))
+    });
+}
+
+#[test]
+fn a_graph_package_that_breaks_its_contract_or_is_invalid_is_not_installed() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    // The node promises a string result; its graph returns an integer.
+    assert!(matches!(
+        host.install(&graph_package("core/string@1", true).unwrap(), Grants::default()),
+        Err(HostError::Graph(name, _)) if name == REMEMBER
+    ));
+    // The body uses a variable the package does not declare.
+    let Err(HostError::GraphInvalid(package, diagnostics)) =
+        host.install(&graph_package(I64, false).unwrap(), Grants::default())
+    else {
+        panic!("an invalid graph must not be published");
+    };
+    assert_eq!(package, "org.example.tools");
+    assert!(!diagnostics.is_empty());
+    let definition = DefinitionRef {
+        id: REMEMBER.parse().unwrap(),
+        version: 1,
+    };
+    assert!(host.registry().new_binding_default(&definition).is_none());
+}

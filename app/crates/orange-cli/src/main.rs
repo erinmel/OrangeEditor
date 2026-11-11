@@ -6,6 +6,7 @@ use orange_host::{
     FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, NodeId, StopMode,
 };
 use std::io::BufRead;
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
@@ -14,6 +15,7 @@ const USAGE: &str = "\
 usage:
   orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log]
   orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--for <ms>]
+  orange pack  <package-dir> <out.orangeplug>
 
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
 what they do. While it runs, type commands on standard input:
@@ -22,6 +24,9 @@ what they do. While it runs, type commands on standard input:
   stop <flow>  | kill <flow>        stop gracefully, or at once
   trigger <flow> <node-id>          fire a manual entry
   quit                              stop everything and exit
+
+`pack` builds a package from a directory holding `manifest.json` and the package's
+files (`nodes/<name>.json`, `graphs/<name>.json`, a component), filling in its digest.
 
 `--grant-log` lets installed package code write log lines. `--for` stops after a time.";
 
@@ -175,7 +180,58 @@ fn run(host: &Host, events: &Receiver<HostEvent>, flows: &[FlowId], duration: Op
     }
 }
 
+fn collect(root: &Path, at: &Path, files: &mut Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    let failed = |error: std::io::Error| format!("{}: {error}", at.display());
+    for entry in std::fs::read_dir(at).map_err(failed)? {
+        let path = entry.map_err(failed)?.path();
+        if path.is_dir() {
+            collect(root, &path, files)?;
+            continue;
+        }
+        let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+        let name: Vec<_> = relative
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect();
+        let name = name.join("/");
+        if name != "manifest.json" {
+            files.push((name, read(&path.to_string_lossy())?));
+        }
+    }
+    Ok(())
+}
+
+fn pack(directory: &str, output: &str) -> Result<usize, String> {
+    let root = Path::new(directory);
+    let manifest = read(&root.join("manifest.json").to_string_lossy())?;
+    let mut files = Vec::new();
+    collect(root, root, &mut files)?;
+    let archive = orange_host::pack(&manifest, &files).map_err(|error| error.to_string())?;
+    std::fs::write(output, &archive).map_err(|error| format!("{output}: {error}"))?;
+    Ok(files.len())
+}
+
 fn main() -> ExitCode {
+    let words: Vec<String> = std::env::args().skip(1).collect();
+    if words.first().map(String::as_str) == Some("pack") {
+        let [_, directory, output] = &words[..] else {
+            eprintln!(
+                "pack needs a directory and an output file
+{USAGE}"
+            );
+            return ExitCode::from(2);
+        };
+        return match pack(directory, output) {
+            Ok(files) => {
+                println!("{output}: manifest and {files} files");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let arguments = match arguments() {
         Ok(arguments) if matches!(arguments.command.as_str(), "check" | "run") => arguments,
         Ok(arguments) => {

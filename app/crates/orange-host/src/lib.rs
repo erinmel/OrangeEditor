@@ -14,9 +14,11 @@
 
 mod effects;
 mod flow;
+mod graphs;
 
 use effects::Pool;
 use flow::{Context, Query, Shared, Sink};
+use graphs::{GraphNode, Graphs};
 use orange_bundled::MathPackage;
 use orange_compiler::{CompileError, CompileOptions, compile_control_with_effects};
 use orange_guest::{GuestEngine, GuestLoadError, GuestPackage, WithGuests};
@@ -24,12 +26,12 @@ use orange_kernel::{
     BindingRequest, EffectBinding, EffectResolver, EntropyBinding, EntropyKernelResolver,
     KernelBinding, PureKernelResolver, ResolveError,
 };
-use orange_model::catalog::{NodeDefinition, RegistryBuilder, RegistrySnapshot};
+use orange_model::catalog::{NodeDefinition, ProviderKey, RegistryBuilder, RegistrySnapshot};
 use orange_model::validation::{Diagnostic, HostOrigin};
-use orange_model::{analyze, from_json};
+use orange_model::{GraphDocument, analyze, from_json, to_json};
 use orange_packages::{
-    ArchiveLimits, ArchivePath, Execution, HOST_API_VERSION, MemoryJournal, MemorySink,
-    PackageStore, ProviderSlot, read_archive,
+    ArchiveFiles, ArchiveLimits, ArchivePath, DiscardSink, Execution, HOST_API_VERSION,
+    MemoryJournal, MemorySink, PackageStore, ProviderSlot, read_archive,
 };
 use orange_runtime::{HostInput, InboxError, Run, RunDriver, RunEventSource, SourceOptions};
 use sha2::{Digest, Sha256};
@@ -40,6 +42,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use orange_guest::{Grants, GuestLimits};
 pub use orange_model::Value;
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
@@ -123,6 +126,10 @@ pub enum HostError {
     Definition(String),
     #[error("the package component was refused: {0}")]
     Guest(#[from] GuestLoadError),
+    #[error("the package graph `{0}` was refused: {1}")]
+    Graph(String, String),
+    #[error("the graphs of package `{0}` have blocking diagnostics")]
+    GraphInvalid(String, Vec<Diagnostic>),
     #[error("the package could not be installed: {0}")]
     Install(String),
     #[error("the document could not be read: {0}")]
@@ -199,6 +206,7 @@ pub struct Host {
     native: Native,
     engine: GuestEngine,
     guests: Vec<GuestPackage>,
+    graphs: Graphs,
     store: PackageStore<MemoryJournal>,
     pool: Pool,
     sink: Sink,
@@ -243,6 +251,7 @@ impl Host {
             native: Native(Arc::new(math)),
             engine,
             guests: Vec::new(),
+            graphs: Graphs::new(),
             store: PackageStore::new(base, HOST_API_VERSION, MemoryJournal::new()),
             pool,
             sink: Sink {
@@ -281,19 +290,24 @@ impl Host {
         let manifest = verified.manifest().clone();
         let key = manifest.key().clone();
 
-        let mut definitions = Vec::with_capacity(manifest.nodes().len());
-        for node in manifest.nodes() {
-            let name = node.to_string();
-            let local = name.rsplit('/').next().unwrap_or(&name);
-            let path = format!("nodes/{local}.json");
-            let missing = || HostError::MissingDefinition(path.clone());
+        let content_digest = verified.content_digest().to_owned();
+        let read = |path: &str| -> Result<&str, HostError> {
+            let missing = || HostError::MissingDefinition(path.to_owned());
             let archive_path: ArchivePath = path.parse().map_err(|_| missing())?;
-            let bytes = files.file(&path).ok_or_else(missing)?;
+            let bytes = files.file(path).ok_or_else(missing)?;
             verified
                 .verify_file(&archive_path, bytes)
                 .map_err(|error| HostError::Archive(error.to_string()))?;
-            let text = std::str::from_utf8(bytes)
-                .map_err(|error| HostError::Definition(error.to_string()))?;
+            std::str::from_utf8(bytes).map_err(|error| HostError::Definition(error.to_string()))
+        };
+        let local = |name: &str| name.rsplit('/').next().unwrap_or(name).to_owned();
+
+        let mut definitions = Vec::with_capacity(manifest.nodes().len());
+        let mut definition_text = BTreeMap::new();
+        for node in manifest.nodes() {
+            let name = node.to_string();
+            let path = format!("nodes/{}.json", local(&name));
+            let text = read(&path)?;
             let definition = NodeDefinition::from_json(text)
                 .map_err(|error| HostError::Definition(error.to_string()))?;
             if definition.definition.id != *node {
@@ -301,26 +315,53 @@ impl Host {
                     "`{path}` does not define `{name}`"
                 )));
             }
+            let _ = definition_text.insert((name, u64::from(definition.definition.version)), text);
             definitions.push(definition);
         }
 
-        // Prepare all code before anything is published, so a refused component
-        // leaves the registry untouched.
+        // Prepare every implementation before anything is published, so a refused
+        // component or graph leaves the registry untouched.
+        let provider_key = |id: &str| ProviderKey {
+            package: key.id.as_str().to_owned(),
+            version: key.version.as_str().to_owned(),
+            content_digest: content_digest.clone(),
+            id: id.to_owned(),
+        };
         let mut guests: Vec<GuestPackage> = Vec::new();
-        if matches!(manifest.execution(), Some(Execution::WasmComponent { .. })) {
-            for provider in manifest.providers() {
-                if guests
+        let mut graphs: Vec<(graphs::GraphKey, Arc<GraphNode>)> = Vec::new();
+        for provider in manifest.providers() {
+            if provider.id == GRAPH_PROVIDER {
+                let ProviderSlot::Node(definition) = &provider.slot else {
+                    continue;
+                };
+                let name = definition.id.to_string();
+                let version = u64::from(definition.version);
+                let path = format!("graphs/{}.json", local(&name));
+                let text = read(&path)?;
+                let contract = definition_text
+                    .get(&(name.clone(), version))
+                    .ok_or_else(|| HostError::MissingDefinition(name.clone()))?;
+                let graph = GraphNode::decode(text, contract)
+                    .map_err(|reason| HostError::Graph(name.clone(), reason))?;
+                let graph_key = (
+                    key.id.as_str().to_owned(),
+                    key.version.as_str().to_owned(),
+                    name,
+                    version,
+                );
+                graphs.push((graph_key, Arc::new(graph)));
+            } else if matches!(manifest.execution(), Some(Execution::WasmComponent { .. }))
+                && guests
                     .iter()
                     .all(|guest| guest.provider().id != provider.id)
-                {
-                    guests.push(GuestPackage::from_archive(
-                        &self.engine,
-                        &verified,
-                        &files,
-                        &provider.id,
-                        grants,
-                    )?);
-                }
+            {
+                guests.push(GuestPackage::from_archive(
+                    &self.engine,
+                    &verified,
+                    &files,
+                    &provider.id,
+                    grants,
+                )?);
             }
         }
 
@@ -329,36 +370,90 @@ impl Host {
             .store
             .install(verified.into_contents(definitions))
             .map_err(|e| install(&e))?;
+
+        // A graph is checked as it will be used: linked with the graphs it builds on,
+        // against the registry that now includes this package's own definitions.
+        if !graphs.is_empty() {
+            let mut known = self.graphs.clone();
+            known.extend(graphs.iter().cloned());
+            let bodies: Vec<_> = graphs.iter().map(|(_, graph)| Arc::clone(graph)).collect();
+            if let Err(error) = self.check_graphs(key.id.as_str(), &bodies, &known) {
+                let _ = self.store.rollback();
+                return Err(error);
+            }
+        }
+
         for provider in manifest.providers() {
             let ProviderSlot::Node(definition) = &provider.slot else {
                 continue;
             };
-            let Some(guest) = guests
-                .iter()
-                .find(|guest| guest.provider().id == provider.id)
-            else {
-                continue;
-            };
-            if self
-                .store
-                .current()
-                .new_binding_default(definition)
-                .is_none()
+            let implemented = provider.id == GRAPH_PROVIDER
+                || guests
+                    .iter()
+                    .any(|guest| guest.provider().id == provider.id);
+            if implemented
+                && self
+                    .store
+                    .current()
+                    .new_binding_default(definition)
+                    .is_none()
             {
                 let _ = self
                     .store
-                    .select_default(definition.clone(), guest.provider().clone())
+                    .select_default(definition.clone(), provider_key(&provider.id))
                     .map_err(|e| install(&e))?;
             }
         }
         self.guests.extend(guests);
+        self.graphs.extend(graphs);
         Ok(key)
+    }
+
+    fn check_graphs(
+        &self,
+        package: &str,
+        bodies: &[Arc<GraphNode>],
+        known: &Graphs,
+    ) -> Result<(), HostError> {
+        let refused = |reason: String| HostError::Graph(package.to_owned(), reason);
+        let empty = to_json(&GraphDocument::new(
+            SCRATCH_GRAPH
+                .parse()
+                .map_err(|_| refused("invalid validation graph id".into()))?,
+        ))
+        .map_err(|error| refused(error.to_string()))?;
+        let mut scratch = graphs::scratch(&empty, bodies)
+            .ok_or_else(|| refused("could not build a validation document".into()))?;
+        graphs::link(&mut scratch, known);
+        let document =
+            from_json(&scratch.to_string()).map_err(|error| refused(error.to_string()))?;
+        let registry = self.store.current();
+        let analysis = analyze(&document, registry);
+        if analysis.is_ready_for_lowering(&document, registry) {
+            Ok(())
+        } else {
+            Err(HostError::GraphInvalid(
+                package.to_owned(),
+                analysis.report().diagnostics.clone(),
+            ))
+        }
+    }
+
+    /// Decodes a saved document and links the graph-implemented package nodes it uses.
+    fn linked(&self, json: &str) -> Result<GraphDocument, HostError> {
+        let document = |error: &dyn std::fmt::Display| HostError::Document(error.to_string());
+        if self.graphs.is_empty() {
+            return from_json(json).map_err(|e| document(&e));
+        }
+        let mut saved = serde_json::from_str(json).map_err(|e| document(&e))?;
+        graphs::link(&mut saved, &self.graphs);
+        from_json(&saved.to_string()).map_err(|e| document(&e))
     }
 
     /// Checks a document against the current registry without running it. An empty
     /// list means [`Host::open`] would accept it as far as validation goes.
     pub fn check(&self, json: &str) -> Result<Vec<Diagnostic>, HostError> {
-        let document = from_json(json).map_err(|error| HostError::Document(error.to_string()))?;
+        let document = self.linked(json)?;
         let registry = self.store.current();
         let analysis = analyze(&document, registry);
         if analysis.is_ready_for_lowering(&document, registry) {
@@ -370,7 +465,7 @@ impl Host {
 
     /// Validates, compiles and starts a document as a new flow on its own thread.
     pub fn open(&mut self, json: &str) -> Result<FlowId, HostError> {
-        let document = from_json(json).map_err(|error| HostError::Document(error.to_string()))?;
+        let document = self.linked(json)?;
         let registry = Arc::clone(self.store.current());
         let analysis = analyze(&document, &registry);
         if !analysis.is_ready_for_lowering(&document, &registry) {
@@ -576,4 +671,35 @@ impl Drop for Host {
             }
         }
     }
+}
+
+/// Identity of the throwaway document a package's graphs are validated in.
+const SCRATCH_GRAPH: &str = "00000000-0000-4000-8000-000000000000";
+
+/// Builds a `.orangeplug` archive from a manifest and the package's other files, given
+/// as archive paths and contents. The manifest's content digest is computed and filled
+/// in, and the result is verified as an installer would before it is returned.
+pub fn pack(manifest: &[u8], files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, HostError> {
+    let refused = |error: &dyn std::fmt::Display| HostError::Archive(error.to_string());
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(manifest).map_err(|e| refused(&e))?;
+    let mut entries = Vec::with_capacity(files.len());
+    for (path, bytes) in files {
+        let path: ArchivePath = path.parse().map_err(|e| refused(&e))?;
+        entries.push((path, &bytes[..]));
+    }
+    let entries = ArchiveFiles::new(entries).map_err(|e| refused(&e))?;
+    let encode =
+        |manifest: &serde_json::Value| serde_json::to_vec(manifest).map_err(|e| refused(&e));
+    manifest["integrity"] =
+        serde_json::json!({"algorithm": "sha256", "content_digest": "0".repeat(64)});
+    let digest = entries
+        .content_digest(&encode(&manifest)?)
+        .map_err(|e| refused(&e))?;
+    manifest["integrity"]["content_digest"] =
+        serde_json::json!(digest.strip_prefix("sha256:").unwrap_or(&digest));
+    let archive = entries.encode(&encode(&manifest)?);
+    let _ = read_archive(&archive[..], &ArchiveLimits::default(), &mut DiscardSink)
+        .map_err(|e| refused(&e))?;
+    Ok(archive)
 }
