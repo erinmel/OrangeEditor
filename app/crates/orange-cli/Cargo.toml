@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 orange-host = { path = "../orange-host", version = "=0.0.0" }
+orange-net = { path = "../orange-net", version = "=0.0.0" }
 
 [lints]
 workspace = true

@@ -28,12 +28,18 @@ what they do. While it runs, type commands on standard input:
 `pack` builds a package from a directory holding `manifest.json` and the package's
 files (`nodes/<name>.json`, `graphs/<name>.json`, a component), filling in its digest.
 
+`--share <id> <adapter> <settings.json>` gives every graph that declares connection
+`<id>` as shared the same session, with settings read from the file. The base network
+package is built in: adapter `org.orange.net/http`, node `org.orange.net/http-request`
+(`http://` endpoints only).
+
 `--grant-log` lets installed package code write log lines. `--for` stops after a time.";
 
 struct Arguments {
     command: String,
     graphs: Vec<String>,
     packages: Vec<String>,
+    shared: Vec<[String; 3]>,
     grants: Grants,
     duration: Option<Duration>,
 }
@@ -45,6 +51,7 @@ fn arguments() -> Result<Arguments, String> {
         command,
         graphs: Vec::new(),
         packages: Vec::new(),
+        shared: Vec::new(),
         grants: Grants::default(),
         duration: None,
     };
@@ -53,6 +60,14 @@ fn arguments() -> Result<Arguments, String> {
             "--package" => parsed
                 .packages
                 .push(words.next().ok_or("--package needs a file")?),
+            "--share" => {
+                let mut next = || {
+                    words
+                        .next()
+                        .ok_or("--share needs an id, an adapter and a file")
+                };
+                parsed.shared.push([next()?, next()?, next()?]);
+            }
             "--grant-log" => parsed.grants.log = true,
             "--for" => {
                 let text = words.next().ok_or("--for needs milliseconds")?;
@@ -71,6 +86,13 @@ fn arguments() -> Result<Arguments, String> {
 
 fn read(path: &str) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|error| format!("{path}: {error}"))
+}
+
+fn share(host: &mut Host, id: &str, adapter: &str, settings: &[u8]) -> Result<(), String> {
+    let id = id.parse().map_err(|_| "not a connection id".to_owned())?;
+    let settings = orange_host::settings_from_json(settings).map_err(|error| error.to_string())?;
+    host.share_connection(id, adapter, settings)
+        .map_err(|error| error.to_string())
 }
 
 fn report(path: &str, error: &HostError) {
@@ -243,7 +265,8 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let (mut host, events) = match Host::new(HostOptions::default()) {
+    let services = vec![orange_net::package()];
+    let (mut host, events) = match Host::with_services(HostOptions::default(), services) {
         Ok(started) => started,
         Err(error) => {
             eprintln!("{error}");
@@ -261,6 +284,13 @@ fn main() -> ExitCode {
                 eprintln!("{message}");
                 return ExitCode::FAILURE;
             }
+        }
+    }
+    for [id, adapter, path] in &arguments.shared {
+        let shared = read(path).and_then(|bytes| share(&mut host, id, adapter, &bytes));
+        if let Err(message) = shared {
+            eprintln!("--share {id}: {message}");
+            return ExitCode::FAILURE;
         }
     }
     let mut failed = false;
