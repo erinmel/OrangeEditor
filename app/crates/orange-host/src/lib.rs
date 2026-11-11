@@ -37,7 +37,9 @@ use orange_packages::{
     ArchiveFiles, ArchiveLimits, ArchivePath, DiscardSink, Execution, HOST_API_VERSION,
     MemoryJournal, MemorySink, PackageStore, ProviderSlot, read_archive,
 };
-use orange_runtime::{HostInput, InboxError, Run, RunDriver, RunEventSource};
+use orange_runtime::{
+    HostInput, InboxError, Run, RunDriver, RunEventSource, Workspace, WorkspaceLimits,
+};
 use services::Services;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
@@ -159,6 +161,8 @@ impl Default for HostOptions {
 pub enum HostError {
     #[error("the host could not start: {0}")]
     Start(String),
+    #[error("shared variables: {0}")]
+    Workspace(String),
     #[error("installed packages could not be stored: {0}")]
     Storage(String),
     #[error("the package archive was refused: {0}")]
@@ -362,6 +366,7 @@ pub struct Host {
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
     not_restored: Vec<(String, HostError)>,
+    space: Arc<flow::Space>,
     pool: Pool,
     sink: Sink,
     clock: Instant,
@@ -459,6 +464,7 @@ impl Host {
             store: PackageStore::new(base, HOST_API_VERSION, MemoryJournal::new()),
             presentations,
             not_restored: Vec::new(),
+            space: Arc::default(),
             pool,
             sink: Sink {
                 events,
@@ -881,13 +887,29 @@ impl Host {
     /// Validates, compiles and starts a document as a new flow on its own thread.
     pub fn open(&mut self, json: &str) -> Result<FlowId, HostError> {
         let prepared = self.prepare(json, None)?;
-        let run = Run::start(
-            Arc::clone(&prepared.plan),
-            &prepared.document,
-            &prepared.registry,
-            0,
-            self.options.run.clone(),
-        )?;
+        let run = if flow::uses_space(&prepared.plan) {
+            let snapshot = self.space.snapshot().ok_or_else(|| {
+                HostError::Workspace(
+                    "the document uses shared variables and none are declared".into(),
+                )
+            })?;
+            Run::start_in_workspace(
+                Arc::clone(&prepared.plan),
+                &prepared.document,
+                &prepared.registry,
+                0,
+                self.options.run.clone(),
+                &snapshot,
+            )?
+        } else {
+            Run::start(
+                Arc::clone(&prepared.plan),
+                &prepared.document,
+                &prepared.registry,
+                0,
+                self.options.run.clone(),
+            )?
+        };
 
         let now = u64::try_from(self.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let (mut driver, inbox) = RunDriver::new(run, self.options.inbox_capacity.max(1), now);
@@ -915,6 +937,7 @@ impl Host {
             inbox: inbox.clone(),
             plan: prepared.plan,
             sessions: sessions_of(&prepared.opened),
+            space: Arc::clone(&self.space),
             clock: self.clock,
             turn_inputs: self.options.turn_inputs.max(1),
             turn_budget: self.options.turn_budget.max(1),
@@ -923,6 +946,12 @@ impl Host {
             .name(format!("orange-flow-{id}"))
             .spawn(move || flow::drive(driver, context))
             .map_err(|error| HostError::Start(error.to_string()))?;
+        let _ = self
+            .space
+            .flows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, thread.thread().clone());
         let mut flow = Flow {
             info,
             inbox,
@@ -1092,6 +1121,37 @@ impl Host {
         )
     }
 
+    /// Declares the variables flows can share: the `workspace`-scope variables of the
+    /// given document, with their initial values. It can be done once, before any
+    /// document that uses them is opened. A document then declares the ones it uses
+    /// with the same IDs and types, reads them with `core/get-variable` and writes them
+    /// with `core/set-shared` or `core/update-shared`. Every flow sees a write at its
+    /// next turn; writes from different flows are applied one at a time.
+    pub fn share_variables(&mut self, json: &str) -> Result<(), HostError> {
+        let document = from_json(json).map_err(|error| HostError::Document(error.to_string()))?;
+        let mut workspace = self
+            .space
+            .workspace
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        if workspace.is_some() {
+            return Err(HostError::Workspace("they are already declared".into()));
+        }
+        let created = Workspace::new(
+            &document,
+            Arc::clone(self.store.current()),
+            WorkspaceLimits::default(),
+        )
+        .map_err(|error| HostError::Workspace(error.to_string()))?;
+        *workspace = Some(created);
+        Ok(())
+    }
+
+    /// The current value of a shared variable; `None` while unset or undeclared.
+    pub fn shared_variable(&self, id: VariableId) -> Option<Value> {
+        self.space.snapshot()?.get(id).ok().flatten().cloned()
+    }
+
     /// Every node a document can use, ordered by ID and version: the core language, the
     /// bundled and built-in service packages and every installed package. This is the
     /// data of a node palette; a node's ports are in its definition.
@@ -1143,6 +1203,12 @@ impl Host {
     /// Stops the flow at once if it is still running, waits for its thread and forgets
     /// it. Its remaining events stay readable.
     pub fn close(&mut self, flow: FlowId) -> Result<(), HostError> {
+        let _ = self
+            .space
+            .flows
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .remove(&flow);
         let mut flow = self.flows.remove(&flow).ok_or(HostError::UnknownFlow)?;
         flow.feeds.clear();
         flow.shared.closing.store(true, Ordering::Relaxed);

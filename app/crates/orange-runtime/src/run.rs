@@ -857,6 +857,44 @@ impl Run {
         }
         Self::start_workspace(plan, document, registry, seed, options, None, Some(values))
     }
+    /// [`Run::start_in_workspace`] and [`Run::start_with_variables`] together: a run
+    /// attached to a host workspace whose run variables start from `values`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_in_workspace_with_variables(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        snapshot: &crate::WorkspaceSnapshot,
+        values: &BTreeMap<VariableId, Option<Value>>,
+    ) -> Result<Self, RunError> {
+        snapshot
+            .check_schema(document, registry)
+            .map_err(|_| SharedError::Contract)?;
+        for (id, value) in values {
+            let cell = plan
+                .variables()
+                .iter()
+                .find(|cell| cell.id() == *id && cell.scope() == VarScope::Run)
+                .ok_or(RunError::InvalidState)?;
+            if value
+                .as_ref()
+                .is_some_and(|value| !cell.ty().accepts(value))
+            {
+                return Err(RunError::InvalidState);
+            }
+        }
+        Self::start_workspace(
+            plan,
+            document,
+            registry,
+            seed,
+            options,
+            Some(snapshot),
+            Some(values),
+        )
+    }
     /// Start with an exact compatible host snapshot. The host explicitly delivers
     /// later publications; no background thread or shared mutable store is read.
     pub fn start_in_workspace(

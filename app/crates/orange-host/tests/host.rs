@@ -789,3 +789,67 @@ fn a_trigger_made_as_a_graph_starts_the_documents_own_nodes() {
     seen.sort_by_key(|value| format!("{value:?}"));
     assert_eq!(seen, [Value::I64(5), Value::I64(6)]);
 }
+
+/// A graph whose manual entry adds its payload to the shared counter, and which keeps
+/// what it last read from the counter in its own variable when told to.
+fn counting_graph(graph: u32) -> String {
+    let saved: Json = serde_json::from_str(&to_json(&empty(graph)).unwrap()).unwrap();
+    let mut add = core(1, "on-manual");
+    add["config"] = json!({"payload": I64});
+    let mut update = core(2, "update-shared");
+    update["config"] = json!({"variable": id(900), "operation": "add"});
+    let mut look = core(3, "on-manual");
+    look["activation"]["order"] = json!(1);
+    let mut read = core(4, "get-variable");
+    read["config"] = json!({"variable": id(900)});
+    let mut keep = core(5, "set-variable");
+    keep["config"] = json!({"variable": id(TOTAL)});
+    let mut saved = saved;
+    saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([add, update, look, read, keep]);
+    saved["edges"] = json!([
+        edge(1, 1, "then", 2, "in"),
+        edge(2, 1, "payload", 2, "value"),
+        edge(3, 3, "then", 5, "in"),
+        edge(4, 4, "value", 5, "value"),
+    ]);
+    saved["variables"] = json!([
+        {"id": id(TOTAL), "name": "total", "type": I64, "scope": "run"},
+        {"id": id(900), "name": "counter", "type": I64, "scope": "workspace",
+            "init": {"type": I64, "value": "0"}}
+    ]);
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+#[test]
+fn flows_share_variables_declared_in_the_host() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    // Without a declaration a document that uses shared variables does not open.
+    assert!(matches!(
+        host.open(&counting_graph(1)),
+        Err(HostError::Workspace(_))
+    ));
+    host.share_variables(&counting_graph(9)).unwrap();
+    assert!(host.share_variables(&counting_graph(9)).is_err());
+    let counter: VariableId = id(900).parse().unwrap();
+    assert_eq!(host.shared_variable(counter), Some(Value::I64(0)));
+
+    let first = host.open(&counting_graph(1)).unwrap();
+    let second = host.open(&counting_graph(2)).unwrap();
+    // Three each, within the entries' queue capacity.
+    for _ in 0..3 {
+        host.trigger(first, node(1), Some(Value::I64(1))).unwrap();
+        host.trigger(second, node(1), Some(Value::I64(10))).unwrap();
+    }
+    // No write is lost, whichever flow made it.
+    until("every write", || {
+        host.shared_variable(counter) == Some(Value::I64(33))
+    });
+    // A flow reads what the other one wrote.
+    host.trigger(first, node(3), None).unwrap();
+    until("the read", || {
+        read_total(&host, first) == Some(Value::I64(33))
+    });
+}

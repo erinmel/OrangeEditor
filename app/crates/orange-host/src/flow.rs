@@ -14,11 +14,11 @@ use orange_model::Value;
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::VarScope;
 use orange_model::id::{ConnectionId, EventDeclId, VariableId};
-use orange_runtime::PortValues;
 use orange_runtime::{
     EffectLease, EffectRequest, HostInput, InboxError, Refused, Run, RunDriver, RunError,
     RunEventSource, RunInbox, RunOptions, RunState, SourceOptions, StopMode,
 };
+use orange_runtime::{PortValues, Workspace, WorkspaceSnapshot};
 use orange_sdk::{Call, Session};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -55,6 +55,50 @@ impl std::fmt::Debug for Shared {
             .field("closing", &self.closing)
             .finish_non_exhaustive()
     }
+}
+
+/// The variables every flow of a host can share. Writes are applied one at a time
+/// under the lock, in the order flows reach it; each flow then takes the new values
+/// at its next turn.
+#[derive(Default)]
+pub(crate) struct Space {
+    /// `None` until the application declares the shared variables.
+    pub workspace: Mutex<Option<Workspace>>,
+    /// Counts committed writes, so a flow can tell it is behind without the lock.
+    pub version: AtomicU64,
+    /// Threads to wake after a write.
+    pub flows: Mutex<BTreeMap<FlowId, Thread>>,
+}
+impl std::fmt::Debug for Space {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Space")
+            .field("version", &self.version)
+            .finish_non_exhaustive()
+    }
+}
+impl Space {
+    pub fn snapshot(&self) -> Option<WorkspaceSnapshot> {
+        self.workspace
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_ref()
+            .map(Workspace::snapshot)
+    }
+    fn wake_others(&self, me: FlowId) {
+        let flows = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
+        for (flow, thread) in flows.iter() {
+            if *flow != me {
+                thread.unpark();
+            }
+        }
+    }
+}
+
+/// Whether the graph reads or writes a shared variable.
+pub(crate) fn uses_space(plan: &ControlPlan) -> bool {
+    plan.variables()
+        .iter()
+        .any(|cell| cell.scope() == VarScope::Workspace)
 }
 
 /// A compiled replacement for a flow's graph, applied by the flow's own thread.
@@ -118,14 +162,30 @@ fn replace(driver: &mut RunDriver, cx: &mut Context, swap: Swap) -> Result<Swapp
         }
     }
     let paused = old.state() == RunState::Paused;
-    let mut run = Run::start_with_variables(
-        Arc::clone(&swap.plan),
-        &swap.document,
-        &swap.registry,
-        0,
-        swap.options,
-        &values,
-    )?;
+    let snapshot = if uses_space(&swap.plan) {
+        Some(cx.space.snapshot().ok_or(RunError::InvalidState)?)
+    } else {
+        None
+    };
+    let mut run = match &snapshot {
+        Some(snapshot) => Run::start_in_workspace_with_variables(
+            Arc::clone(&swap.plan),
+            &swap.document,
+            &swap.registry,
+            0,
+            swap.options,
+            snapshot,
+            &values,
+        )?,
+        None => Run::start_with_variables(
+            Arc::clone(&swap.plan),
+            &swap.document,
+            &swap.registry,
+            0,
+            swap.options,
+            &values,
+        )?,
+    };
     if paused {
         run.pause()?;
     }
@@ -189,6 +249,7 @@ pub(crate) struct Context {
     pub inbox: RunInbox,
     pub plan: Arc<ControlPlan>,
     pub sessions: BTreeMap<ConnectionId, Arc<dyn Session>>,
+    pub space: Arc<Space>,
     pub clock: Instant,
     pub turn_inputs: usize,
     pub turn_budget: usize,
@@ -237,6 +298,8 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let mut guest_work: Vec<(EffectLease, GuestCancellation)> = Vec::new();
     let mut errors = 0u8;
     let mut closing_since: Option<Instant> = None;
+    // The count of shared writes this flow's run has been given.
+    let mut space_seen = cx.space.version.load(Ordering::Acquire);
     // The value of each variable as last reported to the observer.
     let mut reported: BTreeMap<VariableId, Option<Value>> = BTreeMap::new();
     // The value of each output port as last reported to the observer.
@@ -274,6 +337,14 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             }
             let _ = reply.send(outcome);
         }
+        // Take shared values other flows have written since this one last looked.
+        let version = cx.space.version.load(Ordering::Acquire);
+        if version != space_seen && uses_space(&cx.plan) {
+            if let Some(snapshot) = cx.space.snapshot() {
+                let _ = driver.run_mut().publish_workspace(&snapshot);
+            }
+            space_seen = version;
+        }
         // Read before the turn, so input sent after observation began is observed.
         let observed = cx.shared.observed.load(Ordering::Relaxed);
         driver.run_mut().keep_port_values(observed);
@@ -284,6 +355,34 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
         let turn = driver.turn(now, cx.turn_inputs, cx.turn_budget, &mut refused);
 
         let mut issued = false;
+        // Shared writes are applied here, on the flow's thread, one at a time across
+        // the host.
+        while let Ok(Some(request)) = driver.run_mut().take_shared() {
+            issued = true;
+            let mut workspace = cx
+                .space
+                .workspace
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let Some(shared) = workspace.as_mut() else {
+                let _ = driver.run_mut().fail_shared(request, UNAVAILABLE);
+                continue;
+            };
+            match shared.apply_shared(request) {
+                Ok(receipt) => {
+                    let committed = receipt.commit().is_ok();
+                    let _ = driver.run_mut().complete_shared(receipt);
+                    if committed {
+                        let _ = cx.space.version.fetch_add(1, Ordering::AcqRel);
+                        drop(workspace);
+                        cx.space.wake_others(cx.id);
+                    }
+                }
+                Err(refused) => {
+                    let _ = driver.run_mut().fail_shared(refused.value, UNAVAILABLE);
+                }
+            }
+        }
         while let Some(request) = driver.run_mut().take_effect() {
             issued = true;
             let EffectRequest {
