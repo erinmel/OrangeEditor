@@ -1,5 +1,22 @@
 # Tooling, environment and research register
 
+## Port value observation — 2026-11-11
+
+Same branch and toolchain; no dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,722 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+
+Limits: Windows only; no hosted run had reported for this branch when this was written.
+Tested: the payload port of a manual entry, two values in order, on one flow. Not
+tested: outputs of pure, action and asynchronous nodes, ports inside functions and
+loops, observation across a live edit, and the cost of observation on a large graph
+(not measured).
+
 ## Plugin SDK crate, node listing and variable observation — 2026-11-11
 
 Same branch and toolchain. New workspace crate `orange-sdk`; no external dependency

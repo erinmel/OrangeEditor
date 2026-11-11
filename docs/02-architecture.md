@@ -46,8 +46,14 @@ use with its presentation (label, description and category from the definition f
 none for core and bundled nodes) and the provider a new node binds to.
 `Host::observe(flow, on)` makes a flow send `FlowEvent::Variables` with each variable
 whose value differs from the last one reported, starting with all of them; several
-writes between two reports appear as the latest value. Not provided yet: values of
-node ports, and built-in text for core and bundled nodes.
+writes between two reports appear as the latest value. An observed flow also sends
+`FlowEvent::Ports` with each output port whose value changed: the run keeps the last
+value each producer published (`Run::keep_port_values`, `Run::port_values`), taken
+from an activation's value registers when it ends and from live activations on each
+report. A port appears once a node has read it, so an output nothing reads, a constant
+folded at compile time and a fault are absent; nodes inside a function report under
+the function's node IDs, whichever call ran last. Not provided yet: built-in text for
+core and bundled nodes.
 Package nodes implemented as graphs are linked into an in-memory copy of the document
 as function calls when it is checked or opened (04).
 Live edit (2026-11-11; 11 §15): `Host::update(flow, json)` applies an edited document to
