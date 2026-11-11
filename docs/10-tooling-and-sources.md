@@ -1,5 +1,34 @@
 # Tooling, environment and research register
 
+## HTTPS in the network package — 2026-11-10
+
+`ureq` =3.5.1 now builds with `default-features = false, features = ["rustls"]`, which
+its manifest defines as rustls, the ring provider and `webpki-roots`. This supersedes
+the no-TLS note in the entry below. Lockfile additions read from `cargo metadata`:
+rustls 0.23.46 (Apache-2.0 OR ISC OR MIT), ring 0.17.14 (Apache-2.0 AND ISC),
+rustls-webpki 0.103.16 (ISC), untrusted 0.9.0 (ISC), webpki-roots 1.0.11
+(CDLA-Permissive-2.0), rustls-pki-types 1.15.1, zeroize 1.9.1, subtle 2.6.1
+(BSD-3-Clause), getrandom 0.2.17 and 0.4.3, wasi 0.11.1, windows-sys 0.52.0 and
+0.61.2 with windows-targets 0.52.6 and its per-target crates; highest declared MSRV
+1.85. `deny.toml` admits ISC and CDLA-Permissive-2.0 by the user's decision; MPL was
+not needed.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,709 passed, 0 failed, 16 ignored |
+| `cargo test -p orange-net -- --ignored` (public internet) | 1 passed: GET `https://example.com/` returned 200; `https://wrong.host.badssl.com` was refused and took `failed` |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`; `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: `cargo-deny` is not installed locally, so the widened license list and the
+advisory and duplicate-version checks (two `getrandom` and two `windows-sys` versions
+are now present) are confirmed only by the hosted check. ring compiles C and assembly;
+only the Windows MSVC build was exercised. The normal test run covers TLS only through
+a handshake that must fail; the successful and wrong-host cases need the internet and
+are ignored by default. Expired, self-signed and revoked certificates, system trust,
+pinned CAs and mTLS are untested or unimplemented.
+
 ## Connections, native services and the HTTP package — 2026-11-10
 
 Same branch and toolchain as the entries below. New pinned dependency: `ureq` =3.5.1,

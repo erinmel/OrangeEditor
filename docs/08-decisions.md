@@ -51,7 +51,9 @@ installed native library. It is the third way to implement a node, beside graphs
 components, and the only one that can hold a socket today. Network access for
 sandboxed components will be offered through these services behind grants rather than
 by giving guests sockets. A connection is declared data (11 §16.1); the live session
-belongs to the host.
+belongs to the host. HTTPS amendment (2026-11-10, approved by the user): the license
+policy admits ISC and CDLA-Permissive-2.0 so the network package can use rustls, ring
+and the Mozilla root set. No other crate may depend on a TLS stack.
 
 Graph tier amendment (2026-11-10): code is not the only way to implement a package
 node. A provider with the ID `graph` is implemented by a function graph shipped in the

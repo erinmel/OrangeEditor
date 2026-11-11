@@ -30,9 +30,11 @@ Implemented subset (2026-11-10; `orange-host`, `orange-net`): connection declara
 request, default 30,000). Its node `org.orange.net/http-request` takes `method`,
 `path` and `content` and returns `status` and `response`; any HTTP status is a result,
 while a transport failure, an invalid request or an unreadable or over-8-MiB response
-takes the node's `failed` route with an `org.orange.net/*` code. **Only `http://`
-endpoints work**: the dependency policy (`deny.toml`) admits no TLS implementation, so
-`https://` is refused when the connection is opened. Nothing else in this section is
+takes the node's `failed` route with an `org.orange.net/*` code. `http://` and
+`https://` endpoints work. TLS is rustls with the ring provider; certificates and host
+names are verified against the bundled Mozilla roots (`webpki-roots`), not the system
+trust store, and verification cannot be turned off. Pinned CAs, mTLS and system trust
+are not implemented. Nothing else in this section is
 implemented: no credentials or vault, profiles and revisions, leases, pooling policy,
 retries, redirects policy, proxy or DNS rules, Test Connection, or WebSocket. The text
 below remains a proposal.
