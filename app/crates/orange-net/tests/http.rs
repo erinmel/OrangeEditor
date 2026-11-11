@@ -44,6 +44,11 @@ fn edge(n: u32, from: u32, out: &str, to: u32, input: &str) -> Json {
 
 /// Answers each request with status 201 and a body echoing its request line and body.
 fn server(requests: usize) -> String {
+    server_with(requests, 201)
+}
+
+/// The same server answering with another status code.
+fn server_with(requests: usize, status: u16) -> String {
     let listener = TcpListener::bind("127.0.0.1:0").unwrap();
     let address = listener.local_addr().unwrap();
     let _ = std::thread::spawn(move || {
@@ -73,7 +78,7 @@ fn server(requests: usize) -> String {
             let mut stream = reader.into_inner();
             write!(
                 stream,
-                "HTTP/1.1 201 Created\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
+                "HTTP/1.1 {status} Done\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{reply}",
                 reply.len()
             )
             .unwrap();
@@ -272,4 +277,157 @@ fn a_real_https_endpoint_is_reached_with_certificate_verification() {
     host.trigger(flow, node(1), None).unwrap();
     until("the refusal", || read(&host, flow, 100).is_some());
     assert_eq!(read(&host, flow, 100), Some(Value::I64(-1)));
+}
+
+const POST_SCENE: &str = "org.example.api/post-scene";
+const STAND_IN: &str = "40000000-0000-4000-8000-0000000000ff";
+const OTHER: &str = "40000000-0000-4000-8000-000000000002";
+
+/// A package with no code: one node that posts its `content` to `/scene` on whichever
+/// connection the node using it names, built from the base HTTP request node.
+fn scene_package(host: &Host) -> Vec<u8> {
+    // The request node of the body is authored like any node, against a stand-in
+    // connection.
+    let mut scratch = GraphDocument::new("20000000-0000-4000-8000-0000000000aa".parse().unwrap());
+    let stand_in = serde_json::from_value(json!({"id": STAND_IN, "name": "connection",
+        "adapter": orange_net::HTTP_ADAPTER, "scope": "shared"}))
+    .unwrap();
+    let _ = scratch
+        .apply([orange_model::DocCommand::UpsertConnection(stand_in)])
+        .unwrap();
+    let mut request = NewNode::new(
+        node(303),
+        DefinitionRef {
+            id: orange_net::HTTP_REQUEST.parse().unwrap(),
+            version: 1,
+        },
+    );
+    request.config = serde_json::from_value(json!({"connection": STAND_IN})).unwrap();
+    request.inputs = serde_json::from_value(json!({
+        "method": {"type": STRING, "value": "POST"},
+        "path": {"type": STRING, "value": "/scene"}
+    }))
+    .unwrap();
+    let edit = new_node_edit(&scratch, host.registry(), request).unwrap();
+    let _ = scratch.apply(edit.commands).unwrap();
+    let authored: Json = serde_json::from_str(&to_json(&scratch).unwrap()).unwrap();
+
+    let port = |name: &str, direction: &str, ty: &str| json!({"port_id": name, "direction": direction, "kind": "data", "type": ty});
+    let graph = json!({
+        "format": orange_host::GRAPH_NODE_FORMAT, "format_version": 1,
+        "connection": STAND_IN,
+        "function": {"id": id(300), "name": "post-scene", "kind": "async",
+            "inputs": [port("content", "input", STRING)],
+            "outputs": [port("status", "output", I64)],
+            "nodes": [core(301, "function-entry"), authored["nodes"][0], core(305, "return")],
+            "edges": [
+                edge(301, 301, "then", 303, "in"),
+                edge(302, 301, "content", 303, "content"),
+                edge(303, 303, "then", 305, "in"),
+                edge(304, 303, "status", 305, "status"),
+            ]},
+        "signatures": authored["signatures"],
+        "package_lock": authored["package_lock"]
+    });
+    let definition = json!({"definition_id": POST_SCENE, "definition_version": 1,
+    "config_version": 1, "kind": "async", "suspends": "always", "determinism": "external",
+    "connection": true,
+    "ports": [
+        port("content", "input", STRING),
+        {"port_id": "status", "direction": "output", "kind": "data", "type": I64,
+            "source": "execution", "available_on": ["then"]}
+    ]});
+    let manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": "org.example.api", "version": "1.0.0", "publisher": "org.example",
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+        "dependencies": [],
+        "contributions": {
+            "nodes": [POST_SCENE],
+            "providers": [{"slot": format!("node:{POST_SCENE}@1"), "id": orange_host::GRAPH_PROVIDER}]
+        },
+        "permissions": [], "license": "MIT",
+        "about": {"name": "Scene API", "keywords": ["http"]}
+    });
+    orange_host::pack(
+        manifest.to_string().as_bytes(),
+        &[
+            (
+                "nodes/post-scene.json".into(),
+                definition.to_string().into_bytes(),
+            ),
+            (
+                "graphs/post-scene.json".into(),
+                graph.to_string().into_bytes(),
+            ),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_node_made_as_a_graph_uses_whichever_connection_each_use_names() {
+    let mut host = host();
+    let package = scene_package(&host);
+    let _ = host
+        .install(&package, orange_host::Grants::default())
+        .unwrap();
+
+    // One diagram, two servers, the same package node on each.
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000002".parse().unwrap());
+    for (connection, url) in [
+        (CONNECTION, server_with(1, 201)),
+        (OTHER, server_with(1, 202)),
+    ] {
+        let decl = serde_json::from_value(json!({"id": connection, "name": "api",
+            "adapter": orange_net::HTTP_ADAPTER, "scope": "graph",
+            "settings": {"base_url": url}}))
+        .unwrap();
+        let _ = document
+            .apply([orange_model::DocCommand::UpsertConnection(decl)])
+            .unwrap();
+    }
+    for (n, connection) in [(3, CONNECTION), (5, OTHER)] {
+        let mut call = NewNode::new(
+            node(n),
+            DefinitionRef {
+                id: POST_SCENE.parse().unwrap(),
+                version: 1,
+            },
+        );
+        call.config = serde_json::from_value(json!({"connection": connection})).unwrap();
+        call.inputs =
+            serde_json::from_value(json!({"content": {"type": STRING, "value": "hi"}})).unwrap();
+        let edit = new_node_edit(&document, host.registry(), call).unwrap();
+        assert_eq!(edit.provider.id, orange_host::GRAPH_PROVIDER);
+        let _ = document.apply(edit.commands).unwrap();
+    }
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([core(1, "on-manual"), set(4, 100), set(6, 101)]);
+    saved["edges"] = json!([
+        edge(1, 1, "then", 3, "in"),
+        edge(2, 3, "then", 4, "in"),
+        edge(3, 3, "status", 4, "value"),
+        edge(4, 4, "then", 5, "in"),
+        edge(5, 5, "then", 6, "in"),
+        edge(6, 5, "status", 6, "value"),
+    ]);
+    saved["variables"] = json!([
+        {"id": id(100), "name": "first", "type": I64, "scope": "run"},
+        {"id": id(101), "name": "second", "type": I64, "scope": "run"}
+    ]);
+    let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
+    // The saved diagram holds two package nodes and nothing of the HTTP node behind them.
+    assert!(!text.contains(orange_net::HTTP_REQUEST));
+    let diagnostics = host.check(&text).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("both requests", || read(&host, flow, 101).is_some());
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(201)));
+    assert_eq!(read(&host, flow, 101), Some(Value::I64(202)));
 }

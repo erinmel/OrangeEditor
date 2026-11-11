@@ -8,6 +8,7 @@
 //! execution are those of ordinary graph functions, with no separate interpreter and no
 //! sandbox to cross.
 use serde_json::{Map, Value as Json, json};
+use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
 
@@ -25,9 +26,15 @@ pub(crate) type Graphs = BTreeMap<GraphKey, Arc<GraphNode>>;
 #[derive(Debug)]
 pub(crate) struct GraphNode {
     function: Json,
-    function_id: String,
     /// Local variables the body uses. Each call gets its own; nothing else is shared.
     variables: Vec<Json>,
+    /// Signature snapshots and package locks of the package nodes in the body, which a
+    /// document that links the body must hold too.
+    signatures: Map<String, Json>,
+    package_lock: Vec<Json>,
+    /// The stand-in connection ID the body's nodes name, when the node uses a
+    /// connection. Each use of the node replaces it with the connection it names.
+    connection: Option<String>,
 }
 
 fn data_ports<'a>(ports: impl Iterator<Item = &'a Json>) -> BTreeSet<(String, String, String)> {
@@ -46,8 +53,9 @@ fn data_ports<'a>(ports: impl Iterator<Item = &'a Json>) -> BTreeSet<(String, St
 
 impl GraphNode {
     /// Decodes a graph node file and checks it against the node's definition file: same
-    /// kind and the same data ports. Whether the body is a valid function is decided by
-    /// validating it, which the host does before publishing the package.
+    /// kind, the same data ports and the same use of a connection. Whether the body is a
+    /// valid function is decided by validating it, which the host does before publishing
+    /// the package.
     pub fn decode(text: &str, definition: &str) -> Result<Self, String> {
         let file: Json = serde_json::from_str(text).map_err(|error| error.to_string())?;
         let definition: Json =
@@ -60,10 +68,9 @@ impl GraphNode {
             .filter(|function| function.is_object())
             .ok_or("missing `function`")?
             .clone();
-        let function_id = function["id"]
-            .as_str()
-            .ok_or("the function has no `id`")?
-            .to_owned();
+        if !function["id"].is_string() {
+            return Err("the function has no `id`".into());
+        }
         if function["kind"] != definition["kind"] {
             return Err("the function's kind differs from the node definition".into());
         }
@@ -80,10 +87,19 @@ impl GraphNode {
         {
             return Err("a graph node may declare local variables only".into());
         }
+        let connection = match file.get("connection") {
+            None => None,
+            Some(id) => Some(id.as_str().ok_or("`connection` must be an ID")?.to_owned()),
+        };
+        if connection.is_some() != (definition["connection"] == true) {
+            return Err("the graph and the node definition disagree on using a connection".into());
+        }
         Ok(Self {
             function,
-            function_id,
             variables,
+            signatures: file["signatures"].as_object().cloned().unwrap_or_default(),
+            package_lock: list(&file["package_lock"]),
+            connection,
         })
     }
 }
@@ -102,24 +118,75 @@ fn graph_of(node: &Json, graphs: &Graphs) -> Option<Arc<GraphNode>> {
     graphs.get(&key).cloned()
 }
 
-/// Turns the node into a call of `graph`'s function. Its ID, literals, type arguments
-/// and therefore every edge attached to it stay as they are.
-fn retarget(node: &mut Map<String, Json>, graph: &GraphNode) {
+/// A stable ID for `id` as used with `connection`: the same pair always gives the same
+/// ID, and different connections never share one.
+fn derived(id: &str, connection: &str) -> String {
+    let hash = Sha256::digest(format!("orange.graph-node\n{id}\n{connection}").as_bytes());
+    let mut bytes = [0u8; 16];
+    bytes.copy_from_slice(&hash[..16]);
+    // A random-form (version 4) UUID, which is the only form document IDs take.
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    let hex: String = bytes.iter().map(|byte| format!("{byte:02x}")).collect();
+    format!(
+        "{}-{}-{}-{}-{}",
+        &hex[..8],
+        &hex[8..12],
+        &hex[12..16],
+        &hex[16..20],
+        &hex[20..]
+    )
+}
+
+/// The function a use of `graph` calls. A graph that uses no connection has one
+/// function for every use. One that does gets a copy per connection, with its own IDs
+/// and with the stand-in connection replaced, because a function cannot take a
+/// connection as an argument.
+fn function_for(graph: &GraphNode, connection: Option<&str>) -> Json {
+    let (Some(stand_in), Some(actual)) = (graph.connection.as_deref(), connection) else {
+        return graph.function.clone();
+    };
+    let mut function = graph.function.clone();
+    let rename = |value: &mut Json| {
+        if let Some(id) = value.as_str() {
+            *value = json!(derived(id, actual));
+        }
+    };
+    rename(&mut function["id"]);
+    for node in function["nodes"].as_array_mut().into_iter().flatten() {
+        rename(&mut node["id"]);
+        if node["config"]["connection"] == stand_in {
+            node["config"]["connection"] = json!(actual);
+        }
+    }
+    for edge in function["edges"].as_array_mut().into_iter().flatten() {
+        rename(&mut edge["id"]);
+        rename(&mut edge["from"]["node"]);
+        rename(&mut edge["to"]["node"]);
+    }
+    function
+}
+
+/// Turns the node into a call of `function`. Its ID, literals, type arguments and
+/// therefore every edge attached to it stay as they are.
+fn retarget(node: &mut Map<String, Json>, function: &Json) {
     let _ = node.insert("definition_id".into(), json!("core/call"));
     let _ = node.insert("definition_version".into(), json!(1));
     let _ = node.insert("config_version".into(), json!(1));
-    let _ = node.insert("config".into(), json!({"function": graph.function_id}));
+    let _ = node.insert("config".into(), json!({"function": function["id"]}));
     let _ = node.remove("provider");
     let _ = node.remove("signature");
 }
 
-fn retarget_all(nodes: Option<&mut Json>, graphs: &Graphs, used: &mut Vec<Arc<GraphNode>>) {
+fn retarget_all(nodes: Option<&mut Json>, graphs: &Graphs, used: &mut Vec<(Arc<GraphNode>, Json)>) {
     for node in nodes.and_then(Json::as_array_mut).into_iter().flatten() {
-        if let Some(graph) = graph_of(node, graphs)
-            && let Some(fields) = node.as_object_mut()
-        {
-            retarget(fields, &graph);
-            used.push(graph);
+        if let Some(graph) = graph_of(node, graphs) {
+            let connection = node["config"]["connection"].as_str().map(str::to_owned);
+            let function = function_for(&graph, connection.as_deref());
+            if let Some(fields) = node.as_object_mut() {
+                retarget(fields, &function);
+                used.push((graph, function));
+            }
         }
     }
 }
@@ -132,6 +199,30 @@ fn add_missing(document: &mut Map<String, Json>, list: &str, items: &[Json]) {
     for item in items {
         if existing.iter().all(|present| present["id"] != item["id"]) {
             existing.push(item.clone());
+        }
+    }
+}
+
+/// Adds what a linked body needs from its package beside the function itself.
+fn add_support(document: &mut Map<String, Json>, graph: &GraphNode) {
+    add_missing(document, "variables", &graph.variables);
+    let entry = document.entry("signatures").or_insert_with(|| json!({}));
+    if let Some(signatures) = entry.as_object_mut() {
+        for (key, snapshot) in &graph.signatures {
+            let _ = signatures
+                .entry(key.clone())
+                .or_insert_with(|| snapshot.clone());
+        }
+    }
+    let entry = document.entry("package_lock").or_insert_with(|| json!([]));
+    if let Some(locks) = entry.as_array_mut() {
+        for lock in &graph.package_lock {
+            let held = locks
+                .iter()
+                .any(|held| held["id"] == lock["id"] && held["version"] == lock["version"]);
+            if !held {
+                locks.push(lock.clone());
+            }
         }
     }
 }
@@ -154,20 +245,26 @@ pub(crate) fn link(document: &mut Json, graphs: &Graphs) {
         if used.is_empty() {
             return;
         }
-        for graph in used {
-            add_missing(root, "functions", std::slice::from_ref(&graph.function));
-            add_missing(root, "variables", &graph.variables);
+        for (graph, function) in used {
+            add_missing(root, "functions", std::slice::from_ref(&function));
+            add_support(root, &graph);
         }
     }
 }
 
 /// A document holding only the given graphs, for validating them before publication.
+/// A graph that uses a connection is checked against a stand-in declaration.
 pub(crate) fn scratch(empty_document: &str, graphs: &[Arc<GraphNode>]) -> Option<Json> {
     let mut document: Json = serde_json::from_str(empty_document).ok()?;
     let root = document.as_object_mut()?;
     for graph in graphs {
         add_missing(root, "functions", std::slice::from_ref(&graph.function));
-        add_missing(root, "variables", &graph.variables);
+        add_support(root, graph);
+        if let Some(stand_in) = &graph.connection {
+            let declaration = json!({"id": stand_in, "name": "connection",
+                "adapter": "host/parameter", "scope": "shared"});
+            add_missing(root, "connections", std::slice::from_ref(&declaration));
+        }
     }
     Some(document)
 }

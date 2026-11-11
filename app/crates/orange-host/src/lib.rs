@@ -32,7 +32,8 @@ use orange_model::catalog::{
 };
 use orange_model::document::{ConnectionDecl, ConnectionScope};
 use orange_model::validation::{Diagnostic, HostOrigin};
-use orange_model::{GraphDocument, analyze, from_json, to_json};
+use orange_model::validation::{LeafEffects, ValidationAnalysis};
+use orange_model::{GraphDocument, analyze_with_effects, from_json, to_json};
 use orange_packages::{
     ArchiveFiles, ArchiveLimits, ArchivePath, DiscardSink, Execution, HOST_API_VERSION,
     MemoryJournal, MemorySink, PackageStore, ProviderSlot, read_archive,
@@ -203,6 +204,21 @@ impl EffectResolver for Native {
     fn resolve_effect(&self, request: &BindingRequest<'_>) -> Result<EffectBinding, ResolveError> {
         self.1.resolve(request)
     }
+}
+
+/// Validates a document with what the host knows about package nodes used inside
+/// functions: none of them writes a graph variable. Package code, whether a component
+/// or a native service, has no access to a run's variables, so this is a fact about the
+/// execution boundary, not a claim taken from the package.
+fn analyzed(document: &GraphDocument, registry: &RegistrySnapshot) -> ValidationAnalysis {
+    let effects = document
+        .functions()
+        .values()
+        .flat_map(|function| function.body.nodes.values())
+        .filter(|node| !node.definition.id.is_core())
+        .map(|node| (node.id, LeafEffects::Known(Vec::new())))
+        .collect();
+    analyze_with_effects(document, registry, effects)
 }
 
 /// Sessions by connection, with the declaration each was opened from.
@@ -645,7 +661,7 @@ impl Host {
         let document =
             from_json(&scratch.to_string()).map_err(|error| refused(error.to_string()))?;
         let registry = self.store.current();
-        let analysis = analyze(&document, registry);
+        let analysis = analyzed(&document, registry);
         if analysis.is_ready_for_lowering(&document, registry) {
             Ok(())
         } else {
@@ -672,7 +688,7 @@ impl Host {
     pub fn check(&self, json: &str) -> Result<Vec<Diagnostic>, HostError> {
         let document = self.linked(json)?;
         let registry = self.store.current();
-        let analysis = analyze(&document, registry);
+        let analysis = analyzed(&document, registry);
         if analysis.is_ready_for_lowering(&document, registry) {
             Ok(Vec::new())
         } else {
@@ -686,7 +702,7 @@ impl Host {
     fn prepare(&mut self, json: &str, previous: Option<&Opened>) -> Result<Prepared, HostError> {
         let document = self.linked(json)?;
         let registry = Arc::clone(self.store.current());
-        let analysis = analyze(&document, &registry);
+        let analysis = analyzed(&document, &registry);
         if !analysis.is_ready_for_lowering(&document, &registry) {
             return Err(HostError::Invalid(analysis.report().diagnostics.clone()));
         }
