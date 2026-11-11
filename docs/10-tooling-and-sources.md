@@ -1,5 +1,21 @@
 # Tooling, environment and research register
 
+## Stored packages — 2026-11-11
+
+Same branch and toolchain; no dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,723 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `orange pack`, then `orange check <graph> --package <file> --store <dir>`, then `orange check <graph> --store <dir>` | Second check passes without `--package`; the same check without `--store` reports the provider unavailable |
+
+Limits: Windows only. Not tested: a Wasm component package across a restart, a
+package that depends on an earlier stored one, a crash between writing an archive and
+its index, an unreadable or malformed index, and two hosts on one directory.
+
 ## Port value observation — 2026-11-11
 
 Same branch and toolchain; no dependency change.

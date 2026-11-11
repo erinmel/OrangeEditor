@@ -41,6 +41,16 @@ Plugin SDK (2026-11-11): the types a native plugin implements (`ServicePackage`,
 `orange-sdk` crate, which depends on the model, kernel and runtime only. A plugin crate
 depends on it alone; `orange-net` does, and uses the host only in its tests. The host
 re-exports the same types.
+Stored packages (2026-11-11): with `HostOptions::package_dir` the host saves every
+installed archive in that directory under the name of its SHA-256, and an index,
+`installed.json`, lists them in installation order with the granted capabilities. A
+host started on the directory installs them again through the same checks as a first
+installation; one that no longer installs is listed by `Host::not_restored` and the
+host still starts. Files are written to a temporary name and renamed. This is a replay
+of installations, not the package journal: `orange-packages`' `FileJournal` is not
+used by the host, so provider choices made after installation, removals, revocations
+and rollback history do not survive a restart, and the host has no API for them yet.
+Two hosts on one directory are not coordinated.
 Editor-facing API (2026-11-11): `Host::nodes()` lists every definition a document can
 use with its presentation (label, description and category from the definition file;
 none for core and bundled nodes) and the provider a new node binds to.

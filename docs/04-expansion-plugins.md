@@ -86,6 +86,11 @@ Packages contributing text include `localization` and catalogue files per [13 §
 
 Digest and package are synthetic. This sample device package implements a protocol over the granted WebSocket profile; raw send/receive grants do not enforce protocol operation restrictions. Its separate namespaced service validates allowed operations for other expansions. A consumer granted only typed device operations uses that checked service rather than receiving raw socket authority. Authentication uses host-supported broker operations; any new secret transform requires the explicit policy below and in 05. This sample is not a promised shipped device integration.
 
+Installed packages between sessions (2026-11-11; `orange-host`): a host given a
+package directory keeps each installed archive and the capabilities granted to it, and
+installs them again when it next starts (02). The `orange` command takes the directory
+as `--store <dir>`.
+
 Native plugins in Rust (2026-11-11; `orange-sdk`): a plugin crate depends on
 `orange-sdk` and returns a `ServicePackage` holding its definition files, a
 `ServiceNode` per asynchronous node, a `ServiceSource` per trigger and a
