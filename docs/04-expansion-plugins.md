@@ -86,6 +86,14 @@ Packages contributing text include `localization` and catalogue files per [13 §
 
 Digest and package are synthetic. This sample device package implements a protocol over the granted WebSocket profile; raw send/receive grants do not enforce protocol operation restrictions. Its separate namespaced service validates allowed operations for other expansions. A consumer granted only typed device operations uses that checked service rather than receiving raw socket authority. Authentication uses host-supported broker operations; any new secret transform requires the explicit policy below and in 05. This sample is not a promised shipped device integration.
 
+Native plugins in Rust (2026-11-11; `orange-sdk`): a plugin crate depends on
+`orange-sdk` and returns a `ServicePackage` holding its definition files, a
+`ServiceNode` per asynchronous node, a `ServiceSource` per trigger and a
+`ConnectionAdapter` per connection kind. The application passes it to
+`Host::with_services`. This tier is compiled into the application: it is trusted, not
+sandboxed and not installed at run time. A plugin that must be installed into a running
+application is a Wasm component or a graph package.
+
 Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
 sections. `about` holds `name` (≤ 100 characters), `description` (≤ 2,000), `authors`
 (≤ 16), `homepage` and `repository` (`https://` URLs) and `keywords` (≤ 16 distinct

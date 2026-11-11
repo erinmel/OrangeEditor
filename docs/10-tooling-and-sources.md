@@ -1,5 +1,24 @@
 # Tooling, environment and research register
 
+## Plugin SDK crate, node listing and variable observation — 2026-11-11
+
+Same branch and toolchain. New workspace crate `orange-sdk`; no external dependency
+added or changed.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,721 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: Windows only. The hosted Linux test job failed once on the previous head; its
+log could not be downloaded (the log service returned errors) and the failure was not
+reproduced, so its cause is unknown. Not tested: observation across a live edit,
+observation of a paused flow, presentation text of an installed (archive) package, and
+limits on presentation text length beyond the definition file's byte limit.
+
 ## Manifest description, graph nodes on connections and a dependency advisory — 2026-11-11
 
 Same branch and toolchain. `rustix` moved from 1.1.5 to 1.1.6 with `cargo update -p

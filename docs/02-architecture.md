@@ -36,6 +36,18 @@ flow does with it. The source returns a guard that the host drops when the flow 
 closed. An entry no service provides refuses the document. `FlowInfo::manual_entries`
 lists only `core/on-manual` entries, since package entries are not for a user to fire.
 `orange-net` is the first service package and the only crate with a network client.
+Plugin SDK (2026-11-11): the types a native plugin implements (`ServicePackage`,
+`ServiceNode`, `ServiceSource`, `ConnectionAdapter`, `Session`, `Emitter`) are the
+`orange-sdk` crate, which depends on the model, kernel and runtime only. A plugin crate
+depends on it alone; `orange-net` does, and uses the host only in its tests. The host
+re-exports the same types.
+Editor-facing API (2026-11-11): `Host::nodes()` lists every definition a document can
+use with its presentation (label, description and category from the definition file;
+none for core and bundled nodes) and the provider a new node binds to.
+`Host::observe(flow, on)` makes a flow send `FlowEvent::Variables` with each variable
+whose value differs from the last one reported, starting with all of them; several
+writes between two reports appear as the latest value. Not provided yet: values of
+node ports, and built-in text for core and bundled nodes.
 Package nodes implemented as graphs are linked into an in-memory copy of the document
 as function calls when it is checked or opened (04).
 Live edit (2026-11-11; 11 §15): `Host::update(flow, json)` applies an edited document to
@@ -141,7 +153,8 @@ The host owns an input-trigger service and audio capture/playback services. Keyb
 | orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
 | orange-host | Session API: package installation, flows (one run per thread), effect workers, bounded observation | UI, windows, rendering; graph semantics |
 | orange-cli | `orange` terminal front end over `orange-host` and the service packages it builds in | Any direct use of compiler, runtime or packages |
-| orange-net | Base network service package: HTTP and WebSocket adapters, request and send nodes, and the message entry | Graph semantics; anything the host's service interface does not expose |
+| orange-sdk | Plugin SDK: the service package, node, trigger, connection adapter and session types a native plugin crate implements | Package store, guest engine, front ends, any network or OS client |
+| orange-net | Base network service package on `orange-sdk`: HTTP and WebSocket adapters, request and send nodes, and the message entry | Graph semantics; anything the SDK does not expose |
 | orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c); guest action kernels and async effect implementations with binary bulk values (2026-11-10) | Core-crate dependency, precompiled native loading, ungranted imports |
 | orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Specialized integration request logic |
 | orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |
