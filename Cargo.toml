@@ -21,7 +21,7 @@ tungstenite = { version = "=0.30.0", default-features = false, features = ["hand
 ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }
 uuid = { version = "=1.29.0", features = ["serde"] }
 # Wasmtime 48 LTS (supported 24 months); host-only (ADR-03). Default features off.
-wasmtime = { version = "=48.0.8", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
+wasmtime = { version = "=50.0.1", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 
 [workspace.lints.rust]
 unsafe_code = "forbid"
