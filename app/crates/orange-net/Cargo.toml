@@ -9,8 +9,8 @@ publish.workspace = true
 [dependencies]
 orange-host = { path = "../orange-host", version = "=0.0.0" }
 serde_json.workspace = true
-# Blocking HTTP/1.1 client. Default features are off: no TLS stack is admitted by the
-# dependency policy yet, so only `http://` endpoints are reachable.
+# Blocking HTTP/1.1 client with rustls (ring provider, bundled Mozilla roots). The other
+# default feature, gzip, stays off.
 ureq.workspace = true
 
 [dev-dependencies]

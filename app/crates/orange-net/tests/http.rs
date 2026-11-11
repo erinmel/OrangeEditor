@@ -210,9 +210,9 @@ fn an_unreachable_server_takes_the_nodes_failed_route() {
 #[test]
 fn connections_that_cannot_work_are_refused_before_anything_runs() {
     let mut host = host();
-    let https = document(&host, graph_connection("https://example.invalid"));
+    let scheme = document(&host, graph_connection("ftp://example.invalid"));
     assert!(
-        matches!(host.open(&https), Err(HostError::Connection(_, reason)) if reason.contains("https"))
+        matches!(host.open(&scheme), Err(HostError::Connection(_, reason)) if reason.contains("https"))
     );
 
     let unknown = json!({"id": CONNECTION, "name": "api", "adapter": "org.example/none",
@@ -232,4 +232,44 @@ fn connections_that_cannot_work_are_refused_before_anything_runs() {
         "{diagnostics:?}"
     );
     assert_eq!(host.flows().count(), 0);
+}
+
+#[test]
+fn an_https_connection_opens_and_a_failed_handshake_takes_the_failed_route() {
+    let mut host = host();
+    // A plain-text server: the TLS handshake cannot succeed, and nothing is sent in clear.
+    let plain = server(1).replacen("http://", "https://", 1);
+    let text = document(&host, graph_connection(&plain));
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the failure", || read(&host, flow, 100).is_some());
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(-1)));
+}
+
+/// Needs the public internet, so it is not part of the normal run:
+/// `cargo test -p orange-net -- --ignored`.
+#[test]
+#[ignore = "contacts https://example.com"]
+fn a_real_https_endpoint_is_reached_with_certificate_verification() {
+    let mut host = host();
+    let mut saved: Json =
+        serde_json::from_str(&document(&host, graph_connection("https://example.com"))).unwrap();
+    for node in saved["nodes"].as_array_mut().unwrap() {
+        if node["definition_id"] == orange_net::HTTP_REQUEST {
+            node["inputs"]["method"]["value"] = json!("GET");
+            node["inputs"]["path"]["value"] = json!("/");
+            node["inputs"]["content"]["value"] = json!("");
+        }
+    }
+    let flow = host.open(&saved.to_string()).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the reply", || read(&host, flow, 100).is_some());
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(200)));
+
+    // A certificate for another name must be refused, not accepted.
+    let wrong = document(&host, graph_connection("https://wrong.host.badssl.com"));
+    let flow = host.open(&wrong).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the refusal", || read(&host, flow, 100).is_some());
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(-1)));
 }

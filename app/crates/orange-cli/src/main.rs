@@ -30,8 +30,7 @@ files (`nodes/<name>.json`, `graphs/<name>.json`, a component), filling in its d
 
 `--share <id> <adapter> <settings.json>` gives every graph that declares connection
 `<id>` as shared the same session, with settings read from the file. The base network
-package is built in: adapter `org.orange.net/http`, node `org.orange.net/http-request`
-(`http://` endpoints only).
+package is built in: adapter `org.orange.net/http`, node `org.orange.net/http-request`.
 
 `--grant-log` lets installed package code write log lines. `--for` stops after a time.";
 

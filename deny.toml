@@ -6,7 +6,9 @@ yanked = "deny"
 
 # Unpublished workspace members carry no license until a release package declares one.
 [licenses]
-allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "MIT", "Unicode-3.0", "Zlib"]
+# ISC (ring, rustls-webpki, untrusted) and CDLA-Permissive-2.0 (webpki-roots, the Mozilla
+# root certificate data) were admitted on 2026-11-10 for HTTPS in orange-net.
+allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "CDLA-Permissive-2.0", "ISC", "MIT", "Unicode-3.0", "Zlib"]
 private = { ignore = true }
 
 [bans]

@@ -5,9 +5,10 @@
 //! `org.orange.net/http-request`. Nothing here is special to the host; another crate can
 //! provide a better HTTP node, or a different protocol, the same way.
 //!
-//! Only `http://` endpoints are reachable. The repository's dependency policy admits no
-//! TLS implementation yet, so `https://` is refused when the connection is opened rather
-//! than failing later on the wire.
+//! `http://` and `https://` endpoints are supported. TLS is rustls with the ring
+//! provider; server certificates are verified against the bundled Mozilla roots
+//! (`webpki-roots`), not the operating system's store, and there is no way to disable
+//! verification.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -24,7 +25,7 @@ use ureq::http::{Method, Request};
 
 /// Package namespace of the definitions and adapter kinds here.
 pub const PACKAGE: &str = "org.orange.net";
-/// Adapter kind of an HTTP connection. Settings: `base_url` (required, `http://…`),
+/// Adapter kind of an HTTP connection. Settings: `base_url` (required, `http://…` or `https://…`),
 /// `timeout_ms` (whole request, default 30,000).
 pub const HTTP_ADAPTER: &str = "org.orange.net/http";
 /// Sends one request on an HTTP connection. Inputs `method`, `path`, `content` (the request body); outputs
@@ -83,11 +84,8 @@ impl ConnectionAdapter for HttpAdapter {
             .get("base_url")
             .and_then(Json::as_str)
             .ok_or("`base_url` is required")?;
-        if base_url.starts_with("https://") {
-            return Err("https is not available in this build; use an http:// endpoint".into());
-        }
-        if !base_url.starts_with("http://") {
-            return Err("`base_url` must start with http://".into());
+        if !base_url.starts_with("http://") && !base_url.starts_with("https://") {
+            return Err("`base_url` must start with http:// or https://".into());
         }
         let timeout = match settings.get("timeout_ms") {
             None => DEFAULT_TIMEOUT_MS,
