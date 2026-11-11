@@ -1,5 +1,27 @@
 # Tooling, environment and research register
 
+## Manifest description, graph nodes on connections and a dependency advisory — 2026-11-11
+
+Same branch and toolchain. `rustix` moved from 1.1.5 to 1.1.6 with `cargo update -p
+rustix` after RUSTSEC-2026-0486 failed the hosted `cargo-deny` job; it is a transitive
+dependency of Wasmtime and no other package version changed (three lock entries now
+select the already-present `windows-sys` 0.52.0). No other dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,717 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+
+Limits: Windows only; `cargo-deny` not run locally, so the advisory fix is confirmed
+only by the hosted job. Tested: `about` and `update` acceptance and refusals; one
+code-free Async package node whose body is the HTTP request node, used on two
+connections. Not tested: a graph node on a shared connection or a WebSocket, a graph
+body that uses another graph package's connection node, a mismatch between the graph
+file and the definition on using a connection, or a body shipped without the
+signatures it needs. Nothing reads an update feed.
+
 ## Live edit of a running graph — 2026-11-11
 
 Branch `feat/plugin-boundary-and-core-fixes` after `049ba50`; same toolchain, no

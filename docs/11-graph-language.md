@@ -1186,8 +1186,9 @@ document. `UpsertConnection` and `RemoveConnection` are ordinary transactions wi
 undo. Pasted nodes bring the connections they reference under the same ID, added only
 where the target lacks it, because a connection's identity is what makes it shared.
 
-Not specified yet: a connection as a parameter of a graph function, so a
-graph-implemented package node cannot use one; and adapter compatibility in validation.
+A graph function still cannot take a connection as an argument. A graph-implemented
+package node uses one through per-connection copies made when the host links it (04).
+Not specified yet: adapter compatibility in validation.
 A node that receives from a connection is a package entry (§10.2).
 
 ## 17. Diagnostics catalog
