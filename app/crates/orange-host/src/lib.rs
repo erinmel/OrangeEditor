@@ -15,6 +15,7 @@
 mod effects;
 mod flow;
 mod graphs;
+mod services;
 
 use effects::Pool;
 use flow::{Context, Query, Shared, Sink};
@@ -26,7 +27,10 @@ use orange_kernel::{
     BindingRequest, EffectBinding, EffectResolver, EntropyBinding, EntropyKernelResolver,
     KernelBinding, PureKernelResolver, ResolveError,
 };
-use orange_model::catalog::{NodeDefinition, ProviderKey, RegistryBuilder, RegistrySnapshot};
+use orange_model::catalog::{
+    NodeDefinition, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistrySnapshot,
+};
+use orange_model::document::ConnectionScope;
 use orange_model::validation::{Diagnostic, HostOrigin};
 use orange_model::{GraphDocument, analyze, from_json, to_json};
 use orange_packages::{
@@ -34,6 +38,7 @@ use orange_packages::{
     MemoryJournal, MemorySink, PackageStore, ProviderSlot, read_archive,
 };
 use orange_runtime::{HostInput, InboxError, Run, RunDriver, RunEventSource, SourceOptions};
+use services::Services;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -44,11 +49,17 @@ use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use orange_guest::{Grants, GuestLimits};
+pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
+pub use orange_model::id::ConnectionId;
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
 pub use orange_packages::PackageKey;
+pub use orange_runtime::EffectLease;
 pub use orange_runtime::{
     ControlOutcome, RefusedReason, RunError, RunEvent, RunOptions, RunState, StopMode,
+};
+pub use services::{
+    Call, ConnectionAdapter, SERVICE_PROVIDER, ServiceNode, ServicePackage, Session,
 };
 
 /// Identifies one flow for the life of its host. Never reused.
@@ -140,6 +151,8 @@ pub enum HostError {
     Compile(#[from] CompileError),
     #[error("the run could not start: {0}")]
     Run(#[from] RunError),
+    #[error("connection `{0}` cannot be used: {1}")]
+    Connection(String, String),
     #[error("no such flow")]
     UnknownFlow,
     #[error("the flow has ended")]
@@ -160,10 +173,10 @@ pub struct FlowInfo {
     pub events: Vec<EventDeclId>,
 }
 
-/// Bundled native kernels for pure and entropy nodes. The host itself implements no
-/// effect nodes; those come from packages.
+/// Code compiled into the host: bundled kernels for pure and entropy nodes, and the
+/// service packages' asynchronous nodes.
 #[derive(Debug, Clone)]
-struct Native(Arc<MathPackage>);
+struct Native(Arc<MathPackage>, Services);
 impl PureKernelResolver for Native {
     fn resolve_binding(&self, request: &BindingRequest<'_>) -> Result<KernelBinding, ResolveError> {
         self.0.resolve_binding(request)
@@ -178,8 +191,25 @@ impl EntropyKernelResolver for Native {
     }
 }
 impl EffectResolver for Native {
-    fn resolve_effect(&self, _: &BindingRequest<'_>) -> Result<EffectBinding, ResolveError> {
-        Err(ResolveError::Unavailable)
+    fn resolve_effect(&self, request: &BindingRequest<'_>) -> Result<EffectBinding, ResolveError> {
+        self.1.resolve(request)
+    }
+}
+
+/// A connection the host holds for every document that declares its ID as shared.
+struct SharedConnection {
+    adapter: String,
+    settings: serde_json::Map<String, serde_json::Value>,
+    /// Opened when the first flow needs it, then the same session for all of them.
+    session: Option<Arc<dyn Session>>,
+}
+/// Settings are left out: they are the user's and may name private hosts.
+impl std::fmt::Debug for SharedConnection {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("SharedConnection")
+            .field("adapter", &self.adapter)
+            .field("open", &self.session.is_some())
+            .finish_non_exhaustive()
     }
 }
 
@@ -207,6 +237,8 @@ pub struct Host {
     engine: GuestEngine,
     guests: Vec<GuestPackage>,
     graphs: Graphs,
+    adapters: BTreeMap<String, Arc<dyn ConnectionAdapter>>,
+    shared: BTreeMap<ConnectionId, SharedConnection>,
     store: PackageStore<MemoryJournal>,
     pool: Pool,
     sink: Sink,
@@ -235,20 +267,62 @@ impl Host {
     /// flows. The receiver carries every flow's events; dropping it only stops
     /// observation.
     pub fn new(options: HostOptions) -> Result<(Self, Receiver<HostEvent>), HostError> {
+        Self::with_services(options, Vec::new())
+    }
+
+    /// Like [`Host::new`], with native service packages built into the application:
+    /// their nodes are registered beside the bundled ones and their connection
+    /// adapters become available to documents.
+    pub fn with_services(
+        options: HostOptions,
+        packages: Vec<ServicePackage>,
+    ) -> Result<(Self, Receiver<HostEvent>), HostError> {
         let start = |error: &dyn std::fmt::Display| HostError::Start(error.to_string());
         let math = MathPackage::new(built_in_digest("orange-bundled")).map_err(|e| start(&e))?;
         let origin = HostOrigin::new(env!("CARGO_PKG_VERSION"), built_in_digest("orange-host"))
             .map_err(|e| start(&e))?;
-        let base = math
+        let mut builder = math
             .register(RegistryBuilder::core(origin))
-            .map_err(|e| start(&e))?
-            .build()
             .map_err(|e| start(&e))?;
+        let mut services = Services::default();
+        let mut adapters = BTreeMap::new();
+        for package in &packages {
+            let key = ProviderKey {
+                package: package.id.clone(),
+                version: package.version.clone(),
+                content_digest: built_in_digest(&package.id),
+                id: SERVICE_PROVIDER.to_owned(),
+            };
+            let mut provider = ProviderDescriptor {
+                key: key.clone(),
+                implements: Default::default(),
+                specializations: Default::default(),
+            };
+            for (definition, _) in &package.nodes {
+                let _ = provider
+                    .implements
+                    .insert((definition.definition.clone(), definition.config_version));
+                let _ = provider
+                    .specializations
+                    .insert(definition.definition.clone(), vec![Default::default()]);
+                builder = builder
+                    .definition(definition.clone())
+                    .new_binding_default(definition.definition.clone(), key.clone());
+            }
+            builder = builder.provider(provider);
+            services.add(&key, package);
+            for (kind, adapter) in &package.adapters {
+                let _ = adapters.insert(kind.clone(), Arc::clone(adapter));
+            }
+        }
+        let base = builder.build().map_err(|e| start(&e))?;
         let engine = GuestEngine::new(options.guest).map_err(|e| start(&e))?;
         let pool = Pool::new(options.effect_workers).map_err(|e| start(&e))?;
         let (events, observer) = sync_channel(options.event_capacity.max(1));
         let host = Self {
-            native: Native(Arc::new(math)),
+            native: Native(Arc::new(math), services),
+            adapters,
+            shared: BTreeMap::new(),
             engine,
             guests: Vec::new(),
             graphs: Graphs::new(),
@@ -264,6 +338,72 @@ impl Host {
             options,
         };
         Ok((host, observer))
+    }
+
+    /// Gives every document that declares connection `id` as shared the same session.
+    /// The settings stay in the host and are never written into a document. Replacing a
+    /// shared connection affects flows opened afterwards; running flows keep theirs.
+    pub fn share_connection(
+        &mut self,
+        id: ConnectionId,
+        adapter: impl Into<String>,
+        settings: serde_json::Map<String, serde_json::Value>,
+    ) -> Result<(), HostError> {
+        let adapter = adapter.into();
+        if !self.adapters.contains_key(&adapter) {
+            return Err(HostError::Connection(
+                id.to_string(),
+                format!("no adapter `{adapter}` is available"),
+            ));
+        }
+        let _ = self.shared.insert(
+            id,
+            SharedConnection {
+                adapter,
+                settings,
+                session: None,
+            },
+        );
+        Ok(())
+    }
+
+    /// Opens the session of every connection `document` declares.
+    fn sessions(
+        &mut self,
+        document: &GraphDocument,
+    ) -> Result<BTreeMap<ConnectionId, Arc<dyn Session>>, HostError> {
+        let mut sessions = BTreeMap::new();
+        for decl in document.connections().values() {
+            let refused = |reason: String| HostError::Connection(decl.name.clone(), reason);
+            let adapter = self
+                .adapters
+                .get(&decl.adapter)
+                .ok_or_else(|| refused(format!("no adapter `{}` is available", decl.adapter)))?;
+            let session = match decl.scope {
+                ConnectionScope::Graph => adapter.open(&decl.settings).map_err(refused)?,
+                ConnectionScope::Shared => {
+                    let shared = self.shared.get_mut(&decl.id).ok_or_else(|| {
+                        refused("the host shares no connection with this ID".into())
+                    })?;
+                    if shared.adapter != decl.adapter {
+                        return Err(refused(format!(
+                            "the shared connection uses adapter `{}`",
+                            shared.adapter
+                        )));
+                    }
+                    match &shared.session {
+                        Some(session) => Arc::clone(session),
+                        None => {
+                            let session = adapter.open(&shared.settings).map_err(refused)?;
+                            shared.session = Some(Arc::clone(&session));
+                            session
+                        }
+                    }
+                }
+            };
+            let _ = sessions.insert(decl.id, session);
+        }
+        Ok(sessions)
     }
 
     /// The registry new documents are checked and compiled against.
@@ -483,6 +623,7 @@ impl Host {
             &resolver,
             CompileOptions::default(),
         )?);
+        let sessions = self.sessions(&document)?;
         let run = Run::start(
             Arc::clone(&plan),
             &document,
@@ -523,6 +664,7 @@ impl Host {
             sink: self.sink.clone(),
             pool: self.pool.clone(),
             inbox: inbox.clone(),
+            sessions,
             clock: self.clock,
             turn_inputs: self.options.turn_inputs.max(1),
             turn_budget: self.options.turn_budget.max(1),
@@ -702,4 +844,13 @@ pub fn pack(manifest: &[u8], files: &[(String, Vec<u8>)]) -> Result<Vec<u8>, Hos
     let _ = read_archive(&archive[..], &ArchiveLimits::default(), &mut DiscardSink)
         .map_err(|e| refused(&e))?;
     Ok(archive)
+}
+
+/// Decodes connection settings from the text of a JSON object, for callers that hold
+/// them in a file. Anything but an object is refused.
+pub fn settings_from_json(
+    text: &[u8],
+) -> Result<serde_json::Map<String, serde_json::Value>, HostError> {
+    serde_json::from_slice(text)
+        .map_err(|error| HostError::Connection("settings".into(), error.to_string()))
 }

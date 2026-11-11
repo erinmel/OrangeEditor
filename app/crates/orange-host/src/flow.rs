@@ -4,14 +4,16 @@
 //! query the thread executes between turns, so a run needs no lock and two flows never
 //! wait on each other.
 use crate::effects::Pool;
+use crate::services::{Call, ServiceEffect, Session};
 use crate::{FlowEvent, FlowId, HostEvent};
 use orange_guest::{GuestCancellation, guest_effect};
 use orange_kernel::{FaultText, KernelFault};
+use orange_model::id::ConnectionId;
 use orange_runtime::{
     EffectLease, EffectRequest, HostInput, InboxError, Refused, Run, RunDriver, RunInbox, RunState,
     StopMode,
 };
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex, PoisonError};
@@ -65,6 +67,7 @@ pub(crate) struct Context {
     pub sink: Sink,
     pub pool: Pool,
     pub inbox: RunInbox,
+    pub sessions: BTreeMap<ConnectionId, Arc<dyn Session>>,
     pub clock: Instant,
     pub turn_inputs: usize,
     pub turn_budget: usize,
@@ -81,6 +84,12 @@ const UNAVAILABLE: KernelFault = KernelFault {
     code: FaultText::Static("host/EffectUnavailable"),
     message_key: FaultText::Static("host/effect-unavailable"),
     message: "No host service runs this effect.",
+};
+
+const NO_CONNECTION: KernelFault = KernelFault {
+    code: FaultText::Static("host/ConnectionUnavailable"),
+    message_key: FaultText::Static("host/connection-unavailable"),
+    message: "The node names a connection this flow has not opened.",
 };
 
 /// Hands a finished effect back to its run. The mailbox is bounded, so a full one is
@@ -135,6 +144,28 @@ pub(crate) fn drive(mut driver: RunDriver, cx: Context) {
                     let outcome = effect.run(&inputs);
                     deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
                 });
+            } else if let Ok(service) = context.downcast::<ServiceEffect>() {
+                // A node that names a connection this flow did not open cannot run.
+                let session = match service.connection {
+                    None => Ok(None),
+                    Some(id) => cx.sessions.get(&id).cloned().map(Some).ok_or(NO_CONNECTION),
+                };
+                match session {
+                    Err(fault) => {
+                        let _ = driver.run_mut().complete_effect(id, Err(fault));
+                    }
+                    Ok(session) => {
+                        let (inbox, flow) = (cx.inbox.clone(), me.clone());
+                        cx.pool.submit(move || {
+                            let outcome = service.node.run(&Call {
+                                inputs: &inputs,
+                                session: session.as_deref(),
+                                lease: &lease,
+                            });
+                            deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
+                        });
+                    }
+                }
             } else {
                 let _ = driver.run_mut().complete_effect(id, Err(UNAVAILABLE));
             }
