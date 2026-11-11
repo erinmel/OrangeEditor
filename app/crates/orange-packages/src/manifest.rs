@@ -12,6 +12,7 @@ use serde::Deserialize;
 use serde_json::Value;
 use thiserror::Error;
 
+use crate::about::{About, UpdateSource, WireAbout, WireUpdate};
 use crate::json::{self, Problem};
 use crate::path::ArchivePath;
 use crate::sections::{self, Execution, Localization, PanelId};
@@ -199,6 +200,12 @@ pub enum ManifestError {
     /// An argument type is not one of the 13 §3 vocabulary.
     #[error("invalid argument type {0}")]
     ArgumentType(Rejected),
+    /// An `about` or `update` field is empty, too long, repeated or not of its form.
+    #[error("invalid {field}")]
+    Metadata {
+        /// The field, as a manifest path.
+        field: &'static str,
+    },
     /// A section lists more items than the format allows.
     #[error("{section} exceeds {limit} items")]
     SectionLimit {
@@ -256,6 +263,7 @@ impl ManifestError {
             Self::MessageId(_) => "packages/manifest-message-id",
             Self::ArgumentName(_) => "packages/manifest-argument-name",
             Self::ArgumentType(_) => "packages/manifest-argument-type",
+            Self::Metadata { .. } => "packages/manifest-metadata",
             Self::SectionLimit { .. } => "packages/manifest-section-limit",
         }
     }
@@ -511,6 +519,8 @@ pub struct PackageManifest {
     localization: Option<Localization>,
     permissions: Option<Value>,
     license: Option<String>,
+    about: About,
+    update: Option<UpdateSource>,
 }
 
 /// Shows the slot kind and the descriptor's length only: a non-node descriptor is
@@ -555,6 +565,7 @@ impl fmt::Debug for PackageManifest {
             .field("localization", &self.localization)
             .field("permissions", &format_args!("{permissions}"))
             .field("license", &format_args!("{license}"))
+            .field("update", &self.update.is_some())
             .finish_non_exhaustive()
     }
 }
@@ -656,6 +667,16 @@ impl PackageManifest {
         self.permissions.as_ref()
     }
 
+    /// What the package says about itself; empty when the manifest has no `about`.
+    pub fn about(&self) -> &About {
+        &self.about
+    }
+
+    /// Where the publisher announces versions of this package, if it says.
+    pub fn update(&self) -> Option<&UpdateSource> {
+        self.update.as_ref()
+    }
+
     /// The declared license expression, if any.
     pub fn license(&self) -> Option<&str> {
         self.license.as_deref()
@@ -699,6 +720,10 @@ struct WireManifest {
     integrity: WireIntegrity,
     #[serde(default)]
     license: Option<String>,
+    #[serde(default)]
+    about: Option<WireAbout>,
+    #[serde(default)]
+    update: Option<WireUpdate>,
 }
 
 #[derive(Deserialize)]
@@ -839,7 +864,12 @@ impl WireManifest {
         let panels = sections::panels(&id, self.contributions.panels)?;
         let localization = self.localization.map(sections::localization).transpose()?;
 
+        let about = self.about.map(crate::about::about).transpose()?;
+        let update = self.update.map(crate::about::update).transpose()?;
+
         Ok(PackageManifest {
+            about: about.unwrap_or_default(),
+            update,
             content_digest: format!("sha256:{digest}"),
             key: PackageKey { id, version },
             publisher,
