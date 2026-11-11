@@ -279,6 +279,11 @@ impl Tracker {
                     .entry(DeclId::Event(*id))
                     .or_insert(entry.is_some());
             }
+            Patch::Connection { id, entry } => {
+                self.decls
+                    .entry(DeclId::Connection(*id))
+                    .or_insert(entry.is_some());
+            }
             Patch::Function { id, entry } => {
                 self.decls
                     .entry(DeclId::Function(*id))
@@ -394,6 +399,7 @@ impl Tracker {
                 DeclId::Variable(id) => document.variables().contains_key(id),
                 DeclId::Event(id) => document.events().contains_key(id),
                 DeclId::Function(id) => document.functions().contains_key(id),
+                DeclId::Connection(id) => document.connections().contains_key(id),
             }),
         }
     }

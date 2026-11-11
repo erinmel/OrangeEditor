@@ -102,22 +102,35 @@ const AMPLIFY: &str = r#"(component
       i32.const 8192 i32.const 0 i32.store
       i32.const 8196 i32.const 512 i32.store
       i32.const 8192)
-    (func (export "evaluate") (param i32 i32 i32 i32) (result i32)
-      call $values drop
+    (func (export "evaluate") (param i32 i32 i32 i32) (result i32) (local $i i32)
+      ;; 512 twelve-byte values at 16384: case 0 (literal), then the shared string.
+      (loop $l
+        local.get $i i32.const 12 i32.mul i32.const 16388 i32.add i32.const 4096 i32.store
+        local.get $i i32.const 12 i32.mul i32.const 16392 i32.add i32.const 4096 i32.store
+        local.get $i i32.const 1 i32.add local.tee $i i32.const 512 i32.lt_u br_if $l)
       i32.const 8200 i32.const 0 i32.store
-      i32.const 8204 i32.const 0 i32.store
+      i32.const 8204 i32.const 16384 i32.store
       i32.const 8208 i32.const 512 i32.store
       i32.const 8200))
   (core instance $i (instantiate $m))
   (type $strings (list string))
+  (type $value (variant (case "literal" string) (case "bytes" (list u8))
+    (case "i32-list" (list s32)) (case "i64-list" (list s64))
+    (case "u32-list" (list u32)) (case "u64-list" (list u64))
+    (case "f32-list" (list f32)) (case "f64-list" (list f64))))
+  (type $values (list $value))
   (type $error (record (field "code" string) (field "message-key" string)))
-  (type $out (result $strings (error $error)))
+  (type $out (result $values (error $error)))
   (func (export "values") (result $strings)
     (canon lift (core func $i "values") (memory (core memory $i "mem"))))
-  (func $evaluate (param "definition" string) (param "inputs" $strings) (result $out)
+  (func $evaluate (param "definition" string) (param "inputs" $values) (result $out)
     (canon lift (core func $i "evaluate") (memory (core memory $i "mem")) (realloc (core func $i "realloc"))))
-  (instance $nodes (export "node-error" (type $error)) (export "evaluate" (func $evaluate)))
-  (export "orange:expansion/nodes@1.0.0" (instance $nodes)))"#;
+  (instance $nodes (export "value" (type $value)) (export "node-error" (type $error))
+    (export "evaluate" (func $evaluate)))
+  (export "orange:expansion/nodes@1.0.0" (instance $nodes))
+  (instance $effects (export "value" (type $value)) (export "node-error" (type $error))
+    (export "execute" (func $evaluate)))
+  (export "orange:expansion/effects@1.0.0" (instance $effects)))"#;
 
 #[test]
 fn canonical_transfer_budget_refuses_aliased_results_before_typed_publication() {
@@ -183,13 +196,21 @@ fn imported_log_strings_obey_transfer_admission_before_the_retained_log_limit() 
           local.get 0 local.get 1 call $write i32.const 0))
       (core instance $host (export "write" (func $lower)))
       (core instance $i (instantiate $m (with "host" (instance $host))))
-      (type $strings (list string))
+      (type $value (variant (case "literal" string) (case "bytes" (list u8))
+        (case "i32-list" (list s32)) (case "i64-list" (list s64))
+        (case "u32-list" (list u32)) (case "u64-list" (list u64))
+        (case "f32-list" (list f32)) (case "f64-list" (list f64))))
+      (type $values (list $value))
       (type $error (record (field "code" string) (field "message-key" string)))
-      (type $out (result $strings (error $error)))
-      (func $evaluate (param "definition" string) (param "inputs" $strings) (result $out)
+      (type $out (result $values (error $error)))
+      (func $evaluate (param "definition" string) (param "inputs" $values) (result $out)
         (canon lift (core func $i "evaluate") (memory (core memory $mem "mem")) (realloc (core func $mem "realloc"))))
-      (instance $nodes (export "node-error" (type $error)) (export "evaluate" (func $evaluate)))
-      (export "orange:expansion/nodes@1.0.0" (instance $nodes)))"#;
+      (instance $nodes (export "value" (type $value)) (export "node-error" (type $error))
+        (export "evaluate" (func $evaluate)))
+      (export "orange:expansion/nodes@1.0.0" (instance $nodes))
+      (instance $effects (export "value" (type $value)) (export "node-error" (type $error))
+        (export "execute" (func $evaluate)))
+      (export "orange:expansion/effects@1.0.0" (instance $effects)))"#;
     let types = TypeRegistryBuilder::core().build().unwrap();
     let message = "x".repeat(4096);
     for (transfer_bytes, allowed) in [(1024, false), (8192, true)] {

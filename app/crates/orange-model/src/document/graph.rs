@@ -9,11 +9,12 @@ use serde_json::{Map, Value as Json};
 
 use super::literal::Literal;
 use super::{
-    Edge, EventDecl, Extensions, FunctionDecl, NodeInstance, PortRef, SignatureSnapshot,
-    VariableDecl,
+    ConnectionDecl, Edge, EventDecl, Extensions, FunctionDecl, NodeInstance, PortRef,
+    SignatureSnapshot, VariableDecl,
 };
 use crate::id::{
-    EdgeId, EventDeclId, FunctionId, GraphId, NodeId, PortKey, SignatureKey, TypeExpr, VariableId,
+    ConnectionId, EdgeId, EventDeclId, FunctionId, GraphId, NodeId, PortKey, SignatureKey,
+    TypeExpr, VariableId,
 };
 
 /// A fresh content-state identity; see [`GraphDocument::state_id`].
@@ -40,6 +41,7 @@ pub struct GraphDocument {
     pub(crate) type_lock: Vec<TypeLockEntry>,
     pub(crate) variables: IndexMap<VariableId, VariableDecl>,
     pub(crate) events: IndexMap<EventDeclId, EventDecl>,
+    pub(crate) connections: IndexMap<ConnectionId, ConnectionDecl>,
     pub(crate) signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     /// Top-level body, persisted as the document's own `nodes` and `edges`.
     pub(crate) root: GraphBody,
@@ -74,6 +76,12 @@ pub(crate) struct DocumentWire {
     variables: IndexMap<VariableId, VariableDecl>,
     #[serde(default, with = "crate::document::keyed")]
     events: IndexMap<EventDeclId, EventDecl>,
+    #[serde(
+        default,
+        with = "crate::document::keyed",
+        skip_serializing_if = "IndexMap::is_empty"
+    )]
+    connections: IndexMap<ConnectionId, ConnectionDecl>,
     #[serde(default)]
     signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
     #[serde(flatten)]
@@ -114,6 +122,7 @@ impl PartialEq for GraphDocument {
             && self.type_lock == other.type_lock
             && self.variables == other.variables
             && self.events == other.events
+            && self.connections == other.connections
             && self.signatures == other.signatures
             && self.root == other.root
             && self.functions == other.functions
@@ -143,6 +152,7 @@ impl GraphDocument {
             type_lock: Vec::new(),
             variables: IndexMap::new(),
             events: IndexMap::new(),
+            connections: IndexMap::new(),
             signatures: BTreeMap::new(),
             root: GraphBody::default(),
             functions: IndexMap::new(),
@@ -203,6 +213,10 @@ impl GraphDocument {
 
     pub fn events(&self) -> &IndexMap<EventDeclId, EventDecl> {
         &self.events
+    }
+
+    pub fn connections(&self) -> &IndexMap<ConnectionId, ConnectionDecl> {
+        &self.connections
     }
 
     pub fn functions(&self) -> &IndexMap<FunctionId, FunctionDecl> {

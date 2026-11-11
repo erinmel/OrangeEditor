@@ -1026,6 +1026,15 @@ impl RegistrySnapshot {
         &self.converters
     }
 
+    /// Every registered definition version, ordered by ID and then version. This is what
+    /// a node palette lists.
+    pub fn definitions(&self) -> impl Iterator<Item = &NodeDefinition> {
+        self.definitions
+            .values()
+            .flat_map(BTreeMap::values)
+            .map(|registered| registered.definition.as_ref())
+    }
+
     pub fn definition(&self, definition: &DefinitionRef) -> Option<&NodeDefinition> {
         self.registered(definition)
             .map(|registered| registered.definition.as_ref())
@@ -1035,6 +1044,11 @@ impl RegistrySnapshot {
         self.definitions
             .get(&definition.id)?
             .get(&definition.version)
+    }
+
+    /// Every registered provider, ordered by key.
+    pub fn providers(&self) -> impl Iterator<Item = &ProviderDescriptor> {
+        self.providers.values()
     }
 
     pub fn provider(&self, key: &ProviderKey) -> Option<&ProviderDescriptor> {
@@ -1087,10 +1101,21 @@ impl RegistrySnapshot {
         let Some(registered) = self.registered(&node.definition) else {
             return Ok(None);
         };
+        let definition = &registered.definition;
+        // A node that uses a connection must name one this document declares.
+        if definition
+            .references
+            .iter()
+            .any(|field| field.kind == ReferenceKind::Connection)
+        {
+            match self.reference(node, ReferenceKind::Connection) {
+                Ok(DeclId::Connection(id)) if document.connections().contains_key(&id) => {}
+                _ => return Err(ContractError::ConnectionUnknown),
+            }
+        }
         if let Some(declared) = &registered.declared {
             return Ok(Some(Cow::Borrowed(declared)));
         }
-        let definition = &registered.definition;
         if matches!(definition.ports, Ports::ForEach) {
             return super::intrinsics::for_each_contract(definition, node)
                 .map(|contract| Some(Cow::Owned(contract)));

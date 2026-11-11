@@ -25,8 +25,10 @@ Binding request (2026-10-27): host kernel resolvers should implement `PureKernel
 ## Contribution surface
 
 The table below is the selected extension contract. Current installed guest
-execution implements only Pure nodes with concrete port types and empty config
-(K02c). Trusted host type registration implements records, enums and handle kinds;
+execution implements Pure, Action and Async nodes with concrete port types and empty
+config (K02c; effects 2026-11-10). The compiler and host also support package Entry
+nodes fed by trusted native service sources, including incoming WebSocket text.
+Installed Wasm guests still lack host service imports, iterators and resource contributions. Trusted host type registration implements records, enums and handle kinds;
 arbitrary package scalar representations/codecs and complete archive contribution
 activation remain open. Metadata registration alone does not prove execution support.
 
@@ -83,6 +85,39 @@ Packages contributing text include `localization` and catalogue files per [13 §
 ```
 
 Digest and package are synthetic. This sample device package implements a protocol over the granted WebSocket profile; raw send/receive grants do not enforce protocol operation restrictions. Its separate namespaced service validates allowed operations for other expansions. A consumer granted only typed device operations uses that checked service rather than receiving raw socket authority. Authentication uses host-supported broker operations; any new secret transform requires the explicit policy below and in 05. This sample is not a promised shipped device integration.
+
+Installed packages between sessions (2026-11-11; `orange-host`): a host given a
+package directory keeps each installed archive and the capabilities granted to it, and
+installs them again when it next starts (02). The `orange` command takes the directory
+as `--store <dir>`.
+
+Session start (2026-11-11): the host calls `Session::start` on every connection of a
+flow once all of that flow's triggers are attached, at opening and after a live edit;
+a shared session is called once per flow. A session that receives must not begin
+before the first call. The WebSocket session opens its socket only then. Before this
+it connected as soon as the document was prepared, and a server's first message could
+arrive before any trigger existed and be dropped.
+
+Native plugins in Rust (2026-11-11; `orange-sdk`): a plugin crate depends on
+`orange-sdk` and returns a `ServicePackage` holding its definition files, a
+`ServiceNode` per asynchronous node, a `ServiceSource` per trigger and a
+`ConnectionAdapter` per connection kind. The application passes it to
+`Host::with_services`. This tier is compiled into the application: it is trusted, not
+sandboxed and not installed at run time. A plugin that must be installed into a running
+application is a Wasm component or a graph package.
+
+Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
+sections. `about` holds `name` (≤ 100 characters), `description` (≤ 2,000), `authors`
+(≤ 16), `homepage` and `repository` (`https://` URLs) and `keywords` (≤ 16 distinct
+lowercase `[a-z0-9-]` terms). Text has no control characters and no surrounding space;
+`name` and `description` are fallbacks for a host without the package's localization
+catalogue (13 §3). `update` is `{"feed": "https://…", "channel": "stable"}`: where the
+publisher announces versions of this package and which channel this build belongs to
+(default `stable`). A feed URL must be `https://`, at most 2,048 printable ASCII bytes,
+with a host and no user information. Both sections are covered by the content digest
+like the rest of the manifest. They are descriptive only: installation never contacts
+a URL, and the feed's own format, its signature and the host's update check are not
+defined yet. A bad field is `packages/manifest-metadata` and names the field.
 
 Manifest schema (K01, 2026-11-06; `orange-packages`): the manifest is strict JSON. Duplicate object keys and numbers other than integers within ±(2^53 − 1) are rejected at any depth, including uninterpreted sections, because readers disagree on them. `execution` is absent for a data-only package, `{"kind": "wasm-component", "entry", "world"}` with `world` = `orange:expansion/<name>@<x.y.z>`, or `{"kind": "worker", "wire_version": 1, "targets": [{"os": "windows"|"macos"|"linux", "arch": "x86_64"|"aarch64", "entry"}]}` with 1–16 distinct targets; any other kind, including native libraries, is refused. `contributions.panels` lists up to 256 distinct panel IDs `<package>/<[a-z][a-z0-9-]*>` in the package's own namespace; the declarative widget descriptor format is later UI work (ADR-08), so panels are identities only. `localization` follows 13 §3 exactly: format version 1, `fluent`, default locale `en` with an `en` catalogue, BCP 47-shaped tags unique ignoring case, non-empty lists of distinct `.ftl` files, `[a-z][a-z0-9-]*` message IDs and `[a-z][a-z0-9_]*` argument names typed from the 13 §3 vocabulary, with bounded counts. Every file reference is an archive path (below). Dependency locks are `{"id", "version", "content_digest": "sha256:<64 hex>"}`; installation refuses an active dependency whose content digest differs from the lock. `integrity.content_digest` (formerly `payload_digest`; the unreleased name has no reader) is the package's own content digest. `permissions` stays uninterpreted until grants (K03). Errors carry stable `packages/manifest-*` keys and redacted text.
 
@@ -175,6 +210,98 @@ guest bindings and `orange-componentize` (`wit-component` 0.262.0) to produce th
 component; wit-component keeps only the imports a guest actually uses. Resources,
 streams, async, events, panels and service imports are later interface versions.
 
+Binary values and effects (2026-11-10, replacing the first unreleased world in place):
+`value` is a variant. `literal(string)` is the `orange.value.v1` text above and can
+carry any value. `bytes(list<u8>)` carries `core/bytes@1`, and `i32-list`, `i64-list`,
+`u32-list`, `u64-list`, `f32-list` and `f64-list` carry `core/list@1<T>` of that
+scalar, so audio blocks and pixel data cross without text conversion. The host sends
+these types in their binary case whenever it holds them densely and as a literal
+otherwise; a guest may return either form. A binary case is accepted only for exactly
+its own type; any other use is `OutputContract`. The world also exports
+`effects.execute(definition, inputs) -> result<list<value>, node-error>` for Action
+and Async nodes. Unlike `evaluate` it is never folded, cached or repeated, so a guest
+may keep state in its instance. `GuestPlugin::execute` shares the value, error, fuel,
+transfer and cancellation contract of `evaluate`.
+
+Graph-implemented package nodes (2026-11-10; `orange-host`): a node made in the editor
+is published without code. Its manifest provider has the reserved ID `graph`, and the
+archive carries `graphs/<name>.json` beside `nodes/<name>.json`:
+`{"format": "orange.graph-node", "format_version": 1, "function": <function
+declaration, 11 §14>, "variables": [<local variable declarations>]}`. The package needs
+no `execution` section, and one package may mix graph and component providers. The
+function's kind and data ports must equal the node definition's; the body may use core
+nodes and any package nodes installed before it, and may declare local variables only,
+so each call has its own state and nothing leaks into the calling document.
+
+Installation decodes every graph, then validates them together, linked, against the
+registry including the package's own definitions; a contract mismatch is `Graph` and a
+failing body is `GraphInvalid` with its diagnostics, and neither is published. A
+document uses such a node like any other, locked to its exact provider, and the saved
+document never contains the body. When the host checks or opens a document it links an
+in-memory copy: each graph-implemented node becomes a `core/call` of the package's
+function with the same node ID, literals and edges, and the function and its local
+variables are added once. From there validation, compilation and execution are those
+of graph functions; there is no boundary to cross and no per-call copying.
+
+Bodies built on other packages, and connections (2026-11-11): a graph file may carry
+`"signatures"` and `"package_lock"`, copied from the document its body was authored in.
+Linking adds them where the calling document lacks them, which is what lets a body use
+another package's nodes; without them such a body does not validate. A node whose
+definition sets `"connection": true` is implemented by a graph file with
+`"connection": "<id>"`: a stand-in ID that the body's own nodes name in their
+`connection` field. The two must agree or the package is refused. Each use of the node
+names a real connection of its document, and linking gives each distinct connection its
+own copy of the function, with the stand-in replaced and with function, node and edge
+IDs derived from the original ID and the connection, so one diagram can use the node on
+several connections. At installation the body is validated against a stand-in
+declaration. When the host validates a document it states that package nodes inside
+function bodies write no graph variable, which holds for every execution tier because
+package code has no access to a run's variables.
+
+Trigger nodes made as graphs (2026-11-11): a node of kind `entry` with a `payload`
+output is implemented by a graph file with a `"trigger"` object instead of a function:
+`{"event": "<stand-in id>", "nodes": [...], "edges": [...]}`. The nodes are root nodes
+that start at some other entry (a timer, a manual entry, another package's trigger)
+and end in `core/emit` on the stand-in event. Linking gives each use of the node its
+own copy of the fragment and its own run-scope event, with node, edge and event IDs
+derived from the using node, replaces the stand-in connection with the one the use
+names, and turns the using node into `core/on-event` of that event; it keeps its ID,
+its `then` outcome and its `payload` output, so its edges stay. A fragment is
+validated at installation against stand-in declarations. Graph files are checked on a
+throwaway store before the package is published, because a published version is
+permanent: a refused package can be corrected and installed under the same version.
+A package with declared dependencies is still checked after publication and rolled
+back, and then keeps its version's digest. A trigger without a payload
+cannot be made this way, since an event carries one.
+
+Limits: function and body node IDs are the publisher's, so two versions of
+one graph package cannot be linked into the same document; trace events name body
+nodes that the calling document does not contain.
+
+`orange_host::pack` builds an archive from a manifest and files, computing the content
+digest; `orange pack <dir> <out.orangeplug>` does the same from a directory.
+
+Definition files and installation (2026-11-10; `orange-host`): each node a manifest
+contributes, `<package>/<name>`, is described by the archive file `nodes/<name>.json`
+in the `NodeDefinition` format. `Host::install` reads and digest-checks those files,
+refuses a file that defines another ID, prepares the component for each provider ID
+before publishing anything, then installs through `PackageStore`. A package provider
+becomes the choice for new nodes of a definition only when no provider is chosen yet;
+an existing choice is never replaced by installing. Flows already running keep the
+providers they were compiled with. The host's store is in memory for now.
+
+Package effect nodes in graphs (2026-11-10): `WithGuests<R>` also implements
+`EffectResolver`. An Action node of a loaded package gets an inline action kernel and
+runs on the run's own thread inside a pump. An Async node gets no kernel: the run
+issues an ordinary effect request whose `context` is that node's `GuestEffect`. The
+host recovers it with `guest_effect(&request.context)`, calls `GuestEffect::run` off
+the run's thread and passes the result to `Run::complete_effect`; `cancellation()`
+interrupts it when the effect's lease is cancelled. Each node binding owns one guest
+instance for the life of its plan and calls on it are serialized, so every request of
+one node reaches the same state. A guest-reported error becomes the node's own fault
+and takes its `failed` route. Exec ports carry no value and are not passed to the
+guest; event ports and non-empty config are refused at binding.
+
 Package nodes in graphs (K02c, 2026-11-08; `orange_guest`): `GuestPackage::from_archive`
 takes a `VerifiedArchive` and the files its `MemorySink` received, requires a
 `wasm-component` execution section whose world is `orange:expansion/plugin@1.x`, a
@@ -183,7 +310,7 @@ provider key (package ID, version, verified content digest, provider ID) the pac
 store publishes for it. `WithGuests<R>` wraps a host resolver: a binding whose locked
 provider is a loaded package's key gets a guest kernel; every other binding goes to
 `R` (for example `MathPackage`), and a loaded package's provider never falls back to
-`R`. Guest bindings are Pure only, with empty config and concrete port types; each
+`R`. Pure guest bindings (effect bindings are described above) need empty config and concrete port types; each
 binding owns one guest instance, so a trap faults that node's binding and later folds
 report `core/PackageFault` / `core/guest-poisoned`. A guest node error becomes the
 kernel fault with the guest's own validated namespaced code and message key, each

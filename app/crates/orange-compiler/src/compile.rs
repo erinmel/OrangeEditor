@@ -6,7 +6,7 @@ use orange_model::document::{NodeKind, OutputSource, PortDescriptor, PortDirecti
 use orange_model::id::{NodeId, PortKey};
 use orange_model::validation::{Diagnostic, DiagnosticCode, Subject, ValidationAnalysis};
 use orange_model::value::literal_codec;
-use orange_model::value::shape::{MAP_ENTRY_CHARGE, VALUE_CHARGE, is_error_code};
+use orange_model::value::shape::{MAP_ENTRY_CHARGE, VALUE_CHARGE};
 use orange_model::{GraphDocument, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::{
@@ -291,11 +291,7 @@ fn literal_bytes(payload: &LiteralPayload, ty: &ValueShape, limit: usize) -> Opt
     Some(limit - remaining)
 }
 pub(crate) fn valid_fault(fault: &KernelFault) -> bool {
-    is_error_code(&fault.code)
-        && is_error_code(&fault.message_key)
-        && !fault.message.is_empty()
-        && fault.message.len() <= 512
-        && !fault.message.chars().any(char::is_control)
+    fault.is_valid()
 }
 
 type OutputSlots = BTreeMap<(NodeId, PortKey), SlotIx>;

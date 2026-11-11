@@ -1,0 +1,117 @@
+{
+  "format": "orange.graph-node",
+  "format_version": 1,
+  "function": {
+    "id": "10000000-0000-4000-8000-0000000000c8",
+    "name": "remember",
+    "kind": "action",
+    "inputs": [
+      {
+        "port_id": "value",
+        "direction": "input",
+        "kind": "data",
+        "type": "core/i64@1"
+      }
+    ],
+    "outputs": [
+      {
+        "port_id": "result",
+        "direction": "output",
+        "kind": "data",
+        "type": "core/i64@1"
+      }
+    ],
+    "nodes": [
+      {
+        "id": "10000000-0000-4000-8000-0000000000c9",
+        "definition_id": "core/function-entry",
+        "definition_version": 1,
+        "config_version": 1,
+        "config": {}
+      },
+      {
+        "id": "10000000-0000-4000-8000-0000000000cb",
+        "definition_id": "core/set-variable",
+        "definition_version": 1,
+        "config_version": 1,
+        "config": {
+          "variable": "10000000-0000-4000-8000-0000000000d2"
+        }
+      },
+      {
+        "id": "10000000-0000-4000-8000-0000000000cc",
+        "definition_id": "core/get-variable",
+        "definition_version": 1,
+        "config_version": 1,
+        "config": {
+          "variable": "10000000-0000-4000-8000-0000000000d2"
+        }
+      },
+      {
+        "id": "10000000-0000-4000-8000-0000000000cd",
+        "definition_id": "core/return",
+        "definition_version": 1,
+        "config_version": 1,
+        "config": {}
+      }
+    ],
+    "edges": [
+      {
+        "id": "30000000-0000-4000-8000-0000000000c9",
+        "from": {
+          "node": "10000000-0000-4000-8000-0000000000c9",
+          "port": "then"
+        },
+        "to": {
+          "node": "10000000-0000-4000-8000-0000000000cb",
+          "port": "in"
+        }
+      },
+      {
+        "id": "30000000-0000-4000-8000-0000000000ca",
+        "from": {
+          "node": "10000000-0000-4000-8000-0000000000c9",
+          "port": "value"
+        },
+        "to": {
+          "node": "10000000-0000-4000-8000-0000000000cb",
+          "port": "value"
+        }
+      },
+      {
+        "id": "30000000-0000-4000-8000-0000000000cb",
+        "from": {
+          "node": "10000000-0000-4000-8000-0000000000cb",
+          "port": "then"
+        },
+        "to": {
+          "node": "10000000-0000-4000-8000-0000000000cd",
+          "port": "in"
+        }
+      },
+      {
+        "id": "30000000-0000-4000-8000-0000000000cc",
+        "from": {
+          "node": "10000000-0000-4000-8000-0000000000cc",
+          "port": "value"
+        },
+        "to": {
+          "node": "10000000-0000-4000-8000-0000000000cd",
+          "port": "result"
+        }
+      }
+    ]
+  },
+  "variables": [
+    {
+      "id": "10000000-0000-4000-8000-0000000000d2",
+      "name": "kept",
+      "type": "core/i64@1",
+      "scope": "local",
+      "init": {
+        "type": "core/i64@1",
+        "value": "0"
+      }
+    }
+  ]
+}

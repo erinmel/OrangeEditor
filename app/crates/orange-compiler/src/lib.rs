@@ -21,7 +21,6 @@ mod data_compile;
 mod effects;
 mod error;
 mod evaluate;
-mod kernel;
 mod lazy;
 mod plan;
 mod preview;
@@ -38,13 +37,15 @@ pub use control::{
 };
 pub use data::{DataInput, DataNode, DataOperation, DataPlan, DataResources, DataStability};
 pub use data_compile::compile_data;
-pub use effects::{ActionKernel, ControlEffect, EffectBinding, EffectResolver, SharedWrite};
+pub use effects::{ControlEffect, SharedWrite};
 pub use error::CompileError;
 pub use evaluate::{EvaluatedExport, EvaluationError, EvaluationOptions, PureEvaluation};
-pub use kernel::{
-    BindingRequest, EntropyBinding, EntropyKernel, EntropyKernelResolver, EntropySource, FaultText,
-    KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveEntropyInDocument,
-    ResolveError, ResolveInDocument,
+// The provider-facing interface lives in `orange-kernel`; these names stay available
+// here for code that already works with plans.
+pub use orange_kernel::{
+    ActionKernel, BindingRequest, EffectBinding, EffectResolver, EntropyBinding, EntropyKernel,
+    EntropyKernelResolver, EntropySource, FaultText, KernelBinding, KernelFault, PureKernel,
+    PureKernelResolver, ResolveEntropyInDocument, ResolveError, ResolveInDocument,
 };
 pub use plan::{
     ConstantFault, Export, FoldedValue, InputSource, NodeIx, PureCallSite, PurePlan, PureStep,

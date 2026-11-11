@@ -1,0 +1,131 @@
+{
+  "format": "orange.graph",
+  "format_version": 1,
+  "graph_id": "20000000-0000-4000-8000-000000000002",
+  "revision": 1,
+  "package_lock": [
+    {
+      "id": "org.example.tools",
+      "version": "1.0.0",
+      "content_digest": "sha256:4f3eabdde89581218df0063a098e7524d31e901b454db05de310f9c932b61d12"
+    }
+  ],
+  "type_lock": [],
+  "variables": [
+    {
+      "id": "10000000-0000-4000-8000-000000000064",
+      "name": "total",
+      "type": "core/i64@1",
+      "scope": "run",
+      "persistent": false,
+      "conflict": "reject"
+    }
+  ],
+  "events": [],
+  "signatures": {
+    "sha256:d36aade8a02ceb305978a0c41659c1a7eb713abed5a338139e46e77476848fe7": {
+      "kind": "action",
+      "suspends": "never",
+      "ports": [
+        {
+          "port_id": "value",
+          "direction": "input",
+          "kind": "data",
+          "type": "core/i64@1"
+        },
+        {
+          "port_id": "result",
+          "direction": "output",
+          "kind": "data",
+          "type": "core/i64@1",
+          "source": "execution",
+          "available_on": [
+            "then"
+          ]
+        }
+      ]
+    }
+  },
+  "nodes": [
+    {
+      "id": "10000000-0000-4000-8000-000000000003",
+      "definition_id": "org.example.tools/remember",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "provider": {
+        "package": "org.example.tools",
+        "version": "1.0.0",
+        "id": "graph"
+      },
+      "signature": "sha256:d36aade8a02ceb305978a0c41659c1a7eb713abed5a338139e46e77476848fe7",
+      "inputs": {
+        "value": {
+          "type": "core/i64@1",
+          "value": "5"
+        }
+      }
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000001",
+      "definition_id": "core/on-manual",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {},
+      "activation": {
+        "mode": "queue",
+        "capacity": 4,
+        "overflow": "fault",
+        "on_fault": "continue",
+        "order": 0
+      }
+    },
+    {
+      "id": "10000000-0000-4000-8000-000000000004",
+      "definition_id": "core/set-variable",
+      "definition_version": 1,
+      "config_version": 1,
+      "config": {
+        "variable": "10000000-0000-4000-8000-000000000064"
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "30000000-0000-4000-8000-000000000001",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000001",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000002",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "then"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "in"
+      }
+    },
+    {
+      "id": "30000000-0000-4000-8000-000000000003",
+      "from": {
+        "node": "10000000-0000-4000-8000-000000000003",
+        "port": "result"
+      },
+      "to": {
+        "node": "10000000-0000-4000-8000-000000000004",
+        "port": "value"
+      }
+    }
+  ],
+  "functions": [],
+  "exports": [],
+  "editor": {}
+}

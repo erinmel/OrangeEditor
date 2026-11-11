@@ -14,6 +14,7 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 #![warn(missing_docs)]
 
+mod about;
 mod archive;
 mod file_journal;
 mod journal;
@@ -24,6 +25,9 @@ mod path;
 mod sections;
 mod store;
 
+pub use about::{
+    About, MAX_ABOUT_ITEMS, MAX_DESCRIPTION_CHARS, MAX_NAME_CHARS, MAX_URL_BYTES, UpdateSource,
+};
 pub use archive::{
     ARCHIVE_MAGIC, ARCHIVE_VERSION, ArchiveEntry, ArchiveError, ArchiveFiles, ArchiveLimits,
     ArchiveSink, DirectorySink, DiscardSink, MANIFEST_PATH, MemorySink, VerifiedArchive,

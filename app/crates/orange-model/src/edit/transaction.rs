@@ -16,13 +16,14 @@ use super::patch::{Patch, Placed, editor_placement, placement};
 use crate::document::literal::Literal;
 use crate::document::nesting::MAX_NESTING;
 use crate::document::{
-    ActivationPolicy, BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphDocument,
-    GraphExport, NodeInstance, PackageLockEntry, PortRef, ProviderBinding, SignatureSnapshot,
-    TypeLockEntry, TypeParamName, VariableDecl, VariadicState, fresh_state_id,
+    ActivationPolicy, BodyRef, ConfigValue, ConnectionDecl, Edge, EventDecl, FunctionDecl,
+    GraphDocument, GraphExport, NodeInstance, PackageLockEntry, PortRef, ProviderBinding,
+    SignatureSnapshot, TypeLockEntry, TypeParamName, VariableDecl, VariadicState, fresh_state_id,
 };
 use crate::error::TxError;
 use crate::id::{
-    EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, TypeExpr, VariableId,
+    ConnectionId, EdgeId, EventDeclId, FunctionId, NodeId, PortId, PortKey, SignatureKey, TypeExpr,
+    VariableId,
 };
 
 /// One edit intent. Replacing an item keeps its position; a new item is appended.
@@ -81,6 +82,8 @@ pub enum DocCommand {
     RemoveVariable(VariableId),
     UpsertEvent(EventDecl),
     RemoveEvent(EventDeclId),
+    UpsertConnection(ConnectionDecl),
+    RemoveConnection(ConnectionId),
     /// Replaces the whole declaration, body included.
     UpsertFunction(FunctionDecl),
     RemoveFunction(FunctionId),
@@ -471,6 +474,22 @@ impl Journal {
                     return Err(TxError::EventNotFound(id));
                 }
                 self.patch(document, Patch::Event { id, entry: None })
+            }
+            DocCommand::UpsertConnection(decl) => {
+                let index = placement(&document.connections, &decl.id);
+                self.patch(
+                    document,
+                    Patch::Connection {
+                        id: decl.id,
+                        entry: Some(Placed { index, value: decl }),
+                    },
+                )
+            }
+            DocCommand::RemoveConnection(id) => {
+                if !document.connections.contains_key(&id) {
+                    return Err(TxError::ConnectionNotFound(id));
+                }
+                self.patch(document, Patch::Connection { id, entry: None })
             }
             DocCommand::UpsertFunction(decl) => {
                 check_function_body(document, &decl)?;

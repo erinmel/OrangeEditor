@@ -74,6 +74,13 @@ impl Activations {
         }
         self.dynamic.remove(&id).ok_or(RunError::InvalidState)
     }
+    /// Every frame currently held, in no particular order.
+    pub fn frames(&self) -> impl Iterator<Item = &ActivationState> {
+        self.roots
+            .iter()
+            .chain(self.dynamic.values())
+            .filter_map(|frame| frame.as_deref())
+    }
     pub fn clear(&mut self) {
         self.roots.clear();
         self.root_live.clear();

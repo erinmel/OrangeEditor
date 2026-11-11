@@ -24,7 +24,8 @@ mod node;
 mod port;
 
 pub use declaration::{
-    ConflictPolicy, EventDecl, EventScope, FunctionDecl, TypeParam, VarScope, VariableDecl,
+    ConflictPolicy, ConnectionDecl, ConnectionScope, EventDecl, EventScope, FunctionDecl,
+    TypeParam, VarScope, VariableDecl,
 };
 pub use graph::{BodyRef, GraphBody, GraphDocument, GraphExport, PackageLockEntry, TypeLockEntry};
 pub use node::{

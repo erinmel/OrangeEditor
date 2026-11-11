@@ -78,7 +78,12 @@ pub struct KernelFault {
 impl KernelFault {
     /// Whether this redacted envelope satisfies the shared bounded ABI.
     pub fn is_valid(&self) -> bool {
-        crate::compile::valid_fault(self)
+        use orange_model::value::shape::is_error_code;
+        is_error_code(&self.code)
+            && is_error_code(&self.message_key)
+            && !self.message.is_empty()
+            && self.message.len() <= 512
+            && !self.message.chars().any(char::is_control)
     }
     /// Conservative per-fault charge; shared identifiers are charged per retention,
     /// so clones cannot bypass a plan or activation's independent admission budget.

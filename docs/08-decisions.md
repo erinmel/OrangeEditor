@@ -45,6 +45,35 @@ Why egui:
 
 ## ADR-03 — Component-first expansion, trusted worker escape hatch
 
+Native service tier amendment (2026-11-10): work that needs the operating system is
+provided by trusted Rust compiled into the application as a `ServicePackage`, not by an
+installed native library. It is the third way to implement a node, beside graphs and
+components, and the only one that can hold a socket today. Network access for
+sandboxed components will be offered through these services behind grants rather than
+by giving guests sockets. A connection is declared data (11 §16.1); the live session
+belongs to the host. HTTPS amendment (2026-11-10, approved by the user): the license
+policy admits ISC and CDLA-Permissive-2.0 so the network package can use rustls, ring
+and the Mozilla root set. No other crate may depend on a TLS stack.
+
+Graph tier amendment (2026-11-10): code is not the only way to implement a package
+node. A provider with the ID `graph` is implemented by a function graph shipped in the
+archive and linked by the host as an ordinary function call. It needs no sandbox,
+because it can only do what the nodes it is built from can do, and it is the expected
+form for most packages: protocol command sets, hooks and automations composed from base
+nodes. Components remain the default for code.
+
+Plugin boundary amendment (2026-11-10; also ADR-21): the unreleased plugin world is
+replaced in place. Values gain binary cases for bytes and dense numeric lists, so
+bulk data does not cross as text, and packages may implement Action and Async nodes
+through an `effects` export. An async package node is an ordinary effect request the
+host runs off the run actor, so the run-side effect contract is unchanged and guest
+code never executes on a path the actor cannot bound. Package entries, iterators,
+resources and host service imports remain undelivered. The Rust interface for
+trusted native implementations moves to `orange-kernel` (02), so providers and the
+package loader no longer depend on the compiler. Generic second-domain dispatch stays
+deferred until a real per-sample or shader domain needs it; handle-backed buffers are
+the next data-plane step for images and long audio.
+
 **Selected, performance/SDK conditional.** Wasm components are normal installable code, importing only versioned host capabilities. Trusted external workers permit unsupported native/library integrations and register service adapters through the same broker-facing contracts. Statically linked built-in kernels/backends are explicit privileged exceptions. Alternatives: Rust dylib ABI, C ABI plugins, all workers, rebuilding Bevy crates. Components give portable hot addition and a guest memory boundary; workers supply practical native reach at IPC/trust cost. C ABI can stabilize a call layout but cannot isolate host crashes or revoke native OS authority.
 
 Consequences: no arbitrary raw ECS/render/widget injection; custom panels/value editors use declarative schema; scene changes use handles; tiny guest calls need batching; native workers are not sandboxed by a manifest. Evidence: [Rust external ABI](https://doc.rust-lang.org/reference/items/functions.html#extern-function-qualifier), [Wasmtime security](https://docs.wasmtime.dev/security.html), [interruption caveats](https://docs.wasmtime.dev/api/wasmtime/struct.Config.html); specific dependency version still pending. **Falsification:** WU-03 installs without restart, traps an isolated guest, kills worker, denies ungranted imports, adds a panel/type/service and benchmarks W3. If essential expansion cannot fit these boundaries, revise the public interface before SDK freeze. Owner SDK lead; G1/G2.
@@ -342,6 +371,14 @@ Retain v1's rejection of synchronous recursion (`E-RECURSION`) and control cycle
 Test contracts with Rust tests that live beside the code they verify: plain `#[test]` for focused behavior, `rstest` for named scenarios, `proptest` for invariants over generated inputs and edit sequences. The acceptance rule is that **each implemented semantic rule has enough meaningful evidence to distinguish correct behavior from plausible bugs**. One accept/reject pair is a starting point, never a ceiling; there is no fixed test count, diagnostic-code quota or coverage percentage. Equivalence checks (incremental = full validation, interpreter = executor) are paired with known-answer tests, because two implementations can share a bug. JSON goldens are kept for serialization and wire contracts only; G IDs remain explanatory references. The working rules are in [06](06-quality-and-validation.md#v01-test-layers). Alternatives: an exhaustive JSON G-suite written before code (rejected in 00a: it drifted from code that did not exist), and a test per catalog code (counts codes, not evidence). No runtime behavior or feasibility gate is claimed tested by these decisions.
 
 ## ADR-21 — OrangeEditor is a foundation: an embeddable core with fixed extension seams
+
+Host amendment (2026-11-10): the core libraries alone are not an attachment surface.
+Composition — packages, several concurrent runs, effect execution, time and
+observation — is delivered once as `orange-host`, and every front end (terminal,
+editor, service) uses that API instead of assembling the layers itself. The host has
+no UI dependency. Each flow is one run on one thread, which keeps the single-owner
+actor of ADR-14 and gives multiple graphs real parallelism without shared locks. The
+`orange` CLI is the first front end and the proof that the surface is sufficient.
 
 **Selected by the user, 2026-10-21.** OrangeEditor is a **foundation**, not one end product. This repository builds the **core** (plus the foundation UI and basic application clarified by ADR-22): graph model, types, compiler and runtime, as Rust libraries with no UI, window or engine dependency (extends ADR-01). The editor UI is a separate layer on top of the core that a product may reuse, restyle or replace. Downstream products embed the core and specialize it, for example a music tool (MIDI, loops, audio analysis driving visuals), a VTuber or virtual-space program (Warudo-style blueprints driving scene objects), a streamer automation tool, or a game or 3D-art tool. Those products are not built here.
 

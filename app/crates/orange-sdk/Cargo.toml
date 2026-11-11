@@ -1,0 +1,16 @@
+[package]
+name = "orange-sdk"
+description = "OrangeEditor plugin SDK: native nodes, triggers and connection adapters for a host application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orange-kernel = { path = "../orange-kernel", version = "=0.0.0" }
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+orange-runtime = { path = "../orange-runtime", version = "=0.0.0" }
+serde_json.workspace = true
+
+[lints]
+workspace = true

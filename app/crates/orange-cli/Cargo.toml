@@ -1,0 +1,18 @@
+[package]
+name = "orange-cli"
+description = "OrangeEditor command-line host: check and run graph documents without an editor"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "orange"
+path = "src/main.rs"
+
+[dependencies]
+orange-host = { path = "../orange-host", version = "=0.0.0" }
+orange-net = { path = "../orange-net", version = "=0.0.0" }
+
+[lints]
+workspace = true
