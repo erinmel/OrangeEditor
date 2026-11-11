@@ -13,8 +13,8 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str = "\
 usage:
-  orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log]
-  orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--for <ms>]
+  orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>]
+  orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>]
   orange pack  <package-dir> <out.orangeplug>
 
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
@@ -33,6 +33,10 @@ files (`nodes/<name>.json`, `graphs/<name>.json`, a component), filling in its d
 `<id>` as shared the same session, with settings read from the file. The base network
 package is built in: adapters `org.orange.net/http` and `org.orange.net/websocket`.
 
+`--store <dir>` keeps installed packages in a directory: packages given with
+`--package` are saved there, and later commands with the same `--store` have them
+without `--package`.
+
 `--grant-log` lets installed package code write log lines. `--for` stops after a time.";
 
 struct Arguments {
@@ -42,6 +46,7 @@ struct Arguments {
     shared: Vec<[String; 3]>,
     grants: Grants,
     duration: Option<Duration>,
+    store: Option<String>,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -54,6 +59,7 @@ fn arguments() -> Result<Arguments, String> {
         shared: Vec::new(),
         grants: Grants::default(),
         duration: None,
+        store: None,
     };
     while let Some(word) = words.next() {
         match word.as_str() {
@@ -69,6 +75,7 @@ fn arguments() -> Result<Arguments, String> {
                 parsed.shared.push([next()?, next()?, next()?]);
             }
             "--grant-log" => parsed.grants.log = true,
+            "--store" => parsed.store = Some(words.next().ok_or("--store needs a directory")?),
             "--for" => {
                 let text = words.next().ok_or("--for needs milliseconds")?;
                 let ms: u64 = text.parse().map_err(|_| "--for needs milliseconds")?;
@@ -290,13 +297,20 @@ fn main() -> ExitCode {
         }
     };
     let services = vec![orange_net::package()];
-    let (mut host, events) = match Host::with_services(HostOptions::default(), services) {
+    let options = HostOptions {
+        package_dir: arguments.store.as_ref().map(Into::into),
+        ..HostOptions::default()
+    };
+    let (mut host, events) = match Host::with_services(options, services) {
         Ok(started) => started,
         Err(error) => {
             eprintln!("{error}");
             return ExitCode::FAILURE;
         }
     };
+    for (file, error) in host.not_restored() {
+        eprintln!("stored package {file} was not installed: {error}");
+    }
     for path in &arguments.packages {
         let installed = read(path).and_then(|bytes| {
             host.install(&bytes, arguments.grants)
