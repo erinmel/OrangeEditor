@@ -93,14 +93,21 @@ impl NodeDefinition {
         Self::from_json_with_limits(text, DefinitionLimits::default())
     }
 
+    /// Like [`NodeDefinition::from_json`], and also returns the file's presentation:
+    /// `label`, `description` and the category of its `editor` object.
+    pub fn described(text: &str) -> Result<(Self, Presentation), DefinitionError> {
+        Self::decode(text, DefinitionLimits::default())
+    }
+
     /// Decodes one package node definition file subject to `limits`.
     ///
     /// Reads the implemented 12 §4 subset: `definition_id`, `definition_version`,
     /// `config_version`, `kind`, `determinism`, and optionally `suspends`, `volatility`,
-    /// `type_params`, `ports` and `config_schema`. Port descriptors keep their presentation
+    /// `type_params`, `ports`, `config_schema`, `connection`, `label`, `description` and the
+    /// category of `editor`. Port descriptors keep their presentation
     /// fields (`label`, `description`, ...) as extensions, as saved signatures do. Every other
-    /// top-level field, including the 12 §4 fields not modeled yet (`label`, `errors`,
-    /// `capabilities`, `editor`, ...), is rejected. The result declares its ports; it has no
+    /// top-level field, including the 12 §4 fields not modeled yet (`errors`,
+    /// `capabilities`, ...), is rejected. The result declares its ports; it has no
     /// reference fields and no core specialization list, since a package lists supported
     /// argument sets on its provider (11 §5.5). Bound host reads before building `text`.
     ///
@@ -110,6 +117,13 @@ impl NodeDefinition {
         text: &str,
         limits: DefinitionLimits,
     ) -> Result<Self, DefinitionError> {
+        Self::decode(text, limits).map(|(definition, _)| definition)
+    }
+
+    fn decode(
+        text: &str,
+        limits: DefinitionLimits,
+    ) -> Result<(Self, Presentation), DefinitionError> {
         if text.len() > limits.max_bytes {
             return Err(DefinitionError::LimitExceeded {
                 resource: ImportResource::Bytes,
@@ -135,15 +149,52 @@ impl NodeDefinition {
         if scan.nesting > MAX_NESTING {
             return Err(DefinitionError::NestingLimit { max: MAX_NESTING });
         }
-        let wire: DefinitionWire = serde_json::from_str(text)?;
+        let mut wire: DefinitionWire = serde_json::from_str(text)?;
         if wire.ports.len() > limits.max_ports {
             return Err(DefinitionError::TooManyPorts {
                 max: limits.max_ports,
                 actual: wire.ports.len(),
             });
         }
-        Ok(wire.into())
+        let editor = wire.editor.take().unwrap_or_default();
+        let presentation = Presentation {
+            label: wire.label.take(),
+            description: wire.description.take(),
+            category_id: editor.category_id,
+            category: editor.category,
+        };
+        Ok((wire.into(), presentation))
     }
+}
+
+/// Translatable text of a definition file (13 §2): a message key in the package's
+/// namespace and the text to show when no catalogue has the key.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TextRef {
+    pub key: String,
+    pub fallback: String,
+}
+
+/// What a definition file says about showing its node to people. It never affects
+/// validation, compilation or execution, and it is not part of a node's identity.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Presentation {
+    pub label: Option<TextRef>,
+    pub description: Option<TextRef>,
+    /// Stable identity of the palette category; nodes with the same one group together.
+    pub category_id: Option<String>,
+    pub category: Option<TextRef>,
+}
+
+/// The implemented part of a definition file's `editor` object. Other editor hints
+/// are accepted and not read.
+#[derive(Default, Deserialize)]
+struct EditorWire {
+    #[serde(default)]
+    category_id: Option<String>,
+    #[serde(default)]
+    category: Option<TextRef>,
 }
 
 #[derive(Deserialize)]
@@ -167,6 +218,12 @@ struct DefinitionWire {
     /// The node uses a declared connection, named by its `connection` config field.
     #[serde(default)]
     connection: bool,
+    #[serde(default)]
+    label: Option<TextRef>,
+    #[serde(default)]
+    description: Option<TextRef>,
+    #[serde(default)]
+    editor: Option<EditorWire>,
 }
 
 #[derive(Deserialize)]
@@ -226,6 +283,29 @@ mod tests {
 
     use super::*;
     use crate::document::{OutputSource, PortDirection};
+
+    #[test]
+    fn a_definition_file_can_say_how_its_node_is_shown() {
+        let mut file = triple();
+        file["label"] = json!({"key": "acme.math/triple-label", "fallback": "Triple"});
+        file["editor"] = json!({"category_id": "acme.math/category",
+            "category": {"key": "acme.math/category", "fallback": "Math"}, "control": "standard"});
+        let text = file.to_string();
+        let (definition, shown) = NodeDefinition::described(&text).unwrap();
+        // The text is beside the contract, not part of it.
+        assert_eq!(definition, NodeDefinition::from_json(&text).unwrap());
+        assert_eq!(
+            definition,
+            NodeDefinition::from_json(&triple().to_string()).unwrap()
+        );
+        assert_eq!(shown.label.unwrap().fallback, "Triple");
+        assert_eq!(shown.description, None);
+        assert_eq!(shown.category_id.as_deref(), Some("acme.math/category"));
+        assert_eq!(shown.category.unwrap().fallback, "Math");
+
+        file["label"] = json!("Triple");
+        assert!(NodeDefinition::described(&file.to_string()).is_err());
+    }
 
     fn triple() -> serde_json::Value {
         json!({

@@ -1026,6 +1026,15 @@ impl RegistrySnapshot {
         &self.converters
     }
 
+    /// Every registered definition version, ordered by ID and then version. This is what
+    /// a node palette lists.
+    pub fn definitions(&self) -> impl Iterator<Item = &NodeDefinition> {
+        self.definitions
+            .values()
+            .flat_map(BTreeMap::values)
+            .map(|registered| registered.definition.as_ref())
+    }
+
     pub fn definition(&self, definition: &DefinitionRef) -> Option<&NodeDefinition> {
         self.registered(definition)
             .map(|registered| registered.definition.as_ref())
