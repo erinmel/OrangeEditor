@@ -16,6 +16,8 @@ sampled once per turn, so two changes inside one turn show only the last. An asy
 package node is executed on a worker and its result returns through the mailbox; a
 cancelled effect lease is forwarded to the guest. `orange-cli` builds the `orange`
 binary (`check`, `run`) on `orange-host` alone and is the reference front end. Not
+Package nodes implemented as graphs are linked into an in-memory copy of the document
+as function calls when it is checked or opened (04). Not
 yet in the host: editing a document that is running, shared workspaces between flows,
 persistent package storage, host-native effect services and connections.
 

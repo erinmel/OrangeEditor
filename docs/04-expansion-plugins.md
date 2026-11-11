@@ -190,6 +190,33 @@ and Async nodes. Unlike `evaluate` it is never folded, cached or repeated, so a 
 may keep state in its instance. `GuestPlugin::execute` shares the value, error, fuel,
 transfer and cancellation contract of `evaluate`.
 
+Graph-implemented package nodes (2026-11-10; `orange-host`): a node made in the editor
+is published without code. Its manifest provider has the reserved ID `graph`, and the
+archive carries `graphs/<name>.json` beside `nodes/<name>.json`:
+`{"format": "orange.graph-node", "format_version": 1, "function": <function
+declaration, 11 §14>, "variables": [<local variable declarations>]}`. The package needs
+no `execution` section, and one package may mix graph and component providers. The
+function's kind and data ports must equal the node definition's; the body may use core
+nodes and any package nodes installed before it, and may declare local variables only,
+so each call has its own state and nothing leaks into the calling document.
+
+Installation decodes every graph, then validates them together, linked, against the
+registry including the package's own definitions; a contract mismatch is `Graph` and a
+failing body is `GraphInvalid` with its diagnostics, and neither is published. A
+document uses such a node like any other, locked to its exact provider, and the saved
+document never contains the body. When the host checks or opens a document it links an
+in-memory copy: each graph-implemented node becomes a `core/call` of the package's
+function with the same node ID, literals and edges, and the function and its local
+variables are added once. From there validation, compilation and execution are those
+of graph functions; there is no boundary to cross and no per-call copying. Limits: Pure,
+Action and Async kinds only (no entries, so a graph package cannot yet define an event
+source); function and body node IDs are the publisher's, so two versions of one graph
+package cannot be linked into the same document; trace events name body nodes that the
+calling document does not contain.
+
+`orange_host::pack` builds an archive from a manifest and files, computing the content
+digest; `orange pack <dir> <out.orangeplug>` does the same from a directory.
+
 Definition files and installation (2026-11-10; `orange-host`): each node a manifest
 contributes, `<package>/<name>`, is described by the archive file `nodes/<name>.json`
 in the `NodeDefinition` format. `Host::install` reads and digest-checks those files,

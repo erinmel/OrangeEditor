@@ -45,6 +45,13 @@ Why egui:
 
 ## ADR-03 — Component-first expansion, trusted worker escape hatch
 
+Graph tier amendment (2026-11-10): code is not the only way to implement a package
+node. A provider with the ID `graph` is implemented by a function graph shipped in the
+archive and linked by the host as an ordinary function call. It needs no sandbox,
+because it can only do what the nodes it is built from can do, and it is the expected
+form for most packages: protocol command sets, hooks and automations composed from base
+nodes. Components remain the default for code.
+
 Plugin boundary amendment (2026-11-10; also ADR-21): the unreleased plugin world is
 replaced in place. Values gain binary cases for bytes and dense numeric lists, so
 bulk data does not cross as text, and packages may implement Action and Async nodes

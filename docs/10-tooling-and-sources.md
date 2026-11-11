@@ -1,5 +1,30 @@
 # Tooling, environment and research register
 
+## Graph-implemented package nodes — 2026-11-10
+
+Same branch and toolchain as the entries below. No dependency version or feature
+changed; `orange-host` now uses the already-pinned `serde_json` in product code.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,701 passed, 0 failed, 15 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`; `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange pack app/crates/orange-cli/packages/remember <out>` | Archive written, exit 0 |
+| `orange check graphs/remember-on-trigger.json` without the package | Provider unavailable, exit 1 |
+| Same with `--package <out>` | `ok`, exit 0 |
+| `orange run graphs/remember-on-trigger.json --package <out>` with a piped `trigger` | Entry, three body nodes, the package node and the consumer all stepped; exit 0 |
+
+Limits: Windows only; CLI not under automated test. Tested: one Action graph node with
+a local variable, a data-port mismatch and an undeclared variable. Not tested: Pure and
+Async graph nodes, a graph that uses another package's graph node, generic functions,
+a package mixing graph and component providers, two documents sharing one graph
+package, or rollback state after a refused install beyond the default provider staying
+unset. The committed example graph is locked to the content digest of the committed
+example package; editing a package file changes the digest and the graph must be
+re-authored.
+
 ## Session host and CLI — 2026-11-10
 
 Same branch and toolchain as the entry below. No external dependency version or
