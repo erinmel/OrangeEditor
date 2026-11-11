@@ -546,3 +546,49 @@ fn an_observed_flow_reports_its_variable_values_as_they_change() {
         .count();
     assert_eq!(sevens, 1);
 }
+
+#[test]
+fn an_observed_flow_reports_the_values_on_its_wires() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    // The entry's payload is wired into the variable write.
+    let saved: Json = serde_json::from_str(&to_json(&empty(1)).unwrap()).unwrap();
+    let mut entry = core(1, "on-manual");
+    entry["config"] = json!({"payload": I64});
+    let mut set = core(2, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    let text = with_total(
+        saved,
+        vec![entry, set],
+        json!([
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 1, "payload", 2, "value")
+        ]),
+    );
+    let flow = host.open(&text).unwrap();
+    host.observe(flow, true).unwrap();
+    for value in [5, 6] {
+        host.trigger(flow, node(1), Some(Value::I64(value)))
+            .unwrap();
+        until("the value", || {
+            read_total(&host, flow) == Some(Value::I64(value))
+        });
+    }
+    host.stop(flow, StopMode::Graceful).unwrap();
+    let seen = finished(&events, &[flow]);
+    let on_wire: Vec<_> = seen
+        .iter()
+        .filter_map(|event| match &event.kind {
+            FlowEvent::Ports(ports) => Some(ports.clone()),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    // Each report names the entry's payload port, and the values arrive in order.
+    assert!(
+        on_wire
+            .iter()
+            .all(|(from, port, _)| *from == node(1) && port.to_string() == "payload")
+    );
+    let values: Vec<_> = on_wire.into_iter().map(|(_, _, value)| value).collect();
+    assert_eq!(values, [Value::I64(5), Value::I64(6)]);
+}

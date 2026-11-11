@@ -14,6 +14,7 @@ use orange_model::Value;
 use orange_model::catalog::RegistrySnapshot;
 use orange_model::document::VarScope;
 use orange_model::id::{ConnectionId, EventDeclId, VariableId};
+use orange_runtime::PortValues;
 use orange_runtime::{
     EffectLease, EffectRequest, HostInput, InboxError, Refused, Run, RunDriver, RunError,
     RunEventSource, RunInbox, RunOptions, RunState, SourceOptions, StopMode,
@@ -238,6 +239,8 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let mut closing_since: Option<Instant> = None;
     // The value of each variable as last reported to the observer.
     let mut reported: BTreeMap<VariableId, Option<Value>> = BTreeMap::new();
+    // The value of each output port as last reported to the observer.
+    let mut ports: PortValues = PortValues::new();
     loop {
         if closing_since.is_none() && cx.shared.closing.load(Ordering::Relaxed) {
             closing_since = Some(Instant::now());
@@ -260,6 +263,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                 recorded = 0;
                 last_state = None;
                 reported.clear();
+                ports.clear();
                 cx.sink.send(
                     cx.id,
                     FlowEvent::Updated {
@@ -270,6 +274,9 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             }
             let _ = reply.send(outcome);
         }
+        // Read before the turn, so input sent after observation began is observed.
+        let observed = cx.shared.observed.load(Ordering::Relaxed);
+        driver.run_mut().keep_port_values(observed);
         let now = u64::try_from(cx.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let mut refused = |refusal: Refused| {
             cx.sink.send(cx.id, FlowEvent::Refused(refusal.reason));
@@ -326,6 +333,22 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             !lease.is_finished()
         });
 
+        if observed {
+            let mut changed = Vec::new();
+            for ((node, port), value) in driver.run_mut().port_values().into_iter().flatten() {
+                let key = (*node, port.clone());
+                if ports.get(&key) != Some(value) {
+                    let _ = ports.insert(key, value.clone());
+                    changed.push((*node, port.clone(), value.clone()));
+                }
+            }
+            if !changed.is_empty() {
+                cx.sink.send(cx.id, FlowEvent::Ports(changed));
+            }
+        } else if !ports.is_empty() {
+            ports.clear();
+        }
+
         // New trace entries since the last turn. The run keeps a bounded window, so a
         // burst larger than the window is reported as lost rather than replayed.
         let run = driver.run();
@@ -341,7 +364,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
         }
         recorded = total;
 
-        if cx.shared.observed.load(Ordering::Relaxed) {
+        if observed {
             let mut changed = Vec::new();
             for cell in cx.plan.variables() {
                 let value = run.variable(cell.id()).cloned();

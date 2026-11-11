@@ -52,7 +52,7 @@ pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
-pub use orange_model::id::ConnectionId;
+pub use orange_model::id::{ConnectionId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
 pub use orange_packages::PackageKey;
 pub use orange_runtime::EffectLease;
@@ -98,6 +98,11 @@ pub enum FlowEvent {
     /// observation starts holds every variable the graph uses. Several writes between
     /// two reports appear as the latest value only.
     Variables(Vec<(VariableId, Option<Value>)>),
+    /// Output ports whose value differs from the last one reported, with the value now.
+    /// Sent only while the flow is observed. A port appears once a node has read it;
+    /// constants, faults and outputs nothing reads are not reported, and several values
+    /// between two reports appear as the latest only.
+    Ports(Vec<(NodeId, PortKey, Value)>),
     /// The flow's graph was replaced by an edited version. Events after this come
     /// from the new graph, starting with its state.
     Updated {
@@ -1052,10 +1057,11 @@ impl Host {
         })
     }
 
-    /// Turns reporting of the flow's variable values on or off. While on, the flow
-    /// sends [`FlowEvent::Variables`] after each turn in which a value differs from the
-    /// last one reported, starting with every variable. It costs one comparison per
-    /// variable per turn, so a front end observes the flows it is showing.
+    /// Turns reporting of the flow's values on or off. While on, the flow sends
+    /// [`FlowEvent::Variables`] and [`FlowEvent::Ports`] after each turn in which a
+    /// variable or an output port differs from what was last reported, starting with
+    /// every variable. It costs one comparison per variable and per port per turn, so a
+    /// front end observes the flows it is showing.
     pub fn observe(&self, flow: FlowId, on: bool) -> Result<(), HostError> {
         let flow = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
         flow.shared.observed.store(on, Ordering::Relaxed);
