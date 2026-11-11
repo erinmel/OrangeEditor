@@ -21,6 +21,22 @@ edits. Inputs queued for the old graph are dropped by design and that loss is no
 reported per input. The time a swap takes was not measured; the old run's cleanup is
 bounded to 64 pump-or-advance steps before it is disposed regardless.
 
+## Headless host and network verification — 2026-11-10
+
+Source commit `049ba50`, Rust 1.99.1 (`58cf8f9c3`), Windows
+`x86_64-pc-windows-msvc`, default Cargo features. Network dependency features
+are the pinned `ureq/rustls` and `tungstenite` handshake and rustls root features
+listed below. Cargo.lock SHA-256 is
+`cb7420624a8a6476ebf6442fce61a6154c932dc4e2da24d57940c6cd6aa13faa`.
+
+`cargo test -p orange-net -p orange-host -p orange-cli --locked --offline`
+passed 13 tests with one ignored when run with normal local socket access.
+The restricted run failed two HTTP loopback tests that passed on that rerun.
+The verified scope includes HTTP requests and shared sessions, routing a failed
+HTTPS handshake, and plaintext WebSocket round-trip, sharing and queued sends
+before initial connect. The ignored public HTTPS test and WSS integration were
+outside this run. Earlier public HTTPS evidence is recorded below.
+
 ## Package entries and WebSocket — 2026-11-10
 
 Same branch and toolchain as the entries below. New pinned dependency: `tungstenite`

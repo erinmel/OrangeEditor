@@ -1,6 +1,6 @@
 # Host services, integrations and platform capability
 
-These are proposed Orange contracts informed by the primary sources at the end. Library choices remain candidates until their exact version/features/MSRV/licenses are verified in [10](10-tooling-and-sources.md). Capability detection returns supported, partial, unavailable or permission-required with a reason; unsupported OS functionality must not appear as a working node.
+The [connection manager](#connection-manager) records the implemented network subset alongside the remaining service contracts. Exact dependency pins and verification evidence are recorded in [10](10-tooling-and-sources.md). Capability detection returns supported, partial, unavailable or permission-required with a reason; unsupported OS functionality must not appear as a working node.
 
 Service statuses, errors, remediation, connection/vault dialogs and audio controls follow [13](13-internationalization.md): stable codes and typed redacted message arguments, localized by the host. OS paths, protocol tokens, credential references, device names and remote payloads remain content/identity. The UI locale cannot change connection settings, routing, file encodings or graph parse/format semantics. OS-owned dialog language follows the recorded platform capability.
 
@@ -25,8 +25,8 @@ Graph **directory bundle** saves use immutable generation directories plus a sma
 ## Connection manager
 
 Implemented subset (2026-11-10; `orange-host`, `orange-net`): connection declarations
-(11 §16.1), graph and shared scope, adapters and sessions (02), and one adapter,
-`org.orange.net/http`, with settings `base_url` (required) and `timeout_ms` (whole
+(11 §16.1), graph and shared scope, and adapter-owned sessions (02).
+The `org.orange.net/http` adapter takes settings `base_url` (required) and `timeout_ms` (whole
 request, default 30,000). Its node `org.orange.net/http-request` takes `method`,
 `path` and `content` and returns `status` and `response`; any HTTP status is a result,
 while a transport failure, an invalid request or an unreadable or over-8-MiB response

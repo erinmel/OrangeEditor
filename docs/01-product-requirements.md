@@ -1,5 +1,16 @@
 # Product requirements
 
+Headless service trace (2026-11-10). FR-21 has graph-local and host-shared
+connection declarations with adapter-owned sessions. FR-23 has text requests
+and responses over HTTP/HTTPS, verified TLS, a request timeout and an 8 MiB
+response limit. FR-24 has text send and receive over WS/WSS, a bounded outgoing
+queue, reconnect attempts and flow-owned subscriptions. FR-35 has trusted native
+service sources feeding compiled package entries through a flow mailbox. V04
+qualification remains partial. HTTP streaming, credential management, WebSocket
+binary support and TLS WebSocket integration coverage are open. See
+[service contracts](05-services-and-platforms.md#connection-manager) and
+[verification results](10-tooling-and-sources.md).
+
 K02d1 cancellation trace (2026-11-09): FR-35/38 and NFR-06/08 gain a host-owned
 instance cancellation handle, independent of engine-wide interruption. Cancelling
 one live guest leaves a concurrently executing peer usable. The host drives epoch
@@ -163,7 +174,7 @@ Priority: **M** required for the foundation 1.0; **S** optional/deferred, not a 
 | FR-09 | Custom types register versioned codecs, schema and editor description; unsupported codec retains original payload but prevents execution. | M P2 | 03,04 / V01,V03 |
 | FR-10 | Arithmetic/comparison/math/logic report overflow, zero division and domain/nonfinite errors under the selected numeric policy; ordinary f64 rounding is documented. Explicit casts reject or expose loss under a declared policy; no silent numeric/string coercion. | M P3 | 03 / V01,V05 |
 | FR-11 | String encoding, Unicode-aware indexing, parsing/formatting, collection and JSON nodes handle invalid encoding and bounds. Seeded random replays with the same algorithm/version and invocation order. | M P3 | 03 / V01 |
-| FR-12 | Declare/initialize/Get/Set/Update variable nodes expose stable typed declarations, scope and initialization rules; current contextual Update validation supports local/run Add/Sub with exact numeric-operation proofs, Min/Max with exact Ord proofs, and Compare-and-set with exact Eq proofs and required expected/replacement operands; And/Or/Xor accept exact built-in bool/integer types; Append concatenates exact string/bytes/list values; workspace-only Set-shared/Update-shared expose async/maybe contracts with the same type rules, while host serialization/publication of workspace-shared writes remains unimplemented (local/run Update executes; see the Variable Update trace below); supported local/run Get/Set execution is described in the headless milestone below. Declaration-node configuration edits declaration metadata, never implicitly resets a running variable. Enum values have stable variants and explicit construction/match nodes. | M P3 | 03,11 / V01,V02,V06 |
+| FR-12 | Declare/initialize/Get/Set/Update variable nodes expose stable typed declarations, scope and initialization rules; current contextual Update validation supports local/run Add/Sub with exact numeric-operation proofs, Min/Max with exact Ord proofs, and Compare-and-set with exact Eq proofs and required expected/replacement operands; And/Or/Xor accept exact built-in bool/integer types; Append concatenates exact string/bytes/list values; workspace-only Set-shared/Update-shared expose async/maybe contracts with the same type rules and publish host-serialized writes before graph continuation when a workspace actor is attached (see C12b); supported local/run Get/Set execution is described in the headless milestone below. Declaration-node configuration edits declaration metadata, never implicitly resets a running variable. Enum values have stable variants and explicit construction/match nodes. | M P3 | 03,11 / V01,V02,V06 |
 | FR-13 | Persistent variable checkpoints are explicit, versioned and atomic; host access uses the runtime command service, not unsynchronized memory access. | M P3 | 03 / V01,V08 |
 | FR-14 | Branch, enum switch including unknown-variant policy, Sequence, Fork, count/foreach/while/iterator loops and break/continue enforce structured control. Synchronous unbounded cycles are rejected; the legal cycle classes in FR-46 are accepted; long loops yield and cancel. | M P2,P3 | 03,11 / V01,V02 |
 | FR-15 | Manual triggers, timers, subscriptions and external events expose ordering/reentrancy/queue policy; overflow is observable and no unbounded accumulation occurs. Run-scope Await Event registrations are typed, bounded and cancellable. C04a selects a bounded host API for existing run-scoped event declarations. C04b executes manual entries through `Run::trigger` and virtual-clock timer entries with missed-tick policies through the same bounded admission; OS timers and native sources remain open. | M P2,P4 | 03,05,11 / V02,V04 |

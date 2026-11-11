@@ -26,9 +26,9 @@ Binding request (2026-10-27): host kernel resolvers should implement `PureKernel
 
 The table below is the selected extension contract. Current installed guest
 execution implements Pure, Action and Async nodes with concrete port types and empty
-config (K02c; effects 2026-11-10). Entries (event sources), iterators, resources and
-host service imports are not implemented, so a package cannot yet reach the network,
-files or devices. Trusted host type registration implements records, enums and handle kinds;
+config (K02c; effects 2026-11-10). The compiler and host also support package Entry
+nodes fed by trusted native service sources, including incoming WebSocket text.
+Installed Wasm guests still lack host service imports, iterators and resource contributions. Trusted host type registration implements records, enums and handle kinds;
 arbitrary package scalar representations/codecs and complete archive contribution
 activation remain open. Metadata registration alone does not prove execution support.
 
