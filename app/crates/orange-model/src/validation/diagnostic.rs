@@ -109,6 +109,7 @@ diagnostics! { subject;
                 "Subscriptions are not permitted in a function.".into()
             });
     EventUnknown => ("E-EVENT-UNKNOWN", "core/graph-event-unknown", Error, "Event reference is missing, invalid or undeclared.".into());
+    ConnectionUnknown => ("E-CONNECTION-UNKNOWN", "core/graph-connection-unknown", Error, "Connection reference is missing, invalid or undeclared.".into());
     ActivationPolicy => ("E-ACTIVATION-POLICY", "core/graph-activation-policy", Error, "Entry activation policy is missing or invalid.".into());
     ConverterConfig => ("E-CONVERTER-CONFIG", "core/graph-converter-config", Error, {
                 "Converter node uses an unsupported or malformed config.".into()

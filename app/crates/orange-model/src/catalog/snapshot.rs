@@ -1087,10 +1087,21 @@ impl RegistrySnapshot {
         let Some(registered) = self.registered(&node.definition) else {
             return Ok(None);
         };
+        let definition = &registered.definition;
+        // A node that uses a connection must name one this document declares.
+        if definition
+            .references
+            .iter()
+            .any(|field| field.kind == ReferenceKind::Connection)
+        {
+            match self.reference(node, ReferenceKind::Connection) {
+                Ok(DeclId::Connection(id)) if document.connections().contains_key(&id) => {}
+                _ => return Err(ContractError::ConnectionUnknown),
+            }
+        }
         if let Some(declared) = &registered.declared {
             return Ok(Some(Cow::Borrowed(declared)));
         }
-        let definition = &registered.definition;
         if matches!(definition.ports, Ports::ForEach) {
             return super::intrinsics::for_each_contract(definition, node)
                 .map(|contract| Some(Cow::Owned(contract)));

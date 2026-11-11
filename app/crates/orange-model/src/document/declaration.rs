@@ -5,7 +5,8 @@ use serde::{Deserialize, Serialize};
 use super::keyed::Keyed;
 use super::literal::Literal;
 use super::{Extensions, GraphBody, NodeKind, PortDescriptor, TypeParamName};
-use crate::id::{EventDeclId, FunctionId, TypeExpr, VariableId};
+use crate::id::{ConnectionId, EventDeclId, FunctionId, TypeExpr, VariableId};
+use serde_json::{Map, Value as Json};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct VariableDecl {
@@ -66,6 +67,43 @@ impl Keyed for EventDecl {
     fn key(&self) -> EventDeclId {
         self.id
     }
+}
+
+/// A connection to an external service that nodes use by reference (11 §8.6).
+///
+/// The declaration names an adapter and holds its settings; it carries no secret and
+/// opens nothing. The embedding host owns the live session.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConnectionDecl {
+    pub id: ConnectionId,
+    pub name: String,
+    /// Namespaced adapter kind, such as `org.orange.net/http`.
+    pub adapter: String,
+    pub scope: ConnectionScope,
+    /// Adapter settings. Empty for a shared connection, whose settings the host holds.
+    #[serde(default, skip_serializing_if = "Map::is_empty")]
+    pub settings: Map<String, Json>,
+    #[serde(flatten)]
+    pub extensions: Extensions,
+}
+
+impl Keyed for ConnectionDecl {
+    type Key = ConnectionId;
+
+    fn key(&self) -> ConnectionId {
+        self.id
+    }
+}
+
+/// Who owns a connection's settings and session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum ConnectionScope {
+    /// Settings are in this document; each run of it has its own session.
+    Graph,
+    /// The host holds the settings under this ID; every graph that declares the same
+    /// ID uses the same session.
+    Shared,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

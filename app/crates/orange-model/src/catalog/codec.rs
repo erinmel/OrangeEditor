@@ -164,6 +164,9 @@ struct DefinitionWire {
     ports: Vec<PortDescriptor>,
     #[serde(default)]
     config_schema: Option<serde_json::Value>,
+    /// The node uses a declared connection, named by its `connection` config field.
+    #[serde(default)]
+    connection: bool,
 }
 
 #[derive(Deserialize)]
@@ -206,7 +209,11 @@ impl From<DefinitionWire> for NodeDefinition {
             suspends: wire.suspends,
             type_params: wire.type_params,
             ports: Ports::Declared(wire.ports),
-            references: Vec::new(),
+            references: if wire.connection {
+                vec![super::language::reference_field(super::ReferenceKind::Connection).clone()]
+            } else {
+                Vec::new()
+            },
             specializations: None,
             config_schema: wire.config_schema,
         }

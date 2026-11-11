@@ -28,8 +28,8 @@ use uuid::Uuid;
 use crate::catalog::{ReferenceError, ReferenceField, ReferenceKind, RegistrySnapshot};
 use crate::config_pointer::{pointer_get, pointer_set};
 use crate::document::{
-    BodyRef, ConfigValue, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, NodeInstance,
-    PackageLockEntry, SignatureSnapshot, TypeLockEntry, VariableDecl,
+    BodyRef, ConfigValue, ConnectionDecl, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument,
+    NodeInstance, PackageLockEntry, SignatureSnapshot, TypeLockEntry, VariableDecl,
 };
 use crate::edit::{DeclId, DocCommand};
 use crate::error::{IdError, PasteError};
@@ -45,6 +45,10 @@ pub struct Fragment {
     pub edges: Vec<Edge>,
     pub variables: Vec<VariableDecl>,
     pub events: Vec<EventDecl>,
+    /// Connections keep their identity when pasted: a shared connection is the same
+    /// host session everywhere, and a graph connection missing from the target is added
+    /// under its own ID.
+    pub connections: Vec<ConnectionDecl>,
     pub functions: Vec<FunctionDecl>,
     /// Snapshots referenced by `nodes` and by nodes in `functions`.
     pub signatures: BTreeMap<SignatureKey, SignatureSnapshot>,
@@ -169,6 +173,11 @@ impl Fragment {
                     DeclId::Event(id) => {
                         if let Some(decl) = document.events().get(&id) {
                             self.events.push(decl.clone());
+                        }
+                    }
+                    DeclId::Connection(id) => {
+                        if let Some(decl) = document.connections().get(&id) {
+                            self.connections.push(decl.clone());
                         }
                     }
                     DeclId::Function(id) => {
@@ -309,6 +318,13 @@ impl Fragment {
         );
         commands.extend(variables.into_iter().map(DocCommand::UpsertVariable));
         commands.extend(events.into_iter().map(DocCommand::UpsertEvent));
+        commands.extend(
+            self.connections
+                .iter()
+                .filter(|decl| !target.connections().contains_key(&decl.id))
+                .cloned()
+                .map(DocCommand::UpsertConnection),
+        );
         commands.extend(functions.into_iter().map(DocCommand::UpsertFunction));
         let node_map: BTreeMap<NodeId, NodeId> = self
             .nodes

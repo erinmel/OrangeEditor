@@ -19,6 +19,7 @@ mod codec_golden;
 mod codec_unknown;
 mod component_inference;
 mod connection_apply;
+mod connection_declarations;
 mod connection_flow;
 mod connection_plan;
 mod converter_resolution;
