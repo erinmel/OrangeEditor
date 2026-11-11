@@ -1,5 +1,33 @@
 # Tooling, environment and research register
 
+## Connections, native services and the HTTP package — 2026-11-10
+
+Same branch and toolchain as the entries below. New pinned dependency: `ureq` =3.5.1,
+`default-features = false`, selected with `cargo search` and its API checked against the
+docs.rs pages for `Agent::config_builder`, `timeout_global`, `http_status_as_error`,
+`Agent::run` with `http::Request`, and `Body::with_config().limit()`. Lockfile additions
+and licenses, read from `cargo metadata`: ureq 3.5.1, ureq-proto 0.7.1, http 1.5.0,
+httparse 1.10.1, base64 0.23.1, percent-encoding 2.3.2, utf8-zero 0.8.1, all
+`MIT OR Apache-2.0`; highest declared MSRV 1.85. No TLS crate was added because
+`deny.toml` allows neither ISC nor MPL/CDLA licenses that rustls, ring and the root
+stores carry; widening that list is a project decision.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace` | 1,708 passed, 0 failed, 15 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass; 20 fixtures |
+
+Limits: Windows only; `cargo-deny`, `--all-features` and MSRV 1.97.1 were not run
+locally. HTTP is tested against an in-process loopback server only: one POST with a
+body, a shared connection used by two flows, and a closed port. Not tested: timeouts,
+large or non-text responses, redirects, keep-alive reuse, concurrent requests on one
+session, cancellation of a request in flight (the lease is passed but the blocking
+client does not poll it), or pause. The CLI's `--share` flag is untested. Sessions are
+dropped with their flow but have no explicit close or pause hook.
+
 ## Graph-implemented package nodes — 2026-11-10
 
 Same branch and toolchain as the entries below. No dependency version or feature

@@ -1129,6 +1129,39 @@ Functions keep the entry/subscription restrictions above. A selection that conta
 
 A package may **not** add port kinds, control or zone intrinsics, scheduling or reentrancy modes, new cycle-legality rules (except by contributing `suspends: always` async nodes) or availability exceptions. New control shapes use iterators (`open/next/close` lowered to a structured loop), async outcome groups, or functions. Further intrinsics need a host language release (OPEN-12). New execution domains are not package contributions: crates linked by the embedding product add them through the core's public interfaces (ADR-21).
 
+### 16.1 Connections (2026-11-10; FR-60)
+
+A document declares the external services its nodes talk to, beside its variables and
+events:
+
+```json
+"connections": [
+  {"id": "<uuid>", "name": "obs", "adapter": "org.orange.net/http", "scope": "graph",
+   "settings": {"base_url": "http://127.0.0.1:4455"}}
+]
+```
+
+`adapter` is a namespaced adapter kind that the host must have. `scope` is `graph` or
+`shared`. A graph connection's `settings` are in the document and each run of the
+document has its own session. A shared connection has no settings in the document: the
+host holds them under the same `id`, and every document that declares that `id` uses
+one session. Settings never hold secrets; a declaration opens nothing and grants
+nothing. The key is omitted when a document has no connections, so existing documents
+keep their saved form.
+
+A node definition that sets `"connection": true` uses a connection named by its
+`connection` config field, a typed reference like `variable` and `event`. The reference
+must name a connection this document declares, in either scope; otherwise validation
+reports `E-CONNECTION-UNKNOWN` (`core/graph-connection-unknown`). Whether the adapter
+exists, matches the node and can be opened is the host's check when it opens the
+document. `UpsertConnection` and `RemoveConnection` are ordinary transactions with exact
+undo. Pasted nodes bring the connections they reference under the same ID, added only
+where the target lacks it, because a connection's identity is what makes it shared.
+
+Not specified yet: a connection as a parameter of a graph function, so a
+graph-implemented package node cannot use one; adapter compatibility in validation; and
+nodes that receive from a connection, which need package entries.
+
 ## 17. Diagnostics catalog
 
 Compile diagnostics are `E-` (blocks compiling the affected region) or `W-` (compiles). Each one carries the node, port and edge IDs, and suggested fixes where applicable. Every node a validation report leaves incomplete carries at least one diagnostic that names it: its own resolution failure, or `E-DEPENDENCY-UNAVAILABLE` when an unresolved connected node blocks its check. A language intrinsic that this core version lists but does not register yet reports `E-INTRINSIC-UNSUPPORTED`.
@@ -1151,7 +1184,7 @@ All variable and event declarations require concrete, well-formed types availabl
 | State and concurrency | `E-VARIABLE-SCOPE`, `E-SHARED-VARIABLE-SCOPE`, `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `E-VARIABLE-PERSISTENT`, `E-REGISTER-CONFIG`, `W-CONST-ERROR` |
 | Functions and entries | `E-FUNCTION-KIND`, `E-FUNCTION-BODY-MARKER`, `E-MISSING-RETURN`, `E-ENTRY-IN-FUNCTION`, `E-SUBSCRIPTION-IN-FUNCTION`, `E-ACTIVATION-POLICY`, `W-DETACH-IN-FUNCTION` |
 | Exports and configuration | `E-EXPORT-TARGET`, `E-EXPORT-DUPLICATE`, `E-EXPORT-TYPE`, `E-CONFIG-INVALID`, `E-CONFIG-SCHEMA-UNSUPPORTED` |
-| Function resolution | `E-CALL-TARGET-MISSING`, `E-CALL-TARGET-UNKNOWN`, `E-FUNCTION-INTERFACE`, `E-VARIABLE-UNKNOWN`, `E-EVENT-UNKNOWN`, `E-UPDATE-OPERATION`, `E-UPDATE-UNSUPPORTED`, `E-FUNCTION-METADATA-UNAVAILABLE`, `E-METADATA-STALE`, `E-SUSPENDS-MISSING`, `E-SUSPENDS-INVALID` |
+| Function resolution | `E-CALL-TARGET-MISSING`, `E-CALL-TARGET-UNKNOWN`, `E-FUNCTION-INTERFACE`, `E-VARIABLE-UNKNOWN`, `E-EVENT-UNKNOWN`, `E-CONNECTION-UNKNOWN`, `E-UPDATE-OPERATION`, `E-UPDATE-UNSUPPORTED`, `E-FUNCTION-METADATA-UNAVAILABLE`, `E-METADATA-STALE`, `E-SUSPENDS-MISSING`, `E-SUSPENDS-INVALID` |
 
 `E-SHARED-VARIABLE-SCOPE` uses the core origin, message key `core/graph-shared-variable-scope`, empty arguments and safe fallback "Shared writes require a workspace variable." It identifies a local/run target of a shared write without exposing configuration values.
 

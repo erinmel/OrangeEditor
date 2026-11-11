@@ -54,6 +54,8 @@ Package lifecycle (2026-11-03) adds app/crates/orange-packages as a core member.
 
 K02b (2026-11-08) adds the `sdk/` workspace: `sdk/wit` (the versioned `orange:expansion` WIT package), `sdk/guests/probe` (a Rust test guest) and `sdk/tools/componentize`. It builds separately with its own toolchain file adding `wasm32-unknown-unknown`; `node tools/build-guest-fixtures.mjs` produces the host test fixture.
 
+Network package (2026-11-10) adds app/crates/orange-net, a non-core service package depending on orange-host, and pins `ureq` 3.5.1 with default features off (no TLS, no compression, no JSON). The lockfile gains ureq, ureq-proto, http, httparse, base64, percent-encoding and utf8-zero, all `MIT OR Apache-2.0`. orange-cli gains an edge to orange-net.
+
 Session host (2026-11-10) adds app/crates/orange-host (normal edges to every other product crate; sha2 and thiserror already pinned) and app/crates/orange-cli (binary `orange`; its only dependency is orange-host). Neither is graph core. Cargo.lock gains only these local entries. `app/crates/orange-cli/graphs` holds example documents the CLI can run.
 
 Kernel interface (2026-11-10) adds app/crates/orange-kernel as a core member whose only first-party dependency is orange-model, plus the already-pinned thiserror. orange-compiler gains a normal edge to it; orange-bundled and orange-guest replace their normal compiler edge with it and keep the compiler as a development dependency. orange-guest also gains a development edge to orange-runtime for effect tests. Cargo.lock gains only these local entries and edges. The plugin world in `sdk/wit` gains a `value` variant and an `effects` export in place, and the committed probe component is rebuilt from `sdk/guests/probe`.

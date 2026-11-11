@@ -24,6 +24,19 @@ Graph **directory bundle** saves use immutable generation directories plus a sma
 
 ## Connection manager
 
+Implemented subset (2026-11-10; `orange-host`, `orange-net`): connection declarations
+(11 §16.1), graph and shared scope, adapters and sessions (02), and one adapter,
+`org.orange.net/http`, with settings `base_url` (required) and `timeout_ms` (whole
+request, default 30,000). Its node `org.orange.net/http-request` takes `method`,
+`path` and `content` and returns `status` and `response`; any HTTP status is a result,
+while a transport failure, an invalid request or an unreadable or over-8-MiB response
+takes the node's `failed` route with an `org.orange.net/*` code. **Only `http://`
+endpoints work**: the dependency policy (`deny.toml`) admits no TLS implementation, so
+`https://` is refused when the connection is opened. Nothing else in this section is
+implemented: no credentials or vault, profiles and revisions, leases, pooling policy,
+retries, redirects policy, proxy or DNS rules, Test Connection, or WebSocket. The text
+below remains a proposal.
+
 Profiles store versioned adapter ID/schema, endpoint, typed options, TLS/auth policy, credential references and retry/deadline policy. App scope is per-user storage; workspace scope is separately authorized and can shadow an app display name but never its stable ID. Exports omit credentials, auth headers and secret-bearing query/options, preserving remappable placeholders; opaque extension options declare sensitivity. Import does not activate sessions or grant network authority.
 
 `acquire(profile_id, revision, purpose, owner, grant)` returns a lease. Pool key includes resolved profile revision, adapter/provider version, authentication identity/scopes, TLS policy and isolation policy; credentials themselves never become stringified keys/logs. HTTP clients may pool requests; WebSocket subscriptions and optional MQTT client sessions have protocol-specific sharing restrictions. Later protocol plugins must declare their own sharing rules. Profile edits create a new version: active leases retain prior configuration unless revocation forces closure. Last lease releases idle transports after a bounded policy timeout; subscriptions/listeners live under explicit owners.

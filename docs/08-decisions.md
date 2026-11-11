@@ -45,6 +45,14 @@ Why egui:
 
 ## ADR-03 — Component-first expansion, trusted worker escape hatch
 
+Native service tier amendment (2026-11-10): work that needs the operating system is
+provided by trusted Rust compiled into the application as a `ServicePackage`, not by an
+installed native library. It is the third way to implement a node, beside graphs and
+components, and the only one that can hold a socket today. Network access for
+sandboxed components will be offered through these services behind grants rather than
+by giving guests sockets. A connection is declared data (11 §16.1); the live session
+belongs to the host.
+
 Graph tier amendment (2026-11-10): code is not the only way to implement a package
 node. A provider with the ID `graph` is implemented by a function graph shipped in the
 archive and linked by the host as an ordinary function call. It needs no sandbox,

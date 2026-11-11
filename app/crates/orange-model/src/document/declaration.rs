@@ -69,7 +69,7 @@ impl Keyed for EventDecl {
     }
 }
 
-/// A connection to an external service that nodes use by reference (11 §8.6).
+/// A connection to an external service that nodes use by reference (11 §16.1).
 ///
 /// The declaration names an adapter and holds its settings; it carries no secret and
 /// opens nothing. The embedding host owns the live session.

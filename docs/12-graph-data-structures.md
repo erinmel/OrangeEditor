@@ -328,6 +328,7 @@ pub struct GraphDocument {
     pub type_lock: Vec<TypeLockEntry>,       // canonical named type + codec
     pub variables: IndexMap<VariableId, VariableDecl>,
     pub events: IndexMap<EventDeclId, EventDecl>,
+    pub connections: IndexMap<ConnectionId, ConnectionDecl>, // 11 §16.1; omitted when empty
     pub signatures: BTreeMap<SignatureKey, SignatureSnapshot>, // shared by nodes
     pub root: GraphBody,
     pub functions: IndexMap<FunctionId, FunctionDecl>,
