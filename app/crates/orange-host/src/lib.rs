@@ -59,7 +59,8 @@ pub use orange_runtime::{
     ControlOutcome, RefusedReason, RunError, RunEvent, RunOptions, RunState, StopMode,
 };
 pub use services::{
-    Call, ConnectionAdapter, SERVICE_PROVIDER, ServiceNode, ServicePackage, Session,
+    Call, ConnectionAdapter, EmitError, Emitter, SERVICE_PROVIDER, ServiceNode, ServicePackage,
+    ServiceSource, Session,
 };
 
 /// Identifies one flow for the life of its host. Never reused.
@@ -153,6 +154,8 @@ pub enum HostError {
     Run(#[from] RunError),
     #[error("connection `{0}` cannot be used: {1}")]
     Connection(String, String),
+    #[error("entry node `{0}` cannot be fed: {1}")]
+    Source(NodeId, String),
     #[error("no such flow")]
     UnknownFlow,
     #[error("the flow has ended")]
@@ -213,13 +216,22 @@ impl std::fmt::Debug for SharedConnection {
     }
 }
 
-#[derive(Debug)]
 struct Flow {
     info: FlowInfo,
     inbox: orange_runtime::RunInbox,
     sources: BTreeMap<EventDeclId, RunEventSource>,
     shared: Arc<Shared>,
     thread: Option<JoinHandle<()>>,
+    /// Guards of the running service sources; dropping them stops the sources.
+    feeds: Vec<Box<dyn Send>>,
+}
+impl std::fmt::Debug for Flow {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Flow")
+            .field("info", &self.info)
+            .field("feeds", &self.feeds.len())
+            .finish_non_exhaustive()
+    }
 }
 impl Flow {
     fn wake(&self) {
@@ -298,7 +310,12 @@ impl Host {
                 implements: Default::default(),
                 specializations: Default::default(),
             };
-            for (definition, _) in &package.nodes {
+            let definitions = package
+                .nodes
+                .iter()
+                .map(|(definition, _)| definition)
+                .chain(package.sources.iter().map(|(definition, _)| definition));
+            for definition in definitions {
                 let _ = provider
                     .implements
                     .insert((definition.definition.clone(), definition.config_version));
@@ -624,6 +641,43 @@ impl Host {
             CompileOptions::default(),
         )?);
         let sessions = self.sessions(&document)?;
+        // Every package entry needs a source before anything starts.
+        let mut feeds = Vec::new();
+        let mut manual_entries = Vec::new();
+        for entry in plan.manuals() {
+            let node = document
+                .node(entry.node())
+                .ok_or_else(|| HostError::Source(entry.node(), "node not found".into()))?;
+            if node.definition.id.is_core() {
+                manual_entries.push((entry.node(), entry.payload_type().is_some()));
+                continue;
+            }
+            let refused = |reason: &str| HostError::Source(node.id, reason.to_owned());
+            let provider = node
+                .provider
+                .as_ref()
+                .and_then(|binding| ProviderKey::of(&document, binding))
+                .ok_or_else(|| refused("the node has no exact provider"))?;
+            let (source, uses_connection) = self
+                .native
+                .1
+                .source(&provider, &node.definition)
+                .ok_or_else(|| refused("no service provides this entry"))?;
+            let session = if uses_connection {
+                let id: ConnectionId = node
+                    .config
+                    .get("connection")
+                    .and_then(|value| value.as_str())
+                    .and_then(|text| text.parse().ok())
+                    .ok_or_else(|| refused("the node names no connection"))?;
+                Some(Arc::clone(sessions.get(&id).ok_or_else(|| {
+                    refused("the node names a connection this document does not declare")
+                })?))
+            } else {
+                None
+            };
+            feeds.push((node.id, source, session));
+        }
         let run = Run::start(
             Arc::clone(&plan),
             &document,
@@ -643,11 +697,7 @@ impl Host {
         }
         let info = FlowInfo {
             graph: document.graph_id(),
-            manual_entries: plan
-                .manuals()
-                .iter()
-                .map(|entry| (entry.node(), entry.payload_type().is_some()))
-                .collect(),
+            manual_entries,
             events: sources.keys().copied().collect(),
         };
 
@@ -673,16 +723,38 @@ impl Host {
             .name(format!("orange-flow-{id}"))
             .spawn(move || flow::drive(driver, context))
             .map_err(|error| HostError::Start(error.to_string()))?;
-        let _ = self.flows.insert(
-            id,
-            Flow {
-                info,
-                inbox,
-                sources,
-                shared,
-                thread: Some(thread),
-            },
-        );
+        let mut flow = Flow {
+            info,
+            inbox,
+            sources,
+            shared,
+            thread: Some(thread),
+            feeds: Vec::new(),
+        };
+        for (node, source, session) in feeds {
+            let emitter = Emitter {
+                inbox: flow.inbox.clone(),
+                node,
+                flow: flow
+                    .thread
+                    .as_ref()
+                    .map_or_else(thread::current, |t| t.thread().clone()),
+            };
+            match source.start(session, emitter) {
+                Ok(guard) => flow.feeds.push(guard),
+                Err(reason) => {
+                    // Nothing has been reported as opened: stop the flow again.
+                    flow.feeds.clear();
+                    flow.shared.closing.store(true, Ordering::Relaxed);
+                    flow.wake();
+                    if let Some(thread) = flow.thread.take() {
+                        let _ = thread.join();
+                    }
+                    return Err(HostError::Source(node, reason));
+                }
+            }
+        }
+        let _ = self.flows.insert(id, flow);
         Ok(id)
     }
 
@@ -792,6 +864,7 @@ impl Host {
     /// it. Its remaining events stay readable.
     pub fn close(&mut self, flow: FlowId) -> Result<(), HostError> {
         let mut flow = self.flows.remove(&flow).ok_or(HostError::UnknownFlow)?;
+        flow.feeds.clear();
         flow.shared.closing.store(true, Ordering::Relaxed);
         flow.wake();
         if let Some(thread) = flow.thread.take() {
@@ -803,7 +876,8 @@ impl Host {
 
 impl Drop for Host {
     fn drop(&mut self) {
-        for flow in self.flows.values() {
+        for flow in self.flows.values_mut() {
+            flow.feeds.clear();
             flow.shared.closing.store(true, Ordering::Relaxed);
             flow.wake();
         }

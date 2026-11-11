@@ -13,12 +13,14 @@ use orange_kernel::{BindingRequest, EffectBinding, KernelFault, ResolveError};
 use orange_model::Value;
 use orange_model::catalog::{NodeDefinition, ProviderKey};
 use orange_model::document::{DefinitionRef, NodeKind, PortDirection, PortKind};
+use orange_model::id::NodeId;
 use orange_model::id::{ConnectionId, PortKey};
-use orange_runtime::EffectLease;
+use orange_runtime::{EffectLease, HostInput, InboxError, RunInbox};
 use serde_json::{Map, Value as Json};
 use std::any::Any;
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::thread::Thread;
 
 /// Provider ID of every node a service package implements.
 pub const SERVICE_PROVIDER: &str = "native";
@@ -61,11 +63,62 @@ pub trait ServiceNode: Send + Sync + 'static {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault>;
 }
 
+/// Why an [`Emitter`] did not deliver.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EmitError {
+    /// The flow's mailbox is full. The source decides whether to retry or drop.
+    Busy,
+    /// The flow has ended; the source should stop.
+    Closed,
+}
+
+/// Fires one entry node of one flow. Cloneable and usable from any thread; firing never
+/// blocks. What a paused or busy flow does with a firing is the entry's own policy.
+#[derive(Debug, Clone)]
+pub struct Emitter {
+    pub(crate) inbox: RunInbox,
+    pub(crate) node: NodeId,
+    pub(crate) flow: Thread,
+}
+impl Emitter {
+    /// Fires the entry with its payload, or `None` for an entry that declares none.
+    pub fn emit(&self, payload: Option<Value>) -> Result<(), EmitError> {
+        let wall_ns = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()
+            .and_then(|elapsed| i64::try_from(elapsed.as_nanos()).ok());
+        let input = HostInput::Trigger {
+            node: self.node,
+            payload,
+            wall_ns,
+        };
+        self.inbox.send(input).map_err(|error| match error {
+            InboxError::Full(_) => EmitError::Busy,
+            InboxError::Closed(_) => EmitError::Closed,
+        })?;
+        self.flow.unpark();
+        Ok(())
+    }
+}
+
+/// The implementation of one entry node: something outside the graph that fires it.
+///
+/// `start` is called once per entry node when its flow opens and must not block. It
+/// returns a guard; dropping the guard stops the source for that node.
+pub trait ServiceSource: Send + Sync + 'static {
+    fn start(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String>;
+}
+
 /// A set of native nodes and connection adapters built into the application.
 pub struct ServicePackage {
     pub(crate) id: String,
     pub(crate) version: String,
     pub(crate) nodes: Vec<(NodeDefinition, Arc<dyn ServiceNode>)>,
+    pub(crate) sources: Vec<(NodeDefinition, Arc<dyn ServiceSource>)>,
     pub(crate) adapters: Vec<(String, Arc<dyn ConnectionAdapter>)>,
 }
 impl std::fmt::Debug for ServicePackage {
@@ -85,6 +138,7 @@ impl ServicePackage {
             id: id.into(),
             version: version.into(),
             nodes: Vec::new(),
+            sources: Vec::new(),
             adapters: Vec::new(),
         }
     }
@@ -96,6 +150,17 @@ impl ServicePackage {
     ) -> Result<Self, orange_model::catalog::DefinitionError> {
         let definition = NodeDefinition::from_json(definition)?;
         self.nodes.push((definition, Arc::new(node)));
+        Ok(self)
+    }
+    /// Adds an entry node from its definition file text. The definition's kind is
+    /// `entry`; it has a `then` outcome and at most one data output, `payload`.
+    pub fn source(
+        mut self,
+        definition: &str,
+        source: impl ServiceSource,
+    ) -> Result<Self, orange_model::catalog::DefinitionError> {
+        let definition = NodeDefinition::from_json(definition)?;
+        self.sources.push((definition, Arc::new(source)));
         Ok(self)
     }
     /// Adds the adapter for connections whose `adapter` is `kind`.
@@ -115,6 +180,7 @@ pub(crate) struct ServiceEffect {
 #[derive(Default, Clone)]
 pub(crate) struct Services {
     nodes: BTreeMap<(ProviderKey, DefinitionRef), (Arc<dyn ServiceNode>, bool)>,
+    sources: BTreeMap<(ProviderKey, DefinitionRef), (Arc<dyn ServiceSource>, bool)>,
 }
 impl std::fmt::Debug for Services {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -132,6 +198,24 @@ impl Services {
                 (Arc::clone(node), uses_connection),
             );
         }
+        for (definition, source) in &package.sources {
+            let uses_connection = !definition.references.is_empty();
+            let _ = self.sources.insert(
+                (provider.clone(), definition.definition.clone()),
+                (Arc::clone(source), uses_connection),
+            );
+        }
+    }
+
+    /// The source of an entry node bound to `provider`, and whether it uses a connection.
+    pub fn source(
+        &self,
+        provider: &ProviderKey,
+        definition: &DefinitionRef,
+    ) -> Option<(Arc<dyn ServiceSource>, bool)> {
+        self.sources
+            .get(&(provider.clone(), definition.clone()))
+            .cloned()
     }
 
     /// Binds one async service node. Exec ports carry no value; any other non-data port
