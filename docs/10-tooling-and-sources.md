@@ -1,5 +1,26 @@
 # Tooling, environment and research register
 
+## Live edit of a running graph — 2026-11-11
+
+Branch `feat/plugin-boundary-and-core-fixes` after `049ba50`; same toolchain, no
+dependency or lockfile change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,715 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `orange run <copy of set-on-trigger.json>` with piped `trigger`, file edit, `reload 1`, `trigger`, broken file, `reload 1` | Edit applied with 1 variable kept; the entry ran the edited graph; the broken file was refused and the flow kept running; exit 0 |
+
+Limits: Windows only. Not tested: an edit while an effect is in flight, while a timer
+is pending or during a burst of input; an edit that removes or retypes a variable; an
+edit that changes a connection's settings; an edit to a flow using an installed
+component or a graph-implemented package node; a new run that fails to start; repeated
+edits. Inputs queued for the old graph are dropped by design and that loss is not
+reported per input. The time a swap takes was not measured; the old run's cleanup is
+bounded to 64 pump-or-advance steps before it is disposed regardless.
+
 ## Package entries and WebSocket — 2026-11-10
 
 Same branch and toolchain as the entries below. New pinned dependency: `tungstenite`

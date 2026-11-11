@@ -1124,6 +1124,23 @@ Functions keep the entry/subscription restrictions above. A selection that conta
 
 - Document edits never mutate a running plan. A semantic edit compiles a new plan in the background (debounced). Runs started afterwards use it.
 - A running run shows **stale plan (revision r)**. Restart is a graceful stop followed by a new RunId. State carries over only through an opt-in persistent checkpoint ([03](03-data-and-execution.md), [04](04-expansion-plugins.md)).
+- **Apply edit (2026-11-11; FR-62).** A host may replace a running graph with an edited
+  version of the same document. This is an explicit operation, not a side effect of
+  editing: the edit is validated and compiled first, and an edit that fails leaves the
+  run untouched. The running plan is never mutated; a new run starts on the new plan
+  and the old run is then stopped at once. Consequences, all deliberate:
+  - Control flow restarts. Activations in progress are cancelled with their cleanup,
+    pending deliveries and timers are discarded, `core/on-start` runs again and
+    `core/on-stop` does not, because the graph is edited, not stopped.
+  - A run variable keeps its value when a run variable with the same ID and the same
+    type exists in the edited document. A new variable, or one whose type changed,
+    starts from its declared initial value. No checkpoint is involved and nothing is
+    serialized.
+  - Node-private state (`core/gate`, `core/do-once`, `core/flip-flop`, `core/register`,
+    loop counters) starts fresh, even for nodes the edit did not touch.
+  - A paused run is replaced by a paused run.
+  - A document that differs only in layout or its edit counter is not an edit and
+    nothing happens.
 - **Preview** evaluates pinned pure or volatile outputs. Volatile reads come from a selected live run's published snapshot (read-only), or from declared initial values. `execution` outputs show the last inspected value of a selected run, labelled as such, or "unavailable". Entropy nodes use a fixed preview seed. Preview never executes actions or async nodes. Re-evaluation invalidates only the downstream cone of the changed node, runs off the main thread and is budgeted.
 - Layout edits (move, waypoint, frame, comment) never invalidate a plan or a preview ([06](06-quality-and-validation.md) NFR-04).
 

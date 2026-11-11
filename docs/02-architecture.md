@@ -37,8 +37,20 @@ closed. An entry no service provides refuses the document. `FlowInfo::manual_ent
 lists only `core/on-manual` entries, since package entries are not for a user to fire.
 `orange-net` is the first service package and the only crate with a network client.
 Package nodes implemented as graphs are linked into an in-memory copy of the document
-as function calls when it is checked or opened (04). Not
-yet in the host: editing a document that is running, shared workspaces between flows,
+as function calls when it is checked or opened (04).
+Live edit (2026-11-11; 11 §15): `Host::update(flow, json)` applies an edited document to
+a running flow. The host compares the documents without layout and returns at once if
+nothing that runs changed. Otherwise it validates, compiles and resolves the edit on the
+caller's thread, then hands the result to the flow's thread, which replaces the run
+between two turns: it starts the new run with the carried variables first and retires
+the old one only if that succeeded, so a failure at any step leaves the flow as it
+was. The flow keeps its ID, its thread and its place in the event stream, which reports
+`Updated` followed by the new run's state. Its mailbox is replaced, so inputs still
+queued for the old graph and results of work the old graph issued are dropped. A
+connection whose declaration is unchanged keeps its session, so a socket survives an
+edit; package entries are detached from the old mailbox and re-attached to the new one.
+`update` waits for the swap and returns how many variables were kept and reset. Not
+yet in the host: replacing only the changed part of a graph, shared workspaces between flows,
 persistent package storage, and pausing or closing sessions with their flow.
 
 Kernel interface crate (2026-11-10; ADR-03/21): `orange-kernel` holds what a native
