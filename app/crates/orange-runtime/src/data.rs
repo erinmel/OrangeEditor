@@ -13,7 +13,7 @@ use orange_compiler::{
     EvaluatedExport, FoldedValue, KernelFault, NodeIx, SlotIx,
 };
 use orange_model::catalog::RegistrySnapshot;
-use orange_model::id::NodeId;
+use orange_model::id::{NodeId, PortKey};
 use orange_model::value::shape::ValueCheckError;
 use orange_model::{GraphDocument, Value};
 use std::sync::Arc;
@@ -546,6 +546,20 @@ impl DataActivation {
             FoldedValue::Fault(fault) => Err(fault),
         };
         self.state.publish_checked(node, outcome, charge)
+    }
+    /// Calls `see` with every output port value this activation currently holds: the
+    /// last value each producer published, from this or an earlier epoch. Constants
+    /// folded at compile time, faults and ports nothing has pulled are not included.
+    pub fn held_values(&self, mut see: impl FnMut(NodeId, &PortKey, &Value)) {
+        let sources = self.plan.slot_sources();
+        for (slot, register) in self.state.prepared.dynamic_slots.iter().enumerate() {
+            let (Some(register), Some(source)) = (register, sources.get(slot)) else {
+                continue;
+            };
+            if let Some(Ok(value)) = self.state.registers.get(*register) {
+                see(source.node, &source.port, value);
+            }
+        }
     }
     /// Pull one ordered export inside the current explicit epoch. Other pulls in
     /// the same epoch share producers. Borrowed results prevent concurrent mutation.

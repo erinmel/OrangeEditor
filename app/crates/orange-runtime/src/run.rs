@@ -788,6 +788,27 @@ pub struct Run {
     bridges: streams::Bridges,
     replay: Option<replay::Session>,
     watches: watch::Watches,
+    /// The last value seen on each output port, while the host asks for them.
+    port_values: Option<PortValues>,
+}
+/// Output port values by node and port.
+pub type PortValues = BTreeMap<(NodeId, orange_model::id::PortKey), Value>;
+fn record_port(
+    seen: &mut PortValues,
+    node: NodeId,
+    port: &orange_model::id::PortKey,
+    value: &Value,
+) {
+    match seen.get_mut(&(node, port.clone())) {
+        Some(held) => {
+            if held != value {
+                *held = value.clone();
+            }
+        }
+        None => {
+            let _ = seen.insert((node, port.clone()), value.clone());
+        }
+    }
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1169,6 +1190,7 @@ impl Run {
             replay: None,
             changes,
             watches,
+            port_values: None,
         };
         run.arm_timer_entries()?;
         Ok(run)
@@ -1249,6 +1271,32 @@ impl Run {
     pub fn segment_state_writes(&self) -> Option<(u64, &[NodeId])> {
         self.last_segment
             .map(|owner| (owner, self.segment.states()))
+    }
+    /// Starts or stops keeping the last value of each output port for
+    /// [`Run::port_values`]. Stopping forgets what was kept.
+    pub fn keep_port_values(&mut self, on: bool) {
+        if on && self.port_values.is_none() {
+            self.port_values = Some(PortValues::new());
+        } else if !on {
+            self.port_values = None;
+        }
+    }
+    /// The last value each output port carried, for a front end to show on a graph.
+    /// `None` unless [`Run::keep_port_values`] is on.
+    ///
+    /// A port appears once something has pulled its value: the output of a node whose
+    /// result nothing reads, a constant folded at compile time and a fault are absent.
+    /// Nodes inside a function report under the function's own node IDs, whichever
+    /// call ran last. The table is bounded by the plan's port count, and keeping it
+    /// costs one pass over an activation's ports when it ends and on each call here.
+    pub fn port_values(&mut self) -> Option<&PortValues> {
+        let seen = self.port_values.as_mut()?;
+        for frame in self.activations.frames() {
+            frame
+                .data
+                .held_values(|node, port, value| record_port(seen, node, port, value));
+        }
+        self.port_values.as_ref()
     }
     pub fn now(&self) -> u64 {
         self.now
