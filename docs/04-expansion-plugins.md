@@ -190,6 +190,15 @@ and Async nodes. Unlike `evaluate` it is never folded, cached or repeated, so a 
 may keep state in its instance. `GuestPlugin::execute` shares the value, error, fuel,
 transfer and cancellation contract of `evaluate`.
 
+Definition files and installation (2026-11-10; `orange-host`): each node a manifest
+contributes, `<package>/<name>`, is described by the archive file `nodes/<name>.json`
+in the `NodeDefinition` format. `Host::install` reads and digest-checks those files,
+refuses a file that defines another ID, prepares the component for each provider ID
+before publishing anything, then installs through `PackageStore`. A package provider
+becomes the choice for new nodes of a definition only when no provider is chosen yet;
+an existing choice is never replaced by installing. Flows already running keep the
+providers they were compiled with. The host's store is in memory for now.
+
 Package effect nodes in graphs (2026-11-10): `WithGuests<R>` also implements
 `EffectResolver`. An Action node of a loaded package gets an inline action kernel and
 runs on the run's own thread inside a pump. An Async node gets no kernel: the run

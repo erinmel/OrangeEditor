@@ -355,6 +355,14 @@ Test contracts with Rust tests that live beside the code they verify: plain `#[t
 
 ## ADR-21 — OrangeEditor is a foundation: an embeddable core with fixed extension seams
 
+Host amendment (2026-11-10): the core libraries alone are not an attachment surface.
+Composition — packages, several concurrent runs, effect execution, time and
+observation — is delivered once as `orange-host`, and every front end (terminal,
+editor, service) uses that API instead of assembling the layers itself. The host has
+no UI dependency. Each flow is one run on one thread, which keeps the single-owner
+actor of ADR-14 and gives multiple graphs real parallelism without shared locks. The
+`orange` CLI is the first front end and the proof that the surface is sufficient.
+
 **Selected by the user, 2026-10-21.** OrangeEditor is a **foundation**, not one end product. This repository builds the **core** (plus the foundation UI and basic application clarified by ADR-22): graph model, types, compiler and runtime, as Rust libraries with no UI, window or engine dependency (extends ADR-01). The editor UI is a separate layer on top of the core that a product may reuse, restyle or replace. Downstream products embed the core and specialize it, for example a music tool (MIDI, loops, audio analysis driving visuals), a VTuber or virtual-space program (Warudo-style blueprints driving scene objects), a streamer automation tool, or a game or 3D-art tool. Those products are not built here.
 
 The core must therefore be strong and general on its own, and expandable without forking it or changing the document format. Multi-domain node tools (Unreal, Blender, TouchDesigner, Max/Pure Data, Houdini) share one graph infrastructure and give each kind of graph its own evaluation model; none runs audio DSP, shaders and event automation under one scheduler. The core follows that pattern by fixing a small set of seams instead of designing every domain.

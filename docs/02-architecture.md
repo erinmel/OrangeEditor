@@ -1,5 +1,24 @@
 # Architecture and ownership
 
+Session host (2026-11-10; ADR-21): `orange-host` is the one place the layers are
+composed and the surface every front end attaches to. A `Host` owns the package store
+and its registry, the bundled native kernels, the guest engine, a fixed pool of effect
+worker threads and every running graph. `Host::open` validates, compiles and starts a
+document as a *flow*: one run, owned by one thread, driven through `RunDriver` against
+the host's monotonic clock. Flows share nothing mutable, so pausing, faulting or
+stopping one never holds another. Control (`pause`, `resume`, `stop`, `trigger`,
+`emit`) is a bounded, non-blocking send to the flow's mailbox and reports `Busy` when
+it is full. `Host::inspect` runs a read-only closure on the flow's own thread between
+two turns, so no run is ever locked. Observation is one bounded channel of
+`HostEvent`s (state changes, node steps, refused inputs, errors, `Finished`); a slow
+observer loses events, counted by `events_dropped`, and never slows a run. State is
+sampled once per turn, so two changes inside one turn show only the last. An async
+package node is executed on a worker and its result returns through the mailbox; a
+cancelled effect lease is forwarded to the guest. `orange-cli` builds the `orange`
+binary (`check`, `run`) on `orange-host` alone and is the reference front end. Not
+yet in the host: editing a document that is running, shared workspaces between flows,
+persistent package storage, host-native effect services and connections.
+
 Kernel interface crate (2026-11-10; ADR-03/21): `orange-kernel` holds what a native
 node implementation is written against: `PureKernel`, `EntropyKernel`, `ActionKernel`,
 `EffectBinding`, `KernelFault` and their resolvers. It depends only on `orange-model`.
@@ -86,6 +105,8 @@ The host owns an input-trigger service and audio capture/playback services. Keyb
 | orange-runtime | Run/activation state, scheduler, variables, continuations, child task/resource ownership, inspection stream | UI or frame dependence |
 | orange-services | File, connection, vault, HTTP/WebSocket, input-trigger and audio playback/capture/analysis services; platform adapter modules | Graph edits or arbitrary plugin UI |
 | orange-packages | Package store, validation, registry transactions, SDK compatibility, component instances, provider selection | Implicit graph rebinds or vault bypass |
+| orange-host | Session API: package installation, flows (one run per thread), effect workers, bounded observation | UI, windows, rendering; graph semantics |
+| orange-cli | `orange` terminal front end over `orange-host` only | Any direct use of compiler, runtime or packages |
 | orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c); guest action kernels and async effect implementations with binary bulk values (2026-11-10) | Core-crate dependency, precompiled native loading, ungranted imports |
 | orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Specialized integration request logic |
 | orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |

@@ -1,5 +1,29 @@
 # Tooling, environment and research register
 
+## Session host and CLI — 2026-11-10
+
+Same branch and toolchain as the entry below. No external dependency version or
+feature changed; `Cargo.lock` gains the local `orange-host` and `orange-cli` packages.
+The host uses only `std` threads and channels.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,699 passed, 0 failed, 15 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass; 20 fixtures |
+| `orange check graphs/set-on-trigger.json` | `ok`, exit 0 |
+| `orange run <graph> <graph> --for 600` with piped `pause 1`, two `trigger`s, `resume 1` | Both flows ran their entry and finished; exit 0 |
+| `orange run nope.json` | Error printed, exit 1 |
+
+Limits: Windows only. The CLI has no automated test. Host tests cover three cases:
+two flows with one paused, a refused document, and one async package node on a
+worker. Not tested: a full mailbox, a full event channel, lease cancellation of a
+running guest effect, a flow that faults, closing a flow mid-effect, many flows, or
+timers against the real clock. Flow threads are not pooled: one OS thread per open
+flow. No timing was measured.
+
 ## Plugin boundary, kernel crate and Skip timers — 2026-11-10
 
 Branch `feat/plugin-boundary-and-core-fixes` from dev
