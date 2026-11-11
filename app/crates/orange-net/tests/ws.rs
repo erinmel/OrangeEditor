@@ -251,3 +251,155 @@ fn editing_a_running_graph_keeps_its_socket_and_its_trigger() {
         reply(&host, flow).as_deref() == Some("echo:pong")
     });
 }
+
+const ON_CHAT: &str = "org.example.chat/on-chat";
+const STAND_IN: &str = "40000000-0000-4000-8000-0000000000ff";
+
+/// A package with no code whose one node is a trigger on a WebSocket connection: it
+/// fires with every message that arrives on the connection the using node names.
+fn chat_package(host: &Host) -> Vec<u8> {
+    // The message node of the fragment is authored like any node, against a stand-in
+    // connection.
+    let mut scratch = GraphDocument::new("20000000-0000-4000-8000-0000000000aa".parse().unwrap());
+    let stand_in = serde_json::from_value(json!({"id": STAND_IN, "name": "connection",
+        "adapter": orange_net::WS_ADAPTER, "scope": "shared"}))
+    .unwrap();
+    let _ = scratch
+        .apply([DocCommand::UpsertConnection(stand_in)])
+        .unwrap();
+    let mut message = NewNode::new(
+        node(301),
+        DefinitionRef {
+            id: orange_net::WS_MESSAGE.parse().unwrap(),
+            version: 1,
+        },
+    );
+    message.config = serde_json::from_value(json!({"connection": STAND_IN})).unwrap();
+    let edit = new_node_edit(&scratch, host.registry(), message).unwrap();
+    let _ = scratch.apply(edit.commands).unwrap();
+    let authored: Json = serde_json::from_str(&to_json(&scratch).unwrap()).unwrap();
+    let mut inner = authored["nodes"][0].clone();
+    inner["activation"] = activation();
+    let mut emit = core(302, "emit");
+    emit["config"] = json!({"event": id(310)});
+
+    let graph = json!({
+        "format": orange_host::GRAPH_NODE_FORMAT, "format_version": 1,
+        "connection": STAND_IN,
+        "trigger": {
+            "event": id(310),
+            "nodes": [inner, emit],
+            "edges": [
+                edge(301, 301, "then", 302, "in"),
+                edge(302, 301, "payload", 302, "payload"),
+            ]
+        },
+        "signatures": authored["signatures"],
+        "package_lock": authored["package_lock"]
+    });
+    let definition = json!({"definition_id": ON_CHAT, "definition_version": 1,
+        "config_version": 1, "kind": "entry", "determinism": "external", "connection": true,
+        "label": {"key": "org.example.chat/on-chat-label", "fallback": "On chat message"},
+        "ports": [{"port_id": "payload", "direction": "output", "kind": "data",
+            "type": STRING, "source": "payload"}]});
+    let manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": "org.example.chat", "version": "1.0.0", "publisher": "org.example",
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+        "dependencies": [],
+        "contributions": {
+            "nodes": [ON_CHAT],
+            "providers": [{"slot": format!("node:{ON_CHAT}@1"), "id": orange_host::GRAPH_PROVIDER}]
+        },
+        "permissions": [], "license": "MIT"
+    });
+    orange_host::pack(
+        manifest.to_string().as_bytes(),
+        &[
+            (
+                "nodes/on-chat.json".into(),
+                definition.to_string().into_bytes(),
+            ),
+            ("graphs/on-chat.json".into(), graph.to_string().into_bytes()),
+        ],
+    )
+    .unwrap()
+}
+
+#[test]
+fn a_trigger_made_without_code_fires_on_messages_from_the_connection_its_use_names() {
+    let (mut host, events) =
+        Host::with_services(HostOptions::default(), vec![orange_net::package()]).unwrap();
+    let package = chat_package(&host);
+    let _ = host
+        .install(&package, orange_host::Grants::default())
+        .unwrap();
+    let listed = host
+        .nodes()
+        .find(|node| node.definition.definition.id.as_str() == ON_CHAT)
+        .unwrap();
+    assert_eq!(
+        listed
+            .presentation
+            .unwrap()
+            .label
+            .as_ref()
+            .unwrap()
+            .fallback,
+        "On chat message"
+    );
+
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+    let decl = serde_json::from_value(json!({"id": CONNECTION, "name": "peer",
+        "adapter": orange_net::WS_ADAPTER, "scope": "graph", "settings": {"url": server()}}))
+    .unwrap();
+    let _ = document
+        .apply([DocCommand::UpsertConnection(decl)])
+        .unwrap();
+    let mut chat = NewNode::new(
+        node(1),
+        DefinitionRef {
+            id: ON_CHAT.parse().unwrap(),
+            version: 1,
+        },
+    );
+    chat.config = serde_json::from_value(json!({"connection": CONNECTION})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), chat).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    saved["nodes"][0]["activation"] = activation();
+    let mut keep = core(4, "set-variable");
+    keep["config"] = json!({"variable": id(100)});
+    saved["nodes"].as_array_mut().unwrap().push(keep);
+    saved["edges"] = json!([
+        edge(1, 1, "then", 4, "in"),
+        edge(2, 1, "payload", 4, "value"),
+    ]);
+    saved["variables"] = json!([{"id": id(100), "name": "reply", "type": STRING, "scope": "run"}]);
+    let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
+    // The saved diagram holds the package's trigger and nothing of what is behind it.
+    assert!(!text.contains(orange_net::WS_MESSAGE));
+    let diagnostics = host.check(&text).unwrap();
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let flow = host.open(&text).unwrap();
+    host.observe(flow, true).unwrap();
+    until("the server's greeting", || {
+        reply(&host, flow).as_deref() == Some("hello")
+    });
+    // The value is also reported on the trigger's own output port.
+    let start = Instant::now();
+    let mut on_port = false;
+    while !on_port {
+        assert!(start.elapsed() < WAIT, "no port report");
+        if let Ok(event) = events.recv_timeout(Duration::from_millis(50))
+            && let orange_host::FlowEvent::Ports(ports) = event.kind
+        {
+            on_port = ports.iter().any(|(from, port, value)| {
+                *from == node(1)
+                    && port.to_string() == "payload"
+                    && matches!(value, Value::Str(text) if text.as_str() == "hello")
+            });
+        }
+    }
+}

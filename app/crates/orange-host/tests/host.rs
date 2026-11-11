@@ -852,3 +852,54 @@ fn flows_share_variables_declared_in_the_host() {
         read_total(&host, first) == Some(Value::I64(33))
     });
 }
+
+#[test]
+fn an_observed_flow_reports_what_a_pure_node_computed() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    // payload + 1 is written to the variable.
+    let mut document = empty(1);
+    let mut add = NewNode::new(
+        node(3),
+        DefinitionRef {
+            id: "org.orange.math/add".parse().unwrap(),
+            version: 1,
+        },
+    );
+    add.type_pins = serde_json::from_value(json!({"T": I64})).unwrap();
+    add.inputs = serde_json::from_value(json!({"b": {"type": I64, "value": "1"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), add).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    let mut entry = core(1, "on-manual");
+    entry["config"] = json!({"payload": I64});
+    let mut set = core(2, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    let text = with_total(
+        saved,
+        vec![entry, set],
+        json!([
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 1, "payload", 3, "a"),
+            edge(3, 3, "sum", 2, "value")
+        ]),
+    );
+    let flow = host.open(&text).unwrap();
+    host.observe(flow, true).unwrap();
+    host.trigger(flow, node(1), Some(Value::I64(41))).unwrap();
+    until("the sum", || {
+        read_total(&host, flow) == Some(Value::I64(42))
+    });
+    host.stop(flow, StopMode::Graceful).unwrap();
+    let seen = finished(&events, &[flow]);
+    let on_wire: Vec<_> = seen
+        .iter()
+        .filter_map(|event| match &event.kind {
+            FlowEvent::Ports(ports) => Some(ports.clone()),
+            _ => None,
+        })
+        .flatten()
+        .map(|(from, port, value)| (from, port.to_string(), value))
+        .collect();
+    assert!(on_wire.contains(&(node(1), "payload".into(), Value::I64(41))));
+    assert!(on_wire.contains(&(node(3), "sum".into(), Value::I64(42))));
+}
