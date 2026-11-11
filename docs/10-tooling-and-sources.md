@@ -1,5 +1,29 @@
 # Tooling, environment and research register
 
+## WebSocket messages lost before triggers attach — 2026-11-11
+
+Hosted run 43100068822 (head 715ebdb) failed two WebSocket tests by timeout: on Linux
+x64 `received_messages_trigger_the_graph_and_a_node_sends_on_the_same_socket`
+("the greeting") and on macOS ARM64
+`two_diagrams_share_one_socket_and_a_paused_one_keeps_what_arrived` ("the socket").
+Windows passed. Cause: the session's I/O thread connected when the adapter opened the
+session, and the flow's triggers were attached afterwards, so the test server's
+greeting could be delivered to no listener. The session now connects on
+`Session::start` (04). The unexplained Linux failure of run 43094133950 is consistent
+with the same cause; its log was never available.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,728 passed, 0 failed, 16 ignored |
+| `cargo test --locked -p orange-net`, three times | Pass each time |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+
+Limits: Windows only, where the race did not occur before the change either, so the
+fix is confirmed only by the hosted Linux and macOS jobs. A message that arrives on a
+shared connection before a later flow attaches is still not delivered to that flow.
+
 ## Refused packages, built-in node providers and scenario tests — 2026-11-11
 
 Same branch and toolchain; no dependency change.

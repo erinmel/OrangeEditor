@@ -91,6 +91,13 @@ package directory keeps each installed archive and the capabilities granted to i
 installs them again when it next starts (02). The `orange` command takes the directory
 as `--store <dir>`.
 
+Session start (2026-11-11): the host calls `Session::start` on every connection of a
+flow once all of that flow's triggers are attached, at opening and after a live edit;
+a shared session is called once per flow. A session that receives must not begin
+before the first call. The WebSocket session opens its socket only then. Before this
+it connected as soon as the document was prepared, and a server's first message could
+arrive before any trigger existed and be dropped.
+
 Native plugins in Rust (2026-11-11; `orange-sdk`): a plugin crate depends on
 `orange-sdk` and returns a `ServicePackage` holding its definition files, a
 `ServiceNode` per asynchronous node, a `ServiceSource` per trigger and a
