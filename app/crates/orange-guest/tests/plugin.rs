@@ -267,3 +267,86 @@ fn panics_and_runaway_guests_fault_only_their_instance() {
         Ok(Ok(vec![Value::I64(5)]))
     );
 }
+
+#[test]
+fn bytes_and_dense_lists_cross_in_binary_and_only_for_their_own_type() {
+    let types = types();
+    let mut probe = plugin(GuestLimits::default(), LOG).unwrap();
+    let bytes = ty("core/bytes@1");
+    let samples = ty("core/list@1<core/f32@1>");
+    // The probe refuses these nodes unless its input arrived in the binary case.
+    let payload = (bytes.clone(), Value::Bytes(Arc::new(vec![1, 2, 3])));
+    assert_eq!(
+        probe.evaluate(
+            &types,
+            "org.example.probe/reverse-bytes",
+            std::slice::from_ref(&payload),
+            std::slice::from_ref(&bytes),
+        ),
+        Ok(Ok(vec![Value::Bytes(Arc::new(vec![3, 2, 1]))]))
+    );
+    assert_eq!(
+        probe.evaluate(
+            &types,
+            "org.example.probe/byte-count",
+            std::slice::from_ref(&payload),
+            &[ty("core/i64@1")],
+        ),
+        Ok(Ok(vec![Value::I64(3)]))
+    );
+    let block = Value::List(Arc::new(ListRepr::F32(vec![0.5, -1.0].into())));
+    assert_eq!(
+        probe.evaluate(
+            &types,
+            "org.example.probe/scale-samples",
+            &[(samples.clone(), block)],
+            std::slice::from_ref(&samples),
+        ),
+        Ok(Ok(vec![Value::List(Arc::new(ListRepr::F32(
+            vec![1.0, -2.0].into()
+        )))]))
+    );
+    // A binary case is accepted only for exactly its own type.
+    for expected in [samples, bytes] {
+        assert_eq!(
+            probe.evaluate(&types, "org.example.probe/wrong-binary", &[], &[expected]),
+            Err(GuestError::OutputContract)
+        );
+    }
+    assert!(!probe.is_poisoned());
+}
+
+#[test]
+fn effects_keep_instance_state_and_report_their_own_errors() {
+    let types = types();
+    let mut probe = plugin(GuestLimits::default(), LOG).unwrap();
+    let out = [ty("core/i64@1")];
+    for total in [5, 10] {
+        assert_eq!(
+            probe.execute(&types, "org.example.probe/accumulate", &i64s(&[5]), &out),
+            Ok(Ok(vec![Value::I64(total)]))
+        );
+    }
+    // Another instance of the same component starts from its own state.
+    let mut other = plugin(GuestLimits::default(), LOG).unwrap();
+    assert_eq!(
+        other.execute(&types, "org.example.probe/accumulate", &i64s(&[1]), &out),
+        Ok(Ok(vec![Value::I64(1)]))
+    );
+    assert_eq!(
+        probe.execute(&types, "org.example.probe/refuse", &[], &out),
+        Ok(Err(GuestNodeError {
+            code: "org.example.probe/Refused".into(),
+            message_key: "org.example.probe/failed".into()
+        }))
+    );
+    // Pure and effect definitions are separate exports.
+    assert_eq!(
+        probe
+            .evaluate(&types, "org.example.probe/accumulate", &i64s(&[5]), &out)
+            .unwrap()
+            .unwrap_err()
+            .code,
+        "org.example.probe/UnknownDefinition"
+    );
+}

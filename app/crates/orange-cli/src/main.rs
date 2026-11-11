@@ -1,0 +1,397 @@
+//! `orange`: check and run graph documents from a terminal.
+//!
+//! This is the smallest front end of `orange-host`. It exists so a graph can be run and
+//! controlled without an editor, and as the reference for how any front end attaches.
+use orange_host::{
+    FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, NodeId, StopMode,
+};
+use std::io::BufRead;
+use std::path::Path;
+use std::process::ExitCode;
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
+use std::time::{Duration, Instant};
+
+const USAGE: &str = "\
+usage:
+  orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>]
+  orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>]
+  orange pack  <package-dir> <out.orangeplug>
+
+`run` starts every graph as its own flow, numbered from 1 in argument order, and prints
+what they do. While it runs, type commands on standard input:
+
+  pause <flow> | resume <flow>      hold a flow, or let it continue
+  stop <flow>  | kill <flow>        stop gracefully, or at once
+  trigger <flow> <node-id>          fire a manual entry
+  reload <flow>                     read the flow's file again and apply the edit live
+  quit                              stop everything and exit
+
+`pack` builds a package from a directory holding `manifest.json` and the package's
+files (`nodes/<name>.json`, `graphs/<name>.json`, a component), filling in its digest.
+
+`--share <id> <adapter> <settings.json>` gives every graph that declares connection
+`<id>` as shared the same session, with settings read from the file. The base network
+package is built in: adapters `org.orange.net/http` and `org.orange.net/websocket`.
+
+`--store <dir>` keeps installed packages in a directory: packages given with
+`--package` are saved there, and later commands with the same `--store` have them
+without `--package`.
+
+`--no-base` leaves out the bundled base nodes and `--no-net` the network package.
+
+`--grant-log` lets installed package code write log lines. `--for` stops after a time.";
+
+struct Arguments {
+    command: String,
+    graphs: Vec<String>,
+    packages: Vec<String>,
+    shared: Vec<[String; 3]>,
+    grants: Grants,
+    duration: Option<Duration>,
+    store: Option<String>,
+    base_nodes: bool,
+    network: bool,
+}
+
+fn arguments() -> Result<Arguments, String> {
+    let mut words = std::env::args().skip(1);
+    let command = words.next().ok_or("missing command")?;
+    let mut parsed = Arguments {
+        command,
+        graphs: Vec::new(),
+        packages: Vec::new(),
+        shared: Vec::new(),
+        grants: Grants::default(),
+        duration: None,
+        store: None,
+        base_nodes: true,
+        network: true,
+    };
+    while let Some(word) = words.next() {
+        match word.as_str() {
+            "--package" => parsed
+                .packages
+                .push(words.next().ok_or("--package needs a file")?),
+            "--share" => {
+                let mut next = || {
+                    words
+                        .next()
+                        .ok_or("--share needs an id, an adapter and a file")
+                };
+                parsed.shared.push([next()?, next()?, next()?]);
+            }
+            "--grant-log" => parsed.grants.log = true,
+            "--no-base" => parsed.base_nodes = false,
+            "--no-net" => parsed.network = false,
+            "--store" => parsed.store = Some(words.next().ok_or("--store needs a directory")?),
+            "--for" => {
+                let text = words.next().ok_or("--for needs milliseconds")?;
+                let ms: u64 = text.parse().map_err(|_| "--for needs milliseconds")?;
+                parsed.duration = Some(Duration::from_millis(ms));
+            }
+            flag if flag.starts_with("--") => return Err(format!("unknown option {flag}")),
+            _ => parsed.graphs.push(word),
+        }
+    }
+    if parsed.graphs.is_empty() {
+        return Err("no graph given".into());
+    }
+    Ok(parsed)
+}
+
+fn read(path: &str) -> Result<Vec<u8>, String> {
+    std::fs::read(path).map_err(|error| format!("{path}: {error}"))
+}
+
+fn share(host: &mut Host, id: &str, adapter: &str, settings: &[u8]) -> Result<(), String> {
+    let id = id.parse().map_err(|_| "not a connection id".to_owned())?;
+    let settings = orange_host::settings_from_json(settings).map_err(|error| error.to_string())?;
+    host.share_connection(id, adapter, settings)
+        .map_err(|error| error.to_string())
+}
+
+fn report(path: &str, error: &HostError) {
+    eprintln!("{path}: {error}");
+    if let HostError::Invalid(diagnostics) = error {
+        for diagnostic in diagnostics {
+            eprintln!("  {diagnostic:?}");
+        }
+    }
+}
+
+fn print(event: &HostEvent) {
+    let flow = event.flow;
+    match &event.kind {
+        FlowEvent::State(state) => println!("[{flow}] state {state:?}"),
+        FlowEvent::Node(step) => match &step.fault {
+            None => println!("[{flow}] node {} {:?}", step.node, step.outcome),
+            Some(fault) => println!(
+                "[{flow}] node {} {:?} fault {} from {}",
+                step.node, step.outcome, fault.fault.code, fault.source
+            ),
+        },
+        FlowEvent::TraceLost(count) => println!("[{flow}] {count} steps not shown"),
+        FlowEvent::Refused(reason) => println!("[{flow}] input refused: {reason:?}"),
+        FlowEvent::Fault(error) => println!("[{flow}] error: {error}"),
+        FlowEvent::Updated { .. } => println!("[{flow}] graph replaced"),
+        FlowEvent::Finished => println!("[{flow}] finished"),
+        _ => println!("[{flow}] {:?}", event.kind),
+    }
+}
+
+/// Applies one line typed by the user. Returns `false` for `quit`.
+/// Applies an edited graph file to its running flow.
+fn reload(host: &mut Host, flow: FlowId, path: &str) -> Result<(), String> {
+    let text = String::from_utf8(read(path)?).map_err(|_| format!("{path}: not UTF-8 text"))?;
+    match host.update(flow, &text) {
+        Ok(updated) if !updated.changed => println!("[{flow}] nothing to apply"),
+        Ok(updated) => println!(
+            "[{flow}] edit applied: {} variables kept, {} reset",
+            updated.kept_variables, updated.reset_variables
+        ),
+        Err(error) => {
+            report(path, &error);
+            println!("[{flow}] edit refused; the flow is unchanged");
+        }
+    }
+    Ok(())
+}
+
+fn command(host: &mut Host, flows: &[(FlowId, String)], line: &str) -> bool {
+    let words: Vec<&str> = line.split_whitespace().collect();
+    let flow = |index: usize| -> Result<(FlowId, &str), String> {
+        let number: usize = words
+            .get(index)
+            .and_then(|word| word.parse().ok())
+            .ok_or("expected a flow number")?;
+        number
+            .checked_sub(1)
+            .and_then(|at| flows.get(at))
+            .map(|(flow, path)| (*flow, path.as_str()))
+            .ok_or_else(|| "no such flow".to_owned())
+    };
+    let done = |result: Result<(), HostError>| result.map_err(|error| error.to_string());
+    let outcome = match words.first().copied() {
+        None => Ok(()),
+        Some("quit") => return false,
+        Some("pause") => flow(1).and_then(|(flow, _)| done(host.pause(flow))),
+        Some("resume") => flow(1).and_then(|(flow, _)| done(host.resume(flow))),
+        Some("reload") => flow(1).and_then(|(flow, path)| reload(host, flow, path)),
+        Some("stop") => flow(1).and_then(|(flow, _)| done(host.stop(flow, StopMode::Graceful))),
+        Some("kill") => flow(1).and_then(|(flow, _)| done(host.stop(flow, StopMode::Immediate))),
+        Some("trigger") => flow(1).and_then(|(flow, _)| {
+            let node: NodeId = words
+                .get(2)
+                .and_then(|word| word.parse().ok())
+                .ok_or("expected a node id")?;
+            done(host.trigger(flow, node, None))
+        }),
+        Some(other) => Err(format!("unknown command `{other}`")),
+    };
+    if let Err(message) = outcome {
+        eprintln!("{message}");
+    }
+    true
+}
+
+fn run(
+    host: &mut Host,
+    events: &Receiver<HostEvent>,
+    flows: &[(FlowId, String)],
+    duration: Option<Duration>,
+) {
+    let (lines, typed) = channel::<String>();
+    // Standard input blocks, so it gets its own thread; it ends with the process.
+    let _ = std::thread::spawn(move || {
+        for line in std::io::stdin().lock().lines().map_while(Result::ok) {
+            if lines.send(line).is_err() {
+                break;
+            }
+        }
+    });
+    let started = Instant::now();
+    let mut running = flows.len();
+    let mut stopping = false;
+    while running > 0 {
+        match events.recv_timeout(Duration::from_millis(20)) {
+            Ok(event) => {
+                print(&event);
+                if matches!(event.kind, FlowEvent::Finished) {
+                    running -= 1;
+                }
+            }
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => break,
+        }
+        let mut quit = duration.is_some_and(|limit| started.elapsed() >= limit);
+        while let Ok(line) = typed.try_recv() {
+            quit |= !command(host, flows, &line);
+        }
+        if quit && !stopping {
+            stopping = true;
+            for (flow, _) in flows {
+                // A flow that already ended refuses the stop; that is the goal anyway.
+                let _ = host.stop(*flow, StopMode::Graceful);
+            }
+        }
+    }
+    let dropped = host.events_dropped();
+    if dropped > 0 {
+        println!("{dropped} events were not shown");
+    }
+}
+
+fn collect(root: &Path, at: &Path, files: &mut Vec<(String, Vec<u8>)>) -> Result<(), String> {
+    let failed = |error: std::io::Error| format!("{}: {error}", at.display());
+    for entry in std::fs::read_dir(at).map_err(failed)? {
+        let path = entry.map_err(failed)?.path();
+        if path.is_dir() {
+            collect(root, &path, files)?;
+            continue;
+        }
+        let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
+        let name: Vec<_> = relative
+            .components()
+            .map(|part| part.as_os_str().to_string_lossy())
+            .collect();
+        let name = name.join("/");
+        if name != "manifest.json" {
+            files.push((name, read(&path.to_string_lossy())?));
+        }
+    }
+    Ok(())
+}
+
+fn pack(directory: &str, output: &str) -> Result<usize, String> {
+    let root = Path::new(directory);
+    let manifest = read(&root.join("manifest.json").to_string_lossy())?;
+    let mut files = Vec::new();
+    collect(root, root, &mut files)?;
+    let archive = orange_host::pack(&manifest, &files).map_err(|error| error.to_string())?;
+    std::fs::write(output, &archive).map_err(|error| format!("{output}: {error}"))?;
+    Ok(files.len())
+}
+
+fn main() -> ExitCode {
+    let words: Vec<String> = std::env::args().skip(1).collect();
+    if words.first().map(String::as_str) == Some("pack") {
+        let [_, directory, output] = &words[..] else {
+            eprintln!(
+                "pack needs a directory and an output file
+{USAGE}"
+            );
+            return ExitCode::from(2);
+        };
+        return match pack(directory, output) {
+            Ok(files) => {
+                println!("{output}: manifest and {files} files");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    let arguments = match arguments() {
+        Ok(arguments) if matches!(arguments.command.as_str(), "check" | "run") => arguments,
+        Ok(arguments) => {
+            eprintln!("unknown command `{}`\n{USAGE}", arguments.command);
+            return ExitCode::from(2);
+        }
+        Err(message) => {
+            eprintln!("{message}\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    let services = if arguments.network {
+        vec![orange_net::package()]
+    } else {
+        Vec::new()
+    };
+    let options = HostOptions {
+        package_dir: arguments.store.as_ref().map(Into::into),
+        base_nodes: arguments.base_nodes,
+        ..HostOptions::default()
+    };
+    let (mut host, events) = match Host::with_services(options, services) {
+        Ok(started) => started,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    for (file, error) in host.not_restored() {
+        eprintln!("stored package {file} was not installed: {error}");
+    }
+    for path in &arguments.packages {
+        let installed = read(path).and_then(|bytes| {
+            host.install(&bytes, arguments.grants)
+                .map_err(|error| format!("{path}: {error}"))
+        });
+        match installed {
+            Ok(key) => println!("installed {} {}", key.id.as_str(), key.version.as_str()),
+            Err(message) => {
+                eprintln!("{message}");
+                return ExitCode::FAILURE;
+            }
+        }
+    }
+    for [id, adapter, path] in &arguments.shared {
+        let shared = read(path).and_then(|bytes| share(&mut host, id, adapter, &bytes));
+        if let Err(message) = shared {
+            eprintln!("--share {id}: {message}");
+            return ExitCode::FAILURE;
+        }
+    }
+    let mut failed = false;
+    let mut flows = Vec::new();
+    for path in &arguments.graphs {
+        let text = match read(path).map(String::from_utf8) {
+            Ok(Ok(text)) => text,
+            Ok(Err(_)) => {
+                eprintln!("{path}: not UTF-8 text");
+                failed = true;
+                continue;
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                failed = true;
+                continue;
+            }
+        };
+        if arguments.command == "check" {
+            match host.check(&text) {
+                Ok(diagnostics) if diagnostics.is_empty() => println!("{path}: ok"),
+                Ok(diagnostics) => {
+                    report(path, &HostError::Invalid(diagnostics));
+                    failed = true;
+                }
+                Err(error) => {
+                    report(path, &error);
+                    failed = true;
+                }
+            }
+        } else {
+            match host.open(&text) {
+                Ok(flow) => {
+                    println!("[{flow}] opened {path}");
+                    flows.push((flow, path.clone()));
+                }
+                Err(error) => {
+                    report(path, &error);
+                    failed = true;
+                }
+            }
+        }
+    }
+    if failed {
+        // Nothing runs unless everything asked for can; flows already opened are
+        // stopped when the host is dropped.
+        return ExitCode::FAILURE;
+    }
+    if arguments.command == "run" {
+        run(&mut host, &events, &flows, arguments.duration);
+    }
+    ExitCode::SUCCESS
+}

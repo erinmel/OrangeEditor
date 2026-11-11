@@ -5,7 +5,7 @@ use crate::{
     ResolvedConversion, ResolvedFloat, ResolvedInteger, ResolvedKernel, ResolvedText,
     TextOperation, resolve_core_conversion,
 };
-use orange_compiler::{
+use orange_kernel::{
     BindingRequest, KernelBinding, KernelFault, PureKernel, PureKernelResolver, ResolveError,
 };
 use orange_model::Value;
@@ -265,8 +265,8 @@ enum Native {
     Conversion(ResolvedConversion),
 }
 const CONTRACT: KernelFault = KernelFault {
-    code: orange_compiler::FaultText::Static("core/InternalFault"),
-    message_key: orange_compiler::FaultText::Static("core/kernel-input-contract"),
+    code: orange_kernel::FaultText::Static("core/InternalFault"),
+    message_key: orange_kernel::FaultText::Static("core/kernel-input-contract"),
     message: "Kernel inputs violate the resolved contract.",
 };
 impl PureKernel for Native {

@@ -1,0 +1,25 @@
+[package]
+name = "orange-net"
+description = "OrangeEditor base network package: HTTP connections and request nodes as a native host service"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orange-sdk = { path = "../orange-sdk", version = "=0.0.0" }
+serde_json.workspace = true
+# Blocking HTTP/1.1 client with rustls (ring provider, bundled Mozilla roots). The other
+# default feature, gzip, stays off.
+# Blocking WebSocket client sharing the same rustls stack.
+tungstenite.workspace = true
+ureq.workspace = true
+
+[dev-dependencies]
+orange-host = { path = "../orange-host", version = "=0.0.0" }
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+# Tests run a loopback WebSocket server.
+tungstenite.workspace = true
+
+[lints]
+workspace = true

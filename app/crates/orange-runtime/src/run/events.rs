@@ -1402,6 +1402,11 @@ impl Run {
     }
     pub(super) fn retire_activation(&mut self, id: u64) -> Result<(), RunError> {
         let frame = self.activations.remove(id)?;
+        if let (Some(frame), Some(seen)) = (&frame, &mut self.port_values) {
+            frame
+                .data
+                .held_values(|node, port, value| record_port(seen, node, port, value));
+        }
         if frame.is_none() && self.last_error != Some(RunError::Interrupted) {
             return Err(RunError::InvalidState);
         }

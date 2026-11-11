@@ -87,6 +87,8 @@ uuid_id! {
     VariableId;
     EventDeclId;
     FunctionId;
+    /// A declared connection to an external service.
+    ConnectionId;
 }
 
 /// Only the lowercase hyphenated form is accepted, so load→save is byte-stable.
@@ -442,4 +444,5 @@ pub enum DeclId {
     /// Nodes and edges inside a replaced or removed function body are reported through
     /// their function, not individually.
     Function(FunctionId),
+    Connection(ConnectionId),
 }

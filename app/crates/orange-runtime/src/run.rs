@@ -788,6 +788,27 @@ pub struct Run {
     bridges: streams::Bridges,
     replay: Option<replay::Session>,
     watches: watch::Watches,
+    /// The last value seen on each output port, while the host asks for them.
+    port_values: Option<PortValues>,
+}
+/// Output port values by node and port.
+pub type PortValues = BTreeMap<(NodeId, orange_model::id::PortKey), Value>;
+fn record_port(
+    seen: &mut PortValues,
+    node: NodeId,
+    port: &orange_model::id::PortKey,
+    value: &Value,
+) {
+    match seen.get_mut(&(node, port.clone())) {
+        Some(held) => {
+            if held != value {
+                *held = value.clone();
+            }
+        }
+        None => {
+            let _ = seen.insert((node, port.clone()), value.clone());
+        }
+    }
 }
 impl std::fmt::Debug for Run {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -808,6 +829,71 @@ impl Run {
         options: RunOptions,
     ) -> Result<Self, RunError> {
         Self::start_workspace(plan, document, registry, seed, options, None, None)
+    }
+    /// Start with run variables that already hold values, as a host does when it
+    /// replaces an edited graph without losing its state. Each entry must name a
+    /// run-scoped variable of `plan` and hold a value of its declared type (or `None`
+    /// for unset); variables not listed start from their declared initial value.
+    pub fn start_with_variables(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        values: &BTreeMap<VariableId, Option<Value>>,
+    ) -> Result<Self, RunError> {
+        for (id, value) in values {
+            let cell = plan
+                .variables()
+                .iter()
+                .find(|cell| cell.id() == *id && cell.scope() == VarScope::Run)
+                .ok_or(RunError::InvalidState)?;
+            if value
+                .as_ref()
+                .is_some_and(|value| !cell.ty().accepts(value))
+            {
+                return Err(RunError::InvalidState);
+            }
+        }
+        Self::start_workspace(plan, document, registry, seed, options, None, Some(values))
+    }
+    /// [`Run::start_in_workspace`] and [`Run::start_with_variables`] together: a run
+    /// attached to a host workspace whose run variables start from `values`.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_in_workspace_with_variables(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        snapshot: &crate::WorkspaceSnapshot,
+        values: &BTreeMap<VariableId, Option<Value>>,
+    ) -> Result<Self, RunError> {
+        snapshot
+            .check_schema(document, registry)
+            .map_err(|_| SharedError::Contract)?;
+        for (id, value) in values {
+            let cell = plan
+                .variables()
+                .iter()
+                .find(|cell| cell.id() == *id && cell.scope() == VarScope::Run)
+                .ok_or(RunError::InvalidState)?;
+            if value
+                .as_ref()
+                .is_some_and(|value| !cell.ty().accepts(value))
+            {
+                return Err(RunError::InvalidState);
+            }
+        }
+        Self::start_workspace(
+            plan,
+            document,
+            registry,
+            seed,
+            options,
+            Some(snapshot),
+            Some(values),
+        )
     }
     /// Start with an exact compatible host snapshot. The host explicitly delivers
     /// later publications; no background thread or shared mutable store is read.
@@ -1142,6 +1228,7 @@ impl Run {
             replay: None,
             changes,
             watches,
+            port_values: None,
         };
         run.arm_timer_entries()?;
         Ok(run)
@@ -1222,6 +1309,32 @@ impl Run {
     pub fn segment_state_writes(&self) -> Option<(u64, &[NodeId])> {
         self.last_segment
             .map(|owner| (owner, self.segment.states()))
+    }
+    /// Starts or stops keeping the last value of each output port for
+    /// [`Run::port_values`]. Stopping forgets what was kept.
+    pub fn keep_port_values(&mut self, on: bool) {
+        if on && self.port_values.is_none() {
+            self.port_values = Some(PortValues::new());
+        } else if !on {
+            self.port_values = None;
+        }
+    }
+    /// The last value each output port carried, for a front end to show on a graph.
+    /// `None` unless [`Run::keep_port_values`] is on.
+    ///
+    /// A port appears once something has pulled its value: the output of a node whose
+    /// result nothing reads, a constant folded at compile time and a fault are absent.
+    /// Nodes inside a function report under the function's own node IDs, whichever
+    /// call ran last. The table is bounded by the plan's port count, and keeping it
+    /// costs one pass over an activation's ports when it ends and on each call here.
+    pub fn port_values(&mut self) -> Option<&PortValues> {
+        let seen = self.port_values.as_mut()?;
+        for frame in self.activations.frames() {
+            frame
+                .data
+                .held_values(|node, port, value| record_port(seen, node, port, value));
+        }
+        self.port_values.as_ref()
     }
     pub fn now(&self) -> u64 {
         self.now

@@ -30,6 +30,7 @@ pub use entropy::{
     ActivationEntropy, ENTROPY_ALGORITHM, EntropyError, EntropyKey, EntropyLayout,
     EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,
 };
+pub use run::PortValues;
 pub use run::{
     AcquireRefused, CloseReason, ControlOutcome, EffectError, EffectId, EffectLease, EffectRequest,
     EffectResourceRefused, EffectStreamRefused, EventMetadata, EventOrigin, EventTarget,

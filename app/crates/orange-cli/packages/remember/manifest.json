@@ -1,0 +1,30 @@
+{
+  "format": "orange.plugin",
+  "format_version": 1,
+  "id": "org.example.tools",
+  "version": "1.0.0",
+  "publisher": "org.example",
+  "host_api": {
+    "major": 1,
+    "min_minor": 0,
+    "max_minor": 0
+  },
+  "dependencies": [],
+  "contributions": {
+    "nodes": [
+      "org.example.tools/remember"
+    ],
+    "providers": [
+      {
+        "slot": "node:org.example.tools/remember@1",
+        "id": "graph"
+      }
+    ]
+  },
+  "permissions": [],
+  "integrity": {
+    "algorithm": "sha256",
+    "content_digest": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "license": "MIT"
+}

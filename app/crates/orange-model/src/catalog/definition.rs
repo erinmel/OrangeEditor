@@ -33,6 +33,7 @@ pub enum ReferenceKind {
     Variable,
     Event,
     Function,
+    Connection,
 }
 
 /// A config field whose string value is a typed graph identity.
@@ -165,6 +166,7 @@ impl ReferenceField {
             ReferenceKind::Variable => text.parse().map(DeclId::Variable).ok(),
             ReferenceKind::Event => text.parse().map(DeclId::Event).ok(),
             ReferenceKind::Function => text.parse().map(DeclId::Function).ok(),
+            ReferenceKind::Connection => text.parse().map(DeclId::Connection).ok(),
         };
         parsed.ok_or(ReferenceError::Malformed)
     }
@@ -191,6 +193,8 @@ pub enum ContractError {
     TypeComplexity,
     #[error("the referenced event is missing or not declared")]
     EventUnknown,
+    #[error("the referenced connection is missing or not declared")]
+    ConnectionUnknown,
     #[error("for-each mode is not `list` or `map`")]
     ForEachMode,
     #[error("manual entry config is malformed or its payload is not a concrete registered type")]

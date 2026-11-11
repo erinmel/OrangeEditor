@@ -17,8 +17,9 @@ pub enum TimerFirst {
 /// What an interval timer does with ticks that became due before a pump handled them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MissedTicks {
-    /// Deliver a tick only when it is handled at exactly its scheduled time; late ticks
-    /// are dropped and counted in the next delivered tick's `missed`.
+    /// Deliver a tick only when it is handled before the next one comes due. When the
+    /// run falls behind by more than one tick, all due ticks are dropped and counted in
+    /// the next delivered tick's `missed`; nothing is delivered late in a burst.
     Skip,
     /// Deliver one tick for the latest due time; the earlier ones are counted in `missed`
     /// (the default).

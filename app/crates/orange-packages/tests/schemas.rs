@@ -349,3 +349,75 @@ fn install_refuses_a_dependency_with_another_digest() {
         .install(app("org.example.app", HEX_3, &[("2.0.0", HEX_2)]))
         .unwrap();
 }
+
+#[test]
+fn a_manifest_describes_itself_and_says_where_updates_are_announced() {
+    let plain = parse(&manifest()).unwrap();
+    assert!(plain.about().name().is_none() && plain.update().is_none());
+
+    let described = with(|m| {
+        m["about"] = json!({
+            "name": "OBS Control", "description": "Scenes, sources and recording for OBS.",
+            "authors": ["Example Org"], "homepage": "https://example.org/obs",
+            "repository": "https://example.org/obs/source", "keywords": ["obs", "live-video"]
+        });
+        m["update"] = json!({"feed": "https://example.org/orange/obs/feed.json"});
+    })
+    .unwrap();
+    let about = described.about();
+    assert_eq!(about.name(), Some("OBS Control"));
+    assert_eq!(about.keywords(), ["obs", "live-video"]);
+    assert_eq!(about.homepage(), Some("https://example.org/obs"));
+    let update = described.update().unwrap();
+    assert_eq!(update.feed(), "https://example.org/orange/obs/feed.json");
+    assert_eq!(update.channel(), "stable");
+    let beta = with(|m| m["update"] = json!({"feed": "https://example.org/f", "channel": "beta"}));
+    assert_eq!(beta.unwrap().update().unwrap().channel(), "beta");
+
+    let field = |edit: fn(&mut Value)| match rejected(edit) {
+        ManifestError::Metadata { field } => field,
+        other => panic!("{other:?}"),
+    };
+    // A feed is fetched by the host, so it must be an https URL without credentials.
+    assert_eq!(
+        field(|m| m["update"] = json!({"feed": "http://example.org/f"})),
+        "update.feed"
+    );
+    assert_eq!(
+        field(|m| m["update"] = json!({"feed": "https://user@example.org/f"})),
+        "update.feed"
+    );
+    assert_eq!(
+        field(|m| m["update"] = json!({"feed": "https:///f"})),
+        "update.feed"
+    );
+    assert_eq!(
+        field(|m| m["update"] = json!({"feed": "https://example.org/f", "channel": "Beta"})),
+        "update.channel"
+    );
+    assert_eq!(field(|m| m["about"] = json!({"name": " "})), "about.name");
+    assert_eq!(
+        field(|m| m["about"] = json!({"name": "a\u{7}b"})),
+        "about.name"
+    );
+    assert_eq!(
+        field(|m| m["about"] = json!({"homepage": "example.org"})),
+        "about.homepage"
+    );
+    assert_eq!(
+        field(|m| m["about"] = json!({"keywords": ["obs", "obs"]})),
+        "about.keywords"
+    );
+    assert_eq!(
+        field(|m| m["about"] = json!({"keywords": ["Live Video"]})),
+        "about.keywords"
+    );
+    assert_eq!(
+        rejected(|m| m["about"] = json!({"nickname": "x"})).message_key(),
+        "packages/manifest-decode"
+    );
+    assert_eq!(
+        rejected(|m| m["about"] = json!({"name": ""})).message_key(),
+        "packages/manifest-metadata"
+    );
+}

@@ -1053,6 +1053,40 @@ fn admit_controls(cx: &Cx<'_>) -> Result<BTreeSet<ControlKey>, CompileError> {
             {
                 continue;
             }
+            if cx.effects.is_some() && !node.definition.id.is_core() && sig.kind == NodeKind::Entry
+            {
+                // A package entry is fired by the host, like a manual entry. It is a
+                // root node with one `then` outcome and at most one value, `payload`.
+                if scope != 0 || node.provider.is_none() {
+                    return Err(CompileError::UnsupportedNode { node: node.id });
+                }
+                for port in &sig.ports {
+                    let allowed = match port.kind {
+                        PortKind::Exec => {
+                            port.direction == PortDirection::Output
+                                && port.port_id.as_str() == "then"
+                        }
+                        PortKind::Data => {
+                            port.direction == PortDirection::Output
+                                && port.port_id.as_str() == "payload"
+                                && port.variadic.is_none()
+                                && !matches!(
+                                    port_type(cx.snapshot, node.id, port)?,
+                                    ValueShape::Handle(_) | ValueShape::Stream(_)
+                                )
+                        }
+                        _ => false,
+                    };
+                    if !allowed {
+                        return Err(CompileError::UnsupportedPort {
+                            node: node.id,
+                            port: port_key(port),
+                        });
+                    }
+                }
+                controls.insert((scope, node.id));
+                continue;
+            }
             if cx.effects.is_some()
                 && !node.definition.id.is_core()
                 && matches!(sig.kind, NodeKind::Action | NodeKind::Async)
@@ -1276,7 +1310,15 @@ fn entry_handler(
     Ok((policy.order, handler))
 }
 
-/// Root `core/on-manual` entries with their checked payload shape and handler policy.
+/// Whether the node is an entry a package defines. The host fires it by node, exactly
+/// like a manual entry, so it shares that path.
+fn package_entry(cx: &Cx<'_>, (scope, node): ControlKey) -> bool {
+    !cx.node((scope, node)).definition.id.is_core()
+        && cx.calls.signature(cx.analysis, scope, node).kind == NodeKind::Entry
+}
+
+/// Root `core/on-manual` and package entries with their checked payload shape and
+/// handler policy.
 fn prepare_manuals(
     cx: &Cx<'_>,
     controls: &BTreeSet<ControlKey>,
@@ -1286,7 +1328,7 @@ fn prepare_manuals(
     let mut manuals = Vec::new();
     for &key in controls {
         cx.options.checkpoint()?;
-        if cx.node(key).definition.id.as_str() != ids::ON_MANUAL {
+        if cx.node(key).definition.id.as_str() != ids::ON_MANUAL && !package_entry(cx, key) {
             continue;
         }
         let payload_type = match cx.port(key, "payload") {
@@ -1723,6 +1765,20 @@ impl NodeLowering<'_, '_> {
         let (scope, id) = key;
         let node = cx.node(key);
         let definition = node.definition.id.as_str();
+        if package_entry(cx, key) {
+            // Bound to an exact provider that offers it; the host runs its source.
+            let signature = cx.calls.signature(cx.analysis, scope, id);
+            let request = BindingRequest::new(cx.document, node, signature, cx.snapshot.clone())
+                .map_err(|_| CompileError::KernelUnavailable { node: id })?;
+            let offered = request.provider().is_some_and(|provider| {
+                cx.snapshot
+                    .provides(&node.definition, node.config_version, provider)
+            });
+            if !offered {
+                return Err(CompileError::KernelUnavailable { node: id });
+            }
+            return Ok(ControlOperation::Entry);
+        }
         if !node.definition.id.is_core() {
             let resolver = cx
                 .effects
@@ -2228,10 +2284,10 @@ fn host_source(
         return Ok(HostSource::EffectOutput(owner, index));
     }
     if port == "payload"
-        && matches!(
+        && (matches!(
             cx.node((scope, source.node)).definition.id.as_str(),
             ids::ON_EVENT | ids::ON_MANUAL | ids::AWAIT_EVENT
-        )
+        ) || package_entry(cx, (scope, source.node)))
     {
         return Ok(HostSource::EventPayload(owner));
     }

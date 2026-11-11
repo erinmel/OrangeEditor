@@ -856,13 +856,24 @@ C05 refuses this external profile. Contracts/limits/verification are in03/10/12.
 
 **Manual entry (C04b, 2026-11-06).** `core/on-manual@1` is a registered host-owned Entry with config version 1, no provider or signature and the kind-provided `then` output. Its only config field is optional `payload`, a concrete registered type; it adds a `payload` output of that type, and without it the entry has no data output. A non-string, unparsable, parameterized or unregistered type, or any other field, reports `E-MANUAL-PAYLOAD`; a type over the nesting limit reports `E-TYPE-COMPLEXITY`. Its ordinary persisted activation policy is required and is checked and executed like an On Event handler: each root manual entry is a private one-handler channel that only `Run::trigger(node, payload, wall_ns)` feeds; graph Emit and host event sources cannot reach it. A trigger is admitted through the same staged handler admission as Emit and host ingress (type, overflow policy and item/byte/live-payload quotas before any mutation), never runs graph work inline, and its root starts in a later `pump`. The payload is required exactly when the entry declares a type. Accepted metadata has target `Manual(node)`, origin `Manual`, `source_seq` counting the entry's accepted triggers, no cause, depth zero, `Run::now()` and optional caller wall time. Unknown or non-root entries refuse with `UnknownEntry`; a refused trigger changes no sequence, queue or counter except the overflow counter of an applied delivery limit. Graceful/immediate stop, fault and disposal refuse later triggers with `NotRunning`. Editor test buttons, CLI wiring and key bindings are host work outside this core contract.
 
-**Timer entries (C04b2, 2026-11-06).** `core/on-timer@1` and `core/on-timeout@1` are registered host-owned Entries with config version 1, no provider or signature and the kind-provided `then` output. Durations in their config are canonical decimal nanosecond strings within the `core/duration@1` range. On Timer requires `interval` (positive) and accepts `first` (`after-interval`, the default, or `immediate`), `missed` (`coalesce`, the default, `skip` or `catch-up`) and `catch_up_max` (a positive u32, required exactly with `catch-up`); it outputs `scheduled_at: core/duration@1` and `missed: core/u64@1`. On Timeout requires only `delay` (non-negative) and outputs `scheduled_at`. Any other field or value reports `E-TIMER-CONFIG`. Each root timer entry is a private one-handler channel with its ordinary checked activation policy; only its own schedule feeds it. The schedule starts when the run enters Running at virtual time zero: tick `k` (from one) is due at `offset + (k − 1) × interval`, where `offset` is `interval` (after-interval), zero (immediate) or `delay`, so a late tick never shifts later ones. Each armed entry holds one timer for the whole run (`max_timers`; a run that cannot arm them fails to start); it is schedule, not a pending continuation. At the start of a pump, a due entry is handled with the other due timers: the ticks due at `now` are counted, and the policy admits `coalesce` the latest one, `skip` the latest one only when it is due exactly at `now`, and `catch-up(max)` the latest `min(due, max)` oldest first. Ticks past the `core/duration@1` range are never scheduled. Admission uses the same staged handler admission as Emit; each attempt is one pump work item. A tick's metadata has target `Timer(node)`, origin `Timer`, `source_seq` equal to the tick ordinal, no cause, depth zero, `Run::now()` and no wall time. `scheduled_at` is the tick's scheduled virtual time, and `missed` counts the scheduled ticks since the previous admitted tick that were not admitted: those the policy dropped and those a fault overflow or delivery quota refused. A refusal increments the overflow counter and never faults the run; handler-policy drops after admission are event statistics, not missed ticks. Graceful stop, immediate stop and fault disarm every timer entry, so Draining admits no further ticks. On Timeout fires once and is then disarmed.
+**Timer entries (C04b2, 2026-11-06).** `core/on-timer@1` and `core/on-timeout@1` are registered host-owned Entries with config version 1, no provider or signature and the kind-provided `then` output. Durations in their config are canonical decimal nanosecond strings within the `core/duration@1` range. On Timer requires `interval` (positive) and accepts `first` (`after-interval`, the default, or `immediate`), `missed` (`coalesce`, the default, `skip` or `catch-up`) and `catch_up_max` (a positive u32, required exactly with `catch-up`); it outputs `scheduled_at: core/duration@1` and `missed: core/u64@1`. On Timeout requires only `delay` (non-negative) and outputs `scheduled_at`. Any other field or value reports `E-TIMER-CONFIG`. Each root timer entry is a private one-handler channel with its ordinary checked activation policy; only its own schedule feeds it. The schedule starts when the run enters Running at virtual time zero: tick `k` (from one) is due at `offset + (k − 1) × interval`, where `offset` is `interval` (after-interval), zero (immediate) or `delay`, so a late tick never shifts later ones. Each armed entry holds one timer for the whole run (`max_timers`; a run that cannot arm them fails to start); it is schedule, not a pending continuation. At the start of a pump, a due entry is handled with the other due timers: the ticks due at `now` are counted, and the policy admits `coalesce` the latest one, `skip` the due tick only when exactly one is due (handled before the next came due, however late within its interval; 2026-11-10, previously only when due exactly at `now`, which a host on a real clock never is) and none when the run fell behind by more than one, and `catch-up(max)` the latest `min(due, max)` oldest first. Ticks past the `core/duration@1` range are never scheduled. Admission uses the same staged handler admission as Emit; each attempt is one pump work item. A tick's metadata has target `Timer(node)`, origin `Timer`, `source_seq` equal to the tick ordinal, no cause, depth zero, `Run::now()` and no wall time. `scheduled_at` is the tick's scheduled virtual time, and `missed` counts the scheduled ticks since the previous admitted tick that were not admitted: those the policy dropped and those a fault overflow or delivery quota refused. A refusal increments the overflow counter and never faults the run; handler-policy drops after admission are event statistics, not missed ticks. Graceful stop, immediate stop and fault disarm every timer entry, so Draining admits no further ticks. On Timeout fires once and is then disarmed.
 
 **Clock reader (C04b3, 2026-11-06).** `core/now@1` is the registered `clock` volatile intrinsic: no inputs, no config fields, determinism `external` and one output `elapsed: core/duration@1`, the run's virtual time since its clock's zero (the same scale as a timer tick's `scheduled_at`). Like a state read, it is a host input read in the epoch prologue, so every consumption sees the actor clock at that moment and is never folded as a constant; a Wait resumed late or a late timer tick reads the later time. It is admitted in root control/data demands and in Volatile graph-local function bodies, but not in Pure plans. A run clock beyond the duration range yields `core/OutOfRange` at the consuming site. Wall-clock time is not a core clock read: hosts supply `wall_ns` where an API accepts it.
 
 **Variable-changed entries (C06, 2026-11-06).** `core/on-variable-changed@1` is a registered host-owned Entry with config version 1 whose `config.variable` names a run-scope variable with an initial value and a type with `eq`; anything else reports `E-VARIABLE-CHANGED`. It outputs `value` and `previous`, both of the variable type, and needs the ordinary persisted activation policy. The run keeps a watched variable's value from before its first write in a segment. At segment end it compares that value with the final value under the type's `eq`: equal values, including a value restored within the segment, are silent; otherwise every watching entry receives one delivery in handler order, through the same bounded admission as On Event, with origin `Change`, target `VariableChanged(node)`, a per-entry source sequence, the writing activation as cause and its causal depth plus one. A segment ends when its strand suspends, yields, retires or the scheduler selects another strand; a host pump budget alone does not end it. A refused delivery, including one past `max_cause_depth`, counts as an overflow and never faults the run, and no notification is admitted unless the run is Running. Compiler admission requires the type's `eq` to run on the host (`ValueShape::host_eq`); Watch remains open.
 
 **Graph resources (C08a/C08b, 2026-11-07).** A run owns registered handle-kind resources through a generation-checked table. Direct `core/handle@1<K>` values are admitted on trusted effect ports, Action/Async function interfaces and `core/close-handle@1`; a handle-valued effect must have exactly one data result. Async acquisition through `complete_effect_resource` belongs to the executing dynamic region, while `resource_value` on an existing host resource preserves its run owner. Descendants borrow ancestor handles; sibling resources are unavailable. Successful Return transfers returned callee-owned handles to the caller; unreturned resources close on scope retirement. Cancellation retains acquired objects through connected bounded cleanup, then closes them once. The generic Close Handle Action has one required `handle` input, no data outputs/config, ordinary `then`/`failed`, never suspends and is cleanup-safe; authentic already-closed aliases close idempotently. Host revocation invalidates aliases and pending dependent completions. Consumption and publication authenticate issuer, run, generation, exact kind and owner ancestry; a stale reference faults `core/StaleHandle`, wrong owner `core/ResourceOwner`, other invalid references `core/InvalidHandle`. The bounded executable profile excludes resource containers, variables/registers/events, pure handle kernels, serialization and graph streams. [03](03-data-and-execution.md#graph-resource-ownership-c08b-2026-11-07) defines host admission, quotas and cleanup; verification is in 10.
+
+**Package entries (2026-11-10; FR-61).** A package or service may define an entry
+node: a definition of kind `entry` with the implicit `then` outcome and at most one
+data output, named `payload`, of a concrete non-handle, non-stream type. It is valid at
+the root only, carries an activation policy like every entry, and must be bound to an
+exact provider that offers it. The run treats it exactly as `core/on-manual`: the host
+fires it by node with a payload of the declared type, and admission, reentrancy,
+overflow and `while_paused` are the entry's own policy. What fires it is outside the
+graph and outside this document: the provider's source (02). Any other port on a
+package entry is `UnsupportedPort`; an entry inside a function or without a provider is
+`UnsupportedNode`.
 
 ### 10.3 Envelope and causal depth
 
@@ -1113,6 +1124,23 @@ Functions keep the entry/subscription restrictions above. A selection that conta
 
 - Document edits never mutate a running plan. A semantic edit compiles a new plan in the background (debounced). Runs started afterwards use it.
 - A running run shows **stale plan (revision r)**. Restart is a graceful stop followed by a new RunId. State carries over only through an opt-in persistent checkpoint ([03](03-data-and-execution.md), [04](04-expansion-plugins.md)).
+- **Apply edit (2026-11-11; FR-62).** A host may replace a running graph with an edited
+  version of the same document. This is an explicit operation, not a side effect of
+  editing: the edit is validated and compiled first, and an edit that fails leaves the
+  run untouched. The running plan is never mutated; a new run starts on the new plan
+  and the old run is then stopped at once. Consequences, all deliberate:
+  - Control flow restarts. Activations in progress are cancelled with their cleanup,
+    pending deliveries and timers are discarded, `core/on-start` runs again and
+    `core/on-stop` does not, because the graph is edited, not stopped.
+  - A run variable keeps its value when a run variable with the same ID and the same
+    type exists in the edited document. A new variable, or one whose type changed,
+    starts from its declared initial value. No checkpoint is involved and nothing is
+    serialized.
+  - Node-private state (`core/gate`, `core/do-once`, `core/flip-flop`, `core/register`,
+    loop counters) starts fresh, even for nodes the edit did not touch.
+  - A paused run is replaced by a paused run.
+  - A document that differs only in layout or its edit counter is not an edit and
+    nothing happens.
 - **Preview** evaluates pinned pure or volatile outputs. Volatile reads come from a selected live run's published snapshot (read-only), or from declared initial values. `execution` outputs show the last inspected value of a selected run, labelled as such, or "unavailable". Entropy nodes use a fixed preview seed. Preview never executes actions or async nodes. Re-evaluation invalidates only the downstream cone of the changed node, runs off the main thread and is budgeted.
 - Layout edits (move, waypoint, frame, comment) never invalidate a plan or a preview ([06](06-quality-and-validation.md) NFR-04).
 
@@ -1128,6 +1156,40 @@ Functions keep the entry/subscription restrictions above. A selection that conta
 | Value editors and inspectors | [04](04-expansion-plugins.md) declarative UI |
 
 A package may **not** add port kinds, control or zone intrinsics, scheduling or reentrancy modes, new cycle-legality rules (except by contributing `suspends: always` async nodes) or availability exceptions. New control shapes use iterators (`open/next/close` lowered to a structured loop), async outcome groups, or functions. Further intrinsics need a host language release (OPEN-12). New execution domains are not package contributions: crates linked by the embedding product add them through the core's public interfaces (ADR-21).
+
+### 16.1 Connections (2026-11-10; FR-60)
+
+A document declares the external services its nodes talk to, beside its variables and
+events:
+
+```json
+"connections": [
+  {"id": "<uuid>", "name": "obs", "adapter": "org.orange.net/http", "scope": "graph",
+   "settings": {"base_url": "http://127.0.0.1:4455"}}
+]
+```
+
+`adapter` is a namespaced adapter kind that the host must have. `scope` is `graph` or
+`shared`. A graph connection's `settings` are in the document and each run of the
+document has its own session. A shared connection has no settings in the document: the
+host holds them under the same `id`, and every document that declares that `id` uses
+one session. Settings never hold secrets; a declaration opens nothing and grants
+nothing. The key is omitted when a document has no connections, so existing documents
+keep their saved form.
+
+A node definition that sets `"connection": true` uses a connection named by its
+`connection` config field, a typed reference like `variable` and `event`. The reference
+must name a connection this document declares, in either scope; otherwise validation
+reports `E-CONNECTION-UNKNOWN` (`core/graph-connection-unknown`). Whether the adapter
+exists, matches the node and can be opened is the host's check when it opens the
+document. `UpsertConnection` and `RemoveConnection` are ordinary transactions with exact
+undo. Pasted nodes bring the connections they reference under the same ID, added only
+where the target lacks it, because a connection's identity is what makes it shared.
+
+A graph function still cannot take a connection as an argument. A graph-implemented
+package node uses one through per-connection copies made when the host links it (04).
+Not specified yet: adapter compatibility in validation.
+A node that receives from a connection is a package entry (§10.2).
 
 ## 17. Diagnostics catalog
 
@@ -1151,7 +1213,7 @@ All variable and event declarations require concrete, well-formed types availabl
 | State and concurrency | `E-VARIABLE-SCOPE`, `E-SHARED-VARIABLE-SCOPE`, `E-WRITE-CONFLICT`, `W-STALE-CAPTURE`, `E-VARIABLE-PERSISTENT`, `E-REGISTER-CONFIG`, `W-CONST-ERROR` |
 | Functions and entries | `E-FUNCTION-KIND`, `E-FUNCTION-BODY-MARKER`, `E-MISSING-RETURN`, `E-ENTRY-IN-FUNCTION`, `E-SUBSCRIPTION-IN-FUNCTION`, `E-ACTIVATION-POLICY`, `W-DETACH-IN-FUNCTION` |
 | Exports and configuration | `E-EXPORT-TARGET`, `E-EXPORT-DUPLICATE`, `E-EXPORT-TYPE`, `E-CONFIG-INVALID`, `E-CONFIG-SCHEMA-UNSUPPORTED` |
-| Function resolution | `E-CALL-TARGET-MISSING`, `E-CALL-TARGET-UNKNOWN`, `E-FUNCTION-INTERFACE`, `E-VARIABLE-UNKNOWN`, `E-EVENT-UNKNOWN`, `E-UPDATE-OPERATION`, `E-UPDATE-UNSUPPORTED`, `E-FUNCTION-METADATA-UNAVAILABLE`, `E-METADATA-STALE`, `E-SUSPENDS-MISSING`, `E-SUSPENDS-INVALID` |
+| Function resolution | `E-CALL-TARGET-MISSING`, `E-CALL-TARGET-UNKNOWN`, `E-FUNCTION-INTERFACE`, `E-VARIABLE-UNKNOWN`, `E-EVENT-UNKNOWN`, `E-CONNECTION-UNKNOWN`, `E-UPDATE-OPERATION`, `E-UPDATE-UNSUPPORTED`, `E-FUNCTION-METADATA-UNAVAILABLE`, `E-METADATA-STALE`, `E-SUSPENDS-MISSING`, `E-SUSPENDS-INVALID` |
 
 `E-SHARED-VARIABLE-SCOPE` uses the core origin, message key `core/graph-shared-variable-scope`, empty arguments and safe fallback "Shared writes require a workspace variable." It identifies a local/run target of a shared write without exposing configuration values.
 

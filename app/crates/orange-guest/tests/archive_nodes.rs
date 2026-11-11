@@ -60,7 +60,7 @@ fn manifest(world: &str) -> Json {
 }
 
 /// Packs the probe component with `manifest`, then reads it back as a host would.
-fn archive(mut manifest: Json) -> (VerifiedArchive, MemorySink) {
+pub(crate) fn archive(mut manifest: Json) -> (VerifiedArchive, MemorySink) {
     // The committed fixture, or the freshly built component CI names.
     let component = crate::plugin::probe_bytes();
     let files =

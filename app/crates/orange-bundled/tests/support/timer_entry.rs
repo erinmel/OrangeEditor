@@ -125,7 +125,7 @@ fn coalesce_delivers_the_latest_due_tick_with_the_missed_count() {
 }
 
 #[test]
-fn skip_delivers_only_ticks_handled_on_time() {
+fn skip_delivers_a_tick_handled_before_the_next_and_drops_a_backlog() {
     let mut run = timer_run(
         "on-timer",
         json!({"interval": "10", "missed": "skip"}),
@@ -138,6 +138,11 @@ fn skip_delivers_only_ticks_handled_on_time() {
     advance(&mut run, 50);
     assert_eq!(seen(&run), (Some(50), 4, 1));
     assert_eq!(run.last_event().unwrap().source_seq, 5);
+    // A real clock never lands exactly on a tick: one handled a little late, before the
+    // next comes due, is still delivered.
+    advance(&mut run, 63);
+    assert_eq!(seen(&run), (Some(60), 4, 2));
+    assert_eq!(run.pump(0).unwrap().next_wakeup, Some(70));
 }
 
 #[test]

@@ -1,6 +1,6 @@
 # Host services, integrations and platform capability
 
-These are proposed Orange contracts informed by the primary sources at the end. Library choices remain candidates until their exact version/features/MSRV/licenses are verified in [10](10-tooling-and-sources.md). Capability detection returns supported, partial, unavailable or permission-required with a reason; unsupported OS functionality must not appear as a working node.
+The [connection manager](#connection-manager) records the implemented network subset alongside the remaining service contracts. Exact dependency pins and verification evidence are recorded in [10](10-tooling-and-sources.md). Capability detection returns supported, partial, unavailable or permission-required with a reason; unsupported OS functionality must not appear as a working node.
 
 Service statuses, errors, remediation, connection/vault dialogs and audio controls follow [13](13-internationalization.md): stable codes and typed redacted message arguments, localized by the host. OS paths, protocol tokens, credential references, device names and remote payloads remain content/identity. The UI locale cannot change connection settings, routing, file encodings or graph parse/format semantics. OS-owned dialog language follows the recorded platform capability.
 
@@ -23,6 +23,36 @@ Read/write streams use proposed 64 KiB chunks and bounded in-flight buffers, wit
 Graph **directory bundle** saves use immutable generation directories plus a small current-generation manifest/pointer committed with the tested per-OS atomic file replacement primitive. Never assume replacing a populated directory is atomic. Keep the previous generation until recovery validation succeeds; enumerate orphan generations safely after restart. A single-file archive uses the same sibling-temp/replace rule. WU-05 tests power-loss simulations at each commit stage and documents actual filesystem guarantees.
 
 ## Connection manager
+
+Implemented subset (2026-11-10; `orange-host`, `orange-net`): connection declarations
+(11 §16.1), graph and shared scope, and adapter-owned sessions (02).
+The `org.orange.net/http` adapter takes settings `base_url` (required) and `timeout_ms` (whole
+request, default 30,000). Its node `org.orange.net/http-request` takes `method`,
+`path` and `content` and returns `status` and `response`; any HTTP status is a result,
+while a transport failure, an invalid request or an unreadable or over-8-MiB response
+takes the node's `failed` route with an `org.orange.net/*` code. `http://` and
+`https://` endpoints work. TLS is rustls with the ring provider; certificates and host
+names are verified against the bundled Mozilla roots (`webpki-roots`), not the system
+trust store, and verification cannot be turned off. Pinned CAs, mTLS and system trust
+are not implemented.
+
+WebSocket (2026-11-10): adapter `org.orange.net/websocket`, setting `url` (`ws://` or
+`wss://`, same TLS stack). A session is one socket with its own I/O thread, started
+when the connection is opened; it connects in the background and reconnects with
+backoff from 250 ms to 5 s. `org.orange.net/ws-send` queues one text message (input
+`text`) and completes at once: `then` means queued, not delivered. Up to 256 messages
+wait while the socket is down or busy and are written in order when it is up; beyond
+that the node fails with `org.orange.net/Busy`. The entry `org.orange.net/ws-message`
+fires once per received text message with the text as `payload`, for every diagram
+listening on that session, so diagrams sharing a connection share one socket and all
+hear each message. A diagram whose mailbox is full misses that message. Binary
+messages are ignored; ping/pong is answered by the library. Not implemented: binary
+payloads, subprotocols and headers, connection-state events (opened, closed, failed),
+per-message acknowledgement, and messages that arrived before a diagram started
+listening. Nothing else in this section is
+implemented: no credentials or vault, profiles and revisions, leases, pooling policy,
+retries, redirects policy, proxy or DNS rules, or Test Connection. The text
+below remains a proposal.
 
 Profiles store versioned adapter ID/schema, endpoint, typed options, TLS/auth policy, credential references and retry/deadline policy. App scope is per-user storage; workspace scope is separately authorized and can shadow an app display name but never its stable ID. Exports omit credentials, auth headers and secret-bearing query/options, preserving remappable placeholders; opaque extension options declare sensitivity. Import does not activate sessions or grant network authority.
 

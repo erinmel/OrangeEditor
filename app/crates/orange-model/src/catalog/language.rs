@@ -269,10 +269,10 @@ pub(crate) fn is_converter_special_form(id: &str) -> bool {
     id == ids::CONVERT
 }
 
-/// The standard config field naming a declaration of `kind`: `/variable`, `/event` or
-/// `/function`.
+/// The standard config field naming a declaration of `kind`: `/variable`, `/event`,
+/// `/function` or `/connection`.
 pub(crate) fn reference_field(kind: ReferenceKind) -> &'static ReferenceField {
-    static FIELDS: LazyLock<[ReferenceField; 3]> = LazyLock::new(|| {
+    static FIELDS: LazyLock<[ReferenceField; 4]> = LazyLock::new(|| {
         let field = |pointer: &str, kind| ReferenceField {
             pointer: pointer.to_owned(),
             kind,
@@ -281,12 +281,14 @@ pub(crate) fn reference_field(kind: ReferenceKind) -> &'static ReferenceField {
             field("/variable", ReferenceKind::Variable),
             field("/event", ReferenceKind::Event),
             field("/function", ReferenceKind::Function),
+            field("/connection", ReferenceKind::Connection),
         ]
     });
     match kind {
         ReferenceKind::Variable => &FIELDS[0],
         ReferenceKind::Event => &FIELDS[1],
         ReferenceKind::Function => &FIELDS[2],
+        ReferenceKind::Connection => &FIELDS[3],
     }
 }
 

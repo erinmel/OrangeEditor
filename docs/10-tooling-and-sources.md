@@ -1,5 +1,346 @@
 # Tooling, environment and research register
 
+## WebSocket messages lost before triggers attach — 2026-11-11
+
+Hosted run 43100068822 (head 715ebdb) failed two WebSocket tests by timeout: on Linux
+x64 `received_messages_trigger_the_graph_and_a_node_sends_on_the_same_socket`
+("the greeting") and on macOS ARM64
+`two_diagrams_share_one_socket_and_a_paused_one_keeps_what_arrived` ("the socket").
+Windows passed. Cause: the session's I/O thread connected when the adapter opened the
+session, and the flow's triggers were attached afterwards, so the test server's
+greeting could be delivered to no listener. The session now connects on
+`Session::start` (04). The unexplained Linux failure of run 43094133950 is consistent
+with the same cause; its log was never available.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,728 passed, 0 failed, 16 ignored |
+| `cargo test --locked -p orange-net`, three times | Pass each time |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+
+Limits: Windows only, where the race did not occur before the change either, so the
+fix is confirmed only by the hosted Linux and macOS jobs. A message that arrives on a
+shared connection before a later flow attaches is still not delivered to that flow.
+
+## Refused packages, built-in node providers and scenario tests — 2026-11-11
+
+Same branch and toolchain; no dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,728 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+
+New tests: a code-free trigger built on the WebSocket message node fires on the
+connection its use names and reports its payload port; an observed flow reports the
+output of a bundled pure node (`org.orange.math/add`) and the entry payload feeding it;
+a refused trigger package is corrected and installed under the same version on the
+same host. Limits: Windows only; hosted runs were queued during a GitHub outage and
+had not executed. Still not tested: output ports of action and asynchronous nodes,
+ports inside functions and loops, triggers and shared variables across a live edit,
+`core/set-shared`, and the dependency fallback of the graph check.
+
+## Graph-made triggers, shared variables and base package options — 2026-11-11
+
+Same branch and toolchain; no dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,726 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: Windows only; hosted runs for this branch were queued and had not executed.
+Not tested: a graph-made trigger on a connection or built on a WebSocket message, a
+trigger across a live edit, shared variables across a live edit, `core/set-shared`
+(only `update-shared` with `add`), a shared write while paused or stopping, and more
+than two flows. Found and not fixed: after a package installation is refused at the
+graph check, the same host refuses a corrected build of the same package version
+("installed with a different content digest").
+
+## Stored packages — 2026-11-11
+
+Same branch and toolchain; no dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,723 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `orange pack`, then `orange check <graph> --package <file> --store <dir>`, then `orange check <graph> --store <dir>` | Second check passes without `--package`; the same check without `--store` reports the provider unavailable |
+
+Limits: Windows only. Not tested: a Wasm component package across a restart, a
+package that depends on an earlier stored one, a crash between writing an archive and
+its index, an unreadable or malformed index, and two hosts on one directory.
+
+## Port value observation — 2026-11-11
+
+Same branch and toolchain; no dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,722 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+
+Limits: Windows only; no hosted run had reported for this branch when this was written.
+Tested: the payload port of a manual entry, two values in order, on one flow. Not
+tested: outputs of pure, action and asynchronous nodes, ports inside functions and
+loops, observation across a live edit, and the cost of observation on a large graph
+(not measured).
+
+## Plugin SDK crate, node listing and variable observation — 2026-11-11
+
+Same branch and toolchain. New workspace crate `orange-sdk`; no external dependency
+added or changed.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,721 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: Windows only. The hosted Linux test job failed once on the previous head; its
+log could not be downloaded (the log service returned errors) and the failure was not
+reproduced, so its cause is unknown. Not tested: observation across a live edit,
+observation of a paused flow, presentation text of an installed (archive) package, and
+limits on presentation text length beyond the definition file's byte limit.
+
+## Manifest description, graph nodes on connections and a dependency advisory — 2026-11-11
+
+Same branch and toolchain. `rustix` moved from 1.1.5 to 1.1.6 with `cargo update -p
+rustix` after RUSTSEC-2026-0486 failed the hosted `cargo-deny` job; it is a transitive
+dependency of Wasmtime and no other package version changed (three lock entries now
+select the already-present `windows-sys` 0.52.0). No other dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,717 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+
+Limits: Windows only; `cargo-deny` not run locally, so the advisory fix is confirmed
+only by the hosted job. Tested: `about` and `update` acceptance and refusals; one
+code-free Async package node whose body is the HTTP request node, used on two
+connections. Not tested: a graph node on a shared connection or a WebSocket, a graph
+body that uses another graph package's connection node, a mismatch between the graph
+file and the definition on using a connection, or a body shipped without the
+signatures it needs. Nothing reads an update feed.
+
+## Live edit of a running graph — 2026-11-11
+
+Branch `feat/plugin-boundary-and-core-fixes` after `049ba50`; same toolchain, no
+dependency or lockfile change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,715 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `orange run <copy of set-on-trigger.json>` with piped `trigger`, file edit, `reload 1`, `trigger`, broken file, `reload 1` | Edit applied with 1 variable kept; the entry ran the edited graph; the broken file was refused and the flow kept running; exit 0 |
+
+Limits: Windows only. Not tested: an edit while an effect is in flight, while a timer
+is pending or during a burst of input; an edit that removes or retypes a variable; an
+edit that changes a connection's settings; an edit to a flow using an installed
+component or a graph-implemented package node; a new run that fails to start; repeated
+edits. Inputs queued for the old graph are dropped by design and that loss is not
+reported per input. The time a swap takes was not measured; the old run's cleanup is
+bounded to 64 pump-or-advance steps before it is disposed regardless.
+
+## Headless host and network verification — 2026-11-10
+
+Source commit `049ba50`, Rust 1.99.1 (`58cf8f9c3`), Windows
+`x86_64-pc-windows-msvc`, default Cargo features. Network dependency features
+are the pinned `ureq/rustls` and `tungstenite` handshake and rustls root features
+listed below. Cargo.lock SHA-256 is
+`cb7420624a8a6476ebf6442fce61a6154c932dc4e2da24d57940c6cd6aa13faa`.
+
+`cargo test -p orange-net -p orange-host -p orange-cli --locked --offline`
+passed 13 tests with one ignored when run with normal local socket access.
+The restricted run failed two HTTP loopback tests that passed on that rerun.
+The verified scope includes HTTP requests and shared sessions, routing a failed
+HTTPS handshake, and plaintext WebSocket round-trip, sharing and queued sends
+before initial connect. The ignored public HTTPS test and WSS integration were
+outside this run. Earlier public HTTPS evidence is recorded below.
+
+## Package entries and WebSocket — 2026-11-10
+
+Same branch and toolchain as the entries below. New pinned dependency: `tungstenite`
+=0.30.0, `default-features = false`, features `handshake` and
+`rustls-tls-webpki-roots`; version from `cargo search`, usage checked against the
+v0.30.0 README (`connect`, `accept`, `read`, `send`) and by compilation. Lockfile
+additions read from `cargo metadata`: tungstenite 0.30.0 and sha1 0.11.0 (MIT OR
+Apache-2.0), data-encoding 2.11.1 (MIT), webpki-roots 0.26.11 (CDLA-Permissive-2.0);
+highest declared MSRV 1.85.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,712 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`; `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: Windows only; `cargo-deny`, `--all-features` and MSRV 1.97.1 not run locally.
+WebSocket is tested against an in-process loopback server over `ws://` only; `wss://`
+compiles against the same rustls stack but no TLS WebSocket was contacted. Not tested:
+a server that drops an established socket, the 256-message bound, a full flow mailbox,
+binary frames, large messages, or many listeners. Package entries have no compiler
+test of their own: they are exercised only through the WebSocket message entry, and
+the refusals (extra ports, an entry in a function, a missing provider or source) are
+untested. Timing was not measured; an idle socket adds up to 10 ms before a queued
+message is written.
+
+## HTTPS in the network package — 2026-11-10
+
+`ureq` =3.5.1 now builds with `default-features = false, features = ["rustls"]`, which
+its manifest defines as rustls, the ring provider and `webpki-roots`. This supersedes
+the no-TLS note in the entry below. Lockfile additions read from `cargo metadata`:
+rustls 0.23.46 (Apache-2.0 OR ISC OR MIT), ring 0.17.14 (Apache-2.0 AND ISC),
+rustls-webpki 0.103.16 (ISC), untrusted 0.9.0 (ISC), webpki-roots 1.0.11
+(CDLA-Permissive-2.0), rustls-pki-types 1.15.1, zeroize 1.9.1, subtle 2.6.1
+(BSD-3-Clause), getrandom 0.2.17 and 0.4.3, wasi 0.11.1, windows-sys 0.52.0 and
+0.61.2 with windows-targets 0.52.6 and its per-target crates; highest declared MSRV
+1.85. `deny.toml` admits ISC and CDLA-Permissive-2.0 by the user's decision; MPL was
+not needed.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,709 passed, 0 failed, 16 ignored |
+| `cargo test -p orange-net -- --ignored` (public internet) | 1 passed: GET `https://example.com/` returned 200; `https://wrong.host.badssl.com` was refused and took `failed` |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`; `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: `cargo-deny` is not installed locally, so the widened license list and the
+advisory and duplicate-version checks (two `getrandom` and two `windows-sys` versions
+are now present) are confirmed only by the hosted check. ring compiles C and assembly;
+only the Windows MSVC build was exercised. The normal test run covers TLS only through
+a handshake that must fail; the successful and wrong-host cases need the internet and
+are ignored by default. Expired, self-signed and revoked certificates, system trust,
+pinned CAs and mTLS are untested or unimplemented.
+
+## Connections, native services and the HTTP package — 2026-11-10
+
+Same branch and toolchain as the entries below. New pinned dependency: `ureq` =3.5.1,
+`default-features = false`, selected with `cargo search` and its API checked against the
+docs.rs pages for `Agent::config_builder`, `timeout_global`, `http_status_as_error`,
+`Agent::run` with `http::Request`, and `Body::with_config().limit()`. Lockfile additions
+and licenses, read from `cargo metadata`: ureq 3.5.1, ureq-proto 0.7.1, http 1.5.0,
+httparse 1.10.1, base64 0.23.1, percent-encoding 2.3.2, utf8-zero 0.8.1, all
+`MIT OR Apache-2.0`; highest declared MSRV 1.85. No TLS crate was added because
+`deny.toml` allows neither ISC nor MPL/CDLA licenses that rustls, ring and the root
+stores carry; widening that list is a project decision.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace` | 1,708 passed, 0 failed, 15 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass; 20 fixtures |
+
+Limits: Windows only; `cargo-deny`, `--all-features` and MSRV 1.97.1 were not run
+locally. HTTP is tested against an in-process loopback server only: one POST with a
+body, a shared connection used by two flows, and a closed port. Not tested: timeouts,
+large or non-text responses, redirects, keep-alive reuse, concurrent requests on one
+session, cancellation of a request in flight (the lease is passed but the blocking
+client does not poll it), or pause. The CLI's `--share` flag is untested. Sessions are
+dropped with their flow but have no explicit close or pause hook.
+
+## Graph-implemented package nodes — 2026-11-10
+
+Same branch and toolchain as the entries below. No dependency version or feature
+changed; `orange-host` now uses the already-pinned `serde_json` in product code.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,701 passed, 0 failed, 15 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`; `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange pack app/crates/orange-cli/packages/remember <out>` | Archive written, exit 0 |
+| `orange check graphs/remember-on-trigger.json` without the package | Provider unavailable, exit 1 |
+| Same with `--package <out>` | `ok`, exit 0 |
+| `orange run graphs/remember-on-trigger.json --package <out>` with a piped `trigger` | Entry, three body nodes, the package node and the consumer all stepped; exit 0 |
+
+Limits: Windows only; CLI not under automated test. Tested: one Action graph node with
+a local variable, a data-port mismatch and an undeclared variable. Not tested: Pure and
+Async graph nodes, a graph that uses another package's graph node, generic functions,
+a package mixing graph and component providers, two documents sharing one graph
+package, or rollback state after a refused install beyond the default provider staying
+unset. The committed example graph is locked to the content digest of the committed
+example package; editing a package file changes the digest and the graph must be
+re-authored.
+
+## Session host and CLI — 2026-11-10
+
+Same branch and toolchain as the entry below. No external dependency version or
+feature changed; `Cargo.lock` gains the local `orange-host` and `orange-cli` packages.
+The host uses only `std` threads and channels.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,699 passed, 0 failed, 15 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass; 20 fixtures |
+| `orange check graphs/set-on-trigger.json` | `ok`, exit 0 |
+| `orange run <graph> <graph> --for 600` with piped `pause 1`, two `trigger`s, `resume 1` | Both flows ran their entry and finished; exit 0 |
+| `orange run nope.json` | Error printed, exit 1 |
+
+Limits: Windows only. The CLI has no automated test. Host tests cover three cases:
+two flows with one paused, a refused document, and one async package node on a
+worker. Not tested: a full mailbox, a full event channel, lease cancellation of a
+running guest effect, a flow that faults, closing a flow mid-effect, many flows, or
+timers against the real clock. Flow threads are not pooled: one OS thread per open
+flow. No timing was measured.
+
+## Plugin boundary, kernel crate and Skip timers — 2026-11-10
+
+Branch `feat/plugin-boundary-and-core-fixes` from dev
+`ffa8aab` (PR171). Windows x64, rustup Rust 1.99.1, Node 24.18.0, Wasmtime 48.0.8
+unchanged. No external dependency version or feature changed in either lockfile; the
+root `Cargo.lock` gains the local `orange-kernel` package and first-party edges only.
+The `sdk` workspace pins are unchanged (`wit-bindgen` 0.63.0, `wit-component` 0.262.0).
+
+The plugin world's bindings were generated by the pinned tools from the edited
+`sdk/wit/orange-expansion.wit`: `wasmtime::component::bindgen!` on the host and
+`wit_bindgen::generate!` in the probe guest. The committed fixture was rebuilt with
+`node tools/build-guest-fixtures.mjs` (76,157 bytes; a rebuild of the unchanged source beforehand reproduced the previous
+70,093-byte fixture byte for byte). Two hand-written test components were updated to the new
+canonical layout: a `value` is twelve bytes (case, pointer, length).
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,696 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass; 20 fixtures |
+| sdk: `cargo fmt --all --check`; `cargo clippy --locked --workspace --target wasm32-unknown-unknown -- -D warnings` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1, cargo-deny and hosted checks were not run
+locally. Guest effects are tested with the probe guest only: one stateful action, one
+async node completed by the test acting as host, and one guest-reported error. No
+real worker thread, lease cancellation of a running guest effect, or panic inside
+`execute` is tested. Binary values are tested for bytes and `f32` lists; the other
+five list cases share one macro and have no test of their own. A list the host holds
+as boxed values still crosses as a literal. Skip timers are tested on the virtual
+clock only. No timing was measured.
+
 ## Run driver and mailbox — 2026-11-10
 
 Branch `feat/run-driver` from local dev `86e7e80`. Same environment as the entries

@@ -9,11 +9,13 @@ use indexmap::IndexMap;
 use serde_json::{Map, Value as Json};
 
 use crate::document::{
-    BodyRef, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, GraphExport, NodeInstance,
-    PackageLockEntry, SignatureSnapshot, TypeLockEntry, VariableDecl,
+    BodyRef, ConnectionDecl, Edge, EventDecl, FunctionDecl, GraphBody, GraphDocument, GraphExport,
+    NodeInstance, PackageLockEntry, SignatureSnapshot, TypeLockEntry, VariableDecl,
 };
 use crate::error::TxError;
-use crate::id::{EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, TypeExpr, VariableId};
+use crate::id::{
+    ConnectionId, EdgeId, EventDeclId, FunctionId, NodeId, SignatureKey, TypeExpr, VariableId,
+};
 
 /// A value and its position in an ordered collection.
 #[derive(Debug, Clone, PartialEq)]
@@ -42,6 +44,10 @@ pub(crate) enum Patch {
     Event {
         id: EventDeclId,
         entry: Option<Placed<EventDecl>>,
+    },
+    Connection {
+        id: ConnectionId,
+        entry: Option<Placed<ConnectionDecl>>,
     },
     Function {
         id: FunctionId,
@@ -105,6 +111,10 @@ impl Patch {
                 id,
                 entry: set_slot(&mut document.events, id, entry),
             },
+            Patch::Connection { id, entry } => Patch::Connection {
+                id,
+                entry: set_slot(&mut document.connections, id, entry),
+            },
             Patch::Function { id, entry } => {
                 let added: Vec<_> = entry
                     .iter()
@@ -158,6 +168,7 @@ impl Patch {
             }
             Patch::Variable { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
             Patch::Event { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
+            Patch::Connection { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
             Patch::Function { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&*e.value)),
             Patch::Signature { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
             Patch::PackageLock { entry, .. } => entry.as_ref().map(|e| TOP + nesting(&e.value)),
