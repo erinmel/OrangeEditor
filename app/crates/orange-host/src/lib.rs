@@ -681,21 +681,37 @@ impl Host {
         }
 
         let install = |error: &dyn std::fmt::Display| HostError::Install(error.to_string());
-        let _ = self
-            .store
-            .install(verified.into_contents(definitions))
-            .map_err(|e| install(&e))?;
+        let contents = verified.into_contents(definitions);
 
         // A graph is checked as it will be used: linked with the graphs it builds on,
-        // against the registry that now includes this package's own definitions.
-        if !graphs.is_empty() {
-            let mut known = self.graphs.clone();
-            known.extend(graphs.iter().cloned());
-            let bodies: Vec<_> = graphs.iter().map(|(_, graph)| Arc::clone(graph)).collect();
-            if let Err(error) = self.check_graphs(key.id.as_str(), &bodies, &known) {
-                let _ = self.store.rollback();
-                return Err(error);
+        // against a registry that includes this package's own definitions. The check
+        // runs on a throwaway store first, because publishing a version is permanent:
+        // a package refused here can be corrected and installed under the same version.
+        let mut known = self.graphs.clone();
+        known.extend(graphs.iter().cloned());
+        let bodies: Vec<_> = graphs.iter().map(|(_, graph)| Arc::clone(graph)).collect();
+        let mut checked = bodies.is_empty();
+        if !checked {
+            let mut trial = PackageStore::new(
+                Arc::clone(self.store.current()),
+                HOST_API_VERSION,
+                MemoryJournal::new(),
+            );
+            // A package the throwaway store cannot take (it knows no installed
+            // package, so a declared dependency is missing) is checked after the real
+            // installation instead.
+            if trial.install(contents.clone()).is_ok() {
+                self.check_graphs(key.id.as_str(), &bodies, &known, trial.current())?;
+                checked = true;
             }
+        }
+        let _ = self.store.install(contents).map_err(|e| install(&e))?;
+        if !checked
+            && let Err(error) =
+                self.check_graphs(key.id.as_str(), &bodies, &known, self.store.current())
+        {
+            let _ = self.store.rollback();
+            return Err(error);
         }
 
         for provider in manifest.providers() {
@@ -730,6 +746,7 @@ impl Host {
         package: &str,
         bodies: &[Arc<GraphNode>],
         known: &Graphs,
+        registry: &Arc<RegistrySnapshot>,
     ) -> Result<(), HostError> {
         let refused = |reason: String| HostError::Graph(package.to_owned(), reason);
         let empty = to_json(&GraphDocument::new(
@@ -743,7 +760,6 @@ impl Host {
         graphs::link(&mut scratch, known);
         let document =
             from_json(&scratch.to_string()).map_err(|error| refused(error.to_string()))?;
-        let registry = self.store.current();
         let analysis = analyzed(&document, registry);
         if analysis.is_ready_for_lowering(&document, registry) {
             Ok(())

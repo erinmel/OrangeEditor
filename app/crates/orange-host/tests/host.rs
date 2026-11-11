@@ -714,14 +714,13 @@ fn trigger_package(with_event: bool) -> Result<Vec<u8>, HostError> {
 
 #[test]
 fn a_trigger_made_as_a_graph_starts_the_documents_own_nodes() {
-    // A fragment that emits an event it does not own is refused.
-    let (mut strict, _events) = Host::new(HostOptions::default()).unwrap();
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    // A fragment that emits an event it does not own is refused, and the corrected
+    // package installs under the same version.
     assert!(
-        strict
-            .install(&trigger_package(false).unwrap(), Grants::default())
+        host.install(&trigger_package(false).unwrap(), Grants::default())
             .is_err()
     );
-    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
     let _ = host
         .install(&trigger_package(true).unwrap(), Grants::default())
         .unwrap();
