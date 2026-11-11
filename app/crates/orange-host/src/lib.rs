@@ -42,7 +42,7 @@ use orange_runtime::{
 };
 use services::Services;
 use sha2::{Digest, Sha256};
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
@@ -451,6 +451,21 @@ impl Host {
             }
         }
         let base = builder.build().map_err(|e| start(&e))?;
+        // A newly placed node needs a provider to bind to. Built-in nodes that have
+        // one implementation and no choice yet get it, so a front end can place them.
+        let mut defaults = RegistryBuilder::from_snapshot(&base);
+        let mut chosen = BTreeSet::new();
+        for provider in base.providers() {
+            for (definition, _) in &provider.implements {
+                if base.new_binding_default(definition).is_none()
+                    && chosen.insert(definition.clone())
+                {
+                    defaults =
+                        defaults.new_binding_default(definition.clone(), provider.key.clone());
+                }
+            }
+        }
+        let base = defaults.build().map_err(|e| start(&e))?;
         let engine = GuestEngine::new(options.guest).map_err(|e| start(&e))?;
         let pool = Pool::new(options.effect_workers).map_err(|e| start(&e))?;
         let (events, observer) = sync_channel(options.event_capacity.max(1));

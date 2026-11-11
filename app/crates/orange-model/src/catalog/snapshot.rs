@@ -1046,6 +1046,11 @@ impl RegistrySnapshot {
             .get(&definition.version)
     }
 
+    /// Every registered provider, ordered by key.
+    pub fn providers(&self) -> impl Iterator<Item = &ProviderDescriptor> {
+        self.providers.values()
+    }
+
     pub fn provider(&self, key: &ProviderKey) -> Option<&ProviderDescriptor> {
         self.providers.get(key)
     }
