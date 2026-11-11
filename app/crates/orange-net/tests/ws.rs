@@ -219,3 +219,35 @@ fn messages_sent_before_the_server_exists_are_delivered_once_it_does() {
         reply(&host, flow).as_deref() == Some("late:ping")
     });
 }
+
+#[test]
+fn editing_a_running_graph_keeps_its_socket_and_its_trigger() {
+    let mut host = host();
+    let connection = json!({"id": CONNECTION, "name": "peer", "adapter": orange_net::WS_ADAPTER,
+        "scope": "graph", "settings": {"url": server()}});
+    let text = document(&host, 1, connection);
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(2), None).unwrap();
+    until("the echo", || {
+        reply(&host, flow).as_deref() == Some("echo:ping")
+    });
+
+    let mut edited: Json = serde_json::from_str(&text).unwrap();
+    for entry in edited["nodes"].as_array_mut().unwrap() {
+        if entry["definition_id"] == orange_net::WS_SEND {
+            entry["inputs"]["text"]["value"] = json!("pong");
+        }
+    }
+    let updated = host.update(flow, &edited.to_string()).unwrap();
+    assert!(updated.changed);
+    assert_eq!(updated.kept_variables, 1);
+    // A new socket would be greeted with `hello`; the kept one is silent.
+    std::thread::sleep(Duration::from_millis(300));
+    assert_eq!(reply(&host, flow).as_deref(), Some("echo:ping"));
+
+    // The edited send node and the re-attached message entry use the same socket.
+    host.trigger(flow, node(2), None).unwrap();
+    until("the edited echo", || {
+        reply(&host, flow).as_deref() == Some("echo:pong")
+    });
+}

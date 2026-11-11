@@ -23,6 +23,7 @@ what they do. While it runs, type commands on standard input:
   pause <flow> | resume <flow>      hold a flow, or let it continue
   stop <flow>  | kill <flow>        stop gracefully, or at once
   trigger <flow> <node-id>          fire a manual entry
+  reload <flow>                     read the flow's file again and apply the edit live
   quit                              stop everything and exit
 
 `pack` builds a package from a directory holding `manifest.json` and the package's
@@ -117,15 +118,33 @@ fn print(event: &HostEvent) {
         FlowEvent::TraceLost(count) => println!("[{flow}] {count} steps not shown"),
         FlowEvent::Refused(reason) => println!("[{flow}] input refused: {reason:?}"),
         FlowEvent::Fault(error) => println!("[{flow}] error: {error}"),
+        FlowEvent::Updated { .. } => println!("[{flow}] graph replaced"),
         FlowEvent::Finished => println!("[{flow}] finished"),
         _ => println!("[{flow}] {:?}", event.kind),
     }
 }
 
 /// Applies one line typed by the user. Returns `false` for `quit`.
-fn command(host: &Host, flows: &[FlowId], line: &str) -> bool {
+/// Applies an edited graph file to its running flow.
+fn reload(host: &mut Host, flow: FlowId, path: &str) -> Result<(), String> {
+    let text = String::from_utf8(read(path)?).map_err(|_| format!("{path}: not UTF-8 text"))?;
+    match host.update(flow, &text) {
+        Ok(updated) if !updated.changed => println!("[{flow}] nothing to apply"),
+        Ok(updated) => println!(
+            "[{flow}] edit applied: {} variables kept, {} reset",
+            updated.kept_variables, updated.reset_variables
+        ),
+        Err(error) => {
+            report(path, &error);
+            println!("[{flow}] edit refused; the flow is unchanged");
+        }
+    }
+    Ok(())
+}
+
+fn command(host: &mut Host, flows: &[(FlowId, String)], line: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
-    let flow = |index: usize| -> Result<FlowId, String> {
+    let flow = |index: usize| -> Result<(FlowId, &str), String> {
         let number: usize = words
             .get(index)
             .and_then(|word| word.parse().ok())
@@ -133,18 +152,19 @@ fn command(host: &Host, flows: &[FlowId], line: &str) -> bool {
         number
             .checked_sub(1)
             .and_then(|at| flows.get(at))
-            .copied()
+            .map(|(flow, path)| (*flow, path.as_str()))
             .ok_or_else(|| "no such flow".to_owned())
     };
     let done = |result: Result<(), HostError>| result.map_err(|error| error.to_string());
     let outcome = match words.first().copied() {
         None => Ok(()),
         Some("quit") => return false,
-        Some("pause") => flow(1).and_then(|flow| done(host.pause(flow))),
-        Some("resume") => flow(1).and_then(|flow| done(host.resume(flow))),
-        Some("stop") => flow(1).and_then(|flow| done(host.stop(flow, StopMode::Graceful))),
-        Some("kill") => flow(1).and_then(|flow| done(host.stop(flow, StopMode::Immediate))),
-        Some("trigger") => flow(1).and_then(|flow| {
+        Some("pause") => flow(1).and_then(|(flow, _)| done(host.pause(flow))),
+        Some("resume") => flow(1).and_then(|(flow, _)| done(host.resume(flow))),
+        Some("reload") => flow(1).and_then(|(flow, path)| reload(host, flow, path)),
+        Some("stop") => flow(1).and_then(|(flow, _)| done(host.stop(flow, StopMode::Graceful))),
+        Some("kill") => flow(1).and_then(|(flow, _)| done(host.stop(flow, StopMode::Immediate))),
+        Some("trigger") => flow(1).and_then(|(flow, _)| {
             let node: NodeId = words
                 .get(2)
                 .and_then(|word| word.parse().ok())
@@ -159,7 +179,12 @@ fn command(host: &Host, flows: &[FlowId], line: &str) -> bool {
     true
 }
 
-fn run(host: &Host, events: &Receiver<HostEvent>, flows: &[FlowId], duration: Option<Duration>) {
+fn run(
+    host: &mut Host,
+    events: &Receiver<HostEvent>,
+    flows: &[(FlowId, String)],
+    duration: Option<Duration>,
+) {
     let (lines, typed) = channel::<String>();
     // Standard input blocks, so it gets its own thread; it ends with the process.
     let _ = std::thread::spawn(move || {
@@ -189,7 +214,7 @@ fn run(host: &Host, events: &Receiver<HostEvent>, flows: &[FlowId], duration: Op
         }
         if quit && !stopping {
             stopping = true;
-            for flow in flows {
+            for (flow, _) in flows {
                 // A flow that already ended refuses the stop; that is the goal anyway.
                 let _ = host.stop(*flow, StopMode::Graceful);
             }
@@ -324,7 +349,7 @@ fn main() -> ExitCode {
             match host.open(&text) {
                 Ok(flow) => {
                     println!("[{flow}] opened {path}");
-                    flows.push(flow);
+                    flows.push((flow, path.clone()));
                 }
                 Err(error) => {
                     report(path, &error);
@@ -339,7 +364,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     if arguments.command == "run" {
-        run(&host, &events, &flows, arguments.duration);
+        run(&mut host, &events, &flows, arguments.duration);
     }
     ExitCode::SUCCESS
 }

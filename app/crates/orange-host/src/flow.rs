@@ -6,16 +6,20 @@
 use crate::effects::Pool;
 use crate::services::{Call, ServiceEffect, Session};
 use crate::{FlowEvent, FlowId, HostEvent};
+use orange_compiler::ControlPlan;
 use orange_guest::{GuestCancellation, guest_effect};
 use orange_kernel::{FaultText, KernelFault};
-use orange_model::id::ConnectionId;
+use orange_model::GraphDocument;
+use orange_model::catalog::RegistrySnapshot;
+use orange_model::document::VarScope;
+use orange_model::id::{ConnectionId, EventDeclId};
 use orange_runtime::{
-    EffectLease, EffectRequest, HostInput, InboxError, Refused, Run, RunDriver, RunInbox, RunState,
-    StopMode,
+    EffectLease, EffectRequest, HostInput, InboxError, Refused, Run, RunDriver, RunError,
+    RunEventSource, RunInbox, RunOptions, RunState, SourceOptions, StopMode,
 };
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::SyncSender;
+use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, Thread};
 use std::time::{Duration, Instant};
@@ -36,6 +40,8 @@ pub(crate) struct Shared {
     /// `None` once the thread has ended; queries are then refused instead of lost.
     pub queries: Mutex<Option<VecDeque<Query>>>,
     pub closing: AtomicBool,
+    /// An edited document waiting to replace the running one.
+    pub swap: Mutex<Option<Swap>>,
 }
 impl std::fmt::Debug for Shared {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -44,6 +50,115 @@ impl std::fmt::Debug for Shared {
             .field("closing", &self.closing)
             .finish_non_exhaustive()
     }
+}
+
+/// A compiled replacement for a flow's graph, applied by the flow's own thread.
+pub(crate) struct Swap {
+    pub plan: Arc<ControlPlan>,
+    pub document: GraphDocument,
+    pub registry: Arc<RegistrySnapshot>,
+    pub options: RunOptions,
+    pub inbox_capacity: usize,
+    pub sessions: BTreeMap<ConnectionId, Arc<dyn Session>>,
+    pub reply: Sender<Result<Swapped, RunError>>,
+}
+
+/// What the host needs to reach the replacement run.
+pub(crate) struct Swapped {
+    pub inbox: RunInbox,
+    pub sources: BTreeMap<EventDeclId, RunEventSource>,
+    pub kept: usize,
+    pub reset: usize,
+}
+
+/// Registers a host source for every event the run opens to the host.
+pub(crate) fn event_sources(
+    driver: &mut RunDriver,
+    plan: &ControlPlan,
+) -> BTreeMap<EventDeclId, RunEventSource> {
+    let mut sources = BTreeMap::new();
+    for event in plan.events() {
+        // Events the run does not open to the host are simply not offered.
+        if let Ok(source) = driver.register_source(event.id(), SourceOptions::default()) {
+            let _ = sources.insert(event.id(), source);
+        }
+    }
+    sources
+}
+
+/// Replaces the flow's run with one compiled from an edited document.
+///
+/// The new run is started first, with the value of every run variable whose identity and
+/// type are unchanged; only then is the old run stopped. If the new run cannot start,
+/// the old one is untouched and keeps running.
+fn replace(driver: &mut RunDriver, cx: &mut Context, swap: Swap) -> Result<Swapped, RunError> {
+    let old = driver.run();
+    let mut values = BTreeMap::new();
+    let (mut kept, mut reset) = (0, 0);
+    for cell in swap.plan.variables() {
+        if cell.scope() != VarScope::Run {
+            continue;
+        }
+        let unchanged = cx.plan.variables().iter().any(|before| {
+            before.id() == cell.id() && before.scope() == VarScope::Run && before.ty() == cell.ty()
+        });
+        if unchanged {
+            kept += 1;
+            // An unset variable takes the new document's initial value, if it has one.
+            if let Some(value) = old.variable(cell.id()) {
+                let _ = values.insert(cell.id(), Some(value.clone()));
+            }
+        } else {
+            reset += 1;
+        }
+    }
+    let paused = old.state() == RunState::Paused;
+    let mut run = Run::start_with_variables(
+        Arc::clone(&swap.plan),
+        &swap.document,
+        &swap.registry,
+        0,
+        swap.options,
+        &values,
+    )?;
+    if paused {
+        run.pause()?;
+    }
+    let now = u64::try_from(cx.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
+    let (mut next, inbox) = RunDriver::new(run, swap.inbox_capacity, now);
+    let sources = event_sources(&mut next, &swap.plan);
+
+    // Retire the old run: cancel what it was doing and let its cleanup finish. Its
+    // On Stop entries do not run, because the graph is being edited, not stopped.
+    let mut old = std::mem::replace(driver, next).into_run();
+    let _ = old.request_stop(StopMode::Immediate);
+    for _ in 0..64 {
+        if terminal(old.state()) {
+            break;
+        }
+        match old.pump(cx.turn_budget) {
+            Ok(progress) if progress.ready => {}
+            Ok(_) => {
+                // Nothing runnable: let its cleanup deadline pass.
+                let later = old.now().saturating_add(1_000_000_000);
+                if old.advance_to(later).is_err() {
+                    break;
+                }
+            }
+            Err(_) => break,
+        }
+    }
+    let _ = old.dispose();
+
+    cx.inbox = inbox.clone();
+    cx.sessions = swap.sessions;
+    cx.plan = swap.plan;
+    Ok(Swapped {
+        inbox,
+        sources,
+        kept,
+        reset,
+    })
 }
 
 /// Bounded, never-blocking delivery of observations. A slow observer loses events and
@@ -67,6 +182,7 @@ pub(crate) struct Context {
     pub sink: Sink,
     pub pool: Pool,
     pub inbox: RunInbox,
+    pub plan: Arc<ControlPlan>,
     pub sessions: BTreeMap<ConnectionId, Arc<dyn Session>>,
     pub clock: Instant,
     pub turn_inputs: usize,
@@ -109,7 +225,7 @@ fn deliver(inbox: &RunInbox, mut input: HostInput, flow: &Thread) {
     flow.unpark();
 }
 
-pub(crate) fn drive(mut driver: RunDriver, cx: Context) {
+pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let me = thread::current();
     let mut recorded = 0u64;
     let mut last_state = None;
@@ -120,6 +236,32 @@ pub(crate) fn drive(mut driver: RunDriver, cx: Context) {
         if closing_since.is_none() && cx.shared.closing.load(Ordering::Relaxed) {
             closing_since = Some(Instant::now());
             let _ = driver.run_mut().request_stop(StopMode::Immediate);
+        }
+        let pending = cx
+            .shared
+            .swap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take();
+        if let Some(swap) = pending {
+            let reply = swap.reply.clone();
+            let outcome = replace(&mut driver, &mut cx, swap);
+            if let Ok(swapped) = &outcome {
+                // Work issued by the old run has nowhere to return to.
+                for (_, cancellation) in guest_work.drain(..) {
+                    cancellation.cancel();
+                }
+                recorded = 0;
+                last_state = None;
+                cx.sink.send(
+                    cx.id,
+                    FlowEvent::Updated {
+                        kept_variables: swapped.kept,
+                        reset_variables: swapped.reset,
+                    },
+                );
+            }
+            let _ = reply.send(outcome);
         }
         let now = u64::try_from(cx.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let mut refused = |refusal: Refused| {
@@ -242,6 +384,14 @@ pub(crate) fn drive(mut driver: RunDriver, cx: Context) {
     for (_, cancellation) in &guest_work {
         cancellation.cancel();
     }
+    // A replacement that arrives now is refused by dropping its reply channel.
+    drop(
+        cx.shared
+            .swap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .take(),
+    );
     // Refuse queries from here on, and release any that were waiting.
     drop(
         cx.shared

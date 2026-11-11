@@ -809,6 +809,33 @@ impl Run {
     ) -> Result<Self, RunError> {
         Self::start_workspace(plan, document, registry, seed, options, None, None)
     }
+    /// Start with run variables that already hold values, as a host does when it
+    /// replaces an edited graph without losing its state. Each entry must name a
+    /// run-scoped variable of `plan` and hold a value of its declared type (or `None`
+    /// for unset); variables not listed start from their declared initial value.
+    pub fn start_with_variables(
+        plan: Arc<ControlPlan>,
+        document: &GraphDocument,
+        registry: &RegistrySnapshot,
+        seed: u64,
+        options: RunOptions,
+        values: &BTreeMap<VariableId, Option<Value>>,
+    ) -> Result<Self, RunError> {
+        for (id, value) in values {
+            let cell = plan
+                .variables()
+                .iter()
+                .find(|cell| cell.id() == *id && cell.scope() == VarScope::Run)
+                .ok_or(RunError::InvalidState)?;
+            if value
+                .as_ref()
+                .is_some_and(|value| !cell.ty().accepts(value))
+            {
+                return Err(RunError::InvalidState);
+            }
+        }
+        Self::start_workspace(plan, document, registry, seed, options, None, Some(values))
+    }
     /// Start with an exact compatible host snapshot. The host explicitly delivers
     /// later publications; no background thread or shared mutable store is read.
     pub fn start_in_workspace(

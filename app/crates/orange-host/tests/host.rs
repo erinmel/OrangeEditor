@@ -383,3 +383,109 @@ fn a_graph_package_that_breaks_its_contract_or_is_invalid_is_not_installed() {
     };
     assert!(host.registry().new_binding_default(&definition).is_none());
 }
+
+/// `manual_graph(1)` after an edit: the entry now stores `value`, and the document has a
+/// second run variable.
+fn edited_graph(value: i64) -> String {
+    let mut saved: Json = serde_json::from_str(&manual_graph(1)).unwrap();
+    for node in saved["nodes"].as_array_mut().unwrap() {
+        if node["definition_id"] == "core/set-variable" {
+            node["inputs"]["value"]["value"] = json!(value.to_string());
+        }
+    }
+    // The new variable is written after the old one, so the plan holds it.
+    let mut also = core(3, "set-variable");
+    also["config"] = json!({"variable": id(TOTAL + 1)});
+    also["inputs"] = json!({"value": {"type": I64, "value": "5"}});
+    saved["nodes"].as_array_mut().unwrap().push(also);
+    saved["edges"]
+        .as_array_mut()
+        .unwrap()
+        .push(edge(2, 2, "then", 3, "in"));
+    saved["variables"].as_array_mut().unwrap().push(
+        json!({"id": id(TOTAL + 1), "name": "extra", "type": I64, "scope": "run",
+            "init": {"type": I64, "value": "3"}}),
+    );
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+#[test]
+fn an_edit_replaces_a_running_graph_and_keeps_its_variables() {
+    let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+    let flow = host.open(&manual_graph(1)).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the first value", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+
+    // Moving nodes around is not an edit of what runs.
+    let mut moved: Json = serde_json::from_str(&manual_graph(1)).unwrap();
+    moved["editor"] = json!({"nodes": {"a": {"x": 10, "y": 20}}});
+    moved["revision"] = json!(5);
+    assert!(!host.update(flow, &moved.to_string()).unwrap().changed);
+
+    let updated = host.update(flow, &edited_graph(9)).unwrap();
+    assert!(updated.changed);
+    assert_eq!((updated.kept_variables, updated.reset_variables), (1, 1));
+    // The value written by the old graph is still there, and the new variable has its
+    // initial value.
+    assert_eq!(read_total(&host, flow), Some(Value::I64(7)));
+    let extra: VariableId = id(TOTAL + 1).parse().unwrap();
+    assert_eq!(
+        host.inspect(flow, move |run| run.variable(extra).cloned())
+            .unwrap(),
+        Some(Value::I64(3))
+    );
+    // The same entry now runs the edited graph.
+    host.trigger(flow, node(1), None).unwrap();
+    until("the edited value", || {
+        read_total(&host, flow) == Some(Value::I64(9))
+    });
+
+    host.stop(flow, StopMode::Graceful).unwrap();
+    let seen = finished(&events, &[flow]);
+    assert!(seen.iter().any(|event| matches!(
+        event.kind,
+        FlowEvent::Updated {
+            kept_variables: 1,
+            reset_variables: 1
+        }
+    )));
+    assert!(matches!(
+        host.update(flow, &edited_graph(11)),
+        Err(HostError::FlowEnded)
+    ));
+}
+
+#[test]
+fn a_refused_edit_leaves_the_flow_running_and_a_paused_flow_stays_paused() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let flow = host.open(&manual_graph(1)).unwrap();
+
+    let mut broken: Json = serde_json::from_str(&manual_graph(1)).unwrap();
+    broken["variables"] = json!([]);
+    assert!(matches!(
+        host.update(flow, &broken.to_string()),
+        Err(HostError::Invalid(_))
+    ));
+    assert!(matches!(
+        host.update(flow, &manual_graph(2)),
+        Err(HostError::Document(_))
+    ));
+    host.trigger(flow, node(1), None).unwrap();
+    until("the untouched graph", || {
+        read_total(&host, flow) == Some(Value::I64(7))
+    });
+
+    host.pause(flow).unwrap();
+    until("the pause", || host.state(flow) == Some(RunState::Paused));
+    assert!(host.update(flow, &edited_graph(9)).unwrap().changed);
+    host.trigger(flow, node(1), None).unwrap();
+    std::thread::sleep(Duration::from_millis(50));
+    assert_eq!(host.state(flow), Some(RunState::Paused));
+    assert_eq!(read_total(&host, flow), Some(Value::I64(7)));
+    host.resume(flow).unwrap();
+    until("the edited value", || {
+        read_total(&host, flow) == Some(Value::I64(9))
+    });
+}

@@ -30,19 +30,19 @@ use orange_kernel::{
 use orange_model::catalog::{
     NodeDefinition, ProviderDescriptor, ProviderKey, RegistryBuilder, RegistrySnapshot,
 };
-use orange_model::document::ConnectionScope;
+use orange_model::document::{ConnectionDecl, ConnectionScope};
 use orange_model::validation::{Diagnostic, HostOrigin};
 use orange_model::{GraphDocument, analyze, from_json, to_json};
 use orange_packages::{
     ArchiveFiles, ArchiveLimits, ArchivePath, DiscardSink, Execution, HOST_API_VERSION,
     MemoryJournal, MemorySink, PackageStore, ProviderSlot, read_archive,
 };
-use orange_runtime::{HostInput, InboxError, Run, RunDriver, RunEventSource, SourceOptions};
+use orange_runtime::{HostInput, InboxError, Run, RunDriver, RunEventSource};
 use services::Services;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, VecDeque};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::mpsc::{Receiver, channel, sync_channel};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, channel, sync_channel};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
@@ -92,6 +92,12 @@ pub enum FlowEvent {
     Refused(RefusedReason),
     /// The run reported an error while being driven.
     Fault(RunError),
+    /// The flow's graph was replaced by an edited version. Events after this come
+    /// from the new graph, starting with its state.
+    Updated {
+        kept_variables: usize,
+        reset_variables: usize,
+    },
     /// The flow's thread has ended and its run is disposed. Last event of a flow.
     Finished,
 }
@@ -199,6 +205,51 @@ impl EffectResolver for Native {
     }
 }
 
+/// Sessions by connection, with the declaration each was opened from.
+type Opened = BTreeMap<ConnectionId, (ConnectionDecl, Arc<dyn Session>)>;
+type Feed = (NodeId, Arc<dyn ServiceSource>, Option<Arc<dyn Session>>);
+
+fn sessions_of(opened: &Opened) -> BTreeMap<ConnectionId, Arc<dyn Session>> {
+    opened
+        .iter()
+        .map(|(id, (_, session))| (*id, Arc::clone(session)))
+        .collect()
+}
+
+/// A saved document without its layout and edit counter: equal texts mean the two
+/// documents run identically.
+fn semantic(json: &str) -> Result<String, HostError> {
+    let mut saved: serde_json::Value =
+        serde_json::from_str(json).map_err(|error| HostError::Document(error.to_string()))?;
+    if let Some(root) = saved.as_object_mut() {
+        let _ = root.remove("editor");
+        let _ = root.remove("revision");
+    }
+    Ok(saved.to_string())
+}
+
+/// A document ready to run.
+struct Prepared {
+    document: GraphDocument,
+    registry: Arc<RegistrySnapshot>,
+    plan: Arc<orange_compiler::ControlPlan>,
+    opened: Opened,
+    feeds: Vec<Feed>,
+    manual_entries: Vec<(NodeId, bool)>,
+    semantic: String,
+}
+
+/// What [`Host::update`] did.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct Updated {
+    /// `false` when the edit changed nothing that runs; the flow was not touched.
+    pub changed: bool,
+    /// Run variables that kept their value.
+    pub kept_variables: usize,
+    /// Run variables that are new or changed type and started from their initial value.
+    pub reset_variables: usize,
+}
+
 /// A connection the host holds for every document that declares its ID as shared.
 struct SharedConnection {
     adapter: String,
@@ -224,6 +275,10 @@ struct Flow {
     thread: Option<JoinHandle<()>>,
     /// Guards of the running service sources; dropping them stops the sources.
     feeds: Vec<Box<dyn Send>>,
+    /// The connections this flow holds, with the declarations they were opened from.
+    opened: Opened,
+    /// The saved document without layout, to tell a real edit from a moved node.
+    semantic: String,
 }
 impl std::fmt::Debug for Flow {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -384,11 +439,13 @@ impl Host {
         Ok(())
     }
 
-    /// Opens the session of every connection `document` declares.
+    /// Opens the session of every connection `document` declares, keeping the session
+    /// of a graph connection whose declaration is the same as in `previous`.
     fn sessions(
         &mut self,
         document: &GraphDocument,
-    ) -> Result<BTreeMap<ConnectionId, Arc<dyn Session>>, HostError> {
+        previous: Option<&Opened>,
+    ) -> Result<Opened, HostError> {
         let mut sessions = BTreeMap::new();
         for decl in document.connections().values() {
             let refused = |reason: String| HostError::Connection(decl.name.clone(), reason);
@@ -397,7 +454,10 @@ impl Host {
                 .get(&decl.adapter)
                 .ok_or_else(|| refused(format!("no adapter `{}` is available", decl.adapter)))?;
             let session = match decl.scope {
-                ConnectionScope::Graph => adapter.open(&decl.settings).map_err(refused)?,
+                ConnectionScope::Graph => match previous.and_then(|opened| opened.get(&decl.id)) {
+                    Some((before, session)) if before == decl => Arc::clone(session),
+                    _ => adapter.open(&decl.settings).map_err(refused)?,
+                },
                 ConnectionScope::Shared => {
                     let shared = self.shared.get_mut(&decl.id).ok_or_else(|| {
                         refused("the host shares no connection with this ID".into())
@@ -418,7 +478,7 @@ impl Host {
                     }
                 }
             };
-            let _ = sessions.insert(decl.id, session);
+            let _ = sessions.insert(decl.id, (decl.clone(), session));
         }
         Ok(sessions)
     }
@@ -620,8 +680,10 @@ impl Host {
         }
     }
 
-    /// Validates, compiles and starts a document as a new flow on its own thread.
-    pub fn open(&mut self, json: &str) -> Result<FlowId, HostError> {
+    /// Validates and compiles a saved document and resolves everything it needs from
+    /// the host, without starting anything. `previous` are the sessions of the flow
+    /// being edited, reused where a connection's declaration is unchanged.
+    fn prepare(&mut self, json: &str, previous: Option<&Opened>) -> Result<Prepared, HostError> {
         let document = self.linked(json)?;
         let registry = Arc::clone(self.store.current());
         let analysis = analyze(&document, &registry);
@@ -640,7 +702,7 @@ impl Host {
             &resolver,
             CompileOptions::default(),
         )?);
-        let sessions = self.sessions(&document)?;
+        let opened = self.sessions(&document, previous)?;
         // Every package entry needs a source before anything starts.
         let mut feeds = Vec::new();
         let mut manual_entries = Vec::new();
@@ -670,34 +732,66 @@ impl Host {
                     .and_then(|value| value.as_str())
                     .and_then(|text| text.parse().ok())
                     .ok_or_else(|| refused("the node names no connection"))?;
-                Some(Arc::clone(sessions.get(&id).ok_or_else(|| {
+                let (_, session) = opened.get(&id).ok_or_else(|| {
                     refused("the node names a connection this document does not declare")
-                })?))
+                })?;
+                Some(Arc::clone(session))
             } else {
                 None
             };
             feeds.push((node.id, source, session));
         }
+        Ok(Prepared {
+            semantic: semantic(json)?,
+            document,
+            registry,
+            plan,
+            opened,
+            feeds,
+            manual_entries,
+        })
+    }
+
+    /// Starts the source of every package entry of a flow. On a failure the sources
+    /// already started are stopped again.
+    fn feed(flow: &mut Flow, feeds: Vec<Feed>) -> Result<(), HostError> {
+        for (node, source, session) in feeds {
+            let emitter = Emitter {
+                inbox: flow.inbox.clone(),
+                node,
+                flow: flow
+                    .thread
+                    .as_ref()
+                    .map_or_else(thread::current, |t| t.thread().clone()),
+            };
+            match source.start(session, emitter) {
+                Ok(guard) => flow.feeds.push(guard),
+                Err(reason) => {
+                    flow.feeds.clear();
+                    return Err(HostError::Source(node, reason));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Validates, compiles and starts a document as a new flow on its own thread.
+    pub fn open(&mut self, json: &str) -> Result<FlowId, HostError> {
+        let prepared = self.prepare(json, None)?;
         let run = Run::start(
-            Arc::clone(&plan),
-            &document,
-            &registry,
+            Arc::clone(&prepared.plan),
+            &prepared.document,
+            &prepared.registry,
             0,
             self.options.run.clone(),
         )?;
 
         let now = u64::try_from(self.clock.elapsed().as_nanos()).unwrap_or(u64::MAX);
         let (mut driver, inbox) = RunDriver::new(run, self.options.inbox_capacity.max(1), now);
-        let mut sources = BTreeMap::new();
-        for event in plan.events() {
-            // Events the run does not open to the host are simply not offered.
-            if let Ok(source) = driver.register_source(event.id(), SourceOptions::default()) {
-                let _ = sources.insert(event.id(), source);
-            }
-        }
+        let sources = flow::event_sources(&mut driver, &prepared.plan);
         let info = FlowInfo {
-            graph: document.graph_id(),
-            manual_entries,
+            graph: prepared.document.graph_id(),
+            manual_entries: prepared.manual_entries,
             events: sources.keys().copied().collect(),
         };
 
@@ -707,6 +801,7 @@ impl Host {
             state: Mutex::new(driver.run().state()),
             queries: Mutex::new(Some(VecDeque::new())),
             closing: AtomicBool::new(false),
+            swap: Mutex::new(None),
         });
         let context = Context {
             id,
@@ -714,7 +809,8 @@ impl Host {
             sink: self.sink.clone(),
             pool: self.pool.clone(),
             inbox: inbox.clone(),
-            sessions,
+            plan: prepared.plan,
+            sessions: sessions_of(&prepared.opened),
             clock: self.clock,
             turn_inputs: self.options.turn_inputs.max(1),
             turn_budget: self.options.turn_budget.max(1),
@@ -730,32 +826,88 @@ impl Host {
             shared,
             thread: Some(thread),
             feeds: Vec::new(),
+            opened: prepared.opened,
+            semantic: prepared.semantic,
         };
-        for (node, source, session) in feeds {
-            let emitter = Emitter {
-                inbox: flow.inbox.clone(),
-                node,
-                flow: flow
-                    .thread
-                    .as_ref()
-                    .map_or_else(thread::current, |t| t.thread().clone()),
-            };
-            match source.start(session, emitter) {
-                Ok(guard) => flow.feeds.push(guard),
-                Err(reason) => {
-                    // Nothing has been reported as opened: stop the flow again.
-                    flow.feeds.clear();
-                    flow.shared.closing.store(true, Ordering::Relaxed);
-                    flow.wake();
-                    if let Some(thread) = flow.thread.take() {
-                        let _ = thread.join();
-                    }
-                    return Err(HostError::Source(node, reason));
-                }
+        if let Err(error) = Self::feed(&mut flow, prepared.feeds) {
+            // Nothing has been reported as opened: stop the flow again.
+            flow.shared.closing.store(true, Ordering::Relaxed);
+            flow.wake();
+            if let Some(thread) = flow.thread.take() {
+                let _ = thread.join();
             }
+            return Err(error);
         }
         let _ = self.flows.insert(id, flow);
         Ok(id)
+    }
+
+    /// Replaces a running flow's graph with an edited version of the same document.
+    ///
+    /// The edit is validated and compiled first; if that fails the flow is untouched and
+    /// keeps running. Otherwise, between two turns of the flow, its control flow
+    /// restarts on the new graph: work in progress is cancelled, On Start runs again and
+    /// On Stop does not. Run variables keep their values where a variable with the same
+    /// ID and type still exists; other variables, and the private state of nodes such
+    /// as gates and counters, start fresh. A paused flow stays paused. Connections whose
+    /// declaration is unchanged keep their session. A change to layout alone does
+    /// nothing.
+    pub fn update(&mut self, flow: FlowId, json: &str) -> Result<Updated, HostError> {
+        let current = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
+        if semantic(json)? == current.semantic {
+            return Ok(Updated::default());
+        }
+        let previous = current.opened.clone();
+        let graph = current.info.graph;
+        let prepared = self.prepare(json, Some(&previous))?;
+        if prepared.document.graph_id() != graph {
+            return Err(HostError::Document(
+                "the edit belongs to another graph".into(),
+            ));
+        }
+        let (reply, answer) = channel();
+        let swap = flow::Swap {
+            plan: prepared.plan,
+            document: prepared.document,
+            registry: prepared.registry,
+            options: self.options.run.clone(),
+            inbox_capacity: self.options.inbox_capacity.max(1),
+            sessions: sessions_of(&prepared.opened),
+            reply,
+        };
+        let current = self.flows.get_mut(&flow).ok_or(HostError::UnknownFlow)?;
+        *current
+            .shared
+            .swap
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner) = Some(swap);
+        current.wake();
+        let swapped = loop {
+            match answer.recv_timeout(std::time::Duration::from_millis(20)) {
+                Ok(outcome) => break outcome?,
+                Err(RecvTimeoutError::Disconnected) => return Err(HostError::FlowEnded),
+                Err(RecvTimeoutError::Timeout) => {
+                    // A flow that ended without taking the edit will never answer.
+                    if current.thread.as_ref().is_none_or(JoinHandle::is_finished) {
+                        return Err(HostError::FlowEnded);
+                    }
+                }
+            }
+        };
+        // Sources of the old graph fed its mailbox; replace them with the new graph's.
+        current.feeds.clear();
+        current.inbox = swapped.inbox;
+        current.info.manual_entries = prepared.manual_entries;
+        current.info.events = swapped.sources.keys().copied().collect();
+        current.sources = swapped.sources;
+        current.opened = prepared.opened;
+        current.semantic = prepared.semantic;
+        Self::feed(current, prepared.feeds)?;
+        Ok(Updated {
+            changed: true,
+            kept_variables: swapped.kept,
+            reset_variables: swapped.reset,
+        })
     }
 
     /// Flows that have not been closed, including ones whose run has ended.
