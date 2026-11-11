@@ -650,3 +650,52 @@ fn stop_or_drop_closes_pending_tee_upstream_and_push_authority_once() {
         assert!(push.source.is_closed());
     }
 }
+
+#[test]
+fn a_paused_run_buffers_pushed_items_but_serves_no_new_demand() {
+    let mut run = run(RunOptions::default());
+    let push = run
+        .open_push_stream(
+            &ITEM.parse().unwrap(),
+            options(StreamOverflow::Backpressure),
+        )
+        .unwrap();
+    let mut consumer = run.claim_stream(push.stream).unwrap();
+    run.pause().unwrap();
+    assert_eq!(
+        run.push_stream(&push.source, 1, &Value::U64(1)),
+        Ok(PushAdmission::Accepted)
+    );
+    assert_eq!(
+        run.push_stream(&push.source, 2, &Value::U64(2)),
+        Err(StreamError::Full)
+    );
+    assert!(matches!(
+        run.next_stream(&mut consumer),
+        Err(StreamError::NotRunning)
+    ));
+    run.resume().unwrap();
+    assert_eq!(item(&mut run, &mut consumer), 1);
+}
+
+#[test]
+fn a_fault_overflow_stream_refuses_retryably_while_paused_and_survives() {
+    let mut run = run(RunOptions::default());
+    let push = run
+        .open_push_stream(&ITEM.parse().unwrap(), options(StreamOverflow::Fault))
+        .unwrap();
+    let mut consumer = run.claim_stream(push.stream).unwrap();
+    run.pause().unwrap();
+    run.push_stream(&push.source, 1, &Value::U64(1)).unwrap();
+    assert_eq!(
+        run.push_stream(&push.source, 2, &Value::U64(2)),
+        Err(StreamError::Full)
+    );
+    run.resume().unwrap();
+    assert_eq!(item(&mut run, &mut consumer), 1);
+    assert_eq!(
+        run.push_stream(&push.source, 2, &Value::U64(2)),
+        Ok(PushAdmission::Accepted)
+    );
+    assert_eq!(item(&mut run, &mut consumer), 2);
+}

@@ -393,6 +393,10 @@ reads a machine or UI locale.
   build like other provider code.
 - **Size limit.** A result longer than 16 MiB of UTF-8 (`MAX_TEXT_BYTES`) faults
   with `core/LimitExceeded` before it is built. Work is linear in input and output.
+  Split additionally admits its complete nominal list charge against
+  `MAX_COLLECTION_BYTES` before reserving the list or creating owned pieces:
+  one list header, one value header per string, and each piece's UTF-8 bytes.
+  This includes empty pieces. Exceeding that allowance is `core/LimitExceeded`.
 
 ### 5.8 Collection vocabulary (L04a, 2026-11-08)
 
@@ -421,6 +425,9 @@ per element.
   (`core/InternalFault` on mismatch). A growing result (concat, append, insert)
   whose nominal value charge would exceed 16 MiB (`MAX_COLLECTION_BYTES`), or an
   input above that charge, faults with `core/LimitExceeded`.
+  Admission counts the resulting value: concatenation has one list header;
+  replacing a map value credits that value's old charge while retaining the
+  existing key and position. A refusal leaves both inputs unchanged.
 
 ### 5.9 Record and enum nodes (L04b, 2026-11-08)
 
@@ -799,6 +806,9 @@ Every entry has an `activation` policy ([12 §6](12-graph-data-structures.md)):
 | `capacity`, `overflow` | Per [03](03-data-and-execution.md): proposed 256; `backpressure` where the protocol allows it, else `drop-oldest`, `drop-newest`, `coalesce-latest` or `fault`, with counters |
 | `on_fault` | `continue` / `stop-run` |
 | `order` | Handler order (O8) |
+| `while_paused` | `buffer` (default) / `latest` / `drop`: what the entry keeps of input admitted while its run is paused |
+
+**Input while paused (2026-11-10; [03](03-data-and-execution.md) host pause).** `while_paused` chooses what an entry keeps of deliveries admitted while its run is Paused; it has no effect on a running entry. `buffer` (default) is the ordinary queue with its capacity and overflow policy. `latest` keeps only the newest pending delivery, evicting earlier pending ones. `drop` discards the delivery. `drop` takes precedence over every reentrancy mode, so a `replace` entry does not cancel its running root for input it was told to ignore. `latest` applies where reentrancy would otherwise queue: a busy `drop`-mode entry still skips, and `replace` already keeps the latest. Losses chosen by this policy increment `dropped` and `paused_dropped`, never `overflows`, and the delivery is still accepted: its ingestion and source sequences advance. Await waiters behave as `buffer`. The field is optional, omitted when `buffer`, and valid on any entry; packages cannot add values. Whether a sender may instead be told "not now" is a property of its source (§10.3).
 
 For `drop`, **busy means that at least one delivery is pending or its dispatched root is still owned**, including descendant work and cancellation cleanup. A busy delivery is skipped for that handler: increment `dropped`, not `accepted` or `overflows`, and retain no payload for it. This policy takes precedence over pending-capacity overflow, even when `overflow: fault` and the pending queue is full. Payload/type and causal-depth validation still occurs before deciding to skip. A successful Emit advances its ingestion/source metadata even if all matching handlers deliberately skip it. If any target instead refuses the emission under Fault overflow or a hard ingress quota, no staged per-handler loss/counter or queue mutation is committed.
 
@@ -862,6 +872,8 @@ An event envelope carries run-assigned `ingestion_seq`, an `EventDeclId`, tagged
 
 `Run::ingest_event` borrows its typed payload, accepts an optional host-provided UTC nanosecond timestamp, and only stages delivery; it never runs graph code, publishes a waiter or applies cancellation inline. The nonzero per-source sequence must be strictly greater than its last accepted value; gaps represent upstream loss. A refusal advances neither source sequence nor run ingestion sequence/last metadata and mutates no target, timer, acceptance/drop counter or Replace intent. A deliberate Drop/loss after successful admission still advances both sequences and reports accepted event metadata. It stages every matching On Event delivery and registered Await completion atomically against the existing event item/byte/live-payload, state/frame and aggregate quotas. Quota refusal increments the established delivery-overflow counter once; malformed/stale source, sequence, state and type errors use typed fieldless `IngressError` presentation and do not become graph faults or delivery-overflow counts. Stable keys use `core/ingress-*`, except NotRunning (`core/event-run-stopping`) and DeliveryLimit (`core/event-limit-exceeded`) (13).
 
+**Source rejection while paused (2026-11-10).** `Run::register_event_source_with(event, SourceOptions)` registers a source whose `while_paused` is `Admit` (default, as `register_event_source`) or `Reject`. While the run is Paused, ingress from a `Reject` source is refused with `IngressError::Paused` (`core/ingress-paused`) before payload checks or staging: no sequence advances and no target is touched, so the sender can resend the same item or signal its peer. Each refusal increments `RunEventStats::paused_refused`. An `Admit` source offers the event to its entries, which apply their own `while_paused` policy (§10.1).
+
 Same-run revocation returns whether an active registration was removed and is idempotent for an already closed source. Registration and ingress are available only while the Run is Running. Ordinary fault/stop/disposal cleanup removes active sources; a pump-interrupted Run rejects new ingress before its explicit stop/disposal cleanup releases them. Revocation never retracts an event already admitted to handler or waiter ownership.
 
 Host method calls define actor arrival order. A host event accepted before a pump processes an already-due Await timeout wins and removes that timeout; an event arriving after the timeout has been processed cannot resume the waiter. A host-triggered Replace request is applied at the next pump boundary before due timers, dispatch or graph nodes, after whole-run cancellation observation. `pump(0)` executes no graph node or cancellation walk and reports ready if such an intent remains. Existing Emit cancellation still waits until its executing strand/frame returns to actor ownership. These selected ordering rules do not define OS timing or replay. The manual entry remains a separate, not-yet-registered contract.
@@ -881,6 +893,15 @@ Each successfully accepted Emit broadcasts once to every waiter already register
 The Run actor resolves event/timeout races by its existing order: due timers are handled before a graph node when a pump begins. Therefore a timeout already due wins over an Emit node that has not executed at that boundary; an event accepted before virtual time advances beyond the deadline wins and removes the timeout. Registration tokens are checked, run-local and never reused, so a late timer/completion cannot satisfy a later Await on the same looping strand. Cancellation unregisters the waiter and timer before existing bounded cleanup; Await is not cleanup-safe. `max_strands` bounds live waiter registrations, and timed waiters share `max_timers`. Graceful stop drains accepted waits until its deadline; immediate stop, fault, replacement of an owning root and disposal unregister or discard them.
 
 Causal depth belongs to each strand, not shared activation state. Event-root strands start at the accepted envelope depth; Fork/function/body continuations inherit their lineage; an Await event resumes at `max(prior strand depth, event cause depth)`, while timeout preserves the prior depth. Emit validates the executing strand's depth plus one for the new envelope without changing that strand's lineage; sequential independent Emits therefore retain the same source depth. Serial joins/returns preserve the maximum contributing lineage so Await cannot reset a chain and concurrent siblings cannot rewrite each other's depth. Each completed waiter publication consumes one cooperative pump work item after due timers and before handler dispatch or graph nodes; an Emit that exhausts the pump budget leaves accepted completions pending for the next pump or cancellation. This is the supported C03 contract; execution evidence is recorded in 10, while full FR/NFR qualification remains separate.
+
+Timer catch-up admission is resumable (review correction, 2026-11-09). Each
+attempt, including a dropped or quota-refused tick, consumes one pump work item.
+The selected catch-up window stays fixed across host slices; a later clock advance
+is considered after that window completes. A pending window retains the entry's
+original timer ordering key, so equal-deadline ordering does not depend on slice
+size. Completing a window arms its next tick with the ordinary fresh insertion
+sequence. Cancellation is observed between attempts; stop/fault clears pending
+windows with the timer entries. `pump(0)` performs no timer admission.
 
 ## 11. State
 

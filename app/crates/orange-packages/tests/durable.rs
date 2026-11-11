@@ -2,6 +2,7 @@
 //! recovery sees a complete committed set, and compaction replaces the log atomically.
 
 use std::fs;
+use std::process::Command;
 
 use orange_packages::{
     FileJournal, JOURNAL_FILE, JOURNAL_TEMP_FILE, Journal, JournalEntry, PackageKey, PackageState,
@@ -88,9 +89,9 @@ fn every_torn_prefix_recovers_a_complete_committed_set() {
     let mut start = before.len();
     while start < after.len() {
         let length = u32::from_le_bytes(after[start..start + 4].try_into().unwrap()) as usize;
-        let end = start + 8 + length;
-        cuts.extend(start..start + 9);
-        cuts.extend([start + 8 + length / 2, end - 1]);
+        let end = start + 12 + length;
+        cuts.extend(start..start + 13);
+        cuts.extend([start + 12 + length / 2, end - 1]);
         start = end;
     }
     cuts.push(after.len());
@@ -152,6 +153,7 @@ fn appending_after_a_truncated_tail_keeps_the_log_readable() {
         })
         .unwrap();
     assert!(log(&dir).len() > complete);
+    drop(opened.journal);
     let reopened = FileJournal::open(dir.path()).unwrap();
     assert_eq!(reopened.entries.len(), count + 1);
     assert_eq!(reopened.discarded_tail_bytes, 0);
@@ -164,22 +166,141 @@ fn compaction_replaces_the_log_with_one_equivalent_checkpoint() {
     store.install(device("1.0.0", HEX_1)).unwrap();
     store.install(device("2.0.0", HEX_2)).unwrap();
     store.revoke(&pkg(PACKAGE, "1.0.0")).unwrap();
-    let (before, _) = recover(dir.path());
+    let (before, _) = recover_copied_log(&log(&dir));
     let long = log(&dir).len();
 
     store.compact_journal().unwrap();
-    let opened = FileJournal::open(dir.path()).unwrap();
-    assert_eq!(opened.entries.len(), 1);
+    assert!(FileJournal::open(dir.path()).is_err());
     assert!(log(&dir).len() < long);
-    assert_eq!(Recovery::from_entries(&opened.entries), before);
-    drop(opened);
+    let (compacted, count) = recover_copied_log(&log(&dir));
+    assert_eq!(count, 1);
+    assert_eq!(compacted, before);
 
-    // The store keeps appending to the replaced log.
+    // The original FileJournal remains usable after replacing the log.
     store.remove(&pkg(PACKAGE, "2.0.0")).unwrap();
     drop(store);
     let (after, _) = recover(dir.path());
     assert_eq!(after.committed.as_deref(), Some(&[] as &[PackageKey]));
     assert_eq!(after.revoked, before.revoked);
+}
+
+#[test]
+fn writer_lock_is_exclusive_per_directory_and_does_not_touch_recovery_files() {
+    let first_dir = TempDir::new("writer-lock-first");
+    let other_dir = TempDir::new("writer-lock-other");
+    let first = FileJournal::open(first_dir.path()).unwrap();
+    let other = FileJournal::open(other_dir.path()).unwrap();
+
+    let stale = first_dir.path().join(JOURNAL_TEMP_FILE);
+    fs::write(&stale, b"stale temp must survive refused open").unwrap();
+    let error = FileJournal::open(first_dir.path()).unwrap_err();
+    assert_eq!(error.reason, "journal already has a writer");
+    assert_eq!(
+        fs::read(&stale).unwrap(),
+        b"stale temp must survive refused open"
+    );
+    assert_eq!(
+        fs::read(first_dir.path().join(JOURNAL_FILE)).unwrap(),
+        b"OJOURNAL\x02\x00"
+    );
+
+    drop(first);
+    let reopened = FileJournal::open(first_dir.path()).unwrap();
+    drop((reopened, other));
+}
+
+#[test]
+fn writer_lock_survives_failed_compaction() {
+    let failing_dir = TempDir::new("writer-lock-compact-failure");
+    let mut opened = FileJournal::open(failing_dir.path()).unwrap();
+    fs::create_dir(failing_dir.path().join(JOURNAL_TEMP_FILE)).unwrap();
+    assert!(opened.journal.compact(checkpoint()).is_err());
+    fs::remove_dir(failing_dir.path().join(JOURNAL_TEMP_FILE)).unwrap();
+    assert_eq!(
+        FileJournal::open(failing_dir.path()).unwrap_err().reason,
+        "journal already has a writer"
+    );
+    drop(opened);
+    drop(FileJournal::open(failing_dir.path()).unwrap());
+}
+
+#[test]
+fn writer_lock_survives_successful_compaction() {
+    let dir = TempDir::new("writer-lock-compact");
+    let mut opened = FileJournal::open(dir.path()).unwrap();
+    opened.journal.compact(checkpoint()).unwrap();
+    assert_eq!(
+        FileJournal::open(dir.path()).unwrap_err().reason,
+        "journal already has a writer"
+    );
+    drop(opened);
+    drop(FileJournal::open(dir.path()).unwrap());
+}
+
+#[test]
+fn writer_lock_is_exclusive_across_processes_and_released_on_process_exit() {
+    let dir = TempDir::new("writer-lock-process");
+    let opened = FileJournal::open(dir.path()).unwrap();
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "durable::child_process_journal_lock_probe"])
+        .env("ORANGE_JOURNAL_LOCK_PROBE_DIR", dir.path())
+        .env("ORANGE_JOURNAL_LOCK_PROBE_MODE", "must-refuse")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    drop(opened);
+
+    let status = Command::new(std::env::current_exe().unwrap())
+        .args(["--exact", "durable::child_process_journal_lock_probe"])
+        .env("ORANGE_JOURNAL_LOCK_PROBE_DIR", dir.path())
+        .env("ORANGE_JOURNAL_LOCK_PROBE_MODE", "acquire-and-exit")
+        .status()
+        .unwrap();
+    assert!(status.success());
+    drop(FileJournal::open(dir.path()).unwrap());
+}
+
+#[test]
+fn child_process_journal_lock_probe() {
+    let (Ok(path), Ok(mode)) = (
+        std::env::var("ORANGE_JOURNAL_LOCK_PROBE_DIR"),
+        std::env::var("ORANGE_JOURNAL_LOCK_PROBE_MODE"),
+    ) else {
+        return;
+    };
+    if mode == "must-refuse" {
+        assert_eq!(
+            FileJournal::open(std::path::Path::new(&path))
+                .unwrap_err()
+                .reason,
+            "journal already has a writer"
+        );
+    } else {
+        assert_eq!(mode, "acquire-and-exit");
+        let _opened = FileJournal::open(std::path::Path::new(&path)).unwrap();
+        // Verify the OS releases ownership on process termination without Rust Drop.
+        std::process::exit(0);
+    }
+}
+
+fn checkpoint() -> JournalEntry {
+    JournalEntry::Committed {
+        generation: 1,
+        active: vec![],
+        published: Default::default(),
+        revoked: Default::default(),
+        defaults: Default::default(),
+    }
+}
+
+fn recover_copied_log(bytes: &[u8]) -> (Recovery, usize) {
+    let mirror = TempDir::new("recovery-snapshot");
+    fs::write(mirror.path().join(JOURNAL_FILE), bytes).unwrap();
+    let opened = FileJournal::open(mirror.path()).unwrap();
+    (
+        Recovery::from_entries(&opened.entries),
+        opened.entries.len(),
+    )
 }
 
 #[test]
@@ -190,7 +311,7 @@ fn an_interrupted_compaction_leaves_the_complete_old_log() {
     drop(store);
     let (before, _) = recover(dir.path());
     // A crash before the rename leaves a partial temporary file beside the log.
-    fs::write(dir.path().join(JOURNAL_TEMP_FILE), b"OJOURNAL\x01\x00\xff").unwrap();
+    fs::write(dir.path().join(JOURNAL_TEMP_FILE), b"OJOURNAL\x02\x00\xff").unwrap();
     let (after, discarded) = recover(dir.path());
     assert_eq!(after, before);
     assert_eq!(discarded, 0);
@@ -203,6 +324,7 @@ fn other_formats_are_refused_not_migrated() {
     let path = dir.path().join(JOURNAL_FILE);
     for bytes in [
         &b"OJOURNAL\x00\x00"[..],
+        b"OJOURNAL\x01\x00",
         b"{\"entries\":[]}",
         b"OJOURNAX\x01\x00",
     ] {
@@ -213,8 +335,10 @@ fn other_formats_are_refused_not_migrated() {
 
     // A whole, CRC-valid record of an unknown shape is not a torn write.
     let payload = br#"{"entry":"checkpoint_v0","active":[]}"#;
-    let mut bytes = b"OJOURNAL\x01\x00".to_vec();
-    bytes.extend_from_slice(&(payload.len() as u32).to_le_bytes());
+    let mut bytes = b"OJOURNAL\x02\x00".to_vec();
+    let length = (payload.len() as u32).to_le_bytes();
+    bytes.extend_from_slice(&length);
+    bytes.extend_from_slice(&crc32(&length).to_le_bytes());
     bytes.extend_from_slice(&crc32(payload).to_le_bytes());
     bytes.extend_from_slice(payload);
     fs::write(&path, &bytes).unwrap();
@@ -226,7 +350,64 @@ fn other_formats_are_refused_not_migrated() {
     fs::write(&path, b"OJOU").unwrap();
     let opened = FileJournal::open(dir.path()).unwrap();
     assert!(opened.entries.is_empty());
-    assert_eq!(fs::read(&path).unwrap(), b"OJOURNAL\x01\x00");
+    assert_eq!(fs::read(&path).unwrap(), b"OJOURNAL\x02\x00");
+}
+
+#[test]
+fn corrupt_headers_and_complete_payloads_preserve_the_log_and_later_revocations() {
+    let dir = TempDir::new("corruption");
+    let mut store = store(&dir);
+    store.install(device("1.0.0", HEX_1)).unwrap();
+    store.revoke(&pkg(PACKAGE, "1.0.0")).unwrap();
+    drop(store);
+    let original = log(&dir);
+    let (expected, _) = recover(dir.path());
+    assert!(!expected.revoked.is_empty());
+    let first = 10;
+    let first_length = u32::from_le_bytes(original[first..first + 4].try_into().unwrap()) as usize;
+    let mut last = first;
+    let mut cursor = first;
+    while cursor < original.len() {
+        last = cursor;
+        let length = u32::from_le_bytes(original[cursor..cursor + 4].try_into().unwrap()) as usize;
+        cursor += 12 + length;
+    }
+    // Interior payload, declared length (including a length hiding the suffix),
+    // header checksum, payload checksum, and a complete final payload.
+    for (offset, mask) in [
+        (first + 12 + first_length / 2, 1),
+        (first, 1),
+        (first + 2, 1),
+        (first + 4, 1),
+        (first + 8, 1),
+        (last + 12, 1),
+    ] {
+        let mut bytes = original.clone();
+        bytes[offset] ^= mask;
+        fs::write(dir.path().join(JOURNAL_FILE), &bytes).unwrap();
+        let error = FileJournal::open(dir.path()).unwrap_err();
+        assert!(
+            error.reason.contains("checksum mismatch"),
+            "{offset}: {error}"
+        );
+        assert_eq!(
+            log(&dir),
+            bytes,
+            "corruption must not truncate the identity history"
+        );
+    }
+    let mut oversized = original.clone();
+    let length = (orange_packages::MAX_JOURNAL_RECORD_BYTES + 1).to_le_bytes();
+    oversized[first..first + 4].copy_from_slice(&length);
+    oversized[first + 4..first + 8].copy_from_slice(&crc32(&length).to_le_bytes());
+    fs::write(dir.path().join(JOURNAL_FILE), &oversized).unwrap();
+    assert_eq!(
+        FileJournal::open(dir.path()).unwrap_err().reason,
+        "journal record exceeds the size limit"
+    );
+    assert_eq!(log(&dir), oversized);
+    fs::write(dir.path().join(JOURNAL_FILE), &original).unwrap();
+    assert_eq!(recover(dir.path()).0, expected);
 }
 
 #[test]

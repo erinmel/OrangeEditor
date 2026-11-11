@@ -41,7 +41,7 @@ mod events;
 pub use effects::{EffectError, EffectId, EffectLease, EffectRequest};
 mod ids;
 use activations::Activations;
-pub use events::{EventMetadata, RunEventStats};
+pub use events::{EventMetadata, PausedSource, RunEventStats, SourceOptions};
 pub use events::{EventOrigin, EventTarget, HostSourceId, IngressError, RunEventSource};
 mod ready;
 mod replay;
@@ -87,10 +87,14 @@ fn run_identity() -> Result<u64, RunError> {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum RunState {
     Created,
     Starting,
     Running,
+    /// Held by the host: no graph work runs and the virtual clock does not move.
+    /// Input and results of work already issued are still admitted.
+    Paused,
     Draining,
     Cancelling,
     Faulted,
@@ -143,6 +147,9 @@ pub struct RunLimits {
     pub max_regions: usize,
     /// Separately reserved On Stop frames, admitted and allocated at startup.
     pub max_stop_activations: usize,
+    /// Work items in one burst: from the run last having nothing runnable until it
+    /// next has nothing runnable. Exceeding it faults the run as a runaway. It is
+    /// not a lifetime total, so a long-lived event-driven run is unaffected.
     pub max_operations: usize,
     pub max_trace: usize,
     pub max_state_bytes: usize,
@@ -284,6 +291,7 @@ pub struct RunOwnership {
     pub stream_reads: usize,
 }
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum RunError {
     #[error("{0}")]
     Checkpoint(#[from] crate::CheckpointError),
@@ -307,6 +315,8 @@ pub enum RunError {
     ClockWentBackwards,
     #[error("A provider callback panicked during a pump; stop the run.")]
     Interrupted,
+    #[error("The run is paused and does not observe time.")]
+    Paused,
 }
 impl RunError {
     pub const fn message_key(self) -> &'static str {
@@ -322,6 +332,7 @@ impl RunError {
             Self::IdentityExhausted => "core/run-identity-exhausted",
             Self::ClockWentBackwards => "core/run-clock-went-backwards",
             Self::Interrupted => "core/run-interrupted",
+            Self::Paused => "core/run-paused",
         }
     }
 }
@@ -1192,10 +1203,15 @@ impl Run {
     }
     fn transition(&mut self, state: RunState) {
         if self.state != state {
-            if state != RunState::Running
+            // A paused run keeps its endpoint: deliveries wait under the bus's own bounds.
+            if !matches!(state, RunState::Running | RunState::Paused)
                 && let Some(lease) = &self.workspace_bus
             {
                 lease.close();
+            }
+            self.effects.set_paused(state == RunState::Paused);
+            if state != RunState::Paused {
+                self.resources.forget_pause();
             }
             self.state = state;
             self.transitions.push(state);
@@ -1214,6 +1230,9 @@ impl Run {
     pub fn advance_to(&mut self, now: u64) -> Result<(), RunError> {
         if self.settle_interruption() {
             return Err(RunError::Interrupted);
+        }
+        if self.state == RunState::Paused {
+            return Err(RunError::Paused);
         }
         if !matches!(
             self.state,
@@ -1302,6 +1321,18 @@ impl Run {
     ) -> Result<RunProgress, RunError> {
         if self.settle_interruption() {
             return Err(RunError::Interrupted);
+        }
+        if self.state == RunState::Paused {
+            // Whole-run cancellation still reaches a paused run; nothing else does.
+            self.observe_cancellation()?;
+            // The cancellation may also finish at once, leaving nothing to pump.
+            if matches!(self.state, RunState::Paused | RunState::Stopped) {
+                return Ok(RunProgress {
+                    operations: 0,
+                    ready: false,
+                    next_wakeup: None,
+                });
+            }
         }
         if self.state == RunState::Running
             && self.plan.as_ref().is_some_and(|p| {
@@ -1402,10 +1433,10 @@ impl Run {
                 remaining = remaining.saturating_sub(charged);
                 continue;
             }
-            if let Some(timer) = self.timers.pop_due(self.now) {
-                remaining -= 1;
+            if let Some((key, timer)) = self.timers.pop_due(self.now) {
                 match timer {
                     TimerTarget::Wait(timer) => {
+                        remaining -= 1;
                         if timer.run != self.id {
                             return self.fail(RunError::InvalidState);
                         }
@@ -1420,6 +1451,7 @@ impl Run {
                         self.ready.push_back(timer.activation.id, timer.activation);
                     }
                     TimerTarget::Await { run, token } => {
+                        remaining -= 1;
                         if run != self.id {
                             return self.fail(RunError::InvalidState);
                         }
@@ -1431,8 +1463,8 @@ impl Run {
                         if run != self.id {
                             return self.fail(RunError::InvalidState);
                         }
-                        match self.fire_timer_entry(timer, at) {
-                            Ok(attempts) => remaining = remaining.saturating_sub(attempts - 1),
+                        match self.fire_timer_entry(timer, at, key) {
+                            Ok(work) => remaining = remaining.saturating_sub(work),
                             Err(error) => return self.fail(error),
                         }
                     }
@@ -1565,6 +1597,21 @@ impl Run {
             })();
             let used = before - quantum;
             remaining -= used;
+            // Fuel bounds work done without giving control back. A strand that parks on
+            // time, an event or the host has given it back; cleanup keeps its own budget.
+            if result.is_ok()
+                && !activation.cleanup
+                && shared.cleanup_scope.is_none()
+                && matches!(
+                    activation.transfer,
+                    Transfer::Wait { .. }
+                        | Transfer::Await { .. }
+                        | Transfer::Effect(_)
+                        | Transfer::Stream(_)
+                )
+            {
+                shared.data.refuel();
+            }
             if activation.cleanup {
                 activation.cleanup_remaining -= used;
                 shared.cleanup_remaining -= used;
@@ -1721,6 +1768,11 @@ impl Run {
         // Explicit suspension or selecting a different strand opens a new segment.
         let count = initial - remaining;
         self.operations = self.operations.saturating_add(count);
+        // The limit is a runaway guard, not a lifetime: a run with nothing left to do
+        // until its host supplies time or input starts its next burst from zero.
+        if self.state == RunState::Running && !self.has_runnable() {
+            self.operations = 0;
+        }
         if budget > 0
             && self.state != RunState::Cancelling
             && self.state != RunState::Stopped
@@ -1758,18 +1810,22 @@ impl Run {
         };
         Ok(RunProgress {
             operations: count,
-            ready: !self.ready.is_empty()
-                || self.watches.has_pending()
-                || self.timers.is_due(self.now)
-                || self.pending_await_completions()
-                || self.effects.has_ready()
-                || self.graph_streams.has_ready()
-                || (matches!(self.state, RunState::Running | RunState::Draining)
-                    && self.bridges.has_ready())
-                || self.has_replace_cancellation()
-                || self.event_dispatchable(),
+            ready: self.has_runnable(),
             next_wakeup,
         })
+    }
+    /// Work a further pump could do now, without new time or host input.
+    fn has_runnable(&self) -> bool {
+        !self.ready.is_empty()
+            || self.watches.has_pending()
+            || self.timers.is_due(self.now)
+            || self.pending_await_completions()
+            || self.effects.has_ready()
+            || self.graph_streams.has_ready()
+            || (matches!(self.state, RunState::Running | RunState::Draining)
+                && self.bridges.has_ready())
+            || self.has_replace_cancellation()
+            || self.event_dispatchable()
     }
     fn observe_cancellation(&mut self) -> Result<(), RunError> {
         let cancelled = self
@@ -1816,6 +1872,7 @@ impl Run {
         self.stop_ready.clear();
         self.ready.clear();
         self.timers.clear();
+        self.events.clear_tick_windows();
         self.effects.clear();
         self.graph_streams.clear();
         self.watches.clear();
@@ -2086,7 +2143,14 @@ impl Run {
                 message: "This operation is not permitted during cancellation cleanup.",
             },
         };
-        Self::publish_error(plan, &self.layout, shared, ix, &fault)?;
+        Self::publish_error(
+            plan,
+            &self.layout,
+            shared,
+            ix,
+            &fault,
+            self.options.limits.max_state_bytes,
+        )?;
         self.record(RunEvent {
             activation: activation.sequence,
             node: node.node(),
@@ -2113,7 +2177,14 @@ impl Run {
         activation.pull.reset();
         activation.reenter = None;
         if let Some(fault) = &fault {
-            Self::publish_error(plan, &self.layout, shared, ix, fault)?;
+            Self::publish_error(
+                plan,
+                &self.layout,
+                shared,
+                ix,
+                fault,
+                self.options.limits.max_state_bytes,
+            )?;
         }
         if outcome == ControlOutcome::Failed && next.is_none() {
             activation.stack.clear();
@@ -2230,9 +2301,29 @@ impl Run {
         value: impl Fn(HostSource) -> Option<Value>,
         limit: usize,
     ) -> Result<(), RunError> {
+        Self::publish_projections(
+            plan,
+            layout,
+            shared,
+            owner,
+            plan.value_targets(owner).iter().copied(),
+            value,
+            limit,
+        )
+    }
+    /// Admits replacement of all selected projections together before mutation.
+    fn publish_projections(
+        plan: &ControlPlan,
+        layout: &StateLayout,
+        shared: &mut ActivationState,
+        owner: ControlIx,
+        targets: impl Iterator<Item = usize> + Clone,
+        value: impl Fn(HostSource) -> Option<Value>,
+        limit: usize,
+    ) -> Result<(), RunError> {
         let mut old = 0usize;
         let mut new = 0usize;
-        for &i in plan.value_targets(owner) {
+        for i in targets.clone() {
             let slot = plan.data().nodes()[plan.data().host_inputs()[i].index()].outputs()[0];
             let cell = layout.outputs[i].ok_or(RunError::InvalidState)?;
             let charge = |value: &Value| {
@@ -2265,7 +2356,7 @@ impl Run {
             })
             .ok_or(RunError::ResourceLimit)?;
         shared.retained(retained)?;
-        for &i in plan.value_targets(owner) {
+        for i in targets {
             shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
                 value(plan.host_sources()[i]).map(FoldedValue::Value);
         }
@@ -2290,16 +2381,64 @@ impl Run {
         shared: &mut ActivationState,
         owner: ControlIx,
         fault: &ConstantFault,
+        limit: usize,
     ) -> Result<(), RunError> {
-        for &i in plan.error_targets(owner) {
-            shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] = Some(
-                FoldedValue::Value(Value::Err(Arc::new(orange_model::value::NodeError {
-                    code: fault.fault.code.to_string(),
-                    node: Some(fault.source),
-                }))),
-            );
+        if plan.error_targets(owner).is_empty() {
+            return Ok(());
         }
+        let error = Value::Err(Arc::new(orange_model::value::NodeError {
+            code: fault.fault.code.to_string(),
+            node: Some(fault.source),
+        }));
+        Self::publish_projections(
+            plan,
+            layout,
+            shared,
+            owner,
+            plan.error_targets(owner).iter().copied(),
+            |_| Some(error.clone()),
+            limit,
+        )
+    }
+    /// Hold a running run. Takes effect at once: the run is one actor, so unfinished
+    /// work simply stays owned. While paused `pump` does no graph work, `advance_to`
+    /// is refused with `RunError::Paused`, timers and deadlines do not elapse, and no
+    /// new effect is handed out. Events, pushed stream items and results of work
+    /// already issued are still admitted under their ordinary bounded policies.
+    pub fn pause(&mut self) -> Result<(), RunError> {
+        if self.settle_interruption() {
+            return Err(RunError::Interrupted);
+        }
+        if self.state != RunState::Running {
+            return Err(RunError::InvalidState);
+        }
+        self.transition(RunState::Paused);
+        self.resources.set_paused(true);
         Ok(())
+    }
+    /// Continue a paused run from the virtual time at which it was paused. A host
+    /// that wants the gap to count advances the clock afterwards.
+    pub fn resume(&mut self) -> Result<(), RunError> {
+        if self.settle_interruption() {
+            return Err(RunError::Interrupted);
+        }
+        if self.state != RunState::Paused {
+            return Err(RunError::InvalidState);
+        }
+        self.transition(RunState::Running);
+        self.resources.set_paused(false);
+        Ok(())
+    }
+    /// Running or paused: new host input is admitted.
+    fn accepts_input(&self) -> bool {
+        matches!(self.state, RunState::Running | RunState::Paused)
+    }
+    /// Results of work the run already issued are admitted, including while paused.
+    fn accepts_results(&self) -> bool {
+        matches!(
+            self.state,
+            RunState::Running | RunState::Draining | RunState::Paused
+        )
     }
     pub fn stop(&mut self) -> Result<(), RunError> {
         self.request_stop(StopMode::Immediate)
@@ -2318,15 +2457,21 @@ impl Run {
                 Ok(())
             }
             (RunState::Draining, StopMode::Graceful) => Err(RunError::InvalidState),
-            (RunState::Running, StopMode::Graceful) => {
+            (RunState::Running | RunState::Paused, StopMode::Graceful) => {
+                let held = self.state == RunState::Paused;
                 let deadline = self
                     .now
                     .checked_add(self.options.drain_timeout_ns)
                     .ok_or(RunError::ResourceLimit)?;
                 self.transition(RunState::Draining);
+                // On Stop work may use resources the pause had held.
+                if held {
+                    self.resources.set_paused(false);
+                }
                 self.watches.clear();
                 self.close_host_sources();
                 self.timers.remove_entries();
+                self.events.clear_tick_windows();
                 self.deadline = Some(deadline);
                 while let Some(strand) = self.stop_ready.pop_front() {
                     self.ready.push_back(strand.id, strand);
@@ -2344,6 +2489,7 @@ impl Run {
         self.transition(RunState::Cancelling);
         self.events.clear();
         self.timers.remove_entries();
+        self.events.clear_tick_windows();
         self.deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
         self.stop_ready.clear();
         let roots = self.regions.roots();

@@ -2,8 +2,7 @@
 //! memory limits, stack overflow and refused ungranted imports (ADR-03 falsification).
 mod archive_nodes;
 mod plugin;
-
-use std::time::Duration;
+mod resource_limits;
 
 use orange_guest::{GuestEngine, GuestError, GuestInstance, GuestLimits, GuestTrap};
 
@@ -101,29 +100,6 @@ fn fuel_bounds_each_call_deterministically() {
         Err(GuestError::Trap(GuestTrap::OutOfFuel))
     );
     assert_eq!(instance.remaining_fuel(), 0);
-}
-
-#[test]
-fn the_host_interrupts_a_running_call_from_another_thread() {
-    let engine = engine(GuestLimits {
-        fuel_per_call: u64::MAX,
-        ..GuestLimits::default()
-    });
-    let component = engine.compile(PROBE.as_bytes()).unwrap();
-    let mut instance = GuestInstance::new(&component).unwrap();
-    let interrupter = engine.clone();
-    let handle = std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(100));
-        interrupter.interrupt();
-    });
-    assert_eq!(
-        instance.call::<(), (i64,)>("spin", ()),
-        Err(GuestError::Trap(GuestTrap::Interrupted))
-    );
-    handle.join().unwrap();
-    // An interruption of one call does not leak into instances created afterwards.
-    let mut next = GuestInstance::new(&component).unwrap();
-    assert_eq!(next.call::<(i64, i64), (i64,)>("add", (5, 5)), Ok((10,)));
 }
 
 #[test]

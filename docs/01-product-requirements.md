@@ -1,5 +1,11 @@
 # Product requirements
 
+K02d1 cancellation trace (2026-11-09): FR-35/38 and NFR-06/08 gain a host-owned
+instance cancellation handle, independent of engine-wide interruption. Cancelling
+one live guest leaves a concurrently executing peer usable. The host drives epoch
+ticks; fuel remains the independent computation bound. This prerequisite does not
+implement service imports, graph lease wiring, package revocation or K03 policy.
+
 K02c fault-ownership trace (2026-11-09): FR-34/35/38/44 retain package fault codes,
 catalogue keys and original producer across compile/runtime boundaries without a
 process-wide identifier allowance. Shared error text retires with its last owner;
@@ -202,6 +208,7 @@ Priority: **M** required for the foundation 1.0; **S** optional/deferred, not a 
 | FR-54 | Enumerate/select OS-exposed audio input devices; acquire capture only with authority, expose format/status, and stop/revoke/hotplug closes the owned session. PCM uses bounded buffers and explicit channel/rate policy; capture starts on run acquisition, never on opening a graph. Unsupported input is a visible capability error. | M P5 | 05 / V02,V07,V09,V10 |
 | FR-55 | Selected input produces timestamped RMS/peak levels with explicit dBFS units, window and channel policy. Nodes emit above/below-threshold transitions immediately at analysis resolution or after continuous hold duration, with explicit hysteresis/rearm. Gaps reset hold state; no callback graph execution or unbounded event queue. | M P5 | 05,11 / V01,V02,V10 |
 | FR-56 | Conditional frequency-band energy and pitch estimation nodes declare analysis window/rate, frequency range, confidence/unvoiced behavior and latency. Band energy is distinct from fundamental pitch. Synthetic signals/noise and hardware evidence precede promotion; no speech/sound recognition or arbitrary DSP editor is implied. | S P6 | 05 / V01,V05,V10 |
+| FR-57 | Host pause: a running graph can be held and resumed without loss of owned work. A paused run executes no graph work and observes no time; input and results of work already issued are admitted under existing bounded policies and never fault the run; stop and cancellation still apply. Resource owners receive pause/resume hooks. Each entry chooses to buffer, keep the latest or drop paused input, and a source may reject it so its sender retries. | M core | 03,08 / focused runtime tests |
 
 ## Workflows and boundaries
 
@@ -487,3 +494,45 @@ verified through public APIs (11 §5.10, 12 §4.7). JSON construction remains op
 L04d record update trace (2026-11-08; FR-08/12): `set-field` replaces one record field,
 clearing an optional field with None and keeping a boxed present None, through the
 same schema-derived contract as get-field (11 §5.9, 12 §4.6).
+
+Review correction trace (2026-11-09; FR-34/36/37/38, NFR-08/09/13): executable
+loading authenticates the supplied entry bytes before recording a provider lock;
+memory-sink reuse replaces prior contents. Journal format 2 protects both frame
+lengths and payloads and refuses complete corruption without truncating later
+identity/revocation history. Physically interrupted tail writes still recover a
+complete checkpoint prefix (04; ADR-03/07/21). Crash/power-loss qualification and
+executable replacement/drain remain open.
+
+Guest resource trace (2026-11-09; FR-35/38, NFR-05/06/08): raw and plugin stores
+enforce aggregate memory/table totals, finite counts and explicit canonical transfer
+admission. Plugin decoding shares a total value budget across outputs and includes
+absent record slots/identity text before allocating container storage. Verified
+refusals and live-callback cancellation tests cover the selected policy; process RSS,
+wall-time latency, service imports and complete package authority remain open (04).
+
+Runtime error-output trace (2026-11-09; FR-16/47/51, NFR-05/14): faults projected
+as graph error values reserve state/aggregate capacity before publication, preserve
+the original producer, credit replaced storage and release it on function retirement
+and stop. Match-result switches arms with joint value/error admission; an exhausted
+quota refuses infrastructure progress before the next Wait or graph continuation.
+
+Timer budget trace (2026-11-09; FR-14/16/47, NFR-05/06): catch-up admission
+retains a fixed selected window and original timer ordering across host slices,
+charges every attempted tick as one work item and observes cancellation between
+attempts. Stop/fault retires unfinished windows. Large saved catch-up maxima do
+not bypass the pump or run operation limit; no saved-format change is needed.
+
+Journal ownership trace (2026-11-09; FR-34/38, NFR-06/08): one process/handle
+owns the durable store directory from recovery through journal retirement.
+Compaction retains the same writer lease; a second owner refuses before touching
+recovery files. Process termination releases OS ownership without deleting the
+stable lock file. Registry identity/revocation history cannot be overwritten by a
+second cooperating store with an independently recovered checkpoint.
+Writer retirement explicitly unlocks after the append handle closes, including
+when another descriptor temporarily retains the underlying OS file description.
+
+Bundled construction trace (2026-11-09; FR-08, NFR-05/08): Text Split admits
+the complete nominal collection before allocating owned pieces, including empty
+strings. List Concat and Map Insert admit the result's actual charge, with one
+container header and exact replacement credit. Exact-bound success and one-over
+refusal preserve immutable inputs; the existing LimitExceeded envelope is reused.

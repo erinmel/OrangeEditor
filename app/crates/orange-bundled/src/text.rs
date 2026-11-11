@@ -7,9 +7,10 @@ use orange_model::catalog::{NodeDefinition, Ports, ProviderKey, RegistrySnapshot
 use orange_model::document::{ConfigValue, DefinitionRef, NodeKind, OutputSource, PortDescriptor};
 use orange_model::id::TypeExpr;
 use orange_model::value::ListRepr;
+use orange_model::value::shape::VALUE_CHARGE;
 use serde_json::json;
 
-use crate::{BindingError, CatalogError, KernelError, MathPackage};
+use crate::{BindingError, CatalogError, KernelError, MAX_COLLECTION_BYTES, MathPackage};
 
 /// Largest string, in UTF-8 bytes, that a text node produces. Larger results fail
 /// with `core/LimitExceeded` before the result is built.
@@ -342,10 +343,27 @@ impl ResolvedText {
                 if separator.is_empty() {
                     return Err(KernelError::Domain);
                 }
-                let items: Vec<Arc<String>> = source
-                    .split(separator)
-                    .map(|piece| Arc::new(piece.to_owned()))
-                    .collect();
+                // A split is also a collection construction. Preflight its complete
+                // nominal list charge before reserving the vector or any piece strings.
+                let mut charge = VALUE_CHARGE;
+                let mut count = 0usize;
+                for piece in source.split(separator) {
+                    count = count.checked_add(1).ok_or(KernelError::LimitExceeded)?;
+                    charge = charge
+                        .checked_add(VALUE_CHARGE)
+                        .and_then(|total| total.checked_add(piece.len()))
+                        .filter(|total| *total <= MAX_COLLECTION_BYTES)
+                        .ok_or(KernelError::LimitExceeded)?;
+                }
+                let mut items = Vec::new();
+                items
+                    .try_reserve_exact(count)
+                    .map_err(|_| KernelError::LimitExceeded)?;
+                items.extend(
+                    source
+                        .split(separator)
+                        .map(|piece| Arc::new(piece.to_owned())),
+                );
                 Value::List(Arc::new(ListRepr::Str(items.into())))
             }
             Join => {

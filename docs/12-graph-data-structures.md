@@ -380,6 +380,7 @@ pub struct ActivationPolicy {
     pub mode: ReentrancyMode,                // Queue | Drop | Replace | Parallel{max}
     pub capacity: u32, pub overflow: OverflowPolicy,
     pub on_fault: FaultPolicy, pub order: u32,
+    pub while_paused: PausedPolicy,          // Buffer (default, omitted) | Latest | Drop; 11 §10.1
 }
 ```
 
@@ -791,6 +792,12 @@ output port is `result`. Semantics: [11 §5.7](11-graph-language.md).
 provider never stands in for the text provider. No new intrinsic, saved format or
 dependency is introduced.
 
+Text split construction (review correction, 2026-11-09) preflights its full
+nominal `list<string>` charge using the model's `VALUE_CHARGE` before allocation,
+under `MAX_COLLECTION_BYTES`. The input is scanned without owned pieces; only an
+admitted count reserves storage. Empty pieces cost a value slot even with no UTF-8
+payload. The existing `core/LimitExceeded` fault covers refusal.
+
 ### 4.5 Bundled collection definitions
 
 L04a (2026-11-08) adds `org.orange.collections`, a third package of the same bundled
@@ -822,6 +829,12 @@ container type of the first input and refuses unsupported shapes. IDs below have
 (`list`, `map` and `option` abbreviate `core/list@1`, `core/map@1` and
 `core/option@1`.) `CollectionOperation`, `ResolvedCollection` and
 `MathPackage::resolve_collection` expose the same contracts to embedders.
+
+Collection result admission (review correction, 2026-11-09) uses one result
+container header for List Concat. Map Insert resolves an existing key before
+admission and credits only its replaced value; a new key adds its checked key and
+value charges. The model's map-entry minimum is a preflight, not an extra charge.
+Checked arithmetic and admission precede result construction; inputs stay immutable.
 
 ### 4.6 Bundled record and enum definitions
 
@@ -1056,6 +1069,14 @@ Implementation notes (WU-00/00b.4, `orange_model::value::literal_codec`):
 - **Map keys:** maps are built only by `MapRepr::new` (or empty by `Default`), which rejects a repeated key (`DuplicateKey`; the codec reports `LiteralError::DuplicateMapKey`). Up to 16 entries are compared pairwise; larger maps use one presized hash set. `Value` implements `Eq` and `Hash` consistently with its structural equality, so the check takes expected linear time. Because keys are unique by construction, encoding, shape checks and equality never search for duplicates.
 - **Map check memo:** each `MapRepr` allocation keeps its first complete shape check (key shape, value shape, depth, entry charge). Immutable entries can only check the same way against the same shapes, so a later check of that allocation with equal shapes at the same or a smaller depth returns the remembered charge and still applies the caller's byte limit. Failed or partial checks are never remembered, other shapes walk the entries again, and equality, hashing and debug output ignore the memo. The memo is two words (an exact preorder code of both shapes with the depth, and the charge), so it never allocates; enum shapes and shapes over eleven nodes are not coded and always walk. It is derived in-memory data inside one allocation, never persisted and never keyed by address.
 
+Literal admission correction (2026-11-09; FR-08/35/38, NFR-05/08): decoded lists
+and maps check their minimum element storage before reserve. Records charge their
+retained type identity and every absent optional field slot as well as present
+values. `decode_with_budget` remains conservative; the first exhausted container
+can be refused before visiting a mistyped element. Plugin output decoding shares
+one nominal budget across its complete result vector (04); refusal publishes no
+partial values. Wire encodings and type/provider identities are unchanged.
+
 ### 6.2 Presentation message wire contract
 
 TextRef and MessageRef policy is owned by [13](13-internationalization.md). `MessageRef` has required `origin`, `key`, `args`, `fallback`. `MessageOrigin` is one of:
@@ -1119,6 +1140,14 @@ Value shape ownership (2026-10-27; `core/data-shape`):
   - the error-code rule;
   - the option/result boxing rule above.
 - `ListBuilder` is the one list packing. The literal codec and runtime builders both use it, so every producer stores scalar and string elements natively.
+
+Runtime error projection accounting (2026-11-09): an execution output containing
+`Value::Err` has the same checked `ERROR_CHARGE + code.len()` nominal cost as that
+value elsewhere. Implicit fault outputs and Match-result error arms reserve it
+against activation state and aggregate retention before mutation. A Match-result
+arm switch stages both value/error projection replacements together; retired
+function scopes refund error projections with their other owned outputs. Codes
+and producer IDs remain unchanged; no saved representation changes.
 - `Value`, `ListRepr`, `ValueShape`, `ValueCheckError` and `ListPushError` are `#[non_exhaustive]`, because they will grow with records, enums, handles and OPEN-15. Language-closed enums stay exhaustive: node kind, port kind, output source and zone kind.
 - Package handles still have no executable shape. The compiler refuses them before binding.
 - A package record has a shape only through schemas (2026-11-06): `ValueShape::Record(Arc<RecordShape>)` holds the canonical nominal type plus each field's ID, shape and optional flag in schema order. `RecordShape::index` maps a field ID to its compiled index, and `field` returns the shape and optional flag at an index. Records and enums share one resolution with one memo, cycle guard and height rule, so recursion through either kind has no shape. A value checks when `RecordRepr::ty` equals the shape's type, `fields` has exactly the schema's length, every required slot is present and every present field checks. The check charges `VALUE_CHARGE`, the type text's bytes, and for each slot its field's charge or, when absent, `VALUE_CHARGE`. The compiler's literal pre-charge applies the same rule. `Schemas::derives_key` also marks a record a map key when every field is one. `MapCheck` does not remember maps with nominal key or value shapes.
@@ -1228,6 +1257,13 @@ pub enum Instr {
 Native prerequisite (N1a): `orange-bundled::math_definitions()` supplies the ordinary replaceable definition contracts, while `MathPackage::register` adds one exact provider with its scalar specialization table. `MathPackage::resolve` checks that provider/version/digest exists in the supplied snapshot, that the snapshot admits the type arguments, and that the config is supported. Its private `ResolvedKernel` stores the Arc snapshot, ProviderKey, operation, scalar kind and normalized policy enums. `evaluate` accepts declared-order scalar Values and returns one Value or a typed KernelError; it neither validates a graph nor constructs a plan. Successful scalar evaluation contains no dynamic metadata lookups or buffer allocations by construction; no latency/allocation benchmark is implied. Retaining an old binding keeps old metadata alive and never consults a newly published provider default. The host must authenticate build identity and supply fresh resolved graph inputs. The final dense compiler/kernel ABI, source maps and full runtime error envelope remain unimplemented.
 
 ## 10. Runtime structures
+
+Timer catch-up cursor (review correction, 2026-11-09): each run timer entry may
+retain one fixed-size pending window (next/last ordinal, latest scheduled time and
+interval). The timer directory keeps the original ordering key until that window
+finishes. One actor turn admits one tick, then requeues the same owner or arms its
+next schedule normally. The cursor adds no per-tick queue and is cleared on stop
+or fault. This is private runtime state; saved graph/provider formats are unchanged.
 
 Structured-concurrency implementation separates activation-owned data evaluation, local cells and execution outputs from strand-owned control cursors, pending input snapshots and waits. The actor lends one shared activation state exclusively while executing a strand; it introduces no shared-state lock or new provider interface. A Fork must not initialize another activation or replenish its entropy/fuel.
 

@@ -156,6 +156,115 @@ fn idle(run: &mut Run) {
 fn result(run: &Run) -> Option<&Value> {
     run.variable(id(100).parse().unwrap())
 }
+
+fn error_projection_run(options: RunOptions, cycle: bool) -> Run {
+    setup_edit(true, options, |wire| {
+        let mut count = core(2, "count");
+        count["inputs"] = json!({"count":{"type":"core/i64@1","value":"-1"}});
+        wire["nodes"][1] = count;
+        wire["variables"][0]["type"] = json!("core/error@1");
+        let mut wait = core(4, "wait");
+        wait["inputs"] = json!({"duration":{"type":"core/duration@1","value":"1"}});
+        wire["nodes"].as_array_mut().unwrap().push(wait);
+        wire["edges"] = json!([
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "failed", 4, "in"),
+            edge(3, 4, "then", 3, "in"),
+            edge(4, 2, "error", 3, "value")
+        ]);
+        if cycle {
+            wire["edges"]
+                .as_array_mut()
+                .unwrap()
+                .push(edge(5, 3, "then", 2, "in"));
+        }
+    })
+    .2
+}
+
+#[test]
+fn implicit_error_projection_respects_state_and_aggregate_admission_before_waiting() {
+    use orange_runtime::{RunError, RunLimits};
+    let bytes = 32 + "core/OutOfRange".len();
+    for (state, aggregate, expected) in [
+        (bytes - 1, 4096, Some(RunError::ResourceLimit)),
+        (bytes, bytes - 1, Some(RunError::AggregateLimit)),
+        (bytes, bytes, None),
+    ] {
+        let mut run = error_projection_run(
+            RunOptions {
+                limits: RunLimits {
+                    max_state_bytes: state,
+                    max_run_retained_bytes: aggregate,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            false,
+        );
+        let mut failure = None;
+        for _ in 0..32 {
+            match run.pump(1) {
+                Err(error) => {
+                    failure = Some(error);
+                    break;
+                }
+                Ok(progress) if !progress.ready => break,
+                Ok(_) => {}
+            }
+        }
+        assert_eq!(failure, expected);
+        if expected.is_none() {
+            assert_eq!(run.pump(0).unwrap().next_wakeup, Some(1));
+            assert_eq!(run.retention().reserved_bytes, bytes);
+            assert!(run.trace().iter().any(|e| {
+                e.node.to_string() == id(2)
+                    && e.fault
+                        .as_ref()
+                        .is_some_and(|f| f.source.to_string() == id(2))
+            }));
+        } else {
+            assert!(!run.trace().iter().any(|e| e.node.to_string() == id(4)));
+        }
+        if run.state() != RunState::Stopped {
+            run.stop().unwrap();
+        }
+        idle(&mut run);
+        assert_eq!(run.retention().reserved_bytes, 0);
+    }
+}
+
+#[test]
+fn repeated_error_publication_credits_replaced_storage_and_stop_releases_it() {
+    let bytes = 32 + "core/OutOfRange".len();
+    let mut run = error_projection_run(
+        RunOptions {
+            limits: orange_runtime::RunLimits {
+                max_state_bytes: bytes,
+                max_run_retained_bytes: 2 * bytes,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        true,
+    );
+    idle(&mut run);
+    assert_eq!(run.retention().reserved_bytes, bytes);
+    for now in 1..=16 {
+        run.advance_to(now).unwrap();
+        idle(&mut run);
+        assert_eq!(run.retention().reserved_bytes, 2 * bytes);
+        let Some(Value::Err(error)) = result(&run) else {
+            panic!("error must stay data")
+        };
+        assert_eq!(error.code, "core/OutOfRange");
+        assert_eq!(error.node, Some(id(2).parse().unwrap()));
+    }
+    run.stop().unwrap();
+    idle(&mut run);
+    run.dispose().unwrap();
+    assert_eq!(run.retention().reserved_bytes, 0);
+}
 #[test]
 fn async_request_once_then_budgeted_typed_completion() {
     let (_, _, mut run) = setup(false, RunOptions::default());
@@ -498,6 +607,57 @@ fn async_function_effect_returns_typed_results_and_retires_its_projection() {
 }
 
 #[test]
+fn returning_a_captured_error_refunds_the_callees_error_projection() {
+    let (_, _, mut run) = setup_edit(false, RunOptions::default(), |wire| {
+        let mut effect = wire["nodes"][1].clone();
+        effect["id"] = json!(id(12));
+        let mut call = core(2, "call");
+        call["config"] = json!({"function":id(200)});
+        wire["nodes"][1] = call;
+        wire["variables"][0]["type"] = json!("core/error@1");
+        let mut wait = core(4, "wait");
+        wait["inputs"] = json!({"duration":{"type":"core/duration@1","value":"1"}});
+        wire["nodes"].as_array_mut().unwrap().push(wait);
+        wire["edges"] = json!([
+            edge(1, 1, "then", 2, "in"),
+            edge(2, 2, "then", 4, "in"),
+            edge(3, 4, "then", 3, "in"),
+            edge(4, 2, "result", 3, "value")
+        ]);
+        let mut get = core(15, "get-variable");
+        get["config"] = json!({"variable":id(100)});
+        wire["functions"] = json!([{"id":id(200),"name":"captured","kind":"async","inputs":[],
+            "outputs":[{"port_id":"result","direction":"output","kind":"data","type":"core/error@1"}],
+            "nodes":[core(11,"function-entry"),effect,core(13,"return"),core(14,"return"),get],
+            "edges":[edge(11,11,"then",12,"in"),edge(12,12,"failed",13,"in"),edge(13,12,"error",13,"result"),
+                edge(14,12,"then",14,"in"),edge(15,15,"value",14,"result")]}]);
+    });
+    idle(&mut run);
+    let request = run.take_effect().unwrap();
+    run.complete_effect(
+        request.id,
+        Err(KernelFault {
+            code: "acme/Failed".into(),
+            message_key: "acme/failed".into(),
+            message: "Safe failure.",
+        }),
+    )
+    .unwrap();
+    idle(&mut run);
+    assert_eq!(run.pump(0).unwrap().next_wakeup, Some(1));
+    // Only the return's data cache and caller's result remain. The callee's
+    // execution projection must release its separate nominal reservation.
+    assert_eq!(
+        run.retention().reserved_bytes,
+        2 * (32 + "acme/Failed".len())
+    );
+    run.stop().unwrap();
+    idle(&mut run);
+    run.dispose().unwrap();
+    assert_eq!(run.retention().reserved_bytes, 0);
+}
+
+#[test]
 fn stop_after_result_acceptance_discards_it_before_publication() {
     let (_, _, mut run) = setup(false, RunOptions::default());
     idle(&mut run);
@@ -541,4 +701,30 @@ fn return_cancels_a_detached_effect_before_resuming_its_caller() {
         run.complete_effect(request.id, Ok(&[Value::U64(1)])),
         Err(EffectError::Stale)
     );
+}
+
+#[test]
+fn a_paused_run_issues_no_effect_and_holds_an_admitted_completion() {
+    let (_, _, mut run) = setup(false, RunOptions::default());
+    idle(&mut run);
+    run.pause().unwrap();
+    assert!(run.take_effect().is_none());
+    run.resume().unwrap();
+    let request = run.take_effect().unwrap();
+    assert!(!request.lease.is_paused());
+
+    run.pause().unwrap();
+    assert!(request.lease.is_paused());
+    run.complete_effect(request.id, Ok(&[Value::U64(42)]))
+        .unwrap();
+    assert_eq!(run.pump(64).unwrap().operations, 0);
+    assert_eq!(result(&run), None);
+
+    run.resume().unwrap();
+    assert!(!request.lease.is_paused());
+    idle(&mut run);
+    assert_eq!(result(&run), Some(&Value::U64(42)));
+    // Finished work is never reported as held, even if the run pauses again.
+    run.pause().unwrap();
+    assert!(request.lease.is_finished() && !request.lease.is_paused());
 }

@@ -18,12 +18,14 @@ mod budget;
 mod cancel;
 mod checkpoint;
 mod data;
+mod driver;
 mod entropy;
 mod run;
 mod workspace;
 pub use cancel::CancelToken;
 pub use checkpoint::{CheckpointError, CheckpointLimits, CheckpointScope, ValueCheckpoint};
 pub use data::{DataActivation, DataError, DataLimits, DataOptions, DataPoll};
+pub use driver::{DriverTurn, HostInput, InboxError, Refused, RefusedReason, RunDriver, RunInbox};
 pub use entropy::{
     ActivationEntropy, ENTROPY_ALGORITHM, EntropyError, EntropyKey, EntropyLayout,
     EntropyReplayMetadata, EntropySlot, EntropyStream, FrameId,
@@ -31,14 +33,15 @@ pub use entropy::{
 pub use run::{
     AcquireRefused, CloseReason, ControlOutcome, EffectError, EffectId, EffectLease, EffectRequest,
     EffectResourceRefused, EffectStreamRefused, EventMetadata, EventOrigin, EventTarget,
-    HostSourceId, IngressError, PullStream, PushAdmission, PushStream, PushStreamSource,
-    RecordedRun, ReplayArchive, ReplayArchiveError, ReplayError, ReplayLog, ReplayOptions,
-    ReplayPayloadRef, ReplayPlayback, ReplayStats, ReplayedRun, ResourceError, ResourceHandle, Run,
-    RunError, RunEvent, RunEventSource, RunEventStats, RunLimits, RunOptions, RunOwnership,
-    RunProgress, RunResource, RunRetention, RunState, SharedError, SharedReceipt, SharedRefused,
-    SharedRequest, StopMode, StreamBranchStats, StreamBridge, StreamBridgeStats,
-    StreamBufferOptions, StreamCollectPoll, StreamConsumer, StreamDemand, StreamError,
-    StreamHandle, StreamNextId, StreamOverflow, StreamRead, StreamRefused, StreamStep, TeeStreams,
+    HostSourceId, IngressError, PausedSource, PullStream, PushAdmission, PushStream,
+    PushStreamSource, RecordedRun, ReplayArchive, ReplayArchiveError, ReplayError, ReplayLog,
+    ReplayOptions, ReplayPayloadRef, ReplayPlayback, ReplayStats, ReplayedRun, ResourceError,
+    ResourceHandle, Run, RunError, RunEvent, RunEventSource, RunEventStats, RunLimits, RunOptions,
+    RunOwnership, RunProgress, RunResource, RunRetention, RunState, SharedError, SharedReceipt,
+    SharedRefused, SharedRequest, SourceOptions, StopMode, StreamBranchStats, StreamBridge,
+    StreamBridgeStats, StreamBufferOptions, StreamCollectPoll, StreamConsumer, StreamDemand,
+    StreamError, StreamHandle, StreamNextId, StreamOverflow, StreamRead, StreamRefused, StreamStep,
+    TeeStreams,
 };
 pub use workspace::{
     Workspace, WorkspaceBus, WorkspaceBusError, WorkspaceBusId, WorkspaceBusLimits,

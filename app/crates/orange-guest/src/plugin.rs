@@ -1,15 +1,16 @@
 //! The `orange:expansion/plugin@1.0.0` world (sdk/wit): grant-scoped host imports and
 //! node evaluation with values in the `orange.value.v1` literal codec (K02b).
 
+use crate::limits::InstanceLimits;
 use orange_model::Value;
 use orange_model::document::literal::Literal;
 use orange_model::id::TypeExpr;
 use orange_model::types::TypeRegistry;
 use orange_model::value::literal_codec;
+use wasmtime::Store;
 use wasmtime::component::{HasSelf, Linker};
-use wasmtime::{Store, StoreLimitsBuilder};
 
-use crate::{GuestComponent, GuestError, classify};
+use crate::{GuestCancellation, GuestComponent, GuestError, GuestTrap, classify};
 
 wasmtime::component::bindgen!({
     path: "../../../sdk/wit",
@@ -33,7 +34,7 @@ pub struct Grants {
 }
 
 struct PluginState {
-    limits: wasmtime::StoreLimits,
+    limits: InstanceLimits,
     log: Vec<String>,
 }
 
@@ -68,7 +69,9 @@ pub struct GuestPlugin {
     store: Store<PluginState>,
     bindings: Plugin,
     fuel: u64,
+    output_bytes: usize,
     poisoned: bool,
+    cancellation: GuestCancellation,
 }
 
 impl std::fmt::Debug for GuestPlugin {
@@ -97,17 +100,13 @@ impl GuestPlugin {
         let mut store = Store::new(
             &engine.engine,
             PluginState {
-                limits: StoreLimitsBuilder::new()
-                    .memory_size(limits.memory_bytes)
-                    .instances(limits.instances)
-                    .trap_on_grow_failure(false)
-                    .build(),
+                limits: InstanceLimits::new(limits),
                 log: Vec::new(),
             },
         );
         store.limiter(|state| &mut state.limits);
-        store.epoch_deadline_trap();
-        store.set_epoch_deadline(1);
+        store.set_hostcall_fuel(limits.transfer_bytes);
+        let cancellation = GuestCancellation::install(engine, &mut store)?;
         store
             .set_fuel(limits.fuel_per_call)
             .map_err(|_| GuestError::Engine)?;
@@ -129,7 +128,9 @@ impl GuestPlugin {
             store,
             bindings,
             fuel: limits.fuel_per_call,
+            output_bytes: limits.transfer_bytes,
             poisoned: false,
+            cancellation,
         })
     }
 
@@ -146,6 +147,10 @@ impl GuestPlugin {
         if self.poisoned {
             return Err(GuestError::Poisoned);
         }
+        if self.cancellation.is_cancelled() {
+            self.poisoned = true;
+            return Err(GuestError::Trap(GuestTrap::Interrupted));
+        }
         let mut encoded = Vec::with_capacity(inputs.len());
         for (ty, value) in inputs {
             let literal =
@@ -155,7 +160,10 @@ impl GuestPlugin {
         self.store
             .set_fuel(self.fuel)
             .map_err(|_| GuestError::Engine)?;
-        self.store.set_epoch_deadline(1);
+        if let Err(error) = self.cancellation.arm(&mut self.store) {
+            self.poisoned = true;
+            return Err(error);
+        }
         let result = self
             .bindings
             .orange_expansion_nodes()
@@ -179,16 +187,21 @@ impl GuestPlugin {
                     return Err(GuestError::OutputContract);
                 }
                 let mut decoded = Vec::with_capacity(values.len());
+                let mut remaining = self.output_bytes;
                 for (text, ty) in values.iter().zip(outputs) {
                     let literal: Literal =
                         serde_json::from_str(text).map_err(|_| GuestError::OutputContract)?;
                     if &literal.ty != ty {
                         return Err(GuestError::OutputContract);
                     }
-                    decoded.push(
-                        literal_codec::decode(&literal, types)
-                            .map_err(|_| GuestError::OutputContract)?,
-                    );
+                    let value = literal_codec::decode_with_budget(&literal, types, remaining)
+                        .map_err(|_| GuestError::OutputContract)?;
+                    let charge = orange_model::value::shape::ValueShape::of_in(ty, types)
+                        .ok_or(GuestError::OutputContract)?
+                        .checked_charge(&value, remaining)
+                        .map_err(|_| GuestError::OutputContract)?;
+                    remaining -= charge;
+                    decoded.push(value);
                 }
                 Ok(Ok(decoded))
             }
@@ -197,6 +210,10 @@ impl GuestPlugin {
 
     pub fn is_poisoned(&self) -> bool {
         self.poisoned
+    }
+    /// Clone a cancellation handle scoped to this plugin instance's lifetime.
+    pub fn cancellation(&self) -> GuestCancellation {
+        self.cancellation.clone()
     }
 
     /// Takes the retained log entries (granted `log` only).

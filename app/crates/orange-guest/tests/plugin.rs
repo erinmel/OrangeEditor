@@ -66,6 +66,37 @@ fn typed_values_cross_the_boundary_and_node_errors_stay_data() {
 }
 
 #[test]
+fn rust_guest_cancellation_is_terminal_and_does_not_cancel_a_peer() {
+    let engine = GuestEngine::new(GuestLimits::default()).unwrap();
+    let component = engine.compile(&probe_bytes()).unwrap();
+    let mut cancelled = GuestPlugin::new(&component, LOG).unwrap();
+    let mut peer = GuestPlugin::new(&component, LOG).unwrap();
+    let handle = cancelled.cancellation();
+    handle.cancel();
+    let types = types();
+    let out = [ty("core/i64@1")];
+    assert_eq!(
+        cancelled.evaluate(&types, "org.example.probe/spin", &[], &out),
+        Err(GuestError::Trap(GuestTrap::Interrupted))
+    );
+    assert!(cancelled.is_poisoned());
+    assert_eq!(
+        cancelled.evaluate(&types, "org.example.probe/add", &i64s(&[1, 2]), &out),
+        Err(GuestError::Poisoned)
+    );
+    drop(cancelled);
+    assert_eq!(
+        peer.evaluate(&types, "org.example.probe/add", &i64s(&[20, 22]), &out),
+        Ok(Ok(vec![Value::I64(42)]))
+    );
+    handle.cancel();
+    assert_eq!(
+        peer.evaluate(&types, "org.example.probe/add", &i64s(&[21, 21]), &out),
+        Ok(Ok(vec![Value::I64(42)]))
+    );
+}
+
+#[test]
 fn nested_values_round_trip_exactly_through_the_literal_codec() {
     let types = types();
     let mut probe = plugin(GuestLimits::default(), LOG).unwrap();
@@ -115,6 +146,52 @@ fn imports_are_linked_only_when_granted_and_logging_is_bounded() {
     }
     assert_eq!(probe.take_log().len(), MAX_LOG_ENTRIES);
     assert!(probe.take_log().is_empty());
+}
+
+#[test]
+fn decoded_outputs_share_one_budget_and_a_refusal_keeps_the_instance_usable() {
+    let list_type = ty("core/list@1<core/string@1>");
+    let list = Value::List(Arc::new(ListRepr::Values(
+        vec![Value::Str(Arc::new(String::new())); 32].into_boxed_slice(),
+    )));
+    let inputs = vec![(list_type.clone(), list.clone()); 2];
+    let outputs = [list_type.clone(), list_type];
+    let types = types();
+    // Both encoded literals fit, but two decoded lists charge 2*(16+32*16).
+    let mut small = plugin(
+        GuestLimits {
+            transfer_bytes: 600,
+            ..Default::default()
+        },
+        LOG,
+    )
+    .unwrap();
+    assert_eq!(
+        small.evaluate(&types, "org.example.probe/echo-logged", &inputs, &outputs),
+        Err(GuestError::OutputContract)
+    );
+    assert!(!small.is_poisoned());
+    assert_eq!(
+        small.evaluate(
+            &types,
+            "org.example.probe/add",
+            &i64s(&[20, 22]),
+            &[ty("core/i64@1")]
+        ),
+        Ok(Ok(vec![Value::I64(42)]))
+    );
+    let mut exact = plugin(
+        GuestLimits {
+            transfer_bytes: 2 * (16 + 32 * 16),
+            ..Default::default()
+        },
+        LOG,
+    )
+    .unwrap();
+    assert_eq!(
+        exact.evaluate(&types, "org.example.probe/echo-logged", &inputs, &outputs),
+        Ok(Ok(vec![list.clone(), list]))
+    );
 }
 
 #[test]

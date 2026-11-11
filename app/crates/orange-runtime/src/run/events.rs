@@ -1,7 +1,7 @@
 //! Run-scoped event fan-out, bounded reentrancy and FIFO delivery ownership.
 //! No handler executes in Emit.
 use super::*;
-use orange_model::document::{OverflowPolicy, ReentrancyMode};
+use orange_model::document::{OverflowPolicy, PausedPolicy, ReentrancyMode};
 use orange_model::id::EventDeclId;
 use orange_model::value::shape::ValueShape;
 use std::collections::BTreeSet;
@@ -36,6 +36,33 @@ pub struct RunEventStats {
     pub pending_bytes: usize,
     pub live_payload_bytes: usize,
     pub activation_high_water: usize,
+    /// The part of `dropped` chosen by an entry's `while_paused` policy.
+    pub paused_dropped: u64,
+    /// Host ingress refused because its source rejects input while the run is paused.
+    pub paused_refused: u64,
+}
+
+/// Whether a host source can be told "not now" while its run is paused.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub enum PausedSource {
+    /// Offer the event to its entries, which apply their own `while_paused` policy.
+    #[default]
+    Admit,
+    /// Refuse with `IngressError::Paused` and consume no sequence, so a sender that
+    /// can retry or signal its peer keeps the item.
+    Reject,
+}
+/// Per-registration host source behaviour.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub struct SourceOptions {
+    pub while_paused: PausedSource,
+}
+impl SourceOptions {
+    pub fn while_paused(mut self, policy: PausedSource) -> Self {
+        self.while_paused = policy;
+        self
+    }
 }
 /// Identifies whether an accepted event came from a graph node, a registered host source,
 /// the host manual-trigger call or a timer entry's schedule.
@@ -126,6 +153,7 @@ impl std::fmt::Debug for RunEventSource {
 
 /// Bounded, payload-free refusal from the host ingress boundary.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Error)]
+#[non_exhaustive]
 pub enum IngressError {
     #[error("The event source belongs to another run.")]
     WrongRun,
@@ -147,6 +175,8 @@ pub enum IngressError {
     DeliveryLimit,
     #[error("The node is not a manual entry in the checked run plan.")]
     UnknownEntry,
+    #[error("The run is paused and this source rejects input until it resumes.")]
+    Paused,
 }
 impl IngressError {
     pub const fn message_key(self) -> &'static str {
@@ -161,6 +191,7 @@ impl IngressError {
             Self::InvalidPayload => "core/ingress-payload-invalid",
             Self::DeliveryLimit => "core/event-limit-exceeded",
             Self::UnknownEntry => "core/ingress-unknown-entry",
+            Self::Paused => "core/ingress-paused",
         }
     }
 }
@@ -168,6 +199,7 @@ impl IngressError {
 struct HostSource {
     event: usize,
     last_seq: u64,
+    rejects_paused: bool,
 }
 pub(super) struct EventAdmission {
     pub event: usize,
@@ -192,6 +224,7 @@ struct Handler {
     overflow: OverflowPolicy,
     mode: ReentrancyMode,
     max_parallel: usize,
+    while_paused: PausedPolicy,
     pending: VecDeque<Envelope>,
     /// Root identities remain owned through descendant/cleanup retirement. The existing
     /// singleton set keeps serial handlers allocation-free and can identify a Replace
@@ -442,6 +475,7 @@ impl Events {
                 overflow: handler.overflow(),
                 mode: handler.mode(),
                 max_parallel: handler.max_parallel(),
+                while_paused: handler.while_paused(),
                 pending: VecDeque::new(),
                 active_roots: IdSet::default(),
                 cancel_requested: None,
@@ -543,6 +577,22 @@ impl Events {
             .next = ordinal;
         Ok(())
     }
+    pub(super) fn set_tick_pending(
+        &mut self,
+        timer: usize,
+        pending: Option<super::ticks::TickWindow>,
+    ) -> Result<(), RunError> {
+        self.ticks
+            .get_mut(timer)
+            .ok_or(RunError::InvalidState)?
+            .pending = pending;
+        Ok(())
+    }
+    pub(super) fn clear_tick_windows(&mut self) {
+        for cursor in &mut self.ticks {
+            cursor.pending = None;
+        }
+    }
     pub(super) fn count_overflow(&mut self) {
         self.stats.overflows = self.stats.overflows.saturating_add(1);
     }
@@ -598,6 +648,8 @@ struct Disposition {
     overflow: bool,
     charge: usize,
     cancel: Option<u64>,
+    /// The loss was chosen by the entry's `while_paused` policy.
+    paused: bool,
 }
 impl Run {
     pub(super) fn host_source_count(&self) -> usize {
@@ -626,9 +678,18 @@ impl Run {
         &mut self,
         event: EventDeclId,
     ) -> Result<RunEventSource, IngressError> {
+        self.register_event_source_with(event, SourceOptions::default())
+    }
+    /// Register a host source with explicit behaviour, such as rejecting input while
+    /// the run is paused.
+    pub fn register_event_source_with(
+        &mut self,
+        event: EventDeclId,
+        options: SourceOptions,
+    ) -> Result<RunEventSource, IngressError> {
         // An unwound pump leaves `Interrupted` for pump/advance_to to report once;
         // a refused host call must not consume or otherwise mutate that state.
-        if self.pump_open || self.state != RunState::Running {
+        if self.pump_open || !self.accepts_input() {
             return Err(IngressError::NotRunning);
         }
         let plan = self.plan.as_ref().ok_or(IngressError::UnknownEvent)?;
@@ -653,6 +714,7 @@ impl Run {
             HostSource {
                 event: event_index,
                 last_seq: 0,
+                rejects_paused: options.while_paused == PausedSource::Reject,
             },
         );
         Ok(RunEventSource {
@@ -681,11 +743,11 @@ impl Run {
         if source.run != self.id {
             return Err(IngressError::WrongRun);
         }
-        if self.pump_open || self.state != RunState::Running {
+        if self.pump_open || !self.accepts_input() {
             return Err(IngressError::NotRunning);
         }
         let plan = self.plan.as_ref().ok_or(IngressError::RevokedSource)?;
-        let (event_index, last_seq) = self
+        let (event_index, last_seq, rejects_paused) = self
             .events
             .host_sources
             .get(&source.id)
@@ -694,8 +756,12 @@ impl Run {
                     .get(entry.event)
                     .is_some_and(|event| event.id() == source.event)
             })
-            .map(|entry| (entry.event, entry.last_seq))
+            .map(|entry| (entry.event, entry.last_seq, entry.rejects_paused))
             .ok_or(IngressError::RevokedSource)?;
+        if rejects_paused && self.state == RunState::Paused {
+            self.events.stats.paused_refused = self.events.stats.paused_refused.saturating_add(1);
+            return Err(IngressError::Paused);
+        }
         if source_seq == 0 || source_seq <= last_seq {
             return Err(IngressError::SequenceNotIncreasing);
         }
@@ -744,7 +810,7 @@ impl Run {
         payload: Option<&Value>,
         wall_ns: Option<i64>,
     ) -> Result<EventMetadata, IngressError> {
-        if self.pump_open || self.state != RunState::Running {
+        if self.pump_open || !self.accepts_input() {
             return Err(IngressError::NotRunning);
         }
         let plan = self
@@ -971,6 +1037,7 @@ impl Run {
             graph_source,
             tick,
         } = admission;
+        let held = self.state == RunState::Paused;
         let (payload_type, target) = channel(plan, event).ok_or(LIMIT)?;
         let charge = match payload_type {
             Some(shape) => shape
@@ -1011,8 +1078,22 @@ impl Run {
             // Type/causal checks above still apply, but no payload is retained for it.
             let drops_busy = queue.drops_busy();
             let replaces = queue.mode == ReentrancyMode::Replace;
-            let overflow = !replaces && !drops_busy && queue.pending.len() >= queue.capacity;
-            let (remove, skip) = if replaces {
+            // An entry's paused policy is a deliberate choice too. Drop ignores the
+            // input whatever the reentrancy mode, so it never requests a replacement;
+            // Latest applies where reentrancy would otherwise queue.
+            let paused_drop = held && queue.while_paused == PausedPolicy::Drop;
+            let paused_latest =
+                held && queue.while_paused == PausedPolicy::Latest && !replaces && !drops_busy;
+            let overflow = !replaces
+                && !drops_busy
+                && !paused_drop
+                && !paused_latest
+                && queue.pending.len() >= queue.capacity;
+            let (remove, skip) = if paused_drop {
+                (0, true)
+            } else if paused_latest {
+                (queue.pending.len(), false)
+            } else if replaces {
                 // Replace always retains only the latest pending envelope. Its intrinsic
                 // coalescing supersedes the configured capacity overflow selector.
                 (queue.pending.len(), false)
@@ -1065,7 +1146,12 @@ impl Run {
                 skip,
                 overflow,
                 charge: delivery_charge,
-                cancel: queue.replacement_target(),
+                cancel: if skip {
+                    None
+                } else {
+                    queue.replacement_target()
+                },
+                paused: paused_drop || paused_latest,
             });
         }
         if pending > self.options.limits.max_pending_events
@@ -1101,6 +1187,13 @@ impl Run {
                 .stats
                 .dropped
                 .saturating_add(change.remove as u64 + u64::from(change.skip));
+            if change.paused {
+                self.events.stats.paused_dropped = self
+                    .events
+                    .stats
+                    .paused_dropped
+                    .saturating_add(change.remove as u64 + u64::from(change.skip));
+            }
             self.events.stats.overflows = self
                 .events
                 .stats

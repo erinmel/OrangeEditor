@@ -24,6 +24,18 @@ Binding request (2026-10-27): host kernel resolvers should implement `PureKernel
 
 ## Contribution surface
 
+The table below is the selected extension contract. Current installed guest
+execution implements only Pure nodes with concrete port types and empty config
+(K02c). Trusted host type registration implements records, enums and handle kinds;
+arbitrary package scalar representations/codecs and complete archive contribution
+activation remain open. Metadata registration alone does not prove execution support.
+
+An ordinary node declares ports, types, configuration and effects within an existing
+execution class. Special control rules belong to the host language release; a
+separate evaluation model belongs to a trusted downstream domain. Typed domain
+registration/dispatch and its external consumer probe remain the ADR-21 pre-G2 gate.
+Backend replacement uses an existing slot contract and grants no scheduler authority.
+
 | Contribution / replaceable slot | Wasm component | Trusted worker | Bundled native |
 |---|---|---|---|
 | Node implementation, types, codecs, reusable graph | Yes; bounded values/calls | Yes; same contracts over IPC | Yes; shared definitions |
@@ -109,6 +121,17 @@ Converter pair slots may contain distinct semantic entry contracts. An override 
 
 ## Hot update/removal semantics
 
+The durable package store has one cooperating writer per directory. `FileJournal`
+acquires a nonblocking exclusive OS lock on the stable sibling
+`packages.journal.lock` before reading recovery state or removing stale compaction
+files. It retains that ownership through writes, compaction and failed reopen paths
+until the journal is dropped. Another owner refuses with a redacted journal error.
+Retirement explicitly unlocks after closing the append handle, so an inherited
+duplicate descriptor cannot prolong the writer's ownership beyond that retirement.
+The lock file remains on disk; OS ownership releases on process exit, so its presence
+is not a stale-lock indicator. Hosts must keep the store directory under their control.
+The record format remains 2 with no historical reader.
+
 Hot addition immediately publishes new contributions. **Hot replacement of running code is separate:** existing runs retain old snapshots/component instances; new graphs or explicitly rebound graphs select the new package version. A graph edit normally prepares a new run; live swapping an executing continuation is not supported in 1.0. Existing pending external side effects are never replayed to imitate migration.
 
 Update sequence: stage new immutable version → dependency/API/authority validation → request only new grants → instantiate → atomic registry publication → optional explicit graph migration/rebind → old generation drains. State migration occurs only at a declared stopped/checkpoint boundary with schema/handle validation; arbitrary continuation stacks, raw pointers, sockets and audio callbacks do not migrate. New authority cannot be silently inherited from old grants.
@@ -124,7 +147,7 @@ Implementation status (2026-11-03; `orange-packages`): `PackageManifest::from_js
 Recovery and retention update (2026-11-05; `orange-packages`): `PackageStore::restore` stages the whole candidate against a private in-memory journal in dependency order, then makes exactly one atomic `Committed` append to the host journal. A failed append writes nothing and returns `TransactionError::Journal`, so the host may retry; a crash leaves either the old or the new complete checkpoint, never a prefix. Hosts must append atomically. `Journal::compact(checkpoint)` replaces earlier entries with one complete `Committed`; its default is a no-op and an implementation must be atomic (all earlier entries or exactly the checkpoint). Compaction drops per-step transitions, so a half-staged version is no longer reported abandoned: compact when no transaction is in flight. `PackageStore::compact_journal` writes the current state through it. `RetentionPolicy { max_rollback_generations }` (default 16, an unmeasured starting point; `0` disables rollback) bounds in-memory rollback history. Rollback beyond it is `RollbackWindowExceeded`; retirement releases only the store's reference, so a snapshot a plan still holds stays usable. Published digests and revocations are identity state and survive retirement. Re-selecting the current default is a no-op and creates no generation. Defaults are checkpointed ([12 §8](12-graph-data-structures.md)); package error text is redacted ([13 §8](13-internationalization.md)).
 
 Default-absence recovery (P01, 2026-11-05): a checkpoint records an exact selected provider **or explicit absence** for each controlled definition ([12 §8](12-graph-data-structures.md)). Removing or revoking a selected package provider therefore remains unselected after restart, even when the shipped base registry contains another default. Rollback restores its prior selection state and compaction retains explicit clears; unrelated base definitions keep their choices. This is new-binding policy only: existing graph locks and running provider snapshots never change. The current pre-beta checkpoint representation replaces its earlier unreleased form without compatibility readers or a migration layer. Durable journal implementations, executable instances and draining still require their own evidence.
-Durable journal (K01, 2026-11-06; `orange-packages`): `FileJournal` implements `Journal` over one log file, `packages.journal`, in a host-chosen directory: a versioned header, then records of `length u32 | CRC-32 u32 | JSON`. `append` writes one whole record at the end and flushes it before returning; a failed append truncates its own partial bytes, and if that also fails the journal refuses further appends until reopened. `FileJournal::open` replays records up to the first short or CRC-failing one, truncates that torn tail and reports how many bytes it dropped, so recovery sees exactly the appends that returned `Ok`: an install interrupted at any byte recovers either the previous or the new complete committed set, and its half-staged version is reported abandoned once any of its records is whole. `compact` writes the header and one checkpoint to `packages.journal.tmp`, flushes it and renames it over the log; open deletes a stale temporary file, so an interrupted compaction leaves the complete old log. A log with another header version, or a whole CRC-valid record of another shape, is refused without truncation: there are no historical journal readers before the first release. Error reasons name the operation and I/O error kind, never a path. Limits: Windows offers no directory flush through std, so rename durability there relies on NTFS metadata journaling; Linux/macOS flush the directory. No power-loss or per-filesystem crash injection has run.
+Durable journal (K01, corrected 2026-11-09; `orange-packages`): `FileJournal` implements `Journal` over `packages.journal` in a host-chosen directory. Current header is `OJOURNAL | version u16 = 2`; each record is `length u32 | CRC-32(length) u32 | CRC-32(payload) u32 | JSON`, little-endian. Protecting the length prevents accidental header corruption from hiding later identity/revocation commits as an apparent short tail. `append` writes and flushes a whole record; failure truncates its partial bytes, and failure of that cleanup closes the journal to further appends. `open` truncates only a physically short final header or payload and reports dropped bytes. A complete header/payload checksum mismatch, over-limit length or unsupported shape refuses open and preserves the log. CRC detects accidental corruption, not malicious rewriting. Recovery includes every complete record, including a durable commit whose acknowledgement was not observed before a crash; an interrupted install recovers the previous or new complete committed set and reports half-staged versions. `compact` writes and flushes one checkpoint to `packages.journal.tmp`, then renames it over the log; open deletes a stale temporary file. Format 2 replaces unreleased format 1 without a historical reader; other versions are refused without truncation. Error reasons contain operation/I/O kind only. Windows rename durability relies on NTFS metadata journaling because std provides no directory flush; Linux/macOS attempt a directory flush. Power-loss/per-filesystem qualification remains open.
 
 SDK surface (2026-11-03): `HOST_API_VERSION` (1.0) is the host API this foundation build offers; hosts pass it to `PackageStore::new`, which refuses a manifest whose range excludes it. Definition files decode with `NodeDefinition::from_json` (default 1 MiB, 1,024 ports) or `from_json_with_limits` ([12 §4](12-graph-data-structures.md)). `PackageContents::with_specializations(provider, definition, supported)` lists the argument sets a generic provider supports ([11 §5.5](11-graph-language.md)); the pair must be a declared `node:` contribution (`TransactionError::UndeclaredSpecialization` otherwise), and the list is published on that exact provider, so other instantiations report `E-NO-SPECIALIZATION`. Without a list the provider delegates to constraints. Which archive file carries the list is not specified yet; the host supplies it with the staged contents.
 
@@ -138,7 +161,7 @@ linked: `api-version() -> (u16, u16)`, currently (1, 0)) and `log` (`write(messa
 linked only with the `log` grant), and exports `nodes.evaluate(definition, inputs) ->
 result<list<value>, node-error>`. A `value` is one Orange literal in the
 `orange.value.v1` codec: the JSON text of `{"type", "value"}` (or `"bits"` for floats),
-so every graph type, aggregates included, crosses with exact float bits, map order and
+so literal-capable types, aggregates included, cross with exact float bits, map order and
 None. `node-error` carries a namespaced `code` and `message-key` only. The host
 (`orange_guest::GuestPlugin`) encodes inputs with their declared types, checks the
 output count, each output's exact type and both error identifiers, and reports any
@@ -171,3 +194,56 @@ Invalid or overlong identifiers map to `core/PackageFault`; a guest fault is
 key. Constant folding and data demands run guest kernels like bundled ones. Guest
 entropy, actions, async, events and generic (non-concrete) package nodes are later
 work; grants come from the host until manifest permissions are interpreted (K03).
+
+Verified payload correction (2026-11-09; FR-34/36/38, NFR-08/09):
+`VerifiedArchive::verify_file` checks independently stored bytes against the exact
+entry's size and SHA-256. `GuestPackage::from_archive` checks before compilation
+and refuses a mismatched sink with `GuestLoadError::Integrity`. Reusing a
+`MemorySink` replaces its previous archive at the next manifest, removes old-only
+paths and keeps one archive's storage; failure clears that staging set. Verified
+metadata and arbitrary payload bytes cannot be mixed under a provider lock.
+
+Scoped guest cancellation (K02d1, 2026-11-09): `GuestInstance::cancellation()` and
+`GuestPlugin::cancellation()` return a cloneable `GuestCancellation` scoped to that
+instance's entire lifetime, not a reusable operation ID. `cancel()` sets a monotonic
+flag and wakes epoch checks. A cancellation observed before entry or in running
+guest code reports `GuestTrap::Interrupted`, poisons the instance, and later calls
+report `GuestError::Poisoned`. Discard that instance; handles never reset or retarget.
+An old handle may keep its engine alive but cannot cancel another store. Merely
+dropping a handle does not cancel work. `is_cancelled()` reports the local request;
+an engine-wide interruption is separately reported by the executing instance.
+
+The host must periodically call `GuestEngine::advance_epoch()` while guest workers
+run. A single wakeup can race Wasmtime's deadline renewal after a callback, so it
+is not a reliable ticker. The per-store callback interrupts only a cancelled store
+and lets peers continue. `GuestEngine::interrupt()` remains an explicit broadcast
+to calls already running; idle instances renew their broadcast baseline before a
+later call. Epoch cadence and worker ownership are host policy; there is no
+wall-time latency qualification. Fuel is still charged independently. Epochs cannot
+preempt a blocked host import. Service-import cancellation, C11 lease integration,
+manifest authority enforcement and package revocation remain separate gates.
+
+Guest resource correction (2026-11-09; review F2/F3/F4/F7, FR-35/38, NFR-05/06/08):
+both instance constructors use one store-owned limiter. `memory_bytes` is the total
+of initial linear memories and successful growth; `table_elements` is the total
+initial/grown table entries. Denial reserves no capacity; allocation failure refunds
+its reservation. Defaults are64MiB memory,65,536 table elements,64 memories/tables/
+core instances,10million execution fuel and512KiB Wasm stack. These are adjustable
+unqualified policy values, not process RSS bounds. The selected no-threads Wasmtime
+feature profile rejects shared memory, whose growth bypasses the synchronous limiter.
+
+`GuestLimits::transfer_bytes` defaults to1MiB of Wasmtime hostcall fuel for each
+guest-to-host import or result. Canonical list/string storage is admitted before
+copying, independently of execution fuel and linear memory. Exhaustion traps and
+poisons that instance under the existing redacted `GuestTrap::Other` mapping.
+Wasmtime48.0.8 already defaults to128MiB per transfer; the review's original claim
+of an unbounded copy was incorrect. OrangeEditor now selects an explicit limit.
+This is nominal runtime accounting, including encoded text and list descriptors,
+not an exact allocator/transcoding peak or an aggregate of all imports in a call.
+Retained logs remain64entries of1KiB, separately. Decoded plugin outputs also share
+one `transfer_bytes` nominal value budget; decoding checks minimum container slots
+before reserve and includes record identities and absent field slots. Decoded-output
+refusal reports `OutputContract` without poisoning or publication. Added Rust limit
+fields are unfrozen API changes; WIT and saved formats stay unchanged. Cancellation
+verification uses observed live callbacks and host ticks, replacing the redundant
+sleep-based interruption test.

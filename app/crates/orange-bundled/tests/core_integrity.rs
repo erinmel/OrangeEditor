@@ -111,11 +111,18 @@ fn paste_rejects_duplicate_function_node_ids_and_existing_target_ids() {
 fn cleanup_entry_failure_retires_all_owned_work() {
     let mut wait = core(2, "wait");
     wait["inputs"] = json!({"duration":{"type":"core/duration@1","value":"100"}});
+    // The wait refills activation fuel as it parks; its sibling branch then spends some,
+    // so reserving the whole range for cleanup overflows and cleanup cannot begin.
+    let mut fork = core(4, "fork");
+    fork["config"] = json!({"join":"all"});
+    fork["variadic"] = json!({"branch":{"next":2,"order":[0,1]}});
     let (doc, plan) = control(
-        vec![core(1, "on-start"), wait, branch(3)],
+        vec![core(1, "on-start"), fork, wait, branch(3), branch(5)],
         vec![
-            edge(1, 1, "then", 2, "in"),
-            edge(2, 2, "cancelled", 3, "in"),
+            edge(1, 1, "then", 4, "in"),
+            edge(2, 4, "branch#0", 2, "in"),
+            edge(3, 2, "cancelled", 3, "in"),
+            edge(4, 4, "branch#1", 5, "in"),
         ],
     );
     let options = RunOptions {

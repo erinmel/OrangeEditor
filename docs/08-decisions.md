@@ -77,6 +77,20 @@ Evidence: lifecycle design [04](04-expansion-plugins.md); recovery atomicity, ch
 
 K01 archive amendment (2026-11-06; ADR-03/06/07): the installable archive is a std-only canonical layout without compression, so every set of files has one byte encoding, cross-language vectors are exact and unpacked bytes never exceed archive bytes; deflate was rejected because its output is not unique without pinning one encoder. The lock digest is a domain-separated SHA-256 over the RFC 8785 manifest without `integrity` plus each file's path, size and SHA-256, so metadata and dependency locks are covered and the declared digest can live in the manifest. Signatures, when added, are detached over that digest. Verification streams under byte/entry quotas and finishes before any staged byte is usable. Contract in [04](04-expansion-plugins.md), evidence in [10](10-tooling-and-sources.md).
 
+Journal ownership correction (2026-11-09; ADR-07, FR-34/38, NFR-06/08): use
+one nonblocking OS writer lease on a stable sibling file for the full `FileJournal`
+lifetime, acquired before recovery. Locking individual appends cannot protect two
+stores' independently recovered identity histories. The guard survives compaction
+and failure; OS process exit releases it. The standard library suffices, with no
+dependency or journal-format change. Cross-process and compaction tests verify the
+ownership boundary; same-OS-user tampering remains outside guest isolation.
+
+Writer retirement follow-up (2026-11-09): hold the OS lock in a private RAII
+guard that explicitly unlocks after the journal append handle closes. Close-only
+release can be delayed by a duplicate descriptor inherited during process startup
+on Linux. A deterministic duplicate-descriptor unit case checks this lifetime
+rule alongside unchanged separate-owner exclusion; no sleeps or test serialization.
+
 ## ADR-08 — Incremental desktop editor and accessible declarative contributions
 
 **Selected, adapter conditional.** Persistent view state keyed by document IDs, transaction change sets, spatial index/culling, retained text edit session and virtualized controls. Guest UI is declarative with host accessibility labels/actions, not native widget pointers. Alternatives: full scene/UI rebuild on every graph change; raw guest widgets; draw-only canvas without accessibility model. Consequence: host provides a bounded widget vocabulary and versioned extension events; advanced widgets may require new host primitives.
@@ -121,6 +135,27 @@ Consequences: effects happen only where exec wires put them. A Get re-reads comm
 Definition-publication clarification (C3, 2026-10-23; FR-44, ADR-13/16): the registry rejects a `pure` definition that declares an exec port, any event input, a declared data output without a `source`, a package definition with a true lazy port, suspension metadata incompatible with the definition kind, and finite variadic bounds where `min > max`. `async` and `iterator` require `maybe` or `always`; synchronous kinds allow omission or `never`, including contextual-port definitions. `max: null` remains unbounded, and only declared range ordering is checked here. Typed failures identify the definition and the relevant port or suspension metadata. A true lazy port is accepted only through host intrinsic registration; missing and false lazy values are both non-lazy. The data-output rule does not impose source requirements on other port positions or source-vs-node-kind legality. Passive saved signatures remain repairable. This is a bounded publication check, not a claim that all definition fields or runtime graph legality are validated.
 
 ## ADR-14 — One cooperative actor per run
+
+Pause amendment (2026-11-09): a host may hold a Running run in `Paused` and resume
+it. The actor model makes this immediate and lossless: nothing interleaves, so
+owned work stays owned. A paused run does no graph work and observes no time;
+admission of input and of results for already issued work continues under the
+existing bounded policies, and stop/cancellation still reach it. This replaces the
+earlier "pause is not supported in 1.0" position in 03. `RunState`, `RunError`,
+`IngressError`, `EffectError` and `StreamError` are now `#[non_exhaustive]` so
+later lifecycle additions are not breaking. `RunResource` gains default no-op
+`pause`/`resume` hooks, and `EffectLease` gains `is_paused` (2026-11-10). Entries gain an optional
+`while_paused` policy (`buffer` default, `latest`, `drop`) and host sources an
+optional paused rejection: the entry decides what the graph keeps, the source
+whether its sender can be told "not now". The field is omitted when default, so
+saved format v1 documents are unchanged. No dependency or provider ABI changes.
+
+Driver amendment (2026-11-10): the run stays a single-owner actor, and
+`orange-runtime` supplies the one place where input from other threads meets it:
+`RunDriver` with a bounded `RunInbox` (03). Cross-source order, fairness between
+input and graph work, and pause-aware host time are decided there once instead of
+by each embedder. It uses only `std`, starts no thread and reads no clock, so the
+planned `orange-host` composition root builds on it without changing the actor.
 
 C13 amendment (2026-11-08; also ADR-16/21): portable checkpoints contain only
 explicitly selected persistent values and a versioned compatibility seal. Reuse
@@ -228,6 +263,14 @@ entry. This avoids per-node futures, a second executor and independent alias clo
 Tee/push bridges and concrete adapters remain later units; physical performance
 qualification is deferred while correctness/native/MSRV checks remain mandatory.
 
+Timer budget correction (2026-11-09; FR-14/16/47, NFR-05/06; ADR-14): perform
+one catch-up admission attempt per actor work item. Retain the selected window and
+its original ordering key across slices; completed windows use ordinary timer
+rearming. This keeps cancellation and operation limits effective without reducing
+the saved catch-up maximum, adding an executor or changing graph format. Focused
+tests must compare small/large slices, later clock advances, queue refusals and
+stop. Trusted callbacks remain outside a wall-time preemption guarantee.
+
 ## ADR-15 — Structured regions, value availability and cycle classes
 
 **Selected.** Exec nodes belong to exactly one region. Exec edges cannot leave regions except through terminators. An `execution` output may be consumed only where its outcome dominates the consumer. A data cycle is legal only through a state boundary (register, variable), a zone or a loop. A control cycle must contain a `suspends: always` node. Event and reactive cycles are bounded by causal depth. Synchronous recursion is rejected in v1 ([11 §7–8](11-graph-language.md)). Alternatives: unstructured exec wiring with stale or default outputs (a common source of node-editor bugs); a pure DAG with no cycles (cannot express counters, polling or feedback); bounded synchronous recursion (needs dynamic frame sizes, breaks NFR-05 allocation-free frames and fixed memory). Consequences: some wirings need a local, register or `select`, and diagnostics must suggest them. Loops and feedback are explicit and analyzable. Frames have static size. **Falsification:** G-04–07, G-10, G-12, G-16, G-24, G-26, G-27; representative workflow trials in 02b/05a. If users cannot express listed workflows (01 workflows 1–4) without excessive workarounds, revise the rule by ADR with a focused regression test. Owner language lead; G2/G3.
@@ -264,6 +307,13 @@ Converter identity clarification (00c.5a): semantic entries and exact implementa
 
 `core/convert` resolution clarification (00d.2b): the converter node is a host-owned registry special form, distinct from both ordinary fixed-control intrinsics and installable package definitions. Its exact entry derives ports; version-1 config and signature are required. Missing provider selects only `Core`; package bindings use the exact document lock and provider digest. Persisted options must contain every resolved choice and are checked without adopting updated defaults. Available metadata is authoritative, while a missing package leaves the saved snapshot usable for offline edge inspection and the node incomplete ([11 §6/§17](11-graph-language.md), [12 §5/I-4](12-graph-data-structures.md)).
 Pin clarification (00c.4a): an explicit user type choice is a **pin** stored in `type_pins`; `type_args` holds the resolved value of every parameter (pinned or inferred) and is only a cache. Inference seeds from pins, typed literals, edges and concrete port types, never from persisted `type_args`, so a disconnect cannot leave a stale binding that behaves like a pin. Documents without `type_pins` load with no pins ([11 §5.5](11-graph-language.md), [12 §3.1](12-graph-data-structures.md)). Connection selection follows the same rule: re-infer endpoint types after removing replaced wires, excluding the newly shadowed target literal. Reusing an edge ID invalidates inference at both old and new endpoints (00c review correction); pins and other surviving evidence remain authoritative.
+
+Collection admission correction (2026-11-09; ADR-16/21, FR-08, NFR-05/08):
+reuse the model's nominal value charges when constructing bundled collections.
+Text Split preflights all pieces before owned allocation; List Concat counts one
+result header; Map Insert credits the replaced value while preserving its key.
+Small checked arithmetic helpers retain the existing typed kernel interfaces.
+No generic allocation framework, dependency or saved-format change is needed.
 
 ## ADR-17 — Host-owned localization, stable graph semantics
 
@@ -305,6 +355,10 @@ The core must therefore be strong and general on its own, and expandable without
 4. **Host adapter interfaces.** `Clock`, services and a scene/object bridge ([02](02-architecture.md)), so any Rust host can embed the runtime: the reference editor, a headless runner, a music or VTuber product, a game engine, later a C ABI or Wasm. The project has no Bevy dependency (ADR-02); an engine-based product embeds the core on its own side.
 
 **Extension seams the core guarantees:**
+
+These are delivery requirements. Current typed domain registration/dispatch and
+arbitrary scalar/codec registration remain undelivered; the implementation-status
+clarification below and [04](04-expansion-plugins.md) describe the executable subset.
 
 | Seam | Who uses it | Contract |
 |---|---|---|
@@ -678,3 +732,48 @@ ones map to `core/PackageFault`. Retained shared text is charged by compiler, pr
 runtime, stream and replay admission and released with its final owner. This is an
 unfrozen Rust API change, with no WIT, graph-format, provider-lock or locale change.
 Guest kernels still compose through `orange_guest::WithGuests`.
+
+Scoped guest cancellation amendment (2026-11-09; K02d1, ADR-03/14/21): choose
+host-driven epoch ticks plus store-local monotonic cancellation flags. One shared
+engine must support stopping a selected instance while another guest continues;
+engine-wide interruption remains an explicit separate operation. Cancellation is
+terminal for an instance, so handles cannot later target a replacement. Wasmtime
+48.0.8 sets a renewed deadline after its callback; a single signal can race that
+renewal. Hosts therefore advance epochs periodically while guest code runs. Do not
+create hidden ticker threads or claim blocked-host-call preemption. This additive
+host Rust API changes no WIT, graph semantics, dependency/features or provider lock.
+Async/service imports, graph cancellation lease wiring and wall-time qualification
+remain open.
+
+Package integrity/recovery correction (2026-11-09; ADR-03/07/21, FR-34/36/37/38,
+NFR-08/09/13): authenticate a separately stored executable against its verified
+entry size and SHA-256 before compilation. A reused in-memory sink owns only the
+current archive. Journal format 2 adds a checksum of the declared frame length;
+complete header/payload corruption preserves and refuses the log rather than
+discarding later valid commits as a torn tail. Physically short final writes retain
+prefix recovery. This replaces the unreleased journal encoding without a legacy
+reader; package archive, graph/provider-lock and guest interface formats do not
+change. CRC detects accidental corruption; it does not authenticate journal bytes.
+
+Guest resource admission amendment (2026-11-09; ADR-03/14/21): raw and plugin
+stores share one limiter for aggregate memory and table elements, including initial
+allocation and failed-growth refunds, plus finite object counts. Use Wasmtime48.0.8
+`Store::set_hostcall_fuel` for bounded canonical lifting; its128MiB default was
+present but not selected by OrangeEditor. Choose an explicit1MiB default and an
+aggregate decoded-output check under that policy. Keep owning generated bindings
+so post-return cleanup cannot invalidate lazy borrowed results. No custom unsafe
+lifting, new dependency or encoding is needed. Check container minimum storage
+before reserve and include absent record slots/identity text in codec admission.
+Each import/result has its own nominal allowance; no RSS/wall-time claim is added.
+Use the synchronized live-store cancellation tests in place of sleep-based readiness.
+Per-binding mutable instances remain shared by plan users; asynchronous run-lease
+integration must first define an operation/activation owner and must not cancel a
+shared binding for one run. Pooling remains deferred.
+
+Error-output admission correction (2026-11-09; ADR-14/16/21): include error-as-value
+execution projections in the same nominal retention contract as successful output
+values. A selected Match-result arm replaces both projection sets in one staged
+admission; function retirement releases the callee's error charge. This completes
+the ownership correction for these paths without changing error identity, graph
+semantics, public Rust signatures, WIT or dependencies. Quota refusals remain
+infrastructure errors and never become an ordinary error arm or partial publication.

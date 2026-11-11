@@ -33,6 +33,8 @@ pub enum GuestLoadError {
     World,
     #[error("the package's component entry is missing from its files")]
     MissingEntry,
+    #[error("the component bytes do not match their verified archive entry")]
+    Integrity,
     #[error("the package declares no provider with that ID")]
     Provider,
     #[error("the package component could not be prepared")]
@@ -75,6 +77,9 @@ impl GuestPackage {
         let bytes = files
             .file(entry.as_str())
             .ok_or(GuestLoadError::MissingEntry)?;
+        archive
+            .verify_file(entry, bytes)
+            .map_err(|_| GuestLoadError::Integrity)?;
         let component = engine.compile(bytes).map_err(GuestLoadError::Guest)?;
         let key = manifest.key();
         Ok(Self {

@@ -429,3 +429,51 @@ fn a_literal_is_decoded_within_one_byte_budget() {
     assert!(needed < MAX_LITERAL_BYTES);
     assert!(decode(&literal, &schemas).is_ok());
 }
+
+#[test]
+fn record_identity_and_absent_field_slots_share_the_literal_budget() {
+    use orange_model::value::literal_codec::decode_with_budget;
+    let ty = "org.example/empty@1";
+    let schemas = SchemaSet::default().with_record(
+        ty,
+        RecordSchema {
+            fields: (0..100)
+                .map(|n| FieldSchema {
+                    field_id: format!("f-{n}"),
+                    ty: term("core/i64@1"),
+                    optional: true,
+                })
+                .collect(),
+        },
+    );
+    let value = literal(ty, json!({}));
+    let needed = 16 + ty.len() + 100 * 16;
+    assert!(decode_with_budget(&value, &schemas, needed).is_ok());
+    assert!(matches!(
+        decode_with_budget(&value, &schemas, needed - 1),
+        Err(LiteralError::TooLarge { .. })
+    ));
+    assert!(matches!(
+        decode_with_budget(&value, &schemas, 32),
+        Err(LiteralError::TooLarge { .. })
+    ));
+}
+
+#[test]
+fn impossible_container_counts_are_refused_before_decoding_elements() {
+    use orange_model::value::literal_codec::decode_with_budget;
+    // Mistyped elements would fail type validation if decoding reached them.
+    // Insufficient element storage must reject before reserving/visiting them.
+    for (ty, value) in [
+        ("core/list@1<core/i64@1>", json!([true, true])),
+        (
+            "core/map@1<core/string@1,core/i64@1>",
+            json!([[true, true], [true, true]]),
+        ),
+    ] {
+        assert!(matches!(
+            decode_with_budget(&literal(ty, value), &schemas(), 16),
+            Err(LiteralError::TooLarge { .. })
+        ));
+    }
+}

@@ -1,5 +1,29 @@
 # Architecture and ownership
 
+Run driver (2026-11-10; ADR-14): `orange-runtime` exposes `RunDriver`/`RunInbox`, a
+bounded thread-safe mailbox and a bounded `turn` that owns one `Run`. Host threads
+(sockets, hotkeys, effect workers) send inputs; the owning thread turns. It needs no
+async runtime and adds no dependency; `orange-host` remains the planned composition
+root for services and reactors.
+
+Scoped guest cancellation (K02d1, 2026-11-09): `GuestInstance` and `GuestPlugin`
+expose cloneable instance-lifetime `GuestCancellation` handles. Cancellation is
+monotonic and terminal for that instance; an old handle cannot retarget a later
+instance. Hosts periodically call `GuestEngine::advance_epoch` while workers run
+guest code. Store-local callbacks distinguish local cancellation from an explicit
+engine-wide broadcast; no library-owned ticker thread, core dependency or new
+Wasm feature is introduced. Blocking host imports still need a separate bounded
+service/cancellation protocol.
+
+Guest admission (review correction, 2026-11-09): raw and plugin stores share
+aggregate initial/growth limits for memory and table elements and finite object
+counts. Canonical imports/results use an explicit hostcall transfer allowance;
+decoded plugin outputs share an additional nominal budget under that policy.
+Compiled components are immutable/shareable. The current Pure binding's mutable
+instance is serialized across its plan users; future run-lease cancellation must
+first provide a distinct operation/activation owner rather than cancel that shared
+instance. This correction adds no async service or instance-pooling implementation.
+
 Fault ownership (2026-11-09; ADR-03/16/21): public core `KernelFault` identifiers
 borrow built-in text or share package-owned text, while fallback messages remain
 static. Plans, previews, runtime slots, streams and replay journals retain and
@@ -34,7 +58,7 @@ flowchart TD
 
 Implemented native prerequisite (N1a): `orange-bundled` depends on `orange-model` and publishes ordinary `org.orange.math` definition/provider metadata plus resolved scalar kernels. Resolution checks exact provider/build digest, definition/config version and specialization before execution. A resolved kernel retains its immutable registry snapshot and performs scalar dispatch without parsing or registry lookup. This is not the final compiler/runtime kernel ABI, package loader or service layer; the full crate graph above remains the target architecture.
 
-Implemented package prerequisite (2026-11-03): `orange-packages` depends on `orange-model` only. It validates format 1 manifests and publishes install, update, removal, revocation and rollback as immutable registry generations, journaled through a host-supplied seam. It performs no I/O and loads no code; archives, grants, component instances, `orange-contracts` and non-node slots remain later work.
+Implemented package storage (updated 2026-11-09): `orange-packages` depends on `orange-model` and validates manifests/archives and registry transactions. Its `Journal` seam is inert; explicit `DirectorySink` and `FileJournal` adapters perform filesystem staging and persistence. Independently stored executable bytes must match their verified entry before loading. Journal format 2 protects frame lengths and payloads; complete corruption is refused without truncating identity history. Package code loading belongs to `orange-guest`; manifest grants, executable draining, `orange-contracts` and non-node slots remain later work.
 
 ## Foundation application and general capabilities
 

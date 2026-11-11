@@ -58,10 +58,7 @@ impl Run {
         if source.bridge.run != self.id {
             return Err(StreamError::WrongRun);
         }
-        if self.pump_open
-            || !matches!(self.state, RunState::Running | RunState::Draining)
-            || (admitting && self.state != RunState::Running)
-        {
+        if self.pump_open || !self.accepts_results() || (admitting && !self.accepts_input()) {
             return Err(StreamError::NotRunning);
         }
         if source.is_closed() {
@@ -87,6 +84,7 @@ impl Run {
         value: &Value,
     ) -> Result<PushAdmission, StreamError> {
         self.check_push_source(source, true)?;
+        let paused = self.state == RunState::Paused;
         self.reconcile_stream_bridges();
         let id = source.bridge.sequence;
         let hub = self.bridges.hubs.get_mut(&id).ok_or(StreamError::Stale)?;
@@ -109,7 +107,12 @@ impl Run {
                     StreamError::Limit
                 }
             })?;
-        let result = hub.fanout(value, bytes, &self.budget);
+        let result = match hub.fanout(value, bytes, &self.budget) {
+            // A paused consumer cannot drain: overflow is a retryable refusal, not a
+            // bridge failure. Nothing was staged, so the same sequence can be resent.
+            Err(StreamError::Overflow) if paused => Err(StreamError::Full),
+            other => other,
+        };
         match result {
             Ok(_) => hub.source_sequence = sequence,
             Err(StreamError::Overflow) => hub.fail(OVERFLOW),

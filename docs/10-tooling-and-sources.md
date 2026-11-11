@@ -1,5 +1,158 @@
 # Tooling, environment and research register
 
+## Run driver and mailbox — 2026-11-10
+
+Branch `feat/run-driver` from local dev `86e7e80`. Same environment as the entries
+below; `std::sync::mpsc::sync_channel` only, no dependency, lockfile, feature, WIT
+or graph format change. Contract in 03; ADR-14 driver amendment.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,691 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1 and hosted checks were not run. The
+multi-thread test joins its senders before turning, so it checks delivery and
+thread safety, not interleaving under contention. Effect results through the
+mailbox share the tested dispatch but have no test of their own. No workspace-bus
+or stream support, and no timing was measured.
+
+## Activation fuel refills at suspension — 2026-11-10
+
+Branch `feat/run-pause`. Same environment as the entries below; no dependency,
+lockfile, feature, WIT or graph format change. A `Run` refills an activation when
+one of its strands parks on a Wait, Await Event, effect or stream read (03,
+activation fuel). Two existing tests assumed fuel never refilled and were adapted
+to keep their intent: `completed_cleanup_cannot_replenish_surviving_activation_fuel`
+now spends its post-wait budget before the refused node, and
+`cleanup_entry_failure_retires_all_owned_work` spends fuel in a sibling Fork branch
+so the cleanup reservation still overflows.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,685 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1 and hosted checks were not run. The refill is
+tested for Wait only; Await, effect and stream suspension share the same branch
+without their own test. A handler that loops on Yield without waiting still ends
+when its fuel or the run burst limit is reached.
+
+## Paused-input policy, source rejection and paused stream overflow — 2026-11-10
+
+Branch `feat/run-pause` from dev `e08de9ff724f49d549faee10fade2f8858d77675`. Same
+environment as the entries below; no dependency, lockfile, feature or WIT change.
+`ActivationPolicy::while_paused` is optional and omitted when `buffer`, so saved
+format v1 documents are byte-identical. Contracts: 11 §10.1/§10.3, 12, 03, ADR-14
+amendment, FR-57. This supersedes the "not implemented" limits of the two entries
+below for per-entry policy, source rejection and the paused `fault` push stream.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,683 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1 and hosted checks were not run. The paused
+policy is exercised through manual entries and one declared event; workspace
+deliveries and `parallel` entries share the same admission code but have no
+paused-policy test. Push streams have no per-stream paused policy. No editor
+exposes the field yet, and no timing was measured.
+
+## Resource pause hooks — 2026-11-10
+
+Local working tree on branch `feat/run-pause` at `0a2626e`, uncommitted. Same
+environment as the entry below; no dependency, lockfile, feature, WIT or graph
+format change. `RunResource::pause`/`resume` (default no-ops) and
+`EffectLease::is_paused` are described in 03 and the ADR-14 amendment. This
+supersedes "resource pause hooks ... not implemented" in the entry below.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,677 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1, hosted checks and the Node helpers were not
+run. A panicking hook is caught so the other resources are still told, then
+re-raised; that path has no test. Stream producers (`PullStream`) receive no pause
+signal. Per-entry paused-input policy, source rejection and the paused
+`fault`-overflow push stream remain unimplemented.
+
+## Host pause and per-burst operation limit — 2026-11-09
+
+Local working tree on dev `e08de9ff724f49d549faee10fade2f8858d77675`, uncommitted.
+Windows x64, rustup Rust 1.99.1. No dependency, lockfile, feature, WIT or graph
+format change. `Run::pause`/`Run::resume`, `RunState::Paused`, `RunError::Paused`
+and the per-burst `RunLimits::max_operations` are described in 03; five runtime
+enums became `#[non_exhaustive]` (ADR-14 amendment).
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | **1,674 passed, 0 failed, 15 ignored** |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+
+Limits: `--all-features`, MSRV 1.97.1, hosted checks and the metadata/release
+Node helpers were not run. Per-entry paused-input policy, source rejection, resource
+pause hooks and the paused `fault`-overflow push stream are not implemented. No
+timing was measured.
+
+## K02d1 — scoped guest cancellation — 2026-11-09
+
+Branch `codex/k02d1-guest-cancellation` starts from dev
+`4de171d5c2219555a0ab26107162a1eaeec70098` (PR162 merged after all nine hosted jobs
+plus aggregate rust passed for b42645e, run42645689408). No external dependency,
+lockfile, feature, WIT, SDK source or graph format changed. Selected environment is
+Windows x64, rustup Rust1.99.1, rustc1.99.1 (58cf8f9c3 2026-10-13),
+Cargo1.99.1 (5f94df478 2026-08-27), Node24.18.0. Unchanged Cargo.lock SHA256:
+`E2AB8E6108BAEBC40B8D59D3E5D0807D8B0C9AA525F573551E0FC9E29D01B14E`.
+Wasmtime48.0.8 retains runtime/cranelift/component-model/std; tests enable wat.
+
+API evidence was read from the installed, exact-version crate sources:
+`wasmtime-48.0.8/src/runtime/store.rs` (`epoch_deadline_callback`,
+`UpdateDeadline::Interrupt`/`Continue`) and `src/runtime/vm/libcalls.rs::new_epoch`.
+The latter renews the deadline after invoking the callback. An initial single-tick
+concurrent experiment stalled at that race and was interrupted; its design was
+replaced with explicit host-driven periodic epochs. The library creates no ticker
+thread. Epoch cadence remains host policy, not a measured time guarantee, and
+blocked host imports are not preempted. Fuel remains independently enforced.
+
+| Command | Result |
+|---|---|
+| `cargo test -p orange-guest --locked` | 6 unit + 15 integration tests passed |
+| `cargo test --workspace --all-features --locked` | **1,635 passed, 0 failed, 15 optional measurements ignored**, including doctests |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `git diff --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` and `--self-test` | Pass;19 fixtures |
+| `node --test tools/*.test.mjs` | 17 passed, 0 failed |
+
+Four focused cancellation unit regressions cover actual concurrent guest loops on
+one engine, local cancellation with an already-running peer continuing, retained
+engine-wide broadcast behavior, stale handle isolation, cancel-before-entry,
+terminal poisoning and flag checks after renewing a deadline. A fifth integration
+regression exercises terminal cancellation and peer success with the Rust-built
+probe. Unit tests observe epoch callbacks rather than assume entry after a sleep;
+their host ticker survives panic cleanup and their waits have watchdogs. The full
+suite used normal Windows file access for the existing journal rename tests.
+OneDrive incremental hard-link warnings fell back to copies; there are no code lint
+or rustdoc findings. No new local MSRV, fresh SDK rebuild, optimized workspace or
+physical latency/RSS measurement is claimed. Hosted checks are required before merge.
+
+This is a prerequisite for K02 async/service-import cancellation, not that full
+gate: no C11 effect lease bridge, asynchronous WIT world, manifest grants, executable
+revocation/hot replacement or IC3/M1 qualification is implemented by this slice.
+
 ## K02c fault-text ownership correction — 2026-11-09
 
 User selected owned/shared identifiers instead of the process-lifetime interning
@@ -4797,3 +4950,254 @@ MSRV remains 1.97.1. No dependency or lockfile changes; Cargo.lock SHA256
 - Limits: Watch, live preview, workspace variables and package-implemented `eq` remain
   open. Writes during Draining or cancellation never notify. No timing or memory probe
   ran.
+
+### Package integrity and journal review corrections — 2026-11-09
+
+- Scope: review F1/F6, FR-34/36/37/38, NFR-08/09/13; ADR-03/07/21.
+  `VerifiedArchive::verify_file` authenticates size/SHA-256 before guest loading;
+  reused memory staging replaces all prior paths. Journal encoding2 protects its
+  frame length separately from its payload and refuses complete corruption without
+  truncation. It replaces unreleased1; no historical reader, archive/WIT/provider
+  lock change or external dependency is introduced.
+- Environment: Windows x86_64 MSVC, rustc1.99.1 (58cf8f9c3 2026-10-13),
+  cargo1.99.1 (5f94df478 2026-08-27), toolchain1.99.1; unchanged Cargo.lock SHA-256
+  `E2AB8E6108BAEBC40B8D59D3E5D0807D8B0C9AA525F573551E0FC9E29D01B14E`.
+  Wasmtime48.0.8 runtime/cranelift/component-model/std, test-only wat.
+- PASS: `cargo test -p orange-packages -p orange-guest --locked`; complete
+  `cargo test --workspace --all-features --locked`: **1,638 passed,0 failed,15
+  optional measurements ignored**. `cargo clippy --workspace --all-targets
+  --all-features --locked -- -D warnings`; `RUSTDOCFLAGS=-D warnings cargo doc
+  --workspace --no-deps --all-features --locked`; `cargo fmt --all --check`;
+  `git diff --check`; metadata policy and19 fixtures; `node --test tools/*.test.mjs`
+  (17 tests).
+- Regressions require mismatched/short payload refusal before compilation, correct
+  sink replacement and failure cleanup, preservation of logs with corrupt interior
+  payloads, corrupt length/header/payload checksums and corrupt complete final
+  records. Existing cuts through every frame header/payload still recover a complete
+  checkpoint prefix, and compaction retains revocations.
+- The first restricted-access run hit the existing Windows replace-journal
+  PermissionDenied; focused and full suites passed with normal Windows file access.
+  OneDrive fell back from incremental hard links to copies; no code lint/doc warning.
+  Physical power-loss/filesystem qualification and the other review corrections
+  remain separate work. Final-head hosted validation is required before merge.
+
+- Hosted evidence on package correction heada214288: all nine jobs plus `rust`
+  passed in unchanged workflow-dispatch run42745031279, including Windows/Linux/
+  macOS, MSRV1.97.1, optimized behavior and a freshly rebuilt Rust guest. Earlier
+  PR run42670897012/retries encountered GitHub internal-server/abandoned-job states.
+  The protected branch still requires a successful PR-triggered run; manual success
+  did not authorize merging and no protection was bypassed. This evidence update
+  triggers fresh PR validation with unchanged product code.
+- Final package PR head701aa01 passed all nine jobs plus `rust` in PR-triggered
+  run42745765135. PR165 merged normally as e579fc7 with branch protection intact.
+
+### Guest resource and transfer review corrections — 2026-11-09
+
+- Scope: F2/F3/F4/F7; FR-08/35/38, NFR-05/06/08; ADR-03/14/21. Both constructors
+  now use a store-local aggregate limiter for initial memory/table allocation and
+  growth, rollback on allocation failure, and finite memory/table/instance counts.
+  Defaults:64 MiB memory,65,536 table elements,64 of each object,1 MiB canonical
+  transfer allowance. `GuestLimits` adds four unfrozen fields; no dependency,
+  lock, WIT or saved-format change.
+- Corrected review evidence: pinned Wasmtime48.0.8
+  `src/runtime/component/store.rs` documents `Store::set_hostcall_fuel` and its
+  existing128 MiB default. `src/runtime/component/func/options.rs` and `typed.rs`
+  charge list storage/strings before allocation. The review's "unbounded" statement
+  was too broad; OrangeEditor now selects an explicit per-import/result allowance.
+  Owning bindings retain automatic post-return cleanup. The synchronous limiter
+  callbacks and failure-refund contracts were checked in that release's
+  `src/runtime/limits.rs`. No latest-version examples substituted for source.
+- Plugin decoded outputs share one additional nominal value budget. Codec list/map
+  minimum-slot checks precede reserve; records include type text and missing field
+  slots. This closes a schema-driven allocation gap as well as the canonical-copy
+  policy gap. The redundant100ms-sleep broadcast test was removed; live-callback,
+  ticker-driven, watchdog-protected instance/broadcast cancellation tests remain.
+- Environment unchanged from the package correction above: Windows x64 MSVC,
+  Rust/Cargo1.99.1, exact unchanged root lock and Wasmtime48.0.8 feature profile.
+  PASS: focused guest/model tests and `cargo test --workspace --all-features
+  --locked` (**1,646 passed,0 failed,15 optional measurements ignored**); all-target/
+  all-feature Clippy and rustdoc with warnings denied; fmt/diff checks; metadata
+  policy19 fixtures;17 tooling tests.
+- Regressions cover two initial memories exceeding the total, shared aggregate
+  growth, per-object maximum refusal leaving peer capacity, initial/grown tables,
+  finite object counts and oversized default tables; shared-memory refusal in the
+  selected no-threads profile; synthetic allocation-failure refunds; alias-amplified
+  result refusal in raw/plugin calls and admission with a larger budget; oversized
+  imported logs; decoded aggregate refusal and exact-bound admission through the
+  Rust probe; record-slot budget and impossible container counts before decoding.
+- Limits: nominal transfer charges include runtime descriptors/encoded text, not
+  exact transcoding/allocator peaks; each import/result has its own allowance, not
+  one invocation-wide total. Retained logs and decoded outputs are separately
+  bounded. No process RSS, physical latency, blocked-import preemption, guest
+  execution pooling or Run lease integration claim. Hosted final-head native/MSRV/
+  rebuilt-guest/security checks remain required before merge.
+
+- Hosted final guest head e692148 passed all nine jobs plus `rust` in PR-triggered
+  run42746473715: native Windows/Linux/macOS, MSRV1.97.1, optimized behavior,
+  rebuilt Rust guest, quality, dependency and repository checks. PR166 merged
+  normally as 599d976; no submitted reviews, review threads or protection bypass.
+
+### Runtime error-publication review correction — 2026-11-09
+
+- Scope: F5; FR-16/47/51, NFR-05/14; ADR-14/16/21. Implicit fault outputs and
+  Match-result errors now use ordinary transactional state/aggregate admission.
+  Joint arm replacement credits the cleared error/value storage, and function
+  retirement refunds owned error projections. Code and producer identity survive;
+  quota exhaustion stays infrastructure failure. No public signature, saved format,
+  dependency, lockfile or WIT change. README's superseded pending-capability notes
+  now agree with implemented ingress, workspace, events, calls and stream behavior.
+- PASS: `cargo test --workspace --all-features --locked`: **1,650 passed, 0 failed,
+  15 optional measurements ignored**. Focused bundled/runtime suites and four new
+  regressions passed. Warnings-denied all-target/all-feature Clippy and rustdoc,
+  fmt/diff checks, metadata policy plus 19 fixtures, and 17 tooling tests passed.
+  Windows x64 MSVC; the exact Rust1.99.1/toolchain/features and unchanged lock are
+  those recorded in the preceding correction entries. The full suite uses normal
+  Windows file access for journal replacement.
+- Regressions: state and aggregate refusal before a failed Count can reach Wait;
+  exact-budget retention and source identity; repeated fault publication across
+  16 waits credits its prior output; stop/disposal release it; Match-result switches
+  Err→Ok at a limit that cannot hold both; an async function returns a captured
+  error and refunds its own projection before its caller waits.
+- Initial new test setup errors (an integer initializer encoded as a JSON number,
+  pumping an already stopped run, and an omitted successful Return path) were
+  corrected before passing evidence. No product validator or lifecycle rule was
+  weakened. OneDrive emitted incremental hard-link fallback notices only.
+- Limitations: nominal retained-value accounting, not RSS or timing qualification.
+  Other physical/application/package-lifecycle gates remain open. Required final-head
+  hosted native/MSRV/security/guest validation remains a separate merge gate.
+
+### Timer catch-up budget correction — 2026-11-09
+
+- R1; FR-14/16/47, NFR-05/06; ADR-14. Each timer admission attempt is one
+  cooperative work item. A fixed-size cursor retains the selected window and its
+  original timer key across slices; normal rearming gets a fresh sequence.
+  Stop/fault clears pending windows. Graph formats, dependencies, WIT and public
+  signatures are unchanged. Development policy now explicitly replaces unreleased
+  data formats without historical readers; extension status distinguishes selected
+  domain/scalar seams from delivered APIs (04/08/14).
+- Environment: Windows x64 MSVC, rustc1.99.1 (58cf8f9c3,2026-10-13),
+  cargo1.99.1 (5f94df478,2026-08-27), Node24.18.0. Root lock SHA-256 remains
+  E2AB8E6108BAEBC40B8D59D3E5D0807D8B0C9AA525F573551E0FC9E29D01B14E.
+  Wasmtime48.0.8 remains default-features=false with runtime/cranelift/component-model/
+  std; existing test WAT support is unchanged. MSRV remains1.97.1.
+- PASS: `cargo test -p orange-bundled --test integration timer_entry:: --locked`
+  (15 tests); `cargo test --workspace --all-features --locked`
+  (**1,656 passed,0 failed,15 optional measurements ignored**);
+  `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings`;
+  `RUSTDOCFLAGS=-D warnings cargo doc --workspace --no-deps --all-features --locked`;
+  `cargo fmt --all --check`; `git diff --check`. Full tests used normal filesystem
+  access for Windows journal replacement. Guest tests used the checked-in probe.
+- PASS: metadata policy plus19 self-test fixtures; all17 Node tooling tests;
+  pinned cargo-deny0.20.2 refreshed advisories and passed advisories/bans/licenses/
+  sources for both root and SDK locks. Transitive duplicate-version warnings remain
+  policy warnings; no ignore or weaker check was added.
+- Six new regressions cover1000 one-item slices and zero budget, fixed window under
+  clock advance, equal-due entries, mixed Wait/next-tick ordering, stop cleanup and
+  the run operation ceiling. Lead review corrected future timer arrival ordering;
+  a separate read-only source review found no further timer flaw in its examined
+  arithmetic/ordering/cleanup scope. This is engineering review, not independent
+  human approval or physical timing qualification. Hosted final-head checks remain
+  required before merge; other domain/package/embedding gates remain open.
+
+- Hosted timer head5838a22 passed all nine jobs plus `rust` in PR run42755711635,
+  including native Windows/Linux/macOS, MSRV1.97.1, optimized behavior and the
+  rebuilt Rust guest. PR168 merged normally as6e053b6; no review threads or
+  submitted reviews remained and no protection was bypassed.
+
+### Durable journal writer ownership — 2026-11-09
+
+- R2; FR-34/38, NFR-06/08; ADR-07. `FileJournal::open` takes one
+  nonblocking exclusive OS writer lock on `packages.journal.lock` before recovery
+  or stale-temp cleanup. The separate guard survives journal replacement and
+  failed compaction/reopen; drop/process exit releases OS ownership. The lock file
+  stays on disk. Journal format2 remains the only reader; no dependency, lockfile,
+  migration layer, public signature or message key changes.
+- Versioned API evidence: local Rust1.99.1 rustdoc `std/fs/struct.File.html`
+  (`try_lock`) and `library/std/src/fs.rs` identify `file_lock` as stable since
+  Rust1.89.0, within the1.97.1 MSRV. The selected implementation uses
+  `File::try_lock`/`TryLockError`, not a crate or an unsupported newer API.
+- PASS on Windows x64/Rust1.99.1: `cargo test -p orange-packages --all-features
+  --locked` (7 unit tests,76 top-level integration tests, zero failures; the
+  cross-process child runs its filtered probe separately); package all-target/
+  all-feature Clippy with `-D warnings`; fmt/diff checks. Normal filesystem access
+  passed both successful-compaction tests. Restricted access had refused Windows
+  rename with PermissionDenied; no product fallback or weakened test was added.
+- Regressions cover same/different directories, refusal before recovery-file
+  mutation, successful/failed compaction, lock release on drop and process exit
+  without Rust destructors, and separate-process exclusion. The existing compaction
+  test still proves one equivalent checkpoint and append through the original
+  owner. Lead review preserved these assertions and removed duplicate reopen code.
+- Root dependency lock/features/toolchain remain unchanged from the timer correction.
+  On rebased dev6e053b6, `cargo test --workspace --all-features --locked` passed
+  **1,661 top-level tests plus the child probe,0 failures,15 ignored**. All-target/
+  all-feature Clippy and rustdoc with warnings denied, fmt/diff and metadata policy
+  passed. Root/SDK cargo-deny checks and17 tooling tests passed earlier in this
+  same-lock correction cohort. Hosted native/MSRV/rebuilt-guest checks remain
+  required before merge. The lock coordinates cooperating hosts, not malicious
+  same-OS-user path replacement; power-loss/filesystem qualification remains open.
+
+- Hosted journal headb636878 passed all nine jobs plus `rust` in PR run42756694626,
+  including separate-process lock tests on Windows/Linux/macOS, MSRV1.97.1,
+  optimized behavior and the rebuilt Rust guest. PR169 merged normally as79d6e87,
+  with no submitted reviews or review threads and no protection bypass.
+
+### Bundled construction admission — 2026-11-09
+
+- R3/R4; FR-08, NFR-05/08; ADR-16/21. Split checks its complete nominal
+  collection charge before reserving or creating owned strings. List Concat counts
+  one result container; Map Insert credits only a replaced value and retains its
+  existing key/position. Checked arithmetic shares model charges and the existing
+  LimitExceeded failure. No kernel framework, dependency, public signature, saved
+  format, migration reader or WIT change.
+- Lead-reviewed boundaries include exact-limit success, one-byte excess, many
+  empty pieces, a multibyte separator, split/join identity, exact new-key admission,
+  equal/shrinking/growing map replacement and immutable inputs on refusal. The
+  map-entry minimum is only a preflight: lead review corrected an initial extra
+  charge rather than changing the model's value rules. Large test inputs are built
+  one case at a time.
+- PASS on Windows x64/Rust1.99.1: focused text and collection suites (10 tests
+  each); `cargo test -p orange-bundled --all-features --locked` (797 passed,
+  zero failures,6 optional measurements ignored); package all-target/all-feature
+  warnings-denied Clippy; fmt/diff checks. Toolchain, features and exact dependency
+  lock remain those recorded in the timer correction. The combined candidate on
+  reviewed journal headb636878 passed `cargo test --workspace --all-features
+  --locked`: **1,663 top-level tests plus the child probe,0 failures,15 ignored**.
+  Full all-target/all-feature Clippy and rustdoc with warnings denied also passed.
+  After PR169 squash merge, replaying only this slice onto dev79d6e87 preserved
+  the tested app/SDK sources and lockfiles exactly; only verification notes changed.
+  Hosted final-head native/MSRV/rebuilt-guest checks remain required before merge.
+- Limits remain nominal construction/retention allowances, not allocator/RSS or
+  physical latency qualification. Split scans twice only after successful preflight;
+  over-limit construction returns before allocating its piece vector/owned strings.
+
+#### Linux journal retirement follow-up
+
+- Initial PR170 run42757294374 passed Windows/macOS and the other independent
+  jobs, but two Linux journal tests refused immediate reopen after owner drop.
+  The earlier PR169 run had passed; this later failure was investigated rather
+  than retried unchanged. No exclusivity check was weakened or serialized.
+- Pinned Rust1.99.1 `library/std/src/sys/fs/unix.rs` implements locking through
+  `flock`. The [Linux locking contract](https://man7.org/linux/man-pages/man2/flock.2.html)
+  associates the lock with the open file description: duplicate/inherited
+  descriptors retain it after one handle closes. Concurrent child startup is
+  consistent with the observed parallel-test failure; no system-call trace was
+  captured. A private `WriterLock` explicitly unlocks on retirement, after the
+  journal append handle closes, including early-open error paths.
+- The new Linux-only unit retains a `File::try_clone` duplicate, drops the guard
+  and requires immediate acquisition through a fresh descriptor. It directly
+  exercises the lifetime case without process timing, sleeps, retries or unsafe
+  code. The original separate-process exclusion/exit tests remain unchanged.
+  Both lock and unlock APIs are stable since1.89 and fit MSRV1.97.1. No format,
+  dependency, public signature or diagnostic changes. Local Debian WSL was
+  registered but unavailable (`Wsl/Service/E_UNEXPECTED`); its environment was
+  not repaired as part of the fix. Hosted Linux must execute this regression.
+- A local rerun initially reused binaries whose compiled fixture path named a
+  retired worktree. Rebuilding only first-party Cargo outputs restored current
+  checkout paths; no model fixture/validator behavior was changed. The failing log
+  and generated property seed remain ignored diagnostic evidence.
+- After the explicit-release correction and first-party rebuild, the full Windows
+  all-feature suite passed again (1,663 top-level tests plus the child probe,
+  zero failures,15 ignored), with full warnings-denied Clippy/rustdoc and fmt/diff.
+  A separate read-only source review checked acquisition/error/drop/compaction
+  ownership. The Linux-only unit remains a required hosted check; no local Linux
+  pass is claimed.

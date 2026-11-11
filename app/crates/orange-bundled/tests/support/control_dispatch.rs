@@ -435,6 +435,92 @@ fn matched_strings_replace_charges_and_respect_activation_state_limits() {
         );
     }
 }
+
+#[test]
+fn match_error_to_success_replaces_both_projections_with_one_admission() {
+    let mut division = math(2, "divide", 8, 0);
+    division["inputs"].as_object_mut().unwrap().remove("b");
+    let mut first_wait = core(7, "wait");
+    first_wait["inputs"] = json!({"duration":lit("core/duration@1", json!("1"))});
+    let mut set = var_node(8, "set-variable", 100);
+    set["inputs"] = json!({"value":lit("core/u64@1", json!(2))});
+    let mut second_wait = core(10, "wait");
+    second_wait["inputs"] = json!({"duration":lit("core/duration@1", json!("1"))});
+    let (doc, snapshot, _, plan) = build(
+        vec![
+            core(1, "on-start"),
+            division,
+            attempt(3, "core/u64@1"),
+            matcher(4, "core/u64@1"),
+            var_node(5, "set-variable", 102),
+            var_node(6, "set-variable", 101),
+            first_wait,
+            set,
+            var_node(9, "get-variable", 100),
+            second_wait,
+        ],
+        vec![
+            edge(1, 1, "then", 4, "in"),
+            edge(2, 9, "value", 2, "b"),
+            edge(3, 2, "quotient", 3, "value"),
+            edge(4, 3, "result", 4, "result"),
+            edge(5, 4, "err", 7, "in"),
+            edge(6, 7, "then", 8, "in"),
+            edge(7, 8, "then", 4, "in"),
+            edge(8, 4, "ok", 10, "in"),
+            edge(9, 4, "error", 6, "value"),
+            edge(10, 4, "value", 5, "value"),
+        ],
+        vec![
+            variable(100, "run", "core/u64@1", Some(json!("0"))),
+            variable(101, "run", "core/error@1", None),
+            variable(102, "run", "core/u64@1", None),
+        ],
+    );
+    // The old error fits, but retaining it while adding the success would not.
+    let mut run = Run::start(
+        plan,
+        &doc,
+        &snapshot,
+        1,
+        RunOptions {
+            limits: orange_runtime::RunLimits {
+                max_state_bytes: 32 + "core/DivideByZero".len(),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    for _ in 0..64 {
+        if !run.pump(1).unwrap().ready {
+            break;
+        }
+    }
+    assert!(
+        run.trace()
+            .iter()
+            .any(|e| e.node.to_string() == id(4) && e.outcome == ControlOutcome::MatchedErr)
+    );
+    run.advance_to(1).unwrap();
+    for _ in 0..64 {
+        if !run.pump(1).unwrap().ready {
+            break;
+        }
+    }
+    assert!(
+        run.trace()
+            .iter()
+            .any(|e| e.node.to_string() == id(4) && e.outcome == ControlOutcome::MatchedOk)
+    );
+    assert_eq!(run.pump(0).unwrap().next_wakeup, Some(2));
+    run.stop().unwrap();
+    if run.state() != orange_runtime::RunState::Stopped {
+        run_all(&mut run, 1);
+    }
+    run.dispose().unwrap();
+    assert_eq!(run.retention().reserved_bytes, 0);
+}
 #[test]
 fn uncaptured_input_fault_takes_failed_instead_of_the_result_err_arm() {
     let (doc, snapshot, _, plan) = build(

@@ -19,8 +19,17 @@ pub(in crate::run) use graph::resource_fault;
 /// closes its handle, its graph scope retires, the run reaches `Stopped`, or the run
 /// is dropped. `close` runs synchronously on the calling host/actor stack and must
 /// be bounded and nonblocking. `Send + Sync` keeps `Run` movable and shareable.
+///
+/// `pause` and `resume` tell the owner that the run is held or continues, so it can
+/// hold what the run cannot freeze: stop reading a socket, pause playback, refuse a
+/// request. Both follow the rules of `close`: synchronous, bounded and nonblocking.
+/// Pausing runs newest first and resuming oldest first, each once per live resource.
+/// A resource acquired while the run is paused is paused as it is taken. An
+/// immediate stop closes a paused resource without resuming it.
 pub trait RunResource: Any + Send + Sync {
     fn close(self: Box<Self>, reason: CloseReason);
+    fn pause(&self) {}
+    fn resume(&self) {}
 }
 
 /// Why a run closed one of its resources.
@@ -143,6 +152,8 @@ pub(super) struct Resources {
     kinds: Vec<TypeExpr>,
     kind_index: HashMap<TypeExpr, u32>,
     next_seq: u64,
+    /// The owning run is paused; a resource taken now is paused on insertion.
+    paused: bool,
 }
 impl Resources {
     pub(super) fn len(&self) -> usize {
@@ -184,6 +195,9 @@ impl Resources {
             },
         };
         self.next_seq = seq;
+        if self.paused {
+            resource.pause();
+        }
         let slot = &mut self.slots[index as usize];
         slot.entry = Some(Entry {
             owner: None,
@@ -245,6 +259,41 @@ impl Resources {
             self.free.push(index);
         }
         entry
+    }
+    /// Tells every live resource the run is held, newest first, or continues, oldest
+    /// first. A panicking hook does not skip the others; the first panic resumes after
+    /// all of them ran.
+    pub(super) fn set_paused(&mut self, paused: bool) {
+        self.paused = paused;
+        let mut live: Vec<&Entry> = self
+            .slots
+            .iter()
+            .filter_map(|slot| slot.entry.as_ref())
+            .collect();
+        live.sort_unstable_by_key(|entry| entry.seq);
+        if paused {
+            live.reverse();
+        }
+        let mut panic = None;
+        for entry in live {
+            let hook = || {
+                if paused {
+                    entry.resource.pause();
+                } else {
+                    entry.resource.resume();
+                }
+            };
+            if let Err(payload) = catch_unwind(AssertUnwindSafe(hook)) {
+                panic.get_or_insert(payload);
+            }
+        }
+        if let Some(payload) = panic {
+            resume_unwind(payload);
+        }
+    }
+    /// The run left `Paused` without resuming; later acquisitions are not paused.
+    pub(super) fn forget_pause(&mut self) {
+        self.paused = false;
     }
     /// Closes every live resource newest first, each once. A panicking closer does not
     /// skip the others; the first panic resumes after all of them ran.

@@ -32,11 +32,21 @@ impl Run {
                 }
             }
             (ControlOperation::MatchResult { err, .. }, Some(Value::Err(error))) => {
-                Self::publish_match_value(plan, layout, shared, ix, None, limit)?;
-                for &i in plan.error_targets(ix) {
-                    shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] =
-                        Some(FoldedValue::Value(Value::Err(error.clone())));
-                }
+                Self::publish_projections(
+                    plan,
+                    layout,
+                    shared,
+                    ix,
+                    plan.value_targets(ix)
+                        .iter()
+                        .chain(plan.error_targets(ix))
+                        .copied(),
+                    |source| match source {
+                        HostSource::Error(_) => Some(Value::Err(error.clone())),
+                        _ => None,
+                    },
+                    limit,
+                )?;
                 (*err, ControlOutcome::MatchedErr, None)
             }
             (ControlOperation::MatchResult { boxed, ok, .. }, Some(value)) => {
@@ -45,10 +55,21 @@ impl Run {
                     (false, value) => value,
                     _ => return Err(contract.into()),
                 };
-                Self::publish_match_value(plan, layout, shared, ix, Some(value), limit)?;
-                for &i in plan.error_targets(ix) {
-                    shared.outputs[layout.outputs[i].ok_or(RunError::InvalidState)?] = None;
-                }
+                Self::publish_projections(
+                    plan,
+                    layout,
+                    shared,
+                    ix,
+                    plan.value_targets(ix)
+                        .iter()
+                        .chain(plan.error_targets(ix))
+                        .copied(),
+                    |source| match source {
+                        HostSource::Error(_) => None,
+                        _ => Some(value.clone()),
+                    },
+                    limit,
+                )?;
                 (*ok, ControlOutcome::MatchedOk, None)
             }
             _ => return Err(RunError::InvalidState),

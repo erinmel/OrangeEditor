@@ -219,7 +219,7 @@ E1a compiler messages: CompileError exposes core/compile-* message keys with typ
 
 E2b evaluation entry/access errors expose core/evaluate-stale-document, core/evaluate-stale-registry, core/evaluate-resource-limit and core/evaluate-cancelled message keys and static safe fallbacks. They contain no graph values, configuration text or credentials. A graph's ConstantFault remains the original producer's namespaced envelope; EvaluatedExport identifies the requested output port separately. Presentation remains host-owned and does not affect snapshot selection or result order.
 
-Headless control messages (2026-10-24): RunError exposes `core/run-invalid-state`, `core/run-resource-limit`, `core/run-identity-exhausted`, `core/run-clock-went-backwards`, `core/run-interrupted`, or the underlying typed DataError key. Resumable pulls add `core/data-pull-in-progress`. Graph faults use `core/uninitialized-variable`, `core/count-out-of-range`, `core/wait-out-of-range`, `core/loop-budget-exceeded` and `core/cleanup-unsafe-node`, with their original producer ID and safe static fallbacks. RunEvent carries consumer/activation/outcome identity separately; status and variable-write inspection expose typed IDs. Default Run/ControlPlan formatting never renders values, names, config, registry contents or callbacks. Explicit variable inspection remains host-owned. These runtime enums and keys do not localize graph semantics or qualify an editor catalogue/UI.
+Headless control messages (2026-10-24): RunError exposes `core/run-invalid-state`, `core/run-resource-limit`, `core/run-identity-exhausted`, `core/run-clock-went-backwards`, `core/run-interrupted`, `core/run-paused` (2026-11-09), or the underlying typed DataError key. Resumable pulls add `core/data-pull-in-progress`. Graph faults use `core/uninitialized-variable`, `core/count-out-of-range`, `core/wait-out-of-range`, `core/loop-budget-exceeded` and `core/cleanup-unsafe-node`, with their original producer ID and safe static fallbacks. RunEvent carries consumer/activation/outcome identity separately; status and variable-write inspection expose typed IDs. Default Run/ControlPlan formatting never renders values, names, config, registry contents or callbacks. Explicit variable inspection remains host-owned. These runtime enums and keys do not localize graph semantics or qualify an editor catalogue/UI.
 
 Aggregate run budget (2026-11-05): `RunError::AggregateLimit` exposes `core/run-aggregate-limit` and `DataError::AggregateLimit` exposes `core/data-aggregate-limit`, with static safe fallbacks and no value arguments.
 
@@ -244,6 +244,8 @@ Standalone data interruption (2026-10-31): `DataError::Interrupted` exposes `cor
 JSON budget resources (2026-11-01 UTC): `JsonValues`, `JsonKeyBytes` and `JsonStringBytes` extend the typed `ImportResource` vocabulary carried by `CodecError::ImportLimitExceeded`. The key remains `core/import-limit-exceeded`; resource kind and numeric maximum/observed count are safe metadata, with no rejected document value or object key included. Host presentation translates the resource kind rather than interpreting payload strings as messages.
 
 Run-scope event faults (2026-11-02): core/LimitExceeded uses core/event-limit-exceeded (safe fallback "The event exceeds a run delivery limit."); core/RunStopping uses core/event-run-stopping ("The run is stopping and cannot accept an event."); core/RunawayEventChain uses core/event-cause-depth ("The event causal depth limit was reached."). They carry no payload or interpolation arguments. Trace provenance retains the original emitter or upstream payload-fault node; source scope/IDs, numeric counters, queue ordering and virtual time are semantic metadata and never translated. Host-owned presentation localizes messages; EventMetadata/RunEventStats contain no graph values or credentials.
+
+Paused ingress (2026-11-10): `IngressError::Paused` maps to `core/ingress-paused` ("The run is paused and this source rejects input until it resumes."), with no arguments.
 
 Bounded host ingress errors (C04a contract, 2026-11-06; implementation evidence pending) are fieldless, expose `message_key()`, and retain no event payload, rejected content or host text. `WrongRun` maps to `core/ingress-wrong-run` ("The event source belongs to another run."); `NotRunning` reuses `core/event-run-stopping`; `UnknownEvent` maps to `core/ingress-unknown-event` ("The event is not present in the checked run plan."); `SourceLimit` to `core/ingress-source-limit` ("The run has reached its active host source limit."); `IdentityExhausted` to `core/ingress-identity-exhausted` ("The host source identity space is exhausted."); `RevokedSource` to `core/ingress-source-revoked` ("The host event source is revoked or unknown."); `SequenceNotIncreasing` to `core/ingress-sequence-invalid` ("The source sequence must be nonzero and strictly increasing."); and `InvalidPayload` to `core/ingress-payload-invalid` ("The event payload does not match its checked type."). `DeliveryLimit` reuses `core/event-limit-exceeded`. `UnknownEntry` (C04b `Run::trigger`) maps to `core/ingress-unknown-entry` ("The node is not a manual entry in the checked run plan."). The C04b validation diagnostic `E-MANUAL-PAYLOAD` uses `core/graph-manual-payload` ("A manual entry payload must name a concrete registered type, and no other field is allowed."), `E-VARIABLE-CHANGED` uses `core/graph-variable-changed` ("A variable-changed entry needs a run variable with an initial value and a type with eq."), and `E-TIMER-CONFIG` uses `core/graph-timer-config` ("A timer entry needs a positive interval or a non-negative delay in nanoseconds, and only its documented fields."). A `core/now` read past the duration range faults with `core/OutOfRange` and key `core/clock-out-of-range` ("The run clock is beyond the duration range."). Fieldless `ResourceError` values (C08a) map to `core/resource-wrong-run`, `core/resource-not-running`, `core/resource-unknown-kind`, `core/resource-limit`, `core/resource-identity-exhausted`, `core/resource-stale` and `core/resource-wrong-kind`, with their English `Display` text as fallback; they carry no resource content. All fallbacks are static and have no arguments. These keys are host-presented; no catalogue or saved schema change is implied. EventMetadata contains typed event/source/cause identity and timestamps but never payload or credentials; source IDs, sequences, counters, queue order and time remain semantic metadata, not translated strings.
 
@@ -310,3 +312,37 @@ limit prevents unrelated package history from changing an error code visible to
 Try. Retention budgets include shared identifier storage; the final owner frees it.
 `WorkspaceError::message_key(&self)` returns borrowed text because a wrapped fault
 may own its key. The public Rust envelope is Clone rather than Copy.
+
+K02d1 scoped cancellation (2026-11-09): local cancellation reuses
+`core/guest-trap` for Interrupted and `core/guest-poisoned` for later calls, with
+static fallbacks and no arguments. The handle's Debug exposes only its local
+cancelled flag, never values, package text, grants or callbacks. Engine clocks,
+instance ownership and cancellation do not depend on locale. No catalogue or WIT
+change is required.
+
+Package integrity correction (2026-11-09): `packages/archive-file-mismatch` reports
+supplied bytes that differ from their verified entry. Paths remain `Rejected` text;
+the host owns authorized display. Loader `GuestLoadError::Integrity` is a static,
+redacted classification. Journal checksum/size refusals contain no payload, path or
+digest contents and use the existing transaction journal presentation contract.
+
+Guest admission correction (2026-11-09): canonical transfer exhaustion keeps the
+existing `core/guest-trap` envelope (`GuestTrap::Other`) and terminal poisoning;
+decoded-output admission keeps `core/guest-output-contract` without poisoning.
+Neither publishes partial values or guest failure text. Memory/table policy, codec
+budgets and cancellation readiness are locale-independent and add no WIT/text keys.
+
+Error-output admission (2026-11-09): copied graph error values retain the original
+code and producer under normal retention budgets. Refusal uses the existing
+state/aggregate infrastructure classifications; no locale-dependent substitution,
+new catalogue key or package fault rewriting is introduced.
+
+Journal writer ownership (2026-11-09): contention and lock I/O failures use the
+existing `packages/transaction-journal` envelope. Reasons contain only static
+operation text and I/O kind, with no path or checkpoint data. Lock ownership and
+recovery selection are independent of locale; no new message key is introduced.
+
+Bundled construction limits (2026-11-09): oversized Split collections and
+collection growth use the existing `core/LimitExceeded` fault and static safe
+fallback. Nominal charge and replacement credit never depend on rendered text or
+locale. No payload, separator or map key is copied into error arguments.
