@@ -251,8 +251,19 @@ declaration. When the host validates a document it states that package nodes ins
 function bodies write no graph variable, which holds for every execution tier because
 package code has no access to a run's variables.
 
-Limits: Pure, Action and Async kinds only (no entries, so a graph package cannot yet
-define a trigger); function and body node IDs are the publisher's, so two versions of
+Trigger nodes made as graphs (2026-11-11): a node of kind `entry` with a `payload`
+output is implemented by a graph file with a `"trigger"` object instead of a function:
+`{"event": "<stand-in id>", "nodes": [...], "edges": [...]}`. The nodes are root nodes
+that start at some other entry (a timer, a manual entry, another package's trigger)
+and end in `core/emit` on the stand-in event. Linking gives each use of the node its
+own copy of the fragment and its own run-scope event, with node, edge and event IDs
+derived from the using node, replaces the stand-in connection with the one the use
+names, and turns the using node into `core/on-event` of that event; it keeps its ID,
+its `then` outcome and its `payload` output, so its edges stay. A fragment is
+validated at installation against stand-in declarations. A trigger without a payload
+cannot be made this way, since an event carries one.
+
+Limits: function and body node IDs are the publisher's, so two versions of
 one graph package cannot be linked into the same document; trace events name body
 nodes that the calling document does not contain.
 

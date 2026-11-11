@@ -1,5 +1,25 @@
 # Tooling, environment and research register
 
+## Graph-made triggers, shared variables and base package options — 2026-11-11
+
+Same branch and toolchain; no dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,726 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limits: Windows only; hosted runs for this branch were queued and had not executed.
+Not tested: a graph-made trigger on a connection or built on a WebSocket message, a
+trigger across a live edit, shared variables across a live edit, `core/set-shared`
+(only `update-shared` with `add`), a shared write while paused or stopping, and more
+than two flows. Found and not fixed: after a package installation is refused at the
+graph check, the same host refuses a corrected build of the same package version
+("installed with a different content digest").
+
 ## Stored packages — 2026-11-11
 
 Same branch and toolchain; no dependency change.

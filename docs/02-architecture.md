@@ -41,6 +41,21 @@ Plugin SDK (2026-11-11): the types a native plugin implements (`ServicePackage`,
 `orange-sdk` crate, which depends on the model, kernel and runtime only. A plugin crate
 depends on it alone; `orange-net` does, and uses the host only in its tests. The host
 re-exports the same types.
+Shared variables (2026-11-11): `Host::share_variables(json)` declares, once, the
+`workspace`-scope variables of a document as the host's shared variables. A document
+that declares a subset with the same IDs and types reads them with
+`core/get-variable` and writes them with `core/set-shared` or `core/update-shared`.
+The host holds one runtime `Workspace` behind a lock; each flow applies its shared
+writes on its own thread under that lock, so writes from different flows are applied
+one at a time and none is lost, and every other flow is woken and takes the new
+snapshot before its next turn. `Host::shared_variable` reads the current value. A
+document that uses shared variables does not open before they are declared. The
+declaration cannot be extended or replaced afterwards, the values are not stored
+between sessions, workspace-scope events are not wired, and an observed flow does not
+report shared values.
+Base packages (2026-11-11): `HostOptions::base_nodes = false` leaves the bundled base
+nodes unregistered, and an application chooses its service packages (the `orange`
+command: `--no-base`, `--no-net`). Core language nodes are always present.
 Stored packages (2026-11-11): with `HostOptions::package_dir` the host saves every
 installed archive in that directory under the name of its SHA-256, and an index,
 `installed.json`, lists them in installation order with the granted capabilities. A
