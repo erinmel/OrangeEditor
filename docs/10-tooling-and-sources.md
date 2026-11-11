@@ -1,5 +1,25 @@
 # Tooling, environment and research register
 
+## Refused packages, built-in node providers and scenario tests — 2026-11-11
+
+Same branch and toolchain; no dependency change.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,728 passed, 0 failed, 16 ignored |
+| `cargo clippy --workspace --all-targets --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+
+New tests: a code-free trigger built on the WebSocket message node fires on the
+connection its use names and reports its payload port; an observed flow reports the
+output of a bundled pure node (`org.orange.math/add`) and the entry payload feeding it;
+a refused trigger package is corrected and installed under the same version on the
+same host. Limits: Windows only; hosted runs were queued during a GitHub outage and
+had not executed. Still not tested: output ports of action and asynchronous nodes,
+ports inside functions and loops, triggers and shared variables across a live edit,
+`core/set-shared`, and the dependency fallback of the graph check.
+
 ## Graph-made triggers, shared variables and base package options — 2026-11-11
 
 Same branch and toolchain; no dependency change.

@@ -53,6 +53,11 @@ document that uses shared variables does not open before they are declared. The
 declaration cannot be extended or replaced afterwards, the values are not stored
 between sessions, workspace-scope events are not wired, and an observed flow does not
 report shared values.
+Placing built-in nodes (2026-11-11): at start the host chooses, for every built-in
+definition that has an implementation and no choice yet, the first provider that
+implements it as the one a newly placed node binds to. Before this the bundled base
+nodes had none, so `new_node_edit` refused them and `Host::nodes` listed them without
+a provider.
 Base packages (2026-11-11): `HostOptions::base_nodes = false` leaves the bundled base
 nodes unregistered, and an application chooses its service packages (the `orange`
 command: `--no-base`, `--no-net`). Core language nodes are always present.

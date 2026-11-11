@@ -260,7 +260,11 @@ own copy of the fragment and its own run-scope event, with node, edge and event 
 derived from the using node, replaces the stand-in connection with the one the use
 names, and turns the using node into `core/on-event` of that event; it keeps its ID,
 its `then` outcome and its `payload` output, so its edges stay. A fragment is
-validated at installation against stand-in declarations. A trigger without a payload
+validated at installation against stand-in declarations. Graph files are checked on a
+throwaway store before the package is published, because a published version is
+permanent: a refused package can be corrected and installed under the same version.
+A package with declared dependencies is still checked after publication and rolled
+back, and then keeps its version's digest. A trigger without a payload
 cannot be made this way, since an event carries one.
 
 Limits: function and body node IDs are the publisher's, so two versions of
