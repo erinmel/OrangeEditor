@@ -1002,6 +1002,10 @@ impl Host {
             }
             return Err(error);
         }
+        // Every trigger is attached: the flow's connections may begin receiving.
+        for (_, session) in flow.opened.values() {
+            session.start();
+        }
         let _ = self.flows.insert(id, flow);
         Ok(id)
     }
@@ -1067,6 +1071,9 @@ impl Host {
         current.opened = prepared.opened;
         current.semantic = prepared.semantic;
         Self::feed(current, prepared.feeds)?;
+        for (_, session) in current.opened.values() {
+            session.start();
+        }
         Ok(Updated {
             changed: true,
             kept_variables: swapped.kept,

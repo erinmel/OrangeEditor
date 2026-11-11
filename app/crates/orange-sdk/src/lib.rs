@@ -34,6 +34,11 @@ pub const SERVICE_PROVIDER: &str = "native";
 /// it back through [`Session::as_any`]. Dropping the last reference closes it.
 pub trait Session: std::fmt::Debug + Send + Sync + 'static {
     fn as_any(&self) -> &dyn Any;
+    /// Called each time a flow that uses the session has started all of its triggers,
+    /// so more than once for a session several flows share. A session that receives
+    /// should not begin before the first call: what arrives earlier has no trigger to
+    /// reach and would be lost. The default does nothing.
+    fn start(&self) {}
 }
 
 /// Opens sessions of one adapter kind from declared settings.

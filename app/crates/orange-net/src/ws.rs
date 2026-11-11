@@ -1,6 +1,7 @@
 //! WebSocket connections: one socket per session, shared by every node that names it.
 //!
-//! A session owns one I/O thread. It connects, reconnects with backoff, writes queued
+//! A session owns one I/O thread. It connects once a flow using it has attached its
+//! triggers, reconnects with backoff, writes queued
 //! outgoing messages and fans each received text message out to the entry nodes that
 //! listen. Nodes never touch the socket: sending queues a message and returns, and a
 //! listener is fired through its emitter, so a slow or paused flow cannot stall the
@@ -53,6 +54,8 @@ struct Shared {
     outgoing: Mutex<VecDeque<String>>,
     listeners: Mutex<Vec<(u64, Emitter)>>,
     next_listener: AtomicU64,
+    /// Set once a flow has attached its triggers; the socket is not opened before.
+    started: AtomicBool,
     stop: AtomicBool,
 }
 impl Shared {
@@ -76,6 +79,9 @@ struct WsSession(Arc<Shared>);
 impl Session for WsSession {
     fn as_any(&self) -> &dyn Any {
         self
+    }
+    fn start(&self) {
+        self.0.started.store(true, Ordering::Release);
     }
 }
 impl Drop for WsSession {
@@ -133,6 +139,11 @@ fn serve(shared: &Shared, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
 }
 
 fn run(shared: &Shared) {
+    // A server may speak first. Connecting only once a flow has attached its triggers
+    // means its first messages have somewhere to go.
+    while !shared.started.load(Ordering::Acquire) && !shared.stopped() {
+        thread::sleep(POLL);
+    }
     let mut retry = FIRST_RETRY;
     while !shared.stopped() {
         if let Ok((mut socket, _)) = tungstenite::connect(shared.url.as_str()) {
@@ -165,6 +176,7 @@ impl ConnectionAdapter for WsAdapter {
             outgoing: Mutex::new(VecDeque::new()),
             listeners: Mutex::new(Vec::new()),
             next_listener: AtomicU64::new(0),
+            started: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
         // Connecting happens on the session's own thread, never here.
