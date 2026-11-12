@@ -26,10 +26,13 @@ const policy = {
   'orange-sdk': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-runtime']},
   // Terminal front end; reaches the product only through the host and the service
   // packages it builds in.
-  'orange-cli': {core: false, normal: ['orange-host', 'orange-net']},
+  'orange-cli': {core: false, normal: ['orange-host', 'orange-net', 'orange-audio']},
   // Base network service package: the only crate with a network client. It is built on
   // the plugin SDK alone; its tests run it in a host.
   'orange-net': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
+  // Base audio service package: the only crate with an audio device library. Built on
+  // the plugin SDK alone; its tests run it in a host.
+  'orange-audio': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
 };
 // UI, window, renderer and engine frameworks that graph-core crates must never depend on
 // (ADR-01, ADR-02, ADR-21). Host applications may use them.
