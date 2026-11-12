@@ -13,6 +13,7 @@ path = "src/main.rs"
 [dependencies]
 orange-audio = { path = "../orange-audio", version = "=0.0.0" }
 orange-host = { path = "../orange-host", version = "=0.0.0" }
+orange-native = { path = "../orange-native", version = "=0.0.0" }
 orange-net = { path = "../orange-net", version = "=0.0.0" }
 
 [lints]

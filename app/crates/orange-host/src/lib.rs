@@ -388,7 +388,8 @@ pub struct PackageInfo<'a> {
     pub id: &'a str,
     pub version: &'a str,
     /// The manifest of an installed package: its `about` text, its `update` source, its
-    /// nodes and its digest. `None` for a package compiled into the application, which
+    /// nodes and its digest. `None` for a native service package, compiled into the
+    /// application or loaded from a plugin library when it started, which
     /// cannot be removed while it runs.
     pub manifest: Option<&'a PackageManifest>,
 }

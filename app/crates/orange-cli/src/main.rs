@@ -54,6 +54,10 @@ connection's `device` setting can name.
 The base audio package is built in too: adapters `org.orange.audio/output` and
 `org.orange.audio/input`.
 
+`--plugins <dir>` loads every native plugin library in a directory (`.dll`, `.so` or
+`.dylib` files built on the plugin SDK with this application's compiler and lockfile).
+A native plugin runs with all of this program's rights; load only what you trust.
+
 `--no-base` leaves out the bundled base nodes, `--no-net` the network package and
 `--no-audio` the audio package.
 
@@ -71,6 +75,7 @@ struct Arguments {
     network: bool,
     audio: bool,
     apply: bool,
+    plugins: Vec<String>,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -88,6 +93,7 @@ fn arguments() -> Result<Arguments, String> {
         network: true,
         audio: true,
         apply: false,
+        plugins: Vec::new(),
     };
     while let Some(word) = words.next() {
         match word.as_str() {
@@ -107,6 +113,9 @@ fn arguments() -> Result<Arguments, String> {
             "--no-net" => parsed.network = false,
             "--no-audio" => parsed.audio = false,
             "--apply" => parsed.apply = true,
+            "--plugins" => parsed
+                .plugins
+                .push(words.next().ok_or("--plugins needs a directory")?),
             "--store" => parsed.store = Some(words.next().ok_or("--store needs a directory")?),
             "--for" => {
                 let text = words.next().ok_or("--for needs milliseconds")?;
@@ -420,6 +429,25 @@ fn main() -> ExitCode {
     if arguments.audio {
         services.push(orange_audio::package());
     }
+    for directory in &arguments.plugins {
+        let loaded = match orange_native::load_directory(Path::new(directory)) {
+            Ok(loaded) => loaded,
+            Err(error) => {
+                eprintln!("{directory}: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        for (path, package) in loaded {
+            match package {
+                Ok(package) => {
+                    println!("loaded plugin {} {}", package.id(), package.version());
+                    services.push(package);
+                }
+                // One bad library does not stop the others or the program.
+                Err(error) => eprintln!("{}: {error}", path.display()),
+            }
+        }
+    }
     let options = HostOptions {
         package_dir: arguments.store.as_ref().map(Into::into),
         base_nodes: arguments.base_nodes,
@@ -459,7 +487,7 @@ fn main() -> ExitCode {
                     if package.manifest.is_some() {
                         "installed"
                     } else {
-                        "built-in"
+                        "native"
                     },
                     about.and_then(orange_host::About::name).unwrap_or("-"),
                 );
