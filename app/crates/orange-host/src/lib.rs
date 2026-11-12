@@ -42,6 +42,7 @@ use orange_runtime::{
 };
 use services::Services;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -351,6 +352,39 @@ pub struct NodeInfo<'a> {
     /// The implementation a newly placed node binds to. `None` for core nodes, which
     /// the language implements, and for a definition nothing implements.
     pub provider: Option<&'a ProviderKey>,
+}
+impl NodeInfo<'_> {
+    /// The node's name in the default language: its definition file's label, or a name
+    /// made from its ID (`core/set-variable` is "Set variable") when it has none.
+    pub fn label(&self) -> Cow<'_, str> {
+        match self.presentation.and_then(|shown| shown.label.as_ref()) {
+            Some(label) => Cow::Borrowed(label.fallback.as_str()),
+            None => {
+                let id = self.definition.definition.id.as_str();
+                Cow::Owned(words(id.rsplit('/').next().unwrap_or(id)))
+            }
+        }
+    }
+    /// The palette category in the default language: its definition file's category,
+    /// or one made from the ID's namespace (`org.orange.math/add` is in "Math").
+    pub fn category(&self) -> Cow<'_, str> {
+        match self.presentation.and_then(|shown| shown.category.as_ref()) {
+            Some(category) => Cow::Borrowed(category.fallback.as_str()),
+            None => {
+                let id = self.definition.definition.id.as_str();
+                let namespace = id.split('/').next().unwrap_or(id);
+                Cow::Owned(words(namespace.rsplit('.').next().unwrap_or(namespace)))
+            }
+        }
+    }
+}
+/// `set-variable` as "Set variable".
+fn words(slug: &str) -> String {
+    let mut text = slug.replace(['-', '_'], " ");
+    if let Some(first) = text.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    text
 }
 
 /// See the crate documentation.
