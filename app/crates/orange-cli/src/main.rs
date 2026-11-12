@@ -16,6 +16,8 @@ usage:
   orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>]
   orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>]
   orange pack  <package-dir> <out.orangeplug>
+  orange nodes [--package <file.orangeplug>]... [--store <dir>]
+  orange devices
 
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
 what they do. While it runs, type commands on standard input:
@@ -37,7 +39,15 @@ package is built in: adapters `org.orange.net/http` and `org.orange.net/websocke
 `--package` are saved there, and later commands with the same `--store` have them
 without `--package`.
 
-`--no-base` leaves out the bundled base nodes and `--no-net` the network package.
+`nodes` lists every node a graph can use: its ID and version, its name, its category
+and the package that implements it. `devices` lists the audio devices an audio
+connection's `device` setting can name.
+
+The base audio package is built in too: adapters `org.orange.audio/output` and
+`org.orange.audio/input`.
+
+`--no-base` leaves out the bundled base nodes, `--no-net` the network package and
+`--no-audio` the audio package.
 
 `--grant-log` lets installed package code write log lines. `--for` stops after a time.";
 
@@ -51,6 +61,7 @@ struct Arguments {
     store: Option<String>,
     base_nodes: bool,
     network: bool,
+    audio: bool,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -66,6 +77,7 @@ fn arguments() -> Result<Arguments, String> {
         store: None,
         base_nodes: true,
         network: true,
+        audio: true,
     };
     while let Some(word) = words.next() {
         match word.as_str() {
@@ -83,6 +95,7 @@ fn arguments() -> Result<Arguments, String> {
             "--grant-log" => parsed.grants.log = true,
             "--no-base" => parsed.base_nodes = false,
             "--no-net" => parsed.network = false,
+            "--no-audio" => parsed.audio = false,
             "--store" => parsed.store = Some(words.next().ok_or("--store needs a directory")?),
             "--for" => {
                 let text = words.next().ok_or("--for needs milliseconds")?;
@@ -93,7 +106,7 @@ fn arguments() -> Result<Arguments, String> {
             _ => parsed.graphs.push(word),
         }
     }
-    if parsed.graphs.is_empty() {
+    if parsed.graphs.is_empty() && parsed.command != "nodes" {
         return Err("no graph given".into());
     }
     Ok(parsed)
@@ -293,8 +306,27 @@ fn main() -> ExitCode {
             }
         };
     }
+    if words.first().map(String::as_str) == Some("devices") {
+        return match orange_audio::devices() {
+            Ok(devices) => {
+                for name in devices.outputs {
+                    println!("output  {name}");
+                }
+                for name in devices.inputs {
+                    println!("input   {name}");
+                }
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     let arguments = match arguments() {
-        Ok(arguments) if matches!(arguments.command.as_str(), "check" | "run") => arguments,
+        Ok(arguments) if matches!(arguments.command.as_str(), "check" | "run" | "nodes") => {
+            arguments
+        }
         Ok(arguments) => {
             eprintln!("unknown command `{}`\n{USAGE}", arguments.command);
             return ExitCode::from(2);
@@ -304,11 +336,13 @@ fn main() -> ExitCode {
             return ExitCode::from(2);
         }
     };
-    let services = if arguments.network {
-        vec![orange_net::package()]
-    } else {
-        Vec::new()
-    };
+    let mut services = Vec::new();
+    if arguments.network {
+        services.push(orange_net::package());
+    }
+    if arguments.audio {
+        services.push(orange_audio::package());
+    }
     let options = HostOptions {
         package_dir: arguments.store.as_ref().map(Into::into),
         base_nodes: arguments.base_nodes,
@@ -336,6 +370,21 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+    }
+    if arguments.command == "nodes" {
+        for info in host.nodes() {
+            let definition = &info.definition.definition;
+            println!(
+                "{}@{}	{}	{}	{}",
+                definition.id.as_str(),
+                definition.version,
+                info.label(),
+                info.category(),
+                info.provider
+                    .map_or("-", |provider| provider.package.as_str()),
+            );
+        }
+        return ExitCode::SUCCESS;
     }
     for [id, adapter, path] in &arguments.shared {
         let shared = read(path).and_then(|bytes| share(&mut host, id, adapter, &bytes));
