@@ -17,6 +17,9 @@ usage:
   orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>]
   orange pack  <package-dir> <out.orangeplug>
   orange nodes [--package <file.orangeplug>]... [--store <dir>]
+  orange packages [--store <dir>]
+  orange remove <package-id> <version> --store <dir>
+  orange updates [--apply] [--grant-log] --store <dir>
   orange devices
 
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
@@ -38,6 +41,11 @@ package is built in: adapters `org.orange.net/http` and `org.orange.net/websocke
 `--store <dir>` keeps installed packages in a directory: packages given with
 `--package` are saved there, and later commands with the same `--store` have them
 without `--package`.
+
+`packages` lists the built-in and the stored packages. `remove` takes one out of the
+store. `updates` reads the update feed each stored package names and lists newer
+releases; with `--apply` it downloads each, checks its digest against the feed and
+installs it. Packages are installed at your own risk: their code is not reviewed.
 
 `nodes` lists every node a graph can use: its ID and version, its name, its category
 and the package that implements it. `devices` lists the audio devices an audio
@@ -62,6 +70,7 @@ struct Arguments {
     base_nodes: bool,
     network: bool,
     audio: bool,
+    apply: bool,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -78,6 +87,7 @@ fn arguments() -> Result<Arguments, String> {
         base_nodes: true,
         network: true,
         audio: true,
+        apply: false,
     };
     while let Some(word) = words.next() {
         match word.as_str() {
@@ -96,6 +106,7 @@ fn arguments() -> Result<Arguments, String> {
             "--no-base" => parsed.base_nodes = false,
             "--no-net" => parsed.network = false,
             "--no-audio" => parsed.audio = false,
+            "--apply" => parsed.apply = true,
             "--store" => parsed.store = Some(words.next().ok_or("--store needs a directory")?),
             "--for" => {
                 let text = words.next().ok_or("--for needs milliseconds")?;
@@ -106,7 +117,7 @@ fn arguments() -> Result<Arguments, String> {
             _ => parsed.graphs.push(word),
         }
     }
-    if parsed.graphs.is_empty() && parsed.command != "nodes" {
+    if parsed.graphs.is_empty() && matches!(parsed.command.as_str(), "check" | "run") {
         return Err("no graph given".into());
     }
     Ok(parsed)
@@ -285,6 +296,67 @@ fn pack(directory: &str, output: &str) -> Result<usize, String> {
     Ok(files.len())
 }
 
+/// Largest release archive `updates --apply` downloads.
+const MAX_RELEASE_BYTES: u64 = 256 * 1024 * 1024;
+
+/// Reads the feed of every installed package that names one and reports, or installs,
+/// the newer releases.
+fn updates(host: &mut Host, apply: bool, grants: Grants) -> ExitCode {
+    let mut found = Vec::new();
+    let mut failed = false;
+    for package in host.packages() {
+        let Some(manifest) = package.manifest else {
+            continue;
+        };
+        let Some(source) = manifest.update() else {
+            continue;
+        };
+        let release = orange_net::download(source.feed(), 1024 * 1024)
+            .and_then(|bytes| {
+                orange_host::UpdateFeed::from_json(&bytes).map_err(|error| error.to_string())
+            })
+            .map(|feed| feed.update_for(manifest).cloned());
+        match release {
+            Ok(Some(release)) => {
+                println!(
+                    "{} {} -> {} ({})",
+                    package.id,
+                    package.version,
+                    release.key().version.as_str(),
+                    release.archive()
+                );
+                found.push(release);
+            }
+            Ok(None) => println!("{} {} is up to date", package.id, package.version),
+            Err(message) => {
+                eprintln!("{} {}: {message}", package.id, package.version);
+                failed = true;
+            }
+        }
+    }
+    if apply {
+        for release in found {
+            let installed =
+                orange_net::download(release.archive(), MAX_RELEASE_BYTES).and_then(|archive| {
+                    host.install_release(&archive, grants, release.content_digest())
+                        .map_err(|error| error.to_string())
+                });
+            match installed {
+                Ok(key) => println!("installed {} {}", key.id.as_str(), key.version.as_str()),
+                Err(message) => {
+                    eprintln!("{}: {message}", release.archive());
+                    failed = true;
+                }
+            }
+        }
+    }
+    if failed {
+        ExitCode::FAILURE
+    } else {
+        ExitCode::SUCCESS
+    }
+}
+
 fn main() -> ExitCode {
     let words: Vec<String> = std::env::args().skip(1).collect();
     if words.first().map(String::as_str) == Some("pack") {
@@ -324,7 +396,12 @@ fn main() -> ExitCode {
         };
     }
     let arguments = match arguments() {
-        Ok(arguments) if matches!(arguments.command.as_str(), "check" | "run" | "nodes") => {
+        Ok(arguments)
+            if matches!(
+                arguments.command.as_str(),
+                "check" | "run" | "nodes" | "packages" | "remove" | "updates"
+            ) =>
+        {
             arguments
         }
         Ok(arguments) => {
@@ -370,6 +447,55 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+    }
+    match arguments.command.as_str() {
+        "packages" => {
+            for package in host.packages() {
+                let about = package.manifest.map(orange_host::PackageManifest::about);
+                println!(
+                    "{}	{}	{}	{}",
+                    package.id,
+                    package.version,
+                    if package.manifest.is_some() {
+                        "installed"
+                    } else {
+                        "built-in"
+                    },
+                    about.and_then(orange_host::About::name).unwrap_or("-"),
+                );
+            }
+            return ExitCode::SUCCESS;
+        }
+        "remove" => {
+            let [id, version] = &arguments.graphs[..] else {
+                eprintln!(
+                    "remove needs a package ID and a version
+{USAGE}"
+                );
+                return ExitCode::from(2);
+            };
+            let found = host
+                .packages()
+                .filter_map(|package| package.manifest)
+                .map(orange_host::PackageManifest::key)
+                .find(|key| key.id.as_str() == id && key.version.as_str() == version)
+                .cloned();
+            let removed = found
+                .ok_or_else(|| format!("{id} {version} is not installed"))
+                .and_then(|key| host.uninstall(&key).map_err(|error| error.to_string()));
+            return match removed {
+                Ok(()) => {
+                    println!("removed {id} {version}");
+                    ExitCode::SUCCESS
+                }
+                Err(message) => {
+                    eprintln!("{message}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        "updates" => return updates(&mut host, arguments.apply, arguments.grants),
+        _ => {}
     }
     if arguments.command == "nodes" {
         for info in host.nodes() {

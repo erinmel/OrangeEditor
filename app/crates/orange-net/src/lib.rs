@@ -178,6 +178,36 @@ const HTTP_REQUEST_DEFINITION: &str = r#"{
   ]
 }"#;
 
+/// Downloads an `https://` URL, following redirects only to other `https://` URLs: how
+/// an application reads a package's update feed or a release archive. Anything but
+/// status 200, or a body over `max_bytes`, is an error. This is not a graph node and
+/// needs no host.
+pub fn download(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
+    if !url.starts_with("https://") {
+        return Err("the URL must start with https://".into());
+    }
+    let agent = Agent::config_builder()
+        .timeout_global(Some(Duration::from_millis(DEFAULT_TIMEOUT_MS)))
+        .https_only(true)
+        .http_status_as_error(false)
+        .build()
+        .new_agent();
+    let mut response = agent
+        .get(url)
+        .call()
+        .map_err(|_| "the download could not be completed".to_owned())?;
+    let status = response.status().as_u16();
+    if status != 200 {
+        return Err(format!("the server answered with status {status}"));
+    }
+    response
+        .body_mut()
+        .with_config()
+        .limit(max_bytes)
+        .read_to_vec()
+        .map_err(|_| "the download is too large or was cut short".to_owned())
+}
+
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
