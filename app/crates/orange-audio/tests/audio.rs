@@ -202,8 +202,16 @@ fn a_stop_node_ends_a_long_sound_early() {
     host.trigger(flow, node(1), None).unwrap();
     std::thread::sleep(Duration::from_millis(100));
     assert_eq!(read(&host, flow, 100), None);
-    host.trigger(flow, node(7), None).unwrap();
-    until("the sound to stop", || read(&host, flow, 100).is_some());
+    // Decoding takes a machine-dependent time and a stop before the sound has started
+    // stops nothing, so stop until it has ended.
+    let mut last = Instant::now() - Duration::from_secs(1);
+    until("the sound to stop", || {
+        if last.elapsed() >= Duration::from_millis(100) {
+            last = Instant::now();
+            host.trigger(flow, node(7), None).unwrap();
+        }
+        read(&host, flow, 100).is_some()
+    });
     assert_eq!(read(&host, flow, 100), Some(Value::I64(1)));
     assert!(started.elapsed() < Duration::from_secs(15));
 }
