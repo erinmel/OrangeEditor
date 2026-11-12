@@ -220,7 +220,15 @@ fn imported_log_strings_obey_transfer_admission_before_the_retained_log_limit() 
         })
         .unwrap();
         let component = engine.compile(text.as_bytes()).unwrap();
-        let mut plugin = GuestPlugin::new(&component, Grants { log: true }).unwrap();
+        let mut plugin = GuestPlugin::new(
+            &component,
+            Grants {
+                log: true,
+                files: false,
+                http: false,
+            },
+        )
+        .unwrap();
         let result = plugin.evaluate(&types, &message, &[], &[]);
         if allowed {
             assert_eq!(result, Ok(Ok(vec![])));

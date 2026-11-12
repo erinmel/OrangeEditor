@@ -67,7 +67,10 @@ A native plugin runs with all of this program's rights; load only what you trust
 `--no-base` leaves out the bundled base nodes, `--no-net` the network package and
 `--no-audio` the audio package.
 
-`--grant-log` lets installed package code write log lines. `--for` stops after a time.";
+`--grant-log` lets installed package code write log lines, `--grant-files` lets it
+read and write files in its own data directory (`--plugin-data <dir>`, or `data` in the
+store), and `--grant-http` lets it send HTTPS requests. A grant is given to the
+packages installed by that command and is kept with them in the store. `--for` stops after a time.";
 
 struct Arguments {
     command: String,
@@ -82,6 +85,7 @@ struct Arguments {
     audio: bool,
     apply: bool,
     plugins: Vec<String>,
+    plugin_data: Option<String>,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -100,6 +104,7 @@ fn arguments() -> Result<Arguments, String> {
         audio: true,
         apply: false,
         plugins: Vec::new(),
+        plugin_data: None,
     };
     while let Some(word) = words.next() {
         match word.as_str() {
@@ -115,6 +120,11 @@ fn arguments() -> Result<Arguments, String> {
                 parsed.shared.push([next()?, next()?, next()?]);
             }
             "--grant-log" => parsed.grants.log = true,
+            "--grant-files" => parsed.grants.files = true,
+            "--grant-http" => parsed.grants.http = true,
+            "--plugin-data" => {
+                parsed.plugin_data = Some(words.next().ok_or("--plugin-data needs a directory")?);
+            }
             "--no-base" => parsed.base_nodes = false,
             "--no-net" => parsed.network = false,
             "--no-audio" => parsed.audio = false,
@@ -439,6 +449,26 @@ fn updates(
     }
 }
 
+/// The network client of installed packages that hold the `http` grant.
+#[derive(Debug)]
+struct PluginHttp;
+impl orange_host::HttpClient for PluginHttp {
+    fn send(
+        &self,
+        request: &orange_host::HttpRequest,
+    ) -> Result<orange_host::HttpResponse, String> {
+        let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
+        orange_net::fetch(
+            &request.method,
+            &request.url,
+            &request.headers,
+            &request.body,
+            limit,
+        )
+        .map(|(status, body)| orange_host::HttpResponse { status, body })
+    }
+}
+
 fn main() -> ExitCode {
     let words: Vec<String> = std::env::args().skip(1).collect();
     if words.first().map(String::as_str) == Some("pack") {
@@ -533,6 +563,18 @@ fn main() -> ExitCode {
     let options = HostOptions {
         package_dir: arguments.store.as_ref().map(Into::into),
         base_nodes: arguments.base_nodes,
+        // Without `--plugin-data`, package data lives beside the stored packages.
+        plugin_data_dir: arguments
+            .plugin_data
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(|| {
+                arguments
+                    .store
+                    .as_ref()
+                    .map(|store| Path::new(store).join("data"))
+            }),
+        plugin_http: Some(std::sync::Arc::new(PluginHttp)),
         ..HostOptions::default()
     };
     let (mut host, events) = match Host::with_services(options, services) {

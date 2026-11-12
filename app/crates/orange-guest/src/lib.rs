@@ -8,11 +8,13 @@
 //! This crate is a host boundary. Graph-core crates never depend on it, and no
 //! Wasmtime type is part of the graph model.
 
+pub mod access;
 mod cancellation;
 mod limits;
 mod nodes;
 mod plugin;
 
+pub use access::{GuestAccess, HttpClient, HttpRequest, HttpResponse};
 pub use cancellation::GuestCancellation;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};

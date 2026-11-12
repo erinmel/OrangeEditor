@@ -70,6 +70,8 @@ pub(crate) fn load(directory: &Path) -> Result<Vec<Saved>, String> {
             file,
             grants: Grants {
                 log: entry["log"] == true,
+                files: entry["files"] == true,
+                http: entry["http"] == true,
             },
             key: entry["id"]
                 .as_str()
@@ -136,6 +138,7 @@ pub(crate) fn save(
     let mut packages = entries(directory)?;
     packages.retain(|entry| entry["archive"] != name.as_str());
     packages.push(json!({"archive": name, "log": grants.log,
+        "files": grants.files, "http": grants.http,
         "id": key.id.as_str(), "version": key.version.as_str()}));
     write(directory, &name, archive)?;
     let index = json!({"format": FORMAT, "format_version": 1, "packages": packages});

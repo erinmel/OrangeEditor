@@ -22,7 +22,11 @@ pub(crate) fn probe_bytes() -> Vec<u8> {
         None => PROBE.to_vec(),
     }
 }
-const LOG: Grants = Grants { log: true };
+const LOG: Grants = Grants {
+    log: true,
+    files: false,
+    http: false,
+};
 
 fn types() -> TypeRegistry {
     TypeRegistryBuilder::core().build().unwrap()

@@ -169,9 +169,18 @@ fn an_archived_guest_node_compiles_beside_bundled_math_and_keeps_fault_sources()
         .unwrap();
     let engine = GuestEngine::new(GuestLimits::default()).unwrap();
     let (verified, files) = archive(manifest("orange:expansion/plugin@1.0.0"));
-    let guest =
-        GuestPackage::from_archive(&engine, &verified, &files, "guest", Grants { log: true })
-            .unwrap();
+    let guest = GuestPackage::from_archive(
+        &engine,
+        &verified,
+        &files,
+        "guest",
+        Grants {
+            log: true,
+            files: false,
+            http: false,
+        },
+    )
+    .unwrap();
     assert_eq!(guest.provider().package, "org.example.probe");
     assert_eq!(guest.provider().content_digest, verified.content_digest());
 

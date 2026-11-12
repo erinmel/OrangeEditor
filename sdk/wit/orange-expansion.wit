@@ -43,6 +43,42 @@ interface log {
     write: func(message: string);
 }
 
+/// Granted only with the `files` permission: the package's own data directory, which
+/// the application keeps for it. Nothing outside that directory can be named. A path
+/// is relative, with `/` between plain names. Errors are one of `not-found`,
+/// `invalid-path`, `too-large`, `unavailable` and `failed`.
+interface files {
+    /// Reads a whole file.
+    read: func(path: string) -> result<list<u8>, string>;
+    /// Creates or replaces a file, creating the directories on its path.
+    write: func(path: string, data: list<u8>) -> result<_, string>;
+    /// The names in a directory, sorted; `""` is the data directory itself and a
+    /// directory's name ends with `/`.
+    %list: func(path: string) -> result<list<string>, string>;
+    /// Deletes a file.
+    remove: func(path: string) -> result<_, string>;
+}
+
+/// Granted only with the `http` permission: HTTPS requests through the application's
+/// network client. A call blocks the node until the answer arrives, so it belongs in an
+/// async node. Errors are one of `invalid-request`, `too-large`, `unavailable` and
+/// `failed`.
+interface http {
+    record request {
+        /// `GET`, `HEAD`, `POST`, `PUT`, `PATCH` or `DELETE`.
+        method: string,
+        /// An `https://` URL.
+        url: string,
+        headers: list<tuple<string, string>>,
+        body: list<u8>,
+    }
+    record response {
+        status: u16,
+        body: list<u8>,
+    }
+    send: func(request: request) -> result<response, string>;
+}
+
 /// Pure node implementations contributed by the package.
 interface nodes {
     use types.{value, node-error};
@@ -69,6 +105,8 @@ interface effects {
 world plugin {
     import host;
     import log;
+    import files;
+    import http;
     export nodes;
     export effects;
 }

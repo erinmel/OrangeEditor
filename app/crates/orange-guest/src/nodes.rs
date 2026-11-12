@@ -16,7 +16,9 @@ use orange_model::id::{PortKey, TypeExpr};
 use orange_packages::{Execution, MemorySink, VerifiedArchive};
 use thiserror::Error;
 
-use crate::{Grants, GuestCancellation, GuestComponent, GuestEngine, GuestError, GuestPlugin};
+use crate::{
+    Grants, GuestAccess, GuestCancellation, GuestComponent, GuestEngine, GuestError, GuestPlugin,
+};
 
 /// Worlds of this major version are loadable; the host offers 1.0 (`API_VERSION`).
 pub const PLUGIN_WORLD_PREFIX: &str = "orange:expansion/plugin@1.";
@@ -49,9 +51,17 @@ pub struct GuestPackage {
     provider: ProviderKey,
     component: GuestComponent,
     grants: Grants,
+    access: GuestAccess,
 }
 
 impl GuestPackage {
+    /// Sets what the package's instances reach with their `files` and `http` grants.
+    #[must_use]
+    pub fn with_access(mut self, access: GuestAccess) -> Self {
+        self.access = access;
+        self
+    }
+
     /// Prepares the component of a verified archive whose files `files` received.
     /// `provider_id` names one of the manifest's provider contributions; `grants` are the
     /// host capabilities the user approved for it.
@@ -93,6 +103,7 @@ impl GuestPackage {
             },
             component,
             grants,
+            access: GuestAccess::default(),
         })
     }
 
@@ -231,7 +242,7 @@ impl GuestPackage {
                 output_types.push(ty);
             }
         }
-        let plugin = GuestPlugin::new(&self.component, self.grants)
+        let plugin = GuestPlugin::with_access(&self.component, self.grants, self.access.clone())
             .map_err(|_| ResolveError::Unavailable)?;
         let cancellation = plugin.cancellation();
         Ok((

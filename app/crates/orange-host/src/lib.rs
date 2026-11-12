@@ -23,7 +23,7 @@ use flow::{Context, Query, Shared, Sink};
 use graphs::{GraphNode, Graphs};
 use orange_bundled::MathPackage;
 use orange_compiler::{CompileError, CompileOptions, compile_control_with_effects};
-use orange_guest::{GuestEngine, GuestLoadError, GuestPackage, WithGuests};
+use orange_guest::{GuestAccess, GuestEngine, GuestLoadError, GuestPackage, WithGuests};
 use orange_kernel::{
     BindingRequest, EffectBinding, EffectResolver, EntropyBinding, EntropyKernelResolver,
     KernelBinding, PureKernelResolver, ResolveError,
@@ -52,7 +52,7 @@ use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
-pub use orange_guest::{Grants, GuestLimits};
+pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextRef};
@@ -146,6 +146,13 @@ pub struct HostOptions {
     /// [`Host::set_enabled`] saved in [`package_dir`](Self::package_dir): the base
     /// nodes ([`BASE_PACKAGE`]), service packages and installed packages alike.
     pub disabled_packages: BTreeSet<String>,
+    /// Where packages holding the `files` grant keep their data: each gets the
+    /// directory `<plugin_data_dir>/<package ID>` and can name nothing outside it.
+    /// `None` leaves that grant with nothing to reach.
+    pub plugin_data_dir: Option<PathBuf>,
+    /// The network client for packages holding the `http` grant. `None` leaves that
+    /// grant with nothing to reach.
+    pub plugin_http: Option<Arc<dyn HttpClient>>,
 }
 impl Default for HostOptions {
     fn default() -> Self {
@@ -160,6 +167,8 @@ impl Default for HostOptions {
             package_dir: None,
             base_nodes: true,
             disabled_packages: BTreeSet::new(),
+            plugin_data_dir: None,
+            plugin_http: None,
         }
     }
 }
@@ -978,13 +987,24 @@ impl Host {
                     .iter()
                     .all(|guest| guest.provider().id != provider.id)
             {
-                guests.push(GuestPackage::from_archive(
-                    &self.engine,
-                    &verified,
-                    &files,
-                    &provider.id,
-                    grants,
-                )?);
+                let access = GuestAccess {
+                    data_dir: self
+                        .options
+                        .plugin_data_dir
+                        .as_ref()
+                        .map(|root| root.join(key.id.as_str())),
+                    http: self.options.plugin_http.clone(),
+                };
+                guests.push(
+                    GuestPackage::from_archive(
+                        &self.engine,
+                        &verified,
+                        &files,
+                        &provider.id,
+                        grants,
+                    )?
+                    .with_access(access),
+                );
             }
         }
 

@@ -208,6 +208,47 @@ pub fn download(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
         .map_err(|_| "the download is too large or was cut short".to_owned())
 }
 
+/// Sends one HTTPS request and returns the status and body: what an application's
+/// client for plugins holding the `http` grant does. Redirects are not followed, so
+/// the request reaches only the host it names; a body over `max_bytes` is an error.
+pub fn fetch(
+    method: &str,
+    url: &str,
+    headers: &[(String, String)],
+    body: &[u8],
+    max_bytes: u64,
+) -> Result<(u16, Vec<u8>), String> {
+    if !url.starts_with("https://") {
+        return Err("the URL must start with https://".into());
+    }
+    let agent: Agent = Agent::config_builder()
+        .timeout_global(Some(Duration::from_millis(DEFAULT_TIMEOUT_MS)))
+        .https_only(true)
+        .max_redirects(0)
+        .http_status_as_error(false)
+        .build()
+        .new_agent();
+    let method = Method::from_bytes(method.as_bytes()).map_err(|_| "the method is not valid")?;
+    let mut request = Request::builder().method(method).uri(url);
+    for (name, value) in headers {
+        request = request.header(name.as_str(), value.as_str());
+    }
+    let request = request
+        .body(body.to_vec())
+        .map_err(|_| "the request is not valid".to_owned())?;
+    let mut response = agent
+        .run(request)
+        .map_err(|_| "the request could not be completed".to_owned())?;
+    let status = response.status().as_u16();
+    let body = response
+        .body_mut()
+        .with_config()
+        .limit(max_bytes)
+        .read_to_vec()
+        .map_err(|_| "the response is too large or was cut short".to_owned())?;
+    Ok((status, body))
+}
+
 fn unhex(text: &str) -> Option<Vec<u8>> {
     let digits = text.as_bytes();
     if !digits.len().is_multiple_of(2) {

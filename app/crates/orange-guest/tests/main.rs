@@ -1,5 +1,6 @@
 //! K02a probe: one engine, isolated instances, deterministic fuel, host interruption,
 //! memory limits, stack overflow and refused ungranted imports (ADR-03 falsification).
+mod access;
 mod archive_nodes;
 mod guest_effects;
 mod plugin;

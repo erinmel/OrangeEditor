@@ -205,11 +205,25 @@ fn an_installed_package_node_runs_on_a_worker_and_returns_to_its_flow() {
     assert!(host.registry().definition(&definition).is_none());
     // The probe imports `log`, so the user's grant must include it.
     assert!(matches!(
-        host.install(&probe_archive()[..10], Grants { log: true }),
+        host.install(
+            &probe_archive()[..10],
+            Grants {
+                log: true,
+                files: false,
+                http: false,
+            }
+        ),
         Err(HostError::Archive(_))
     ));
     let key = host
-        .install(&probe_archive(), Grants { log: true })
+        .install(
+            &probe_archive(),
+            Grants {
+                log: true,
+                files: false,
+                http: false,
+            },
+        )
         .unwrap();
     assert_eq!(key.id.as_str(), "org.example.probe");
 
@@ -512,7 +526,14 @@ fn the_host_lists_every_node_a_document_can_use() {
     assert_eq!(find(&host, ACCUMULATE), None);
 
     let key = host
-        .install(&probe_archive(), Grants { log: true })
+        .install(
+            &probe_archive(),
+            Grants {
+                log: true,
+                files: false,
+                http: false,
+            },
+        )
         .unwrap();
     let (provider, _) = find(&host, ACCUMULATE).expect("an installed node is listed");
     assert_eq!(provider.unwrap().package, key.id.as_str());
