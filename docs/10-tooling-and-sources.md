@@ -1,5 +1,30 @@
 # Tooling, environment and research register
 
+## Native plugin libraries and the audio stop test — 2026-11-11
+
+Hosted run 43142118022 failed `a_stop_node_ends_a_long_sound_early` on Linux, Windows
+and macOS by timeout. The test stopped once, 100 ms after starting a 30 s sound; on the
+hosted machines the sound had not started yet, and a stop before a sound starts stops
+nothing. The test now repeats the stop until the sound has ended. No product change.
+
+Native plugin libraries: `libloading` 0.9.0 (ISC; `Library::new`, `Library::get` with a
+`&str` symbol name, read from the 0.9.0 crate source).
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,755 passed, 0 failed, 18 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange nodes --plugins <dir>` with the example library and a junk `.dll` | Plugin loaded and its node listed; the junk file reported and skipped |
+
+The loader's test builds `orange-plugin-example` with a nested `cargo build` in the
+profile the test itself was built with, then loads the library from the same target
+directory. Limits: Windows only so far; the ABI refusal (`LoadError::Abi`) has no test
+because a mismatched library needs a second compiler; a panicking plugin, and a plugin
+built with other dependency versions, are documented as unsupported and not tested.
+
 ## Audio package, package management and update feeds — 2026-11-11
 
 Branch `feat/core-completion-audio` from `dev` 2ed1649 (Wasmtime 50.0.1). Rust 1.99.1,

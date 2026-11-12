@@ -200,6 +200,8 @@ The host owns an input-trigger service and audio capture/playback services. Keyb
 | orange-host | Session API: package installation, flows (one run per thread), effect workers, bounded observation | UI, windows, rendering; graph semantics |
 | orange-cli | `orange` terminal front end over `orange-host` and the service packages it builds in | Any direct use of compiler, runtime or packages |
 | orange-sdk | Plugin SDK: the service package, node, trigger, connection adapter and session types a native plugin crate implements | Package store, guest engine, front ends, any network or OS client |
+| orange-native | Loads `ServicePackage`s from native plugin libraries at start; the only crate with unsafe code | Sandboxing; installing or unloading while running |
+| orange-plugin-example | Example native plugin library with one node | Product functionality |
 | orange-audio | Base audio service package on `orange-sdk`: output and input device connections, play, stop and input-level nodes, and the level entry | Graph semantics; anything the SDK does not expose; DSP |
 | orange-net | Base network service package on `orange-sdk`: HTTP and WebSocket adapters, request and send nodes, and the message entry | Graph semantics; anything the SDK does not expose |
 | orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c); guest action kernels and async effect implementations with binary bulk values (2026-11-10) | Core-crate dependency, precompiled native loading, ungranted imports |

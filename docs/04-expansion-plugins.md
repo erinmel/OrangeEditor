@@ -10,7 +10,7 @@ ADR-22 narrows foundation delivery to generic capabilities. Specialized OBS/Twit
 
 | Boundary | Hot addition / portability | Failure and authority | Contribution/latency limits | Decision |
 |---|---|---|---|---|
-| Native Rust dylib/trait objects | Platform/compiler/build sensitive | Host memory/credentials/process privileges; native fault can terminate host | Broad raw UI/ECS access; low call cost; no stable external Rust ABI | Rejected public format |
+| Native Rust dylib/trait objects | Platform/compiler/build sensitive | Host memory/credentials/process privileges; native fault can terminate host | Broad raw UI/ECS access; low call cost; no stable external Rust ABI | **Start-time trusted tier** at the user's risk (ADR-03 amendment 2026-11-11); not an archive payload |
 | Stable C ABI library | Possible per-target bundles; explicit ABI structs required | Same in-process crash/authority limits; unload needs every pointer/thread/callback barrier | Broad native access, ownership hazards, per-platform release testing | Not initial public format |
 | Wasm Component Model | Portable validated component with versioned WIT-style host imports | Guest linear-memory isolation and checked imports; fuel/epoch/resource limits; host bug remains risk | Serialization/copy/call costs; no raw host pointers or native callback code | **Primary installable format** |
 | External worker | Native runtime/language flexibility; bundle per target | Crash boundary and killable process; OS access remains user authority unless actual OS sandbox is implemented | IPC cost, versioned bounded frames, declarative UI/scene bridge only | **Explicit-trust secondary tier** |
@@ -114,12 +114,32 @@ before the first call. The WebSocket session opens its socket only then. Before 
 it connected as soon as the document was prepared, and a server's first message could
 arrive before any trigger existed and be dropped.
 
+Native plugin libraries (2026-11-11; `orange-sdk`, `orange-native`): a plugin crate
+with `crate-type = ["cdylib"]` writes `orange_sdk::export_plugin!(package)`, where
+`package` is a function returning its `ServicePackage`. The macro exports
+`orange_plugin_abi`, returning `orange_sdk::ABI` (the text `orange-plugin <revision> sdk
+<version> rustc <release> <commit> <target>`), and `orange_plugin_package`, returning
+the boxed package. `orange_native::load(path)` opens the library, reads the ABI text
+before calling anything else, refuses a different text (`LoadError::Abi`), a library
+without the symbols (`NotAPlugin`) or a file the system cannot load (`Open`), and
+otherwise returns the package; `load_directory` does this for every library file of a
+directory in name order and reports each result separately. The application passes
+the packages to `Host::with_services`, so a loaded plugin's nodes, triggers and
+connection kinds behave exactly like built-in ones and are listed by `Host::nodes` and
+`Host::packages`. The `orange` command takes `--plugins <dir>`.
+`app/crates/orange-plugin-example` is a complete plugin with one node. Limits: the ABI
+text cannot detect different dependency versions or features, so a plugin must be
+built with the application's lockfile; a panic in a plugin aborts the process; a
+library is never unloaded, is not loaded while the application runs, and cannot be
+removed with `Host::uninstall`; there is no manifest, update source or grant for this
+tier.
+
 Native plugins in Rust (2026-11-11; `orange-sdk`): a plugin crate depends on
 `orange-sdk` and returns a `ServicePackage` holding its definition files, a
 `ServiceNode` per asynchronous node, a `ServiceSource` per trigger and a
 `ConnectionAdapter` per connection kind. The application passes it to
-`Host::with_services`. This tier is compiled into the application: it is trusted, not
-sandboxed and not installed at run time. A plugin that must be installed into a running
+`Host::with_services`. This tier is compiled into the application or loaded from a
+library at start (above): it is trusted, not sandboxed and not installed at run time. A plugin that must be installed into a running
 application is a Wasm component or a graph package.
 
 Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
