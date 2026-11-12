@@ -1230,6 +1230,7 @@ dependencies = [
  "orange-host",
  "orange-model",
  "orange-sdk",
+ "ring",
  "serde_json",
  "tungstenite",
  "ureq",
