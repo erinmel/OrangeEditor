@@ -1,5 +1,38 @@
 # Tooling, environment and research register
 
+## Signed feeds, native plugin updates, audio controls and component access — 2026-11-12
+
+Versions and sources: `ring` 0.17.14 (`signature::UnparsedPublicKey::verify` with
+`ED25519`, `digest::digest` with `SHA256`; already locked as the rustls provider);
+`claxon` 0.4.3 (`FlacReader::open`, `streaminfo`, `samples`, read from the 0.4.3 crate
+source; Apache-2.0). `ureq` 3.5.1 `max_redirects(0)` for the plugin HTTPS client.
+MP3 and Ogg decoders were not adopted: the candidates are MPL-2.0 or bind C code,
+outside `deny.toml`.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,770 passed, 0 failed, 18 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+| `node tools/build-guest-fixtures.mjs`, then `ORANGE_GUEST_PROBE=<out> cargo test -p orange-guest --locked` | Pass: the probe guest rebuilt against the extended interface imports neither new interface and its tests pass |
+| `cargo test -p orange-audio`, three runs | Pass each time (timing-based pause and loop tests) |
+
+How each part was checked: the feed signature with a key pair generated in the test;
+FLAC with a stream the test writes itself (one uncompressed frame with both
+checksums), since no encoder is available here; the audio controls in the mixer
+directly and through a graph on the silent device; component access with a component
+written in the text format that calls the file and HTTPS imports and a recording
+client.
+
+Not run: `orange updates` against a real server, for archives, signatures or
+libraries; a FLAC file from a real encoder (compressed subframes are claxon's code,
+not exercised here); the audio controls on hardware; a package installed in a host
+using its data directory end to end (the host passes the directory and client to the
+guest layer, which is where the tests are); link refusal on Windows needs privileges
+to create a link and is not tested.
+
 ## Package switches and shared-variable listing — 2026-11-12
 
 PR 173 (audio, native plugin libraries, package management) merged with every hosted

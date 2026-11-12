@@ -2,8 +2,8 @@
 
 OrangeEditor has a working headless Rust graph core and CLI. The CLI runs multiple
 flows, loads, lists, removes and updates expansion packages, and includes HTTP/HTTPS
-requests, WebSocket text send and receive over WS or WSS, WAV playback on a chosen
-audio device and a trigger on input level. The separate egui desktop editor is planned.
+requests, WebSocket text send and receive over WS or WSS, WAV and FLAC playback on a
+chosen audio device with loop, pause, seek and volume, and a trigger on input level. The separate egui desktop editor is planned.
 See [CLI usage](#development), [service behavior and limits](docs/05-services-and-platforms.md#connection-manager)
 and [verification results](docs/10-tooling-and-sources.md).
 
@@ -61,6 +61,8 @@ cargo run -p orange-cli --locked -- run app/crates/orange-cli/graphs/set-on-trig
 A front end attaches through `orange-host` alone; [examples/attach.rs](app/crates/orange-host/examples/attach.rs) is a complete one in a single file (`cargo run -p orange-host --example attach --locked`). `orange nodes` lists every usable node with its name and category, `orange packages` the built-in and stored packages, `orange remove <id> <version>` takes one out of the store, and `orange updates [--apply]` reads each stored package's update feed and installs newer releases after checking their digest. [orange-audio](app/crates/orange-audio) is the base audio package: output and input device connections (`orange devices` lists the names), play, stop and input-level nodes and an entry fired when the input level reaches a threshold; `--no-audio` leaves it out. Linux builds need the ALSA development headers (`libasound2-dev`).
 
 A Rust plugin can also be a dynamic library: [orange-plugin-example](app/crates/orange-plugin-example) is one (`crate-type = ["cdylib"]`, `orange-sdk`, one `export_plugin!` line), and `orange --plugins <dir>` loads every library in a directory at start through [orange-native](app/crates/orange-native). Such a plugin must be built with the application's compiler and lockfile, is not sandboxed, and runs at your own risk.
+
+An installed package's code reaches outside itself only with a grant given when it is installed: `--grant-files` (its own data directory), `--grant-http` (HTTPS requests) and `--grant-log`. A package can name the key that signs its update feed; `orange updates` then refuses a feed that key did not sign, and it also updates native plugin libraries that name a feed.
 
 `--store <dir>` keeps installed packages in a directory, so later commands with the same `--store` have them without `--package`. While `run` is active, type `trigger 1 10000000-0000-4000-8000-000000000001`, `pause 1`, `resume 1`, `stop 1` or `quit`. Several graph files start several flows; `--package <file.orangeplug>` installs a package first. A package node can be a graph instead of code: [packages/remember](app/crates/orange-cli/packages/remember) is one, built with `orange pack <dir> <out.orangeplug>` and used by [remember-on-trigger.json](app/crates/orange-cli/graphs/remember-on-trigger.json) with `--package`. Documents declare connections that nodes use by reference, private to one diagram or shared across diagrams with `--share <id> <adapter> <settings.json>`. [orange-net](app/crates/orange-net) is the base network package built into the CLI: HTTP and WebSocket connection adapters, a request node, a send node and an entry that fires on each received WebSocket message, with TLS. A running graph can be edited live: `Host::update`, or `reload <flow>` in the CLI, replaces it with the edited file, keeps its variables and connections, and refuses an invalid edit without disturbing it. Flows share variables the application declares (`Host::share_variables`). `orange packages --store <dir>` lists the base, native and stored packages; `orange disable <id> --store <dir>` leaves one out from the next command on, and `enable` brings it back.
 

@@ -116,10 +116,22 @@ back on a second bounded channel so their memory is freed on a control thread. I
 not allocate, lock, log or read files. The capture callback only sums squares and
 steps the threshold; a session thread turns crossings into entry firings.
 
-Not implemented from the design below: `AudioAsset` handles, pause, seek, loop,
-playlists and seeded random selection, per-sound routing, formats other than WAV,
-resampling better than linear interpolation, hotplug and device-change handling,
-hold time on the threshold, and multi-device synchronization. Crossings closer than
+Playback controls and FLAC (2026-11-12): `play` and `loop` read WAV and FLAC files,
+told apart by content; `loop` starts the sound again each time it ends and continues
+only when stopped. `pause`, `resume`, `seek` (input `seconds`, 0 to 600) and
+`set-volume` (input `gain`, 0 to 8) act on every sound of their output connection;
+sounds that need separate control play on separate connections. A paused output is
+silent and holds each sound's position; a seek past a sound's end ends it and wraps a
+repeating one; the volume multiplies each sound's own gain. A playing node waits
+however long its sound is paused or repeats, and reports a stalled device when the
+device has asked for no samples for two seconds. The callback rules are unchanged.
+
+Not implemented from the design below: `AudioAsset` handles, per-sound control and
+routing, streaming from disk (a sound is decoded whole, up to 64 MiB and 600 s),
+playlists and seeded random selection, MP3 and Ogg files (no decoder under the
+project's licence policy was adopted), resampling better than linear interpolation,
+hotplug and device-change handling, hold time on the threshold, and multi-device
+synchronization. Crossings closer than
 10 ms are reported as one.
 
 
