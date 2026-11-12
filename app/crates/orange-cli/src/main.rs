@@ -18,6 +18,8 @@ usage:
   orange pack  <package-dir> <out.orangeplug>
   orange nodes [--package <file.orangeplug>]... [--store <dir>]
   orange packages [--store <dir>]
+  orange enable <package-id> --store <dir>
+  orange disable <package-id> --store <dir>
   orange remove <package-id> <version> --store <dir>
   orange updates [--apply] [--grant-log] --store <dir>
   orange devices
@@ -42,7 +44,9 @@ package is built in: adapters `org.orange.net/http` and `org.orange.net/websocke
 `--package` are saved there, and later commands with the same `--store` have them
 without `--package`.
 
-`packages` lists the built-in and the stored packages. `remove` takes one out of the
+`packages` lists the base, native and stored packages and whether each is in use.
+`disable <id>` leaves a package out from the next command on and `enable <id>` brings
+it back; both need `--store`, where the choice is kept. `remove` takes one out of the
 store. `updates` reads the update feed each stored package names and lists newer
 releases; with `--apply` it downloads each, checks its digest against the feed and
 installs it. Packages are installed at your own risk: their code is not reviewed.
@@ -408,7 +412,14 @@ fn main() -> ExitCode {
         Ok(arguments)
             if matches!(
                 arguments.command.as_str(),
-                "check" | "run" | "nodes" | "packages" | "remove" | "updates"
+                "check"
+                    | "run"
+                    | "nodes"
+                    | "packages"
+                    | "remove"
+                    | "updates"
+                    | "enable"
+                    | "disable"
             ) =>
         {
             arguments
@@ -479,20 +490,53 @@ fn main() -> ExitCode {
     match arguments.command.as_str() {
         "packages" => {
             for package in host.packages() {
-                let about = package.manifest.map(orange_host::PackageManifest::about);
                 println!(
-                    "{}	{}	{}	{}",
+                    "{}	{}	{}	{}	{}",
                     package.id,
                     package.version,
-                    if package.manifest.is_some() {
-                        "installed"
-                    } else {
-                        "native"
+                    match package.kind {
+                        orange_host::PackageKind::Base => "base",
+                        orange_host::PackageKind::Native => "native",
+                        _ => "installed",
                     },
-                    about.and_then(orange_host::About::name).unwrap_or("-"),
+                    match (package.active, package.enabled) {
+                        (true, true) => "on",
+                        (false, false) => "disabled",
+                        (true, false) => "on, disabled from the next start",
+                        (false, true) => "off",
+                    },
+                    package.name().unwrap_or("-"),
                 );
             }
             return ExitCode::SUCCESS;
+        }
+        "enable" | "disable" => {
+            let enable = arguments.command == "enable";
+            let [id] = &arguments.graphs[..] else {
+                eprintln!("{} needs a package ID\n{USAGE}", arguments.command);
+                return ExitCode::from(2);
+            };
+            if arguments.store.is_none() {
+                eprintln!(
+                    "{} needs --store, where the choice is kept",
+                    arguments.command
+                );
+                return ExitCode::from(2);
+            }
+            if !host.packages().any(|package| package.id == id) {
+                eprintln!("no package {id}");
+                return ExitCode::FAILURE;
+            }
+            return match host.set_enabled(id, enable) {
+                Ok(()) => {
+                    println!("{} {id}", if enable { "enabled" } else { "disabled" });
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::FAILURE
+                }
+            };
         }
         "remove" => {
             let [id, version] = &arguments.graphs[..] else {
@@ -504,10 +548,18 @@ fn main() -> ExitCode {
             };
             let found = host
                 .packages()
-                .filter_map(|package| package.manifest)
-                .map(orange_host::PackageManifest::key)
-                .find(|key| key.id.as_str() == id && key.version.as_str() == version)
-                .cloned();
+                .any(|package| {
+                    package.kind == orange_host::PackageKind::Installed
+                        && package.id == id
+                        && package.version == version
+                })
+                .then(|| {
+                    Some(orange_host::PackageKey {
+                        id: id.parse().ok()?,
+                        version: version.parse().ok()?,
+                    })
+                })
+                .flatten();
             let removed = found
                 .ok_or_else(|| format!("{id} {version} is not installed"))
                 .and_then(|key| host.uninstall(&key).map_err(|error| error.to_string()));
