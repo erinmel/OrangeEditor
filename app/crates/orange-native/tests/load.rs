@@ -178,3 +178,32 @@ fn a_library_without_the_plugin_symbols_is_not_a_plugin() {
     };
     assert_eq!(load(Path::new(system)).err(), Some(LoadError::NotAPlugin));
 }
+
+#[test]
+fn a_newer_library_takes_the_place_of_the_one_in_use() {
+    let directory = std::env::temp_dir().join(format!("orange-native-new-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let extension = std::env::consts::DLL_EXTENSION;
+    let current = directory.join(format!("shout.{extension}"));
+    let _ = std::fs::copy(plugin(), &current).unwrap();
+    // The library is loaded, as it is when an application updates it.
+    assert!(load(&current).is_ok());
+
+    let library = std::fs::read(plugin()).unwrap();
+    let new = orange_native::replace(&current, "org.example.shout", "9.0.0", &library).unwrap();
+    assert_eq!(
+        new,
+        directory.join(format!("org.example.shout-9.0.0.{extension}"))
+    );
+    assert!(!current.exists());
+    // The next start finds only the new file.
+    let loaded = load_directory(&directory).unwrap();
+    assert_eq!(loaded.len(), 1);
+    assert_eq!(loaded[0].0, new);
+    assert_eq!(loaded[0].1.as_ref().unwrap().id(), "org.example.shout");
+    // A name that could leave the directory is refused and nothing is written.
+    assert!(orange_native::replace(&new, "../evil", "1.0.0", &library).is_err());
+    assert!(new.exists());
+    let _ = std::fs::remove_dir_all(&directory);
+}

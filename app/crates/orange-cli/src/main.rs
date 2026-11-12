@@ -6,7 +6,7 @@ use orange_host::{
     FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, NodeId, StopMode,
 };
 use std::io::BufRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
@@ -47,9 +47,11 @@ without `--package`.
 `packages` lists the base, native and stored packages and whether each is in use.
 `disable <id>` leaves a package out from the next command on and `enable <id>` brings
 it back; both need `--store`, where the choice is kept. `remove` takes one out of the
-store. `updates` reads the update feed each stored package names and lists newer
-releases; with `--apply` it downloads each, checks its digest against the feed and
-installs it. Packages are installed at your own risk: their code is not reviewed.
+store. `updates` reads the update feed each package names and lists newer releases;
+with `--apply` it downloads each, checks its digest against the feed and installs it.
+A package that names a signing key is updated only from a feed that key signed. A
+newer native plugin library built for this program replaces the loaded one in its
+`--plugins` directory and loads at the next start. Packages are installed at your own risk: their code is not reviewed.
 
 `nodes` lists every node a graph can use: its ID and version, its name, its category
 and the package that implements it. `devices` lists the audio devices an audio
@@ -312,35 +314,83 @@ fn pack(directory: &str, output: &str) -> Result<usize, String> {
 /// Largest release archive `updates --apply` downloads.
 const MAX_RELEASE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Reads the feed of every installed package that names one and reports, or installs,
-/// the newer releases.
-fn updates(host: &mut Host, apply: bool, grants: Grants) -> ExitCode {
-    let mut found = Vec::new();
+/// Downloads a package's update feed. When the package names a signing key, the feed's
+/// signature is downloaded too and the feed is refused unless the key signed it.
+fn feed(source: &orange_host::UpdateSource) -> Result<orange_host::UpdateFeed, String> {
+    let bytes = orange_net::download(source.feed(), 1024 * 1024)?;
+    if let Some(key) = source.key() {
+        let signature = orange_net::download(&format!("{}.sig", source.feed()), 1024)
+            .map_err(|error| format!("the feed's signature: {error}"))?;
+        orange_net::verify_feed(&bytes, &signature, key)?;
+    }
+    orange_host::UpdateFeed::from_json(&bytes).map_err(|error| error.to_string())
+}
+
+/// Reads the feed of every package that names one and reports, or installs, the newer
+/// releases: archives for installed packages, libraries built for this program's
+/// target for native plugins. `plugins` maps a loaded plugin's ID to its file.
+fn updates(
+    host: &mut Host,
+    apply: bool,
+    grants: Grants,
+    plugins: &[(String, PathBuf)],
+) -> ExitCode {
+    // (release, the plugin file it replaces)
+    let mut found: Vec<(orange_host::Release, Option<PathBuf>)> = Vec::new();
     let mut failed = false;
     for package in host.packages() {
-        let Some(manifest) = package.manifest else {
+        let Some(source) = package.update() else {
             continue;
         };
-        let Some(source) = manifest.update() else {
-            continue;
+        let file = plugins
+            .iter()
+            .find(|(id, _)| id == package.id)
+            .map(|(_, path)| path.clone());
+        let native = package.kind == orange_host::PackageKind::Native;
+        let release = feed(source).and_then(|feed| match package.manifest {
+            Some(manifest) => Ok(feed.update_for(manifest).cloned()),
+            None => {
+                let current = orange_host::PackageKey {
+                    id: package
+                        .id
+                        .parse()
+                        .map_err(|_| "the package ID is not valid")?,
+                    version: package
+                        .version
+                        .parse()
+                        .map_err(|_| "the package version is not valid")?,
+                };
+                let target = native.then_some(orange_host::TARGET);
+                Ok(feed.newer(&current, source.channel(), target).cloned())
+            }
+        });
+        let signed = if source.key().is_some() {
+            "signed feed"
+        } else {
+            "unsigned feed"
         };
-        let release = orange_net::download(source.feed(), 1024 * 1024)
-            .and_then(|bytes| {
-                orange_host::UpdateFeed::from_json(&bytes).map_err(|error| error.to_string())
-            })
-            .map(|feed| feed.update_for(manifest).cloned());
         match release {
             Ok(Some(release)) => {
                 println!(
-                    "{} {} -> {} ({})",
+                    "{} {} -> {} ({}, {signed})",
                     package.id,
                     package.version,
                     release.key().version.as_str(),
                     release.archive()
                 );
-                found.push(release);
+                if native && file.is_none() {
+                    println!(
+                        "  {} is built into this program and is not replaced",
+                        package.id
+                    );
+                } else if package.active {
+                    found.push((release, file));
+                }
             }
-            Ok(None) => println!("{} {} is up to date", package.id, package.version),
+            Ok(None) => println!(
+                "{} {} is up to date ({signed})",
+                package.id, package.version
+            ),
             Err(message) => {
                 eprintln!("{} {}: {message}", package.id, package.version);
                 failed = true;
@@ -348,14 +398,33 @@ fn updates(host: &mut Host, apply: bool, grants: Grants) -> ExitCode {
         }
     }
     if apply {
-        for release in found {
-            let installed =
-                orange_net::download(release.archive(), MAX_RELEASE_BYTES).and_then(|archive| {
+        for (release, file) in found {
+            let downloaded = orange_net::download(release.archive(), MAX_RELEASE_BYTES);
+            let installed = match file {
+                None => downloaded.and_then(|archive| {
                     host.install_release(&archive, grants, release.content_digest())
+                        .map(|key| {
+                            format!("installed {} {}", key.id.as_str(), key.version.as_str())
+                        })
                         .map_err(|error| error.to_string())
-                });
+                }),
+                Some(current) => downloaded.and_then(|library| {
+                    if orange_net::sha256(&library) != release.content_digest() {
+                        return Err("its content digest is not the announced one".to_owned());
+                    }
+                    let key = release.key();
+                    orange_native::replace(
+                        &current,
+                        key.id.as_str(),
+                        key.version.as_str(),
+                        &library,
+                    )
+                    .map(|path| format!("saved {}; it loads at the next start", path.display()))
+                    .map_err(|error| error.to_string())
+                }),
+            };
             match installed {
-                Ok(key) => println!("installed {} {}", key.id.as_str(), key.version.as_str()),
+                Ok(message) => println!("{message}"),
                 Err(message) => {
                     eprintln!("{}: {message}", release.archive());
                     failed = true;
@@ -434,6 +503,7 @@ fn main() -> ExitCode {
         }
     };
     let mut services = Vec::new();
+    let mut plugin_files = Vec::new();
     if arguments.network {
         services.push(orange_net::package());
     }
@@ -452,6 +522,7 @@ fn main() -> ExitCode {
             match package {
                 Ok(package) => {
                     println!("loaded plugin {} {}", package.id(), package.version());
+                    plugin_files.push((package.id().to_owned(), path));
                     services.push(package);
                 }
                 // One bad library does not stop the others or the program.
@@ -574,7 +645,7 @@ fn main() -> ExitCode {
                 }
             };
         }
-        "updates" => return updates(&mut host, arguments.apply, arguments.grants),
+        "updates" => return updates(&mut host, arguments.apply, arguments.grants, &plugin_files),
         _ => {}
     }
     if arguments.command == "nodes" {

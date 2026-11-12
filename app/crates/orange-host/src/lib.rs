@@ -68,7 +68,7 @@ pub use orange_runtime::{
 };
 pub use orange_sdk::{
     Call, ConnectionAdapter, EmitError, Emitter, SERVICE_PROVIDER, ServiceNode, ServicePackage,
-    ServiceSource, Session,
+    ServiceSource, Session, TARGET,
 };
 
 /// Identifies one flow for the life of its host. Never reused.
@@ -422,8 +422,14 @@ pub struct PackageInfo<'a> {
     pub manifest: Option<&'a PackageManifest>,
     name: Option<&'a str>,
     description: Option<&'a str>,
+    update: Option<&'a UpdateSource>,
 }
 impl<'a> PackageInfo<'a> {
+    /// Where newer versions of the package are announced, when it says so.
+    pub fn update(&self) -> Option<&'a UpdateSource> {
+        self.update
+            .or_else(|| self.manifest.and_then(PackageManifest::update))
+    }
     /// A display name, when the package gives one.
     pub fn name(&self) -> Option<&'a str> {
         self.name
@@ -447,6 +453,7 @@ struct BuiltIn {
     active: bool,
     name: Option<String>,
     description: Option<String>,
+    update: Option<UpdateSource>,
 }
 
 /// `set-variable` as "Set variable".
@@ -546,14 +553,21 @@ impl Host {
             description: Some(
                 "Arithmetic, comparison, text, collection and JSON operations.".to_owned(),
             ),
+            update: None,
         }];
-        built_in.extend(packages.iter().map(|package| BuiltIn {
-            id: package.id().to_owned(),
-            version: package.version().to_owned(),
-            kind: PackageKind::Native,
-            active: !disabled.contains(package.id()),
-            name: package.name().map(str::to_owned),
-            description: package.description().map(str::to_owned),
+        built_in.extend(packages.iter().map(|package| {
+            BuiltIn {
+                id: package.id().to_owned(),
+                version: package.version().to_owned(),
+                kind: PackageKind::Native,
+                active: !disabled.contains(package.id()),
+                name: package.name().map(str::to_owned),
+                description: package.description().map(str::to_owned),
+                // A source that breaks the manifest rules is not offered.
+                update: package
+                    .update_source()
+                    .and_then(|(feed, key)| UpdateSource::new(feed, None, key).ok()),
+            }
         }));
         let mut adapters = BTreeMap::new();
         let mut presentations = BTreeMap::new();
@@ -811,6 +825,7 @@ impl Host {
             manifest: None,
             name: package.name.as_deref(),
             description: package.description.as_deref(),
+            update: package.update.as_ref(),
         });
         let inactive = self.inactive.iter().map(|(id, version)| PackageInfo {
             id,
@@ -821,6 +836,7 @@ impl Host {
             manifest: None,
             name: None,
             description: None,
+            update: None,
         });
         let installed = self
             .store
@@ -837,6 +853,7 @@ impl Host {
                     manifest: Some(manifest),
                     name: None,
                     description: None,
+                    update: None,
                 }
             });
         built_in.chain(installed).chain(inactive)

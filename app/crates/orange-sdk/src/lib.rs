@@ -124,6 +124,8 @@ pub struct ServicePackage {
     version: String,
     name: Option<String>,
     description: Option<String>,
+    update_feed: Option<String>,
+    update_key: Option<String>,
     nodes: Vec<(NodeDefinition, Arc<dyn ServiceNode>)>,
     sources: Vec<(NodeDefinition, Arc<dyn ServiceSource>)>,
     adapters: Vec<(String, Arc<dyn ConnectionAdapter>)>,
@@ -147,6 +149,8 @@ impl ServicePackage {
             version: version.into(),
             name: None,
             description: None,
+            update_feed: None,
+            update_key: None,
             nodes: Vec::new(),
             sources: Vec::new(),
             adapters: Vec::new(),
@@ -165,6 +169,19 @@ impl ServicePackage {
         self.name = Some(name.into());
         self.description = Some(description.into());
         self
+    }
+    /// Names where newer versions of this package are announced: the `https://` URL of
+    /// an update feed and, optionally, the publisher's feed-signing key
+    /// (`ed25519:<64 hex>`). An application reads the feed and offers releases built
+    /// for its [`TARGET`].
+    pub fn update(mut self, feed: impl Into<String>, key: Option<&str>) -> Self {
+        self.update_feed = Some(feed.into());
+        self.update_key = key.map(str::to_owned);
+        self
+    }
+    /// The update feed URL and signing key, when [`update`](Self::update) set them.
+    pub fn update_source(&self) -> Option<(&str, Option<&str>)> {
+        Some((self.update_feed.as_deref()?, self.update_key.as_deref()))
     }
     /// The display name, when [`about`](Self::about) set one.
     pub fn name(&self) -> Option<&str> {
@@ -233,7 +250,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 2",
+        "orange-plugin 3",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",
@@ -247,6 +264,10 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     Ok(text) => text,
     Err(_) => panic!("the plugin ABI text contains a NUL byte"),
 };
+
+/// The compiler target this SDK was built for, such as `x86_64-pc-windows-msvc`: the
+/// target a native plugin library release must name to be offered as an update.
+pub const TARGET: &str = env!("ORANGE_SDK_TARGET");
 
 /// Name of the symbol a plugin library exports for [`ABI`].
 pub const ABI_SYMBOL: &str = "orange_plugin_abi";
