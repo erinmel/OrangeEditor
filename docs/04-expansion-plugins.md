@@ -91,6 +91,22 @@ package directory keeps each installed archive and the capabilities granted to i
 installs them again when it next starts (02). The `orange` command takes the directory
 as `--store <dir>`.
 
+Update feeds and removal (2026-11-11; `orange-packages`, `orange-host`): the document
+at a manifest's `update.feed` URL is
+`{"format": "orange.update-feed", "format_version": 1, "releases": [{"id", "version",
+"channel", "archive", "content_digest"}]}`. `channel` defaults to `stable`, `archive`
+is an `https://` URL and `content_digest` is `sha256:<64 hex>`. Unknown fields, more
+than 4,096 releases or more than 1 MiB refuse the feed, and one invalid release refuses
+all of it. `UpdateFeed::update_for(manifest)` returns the release of the installed
+package's ID and channel with the highest version above the installed one, comparing
+by Semantic Versioning precedence. The package crate only reads bytes; the application
+fetches them. `Host::install_release` refuses an archive whose content digest is not
+the announced one. A feed is not signed: its authority is the `https://` origin the
+installed package named, and packages are installed at the user's own risk. The
+`orange` command has `packages`, `remove <id> <version>` and `updates [--apply]`.
+`Host::uninstall` removes a version from the registry and from the package directory;
+it is refused while another installed package depends on it.
+
 Session start (2026-11-11): the host calls `Session::start` on every connection of a
 flow once all of that flow's triggers are attached, at opening and after a live edit;
 a shared session is called once per flow. A session that receives must not begin
@@ -116,8 +132,8 @@ publisher announces versions of this package and which channel this build belong
 (default `stable`). A feed URL must be `https://`, at most 2,048 printable ASCII bytes,
 with a host and no user information. Both sections are covered by the content digest
 like the rest of the manifest. They are descriptive only: installation never contacts
-a URL, and the feed's own format, its signature and the host's update check are not
-defined yet. A bad field is `packages/manifest-metadata` and names the field.
+a URL. The feed format and the update check are described above; feed signatures are
+not defined. A bad field is `packages/manifest-metadata` and names the field.
 
 Manifest schema (K01, 2026-11-06; `orange-packages`): the manifest is strict JSON. Duplicate object keys and numbers other than integers within ±(2^53 − 1) are rejected at any depth, including uninterpreted sections, because readers disagree on them. `execution` is absent for a data-only package, `{"kind": "wasm-component", "entry", "world"}` with `world` = `orange:expansion/<name>@<x.y.z>`, or `{"kind": "worker", "wire_version": 1, "targets": [{"os": "windows"|"macos"|"linux", "arch": "x86_64"|"aarch64", "entry"}]}` with 1–16 distinct targets; any other kind, including native libraries, is refused. `contributions.panels` lists up to 256 distinct panel IDs `<package>/<[a-z][a-z0-9-]*>` in the package's own namespace; the declarative widget descriptor format is later UI work (ADR-08), so panels are identities only. `localization` follows 13 §3 exactly: format version 1, `fluent`, default locale `en` with an `en` catalogue, BCP 47-shaped tags unique ignoring case, non-empty lists of distinct `.ftl` files, `[a-z][a-z0-9-]*` message IDs and `[a-z][a-z0-9_]*` argument names typed from the 13 §3 vocabulary, with bounded counts. Every file reference is an archive path (below). Dependency locks are `{"id", "version", "content_digest": "sha256:<64 hex>"}`; installation refuses an active dependency whose content digest differs from the lock. `integrity.content_digest` (formerly `payload_digest`; the unreleased name has no reader) is the package's own content digest. `permissions` stays uninterpreted until grants (K03). Errors carry stable `packages/manifest-*` keys and redacted text.
 

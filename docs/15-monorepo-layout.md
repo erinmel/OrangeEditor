@@ -54,6 +54,8 @@ Package lifecycle (2026-11-03) adds app/crates/orange-packages as a core member.
 
 K02b (2026-11-08) adds the `sdk/` workspace: `sdk/wit` (the versioned `orange:expansion` WIT package), `sdk/guests/probe` (a Rust test guest) and `sdk/tools/componentize`. It builds separately with its own toolchain file adding `wasm32-unknown-unknown`; `node tools/build-guest-fixtures.mjs` produces the host test fixture.
 
+Audio package (2026-11-11) adds app/crates/orange-audio, a non-core service package depending on orange-sdk (orange-host and orange-model for its tests), and pins `cpal` 0.18.2 (default features: WASAPI, CoreAudio, ALSA) and `hound` 3.5.1. Linux builds need the ALSA development headers (`libasound2-dev`), which the Linux CI jobs install. orange-cli depends on orange-audio.
+
 Plugin SDK (2026-11-11) adds app/crates/orange-sdk (normal edges to orange-model, orange-kernel and orange-runtime; no new external dependency). orange-net now depends on orange-sdk, with orange-host as a dev-dependency only, and orange-host depends on orange-sdk.
 
 Network package (2026-11-10) adds app/crates/orange-net, a non-core service package depending on orange-host, and pins `ureq` 3.5.1 with only its `rustls` feature (no compression, no JSON). `deny.toml` admits ISC and CDLA-Permissive-2.0 for ring, rustls-webpki, untrusted and webpki-roots. The lockfile gains ureq, ureq-proto, http, httparse, base64, percent-encoding and utf8-zero, all `MIT OR Apache-2.0`. orange-cli gains an edge to orange-net.

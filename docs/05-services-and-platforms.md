@@ -97,6 +97,32 @@ AMQP 1.0 is a different separately versioned optional adapter, not a baseline co
 
 ## Audio architecture
 
+Implemented part (2026-11-11; `orange-audio`, package `org.orange.audio`). Connections:
+`org.orange.audio/output` (setting `device`: a device name, `null` for the built-in
+silent device, absent for the system default) and `org.orange.audio/input` (`device`,
+`threshold_db` default -30, `release_db` default 6 dB below it, `window_ms` 5 to 1,000,
+default 50). Nodes: `play` (inputs `path`, `gain` 0 to 8) reads a WAV file with
+integer or float PCM, converts it to the device's rate and channels and continues when
+the sound has ended or was stopped; `stop` ends every sound on the connection;
+`input-level` returns the latest RMS level in dBFS (silence is -120);
+`on-level` is an entry fired once when the level reaches the threshold and again only
+after it fell to the release level, with the level as payload. An output opens at first
+use, so a document opens without the device and only the playing node takes `failed`.
+One output mixes at most 32 sounds; a file over 64 MiB or 600 s is refused.
+
+The device callback runs only the mixer: it takes commands from a bounded channel
+without waiting, adds prepared samples, limits to full scale and hands ended sounds
+back on a second bounded channel so their memory is freed on a control thread. It does
+not allocate, lock, log or read files. The capture callback only sums squares and
+steps the threshold; a session thread turns crossings into entry firings.
+
+Not implemented from the design below: `AudioAsset` handles, pause, seek, loop,
+playlists and seeded random selection, per-sound routing, formats other than WAV,
+resampling better than linear interpolation, hotplug and device-change handling,
+hold time on the threshold, and multi-device synchronization. Crossings closer than
+10 ms are reported as one.
+
+
 Audio is a general host capability (FR-30–32, FR-54/55), not a DSP evaluation domain in the graph runtime. Basic operations are open/decode, play/pause/stop/seek/loop, gain/mute and bounded mixing/routing, plus selected-device capture and level events. TTS synthesis, transcription, sound recognition and a DSP/DAW editor are outside baseline. Existing virtual cables are selectable OS endpoints; creating virtual endpoints or drivers is outside baseline (FR-33).
 
 `AudioAsset` owns decoder/metadata or a streaming source descriptor. `PlaybackSession` owns selected output route, mixer controls, player instances and device leases. Nodes choose opened assets, folder lists/filters or explicit file references; random selection uses the graph seed and a recorded sorted file snapshot (filesystem iteration order is not a seed). Empty set, changed file and decode errors are observable. Playlist transition/loop/shuffle policy is explicit. Already-opened assets are handles with run/workspace ownership, not copies of file contents per node.
