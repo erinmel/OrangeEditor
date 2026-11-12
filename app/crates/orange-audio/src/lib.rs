@@ -441,6 +441,10 @@ const ON_LEVEL_DEFINITION: &str = r#"{
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
+        .about(
+            "Audio",
+            "Plays sound files on an output device and reads the level of an input device.",
+        )
         .adapter(OUTPUT_ADAPTER, OutputAdapter)
         .adapter(INPUT_ADAPTER, InputAdapter)
         .node(PLAY_DEFINITION, Play)

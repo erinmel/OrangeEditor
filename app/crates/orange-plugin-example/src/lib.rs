@@ -53,7 +53,10 @@ const SHOUT_DEFINITION: &str = r#"{
 }"#;
 
 fn package() -> ServicePackage {
-    match ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION")).node(SHOUT_DEFINITION, Shout) {
+    let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
+        .about("Shout", "An example plugin: one node that shouts its text.")
+        .node(SHOUT_DEFINITION, Shout);
+    match package {
         Ok(package) => package,
         // The definition is a constant of this crate, checked by the loader's tests.
         Err(error) => unreachable!("built-in definition is valid: {error}"),

@@ -211,6 +211,10 @@ pub fn download(url: &str, max_bytes: u64) -> Result<Vec<u8>, String> {
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
+        .about(
+            "Network",
+            "HTTP requests and WebSocket connections, with TLS.",
+        )
         .adapter(HTTP_ADAPTER, HttpAdapter)
         .adapter(WS_ADAPTER, ws::WsAdapter)
         .node(HTTP_REQUEST_DEFINITION, HttpRequest)

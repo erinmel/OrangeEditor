@@ -122,6 +122,8 @@ pub trait ServiceSource: Send + Sync + 'static {
 pub struct ServicePackage {
     id: String,
     version: String,
+    name: Option<String>,
+    description: Option<String>,
     nodes: Vec<(NodeDefinition, Arc<dyn ServiceNode>)>,
     sources: Vec<(NodeDefinition, Arc<dyn ServiceSource>)>,
     adapters: Vec<(String, Arc<dyn ConnectionAdapter>)>,
@@ -143,6 +145,8 @@ impl ServicePackage {
         Self {
             id: id.into(),
             version: version.into(),
+            name: None,
+            description: None,
             nodes: Vec::new(),
             sources: Vec::new(),
             adapters: Vec::new(),
@@ -154,6 +158,21 @@ impl ServicePackage {
     }
     pub fn version(&self) -> &str {
         &self.version
+    }
+    /// Sets what a package list shows for this package: a display name and one
+    /// paragraph on what it adds.
+    pub fn about(mut self, name: impl Into<String>, description: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self.description = Some(description.into());
+        self
+    }
+    /// The display name, when [`about`](Self::about) set one.
+    pub fn name(&self) -> Option<&str> {
+        self.name.as_deref()
+    }
+    /// What the package adds, when [`about`](Self::about) said so.
+    pub fn description(&self) -> Option<&str> {
+        self.description.as_deref()
     }
     /// The asynchronous nodes, each with its definition.
     pub fn nodes(&self) -> &[(NodeDefinition, Arc<dyn ServiceNode>)] {
@@ -214,7 +233,7 @@ pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
     concat!(
         // The interface revision: raise it when a type or trait a plugin library
         // exchanges with its host changes shape.
-        "orange-plugin 1",
+        "orange-plugin 2",
         " sdk ",
         env!("CARGO_PKG_VERSION"),
         " rustc ",
