@@ -91,6 +91,12 @@ package directory keeps each installed archive and the capabilities granted to i
 installs them again when it next starts (02). The `orange` command takes the directory
 as `--store <dir>`.
 
+Enabling and disabling (2026-11-12; `orange-host`): every package of a host, whatever
+its tier, can be switched off by ID and on again without removing it; the switch is
+saved beside the stored archives and applies from the next start (02, "Package
+switches"). The plugin interface revision in `orange_sdk::ABI` is 2 since
+`ServicePackage` carries a display name and description.
+
 Update feeds and removal (2026-11-11; `orange-packages`, `orange-host`): the document
 at a manifest's `update.feed` URL is
 `{"format": "orange.update-feed", "format_version": 1, "releases": [{"id", "version",

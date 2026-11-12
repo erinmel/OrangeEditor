@@ -1,5 +1,29 @@
 # Tooling, environment and research register
 
+## Package switches and shared-variable listing — 2026-11-12
+
+PR 173 (audio, native plugin libraries, package management) merged with every hosted
+check passing on Linux, Windows and macOS, including the loader test that builds and
+loads the example plugin library.
+
+This unit adds `Host::set_enabled`, `HostOptions::disabled_packages`, `PackageKind`,
+`PackageInfo::{kind, active, enabled, name, description}`, the base nodes as a listed
+package, `ServicePackage::about`, `Host::shared_variables`, `Host::shared_writes` and
+the `orange enable` / `disable` commands. No dependency changed.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,756 passed, 0 failed, 18 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange disable org.orange.audio --store <dir>`, then `orange packages --store <dir>` and `orange enable` | Audio and base nodes listed as disabled and their nodes gone from `orange nodes`; both back after `enable`; an unknown ID and a missing `--store` are refused |
+
+Limits: a switch never changes a running host, so a front end shows "from the next
+start"; a disabled stored package is listed by ID and version only, because its archive
+is not read; native plugin libraries have no update source.
+
 ## Native plugin libraries and the audio stop test — 2026-11-11
 
 Hosted run 43142118022 failed `a_stop_node_ends_a_long_sound_early` on Linux, Windows
