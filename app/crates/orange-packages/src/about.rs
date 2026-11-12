@@ -123,14 +123,19 @@ fn text(value: &str, max: usize, field: &'static str) -> Result<(), ManifestErro
 }
 
 /// An `https://` URL with a host and nothing a terminal or log could misread.
-fn url(value: &str, field: &'static str) -> Result<(), ManifestError> {
+/// An `https://` URL of printable ASCII with a host and no user information, within
+/// [`MAX_URL_BYTES`].
+pub(crate) fn is_https_url(value: &str) -> bool {
     let host = value
         .strip_prefix("https://")
         .map(|rest| rest.split(['/', '?', '#']).next().unwrap_or_default());
-    let acceptable = value.len() <= MAX_URL_BYTES
+    value.len() <= MAX_URL_BYTES
         && host.is_some_and(|host| !host.is_empty() && !host.contains('@'))
-        && value.chars().all(|c| c.is_ascii_graphic());
-    if acceptable {
+        && value.chars().all(|c| c.is_ascii_graphic())
+}
+
+fn url(value: &str, field: &'static str) -> Result<(), ManifestError> {
+    if is_https_url(value) {
         Ok(())
     } else {
         Err(refused(field))

@@ -16,6 +16,7 @@
 
 mod about;
 mod archive;
+mod feed;
 mod file_journal;
 mod journal;
 mod json;
@@ -32,6 +33,9 @@ pub use archive::{
     ARCHIVE_MAGIC, ARCHIVE_VERSION, ArchiveEntry, ArchiveError, ArchiveFiles, ArchiveLimits,
     ArchiveSink, DirectorySink, DiscardSink, MANIFEST_PATH, MemorySink, VerifiedArchive,
     read_archive,
+};
+pub use feed::{
+    FEED_FORMAT, FeedError, MAX_FEED_BYTES, MAX_FEED_RELEASES, Release, UpdateFeed, precedence,
 };
 pub use file_journal::{
     FileJournal, JOURNAL_FILE, JOURNAL_TEMP_FILE, MAX_JOURNAL_RECORD_BYTES, OpenedJournal,
