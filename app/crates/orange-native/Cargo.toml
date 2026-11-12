@@ -1,0 +1,26 @@
+[package]
+name = "orange-native"
+description = "OrangeEditor native plugin loader: reads service packages from dynamic libraries built on the plugin SDK"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orange-sdk = { path = "../orange-sdk", version = "=0.0.0" }
+libloading.workspace = true
+thiserror.workspace = true
+
+[dev-dependencies]
+orange-host = { path = "../orange-host", version = "=0.0.0" }
+orange-model = { path = "../orange-model", version = "=0.0.0" }
+serde_json.workspace = true
+
+# The workspace forbids unsafe code. Loading a library cannot be done without it, so
+# this crate alone denies it and allows the few reviewed uses in `src/lib.rs`.
+[lints.rust]
+unsafe_code = "deny"
+missing_debug_implementations = "warn"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

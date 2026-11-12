@@ -1,7 +1,7 @@
 # Host application workspace (docs/15-monorepo-layout.md). Installable plugins build independently.
 [workspace]
 resolver = "3"
-members = ["app/crates/orange-model", "app/crates/orange-kernel", "app/crates/orange-bundled", "app/crates/orange-compiler", "app/crates/orange-runtime", "app/crates/orange-measure", "app/crates/orange-packages", "app/crates/orange-guest", "app/crates/orange-host", "app/crates/orange-cli", "app/crates/orange-net", "app/crates/orange-sdk", "app/crates/orange-audio"]
+members = ["app/crates/orange-model", "app/crates/orange-kernel", "app/crates/orange-bundled", "app/crates/orange-compiler", "app/crates/orange-runtime", "app/crates/orange-measure", "app/crates/orange-packages", "app/crates/orange-guest", "app/crates/orange-host", "app/crates/orange-cli", "app/crates/orange-net", "app/crates/orange-sdk", "app/crates/orange-audio", "app/crates/orange-native", "app/crates/orange-plugin-example"]
 exclude = ["plugins"]
 
 [workspace.package]
@@ -13,6 +13,8 @@ publish = false
 [workspace.dependencies]
 cpal = "=0.18.2"
 hound = "=3.5.1"
+# Dynamic library loading for native plugins (orange-native only).
+libloading = "=0.9.0"
 indexmap = { version = "=2.14.2", features = ["serde"] }
 proptest = "=1.12.0"
 serde = { version = "=1.0.229", features = ["derive"] }
