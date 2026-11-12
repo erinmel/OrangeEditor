@@ -35,13 +35,14 @@ use orange_model::validation::{LeafEffects, ValidationAnalysis};
 use orange_model::{GraphDocument, analyze_with_effects, from_json, to_json};
 use orange_packages::{
     ArchiveFiles, ArchiveLimits, ArchivePath, DiscardSink, Execution, HOST_API_VERSION,
-    MemoryJournal, MemorySink, PackageStore, ProviderSlot, read_archive,
+    MemoryJournal, MemorySink, PackageState, PackageStore, ProviderSlot, read_archive,
 };
 use orange_runtime::{
     HostInput, InboxError, Run, RunDriver, RunEventSource, Workspace, WorkspaceLimits,
 };
 use services::Services;
 use sha2::{Digest, Sha256};
+use std::borrow::Cow;
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -58,7 +59,9 @@ pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextR
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::id::{ConnectionId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
-pub use orange_packages::PackageKey;
+pub use orange_packages::{
+    About, FeedError, PackageKey, PackageManifest, Release, UpdateFeed, UpdateSource,
+};
 pub use orange_runtime::EffectLease;
 pub use orange_runtime::{
     ControlOutcome, RefusedReason, RunError, RunEvent, RunOptions, RunState, StopMode,
@@ -179,6 +182,8 @@ pub enum HostError {
     GraphInvalid(String, Vec<Diagnostic>),
     #[error("the package could not be installed: {0}")]
     Install(String),
+    #[error("the package could not be removed: {0}")]
+    Uninstall(String),
     #[error("the document could not be read: {0}")]
     Document(String),
     #[error("the document has {} blocking diagnostics", .0.len())]
@@ -352,6 +357,51 @@ pub struct NodeInfo<'a> {
     /// the language implements, and for a definition nothing implements.
     pub provider: Option<&'a ProviderKey>,
 }
+impl NodeInfo<'_> {
+    /// The node's name in the default language: its definition file's label, or a name
+    /// made from its ID (`core/set-variable` is "Set variable") when it has none.
+    pub fn label(&self) -> Cow<'_, str> {
+        match self.presentation.and_then(|shown| shown.label.as_ref()) {
+            Some(label) => Cow::Borrowed(label.fallback.as_str()),
+            None => {
+                let id = self.definition.definition.id.as_str();
+                Cow::Owned(words(id.rsplit('/').next().unwrap_or(id)))
+            }
+        }
+    }
+    /// The palette category in the default language: its definition file's category,
+    /// or one made from the ID's namespace (`org.orange.math/add` is in "Math").
+    pub fn category(&self) -> Cow<'_, str> {
+        match self.presentation.and_then(|shown| shown.category.as_ref()) {
+            Some(category) => Cow::Borrowed(category.fallback.as_str()),
+            None => {
+                let id = self.definition.definition.id.as_str();
+                let namespace = id.split('/').next().unwrap_or(id);
+                Cow::Owned(words(namespace.rsplit('.').next().unwrap_or(namespace)))
+            }
+        }
+    }
+}
+/// One package of a host, as [`Host::packages`] lists it.
+#[derive(Debug, Clone, Copy)]
+pub struct PackageInfo<'a> {
+    pub id: &'a str,
+    pub version: &'a str,
+    /// The manifest of an installed package: its `about` text, its `update` source, its
+    /// nodes and its digest. `None` for a native service package, compiled into the
+    /// application or loaded from a plugin library when it started, which
+    /// cannot be removed while it runs.
+    pub manifest: Option<&'a PackageManifest>,
+}
+
+/// `set-variable` as "Set variable".
+fn words(slug: &str) -> String {
+    let mut text = slug.replace(['-', '_'], " ");
+    if let Some(first) = text.get_mut(..1) {
+        first.make_ascii_uppercase();
+    }
+    text
+}
 
 /// See the crate documentation.
 #[derive(Debug)]
@@ -366,6 +416,8 @@ pub struct Host {
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
     not_restored: Vec<(String, HostError)>,
+    /// ID and version of each service package the application was built with.
+    built_in: Vec<(String, String)>,
     space: Arc<flow::Space>,
     pool: Pool,
     sink: Sink,
@@ -413,6 +465,10 @@ impl Host {
             builder = math.register(builder).map_err(|e| start(&e))?;
         }
         let mut services = Services::default();
+        let built_in = packages
+            .iter()
+            .map(|package| (package.id().to_owned(), package.version().to_owned()))
+            .collect();
         let mut adapters = BTreeMap::new();
         let mut presentations = BTreeMap::new();
         for package in &packages {
@@ -479,6 +535,7 @@ impl Host {
             store: PackageStore::new(base, HOST_API_VERSION, MemoryJournal::new()),
             presentations,
             not_restored: Vec::new(),
+            built_in,
             space: Arc::default(),
             pool,
             sink: Sink {
@@ -497,7 +554,7 @@ impl Host {
                 let installed = package
                     .archive
                     .map_err(HostError::Storage)
-                    .and_then(|archive| host.install_archive(&archive, package.grants));
+                    .and_then(|archive| host.install_archive(&archive, package.grants, None));
                 if let Err(error) = installed {
                     host.not_restored.push((package.file, error));
                 }
@@ -598,11 +655,71 @@ impl Host {
     /// With [`HostOptions::package_dir`] the archive is then saved. If saving fails the
     /// package stays installed for this session and the error says it was not stored.
     pub fn install(&mut self, archive: &[u8], grants: Grants) -> Result<PackageKey, HostError> {
-        let key = self.install_archive(archive, grants)?;
+        self.install_expected(archive, grants, None)
+    }
+
+    /// Installs a package like [`install`](Self::install), but only if its content
+    /// digest is `content_digest` (`sha256:<64 hex>`): the check that a downloaded
+    /// archive is the one an update feed announced.
+    pub fn install_release(
+        &mut self,
+        archive: &[u8],
+        grants: Grants,
+        content_digest: &str,
+    ) -> Result<PackageKey, HostError> {
+        self.install_expected(archive, grants, Some(content_digest))
+    }
+
+    fn install_expected(
+        &mut self,
+        archive: &[u8],
+        grants: Grants,
+        expected: Option<&str>,
+    ) -> Result<PackageKey, HostError> {
+        let key = self.install_archive(archive, grants, expected)?;
         if let Some(directory) = &self.options.package_dir {
-            persist::save(directory, archive, grants).map_err(HostError::Storage)?;
+            persist::save(directory, archive, grants, &key).map_err(HostError::Storage)?;
         }
         Ok(key)
+    }
+
+    /// The packages of this host: those compiled into the application, then every
+    /// installed package. This is the data of a package manager view.
+    pub fn packages(&self) -> impl Iterator<Item = PackageInfo<'_>> {
+        let built_in = self.built_in.iter().map(|(id, version)| PackageInfo {
+            id,
+            version,
+            manifest: None,
+        });
+        let installed = self
+            .store
+            .packages()
+            .filter(|record| record.state() == PackageState::Active)
+            .map(|record| {
+                let manifest = record.manifest();
+                PackageInfo {
+                    id: manifest.key().id.as_str(),
+                    version: manifest.key().version.as_str(),
+                    manifest: Some(manifest),
+                }
+            });
+        built_in.chain(installed)
+    }
+
+    /// Removes an installed package. Its nodes can no longer be placed, and a document
+    /// that uses them no longer opens; flows already running keep the code they
+    /// started with. A package another installed package depends on is refused. With
+    /// [`HostOptions::package_dir`] it is also removed from the directory, so it stays
+    /// removed when the host next starts.
+    pub fn uninstall(&mut self, key: &PackageKey) -> Result<(), HostError> {
+        let _ = self
+            .store
+            .remove(key)
+            .map_err(|error| HostError::Uninstall(error.to_string()))?;
+        if let Some(directory) = &self.options.package_dir {
+            persist::forget(directory, key).map_err(HostError::Storage)?;
+        }
+        Ok(())
     }
 
     /// Saved packages that could not be installed again when this host started, by
@@ -611,7 +728,12 @@ impl Host {
         &self.not_restored
     }
 
-    fn install_archive(&mut self, archive: &[u8], grants: Grants) -> Result<PackageKey, HostError> {
+    fn install_archive(
+        &mut self,
+        archive: &[u8],
+        grants: Grants,
+        expected: Option<&str>,
+    ) -> Result<PackageKey, HostError> {
         let mut files = MemorySink::new();
         let verified = read_archive(archive, &ArchiveLimits::default(), &mut files)
             .map_err(|error| HostError::Archive(error.to_string()))?;
@@ -619,6 +741,15 @@ impl Host {
         let key = manifest.key().clone();
 
         let content_digest = verified.content_digest().to_owned();
+        if expected.is_some_and(|expected| {
+            let bare = |digest: &'_ str| digest.strip_prefix("sha256:").map(str::to_owned);
+            bare(expected).unwrap_or_else(|| expected.to_owned())
+                != bare(&content_digest).unwrap_or_else(|| content_digest.clone())
+        }) {
+            return Err(HostError::Archive(
+                "its content digest is not the expected one".into(),
+            ));
+        }
         let read = |path: &str| -> Result<&str, HostError> {
             let missing = || HostError::MissingDefinition(path.to_owned());
             let archive_path: ArchivePath = path.parse().map_err(|_| missing())?;
@@ -720,7 +851,22 @@ impl Host {
                 checked = true;
             }
         }
-        let _ = self.store.install(contents).map_err(|e| install(&e))?;
+        // A newer version of an installed package succeeds it: both stay published, so
+        // documents locked to the old one still open, and newly placed nodes use the
+        // new one.
+        let previous = self
+            .store
+            .packages()
+            .filter(|record| record.state() == PackageState::Active)
+            .map(|record| record.manifest().key())
+            .filter(|active| active.id == key.id && active.version != key.version)
+            .max_by(|a, b| orange_packages::precedence(&a.version, &b.version))
+            .cloned();
+        let _ = match previous {
+            Some(previous) => self.store.update(&previous, contents),
+            None => self.store.install(contents),
+        }
+        .map_err(|e| install(&e))?;
         if !checked
             && let Err(error) =
                 self.check_graphs(key.id.as_str(), &bodies, &known, self.store.current())

@@ -259,10 +259,18 @@ const REMEMBER: &str = "org.example.tools/remember";
 /// A package with no code: its one node is a graph that stores its input in a local
 /// variable of its own and returns what it reads back.
 fn graph_package(output_type: &str, with_variable: bool) -> Result<Vec<u8>, HostError> {
+    graph_package_at("1.0.0", output_type, with_variable)
+}
+fn graph_package_at(
+    version: &str,
+    output_type: &str,
+    with_variable: bool,
+) -> Result<Vec<u8>, HostError> {
     let port = |name: &str, direction: &str, ty: &str| json!({"port_id": name, "direction": direction, "kind": "data", "type": ty});
     let manifest = json!({
         "format": "orange.plugin", "format_version": 1,
-        "id": "org.example.tools", "version": "1.0.0", "publisher": "org.example",
+        "id": "org.example.tools", "version": version, "publisher": "org.example",
+        "update": {"feed": "https://example.org/tools/feed.json"},
         "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
         "dependencies": [],
         "contributions": {
@@ -902,4 +910,123 @@ fn an_observed_flow_reports_what_a_pure_node_computed() {
         .collect();
     assert!(on_wire.contains(&(node(1), "payload".into(), Value::I64(41))));
     assert!(on_wire.contains(&(node(3), "sum".into(), Value::I64(42))));
+}
+
+#[test]
+fn packages_are_listed_and_a_removed_one_stays_removed() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-remove-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = || HostOptions {
+        package_dir: Some(directory.clone()),
+        ..HostOptions::default()
+    };
+    let placeable = |host: &Host| {
+        host.nodes().any(|node| {
+            node.definition.definition.id.as_str() == REMEMBER && node.provider.is_some()
+        })
+    };
+    let archive = graph_package(I64, true).unwrap();
+    let key = {
+        let (mut host, _events) = Host::new(options()).unwrap();
+        assert_eq!(host.packages().count(), 0);
+        let key = host.install(&archive, Grants::default()).unwrap();
+        let listed: Vec<_> = host.packages().collect();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].id, key.id.as_str());
+        assert_eq!(listed[0].version, key.version.as_str());
+        assert_eq!(listed[0].manifest.unwrap().key(), &key);
+        assert!(placeable(&host));
+
+        host.uninstall(&key).unwrap();
+        assert_eq!(host.packages().count(), 0);
+        assert!(!placeable(&host));
+        // Removing it again is refused, and nothing else changes.
+        assert!(matches!(host.uninstall(&key), Err(HostError::Uninstall(_))));
+        // It installs again in the same session, and is removed again.
+        assert_eq!(host.install(&archive, Grants::default()).unwrap(), key);
+        assert!(placeable(&host));
+        host.uninstall(&key).unwrap();
+        key
+    };
+    {
+        let (mut host, _events) = Host::new(options()).unwrap();
+        assert!(host.not_restored().is_empty());
+        assert_eq!(host.packages().count(), 0);
+        // The same version installs again.
+        assert_eq!(host.install(&archive, Grants::default()).unwrap(), key);
+        assert!(placeable(&host));
+    }
+    let (host, _events) = Host::new(options()).unwrap();
+    assert_eq!(host.packages().count(), 1);
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_release_from_a_feed_succeeds_the_installed_version() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let old = host
+        .install(&graph_package(I64, true).unwrap(), Grants::default())
+        .unwrap();
+    let provider_version = |host: &Host| {
+        host.nodes()
+            .find(|node| node.definition.definition.id.as_str() == REMEMBER)
+            .and_then(|node| node.provider.map(|provider| provider.version.clone()))
+    };
+    assert_eq!(provider_version(&host).as_deref(), Some("1.0.0"));
+
+    // The feed the installed package names announces 1.1.0.
+    let newer = graph_package_at("1.1.0", I64, true).unwrap();
+    let (mut scratch, _scratch_events) = Host::new(HostOptions::default()).unwrap();
+    let new = scratch.install(&newer, Grants::default()).unwrap();
+    let digest = scratch
+        .packages()
+        .next()
+        .unwrap()
+        .manifest
+        .unwrap()
+        .content_digest()
+        .to_owned();
+    let feed = json!({"format": "orange.update-feed", "format_version": 1, "releases": [
+        {"id": "org.example.tools", "version": "1.1.0",
+            "archive": "https://example.org/tools/1.1.0.orangeplug", "content_digest": digest}
+    ]});
+    let feed = orange_host::UpdateFeed::from_json(feed.to_string().as_bytes()).unwrap();
+    let installed = host.packages().next().unwrap().manifest.unwrap();
+    assert_eq!(
+        installed.update().unwrap().feed(),
+        "https://example.org/tools/feed.json"
+    );
+    let release = feed.update_for(installed).unwrap().clone();
+    assert_eq!(release.key(), &new);
+
+    // An archive that is not the announced one is refused and nothing changes.
+    let other = graph_package_at("1.1.0", I64, false).unwrap();
+    assert!(matches!(
+        host.install_release(&other, Grants::default(), release.content_digest()),
+        Err(HostError::Archive(_))
+    ));
+    assert_eq!(host.packages().count(), 1);
+
+    assert_eq!(
+        host.install_release(&newer, Grants::default(), release.content_digest())
+            .unwrap(),
+        new
+    );
+    // Both versions stay, so documents locked to 1.0.0 still open; new nodes use 1.1.0.
+    assert_eq!(host.packages().count(), 2);
+    assert_eq!(provider_version(&host).as_deref(), Some("1.1.0"));
+    let installed = host
+        .packages()
+        .find(|package| package.version == "1.1.0")
+        .unwrap()
+        .manifest
+        .unwrap();
+    assert_eq!(feed.update_for(installed), None);
+    host.uninstall(&old).unwrap();
+    assert_eq!(provider_version(&host).as_deref(), Some("1.1.0"));
 }

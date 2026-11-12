@@ -45,6 +45,21 @@ Why egui:
 
 ## ADR-03 — Component-first expansion, trusted worker escape hatch
 
+Native plugin library amendment (2026-11-11, selected by the user): a `ServicePackage`
+may also come from a dynamic library the application loads when it starts
+(`orange-native`). This reverses, for this tier only, the earlier rejection of Rust
+dynamic libraries as a plugin format. The reasons it was rejected still hold and are
+accepted as the user's risk for now: the code is not sandboxed and has every right of
+the application, a fault or panic in it ends the application, and Rust has no stable
+binary interface, so a library is loaded only when it reports the same SDK interface
+revision, compiler and target as the application, and it must be built against the
+application's lockfile. Libraries are never unloaded and are not installed while the
+application runs. Installable archives still refuse native library payloads; the
+sandboxed component remains the format for packages installed at run time. The
+workspace keeps `unsafe_code = "forbid"`; `orange-native` alone denies it and allows
+three reviewed blocks, and a plugin crate allows the unmangled exports of
+`export_plugin!`.
+
 Native service tier amendment (2026-11-10): work that needs the operating system is
 provided by trusted Rust compiled into the application as a `ServicePackage`, not by an
 installed native library. It is the third way to implement a node, beside graphs and

@@ -10,7 +10,7 @@ ADR-22 narrows foundation delivery to generic capabilities. Specialized OBS/Twit
 
 | Boundary | Hot addition / portability | Failure and authority | Contribution/latency limits | Decision |
 |---|---|---|---|---|
-| Native Rust dylib/trait objects | Platform/compiler/build sensitive | Host memory/credentials/process privileges; native fault can terminate host | Broad raw UI/ECS access; low call cost; no stable external Rust ABI | Rejected public format |
+| Native Rust dylib/trait objects | Platform/compiler/build sensitive | Host memory/credentials/process privileges; native fault can terminate host | Broad raw UI/ECS access; low call cost; no stable external Rust ABI | **Start-time trusted tier** at the user's risk (ADR-03 amendment 2026-11-11); not an archive payload |
 | Stable C ABI library | Possible per-target bundles; explicit ABI structs required | Same in-process crash/authority limits; unload needs every pointer/thread/callback barrier | Broad native access, ownership hazards, per-platform release testing | Not initial public format |
 | Wasm Component Model | Portable validated component with versioned WIT-style host imports | Guest linear-memory isolation and checked imports; fuel/epoch/resource limits; host bug remains risk | Serialization/copy/call costs; no raw host pointers or native callback code | **Primary installable format** |
 | External worker | Native runtime/language flexibility; bundle per target | Crash boundary and killable process; OS access remains user authority unless actual OS sandbox is implemented | IPC cost, versioned bounded frames, declarative UI/scene bridge only | **Explicit-trust secondary tier** |
@@ -91,6 +91,22 @@ package directory keeps each installed archive and the capabilities granted to i
 installs them again when it next starts (02). The `orange` command takes the directory
 as `--store <dir>`.
 
+Update feeds and removal (2026-11-11; `orange-packages`, `orange-host`): the document
+at a manifest's `update.feed` URL is
+`{"format": "orange.update-feed", "format_version": 1, "releases": [{"id", "version",
+"channel", "archive", "content_digest"}]}`. `channel` defaults to `stable`, `archive`
+is an `https://` URL and `content_digest` is `sha256:<64 hex>`. Unknown fields, more
+than 4,096 releases or more than 1 MiB refuse the feed, and one invalid release refuses
+all of it. `UpdateFeed::update_for(manifest)` returns the release of the installed
+package's ID and channel with the highest version above the installed one, comparing
+by Semantic Versioning precedence. The package crate only reads bytes; the application
+fetches them. `Host::install_release` refuses an archive whose content digest is not
+the announced one. A feed is not signed: its authority is the `https://` origin the
+installed package named, and packages are installed at the user's own risk. The
+`orange` command has `packages`, `remove <id> <version>` and `updates [--apply]`.
+`Host::uninstall` removes a version from the registry and from the package directory;
+it is refused while another installed package depends on it.
+
 Session start (2026-11-11): the host calls `Session::start` on every connection of a
 flow once all of that flow's triggers are attached, at opening and after a live edit;
 a shared session is called once per flow. A session that receives must not begin
@@ -98,12 +114,32 @@ before the first call. The WebSocket session opens its socket only then. Before 
 it connected as soon as the document was prepared, and a server's first message could
 arrive before any trigger existed and be dropped.
 
+Native plugin libraries (2026-11-11; `orange-sdk`, `orange-native`): a plugin crate
+with `crate-type = ["cdylib"]` writes `orange_sdk::export_plugin!(package)`, where
+`package` is a function returning its `ServicePackage`. The macro exports
+`orange_plugin_abi`, returning `orange_sdk::ABI` (the text `orange-plugin <revision> sdk
+<version> rustc <release> <commit> <target>`), and `orange_plugin_package`, returning
+the boxed package. `orange_native::load(path)` opens the library, reads the ABI text
+before calling anything else, refuses a different text (`LoadError::Abi`), a library
+without the symbols (`NotAPlugin`) or a file the system cannot load (`Open`), and
+otherwise returns the package; `load_directory` does this for every library file of a
+directory in name order and reports each result separately. The application passes
+the packages to `Host::with_services`, so a loaded plugin's nodes, triggers and
+connection kinds behave exactly like built-in ones and are listed by `Host::nodes` and
+`Host::packages`. The `orange` command takes `--plugins <dir>`.
+`app/crates/orange-plugin-example` is a complete plugin with one node. Limits: the ABI
+text cannot detect different dependency versions or features, so a plugin must be
+built with the application's lockfile; a panic in a plugin aborts the process; a
+library is never unloaded, is not loaded while the application runs, and cannot be
+removed with `Host::uninstall`; there is no manifest, update source or grant for this
+tier.
+
 Native plugins in Rust (2026-11-11; `orange-sdk`): a plugin crate depends on
 `orange-sdk` and returns a `ServicePackage` holding its definition files, a
 `ServiceNode` per asynchronous node, a `ServiceSource` per trigger and a
 `ConnectionAdapter` per connection kind. The application passes it to
-`Host::with_services`. This tier is compiled into the application: it is trusted, not
-sandboxed and not installed at run time. A plugin that must be installed into a running
+`Host::with_services`. This tier is compiled into the application or loaded from a
+library at start (above): it is trusted, not sandboxed and not installed at run time. A plugin that must be installed into a running
 application is a Wasm component or a graph package.
 
 Manifest `about` and `update` (2026-11-11; `orange-packages`): two optional top-level
@@ -116,8 +152,8 @@ publisher announces versions of this package and which channel this build belong
 (default `stable`). A feed URL must be `https://`, at most 2,048 printable ASCII bytes,
 with a host and no user information. Both sections are covered by the content digest
 like the rest of the manifest. They are descriptive only: installation never contacts
-a URL, and the feed's own format, its signature and the host's update check are not
-defined yet. A bad field is `packages/manifest-metadata` and names the field.
+a URL. The feed format and the update check are described above; feed signatures are
+not defined. A bad field is `packages/manifest-metadata` and names the field.
 
 Manifest schema (K01, 2026-11-06; `orange-packages`): the manifest is strict JSON. Duplicate object keys and numbers other than integers within ±(2^53 − 1) are rejected at any depth, including uninterpreted sections, because readers disagree on them. `execution` is absent for a data-only package, `{"kind": "wasm-component", "entry", "world"}` with `world` = `orange:expansion/<name>@<x.y.z>`, or `{"kind": "worker", "wire_version": 1, "targets": [{"os": "windows"|"macos"|"linux", "arch": "x86_64"|"aarch64", "entry"}]}` with 1–16 distinct targets; any other kind, including native libraries, is refused. `contributions.panels` lists up to 256 distinct panel IDs `<package>/<[a-z][a-z0-9-]*>` in the package's own namespace; the declarative widget descriptor format is later UI work (ADR-08), so panels are identities only. `localization` follows 13 §3 exactly: format version 1, `fluent`, default locale `en` with an `en` catalogue, BCP 47-shaped tags unique ignoring case, non-empty lists of distinct `.ftl` files, `[a-z][a-z0-9-]*` message IDs and `[a-z][a-z0-9_]*` argument names typed from the 13 §3 vocabulary, with bounded counts. Every file reference is an archive path (below). Dependency locks are `{"id", "version", "content_digest": "sha256:<64 hex>"}`; installation refuses an active dependency whose content digest differs from the lock. `integrity.content_digest` (formerly `payload_digest`; the unreleased name has no reader) is the package's own content digest. `permissions` stays uninterpreted until grants (K03). Errors carry stable `packages/manifest-*` keys and redacted text.
 

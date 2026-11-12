@@ -58,9 +58,19 @@ definition that has an implementation and no choice yet, the first provider that
 implements it as the one a newly placed node binds to. Before this the bundled base
 nodes had none, so `new_node_edit` refused them and `Host::nodes` listed them without
 a provider.
+Package management and names (2026-11-11): `Host::packages` lists the service packages
+compiled into the application and every installed package with its manifest;
+`Host::uninstall` removes an installed one, also from the package directory;
+`Host::install_release` installs an archive only if it has a given content digest.
+Installing a version of a package that already has an active version uses the store's
+update, so both stay published and newly placed nodes bind to the new one.
+`NodeInfo::label` and `NodeInfo::category` give every listed node a name and a
+palette category in the default language: the definition file's text, or text made
+from the node's ID (`core/set-variable` is "Set variable" in "Core"). The example
+`app/crates/orange-host/examples/attach.rs` is a complete front end in one file.
 Base packages (2026-11-11): `HostOptions::base_nodes = false` leaves the bundled base
 nodes unregistered, and an application chooses its service packages (the `orange`
-command: `--no-base`, `--no-net`). Core language nodes are always present.
+command: `--no-base`, `--no-net`, `--no-audio`). Core language nodes are always present.
 Stored packages (2026-11-11): with `HostOptions::package_dir` the host saves every
 installed archive in that directory under the name of its SHA-256, and an index,
 `installed.json`, lists them in installation order with the granted capabilities. A
@@ -190,6 +200,9 @@ The host owns an input-trigger service and audio capture/playback services. Keyb
 | orange-host | Session API: package installation, flows (one run per thread), effect workers, bounded observation | UI, windows, rendering; graph semantics |
 | orange-cli | `orange` terminal front end over `orange-host` and the service packages it builds in | Any direct use of compiler, runtime or packages |
 | orange-sdk | Plugin SDK: the service package, node, trigger, connection adapter and session types a native plugin crate implements | Package store, guest engine, front ends, any network or OS client |
+| orange-native | Loads `ServicePackage`s from native plugin libraries at start; the only crate with unsafe code | Sandboxing; installing or unloading while running |
+| orange-plugin-example | Example native plugin library with one node | Product functionality |
+| orange-audio | Base audio service package on `orange-sdk`: output and input device connections, play, stop and input-level nodes, and the level entry | Graph semantics; anything the SDK does not expose; DSP |
 | orange-net | Base network service package on `orange-sdk`: HTTP and WebSocket adapters, request and send nodes, and the message entry | Graph semantics; anything the SDK does not expose |
 | orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c); guest action kernels and async effect implementations with binary bulk values (2026-11-10) | Core-crate dependency, precompiled native loading, ungranted imports |
 | orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Specialized integration request logic |

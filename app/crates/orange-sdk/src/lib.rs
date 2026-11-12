@@ -202,3 +202,59 @@ impl ServicePackage {
         self
     }
 }
+
+/// Identifies the build a plugin library is compatible with: the SDK's interface
+/// revision and version, the exact compiler and the target. A library exports the
+/// value it was compiled with and a host loads it only when it equals the host's own.
+///
+/// Equal text is necessary, not sufficient: a plugin must also resolve the SDK's
+/// dependencies to the same versions and features as the host, because their types
+/// cross the boundary too. Building the plugin against the host's lockfile ensures it.
+pub const ABI: &std::ffi::CStr = match std::ffi::CStr::from_bytes_with_nul(
+    concat!(
+        // The interface revision: raise it when a type or trait a plugin library
+        // exchanges with its host changes shape.
+        "orange-plugin 1",
+        " sdk ",
+        env!("CARGO_PKG_VERSION"),
+        " rustc ",
+        env!("ORANGE_SDK_RUSTC"),
+        " ",
+        env!("ORANGE_SDK_TARGET"),
+        "\0"
+    )
+    .as_bytes(),
+) {
+    Ok(text) => text,
+    Err(_) => panic!("the plugin ABI text contains a NUL byte"),
+};
+
+/// Name of the symbol a plugin library exports for [`ABI`].
+pub const ABI_SYMBOL: &str = "orange_plugin_abi";
+/// Name of the symbol a plugin library exports for its [`ServicePackage`].
+pub const PACKAGE_SYMBOL: &str = "orange_plugin_package";
+
+/// Makes a `cdylib` crate a native plugin library: exports the function that returns
+/// its [`ServicePackage`] and the [`ABI`] it was built with.
+///
+/// ```ignore
+/// fn package() -> orange_sdk::ServicePackage { /* nodes, triggers, adapters */ }
+/// orange_sdk::export_plugin!(package);
+/// ```
+///
+/// A native plugin runs inside the application with all of its rights; nothing limits
+/// what it does, and a panic in it ends the application. Use once per library.
+#[macro_export]
+macro_rules! export_plugin {
+    ($package:path) => {
+        #[unsafe(no_mangle)]
+        pub extern "C" fn orange_plugin_abi() -> *const ::core::ffi::c_char {
+            $crate::ABI.as_ptr()
+        }
+        #[unsafe(no_mangle)]
+        pub extern "C" fn orange_plugin_package() -> *mut ::core::ffi::c_void {
+            let package: $crate::ServicePackage = $package();
+            ::std::boxed::Box::into_raw(::std::boxed::Box::new(package)).cast()
+        }
+    };
+}

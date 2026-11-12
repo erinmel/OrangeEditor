@@ -1,5 +1,58 @@
 # Tooling, environment and research register
 
+## Native plugin libraries and the audio stop test — 2026-11-11
+
+Hosted run 43142118022 failed `a_stop_node_ends_a_long_sound_early` on Linux, Windows
+and macOS by timeout. The test stopped once, 100 ms after starting a 30 s sound; on the
+hosted machines the sound had not started yet, and a stop before a sound starts stops
+nothing. The test now repeats the stop until the sound has ended. No product change.
+
+Native plugin libraries: `libloading` 0.9.0 (ISC; `Library::new`, `Library::get` with a
+`&str` symbol name, read from the 0.9.0 crate source).
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,755 passed, 0 failed, 18 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange nodes --plugins <dir>` with the example library and a junk `.dll` | Plugin loaded and its node listed; the junk file reported and skipped |
+
+The loader's test builds `orange-plugin-example` with a nested `cargo build` in the
+profile the test itself was built with, then loads the library from the same target
+directory. Limits: Windows only so far; the ABI refusal (`LoadError::Abi`) has no test
+because a mismatched library needs a second compiler; a panicking plugin, and a plugin
+built with other dependency versions, are documented as unsupported and not tested.
+
+## Audio package, package management and update feeds — 2026-11-11
+
+Branch `feat/core-completion-audio` from `dev` 2ed1649 (Wasmtime 50.0.1). Rust 1.99.1,
+Windows 11 x64. New dependencies, exact: `cpal` 0.18.2 (Apache-2.0; API read from the
+0.18.2 crate source: `DeviceTrait::build_output_stream`/`build_input_stream` with a
+`StreamConfig` by value and a timeout argument, `description().name()`) and `hound`
+3.5.1 (Apache-2.0).
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,752 passed, 0 failed, 17 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+| `cargo test -p orange-audio --test audio -- --ignored` | Pass: a 300 ms tone played on the default WASAPI output |
+| `cargo run -p orange-host --example attach --locked` | Lists the palette, runs a flow and prints its variable |
+| `orange pack`, `packages`, `remove` on a temporary `--store` | Installed, listed, removed; second removal refused |
+
+Limits. Audio: automated tests use the silent device, so the cpal device path is
+verified only by the one manual run on Windows; Linux (ALSA) and macOS (CoreAudio)
+device I/O, real capture and the level trigger on a live microphone are not tested.
+`cargo deny` was not run locally; the hosted job checks the new dependency licenses.
+Updates: `orange updates` and `orange_net::download` were not run against a server,
+since feeds must be `https://` and no local TLS server exists in the tests; feed
+parsing, version precedence, the digest check and succession are tested in process.
+Not tested: removing a package while a flow that uses it runs.
+
 ## WebSocket messages lost before triggers attach — 2026-11-11
 
 Hosted run 43100068822 (head 715ebdb) failed two WebSocket tests by timeout: on Linux

@@ -6,6 +6,7 @@
 //! through the same checks as a first installation. Both kinds of file are written to
 //! a temporary name and renamed, so a crash leaves the previous index or the new one.
 use orange_guest::Grants;
+use orange_packages::PackageKey;
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -80,7 +81,12 @@ fn write(directory: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
 }
 
 /// Adds an installed archive to the directory and to the end of its index.
-pub(crate) fn save(directory: &Path, archive: &[u8], grants: Grants) -> Result<(), String> {
+pub(crate) fn save(
+    directory: &Path,
+    archive: &[u8],
+    grants: Grants,
+    key: &PackageKey,
+) -> Result<(), String> {
     let mut name = String::new();
     for byte in Sha256::digest(archive) {
         name.push_str(&format!("{byte:02x}"));
@@ -88,8 +94,32 @@ pub(crate) fn save(directory: &Path, archive: &[u8], grants: Grants) -> Result<(
     name.push_str(".orangeplug");
     let mut packages = entries(directory)?;
     packages.retain(|entry| entry["archive"] != name.as_str());
-    packages.push(json!({"archive": name, "log": grants.log}));
+    packages.push(json!({"archive": name, "log": grants.log,
+        "id": key.id.as_str(), "version": key.version.as_str()}));
     write(directory, &name, archive)?;
     let index = json!({"format": FORMAT, "format_version": 1, "packages": packages});
     write(directory, INDEX, index.to_string().as_bytes())
+}
+
+/// Takes a package out of the index, then deletes its archive. A crash between the two
+/// leaves an unlisted file, which is never read.
+pub(crate) fn forget(directory: &Path, key: &PackageKey) -> Result<(), String> {
+    let (gone, kept): (Vec<Json>, Vec<Json>) = entries(directory)?.into_iter().partition(|entry| {
+        entry["id"] == key.id.as_str() && entry["version"] == key.version.as_str()
+    });
+    if gone.is_empty() {
+        return Ok(());
+    }
+    let index = json!({"format": FORMAT, "format_version": 1, "packages": kept});
+    write(directory, INDEX, index.to_string().as_bytes())?;
+    for entry in &gone {
+        if let Some(name) = archive_name(entry) {
+            match fs::remove_file(directory.join(name)) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => return Err(io("delete the archive", &error)),
+            }
+        }
+    }
+    Ok(())
 }
