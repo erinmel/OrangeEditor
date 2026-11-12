@@ -11,6 +11,7 @@ rust-version = "1.97.1"
 publish = false
 
 [workspace.dependencies]
+claxon = "=0.4.3"
 cpal = "=0.18.2"
 hound = "=3.5.1"
 # Dynamic library loading for native plugins (orange-native only).

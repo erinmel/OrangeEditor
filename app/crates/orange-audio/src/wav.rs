@@ -1,5 +1,7 @@
-//! Reads a WAV file into samples in an output's rate and channel layout.
+//! Reads a WAV or FLAC file into samples in an output's rate and channel layout. The
+//! format is told from the file's first bytes, not from its name.
 use hound::{SampleFormat, WavReader};
+use std::io::Read;
 use std::path::Path;
 use std::sync::Arc;
 
@@ -10,7 +12,7 @@ pub const MAX_SECONDS: u64 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WavError {
-    /// The file is missing, unreadable or not a WAV file this reader supports.
+    /// The file is missing, unreadable or not a WAV or FLAC file this reader supports.
     Unreadable,
     /// The file or the decoded sound is over a limit.
     TooLarge,
@@ -23,6 +25,13 @@ pub(crate) fn load(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, 
         .len();
     if size > MAX_FILE_BYTES {
         return Err(WavError::TooLarge);
+    }
+    let mut magic = [0u8; 4];
+    std::fs::File::open(path)
+        .and_then(|mut file| file.read_exact(&mut magic))
+        .map_err(|_| WavError::Unreadable)?;
+    if &magic == b"fLaC" {
+        return flac(path, rate, channels);
     }
     let mut reader = WavReader::open(path).map_err(|_| WavError::Unreadable)?;
     let spec = reader.spec();
@@ -45,6 +54,35 @@ pub(crate) fn load(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, 
     };
     let samples = samples.map_err(|_| WavError::Unreadable)?;
     convert(&samples, spec.channels, spec.sample_rate, channels, rate)
+}
+
+fn flac(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, WavError> {
+    let mut reader = claxon::FlacReader::open(path).map_err(|_| WavError::Unreadable)?;
+    let info = reader.streaminfo();
+    let source_channels = u16::try_from(info.channels).map_err(|_| WavError::Unreadable)?;
+    if !(1..=32).contains(&info.bits_per_sample) {
+        return Err(WavError::Unreadable);
+    }
+    // Refuse a stream that declares more than the limit before decoding any of it.
+    let declared = info.samples.unwrap_or(0) / u64::from(info.sample_rate.max(1));
+    if declared > MAX_SECONDS {
+        return Err(WavError::TooLarge);
+    }
+    #[expect(
+        clippy::cast_possible_wrap,
+        reason = "bits_per_sample is within 1..=32"
+    )]
+    let scale = 2f32.powi(info.bits_per_sample as i32 - 1).recip();
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "audio samples; the loss is inaudible"
+    )]
+    let samples: Result<Vec<f32>, _> = reader
+        .samples()
+        .map(|sample| sample.map(|value| value as f32 * scale))
+        .collect();
+    let samples = samples.map_err(|_| WavError::Unreadable)?;
+    convert(&samples, source_channels, info.sample_rate, channels, rate)
 }
 
 /// Changes interleaved samples to another channel count and rate. Mono is copied to
@@ -166,5 +204,68 @@ mod tests {
             Err(WavError::Unreadable)
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    /// A FLAC stream of one frame of uncompressed 16-bit mono samples at 8 kHz.
+    fn flac_file(samples: &[i16]) -> Vec<u8> {
+        fn crc(bytes: &[u8], width: u32, polynomial: u32) -> u32 {
+            let top = 1 << (width - 1);
+            let mut crc = 0u32;
+            for byte in bytes {
+                crc ^= u32::from(*byte) << (width - 8);
+                for _ in 0..8 {
+                    crc = if crc & top == 0 {
+                        crc << 1
+                    } else {
+                        (crc << 1) ^ polynomial
+                    };
+                }
+            }
+            crc & ((1u64 << width) - 1) as u32
+        }
+        let count = u16::try_from(samples.len()).unwrap();
+        let mut file = b"fLaC".to_vec();
+        // The last metadata block: STREAMINFO, 34 bytes.
+        file.extend_from_slice(&[0x80, 0, 0, 34]);
+        file.extend_from_slice(&count.to_be_bytes());
+        file.extend_from_slice(&count.to_be_bytes());
+        file.extend_from_slice(&[0; 6]);
+        // 20 bits rate, 3 bits channels - 1, 5 bits depth - 1, 36 bits sample count.
+        let info = (8_000u64 << 44) | (15 << 36) | u64::from(count);
+        file.extend_from_slice(&info.to_be_bytes());
+        file.extend_from_slice(&[0; 16]);
+        // Frame: fixed block size given as 16 bits, rate from STREAMINFO, mono, 16 bits.
+        let mut frame = vec![0xff, 0xf8, 0x70, 0x08, 0x00];
+        frame.extend_from_slice(&(count - 1).to_be_bytes());
+        frame.push(crc(&frame, 8, 0x07) as u8);
+        // One verbatim subframe.
+        frame.push(0x02);
+        for sample in samples {
+            frame.extend_from_slice(&sample.to_be_bytes());
+        }
+        let check = crc(&frame, 16, 0x8005) as u16;
+        frame.extend_from_slice(&check.to_be_bytes());
+        file.extend_from_slice(&frame);
+        file
+    }
+
+    #[test]
+    fn a_flac_file_decodes_like_the_same_wav_file() {
+        let dir = std::env::temp_dir().join(format!("orange-audio-flac-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let samples: Vec<i16> = (0..64).map(|n| (n * 500 - 16_000) as i16).collect();
+        // The extension does not matter: the content says what it is.
+        let path = dir.join("tone.wav");
+        std::fs::write(&path, flac_file(&samples)).unwrap();
+        let decoded = load(&path, 8_000, 1).unwrap();
+        let expected: Vec<f32> = samples.iter().map(|s| f32::from(*s) / 32_768.0).collect();
+        assert_eq!(&decoded[..], &expected[..]);
+        // A damaged stream is refused, not played as noise.
+        let mut damaged = flac_file(&samples);
+        let middle = damaged.len() - 20;
+        damaged[middle] ^= 0xff;
+        std::fs::write(&path, damaged).unwrap();
+        assert_eq!(load(&path, 8_000, 1), Err(WavError::Unreadable));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
