@@ -3,6 +3,7 @@
 use std::sync::mpsc::Receiver;
 use std::time::{Duration, Instant};
 
+use orange_host::{BASE_PACKAGE, PackageKind};
 use orange_host::{
     ControlOutcome, FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, NodeId,
     RunState, StopMode, Value, VariableId,
@@ -672,6 +673,115 @@ fn the_base_nodes_can_be_left_out() {
     });
 }
 
+#[test]
+fn a_disabled_package_is_listed_and_left_out_from_the_next_start() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-toggle-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let start = || {
+        let options = HostOptions {
+            package_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        };
+        let native = orange_host::ServicePackage::new("org.example.native", "2.0.0")
+            .about("Native", "A native package without nodes.");
+        Host::with_services(options, vec![native]).unwrap().0
+    };
+    // (kind, active, enabled) of each package, by ID.
+    let states = |host: &Host| -> Vec<(String, PackageKind, bool, bool)> {
+        host.packages()
+            .map(|package| {
+                (
+                    package.id.to_owned(),
+                    package.kind,
+                    package.active,
+                    package.enabled,
+                )
+            })
+            .collect()
+    };
+    let base_nodes = |host: &Host| {
+        host.nodes()
+            .filter(|node| !node.definition.definition.id.is_core())
+            .count()
+    };
+    let all = |active: bool, enabled: bool| {
+        vec![
+            (BASE_PACKAGE.to_owned(), PackageKind::Base, active, enabled),
+            (
+                "org.example.native".to_owned(),
+                PackageKind::Native,
+                active,
+                enabled,
+            ),
+            (
+                "org.example.tools".to_owned(),
+                PackageKind::Installed,
+                active,
+                enabled,
+            ),
+        ]
+    };
+
+    let key = {
+        let mut host = start();
+        let key = host
+            .install(&graph_package(I64, true).unwrap(), Grants::default())
+            .unwrap();
+        assert_eq!(states(&host), all(true, true));
+        let native = host.packages().nth(1).unwrap();
+        assert_eq!(native.name(), Some("Native"));
+        assert_eq!(native.version, "2.0.0");
+        // Disabling changes the choice, not what this host already uses.
+        for (id, ..) in all(true, true) {
+            host.set_enabled(&id, false).unwrap();
+        }
+        assert_eq!(states(&host), all(true, false));
+        assert!(base_nodes(&host) > 0);
+        key
+    };
+    {
+        let mut host = start();
+        assert!(host.not_restored().is_empty());
+        assert_eq!(states(&host), all(false, false));
+        assert_eq!(base_nodes(&host), 0);
+        for (id, ..) in all(false, false) {
+            host.set_enabled(&id, true).unwrap();
+        }
+        assert_eq!(states(&host), all(false, true));
+    }
+    {
+        let mut host = start();
+        assert_eq!(states(&host), all(true, true));
+        assert!(base_nodes(&host) > 0);
+        host.set_enabled("org.example.tools", false).unwrap();
+    }
+    // A package that was left out can still be removed from the directory.
+    let mut host = start();
+    assert_eq!(
+        installed(&host)
+            .map(|package| package.active)
+            .collect::<Vec<_>>(),
+        [false]
+    );
+    host.uninstall(&key).unwrap();
+    assert_eq!(installed(&host).count(), 0);
+    drop(host);
+    assert_eq!(installed(&start()).count(), 0);
+
+    // An application can also leave packages out without a directory.
+    let options = HostOptions {
+        disabled_packages: [BASE_PACKAGE.to_owned()].into(),
+        ..HostOptions::default()
+    };
+    let (host, _events) = Host::new(options).unwrap();
+    assert_eq!(base_nodes(&host), 0);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
 const ON_POKE: &str = "org.example.triggers/on-poke";
 
 /// A package with no code whose one node is a trigger: its fragment starts at a manual
@@ -842,6 +952,8 @@ fn flows_share_variables_declared_in_the_host() {
     assert!(host.share_variables(&counting_graph(9)).is_err());
     let counter: VariableId = id(900).parse().unwrap();
     assert_eq!(host.shared_variable(counter), Some(Value::I64(0)));
+    assert_eq!(host.shared_variables(), [(counter, Some(Value::I64(0)))]);
+    let writes = host.shared_writes();
 
     let first = host.open(&counting_graph(1)).unwrap();
     let second = host.open(&counting_graph(2)).unwrap();
@@ -854,6 +966,8 @@ fn flows_share_variables_declared_in_the_host() {
     until("every write", || {
         host.shared_variable(counter) == Some(Value::I64(33))
     });
+    assert_eq!(host.shared_variables(), [(counter, Some(Value::I64(33)))]);
+    assert!(host.shared_writes() >= writes + 6);
     // A flow reads what the other one wrote.
     host.trigger(first, node(3), None).unwrap();
     until("the read", || {
@@ -932,9 +1046,9 @@ fn packages_are_listed_and_a_removed_one_stays_removed() {
     let archive = graph_package(I64, true).unwrap();
     let key = {
         let (mut host, _events) = Host::new(options()).unwrap();
-        assert_eq!(host.packages().count(), 0);
+        assert_eq!(installed(&host).count(), 0);
         let key = host.install(&archive, Grants::default()).unwrap();
-        let listed: Vec<_> = host.packages().collect();
+        let listed: Vec<_> = installed(&host).collect();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].id, key.id.as_str());
         assert_eq!(listed[0].version, key.version.as_str());
@@ -942,7 +1056,7 @@ fn packages_are_listed_and_a_removed_one_stays_removed() {
         assert!(placeable(&host));
 
         host.uninstall(&key).unwrap();
-        assert_eq!(host.packages().count(), 0);
+        assert_eq!(installed(&host).count(), 0);
         assert!(!placeable(&host));
         // Removing it again is refused, and nothing else changes.
         assert!(matches!(host.uninstall(&key), Err(HostError::Uninstall(_))));
@@ -955,13 +1069,13 @@ fn packages_are_listed_and_a_removed_one_stays_removed() {
     {
         let (mut host, _events) = Host::new(options()).unwrap();
         assert!(host.not_restored().is_empty());
-        assert_eq!(host.packages().count(), 0);
+        assert_eq!(installed(&host).count(), 0);
         // The same version installs again.
         assert_eq!(host.install(&archive, Grants::default()).unwrap(), key);
         assert!(placeable(&host));
     }
     let (host, _events) = Host::new(options()).unwrap();
-    assert_eq!(host.packages().count(), 1);
+    assert_eq!(installed(&host).count(), 1);
     drop(host);
     let _ = std::fs::remove_dir_all(&directory);
 }
@@ -983,8 +1097,7 @@ fn a_release_from_a_feed_succeeds_the_installed_version() {
     let newer = graph_package_at("1.1.0", I64, true).unwrap();
     let (mut scratch, _scratch_events) = Host::new(HostOptions::default()).unwrap();
     let new = scratch.install(&newer, Grants::default()).unwrap();
-    let digest = scratch
-        .packages()
+    let digest = installed(&scratch)
         .next()
         .unwrap()
         .manifest
@@ -996,12 +1109,12 @@ fn a_release_from_a_feed_succeeds_the_installed_version() {
             "archive": "https://example.org/tools/1.1.0.orangeplug", "content_digest": digest}
     ]});
     let feed = orange_host::UpdateFeed::from_json(feed.to_string().as_bytes()).unwrap();
-    let installed = host.packages().next().unwrap().manifest.unwrap();
+    let manifest = installed(&host).next().unwrap().manifest.unwrap();
     assert_eq!(
-        installed.update().unwrap().feed(),
+        manifest.update().unwrap().feed(),
         "https://example.org/tools/feed.json"
     );
-    let release = feed.update_for(installed).unwrap().clone();
+    let release = feed.update_for(manifest).unwrap().clone();
     assert_eq!(release.key(), &new);
 
     // An archive that is not the announced one is refused and nothing changes.
@@ -1010,7 +1123,7 @@ fn a_release_from_a_feed_succeeds_the_installed_version() {
         host.install_release(&other, Grants::default(), release.content_digest()),
         Err(HostError::Archive(_))
     ));
-    assert_eq!(host.packages().count(), 1);
+    assert_eq!(installed(&host).count(), 1);
 
     assert_eq!(
         host.install_release(&newer, Grants::default(), release.content_digest())
@@ -1018,15 +1131,20 @@ fn a_release_from_a_feed_succeeds_the_installed_version() {
         new
     );
     // Both versions stay, so documents locked to 1.0.0 still open; new nodes use 1.1.0.
-    assert_eq!(host.packages().count(), 2);
+    assert_eq!(installed(&host).count(), 2);
     assert_eq!(provider_version(&host).as_deref(), Some("1.1.0"));
-    let installed = host
-        .packages()
+    let manifest = installed(&host)
         .find(|package| package.version == "1.1.0")
         .unwrap()
         .manifest
         .unwrap();
-    assert_eq!(feed.update_for(installed), None);
+    assert_eq!(feed.update_for(manifest), None);
     host.uninstall(&old).unwrap();
     assert_eq!(provider_version(&host).as_deref(), Some("1.1.0"));
+}
+
+/// The installed packages of a host, without its base and native ones.
+fn installed(host: &Host) -> impl Iterator<Item = orange_host::PackageInfo<'_>> {
+    host.packages()
+        .filter(|package| package.kind == orange_host::PackageKind::Installed)
 }

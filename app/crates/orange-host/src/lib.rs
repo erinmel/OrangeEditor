@@ -29,7 +29,7 @@ use orange_kernel::{
     KernelBinding, PureKernelResolver, ResolveError,
 };
 use orange_model::catalog::{ProviderDescriptor, RegistryBuilder, RegistrySnapshot};
-use orange_model::document::{ConnectionDecl, ConnectionScope};
+use orange_model::document::{ConnectionDecl, ConnectionScope, VarScope};
 use orange_model::validation::{Diagnostic, HostOrigin};
 use orange_model::validation::{LeafEffects, ValidationAnalysis};
 use orange_model::{GraphDocument, analyze_with_effects, from_json, to_json};
@@ -142,6 +142,10 @@ pub struct HostOptions {
     /// operations) are registered. Without them a document can use only the core
     /// language and what the application and installed packages provide.
     pub base_nodes: bool,
+    /// IDs of packages this host leaves out when it starts, in addition to the ones
+    /// [`Host::set_enabled`] saved in [`package_dir`](Self::package_dir): the base
+    /// nodes ([`BASE_PACKAGE`]), service packages and installed packages alike.
+    pub disabled_packages: BTreeSet<String>,
 }
 impl Default for HostOptions {
     fn default() -> Self {
@@ -155,6 +159,7 @@ impl Default for HostOptions {
             guest: GuestLimits::default(),
             package_dir: None,
             base_nodes: true,
+            disabled_packages: BTreeSet::new(),
         }
     }
 }
@@ -382,16 +387,66 @@ impl NodeInfo<'_> {
         }
     }
 }
+/// ID under which [`Host::packages`] lists the bundled base nodes (arithmetic,
+/// comparison, text, collection and JSON operations) and [`Host::set_enabled`]
+/// switches them.
+pub const BASE_PACKAGE: &str = "org.orange.base";
+
+/// Where a package of a host comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PackageKind {
+    /// The bundled base nodes.
+    Base,
+    /// A native service package: compiled into the application or loaded from a
+    /// plugin library when it started.
+    Native,
+    /// A package installed from an archive.
+    Installed,
+}
+
 /// One package of a host, as [`Host::packages`] lists it.
 #[derive(Debug, Clone, Copy)]
 pub struct PackageInfo<'a> {
     pub id: &'a str,
     pub version: &'a str,
-    /// The manifest of an installed package: its `about` text, its `update` source, its
-    /// nodes and its digest. `None` for a native service package, compiled into the
-    /// application or loaded from a plugin library when it started, which
-    /// cannot be removed while it runs.
+    pub kind: PackageKind,
+    /// Whether the package is in use now: its nodes are registered.
+    pub active: bool,
+    /// Whether a host started with the same options and directory uses the package.
+    /// It differs from `active` after [`Host::set_enabled`] until the next start.
+    pub enabled: bool,
+    /// The manifest of an active installed package: its `about` text, its `update`
+    /// source, its nodes and its digest. `None` for other kinds, and for an installed
+    /// package that is not active, whose archive this host did not read.
     pub manifest: Option<&'a PackageManifest>,
+    name: Option<&'a str>,
+    description: Option<&'a str>,
+}
+impl<'a> PackageInfo<'a> {
+    /// A display name, when the package gives one.
+    pub fn name(&self) -> Option<&'a str> {
+        self.name
+            .or_else(|| self.manifest.and_then(|manifest| manifest.about().name()))
+    }
+    /// One paragraph on what the package adds, when it says so.
+    pub fn description(&self) -> Option<&'a str> {
+        self.description.or_else(|| {
+            self.manifest
+                .and_then(|manifest| manifest.about().description())
+        })
+    }
+}
+
+/// A base or native package of this host.
+#[derive(Debug)]
+struct BuiltIn {
+    id: String,
+    version: String,
+    kind: PackageKind,
+    active: bool,
+    name: Option<String>,
+    description: Option<String>,
 }
 
 /// `set-variable` as "Set variable".
@@ -416,8 +471,14 @@ pub struct Host {
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
     not_restored: Vec<(String, HostError)>,
-    /// ID and version of each service package the application was built with.
-    built_in: Vec<(String, String)>,
+    /// The base nodes and each service package the application was started with.
+    built_in: Vec<BuiltIn>,
+    /// IDs of the packages a host started like this one leaves out.
+    disabled: BTreeSet<String>,
+    /// Saved installed packages left out at start because they were disabled.
+    inactive: Vec<(String, String)>,
+    /// The shared variables, in declaration order.
+    shared_variables: Vec<VariableId>,
     space: Arc<flow::Space>,
     pool: Pool,
     sink: Sink,
@@ -451,7 +512,9 @@ impl Host {
 
     /// Like [`Host::new`], with native service packages built into the application:
     /// their nodes are registered beside the bundled ones and their connection
-    /// adapters become available to documents.
+    /// adapters become available to documents. A package whose ID is disabled
+    /// ([`HostOptions::disabled_packages`], [`Host::set_enabled`]) is listed by
+    /// [`Host::packages`] and otherwise left out.
     pub fn with_services(
         options: HostOptions,
         packages: Vec<ServicePackage>,
@@ -460,18 +523,44 @@ impl Host {
         let math = MathPackage::new(built_in_digest("orange-bundled")).map_err(|e| start(&e))?;
         let origin = HostOrigin::new(env!("CARGO_PKG_VERSION"), built_in_digest("orange-host"))
             .map_err(|e| start(&e))?;
+        let saved = match &options.package_dir {
+            Some(directory) => persist::load(directory).map_err(HostError::Storage)?,
+            None => Vec::new(),
+        };
+        let mut disabled = options.disabled_packages.clone();
+        if let Some(directory) = &options.package_dir {
+            disabled.extend(persist::disabled(directory).map_err(HostError::Storage)?);
+        }
         let mut builder = RegistryBuilder::core(origin);
-        if options.base_nodes {
+        let base_nodes = options.base_nodes && !disabled.contains(BASE_PACKAGE);
+        if base_nodes {
             builder = math.register(builder).map_err(|e| start(&e))?;
         }
         let mut services = Services::default();
-        let built_in = packages
-            .iter()
-            .map(|package| (package.id().to_owned(), package.version().to_owned()))
-            .collect();
+        let mut built_in = vec![BuiltIn {
+            id: BASE_PACKAGE.to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            kind: PackageKind::Base,
+            active: base_nodes,
+            name: Some("Base nodes".to_owned()),
+            description: Some(
+                "Arithmetic, comparison, text, collection and JSON operations.".to_owned(),
+            ),
+        }];
+        built_in.extend(packages.iter().map(|package| BuiltIn {
+            id: package.id().to_owned(),
+            version: package.version().to_owned(),
+            kind: PackageKind::Native,
+            active: !disabled.contains(package.id()),
+            name: package.name().map(str::to_owned),
+            description: package.description().map(str::to_owned),
+        }));
         let mut adapters = BTreeMap::new();
         let mut presentations = BTreeMap::new();
         for package in &packages {
+            if disabled.contains(package.id()) {
+                continue;
+            }
             presentations.extend(package.presentations().iter().cloned());
             let key = ProviderKey {
                 package: package.id().to_owned(),
@@ -536,6 +625,9 @@ impl Host {
             presentations,
             not_restored: Vec::new(),
             built_in,
+            disabled,
+            inactive: Vec::new(),
+            shared_variables: Vec::new(),
             space: Arc::default(),
             pool,
             sink: Sink {
@@ -548,16 +640,19 @@ impl Host {
             options,
         };
         let mut host = host;
-        if let Some(directory) = host.options.package_dir.clone() {
-            let saved = persist::load(&directory).map_err(HostError::Storage)?;
-            for package in saved {
-                let installed = package
-                    .archive
-                    .map_err(HostError::Storage)
-                    .and_then(|archive| host.install_archive(&archive, package.grants, None));
-                if let Err(error) = installed {
-                    host.not_restored.push((package.file, error));
-                }
+        for package in saved {
+            if let Some((id, version)) = &package.key
+                && host.disabled.contains(id)
+            {
+                host.inactive.push((id.clone(), version.clone()));
+                continue;
+            }
+            let installed = package
+                .archive
+                .map_err(HostError::Storage)
+                .and_then(|archive| host.install_archive(&archive, package.grants, None));
+            if let Err(error) = installed {
+                host.not_restored.push((package.file, error));
             }
         }
         Ok((host, observer))
@@ -680,16 +775,52 @@ impl Host {
         if let Some(directory) = &self.options.package_dir {
             persist::save(directory, archive, grants, &key).map_err(HostError::Storage)?;
         }
+        // Installing a package is asking for it: it is enabled again.
+        self.set_enabled(key.id.as_str(), true)?;
         Ok(key)
     }
 
-    /// The packages of this host: those compiled into the application, then every
-    /// installed package. This is the data of a package manager view.
+    /// Chooses whether hosts started from now on use package `id`: the base nodes
+    /// ([`BASE_PACKAGE`]), a native service package or an installed package. Nothing
+    /// changes in this host; [`PackageInfo::enabled`] shows the choice and
+    /// [`PackageInfo::active`] what is in use. With [`HostOptions::package_dir`] the
+    /// choice is saved there; without one it lasts as long as this host and has no
+    /// effect. A document that uses nodes of a package that is left out does not open.
+    pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), HostError> {
+        let changed = if enabled {
+            self.disabled.remove(id)
+        } else {
+            self.disabled.insert(id.to_owned())
+        };
+        if changed && let Some(directory) = &self.options.package_dir {
+            persist::set_disabled(directory, &self.disabled).map_err(HostError::Storage)?;
+        }
+        Ok(())
+    }
+
+    /// The packages of this host: the base nodes, the native service packages it was
+    /// started with, then every installed package, including those left out because
+    /// they are disabled. This is the data of a package manager view.
     pub fn packages(&self) -> impl Iterator<Item = PackageInfo<'_>> {
-        let built_in = self.built_in.iter().map(|(id, version)| PackageInfo {
+        let built_in = self.built_in.iter().map(|package| PackageInfo {
+            id: &package.id,
+            version: &package.version,
+            kind: package.kind,
+            active: package.active,
+            enabled: !self.disabled.contains(&package.id),
+            manifest: None,
+            name: package.name.as_deref(),
+            description: package.description.as_deref(),
+        });
+        let inactive = self.inactive.iter().map(|(id, version)| PackageInfo {
             id,
             version,
+            kind: PackageKind::Installed,
+            active: false,
+            enabled: !self.disabled.contains(id),
             manifest: None,
+            name: None,
+            description: None,
         });
         let installed = self
             .store
@@ -700,22 +831,36 @@ impl Host {
                 PackageInfo {
                     id: manifest.key().id.as_str(),
                     version: manifest.key().version.as_str(),
+                    kind: PackageKind::Installed,
+                    active: true,
+                    enabled: !self.disabled.contains(manifest.key().id.as_str()),
                     manifest: Some(manifest),
+                    name: None,
+                    description: None,
                 }
             });
-        built_in.chain(installed)
+        built_in.chain(installed).chain(inactive)
     }
 
     /// Removes an installed package. Its nodes can no longer be placed, and a document
     /// that uses them no longer opens; flows already running keep the code they
     /// started with. A package another installed package depends on is refused. With
     /// [`HostOptions::package_dir`] it is also removed from the directory, so it stays
-    /// removed when the host next starts.
+    /// removed when the host next starts. A saved package that was left out because it
+    /// is disabled is removed from the directory.
     pub fn uninstall(&mut self, key: &PackageKey) -> Result<(), HostError> {
-        let _ = self
-            .store
-            .remove(key)
-            .map_err(|error| HostError::Uninstall(error.to_string()))?;
+        let left_out = self
+            .inactive
+            .iter()
+            .position(|(id, version)| id == key.id.as_str() && version == key.version.as_str());
+        if let Some(index) = left_out {
+            let _ = self.inactive.remove(index);
+        } else {
+            let _ = self
+                .store
+                .remove(key)
+                .map_err(|error| HostError::Uninstall(error.to_string()))?;
+        }
         if let Some(directory) = &self.options.package_dir {
             persist::forget(directory, key).map_err(HostError::Storage)?;
         }
@@ -1328,7 +1473,31 @@ impl Host {
         )
         .map_err(|error| HostError::Workspace(error.to_string()))?;
         *workspace = Some(created);
+        self.shared_variables = document
+            .variables()
+            .values()
+            .filter(|variable| variable.scope == VarScope::Workspace)
+            .map(|variable| variable.id)
+            .collect();
         Ok(())
+    }
+
+    /// Every shared variable with its value now (`None` while unset), in declaration
+    /// order: one consistent state, taken between two writes.
+    pub fn shared_variables(&self) -> Vec<(VariableId, Option<Value>)> {
+        let Some(snapshot) = self.space.snapshot() else {
+            return Vec::new();
+        };
+        self.shared_variables
+            .iter()
+            .map(|id| (*id, snapshot.get(*id).ok().flatten().cloned()))
+            .collect()
+    }
+
+    /// Counts the writes flows have made to shared variables. A front end reads
+    /// [`shared_variables`](Self::shared_variables) again when this has changed.
+    pub fn shared_writes(&self) -> u64 {
+        self.space.version.load(Ordering::Relaxed)
     }
 
     /// The current value of a shared variable; `None` while unset or undeclared.
