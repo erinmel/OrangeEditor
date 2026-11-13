@@ -183,6 +183,9 @@ pub(crate) fn start(arguments: &Arguments) -> Result<Started, Stop> {
         plugin_data_dir: beside(&arguments.plugin_data, "data"),
         state_dir: beside(&arguments.state, "state"),
         plugin_http: Some(std::sync::Arc::new(PluginHttp)),
+        plugin_data_quota: arguments.plugin_quota,
+        plugin_http_hosts: (!arguments.plugin_hosts.is_empty())
+            .then(|| arguments.plugin_hosts.clone()),
         secrets: Some(std::sync::Arc::new(orange_vault::OsVault::new(
             VAULT_SERVICE,
         ))),

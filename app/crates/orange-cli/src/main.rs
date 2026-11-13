@@ -138,7 +138,10 @@ read and write files in its own data directory (`--plugin-data <dir>`, or `data`
 store), and `--grant-http` lets it send HTTPS requests. A package receives a grant
 only if its manifest asks for it (`permissions`), and an install says what a package
 asked for and was not given. A grant is given to the
-packages installed by that command and is kept with them in the store. `--for` stops after a time.";
+packages installed by that command and is kept with them in the store.
+`--plugin-quota-mb <n>` limits each package's data directory and `--plugin-host <host>`
+(repeatable; `.example.org` allows every host under that domain) limits where packages
+send requests; without them there is no limit. `--for` stops after a time.";
 
 pub(crate) struct Arguments {
     pub command: String,
@@ -156,6 +159,8 @@ pub(crate) struct Arguments {
     pub signed_only: bool,
     pub plugins: Vec<String>,
     pub plugin_data: Option<String>,
+    pub plugin_quota: Option<u64>,
+    pub plugin_hosts: Vec<String>,
     pub watch: bool,
     pub state: Option<String>,
 }
@@ -179,6 +184,8 @@ fn arguments() -> Result<Arguments, String> {
         signed_only: false,
         plugins: Vec::new(),
         plugin_data: None,
+        plugin_quota: None,
+        plugin_hosts: Vec::new(),
         watch: false,
         state: None,
     };
@@ -202,6 +209,16 @@ fn arguments() -> Result<Arguments, String> {
             "--plugin-data" => {
                 parsed.plugin_data = Some(words.next().ok_or("--plugin-data needs a directory")?);
             }
+            "--plugin-quota-mb" => {
+                let megabytes: u64 = words
+                    .next()
+                    .and_then(|text| text.parse().ok())
+                    .ok_or("--plugin-quota-mb needs a number of megabytes")?;
+                parsed.plugin_quota = Some(megabytes.saturating_mul(1024 * 1024));
+            }
+            "--plugin-host" => parsed
+                .plugin_hosts
+                .push(words.next().ok_or("--plugin-host needs a host name")?),
             "--no-base" => parsed.base_nodes = false,
             "--no-net" => parsed.network = false,
             "--no-audio" => parsed.audio = false,

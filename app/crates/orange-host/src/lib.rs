@@ -169,6 +169,11 @@ pub struct HostOptions {
     /// The network client for packages holding the `http` grant. `None` leaves that
     /// grant with nothing to reach.
     pub plugin_http: Option<Arc<dyn HttpClient>>,
+    /// Most bytes each package's data directory may hold. `None` is no limit.
+    pub plugin_data_quota: Option<u64>,
+    /// The hosts packages holding the `http` grant may reach; a name starting with
+    /// `.` allows every host under that domain. `None` allows any host.
+    pub plugin_http_hosts: Option<Vec<String>>,
     /// Where connection settings' `credential://<name>` references are read from.
     /// `None` refuses a connection that names a credential.
     pub secrets: Option<Arc<dyn SecretStore>>,
@@ -193,6 +198,8 @@ impl Default for HostOptions {
             disabled_packages: BTreeSet::new(),
             plugin_data_dir: None,
             plugin_http: None,
+            plugin_data_quota: None,
+            plugin_http_hosts: None,
             secrets: None,
             state_dir: None,
         }

@@ -46,7 +46,7 @@ interface log {
 /// Granted only with the `files` permission: the package's own data directory, which
 /// the application keeps for it. Nothing outside that directory can be named. A path
 /// is relative, with `/` between plain names. Errors are one of `not-found`,
-/// `invalid-path`, `too-large`, `unavailable` and `failed`.
+/// `invalid-path`, `too-large`, `quota-exceeded`, `unavailable` and `failed`.
 interface files {
     /// Reads a whole file.
     read: func(path: string) -> result<list<u8>, string>;
@@ -61,8 +61,8 @@ interface files {
 
 /// Granted only with the `http` permission: HTTPS requests through the application's
 /// network client. A call blocks the node until the answer arrives, so it belongs in an
-/// async node. Errors are one of `invalid-request`, `too-large`, `unavailable` and
-/// `failed`.
+/// async node. Errors are one of `invalid-request`, `not-allowed`, `too-large`,
+/// `unavailable` and `failed`.
 interface http {
     record request {
         /// `GET`, `HEAD`, `POST`, `PUT`, `PATCH` or `DELETE`.

@@ -258,6 +258,8 @@ impl Host {
                         .as_ref()
                         .map(|root| root.join(key.id.as_str())),
                     http: self.options.plugin_http.clone(),
+                    max_data_bytes: self.options.plugin_data_quota,
+                    http_hosts: self.options.plugin_http_hosts.clone(),
                 };
                 guests.push(
                     GuestPackage::from_archive(

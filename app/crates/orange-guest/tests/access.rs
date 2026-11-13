@@ -128,6 +128,7 @@ fn granted_imports_reach_only_the_data_directory_and_the_hosts_client() {
     let access = GuestAccess {
         data_dir: Some(data.clone()),
         http: Some(Arc::clone(&client) as Arc<dyn HttpClient>),
+        ..GuestAccess::default()
     };
     let engine = GuestEngine::new(GuestLimits::default()).unwrap();
     let component = engine.compile(GUEST.as_bytes()).unwrap();
@@ -203,7 +204,7 @@ fn granted_imports_reach_only_the_data_directory_and_the_hosts_client() {
     // Granted but with nothing to reach: the imports link and answer `unavailable`.
     let files_only = GuestAccess {
         data_dir: Some(data.clone()),
-        http: None,
+        ..GuestAccess::default()
     };
     let mut plugin = GuestPlugin::with_access(&component, BOTH, files_only).unwrap();
     assert_eq!(
