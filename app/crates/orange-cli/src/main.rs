@@ -66,7 +66,11 @@ The base audio package is built in too: adapters `org.orange.audio/output` and
 A native plugin runs with all of this program's rights; load only what you trust.
 
 `--no-base` leaves out the bundled base nodes, `--no-net` the network package and
-`--no-audio` the audio package.
+`--no-audio` the audio package and `--no-files` the file package.
+
+The base file package is built in: a connection with adapter `org.orange.files/folder`
+and a `path` setting names a directory, and the file nodes read, write, list and watch
+files inside it and nowhere else.
 
 `secret set <name>` reads a credential from standard input and keeps it in the
 operating system's credential store; a connection's settings name it as
@@ -89,6 +93,7 @@ struct Arguments {
     base_nodes: bool,
     network: bool,
     audio: bool,
+    files: bool,
     apply: bool,
     plugins: Vec<String>,
     plugin_data: Option<String>,
@@ -108,6 +113,7 @@ fn arguments() -> Result<Arguments, String> {
         base_nodes: true,
         network: true,
         audio: true,
+        files: true,
         apply: false,
         plugins: Vec::new(),
         plugin_data: None,
@@ -134,6 +140,7 @@ fn arguments() -> Result<Arguments, String> {
             "--no-base" => parsed.base_nodes = false,
             "--no-net" => parsed.network = false,
             "--no-audio" => parsed.audio = false,
+            "--no-files" => parsed.files = false,
             "--apply" => parsed.apply = true,
             "--plugins" => parsed
                 .plugins
@@ -591,6 +598,9 @@ fn main() -> ExitCode {
     let mut plugin_files = Vec::new();
     if arguments.network {
         services.push(orange_net::package());
+    }
+    if arguments.files {
+        services.push(orange_files::package());
     }
     if arguments.audio {
         services.push(orange_audio::package());

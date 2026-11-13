@@ -1196,6 +1196,7 @@ name = "orange-cli"
 version = "0.0.0"
 dependencies = [
  "orange-audio",
+ "orange-files",
  "orange-host",
  "orange-native",
  "orange-net",
@@ -1210,6 +1211,16 @@ dependencies = [
  "orange-model",
  "serde_json",
  "thiserror 2.0.21",
+]
+
+[[package]]
+name = "orange-files"
+version = "0.0.0"
+dependencies = [
+ "orange-host",
+ "orange-model",
+ "orange-sdk",
+ "serde_json",
 ]
 
 [[package]]

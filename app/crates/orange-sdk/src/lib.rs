@@ -22,6 +22,7 @@ pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::{DefinitionError, NodeDefinition, Presentation, TextRef};
 pub use orange_model::document::DefinitionRef;
+pub use orange_model::value::ListRepr;
 pub use orange_runtime::EffectLease;
 use serde_json::{Map, Value as Json};
 use std::any::Any;
