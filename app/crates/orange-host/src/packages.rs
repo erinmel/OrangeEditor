@@ -40,6 +40,103 @@ impl Host {
         self.install_expected(archive, grants, Some(content_digest))
     }
 
+    /// Registers the types an archive declares, each a file `types/<name>.json` that
+    /// defines `<package id>/<name>@1`:
+    /// `{"kind": "record", "fields": [{"id": "x", "type": "core/f64@1", "optional": false}]}`
+    /// or `{"kind": "enum", "variants": [{"id": "left"}, {"id": "at", "payload": "<type>"}]}`.
+    /// Returns whether a generation with new types was published.
+    fn publish_archive_types(&mut self, archive: &[u8]) -> Result<bool, HostError> {
+        let mut files = MemorySink::new();
+        let verified = read_archive(archive, &ArchiveLimits::default(), &mut files)
+            .map_err(|error| HostError::Archive(error.to_string()))?;
+        let id = verified.manifest().key().id.as_str().to_owned();
+        let mut declarations = Vec::new();
+        for (path, bytes) in files.files() {
+            let Some(name) = path
+                .as_str()
+                .strip_prefix("types/")
+                .and_then(|file| file.strip_suffix(".json"))
+            else {
+                continue;
+            };
+            verified
+                .verify_file(path, bytes)
+                .map_err(|error| HostError::Archive(error.to_string()))?;
+            let refused =
+                |what: &str| HostError::Definition(format!("`{}`: {what}", path.as_str()));
+            let file: serde_json::Value =
+                serde_json::from_slice(bytes).map_err(|error| refused(&error.to_string()))?;
+            let text = |value: &serde_json::Value, key: &str| {
+                value[key]
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| refused(&format!("`{key}` must be text")))
+            };
+            let list = |key: &str| {
+                file[key]
+                    .as_array()
+                    .ok_or_else(|| refused(&format!("`{key}` must be a list")))
+            };
+            declarations.push(match file["kind"].as_str() {
+                Some("record") => TypeDecl::Record {
+                    name: name.to_owned(),
+                    fields: list("fields")?
+                        .iter()
+                        .map(|field| {
+                            let optional = field["optional"].as_bool().unwrap_or(false);
+                            Ok((text(field, "id")?, text(field, "type")?, optional))
+                        })
+                        .collect::<Result<_, HostError>>()?,
+                },
+                Some("enum") => TypeDecl::Enum {
+                    name: name.to_owned(),
+                    variants: list("variants")?
+                        .iter()
+                        .map(|variant| {
+                            let payload = match &variant["payload"] {
+                                serde_json::Value::Null => None,
+                                _ => Some(text(variant, "payload")?),
+                            };
+                            Ok((text(variant, "id")?, payload))
+                        })
+                        .collect::<Result<_, HostError>>()?,
+                },
+                _ => return Err(refused("`kind` must be `record` or `enum`")),
+            });
+        }
+        if declarations.is_empty() {
+            return Ok(false);
+        }
+        let mut types = self.store.current().types().extended();
+        for declaration in &declarations {
+            register_type(&mut types, &id, declaration).map_err(HostError::Definition)?;
+        }
+        let types = types
+            .build()
+            .map_err(|error| HostError::Definition(error.to_string()))?;
+        let _ = self
+            .store
+            .publish_types(Arc::new(types))
+            .map_err(|error| HostError::Install(error.to_string()))?;
+        Ok(true)
+    }
+
+    /// Installs an archive: its types first, then its nodes. A failure after the types
+    /// were published takes them back, so a refused package leaves nothing behind.
+    pub(super) fn install_archive(
+        &mut self,
+        archive: &[u8],
+        grants: Grants,
+        expected: Option<&str>,
+    ) -> Result<PackageKey, HostError> {
+        let published = self.publish_archive_types(archive)?;
+        let installed = self.install_archive_nodes(archive, grants, expected);
+        if installed.is_err() && published {
+            let _ = self.store.rollback();
+        }
+        installed
+    }
+
     pub(super) fn install_expected(
         &mut self,
         archive: &[u8],
@@ -151,7 +248,7 @@ impl Host {
         &self.not_restored
     }
 
-    pub(super) fn install_archive(
+    fn install_archive_nodes(
         &mut self,
         archive: &[u8],
         grants: Grants,

@@ -622,6 +622,20 @@ impl<J: Journal> PackageStore<J> {
         self.commit(snapshot, packages, None, Some(definition))
     }
 
+    /// Publishes a generation that differs from the current one only in its type
+    /// registry: how a host adds the types of a package before installing its nodes.
+    /// It is one step of the history, so [`rollback`](Self::rollback) undoes it.
+    pub fn publish_types(
+        &mut self,
+        types: Arc<orange_model::types::TypeRegistry>,
+    ) -> Result<Arc<RegistrySnapshot>, TransactionError> {
+        let snapshot = RegistryBuilder::from_snapshot(&self.current.snapshot)
+            .types(types)
+            .build()?;
+        let packages = self.current.packages.clone();
+        self.commit(snapshot, packages, None, None)
+    }
+
     /// Hides an active version: its providers leave the next generation and any default
     /// selecting them is cleared. The record stays as a Removed tombstone. Documents are not
     /// rebound; nodes locked to it resolve as provider-unavailable. Its definitions stay

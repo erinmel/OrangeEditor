@@ -634,63 +634,81 @@ pub struct Host {
     preview: Option<preview::Engine>,
 }
 
+/// Registers one declared type of package `id` in a registry being built. A type the
+/// registry already has with the same schema is left as it is.
+pub(crate) fn register_type(
+    types: &mut orange_model::types::TypeRegistryBuilder,
+    id: &str,
+    declaration: &TypeDecl,
+) -> Result<(), String> {
+    use orange_model::type_term::TypeTerm;
+    use orange_model::value::literal_codec::{
+        EnumSchema, FieldSchema, RecordSchema, VariantSchema,
+    };
+    let (TypeDecl::Record { name, .. } | TypeDecl::Enum { name, .. }) = declaration;
+    let refused = |what: &str| format!("package {id}: type `{name}`: {what}");
+    let term = |ty: &str| {
+        ty.parse()
+            .ok()
+            .and_then(|expr| TypeTerm::parse(&expr).ok())
+            .ok_or_else(|| refused(&format!("`{ty}` is not a type")))
+    };
+    let ty = format!("{id}/{name}@1")
+        .parse()
+        .map_err(|_| refused("the name is not valid"))?;
+    let registered = match declaration {
+        TypeDecl::Record { fields, .. } => {
+            let fields = fields
+                .iter()
+                .map(|(field_id, ty, optional)| {
+                    Ok(FieldSchema {
+                        field_id: field_id.clone(),
+                        ty: term(ty)?,
+                        optional: *optional,
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+            types.ensure_record(id, &ty, RecordSchema { fields })
+        }
+        TypeDecl::Enum { variants, .. } => {
+            let variants = variants
+                .iter()
+                .map(|(variant_id, payload)| {
+                    Ok(VariantSchema {
+                        variant_id: variant_id.clone(),
+                        payload: payload.as_deref().map(term).transpose()?,
+                    })
+                })
+                .collect::<Result<_, String>>()?;
+            types.ensure_enum(id, &ty, EnumSchema { variants })
+        }
+    };
+    registered.map_err(|error| refused(&error.to_string()))
+}
+
 /// The type registry with the types the active service packages declare; `None` when
 /// they declare none and the core registry serves.
 fn package_types(
     packages: &[ServicePackage],
     disabled: &BTreeSet<String>,
 ) -> Result<Option<orange_model::types::TypeRegistry>, String> {
-    use orange_model::type_term::TypeTerm;
-    use orange_model::value::literal_codec::{
-        EnumSchema, FieldSchema, RecordSchema, VariantSchema,
-    };
     let mut types = orange_model::types::TypeRegistryBuilder::core();
     let mut any = false;
     for package in packages {
         if disabled.contains(package.id()) {
             continue;
         }
-        let id = package.id();
+        let mut declared = Vec::new();
         for declaration in package.types() {
             let (TypeDecl::Record { name, .. } | TypeDecl::Enum { name, .. }) = declaration;
-            let refused = |what: &str| format!("package {id}: type `{name}`: {what}");
-            let term = |ty: &str| {
-                ty.parse()
-                    .ok()
-                    .and_then(|expr| TypeTerm::parse(&expr).ok())
-                    .ok_or_else(|| refused(&format!("`{ty}` is not a type")))
-            };
-            let ty = format!("{id}/{name}@1")
-                .parse()
-                .map_err(|_| refused("the name is not valid"))?;
-            let registered = match declaration {
-                TypeDecl::Record { fields, .. } => {
-                    let fields = fields
-                        .iter()
-                        .map(|(field_id, ty, optional)| {
-                            Ok(FieldSchema {
-                                field_id: field_id.clone(),
-                                ty: term(ty)?,
-                                optional: *optional,
-                            })
-                        })
-                        .collect::<Result<_, String>>()?;
-                    types.register_record(id, &ty, RecordSchema { fields })
-                }
-                TypeDecl::Enum { variants, .. } => {
-                    let variants = variants
-                        .iter()
-                        .map(|(variant_id, payload)| {
-                            Ok(VariantSchema {
-                                variant_id: variant_id.clone(),
-                                payload: payload.as_deref().map(term).transpose()?,
-                            })
-                        })
-                        .collect::<Result<_, String>>()?;
-                    types.register_enum(id, &ty, EnumSchema { variants })
-                }
-            };
-            registered.map_err(|error| refused(&error.to_string()))?;
+            if declared.contains(&name) {
+                return Err(format!(
+                    "package {}: type `{name}` is declared twice",
+                    package.id()
+                ));
+            }
+            declared.push(name);
+            register_type(&mut types, package.id(), declaration)?;
             any = true;
         }
     }
