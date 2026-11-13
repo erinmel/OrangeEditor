@@ -16,11 +16,19 @@ crate whose other clients are blocking. TLS uses `rustls` 0.23.46
 | `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
 | `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
 
-Limit of this evidence: the broker in the tests is written in the test file from the
-same reading of the standard as the client, so a shared misreading would not be
-caught. No real broker was contacted and `mqtts://` was not exercised. The ignored
-test `a_real_broker_delivers_what_the_graph_publishes` runs the same graph against a
-broker named in `ORANGE_MQTT_BROKER`.
+Real broker: Eclipse Mosquitto 2.1.2 (`eclipse-mosquitto:2` in Docker 29.6.1, bound
+to 127.0.0.1, anonymous access allowed).
+`ORANGE_MQTT_BROKER=mqtt://127.0.0.1:18883 cargo test -p orange-net --locked --test mqtt -- --ignored`
+passed three times: the broker logged the client as protocol 4, clean session,
+keep-alive 30 with its user name, and the graph received the message it published at
+quality of service 1 through its `orange/#` subscription.
+
+Still not exercised against a real broker: `mqtts://`, a broker that requires the
+password, reconnecting and the repeated message, retained messages, binary payloads,
+keep-alive over a long idle time, and a clean DISCONNECT (the test process ends first,
+so the broker logged the connection as closed by the client). Those are covered only
+by the broker in the test file, which is written from the same reading of the
+standard as the client.
 
 ## Files, credentials, network payloads, persistent variables, documents and reuse — 2026-11-12
 
