@@ -1,5 +1,30 @@
 # Tooling, environment and research register
 
+## OAuth and streamed responses — 2026-11-12
+
+Sources: RFC 6749 (client-credentials and refresh-token grants, token response),
+RFC 7636 (PKCE; the appendix B example is a unit test). `ureq` 3.5.1
+`timeout_connect`, `timeout_recv_response`, `timeout_recv_body` and
+`Body::as_reader` for streamed responses. No dependency was added.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,796 passed, 0 failed, 20 ignored |
+| `cargo test -p orange-net`, three runs | Pass each time |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Sign-in run by hand: `orange oauth login` against a stand-in identity provider
+written for the run in Node.js, which recomputes the PKCE challenge with its own
+SHA-256. A return with a wrong `state` was answered and ignored; the real return was
+accepted; the provider confirmed that the verifier matched the challenge; the refresh
+token was stored under a generated name, was not present in the command's output, and
+was then removed.
+
+Not run: any real identity provider or OAuth-protected API; a real server-sent-events
+service; a stream that stalls until `stream_timeout_ms`.
+
 ## Verification in containers; MP3 and Ogg; permissions; feed signing — 2026-11-12
 
 Docker 29.6.1 on Windows; images `eclipse-mosquitto:2` (Mosquitto 2.1.2) and

@@ -45,9 +45,34 @@ response content type and response bytes;
 `org.orange.net/ws-send-bytes` and the entry `org.orange.net/ws-binary` carry binary
 WebSocket messages. A graph can therefore exchange protobuf, gRPC-Web frames or a
 payload it encrypted itself. Not provided: HTTP/2, so native gRPC is not reachable;
-request or response streaming; client certificates; OAuth flows and token
-refresh; secret rotation notices to open
+streaming of request bodies; client certificates; secret rotation notices to open
 connections (a changed secret is used by connections opened afterwards).
+
+OAuth and streamed responses (2026-11-12; `orange-net`). An HTTP connection's `oauth`
+setting is `{token_url, client_id, client_secret}` for the client-credentials grant
+or `{token_url, client_id, refresh_token}` (with an optional `client_secret`) for the
+refresh grant, plus optional `scope` and `client_auth` (`body`, the default, or
+`basic`). The token endpoint must be `https://`, or `http://` on this machine only.
+Nothing is requested when the connection opens. The first request fetches an access
+token; it is reused until 30 seconds before `expires_in` runs out; a request answered
+with 401 fetches a new token and is sent once more. A connection set up with a refresh
+token follows the server's rotation of it in memory; a connection using client
+credentials never changes grant. A token endpoint that refuses takes the node's failed
+route with `org.orange.net/Authorization`; errors repeat the status and the
+standard's error code, never a secret or token. `orange oauth login <settings.json>
+<name>` runs the authorization-code flow with PKCE (S256): it listens on
+`127.0.0.1:<redirect_port>`, prints the address to open, accepts only the return that
+carries its own `state`, exchanges the code and stores the refresh token in the
+credential store under `<name>`. `org.orange.net/http-stream` sends a request like
+the binary node and reads the response as it arrives: each non-empty line (at most
+1 MiB) fires the connection's `http-stream-line` entries, and the node continues at
+the end with `status` and `lines`. A flow that is behind slows the reading rather
+than losing lines. `stream_timeout_ms` (default 600,000) bounds one response. Not
+provided: writing a rotated refresh token back to the credential store (after a
+restart the stored one is used again, which fails with servers that invalidate it);
+OAuth for WebSocket and MQTT connections; the device-code and password grants;
+OpenID Connect discovery; cancelling a stream that sends nothing (it ends at the next
+line or at the timeout); streaming of request bodies.
 
 MQTT (2026-11-12; `orange-net`, FR-25 qualified for 3.1.1). Adapter
 `org.orange.net/mqtt` with settings `url` (`mqtt://host[:port]`, default port 1883, or
