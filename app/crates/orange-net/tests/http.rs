@@ -628,3 +628,267 @@ fn authorization_settings_are_checked_when_a_document_opens() {
         json!({"basic": {"user": "u", "password": "p"}})
     ));
 }
+
+/// Reads one request: its request line, lowercased headers and body.
+fn read_request(stream: std::net::TcpStream) -> (String, String, String, std::net::TcpStream) {
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    let _ = reader.read_line(&mut line).unwrap();
+    let (mut head, mut length) = (String::new(), 0);
+    loop {
+        let mut header = String::new();
+        let _ = reader.read_line(&mut header).unwrap();
+        if header.trim().is_empty() {
+            break;
+        }
+        if let Some(value) = header.to_ascii_lowercase().strip_prefix("content-length:") {
+            length = value.trim().parse().unwrap();
+        }
+        head.push_str(&header.to_ascii_lowercase());
+    }
+    let mut body = vec![0; length];
+    reader.read_exact(&mut body).unwrap();
+    (
+        line.trim().to_owned(),
+        head,
+        String::from_utf8(body).unwrap(),
+        reader.into_inner(),
+    )
+}
+
+fn respond(mut stream: std::net::TcpStream, status: &str, body: &str) {
+    write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+}
+
+/// A token endpoint and an API on one port. Each token request issues `token-<n>` with
+/// `expires_in`; the API accepts only the newest token and, while `reject` is set,
+/// answers 401 once even to that. Every request line and token form is recorded.
+fn oauth_server(
+    expires_in: u64,
+) -> (
+    String,
+    std::sync::Arc<std::sync::Mutex<Vec<String>>>,
+    std::sync::Arc<std::sync::atomic::AtomicBool>,
+) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let log = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let reject = std::sync::Arc::new(AtomicBool::new(false));
+    let (seen, once) = (std::sync::Arc::clone(&log), std::sync::Arc::clone(&reject));
+    let _ = std::thread::spawn(move || {
+        let mut issued = 0;
+        for stream in listener.incoming() {
+            let (line, head, body, stream) = read_request(stream.unwrap());
+            if line.starts_with("POST /token") {
+                issued += 1;
+                seen.lock().unwrap().push(format!("token {body}"));
+                let answer = format!(
+                    r#"{{"access_token": "token-{issued}", "token_type": "Bearer", "expires_in": {expires_in}, "refresh_token": "refresh-{issued}"}}"#
+                );
+                respond(stream, "200 OK", &answer);
+            } else {
+                let current = format!("authorization: bearer token-{issued}");
+                let accepted = head.contains(&current) && !once.swap(false, Ordering::SeqCst);
+                seen.lock().unwrap().push(format!(
+                    "{line} {}",
+                    if accepted { "accepted" } else { "refused" }
+                ));
+                if accepted {
+                    respond(stream, "201 Done", "ok");
+                } else {
+                    respond(stream, "401 Unauthorized", "no");
+                }
+            }
+        }
+    });
+    (format!("http://{address}"), log, reject)
+}
+
+#[test]
+fn an_oauth_connection_gets_keeps_and_replaces_its_access_token() {
+    let (url, log, reject) = oauth_server(3600);
+    let options = HostOptions {
+        secrets: Some(std::sync::Arc::new(Secrets)),
+        ..HostOptions::default()
+    };
+    let (mut host, _events) = Host::with_services(options, vec![orange_net::package()]).unwrap();
+    let mut connection = graph_connection(&url);
+    connection["settings"]["oauth"] = json!({"token_url": format!("{url}/token"),
+        "client_id": "app", "client_secret": "credential://api/token", "scope": "read write"});
+    let text = document(&host, connection);
+    assert!(!text.contains("generated-test-token"));
+    let flow = host.open(&text).unwrap();
+    // Opening asks for nothing: the token is fetched when a request needs it.
+    assert!(log.lock().unwrap().is_empty());
+
+    host.trigger(flow, node(1), None).unwrap();
+    until("the first reply", || read(&host, flow, 101).is_some());
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(201)));
+    assert_eq!(
+        *log.lock().unwrap(),
+        [
+            "token grant_type=client_credentials&scope=read%20write&client_id=app&client_secret=generated-test-token",
+            "POST /scene HTTP/1.1 accepted",
+        ]
+    );
+
+    // The token is reused; when the server stops accepting it, a new one is fetched
+    // and the request is sent again, once.
+    reject.store(true, std::sync::atomic::Ordering::SeqCst);
+    host.trigger(flow, node(1), None).unwrap();
+    until("the retried request", || log.lock().unwrap().len() == 5);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(seen[2], "POST /scene HTTP/1.1 refused");
+    assert!(
+        seen[3].starts_with("token grant_type=client_credentials"),
+        "{seen:?}"
+    );
+    assert_eq!(seen[4], "POST /scene HTTP/1.1 accepted");
+}
+
+#[test]
+fn a_refresh_token_is_exchanged_and_a_rotated_one_is_used_next() {
+    // Tokens that expire at once make every request ask for a new one.
+    let (url, log, _reject) = oauth_server(0);
+    let mut host = host();
+    let mut connection = graph_connection(&url);
+    connection["settings"]["oauth"] = json!({"token_url": format!("{url}/token"),
+        "client_id": "app", "refresh_token": "first-refresh"});
+    let text = document(&host, connection);
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the first request", || log.lock().unwrap().len() == 2);
+    host.trigger(flow, node(1), None).unwrap();
+    until("the second request", || log.lock().unwrap().len() == 4);
+    let seen = log.lock().unwrap().clone();
+    assert_eq!(
+        seen[0],
+        "token grant_type=refresh_token&refresh_token=first-refresh&client_id=app"
+    );
+    // The server replaced the refresh token; the next exchange uses the new one.
+    assert_eq!(
+        seen[2],
+        "token grant_type=refresh_token&refresh_token=refresh-1&client_id=app"
+    );
+    assert!(seen[1].ends_with("accepted") && seen[3].ends_with("accepted"));
+
+    // A token endpoint that refuses takes the node's failed route.
+    let (url, _log, _reject) = oauth_server(3600);
+    let mut connection = graph_connection(&url);
+    connection["settings"]["oauth"] = json!({"token_url": format!("{url}/missing"),
+        "client_id": "app", "client_secret": "s"});
+    let text = document(&host, connection);
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the failed route", || {
+        read(&host, flow, 100) == Some(Value::I64(-1))
+    });
+}
+
+#[test]
+fn a_streamed_response_reaches_the_graph_line_by_line_as_it_arrives() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (release, wait) = std::sync::mpsc::channel::<()>();
+    let _ = std::thread::spawn(move || {
+        let (line, _head, body, mut stream) = read_request(listener.accept().unwrap().0);
+        assert_eq!(
+            (line.as_str(), body.as_str()),
+            ("POST /events HTTP/1.1", "ask")
+        );
+        write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        stream.write_all(b"data: one\r\n\r\n").unwrap();
+        stream.flush().unwrap();
+        // The rest is sent only when the test has seen the first line.
+        wait.recv().unwrap();
+        stream.write_all(b"data: two\n\ndata: three").unwrap();
+    });
+
+    let mut host = host();
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+    let decl = serde_json::from_value(graph_connection(&format!("http://{address}"))).unwrap();
+    let _ = document
+        .apply([orange_model::DocCommand::UpsertConnection(decl)])
+        .unwrap();
+    for (n, definition, inputs) in [
+        (
+            3,
+            orange_net::HTTP_STREAM,
+            json!({
+                "method": {"type": STRING, "value": "POST"},
+                "path": {"type": STRING, "value": "/events"},
+                "content_type": {"type": STRING, "value": ""},
+                "headers": {"type": "core/list@1<core/string@1>", "value": []},
+                "content": {"type": "core/bytes@1", "value": "YXNr"}
+            }),
+        ),
+        (10, orange_net::HTTP_STREAM_LINE, json!({})),
+    ] {
+        let mut new = NewNode::new(
+            node(n),
+            DefinitionRef {
+                id: definition.parse().unwrap(),
+                version: 1,
+            },
+        );
+        new.config = serde_json::from_value(json!({"connection": CONNECTION})).unwrap();
+        new.inputs = serde_json::from_value(inputs).unwrap();
+        let edit = new_node_edit(&document, host.registry(), new).unwrap();
+        let _ = document.apply(edit.commands).unwrap();
+    }
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    for entry in saved["nodes"].as_array_mut().unwrap() {
+        if entry["definition_id"] == orange_net::HTTP_STREAM_LINE {
+            entry["activation"] = core(0, "on-manual")["activation"].clone();
+        }
+    }
+    saved["nodes"].as_array_mut().unwrap().extend([
+        core(1, "on-manual"),
+        set(4, 100),
+        set(5, 102),
+        set(11, 101),
+    ]);
+    saved["edges"] = json!([
+        edge(1, 1, "then", 3, "in"),
+        edge(2, 3, "then", 4, "in"),
+        edge(3, 3, "status", 4, "value"),
+        edge(4, 4, "then", 5, "in"),
+        edge(5, 3, "lines", 5, "value"),
+        edge(6, 10, "then", 11, "in"),
+        edge(7, 10, "payload", 11, "value"),
+    ]);
+    saved["variables"] = json!([
+        {"id": id(100), "name": "status", "type": I64, "scope": "run"},
+        {"id": id(101), "name": "line", "type": STRING, "scope": "run"},
+        {"id": id(102), "name": "lines", "type": I64, "scope": "run"}
+    ]);
+    let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
+    assert!(host.check(&text).unwrap().is_empty());
+
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    let line = |host: &Host| match read(host, flow, 101) {
+        Some(Value::Str(line)) => line.as_str().to_owned(),
+        _ => String::new(),
+    };
+    // The first line is in the graph while the response is still open.
+    until("the first line", || line(&host) == "data: one");
+    assert_eq!(read(&host, flow, 100), None);
+    release.send(()).unwrap();
+    until("the end of the stream", || read(&host, flow, 102).is_some());
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(200)));
+    // Three lines with content; the empty ones between events are not delivered, and
+    // a last line without a line ending still is.
+    assert_eq!(read(&host, flow, 102), Some(Value::I64(3)));
+    until("the last line", || line(&host) == "data: three");
+}

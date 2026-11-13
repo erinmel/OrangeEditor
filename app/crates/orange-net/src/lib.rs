@@ -14,16 +14,21 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod mqtt;
+pub mod oauth;
 mod ws;
 
 pub use ws::MAX_QUEUED_MESSAGES;
 
 use orange_sdk::{
-    Call, ConnectionAdapter, FaultText, KernelFault, ServiceNode, ServicePackage, Session, Value,
+    Call, ConnectionAdapter, EmitError, Emitter, FaultText, KernelFault, ServiceNode,
+    ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
+use std::io::Read;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 use ureq::Agent;
 use ureq::http::{Method, Request};
@@ -33,8 +38,13 @@ pub const PACKAGE: &str = "org.orange.net";
 /// Adapter kind of an HTTP connection. Settings: `base_url` (required, `http://…` or `https://…`),
 /// `timeout_ms` (whole request, default 30,000) and the authorization settings
 /// `bearer` (a token, sent as `Authorization: Bearer …`), `basic` (`{"user", "password"}`)
-/// and `headers` (an object of header names and values sent with every request). A
-/// document writes a secret value as `credential://<name>`; the host supplies it.
+/// and `headers` (an object of header names and values sent with every request), or
+/// `oauth` (`{"token_url", "client_id", "client_secret"}` for the client-credentials
+/// grant, or with `"refresh_token"` for the refresh grant; optional `scope` and
+/// `client_auth`: `body` or `basic`), which gets an access token when first needed,
+/// replaces it before it expires and once more if the server answers 401.
+/// `stream_timeout_ms` (default 600,000) limits one streamed response. A document
+/// writes a secret value as `credential://<name>`; the host supplies it.
 pub const HTTP_ADAPTER: &str = "org.orange.net/http";
 /// Sends one request on an HTTP connection. Inputs `method`, `path`, `content` (the request body); outputs
 /// `status` and `response`. Any HTTP status is a result, not a failure.
@@ -86,6 +96,17 @@ pub const MQTT_BINARY: &str = "org.orange.net/mqtt-binary";
 /// Largest response body a request node returns.
 pub const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_STREAM_TIMEOUT_MS: u64 = 600_000;
+/// Longest line of a streamed response.
+pub const MAX_STREAM_LINE_BYTES: usize = 1024 * 1024;
+/// Sends a request like [`HTTP_REQUEST_BYTES`] and reads the response as it arrives:
+/// each non-empty line fires the connection's [`HTTP_STREAM_LINE`] entries, and the node
+/// continues when the response ends, with `status` and the number of `lines`. It is
+/// how a graph follows server-sent events or a response generated piece by piece.
+pub const HTTP_STREAM: &str = "org.orange.net/http-stream";
+/// Entry fired once per line of a response streamed on an HTTP connection, with the
+/// line as `payload`.
+pub const HTTP_STREAM_LINE: &str = "org.orange.net/http-stream-line";
 
 pub(crate) const fn fault(
     code: &'static str,
@@ -113,6 +134,11 @@ const TRANSPORT: KernelFault = fault(
     "org.orange.net/transport-failed",
     "The request could not be completed.",
 );
+const AUTHORIZATION: KernelFault = fault(
+    "org.orange.net/Authorization",
+    "org.orange.net/authorization-failed",
+    "The authorization server did not issue an access token.",
+);
 const RESPONSE: KernelFault = fault(
     "org.orange.net/Response",
     "org.orange.net/response-unreadable",
@@ -122,7 +148,7 @@ const RESPONSE: KernelFault = fault(
 /// Most headers one connection adds.
 pub const MAX_HEADERS: usize = 32;
 
-fn base64(bytes: &[u8]) -> String {
+pub(crate) fn base64(bytes: &[u8]) -> String {
     const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -204,8 +230,14 @@ pub(crate) fn auth_headers(settings: &Map<String, Json>) -> Result<Vec<(String, 
 /// An HTTP connection: one pooled client bound to a base URL.
 struct HttpSession {
     agent: Agent,
+    /// For responses read as they arrive: no limit on the whole exchange.
+    stream_agent: Agent,
     base_url: String,
     headers: Vec<(String, String)>,
+    oauth: Option<oauth::OAuth>,
+    /// The entries that receive the lines of streamed responses.
+    listeners: Mutex<Vec<(u64, Emitter)>>,
+    next_listener: AtomicU64,
 }
 /// Header values are left out: they can be credentials.
 impl std::fmt::Debug for HttpSession {
@@ -218,7 +250,8 @@ impl std::fmt::Debug for HttpSession {
 }
 impl HttpSession {
     /// Sends one request with the connection's headers, then `extra`, each a
-    /// `Name: value` line.
+    /// `Name: value` line. With OAuth the request carries the current access token;
+    /// if the server answers 401 the token is replaced and the request sent once more.
     fn send(
         &self,
         method: &str,
@@ -226,6 +259,46 @@ impl HttpSession {
         content_type: &str,
         extra: &[Arc<String>],
         body: Vec<u8>,
+        streamed: bool,
+    ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
+        let Some(oauth) = &self.oauth else {
+            return self.send_once(method, path, content_type, extra, body, streamed, None);
+        };
+        let token = oauth.token(false).map_err(|_| AUTHORIZATION)?;
+        let response = self.send_once(
+            method,
+            path,
+            content_type,
+            extra,
+            body.clone(),
+            streamed,
+            Some(&token),
+        )?;
+        if response.status().as_u16() != 401 {
+            return Ok(response);
+        }
+        let token = oauth.token(true).map_err(|_| AUTHORIZATION)?;
+        self.send_once(
+            method,
+            path,
+            content_type,
+            extra,
+            body,
+            streamed,
+            Some(&token),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn send_once(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        extra: &[Arc<String>],
+        body: Vec<u8>,
+        streamed: bool,
+        token: Option<&str>,
     ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
         if extra.len() > MAX_HEADERS {
             return Err(BAD_REQUEST);
@@ -239,6 +312,9 @@ impl HttpSession {
             .uri(format!("{}{path}", self.base_url));
         for (name, value) in &self.headers {
             request = request.header(name.as_str(), value.as_str());
+        }
+        if let Some(token) = token {
+            request = request.header("Authorization", format!("Bearer {token}"));
         }
         if !content_type.is_empty() {
             request = request.header("Content-Type", content_type);
@@ -257,7 +333,12 @@ impl HttpSession {
             request = request.header(name, value);
         }
         let request = request.body(body).map_err(|_| BAD_REQUEST)?;
-        self.agent.run(request).map_err(|_| TRANSPORT)
+        let agent = if streamed {
+            &self.stream_agent
+        } else {
+            &self.agent
+        };
+        agent.run(request).map_err(|_| TRANSPORT)
     }
 }
 impl Session for HttpSession {
@@ -290,10 +371,42 @@ impl ConnectionAdapter for HttpAdapter {
             .http_status_as_error(false)
             .build()
             .new_agent();
+        let stream_timeout = match settings.get("stream_timeout_ms") {
+            None => DEFAULT_STREAM_TIMEOUT_MS,
+            Some(value) => value
+                .as_u64()
+                .filter(|ms| *ms > 0)
+                .ok_or("`stream_timeout_ms` must be a positive integer")?,
+        };
+        // A streamed response may last long: only reaching the server and the whole
+        // body have limits.
+        let stream_agent = Agent::config_builder()
+            .timeout_connect(Some(Duration::from_millis(timeout)))
+            .timeout_recv_response(Some(Duration::from_millis(timeout)))
+            .timeout_recv_body(Some(Duration::from_millis(stream_timeout)))
+            .http_status_as_error(false)
+            .build()
+            .new_agent();
+        let headers = auth_headers(settings)?;
+        let oauth = match settings.get("oauth") {
+            None => None,
+            Some(_)
+                if headers
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case("authorization")) =>
+            {
+                return Err("give `oauth` or another authorization, not both".into());
+            }
+            Some(setting) => Some(oauth::OAuth::from_setting(setting)?),
+        };
         Ok(Arc::new(HttpSession {
             agent,
+            stream_agent,
             base_url: base_url.trim_end_matches('/').to_owned(),
-            headers: auth_headers(settings)?,
+            headers,
+            oauth,
+            listeners: Mutex::new(Vec::new()),
+            next_listener: AtomicU64::new(0),
         }))
     }
 }
@@ -309,7 +422,7 @@ impl ServiceNode for HttpRequest {
         let [Value::Str(method), Value::Str(path), Value::Str(body)] = call.inputs else {
             return Err(BAD_REQUEST);
         };
-        let mut response = session.send(method, path, "", &[], body.as_bytes().to_vec())?;
+        let mut response = session.send(method, path, "", &[], body.as_bytes().to_vec(), false)?;
         let status = i64::from(response.status().as_u16());
         let text = response
             .body_mut()
@@ -345,8 +458,14 @@ impl ServiceNode for HttpRequestBytes {
         if content_type.chars().any(char::is_control) {
             return Err(BAD_REQUEST);
         }
-        let mut response =
-            session.send(method, path, content_type, headers, body.as_ref().clone())?;
+        let mut response = session.send(
+            method,
+            path,
+            content_type,
+            headers,
+            body.as_ref().clone(),
+            false,
+        )?;
         let status = i64::from(response.status().as_u16());
         let kind = response
             .headers()
@@ -367,6 +486,167 @@ impl ServiceNode for HttpRequestBytes {
         ])
     }
 }
+
+/// Sends a request and hands the response to the connection's line entries as it
+/// arrives, one line at a time, then continues with the status.
+#[derive(Debug)]
+struct HttpStream;
+impl ServiceNode for HttpStream {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        use std::io::BufRead;
+        let session = call
+            .session
+            .and_then(|session| session.as_any().downcast_ref::<HttpSession>())
+            .ok_or(NO_SESSION)?;
+        let [
+            Value::Str(method),
+            Value::Str(path),
+            Value::Str(content_type),
+            Value::List(headers),
+            Value::Bytes(body),
+        ] = call.inputs
+        else {
+            return Err(BAD_REQUEST);
+        };
+        let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
+            return Err(BAD_REQUEST);
+        };
+        let mut response = session.send(
+            method,
+            path,
+            content_type,
+            headers,
+            body.as_ref().clone(),
+            true,
+        )?;
+        let status = i64::from(response.status().as_u16());
+        let mut reader = std::io::BufReader::new(response.body_mut().as_reader());
+        let mut line = Vec::new();
+        let mut lines = 0i64;
+        loop {
+            line.clear();
+            // One byte over the limit tells a line that is too long from one that fits.
+            let read = (&mut reader)
+                .take(MAX_STREAM_LINE_BYTES as u64 + 1)
+                .read_until(b'\n', &mut line)
+                .map_err(|_| TRANSPORT)?;
+            if read == 0 {
+                break;
+            }
+            if line.len() > MAX_STREAM_LINE_BYTES {
+                return Err(RESPONSE);
+            }
+            if call.lease.is_cancelled() {
+                break;
+            }
+            let text = String::from_utf8_lossy(&line);
+            let text = text.trim_end_matches(['\n', '\r']);
+            if text.is_empty() {
+                continue;
+            }
+            lines += 1;
+            let payload = Value::Str(Arc::new(text.to_owned()));
+            let listeners: Vec<Emitter> = session
+                .listeners
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .iter()
+                .map(|(_, emitter)| emitter.clone())
+                .collect();
+            for emitter in listeners {
+                // A flow that is behind slows the reading down instead of losing a
+                // line; the server then sees a slow reader.
+                while emitter.emit(Some(payload.clone())) == Err(EmitError::Busy) {
+                    if call.lease.is_cancelled() {
+                        return Ok(vec![Value::I64(status), Value::I64(lines)]);
+                    }
+                    std::thread::sleep(Duration::from_millis(2));
+                }
+            }
+        }
+        Ok(vec![Value::I64(status), Value::I64(lines)])
+    }
+}
+
+/// Removes its listener when the flow that owns the entry closes.
+struct StreamListening(Arc<dyn Session>, u64);
+impl Drop for StreamListening {
+    fn drop(&mut self) {
+        if let Some(session) = self.0.as_any().downcast_ref::<HttpSession>() {
+            session
+                .listeners
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .retain(|(id, _)| *id != self.1);
+        }
+    }
+}
+
+/// Fires its entry once per line of every response streamed on the connection.
+#[derive(Debug)]
+struct HttpStreamLine;
+impl ServiceSource for HttpStreamLine {
+    fn start(
+        &self,
+        session: Option<Arc<dyn Session>>,
+        emitter: Emitter,
+    ) -> Result<Box<dyn Send>, String> {
+        let session = session.ok_or("the entry needs an HTTP connection")?;
+        let http = session
+            .as_any()
+            .downcast_ref::<HttpSession>()
+            .ok_or("the entry needs an HTTP connection")?;
+        let id = http.next_listener.fetch_add(1, Ordering::Relaxed);
+        http.listeners
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .push((id, emitter));
+        Ok(Box::new(StreamListening(session, id)))
+    }
+}
+
+const HTTP_STREAM_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.net/http-stream",
+  "label": {"key": "org.orange.net/http-stream-label", "fallback": "HTTP request (streamed)"},
+  "description": {"key": "org.orange.net/http-stream-description",
+    "fallback": "Sends a request and delivers the response line by line as it arrives."},
+  "editor": {"category_id": "org.orange.net/category-network",
+    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "async",
+  "suspends": "always",
+  "determinism": "external",
+  "connection": true,
+  "ports": [
+    {"port_id": "method", "direction": "input", "kind": "data", "type": "core/string@1"},
+    {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
+    {"port_id": "content_type", "direction": "input", "kind": "data", "type": "core/string@1"},
+    {"port_id": "headers", "direction": "input", "kind": "data",
+      "type": "core/list@1<core/string@1>"},
+    {"port_id": "content", "direction": "input", "kind": "data", "type": "core/bytes@1"},
+    {"port_id": "status", "direction": "output", "kind": "data", "type": "core/i64@1",
+      "source": "execution", "available_on": ["then"]},
+    {"port_id": "lines", "direction": "output", "kind": "data", "type": "core/i64@1",
+      "source": "execution", "available_on": ["then"]}
+  ]
+}"#;
+
+const HTTP_STREAM_LINE_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.net/http-stream-line",
+  "label": {"key": "org.orange.net/http-stream-line-label", "fallback": "On HTTP stream line"},
+  "editor": {"category_id": "org.orange.net/category-network",
+    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "entry",
+  "determinism": "external",
+  "connection": true,
+  "ports": [
+    {"port_id": "payload", "direction": "output", "kind": "data", "type": "core/string@1",
+      "source": "payload"}
+  ]
+}"#;
 
 const HTTP_REQUEST_BYTES_DEFINITION: &str = r#"{
   "definition_id": "org.orange.net/http-request-bytes",
@@ -580,6 +860,8 @@ pub fn package() -> ServicePackage {
         .adapter(MQTT_ADAPTER, mqtt::MqttAdapter)
         .node(HTTP_REQUEST_DEFINITION, HttpRequest)
         .and_then(|package| package.node(HTTP_REQUEST_BYTES_DEFINITION, HttpRequestBytes))
+        .and_then(|package| package.node(HTTP_STREAM_DEFINITION, HttpStream))
+        .and_then(|package| package.source(HTTP_STREAM_LINE_DEFINITION, HttpStreamLine))
         .and_then(|package| package.node(ws::WS_SEND_DEFINITION, ws::WsSend { binary: false }))
         .and_then(|package| package.node(ws::WS_SEND_BYTES_DEFINITION, ws::WsSend { binary: true }))
         .and_then(|package| {
