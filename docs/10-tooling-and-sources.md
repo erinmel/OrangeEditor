@@ -1,5 +1,34 @@
 # Tooling, environment and research register
 
+## Files, credentials, network payloads, persistent variables, documents and reuse — 2026-11-12
+
+Versions and sources: `keyring` 3.6.3 (`Entry::new`, `set_password`, `get_password`,
+`delete_credential`, `Error::{NoEntry, NoStorageAccess}`, read from the 3.6.3 crate
+source). 4.2.0 needs Rust 1.88 and splits the stores into separate crates; 3.6.3 was
+taken as the last release with built-in native stores. `tungstenite` 0.30.0
+`IntoClientRequest` for handshake headers and `Message::binary`.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,783 passed, 0 failed, 19 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+| `cargo test -p orange-vault -- --ignored` (Windows Credential Manager) | Pass: a generated value is stored, read and removed |
+| `orange secret set`, `check`, `remove`, `check` with a generated name and value | Stored, found, removed, then reported as not stored |
+| `orange pack`, `export`, `import`, `import --apply`, `check` with the example graph package | The bundle holds the graph and one package; the import lists it as missing, then as available after `--apply`, and the imported graph checks |
+
+Not run: the operating-system store on macOS and Linux (the Linux backend is the
+kernel keyring, which is not persistent across logins); HTTP and WebSocket
+authorization against a real service; the file watcher on network or very large
+folders; links leading out of a folder (creating one on Windows needs privileges);
+`cargo deny` locally for the keyring dependency tree.
+
+Known limits recorded with the contracts: no HTTP/2 and so no native gRPC, no MQTT,
+no streaming bodies, no OAuth flows; no extraction of a node selection into a function;
+persistence covers declared variables only.
+
 ## Signed feeds, native plugin updates, audio controls and component access — 2026-11-12
 
 Versions and sources: `ring` 0.17.14 (`signature::UnparsedPublicKey::verify` with

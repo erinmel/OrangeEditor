@@ -24,6 +24,43 @@ Graph **directory bundle** saves use immutable generation directories plus a sma
 
 ## Connection manager
 
+Credentials, authorization and binary payloads (2026-11-12; `orange-sdk`,
+`orange-vault`, `orange-host`, `orange-net`). A setting value that is exactly
+`credential://<name>` (name: 1 to 128 of `a-z 0-9 . _ - /`) is a reference. When the
+host opens a connection it replaces each reference, at any depth of the settings, with
+the secret from `HostOptions::secrets` (`SecretStore`) and hands the result to the
+adapter only; the document, the shared-connection table, events and errors keep the
+reference. A missing secret, or a reference with no store configured, refuses the
+connection by name. `orange-vault` provides `OsVault` (keyring 3.6.3: Windows
+Credential Manager, macOS Keychain, Linux kernel keyring, which lasts until logout)
+and `MemoryVault`; the `orange secret set|remove|check` commands manage `OsVault`
+entries and read the secret from standard input. HTTP and WebSocket connections take
+`bearer` (a token), `basic` (`{user, password}`) and `headers` (an object); the HTTP
+adapter adds them to every request and the WebSocket adapter to its opening handshake.
+`org.orange.net/http-request-bytes` sends a `core/bytes@1` body with a content type
+and returns status, response content type and response bytes;
+`org.orange.net/ws-send-bytes` and the entry `org.orange.net/ws-binary` carry binary
+WebSocket messages. A graph can therefore exchange protobuf, gRPC-Web frames or a
+payload it encrypted itself. Not provided: HTTP/2, so native gRPC is not reachable;
+MQTT; request or response streaming; client certificates; OAuth flows and token
+refresh; per-request headers from the graph; secret rotation notices to open
+connections (a changed secret is used by connections opened afterwards).
+
+Files (2026-11-12; `orange-files`, package `org.orange.files`). A
+`org.orange.files/folder` connection has settings `path` (an existing directory),
+`read_only` and `poll_ms` (50 to 60,000, default 500). Nodes: `read-text`,
+`write-text`, `append-text`, `read-bytes`, `write-bytes`, `list`, `exists`, `delete`
+and the entry `on-change` (payload: the changed file's path). Paths are relative to
+the folder with `/` between plain names; `..`, absolute and drive forms, device names
+and links leading out of the folder are refused. A write goes to a temporary file in
+the same directory, is flushed and renamed over the target. Reads and writes are whole
+files up to 64 MiB; a listing or a watched folder holds at most 10,000 entries.
+`on-change` compares sizes and modification times every `poll_ms`, so several changes
+to one file within that time fire once and a change that restores both is not seen.
+Not provided: streams for larger files, directory creation and removal as nodes,
+rename and copy, operating-system change notifications, text encodings other than
+UTF-8.
+
 Implemented subset (2026-11-10; `orange-host`, `orange-net`): connection declarations
 (11 §16.1), graph and shared scope, and adapter-owned sessions (02).
 The `org.orange.net/http` adapter takes settings `base_url` (required) and `timeout_ms` (whole
