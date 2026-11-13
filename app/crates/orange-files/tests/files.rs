@@ -25,7 +25,7 @@ fn a_graph_writes_reads_and_watches_files_in_its_folder() {
         host.nodes()
             .filter(|info| info.category() == "Files")
             .count(),
-        13
+        16
     );
 
     let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
