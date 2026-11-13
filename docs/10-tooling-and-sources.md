@@ -23,18 +23,31 @@ A second finding: a terminal run showed node steps but no values; `--watch` was 
 
 | Command | Result |
 |---|---|
-| `cargo test --workspace --locked` | 1,799 passed, 0 failed, 20 ignored |
+| `cargo test --workspace --locked` | 1,802 passed, 0 failed, 20 ignored |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
 | `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
 | `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
 
-What using it showed that is still rough: nodes and variables are named by 36-character
-IDs in every command and every line of output, with no names; a manual trigger needs
-the entry's full ID; a run prints steps as `node <id> Then` rather than what happened;
-durations such as a timer's interval are written in nanoseconds as text; a float input
-is written as 16 hexadecimal digits; an error in a hand-written graph is reported as a
-debug dump of the diagnostic. These are terminal and format ergonomics, not failures
-of the runtime.
+What using it showed to be rough was then addressed (same day): nodes and variables
+were named only by 36-character IDs; a manual trigger needed the entry's full ID; a
+timer's interval was written in nanoseconds and a decimal input as 16 hexadecimal
+digits; a mistake in a hand-written graph was reported as a debug dump; and `bind`
+saved the file as one line.
+
+Run with names: a graph with nodes named `save greeting`, `every tick` and `log tick`,
+a timer written as `400ms` and a decimal written as `0.15`. Before binding, `check`
+listed six problems by name (for example `TimerConfig … (node every tick)`). After
+`bind` the file held `"interval": "400000000"` and the float's bits. While it ran:
+`trigger 1` fired the only manual entry; `set 1 greeting hello there` set the
+variable; `trigger 1 SAVE GREETING` fired the entry by name in another letter case;
+the output read `[1] save greeting: Then`, `[1] greeting = "hello there"`; the file
+held `hello there`; `set 1 volume loud` and `trigger 1 nobody` were refused with a
+sentence each.
+
+Still rough: a step is printed as `<name>: Then` or `Suspended`, the runtime's words
+rather than a person's; setting a variable the graph declares but never uses is
+refused, because the compiled graph does not hold it; names are not checked for
+uniqueness when a graph is written, only told apart when shown.
 
 ## Performance check and duplication removal — 2026-11-13
 
