@@ -88,6 +88,30 @@ entry fires as for a graph write, and a paused run takes the value without firin
 no flow runs. Not stored: node state, local variables, and anything of a flow that
 ends between two turns' writes and the save that follows them.
 
+Binding hand-written documents (2026-11-13): `Host::bind(json)` completes a document
+whose package nodes carry only `definition_id`, `definition_version`, `config`,
+`inputs` and `type_pins`. Each root node without a `signature` whose definition is
+outside the core language is placed through the same path an editor uses
+(`new_node_edit`), which records the host's provider for it, the package lock entry
+and the signature snapshot; an entry node without an `activation` gets a queue of
+sixteen that faults when full; other fields the author wrote are kept. Bound nodes and
+the rest of the document are untouched, so binding twice gives the same text. Nodes
+inside function bodies are not bound. `orange bind` saves the result over the file,
+keeping the previous version as `.bak`, and prints the remaining diagnostics.
+`orange run --watch` observes each flow and prints `FlowEvent::Variables` and
+`FlowEvent::Ports`. `bind` also rewrites the plain forms a person writes into the
+stored ones: a float literal given as a JSON number becomes its `bits`, and a duration
+with a unit (`ms`, `s`, `m`, `h`) in a `core/duration@1` literal or in the settings of
+`core/on-timer` and `core/on-timeout` becomes nanoseconds. The `orange` command saves
+a bound file indented. Names in the terminal (2026-11-13) are a front-end matter and
+live in `orange-cli`: a node is called by its `name` field, which the document keeps
+as an extension field, else by its definition's label, with the end of its ID added
+when two nodes would be called the same; a variable by its declared name. Run output,
+diagnostics, `trigger` and `set` use them; `trigger <flow>` alone fires a graph's
+only manual entry; `set` takes a plain value for string, boolean, 64-bit integer and
+`f64` variables and a full literal for any other type. IDs are still accepted
+everywhere.
+
 Documents and reuse (2026-11-12): `save_document` refuses text that is not a
 document, keeps the replaced file as `<file>.bak`, writes through a temporary file and
 removes the autosave; `autosave_document` writes `<file>.autosave` only;

@@ -1574,3 +1574,60 @@ fn a_package_is_granted_only_what_its_manifest_asks_for() {
         Err(HostError::Archive(_))
     ));
 }
+
+#[test]
+fn a_document_written_by_hand_is_bound_and_then_runs() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let _ = host
+        .install(&graph_package(I64, true).unwrap(), Grants::default())
+        .unwrap();
+    let _ = host
+        .install(&trigger_package(true).unwrap(), Grants::default())
+        .unwrap();
+    // What a person can write: the node's definition, its inputs, nothing about
+    // providers, package digests or signatures.
+    let by_hand = |definition: &str| {
+        let saved: Json = serde_json::from_str(&to_json(&empty(4)).unwrap()).unwrap();
+        let call = json!({"id": id(3), "definition_id": definition, "definition_version": 1,
+            "config_version": 1, "config": {},
+            "inputs": {"value": {"type": I64, "value": "5"}}});
+        let mut set = core(4, "set-variable");
+        set["config"] = json!({"variable": id(TOTAL)});
+        with_total(
+            saved,
+            vec![core(1, "on-manual"), call, set],
+            json!([
+                edge(1, 1, "then", 3, "in"),
+                edge(2, 3, "then", 4, "in"),
+                edge(3, 3, "result", 4, "value"),
+            ]),
+        )
+    };
+    let text = by_hand(REMEMBER);
+    assert!(!host.check(&text).unwrap().is_empty());
+
+    let bound = host.bind(&text).unwrap();
+    assert!(host.check(&bound).unwrap().is_empty());
+    assert!(bound.contains("\"signature\"") && bound.contains("org.example.tools"));
+    // Binding again changes nothing, and a document with nothing to bind is returned
+    // as it is.
+    assert_eq!(host.bind(&bound).unwrap(), bound);
+    assert_eq!(host.bind(&manual_graph(1)).unwrap(), manual_graph(1));
+    let flow = host.open(&bound).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the bound node's result", || {
+        read_total(&host, flow) == Some(Value::I64(5))
+    });
+
+    // An entry node written without an activation gets one.
+    let mut saved: Json = serde_json::from_str(&to_json(&empty(5)).unwrap()).unwrap();
+    saved["nodes"] = json!([{"id": id(1), "definition_id": ON_POKE, "definition_version": 1,
+        "config_version": 1, "config": {}}]);
+    let bound: Json = serde_json::from_str(&host.bind(&saved.to_string()).unwrap()).unwrap();
+    assert_eq!(bound["nodes"][0]["activation"]["mode"], "queue");
+    // A node this host has no definition for is refused by its ID.
+    let Err(HostError::Document(reason)) = host.bind(&by_hand("org.example.missing/thing")) else {
+        panic!("an unknown definition is refused");
+    };
+    assert!(reason.contains(&id(3)), "{reason}");
+}

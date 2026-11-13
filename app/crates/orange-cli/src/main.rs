@@ -4,10 +4,12 @@
 //! controlled without an editor, and as the reference for how any front end attaches.
 mod console;
 mod credentials;
+mod names;
 mod updates;
 
 use console::*;
 use credentials::*;
+use names::*;
 use orange_host::{
     FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, NodeId, StopMode,
 };
@@ -21,7 +23,8 @@ use updates::*;
 const USAGE: &str = "\
 usage:
   orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>]
-  orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>]
+  orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>] [--watch]
+  orange bind  <graph.json>... [--package <file.orangeplug>]... [--store <dir>]
   orange pack  <package-dir> <out.orangeplug>
   orange nodes [--package <file.orangeplug>]... [--store <dir>]
   orange packages [--store <dir>]
@@ -37,15 +40,26 @@ usage:
   orange feed key <name> | sign <feed.json> <name>
   orange oauth login <settings.json> <name>
 
+Nodes and variables are shown and accepted by name. A node is called by its `name`
+field if the graph gives it one, otherwise by what its kind is called; a variable by
+its declared name.
+
+With `--watch`, `run` also prints each variable and each value on a wire when it
+changes.
+
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
 what they do. While it runs, type commands on standard input:
 
   pause <flow> | resume <flow>      hold a flow, or let it continue
   stop <flow>  | kill <flow>        stop gracefully, or at once
-  trigger <flow> <node-id>          fire a manual entry
+  trigger <flow> [node]             fire a manual entry, by name or ID; the only one if not given
   reload <flow>                     read the flow's file again and apply the edit live
-  set <flow> <variable-id> <literal>  set a run variable to a JSON literal with `type` and `value`
+  set <flow> <variable> <value>     set a run variable, by name or ID, to a value such as 7, true or some text
   quit                              stop everything and exit
+
+`bind` completes a graph written by hand: every package node that names only its
+`definition_id`, `config` and `inputs` gets the provider, package lock and signature a
+graph must record, and the file is saved with the previous version kept as `.bak`.
 
 `pack` builds a package from a directory holding `manifest.json` and the package's
 files (`nodes/<name>.json`, `graphs/<name>.json`, a component), filling in its digest.
@@ -134,6 +148,7 @@ struct Arguments {
     apply: bool,
     plugins: Vec<String>,
     plugin_data: Option<String>,
+    watch: bool,
     state: Option<String>,
 }
 
@@ -155,6 +170,7 @@ fn arguments() -> Result<Arguments, String> {
         apply: false,
         plugins: Vec::new(),
         plugin_data: None,
+        watch: false,
         state: None,
     };
     while let Some(word) = words.next() {
@@ -186,6 +202,7 @@ fn arguments() -> Result<Arguments, String> {
                 .plugins
                 .push(words.next().ok_or("--plugins needs a directory")?),
             "--store" => parsed.store = Some(words.next().ok_or("--store needs a directory")?),
+            "--watch" => parsed.watch = true,
             "--for" => {
                 let text = words.next().ok_or("--for needs milliseconds")?;
                 let ms: u64 = text.parse().map_err(|_| "--for needs milliseconds")?;
@@ -212,11 +229,11 @@ fn share(host: &mut Host, id: &str, adapter: &str, settings: &[u8]) -> Result<()
         .map_err(|error| error.to_string())
 }
 
-fn report(path: &str, error: &HostError) {
+fn report(path: &str, error: &HostError, names: &Names) {
     eprintln!("{path}: {error}");
     if let HostError::Invalid(diagnostics) = error {
         for diagnostic in diagnostics {
-            eprintln!("  {diagnostic:?}");
+            eprintln!("  {}", describe(diagnostic, names));
         }
     }
 }
@@ -378,6 +395,7 @@ fn main() -> ExitCode {
                     | "updates"
                     | "enable"
                     | "disable"
+                    | "bind"
                     | "export"
                     | "import"
             ) =>
@@ -514,6 +532,54 @@ fn main() -> ExitCode {
                 );
             }
             return ExitCode::SUCCESS;
+        }
+        "bind" => {
+            let mut failed = false;
+            for path in &arguments.graphs {
+                let bound = read(path)
+                    .and_then(|bytes| {
+                        String::from_utf8(bytes).map_err(|_| format!("{path}: not text"))
+                    })
+                    .and_then(|text| host.bind(&text).map_err(|error| format!("{path}: {error}")))
+                    // A file a person edits is kept readable: one field per line.
+                    .and_then(|text| {
+                        serde_json::from_str::<serde_json::Value>(&text)
+                            .and_then(|graph| serde_json::to_string_pretty(&graph))
+                            .map_err(|error| format!("{path}: {error}"))
+                    })
+                    .and_then(|text| {
+                        orange_host::save_document(Path::new(path), &text)
+                            .map_err(|error| format!("{path}: {error}"))?;
+                        Ok(text)
+                    });
+                match bound.and_then(|text| {
+                    host.check(&text)
+                        .map_err(|error| format!("{path}: {error}"))
+                }) {
+                    Ok(diagnostics) if diagnostics.is_empty() => println!("{path}: bound, ok"),
+                    Ok(diagnostics) => {
+                        println!("{path}: bound, {} diagnostics", diagnostics.len());
+                        let text = read(path)
+                            .ok()
+                            .and_then(|bytes| String::from_utf8(bytes).ok())
+                            .unwrap_or_default();
+                        let names = Names::of(&host, &text);
+                        for diagnostic in diagnostics {
+                            println!("  {}", describe(&diagnostic, &names));
+                        }
+                        failed = true;
+                    }
+                    Err(message) => {
+                        eprintln!("{message}");
+                        failed = true;
+                    }
+                }
+            }
+            return if failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            };
         }
         "export" => {
             let [graph, output] = &arguments.graphs[..] else {
@@ -708,26 +774,34 @@ fn main() -> ExitCode {
                 continue;
             }
         };
+        let names = Names::of(&host, &text);
         if arguments.command == "check" {
             match host.check(&text) {
                 Ok(diagnostics) if diagnostics.is_empty() => println!("{path}: ok"),
                 Ok(diagnostics) => {
-                    report(path, &HostError::Invalid(diagnostics));
+                    report(path, &HostError::Invalid(diagnostics), &names);
                     failed = true;
                 }
                 Err(error) => {
-                    report(path, &error);
+                    report(path, &error, &names);
                     failed = true;
                 }
             }
         } else {
             match host.open(&text) {
                 Ok(flow) => {
+                    if arguments.watch {
+                        let _ = host.observe(flow, true);
+                    }
                     println!("[{flow}] opened {path}");
-                    flows.push((flow, path.clone()));
+                    flows.push(Opened {
+                        flow,
+                        path: path.clone(),
+                        names,
+                    });
                 }
                 Err(error) => {
-                    report(path, &error);
+                    report(path, &error, &names);
                     failed = true;
                 }
             }
@@ -739,7 +813,7 @@ fn main() -> ExitCode {
         return ExitCode::FAILURE;
     }
     if arguments.command == "run" {
-        run(&mut host, &events, &flows, arguments.duration);
+        run(&mut host, &events, &mut flows, arguments.duration);
     }
     ExitCode::SUCCESS
 }
