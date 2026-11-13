@@ -170,6 +170,12 @@ impl std::fmt::Debug for Call<'_> {
 /// outputs in declared order, or a fault that takes the node's `failed` route.
 pub trait ServiceNode: Send + Sync + 'static {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault>;
+    /// For a node made with [`ServicePackage::stream`]: opens its stream. An ordinary
+    /// node has none.
+    fn items(&self, call: &Call<'_>) -> Option<Result<Box<dyn Items>, KernelFault>> {
+        let _ = call;
+        None
+    }
 }
 
 /// Why an [`Emitter`] did not deliver.
@@ -276,6 +282,46 @@ impl<T: Send + 'static> Listeners<T> {
             .iter()
             .map(|(_, _, emitter)| emitter.clone())
             .collect()
+    }
+}
+
+/// The items of a stream a node produces, pulled one at a time. `next` runs on a
+/// worker thread and may block; it is called again only after the graph has taken the
+/// previous item, so a slow graph slows the producer instead of filling memory. `None`
+/// ends the stream; an error ends it with that fault. The value is dropped when the
+/// graph closes the stream or stops. Any iterator of item results is one.
+pub trait Items: Send + 'static {
+    fn next(&mut self) -> Option<Result<Value, KernelFault>>;
+}
+impl<I> Items for I
+where
+    I: Iterator<Item = Result<Value, KernelFault>> + Send + 'static,
+{
+    fn next(&mut self) -> Option<Result<Value, KernelFault>> {
+        Iterator::next(self)
+    }
+}
+
+/// The implementation of a node whose one data output is a stream
+/// (`core/stream@1<T>`). `open` runs on a worker thread like [`ServiceNode::run`] and
+/// returns the items; the node continues as soon as the stream is open.
+pub trait ServiceStream: std::fmt::Debug + Send + Sync + 'static {
+    fn open(&self, call: &Call<'_>) -> Result<Box<dyn Items>, KernelFault>;
+}
+
+/// A stream node in the list of a package's nodes.
+#[derive(Debug)]
+struct Streaming(Arc<dyn ServiceStream>);
+impl ServiceNode for Streaming {
+    fn run(&self, _call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        Err(KernelFault {
+            code: FaultText::Static("org.orange.sdk/Stream"),
+            message_key: FaultText::Static("org.orange.sdk/stream-node"),
+            message: "The node produces a stream and the application did not open it.",
+        })
+    }
+    fn items(&self, call: &Call<'_>) -> Option<Result<Box<dyn Items>, KernelFault>> {
+        Some(self.0.open(call))
     }
 }
 
@@ -558,6 +604,15 @@ impl ServicePackage {
             .push((definition.definition.clone(), presentation));
         self.nodes.push((definition, Arc::new(node)));
         Ok(self)
+    }
+    /// Adds a node whose one data output is a stream, from its definition file text:
+    /// an asynchronous node with an output of type `core/stream@1<T>`.
+    pub fn stream(
+        self,
+        definition: &str,
+        stream: impl ServiceStream,
+    ) -> Result<Self, DefinitionError> {
+        self.node(definition, Streaming(Arc::new(stream)))
     }
     /// Adds an entry node from its definition file text. The definition's kind is
     /// `entry`; it has a `then` outcome and at most one data output, `payload`.

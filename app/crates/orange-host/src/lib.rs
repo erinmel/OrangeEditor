@@ -23,6 +23,7 @@ mod persist;
 mod preview;
 mod services;
 mod state;
+mod streams;
 mod variables;
 
 use effects::Pool;
@@ -80,8 +81,8 @@ pub use orange_runtime::{
     ControlOutcome, RefusedReason, RunError, RunEvent, RunOptions, RunState, StopMode,
 };
 pub use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, SERVICE_PROVIDER, ServiceNode, ServicePackage,
-    ServiceSource, Session, TARGET, TypeDecl,
+    Call, ConnectionAdapter, EmitError, Emitter, Items, SERVICE_PROVIDER, ServiceNode,
+    ServicePackage, ServiceSource, ServiceStream, Session, TARGET, TypeDecl,
 };
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use preview::Previewed;

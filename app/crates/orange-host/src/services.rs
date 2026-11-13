@@ -13,6 +13,8 @@ use std::sync::Arc;
 pub(crate) struct ServiceEffect {
     pub node: Arc<dyn ServiceNode>,
     pub connection: Option<ConnectionId>,
+    /// The item type, when the node's one data output is a stream.
+    pub stream: Option<orange_model::id::TypeExpr>,
 }
 
 /// Every service node the host has, by exact provider and definition.
@@ -69,6 +71,7 @@ impl Services {
             return Err(ResolveError::Contract);
         }
         let (mut inputs, mut outputs) = (Vec::new(), Vec::new());
+        let mut stream = None;
         for port in &request.signature().ports {
             match port.kind {
                 PortKind::Data => {}
@@ -87,6 +90,13 @@ impl Services {
             if port.direction == PortDirection::Input {
                 inputs.push(key);
             } else {
+                if let Some(item) = ty
+                    .as_str()
+                    .strip_prefix("core/stream@1<")
+                    .and_then(|rest| rest.strip_suffix('>'))
+                {
+                    stream = Some(item.parse().map_err(|_| ResolveError::Contract)?);
+                }
                 outputs.push(key);
             }
         }
@@ -100,11 +110,16 @@ impl Services {
         } else {
             None
         };
+        // A stream is a node's only result.
+        if stream.is_some() && outputs.len() != 1 {
+            return Err(ResolveError::Contract);
+        }
         Ok(EffectBinding {
             route: 0,
             context: Arc::new(ServiceEffect {
                 node: Arc::clone(node),
                 connection,
+                stream,
             }),
             inputs: inputs.into(),
             outputs: outputs.into(),
