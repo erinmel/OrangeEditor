@@ -5,7 +5,7 @@
 //! connections and use the request, send and message nodes. Nothing here is special to the host; another crate can
 //! provide a better HTTP node, or a different protocol, the same way.
 //!
-//! `http://`, `https://`, `ws://` and `wss://` endpoints are supported. TLS is rustls with the ring
+//! `http://`, `https://`, `ws://`, `wss://`, `mqtt://` and `mqtts://` endpoints are supported. TLS is rustls with the ring
 //! provider; server certificates are verified against the bundled Mozilla roots
 //! (`webpki-roots`), not the operating system's store, and there is no way to disable
 //! verification.
@@ -13,6 +13,7 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod mqtt;
 mod ws;
 
 pub use ws::MAX_QUEUED_MESSAGES;
@@ -59,6 +60,25 @@ pub const WS_SEND: &str = "org.orange.net/ws-send";
 /// Entry fired once per text message received on a WebSocket connection, with the
 /// text as `payload`.
 pub const WS_MESSAGE: &str = "org.orange.net/ws-message";
+
+/// Adapter kind of an MQTT 3.1.1 connection. Settings: `url` (required, `mqtt://host`
+/// or `mqtts://host` for TLS, with an optional `:port`), `username` and `password`
+/// (each can be a `credential://<name>` reference), `client_id` (generated when
+/// absent), `topics` (the topic filters to subscribe to), `qos` (0 or 1, default 0,
+/// for subscriptions and publishing) and `keep_alive_s` (5 to 3,600, default 30).
+pub const MQTT_ADAPTER: &str = "org.orange.net/mqtt";
+/// Queues one text message for a topic on an MQTT connection. Inputs `topic`, `text`
+/// and `retain`.
+pub const MQTT_PUBLISH: &str = "org.orange.net/mqtt-publish";
+/// Queues one binary message for a topic. Inputs `topic`, `data` and `retain`.
+pub const MQTT_PUBLISH_BYTES: &str = "org.orange.net/mqtt-publish-bytes";
+/// Entry fired once per message received on an MQTT connection's topics whose payload
+/// is text, with `[topic, text]` as `payload`.
+pub const MQTT_MESSAGE: &str = "org.orange.net/mqtt-message";
+/// Entry fired once per message received on an MQTT connection's topics, with the
+/// payload bytes as `payload`. A connection that needs to tell topics apart for
+/// binary messages subscribes to one topic.
+pub const MQTT_BINARY: &str = "org.orange.net/mqtt-binary";
 
 /// Largest response body a request node returns.
 pub const MAX_RESPONSE_BYTES: u64 = 8 * 1024 * 1024;
@@ -496,6 +516,7 @@ pub fn package() -> ServicePackage {
         )
         .adapter(HTTP_ADAPTER, HttpAdapter)
         .adapter(WS_ADAPTER, ws::WsAdapter)
+        .adapter(MQTT_ADAPTER, mqtt::MqttAdapter)
         .node(HTTP_REQUEST_DEFINITION, HttpRequest)
         .and_then(|package| package.node(HTTP_REQUEST_BYTES_DEFINITION, HttpRequestBytes))
         .and_then(|package| package.node(ws::WS_SEND_DEFINITION, ws::WsSend { binary: false }))
@@ -505,6 +526,27 @@ pub fn package() -> ServicePackage {
         })
         .and_then(|package| {
             package.source(ws::WS_BINARY_DEFINITION, ws::WsMessage { binary: true })
+        })
+        .and_then(|package| {
+            package.node(
+                mqtt::PUBLISH_DEFINITION,
+                mqtt::MqttPublish { binary: false },
+            )
+        })
+        .and_then(|package| {
+            package.node(
+                mqtt::PUBLISH_BYTES_DEFINITION,
+                mqtt::MqttPublish { binary: true },
+            )
+        })
+        .and_then(|package| {
+            package.source(
+                mqtt::MESSAGE_DEFINITION,
+                mqtt::MqttMessage { binary: false },
+            )
+        })
+        .and_then(|package| {
+            package.source(mqtt::BINARY_DEFINITION, mqtt::MqttMessage { binary: true })
         });
     match package {
         Ok(package) => package,

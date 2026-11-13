@@ -1307,9 +1307,11 @@ dependencies = [
  "orange-model",
  "orange-sdk",
  "ring",
+ "rustls",
  "serde_json",
  "tungstenite",
  "ureq",
+ "webpki-roots 1.0.11",
 ]
 
 [[package]]

@@ -43,7 +43,8 @@ files (`nodes/<name>.json`, `graphs/<name>.json`, a component), filling in its d
 
 `--share <id> <adapter> <settings.json>` gives every graph that declares connection
 `<id>` as shared the same session, with settings read from the file. The base network
-package is built in: adapters `org.orange.net/http` and `org.orange.net/websocket`.
+package is built in: adapters `org.orange.net/http`, `org.orange.net/websocket` and
+`org.orange.net/mqtt`.
 
 `--store <dir>` keeps installed packages in a directory: packages given with
 `--package` are saved there, and later commands with the same `--store` have them

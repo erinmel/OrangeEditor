@@ -23,12 +23,14 @@ proptest = "=1.12.0"
 serde = { version = "=1.0.229", features = ["derive"] }
 serde_json = { version = "=1.0.154", features = ["preserve_order"] }
 ring = "=0.17.14"
+rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "=0.11.1"
 thiserror = "=2.0.21"
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }
 uuid = { version = "=1.29.0", features = ["serde"] }
 # Wasmtime 48 LTS (supported 24 months); host-only (ADR-03). Default features off.
+webpki-roots = "=1.0.11"
 wasmtime = { version = "=50.0.1", default-features = false, features = ["runtime", "cranelift", "component-model", "std"] }
 
 [workspace.lints.rust]
