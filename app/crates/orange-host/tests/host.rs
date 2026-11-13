@@ -176,7 +176,7 @@ fn probe_archive() -> Vec<u8> {
             "nodes": [ACCUMULATE],
             "providers": [{"slot": format!("node:{ACCUMULATE}@1"), "id": "guest"}]
         },
-        "permissions": [],
+        "permissions": ["log"],
         "integrity": {"algorithm": "sha256", "content_digest": "0".repeat(64)},
         "license": "MIT"
     });
@@ -1563,4 +1563,40 @@ fn a_function_of_a_document_is_published_as_a_node_other_documents_use() {
     until("the published node's result", || {
         read_total(&host, flow) == Some(Value::I64(21))
     });
+}
+
+#[test]
+fn a_package_is_granted_only_what_its_manifest_asks_for() {
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    // The probe package asks for logging and nothing else.
+    let probe = probe_archive();
+    let asks = host.permissions(&probe).unwrap();
+    assert_eq!((asks.log, asks.files, asks.http), (true, false, false));
+    let too_much = Grants {
+        log: true,
+        files: true,
+        http: false,
+    };
+    assert!(matches!(
+        host.install(&probe, too_much),
+        Err(HostError::Install(_))
+    ));
+    assert_eq!(installed(&host).count(), 0);
+    assert!(host.install(&probe, asks).is_ok());
+    // A package with no code asks for nothing and is given nothing.
+    let graph = graph_package(I64, true).unwrap();
+    assert_eq!(host.permissions(&graph).unwrap(), Grants::default());
+    let logging = Grants {
+        log: true,
+        files: false,
+        http: false,
+    };
+    assert!(matches!(
+        host.install(&graph, logging),
+        Err(HostError::Install(_))
+    ));
+    assert!(matches!(
+        host.permissions(b"not an archive"),
+        Err(HostError::Archive(_))
+    ));
 }

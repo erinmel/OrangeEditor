@@ -377,6 +377,27 @@ fn with_secrets(
     Ok(resolved)
 }
 
+/// The grants a manifest's `permissions` section asks for: a list of `"log"`,
+/// `"files"` and `"http"`. No section asks for nothing.
+fn asked(manifest: &PackageManifest) -> Result<Grants, HostError> {
+    let refused = || {
+        HostError::Install("`permissions` must be a list of `log`, `files` and `http`".to_owned())
+    };
+    let mut grants = Grants::default();
+    let Some(section) = manifest.permissions() else {
+        return Ok(grants);
+    };
+    for permission in section.as_array().ok_or_else(refused)? {
+        match permission.as_str() {
+            Some("log") => grants.log = true,
+            Some("files") => grants.files = true,
+            Some("http") => grants.http = true,
+            _ => return Err(refused()),
+        }
+    }
+    Ok(grants)
+}
+
 /// A connection the host holds for every document that declares its ID as shared.
 struct SharedConnection {
     adapter: String,
@@ -847,6 +868,17 @@ impl Host {
         self.install_expected(archive, grants, None)
     }
 
+    /// What a package asks to be granted, read from the `permissions` section of its
+    /// manifest without installing anything: what an install dialog shows the user.
+    /// [`install`](Self::install) refuses a grant the package did not ask for, so a
+    /// package never holds more than it declared and the user approved.
+    pub fn permissions(&self, archive: &[u8]) -> Result<Grants, HostError> {
+        let mut files = MemorySink::new();
+        let verified = read_archive(archive, &ArchiveLimits::default(), &mut files)
+            .map_err(|error| HostError::Archive(error.to_string()))?;
+        asked(verified.manifest())
+    }
+
     /// Installs a package like [`install`](Self::install), but only if its content
     /// digest is `content_digest` (`sha256:<64 hex>`): the check that a downloaded
     /// archive is the one an update feed announced.
@@ -981,6 +1013,18 @@ impl Host {
             .map_err(|error| HostError::Archive(error.to_string()))?;
         let manifest = verified.manifest().clone();
         let key = manifest.key().clone();
+        let asked = asked(&manifest)?;
+        for (name, given, wanted) in [
+            ("log", grants.log, asked.log),
+            ("files", grants.files, asked.files),
+            ("http", grants.http, asked.http),
+        ] {
+            if given && !wanted {
+                return Err(HostError::Install(format!(
+                    "the package does not ask for the `{name}` grant"
+                )));
+            }
+        }
 
         let content_digest = verified.content_digest().to_owned();
         if expected.is_some_and(|expected| {

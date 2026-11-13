@@ -95,7 +95,9 @@ hold no secrets. `secret check` says whether one is stored without showing it.
 
 `--grant-log` lets installed package code write log lines, `--grant-files` lets it
 read and write files in its own data directory (`--plugin-data <dir>`, or `data` in the
-store), and `--grant-http` lets it send HTTPS requests. A grant is given to the
+store), and `--grant-http` lets it send HTTPS requests. A package receives a grant
+only if its manifest asks for it (`permissions`), and an install says what a package
+asked for and was not given. A grant is given to the
 packages installed by that command and is kept with them in the store. `--for` stops after a time.";
 
 struct Arguments {
@@ -733,7 +735,25 @@ fn main() -> ExitCode {
     }
     for path in &arguments.packages {
         let installed = read(path).and_then(|bytes| {
-            host.install(&bytes, arguments.grants)
+            // A package gets the grants it asks for that this command also gives.
+            let asks = host
+                .permissions(&bytes)
+                .map_err(|error| format!("{path}: {error}"))?;
+            let given = Grants {
+                log: asks.log && arguments.grants.log,
+                files: asks.files && arguments.grants.files,
+                http: asks.http && arguments.grants.http,
+            };
+            for (name, asked, granted) in [
+                ("log", asks.log, given.log),
+                ("files", asks.files, given.files),
+                ("http", asks.http, given.http),
+            ] {
+                if asked && !granted {
+                    println!("{path}: asks for `{name}`, not granted (--grant-{name})");
+                }
+            }
+            host.install(&bytes, given)
                 .map_err(|error| format!("{path}: {error}"))
         });
         match installed {
