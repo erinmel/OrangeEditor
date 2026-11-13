@@ -21,7 +21,8 @@ use updates::*;
 const USAGE: &str = "\
 usage:
   orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>]
-  orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>]
+  orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>] [--watch]
+  orange bind  <graph.json>... [--package <file.orangeplug>]... [--store <dir>]
   orange pack  <package-dir> <out.orangeplug>
   orange nodes [--package <file.orangeplug>]... [--store <dir>]
   orange packages [--store <dir>]
@@ -37,6 +38,9 @@ usage:
   orange feed key <name> | sign <feed.json> <name>
   orange oauth login <settings.json> <name>
 
+With `--watch`, `run` also prints each variable and each value on a wire when it
+changes.
+
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
 what they do. While it runs, type commands on standard input:
 
@@ -46,6 +50,10 @@ what they do. While it runs, type commands on standard input:
   reload <flow>                     read the flow's file again and apply the edit live
   set <flow> <variable-id> <literal>  set a run variable to a JSON literal with `type` and `value`
   quit                              stop everything and exit
+
+`bind` completes a graph written by hand: every package node that names only its
+`definition_id`, `config` and `inputs` gets the provider, package lock and signature a
+graph must record, and the file is saved with the previous version kept as `.bak`.
 
 `pack` builds a package from a directory holding `manifest.json` and the package's
 files (`nodes/<name>.json`, `graphs/<name>.json`, a component), filling in its digest.
@@ -134,6 +142,7 @@ struct Arguments {
     apply: bool,
     plugins: Vec<String>,
     plugin_data: Option<String>,
+    watch: bool,
     state: Option<String>,
 }
 
@@ -155,6 +164,7 @@ fn arguments() -> Result<Arguments, String> {
         apply: false,
         plugins: Vec::new(),
         plugin_data: None,
+        watch: false,
         state: None,
     };
     while let Some(word) = words.next() {
@@ -186,6 +196,7 @@ fn arguments() -> Result<Arguments, String> {
                 .plugins
                 .push(words.next().ok_or("--plugins needs a directory")?),
             "--store" => parsed.store = Some(words.next().ok_or("--store needs a directory")?),
+            "--watch" => parsed.watch = true,
             "--for" => {
                 let text = words.next().ok_or("--for needs milliseconds")?;
                 let ms: u64 = text.parse().map_err(|_| "--for needs milliseconds")?;
@@ -378,6 +389,7 @@ fn main() -> ExitCode {
                     | "updates"
                     | "enable"
                     | "disable"
+                    | "bind"
                     | "export"
                     | "import"
             ) =>
@@ -514,6 +526,43 @@ fn main() -> ExitCode {
                 );
             }
             return ExitCode::SUCCESS;
+        }
+        "bind" => {
+            let mut failed = false;
+            for path in &arguments.graphs {
+                let bound = read(path)
+                    .and_then(|bytes| {
+                        String::from_utf8(bytes).map_err(|_| format!("{path}: not text"))
+                    })
+                    .and_then(|text| host.bind(&text).map_err(|error| format!("{path}: {error}")))
+                    .and_then(|text| {
+                        orange_host::save_document(Path::new(path), &text)
+                            .map_err(|error| format!("{path}: {error}"))?;
+                        Ok(text)
+                    });
+                match bound.and_then(|text| {
+                    host.check(&text)
+                        .map_err(|error| format!("{path}: {error}"))
+                }) {
+                    Ok(diagnostics) if diagnostics.is_empty() => println!("{path}: bound, ok"),
+                    Ok(diagnostics) => {
+                        println!("{path}: bound, {} diagnostics", diagnostics.len());
+                        for diagnostic in diagnostics {
+                            println!("  {diagnostic:?}");
+                        }
+                        failed = true;
+                    }
+                    Err(message) => {
+                        eprintln!("{message}");
+                        failed = true;
+                    }
+                }
+            }
+            return if failed {
+                ExitCode::FAILURE
+            } else {
+                ExitCode::SUCCESS
+            };
         }
         "export" => {
             let [graph, output] = &arguments.graphs[..] else {
@@ -723,6 +772,9 @@ fn main() -> ExitCode {
         } else {
             match host.open(&text) {
                 Ok(flow) => {
+                    if arguments.watch {
+                        let _ = host.observe(flow, true);
+                    }
                     println!("[{flow}] opened {path}");
                     flows.push((flow, path.clone()));
                 }

@@ -15,6 +15,19 @@ pub(crate) fn print(event: &HostEvent) {
         FlowEvent::TraceLost(count) => println!("[{flow}] {count} steps not shown"),
         FlowEvent::Refused(reason) => println!("[{flow}] input refused: {reason:?}"),
         FlowEvent::Fault(error) => println!("[{flow}] error: {error}"),
+        FlowEvent::Variables(changed) => {
+            for (variable, value) in changed {
+                match value {
+                    Some(value) => println!("[{flow}] variable {variable} = {value:?}"),
+                    None => println!("[{flow}] variable {variable} is unset"),
+                }
+            }
+        }
+        FlowEvent::Ports(changed) => {
+            for (node, port, value) in changed {
+                println!("[{flow}] wire {node} {port} = {value:?}");
+            }
+        }
         FlowEvent::Updated { .. } => println!("[{flow}] graph replaced"),
         FlowEvent::Finished => println!("[{flow}] finished"),
         _ => println!("[{flow}] {:?}", event.kind),

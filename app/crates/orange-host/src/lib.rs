@@ -12,6 +12,7 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod authoring;
 mod documents;
 mod effects;
 mod flow;
