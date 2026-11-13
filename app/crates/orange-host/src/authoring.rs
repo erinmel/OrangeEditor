@@ -105,12 +105,20 @@ fn exact(value: &mut Json) -> bool {
     changed
 }
 
+/// The activation an entry written without one gets: a queue of sixteen that faults
+/// when full.
+fn default_activation() -> Json {
+    json!({"mode": "queue", "capacity": 16, "overflow": "fault", "on_fault": "continue",
+        "order": 0})
+}
+
 impl Host {
     /// Binds the package nodes of a document that are not bound yet: each root node
     /// without a `signature` whose definition is not part of the core language gets
     /// this host's provider for it, the package lock entry and the signature
     /// snapshot, exactly as if it had been placed in an editor. An entry node without
-    /// an `activation` gets a queue of sixteen that faults when full. Nodes that are
+    /// an `activation`, built-in or from a package, gets a queue of sixteen that
+    /// faults when full. Nodes that are
     /// already bound, and everything else in the document, are left as they are.
     ///
     /// It also accepts the plain forms a person writes: a float literal given as a
@@ -130,7 +138,24 @@ impl Host {
                     .as_str()
                     .is_some_and(|id| !id.starts_with("core/"))
         };
-        let rewritten = exact(&mut saved);
+        let mut rewritten = exact(&mut saved);
+        let registry = Arc::clone(self.store.current());
+        // A built-in trigger written without an activation gets the default one too.
+        for node in saved["nodes"].as_array_mut().into_iter().flatten() {
+            let entry = node["definition_id"]
+                .as_str()
+                .filter(|id| id.starts_with("core/"))
+                .and_then(|id| id.parse().ok())
+                .and_then(|id| {
+                    let version = u32::try_from(node["definition_version"].as_u64()?).ok()?;
+                    registry.definition(&DefinitionRef { id, version })
+                })
+                .is_some_and(|found| found.kind == NodeKind::Entry);
+            if entry && node.get("activation").is_none() {
+                node["activation"] = default_activation();
+                rewritten = true;
+            }
+        }
         let nodes = saved["nodes"].as_array().cloned().unwrap_or_default();
         let (unbound, bound): (Vec<Json>, Vec<Json>) = nodes.into_iter().partition(is_unbound);
         if unbound.is_empty() {
@@ -157,7 +182,6 @@ impl Host {
         saved["edges"] = Json::Array(kept);
         let mut document =
             from_json(&saved.to_string()).map_err(|error| refused(error.to_string()))?;
-        let registry = Arc::clone(self.store.current());
         let mut entries = Vec::new();
         for node in &unbound {
             let name = node["id"].as_str().unwrap_or("?").to_owned();
@@ -208,8 +232,7 @@ impl Host {
                 .as_str()
                 .is_some_and(|id| entries.iter().any(|entry| entry == id));
             if entry && placed.get("activation").is_none() {
-                placed["activation"] = json!({"mode": "queue", "capacity": 16,
-                    "overflow": "fault", "on_fault": "continue", "order": 0});
+                placed["activation"] = default_activation();
             }
         }
         if let Some(edges) = bound["edges"].as_array_mut() {
@@ -223,6 +246,27 @@ impl Host {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_built_in_trigger_written_without_an_activation_gets_the_default() {
+        let (host, _events) = Host::new(HostOptions::default()).unwrap();
+        let written = json!({"format": "orange.graph", "format_version": 1,
+            "graph_id": "20000000-0000-4000-8000-0000000000e1", "revision": 1,
+            "package_lock": [], "type_lock": [], "variables": [], "events": [],
+            "connections": [], "signatures": {}, "edges": [], "functions": [], "exports": [],
+            "editor": {},
+            "nodes": [{"id": "10000000-0000-4000-8000-000000000001",
+                "definition_id": "core/on-manual", "definition_version": 1,
+                "config_version": 1, "config": {}}]})
+        .to_string();
+        assert!(!host.check(&written).unwrap().is_empty());
+        let bound = host.bind(&written).unwrap();
+        assert!(host.check(&bound).unwrap().is_empty());
+        let saved: Json = serde_json::from_str(&bound).unwrap();
+        assert_eq!(saved["nodes"][0]["activation"], default_activation());
+        // Binding again changes nothing.
+        assert_eq!(host.bind(&bound).unwrap(), bound);
+    }
 
     #[test]
     fn plain_numbers_and_durations_become_the_exact_stored_forms() {
