@@ -22,6 +22,8 @@ usage:
   orange disable <package-id> --store <dir>
   orange remove <package-id> <version> --store <dir>
   orange updates [--apply] [--grant-log] --store <dir>
+  orange export <graph.json> <out.orangegraph> --store <dir>
+  orange import <in.orangegraph> <graph.json> [--apply] [--store <dir>]
   orange devices
   orange secret set <name> | remove <name> | check <name>
 
@@ -72,6 +74,10 @@ A native plugin runs with all of this program's rights; load only what you trust
 The base file package is built in: a connection with adapter `org.orange.files/folder`
 and a `path` setting names a directory, and the file nodes read, write, list and watch
 files inside it and nowhere else.
+
+`export` writes a graph together with the stored packages it uses as one file.
+`import` saves the graph from such a file and lists the packages it needs and whether
+each is available; with `--apply` it first installs the packages the file carries.
 
 `--state <dir>` (or `state` in the store) keeps the variables a graph declares
 `persistent`: they are saved as they change and a later run starts with them. The
@@ -604,6 +610,8 @@ fn main() -> ExitCode {
                     | "updates"
                     | "enable"
                     | "disable"
+                    | "export"
+                    | "import"
             ) =>
         {
             arguments
@@ -720,6 +728,94 @@ fn main() -> ExitCode {
                 );
             }
             return ExitCode::SUCCESS;
+        }
+        "export" => {
+            let [graph, output] = &arguments.graphs[..] else {
+                eprintln!("export needs a graph file and an output file\n{USAGE}");
+                return ExitCode::from(2);
+            };
+            let exported = read(graph)
+                .and_then(|bytes| {
+                    String::from_utf8(bytes).map_err(|_| format!("{graph}: not text"))
+                })
+                .and_then(|text| {
+                    host.export(&text)
+                        .map_err(|error| format!("{graph}: {error}"))
+                })
+                .and_then(|(bundle, missing)| {
+                    std::fs::write(output, bundle.to_bytes())
+                        .map_err(|error| format!("{output}: {error}"))?;
+                    Ok((bundle.packages.len(), missing))
+                });
+            return match exported {
+                Ok((packages, missing)) => {
+                    println!("{output}: the graph and {packages} packages");
+                    for requirement in missing {
+                        println!(
+                            "not included: {} {} (not in the store)",
+                            requirement.package, requirement.version
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(message) => {
+                    eprintln!("{message}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        "import" => {
+            let [bundle, output] = &arguments.graphs[..] else {
+                eprintln!("import needs a bundle file and an output graph file\n{USAGE}");
+                return ExitCode::from(2);
+            };
+            let imported = read(bundle).and_then(|bytes| {
+                orange_host::Bundle::from_bytes(&bytes)
+                    .map_err(|error| format!("{bundle}: {error}"))
+            });
+            let imported = match imported {
+                Ok(imported) => imported,
+                Err(message) => {
+                    eprintln!("{message}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            // Packages are installed only on request: importing runs and grants nothing.
+            if arguments.apply {
+                for archive in &imported.packages {
+                    match host.install(archive, arguments.grants) {
+                        Ok(key) => {
+                            println!("installed {} {}", key.id.as_str(), key.version.as_str());
+                        }
+                        Err(error) => eprintln!("a package was not installed: {error}"),
+                    }
+                }
+            }
+            for requirement in host.requirements(&imported.document).unwrap_or_default() {
+                println!(
+                    "{} {}\t{}",
+                    requirement.package,
+                    requirement.version,
+                    if requirement.available {
+                        "available"
+                    } else {
+                        "missing"
+                    }
+                );
+            }
+            return match orange_host::save_document(Path::new(output), &imported.document) {
+                Ok(()) => {
+                    println!(
+                        "{output}: saved ({} packages in the bundle)",
+                        imported.packages.len()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{output}: {error}");
+                    ExitCode::FAILURE
+                }
+            };
         }
         "enable" | "disable" => {
             let enable = arguments.command == "enable";

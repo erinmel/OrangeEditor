@@ -12,6 +12,7 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod documents;
 mod effects;
 mod flow;
 mod graphs;
@@ -52,6 +53,10 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+pub use documents::{
+    Bundle, MAX_DOCUMENT_BYTES, Recovery, Requirement, autosave_document, discard_autosave,
+    recover_document, save_document,
+};
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};
 pub use orange_kernel::{FaultText, KernelFault};
@@ -1189,6 +1194,59 @@ impl Host {
         let mut saved = serde_json::from_str(json).map_err(|e| document(&e))?;
         graphs::link(&mut saved, &self.graphs);
         from_json(&saved.to_string()).map_err(|e| document(&e))
+    }
+
+    /// The packages a document is locked to and whether this host has each one: what an
+    /// import shows before anything is opened. A document with a requirement that is
+    /// not available still loads and saves; it does not open as a flow until the
+    /// package is installed.
+    pub fn requirements(&self, json: &str) -> Result<Vec<Requirement>, HostError> {
+        let document = from_json(json).map_err(|error| HostError::Document(error.to_string()))?;
+        let registry = self.store.current();
+        Ok(document
+            .package_lock()
+            .iter()
+            .map(|entry| Requirement {
+                package: entry.id.clone(),
+                version: entry.version.clone(),
+                content_digest: entry.content_digest.clone(),
+                available: registry.providers().any(|provider| {
+                    provider.key.package == entry.id
+                        && provider.key.version == entry.version
+                        && provider.key.content_digest == entry.content_digest
+                }),
+            })
+            .collect())
+    }
+
+    /// Builds a bundle of a document and the stored archives of the packages it is
+    /// locked to, to hand to someone else. The second value lists the requirements
+    /// whose archive this host does not hold (a native package, or a package installed
+    /// without [`HostOptions::package_dir`]); the receiver needs those separately.
+    pub fn export(&self, json: &str) -> Result<(Bundle, Vec<Requirement>), HostError> {
+        let requirements = self.requirements(json)?;
+        let saved = match &self.options.package_dir {
+            Some(directory) => persist::load(directory).map_err(HostError::Storage)?,
+            None => Vec::new(),
+        };
+        let (mut packages, mut missing) = (Vec::new(), Vec::new());
+        for requirement in requirements {
+            let archive = saved.iter().find_map(|package| {
+                let (id, version) = package.key.as_ref()?;
+                (*id == requirement.package && *version == requirement.version)
+                    .then(|| package.archive.as_ref().ok().cloned())
+                    .flatten()
+            });
+            match archive {
+                Some(archive) => packages.push(archive),
+                None => missing.push(requirement),
+            }
+        }
+        let bundle = Bundle {
+            document: json.to_owned(),
+            packages,
+        };
+        Ok((bundle, missing))
     }
 
     /// Checks a document against the current registry without running it. An empty

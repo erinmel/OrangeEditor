@@ -1350,3 +1350,123 @@ fn persistent_shared_variables_are_stored_and_edited_through_the_host() {
     drop(host);
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn a_document_is_saved_autosaved_and_recovered_without_losing_a_version() {
+    use orange_host::{autosave_document, discard_autosave, recover_document, save_document};
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-docs-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    std::fs::create_dir_all(&directory).unwrap();
+    let path = directory.join("graph.json");
+    let (first, second, third) = (manual_graph(1), manual_graph(2), manual_graph(3));
+
+    assert_eq!(
+        recover_document(&path).unwrap(),
+        orange_host::Recovery::default()
+    );
+    // Text that is not a document is never written over one.
+    assert!(matches!(
+        save_document(&path, "{}"),
+        Err(HostError::Document(_))
+    ));
+    save_document(&path, &first).unwrap();
+    save_document(&path, &second).unwrap();
+    let recovery = recover_document(&path).unwrap();
+    assert_eq!(recovery.saved.as_deref(), Some(second.as_str()));
+    assert_eq!((recovery.autosave, recovery.backup), (None, None));
+
+    // Unsaved work is offered after a crash, and the saved file is untouched.
+    autosave_document(&path, &third).unwrap();
+    let recovery = recover_document(&path).unwrap();
+    assert_eq!(recovery.saved.as_deref(), Some(second.as_str()));
+    assert_eq!(recovery.autosave.as_deref(), Some(third.as_str()));
+    // An autosave equal to the saved file, or damaged, is not offered.
+    autosave_document(&path, &second).unwrap();
+    assert_eq!(recover_document(&path).unwrap().autosave, None);
+    autosave_document(&path, "half a docu").unwrap();
+    assert_eq!(recover_document(&path).unwrap().autosave, None);
+    // Saving removes the autosave, which is now older than the file.
+    autosave_document(&path, &third).unwrap();
+    save_document(&path, &third).unwrap();
+    assert_eq!(recover_document(&path).unwrap().autosave, None);
+    discard_autosave(&path).unwrap();
+
+    // A damaged file falls back to the version before the last save.
+    std::fs::write(&path, "damaged").unwrap();
+    let recovery = recover_document(&path).unwrap();
+    assert_eq!(recovery.saved, None);
+    assert_eq!(recovery.backup.as_deref(), Some(second.as_str()));
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn a_bundle_carries_a_document_with_its_packages_and_an_import_previews_what_is_missing() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-bundle-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let options = HostOptions {
+        package_dir: Some(directory.clone()),
+        ..HostOptions::default()
+    };
+    let (mut author, _events) = Host::new(options).unwrap();
+    let key = author
+        .install(&graph_package(I64, true).unwrap(), Grants::default())
+        .unwrap();
+    // A document with one node of the installed package.
+    let mut document = empty(1);
+    let new = NewNode::new(
+        node(2),
+        DefinitionRef {
+            id: REMEMBER.parse().unwrap(),
+            version: 1,
+        },
+    );
+    let edit = new_node_edit(&document, author.registry(), new).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let text = to_json(&document).unwrap();
+
+    let requirements = author.requirements(&text).unwrap();
+    assert_eq!(requirements.len(), 1);
+    assert_eq!(requirements[0].package, key.id.as_str());
+    assert!(requirements[0].available);
+    let (bundle, not_included) = author.export(&text).unwrap();
+    assert!(not_included.is_empty());
+    assert_eq!(bundle.packages.len(), 1);
+    let bytes = bundle.to_bytes();
+
+    // The receiver reads the bundle without installing or running anything.
+    let (mut receiver, _events) = Host::new(HostOptions::default()).unwrap();
+    let received = orange_host::Bundle::from_bytes(&bytes).unwrap();
+    assert_eq!(received, bundle);
+    let preview = receiver.requirements(&received.document).unwrap();
+    assert!(!preview[0].available);
+    assert!(receiver.open(&received.document).is_err());
+    // After installing what the bundle carries, the same document is satisfied.
+    for archive in &received.packages {
+        let _ = receiver.install(archive, Grants::default()).unwrap();
+    }
+    assert!(receiver.requirements(&received.document).unwrap()[0].available);
+
+    // Without a package directory the archive cannot be included, and that is said.
+    let (bundle, not_included) = receiver.export(&received.document).unwrap();
+    assert!(bundle.packages.is_empty());
+    assert_eq!(not_included.len(), 1);
+    for damaged in [
+        &bytes[..bytes.len() - 1],
+        &bytes[1..],
+        b"not a bundle".as_slice(),
+    ] {
+        assert!(matches!(
+            orange_host::Bundle::from_bytes(damaged),
+            Err(HostError::Document(_))
+        ));
+    }
+    let _ = std::fs::remove_dir_all(&directory);
+}
