@@ -42,9 +42,28 @@ and returns status, response content type and response bytes;
 `org.orange.net/ws-send-bytes` and the entry `org.orange.net/ws-binary` carry binary
 WebSocket messages. A graph can therefore exchange protobuf, gRPC-Web frames or a
 payload it encrypted itself. Not provided: HTTP/2, so native gRPC is not reachable;
-MQTT; request or response streaming; client certificates; OAuth flows and token
+request or response streaming; client certificates; OAuth flows and token
 refresh; per-request headers from the graph; secret rotation notices to open
 connections (a changed secret is used by connections opened afterwards).
+
+MQTT (2026-11-12; `orange-net`, FR-25 qualified for 3.1.1). Adapter
+`org.orange.net/mqtt` with settings `url` (`mqtt://host[:port]`, default port 1883, or
+`mqtts://` for TLS on 8883 with the bundled roots), `username`, `password`,
+`client_id` (generated when absent), `topics` (up to 64 filters, `+` and `#`
+allowed), `qos` (0 or 1, default 0) and `keep_alive_s` (5 to 3,600, default 30).
+Nodes `mqtt-publish` (`topic`, `text`, `retain`) and `mqtt-publish-bytes` (`topic`,
+`data`, `retain`) queue a message, at most 256 waiting; entries `mqtt-message`
+(payload `[topic, text]`, fired for UTF-8 payloads) and `mqtt-binary` (payload bytes,
+fired for every message). The client is this crate's own: one thread per connection
+that connects when a flow has attached its triggers, subscribes, pings at half the
+keep-alive, treats twice the keep-alive without a packet as a lost connection,
+reconnects with backoff from 250 ms to 5 s and subscribes again. With `qos` 1 a
+published message is kept until the broker acknowledges it and is sent again with the
+duplicate flag after a reconnect, so a subscriber can receive it twice; received
+messages are acknowledged after they are handed to the entries. Every connection is a
+clean session. Not provided: MQTT 5, quality of service 2, wills, persistent sessions,
+client certificates, WebSocket transport, a per-node topic filter (subscriptions belong
+to the connection), and messages over 8 MiB.
 
 Files (2026-11-12; `orange-files`, package `org.orange.files`). A
 `org.orange.files/folder` connection has settings `path` (an existing directory),

@@ -56,6 +56,8 @@ K02b (2026-11-08) adds the `sdk/` workspace: `sdk/wit` (the versioned `orange:ex
 
 Native plugin libraries (2026-11-11) add app/crates/orange-native (normal edge to orange-sdk; `libloading` 0.9.0, ISC) and app/crates/orange-plugin-example, a `cdylib` member depending on orange-sdk only. Both replace the workspace lint table with their own, identical except `unsafe_code = "deny"`. orange-sdk gains a build script that records the compiler and target. orange-cli depends on orange-native.
 
+MQTT (2026-11-12): orange-net depends directly on `rustls` 0.23.46 (features `ring`, `std`, `tls12`) and `webpki-roots` 1.0.11, both already in the tree for HTTPS and WSS; the MQTT client itself is first-party code with no MQTT library.
+
 Files and vault (2026-11-12) add app/crates/orange-files (service package on orange-sdk, no third-party dependency beyond serde_json) and app/crates/orange-vault (orange-sdk and `keyring` 3.6.3, MIT OR Apache-2.0, features `apple-native`, `windows-native`, `linux-native`; no D-Bus or OpenSSL). orange-cli depends on both. orange-sdk gains `SecretStore`.
 
 Signed feeds, FLAC and component access (2026-11-12): orange-net depends directly on `ring` 0.17.14 (already in the tree as the TLS provider) for Ed25519 verification and SHA-256; orange-audio adds `claxon` 0.4.3 (Apache-2.0, no dependencies) for FLAC. orange-guest gains no dependency: file access uses the standard library and HTTPS goes through a client the application supplies.

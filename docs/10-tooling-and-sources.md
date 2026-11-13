@@ -1,5 +1,27 @@
 # Tooling, environment and research register
 
+## MQTT — 2026-11-12
+
+Source: MQTT 3.1.1 (OASIS standard) packet layouts for CONNECT, CONNACK, PUBLISH,
+PUBACK, SUBSCRIBE, SUBACK, PINGREQ, PINGRESP and DISCONNECT. The client is written in
+`orange-net`; `rumqttc` was not adopted because it brings an async runtime into a
+crate whose other clients are blocking. TLS uses `rustls` 0.23.46
+(`ClientConfig::builder_with_provider`, `StreamOwned`) with `webpki-roots` 1.0.11.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,788 passed, 0 failed, 20 ignored |
+| `cargo test -p orange-net --test mqtt`, three runs | Pass each time |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Limit of this evidence: the broker in the tests is written in the test file from the
+same reading of the standard as the client, so a shared misreading would not be
+caught. No real broker was contacted and `mqtts://` was not exercised. The ignored
+test `a_real_broker_delivers_what_the_graph_publishes` runs the same graph against a
+broker named in `ORANGE_MQTT_BROKER`.
+
 ## Files, credentials, network payloads, persistent variables, documents and reuse — 2026-11-12
 
 Versions and sources: `keyring` 3.6.3 (`Entry::new`, `set_password`, `get_password`,
