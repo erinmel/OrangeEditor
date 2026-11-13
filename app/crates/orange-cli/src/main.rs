@@ -33,7 +33,7 @@ usage:
   orange enable <package-id> --store <dir>
   orange disable <package-id> --store <dir>
   orange remove <package-id> <version> --store <dir>
-  orange updates [--apply] [--grant-log] --store <dir>
+  orange updates [--apply] [--signed-only] [--grant-log] --store <dir>
   orange publish <graph.json> <function> <package-id> <version> <node-name> <out.orangeplug>
   orange export <graph.json> <out.orangegraph> --store <dir>
   orange import <in.orangegraph> <graph.json> [--apply] [--store <dir>]
@@ -80,7 +80,8 @@ without `--package`.
 it back; both need `--store`, where the choice is kept. `remove` takes one out of the
 store. `updates` reads the update feed each package names and lists newer releases;
 with `--apply` it downloads each, checks its digest against the feed and installs it.
-A package that names a signing key is updated only from a feed that key signed. A
+A package that names a signing key is updated only from a feed that key signed; with
+`--signed-only` a package that names no key is not updated at all. A
 newer native plugin library built for this program replaces the loaded one in its
 `--plugins` directory and loads at the next start. Packages are installed at your own risk: their code is not reviewed.
 
@@ -148,6 +149,7 @@ pub(crate) struct Arguments {
     pub audio: bool,
     pub files: bool,
     pub apply: bool,
+    pub signed_only: bool,
     pub plugins: Vec<String>,
     pub plugin_data: Option<String>,
     pub watch: bool,
@@ -170,6 +172,7 @@ fn arguments() -> Result<Arguments, String> {
         audio: true,
         files: true,
         apply: false,
+        signed_only: false,
         plugins: Vec::new(),
         plugin_data: None,
         watch: false,
@@ -200,6 +203,7 @@ fn arguments() -> Result<Arguments, String> {
             "--no-audio" => parsed.audio = false,
             "--no-files" => parsed.files = false,
             "--apply" => parsed.apply = true,
+            "--signed-only" => parsed.signed_only = true,
             "--plugins" => parsed
                 .plugins
                 .push(words.next().ok_or("--plugins needs a directory")?),
@@ -262,12 +266,7 @@ fn command(words: &[String]) -> Result<ExitCode, Stop> {
         "enable" | "disable" => switch(host, &arguments)?,
         "remove" => remove(host, &arguments.graphs)?,
         "updates" => {
-            return Ok(updates(
-                host,
-                arguments.apply,
-                arguments.grants,
-                &started.plugin_files,
-            ));
+            return Ok(updates(host, &arguments, &started.plugin_files));
         }
         _ => graphs(&mut started, &arguments)?,
     }

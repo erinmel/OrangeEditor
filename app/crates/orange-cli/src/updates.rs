@@ -21,10 +21,10 @@ pub(crate) fn feed(source: &orange_host::UpdateSource) -> Result<orange_host::Up
 /// target for native plugins. `plugins` maps a loaded plugin's ID to its file.
 pub(crate) fn updates(
     host: &mut Host,
-    apply: bool,
-    grants: Grants,
+    arguments: &Arguments,
     plugins: &[(String, PathBuf)],
 ) -> ExitCode {
+    let (apply, grants) = (arguments.apply, arguments.grants);
     // (release, the plugin file it replaces)
     let mut found: Vec<(orange_host::Release, Option<PathBuf>)> = Vec::new();
     let mut failed = false;
@@ -32,6 +32,14 @@ pub(crate) fn updates(
         let Some(source) = package.update() else {
             continue;
         };
+        if arguments.signed_only && source.key().is_none() {
+            eprintln!(
+                "{} {}: its feed is not signed; not checked (--signed-only)",
+                package.id, package.version
+            );
+            failed = true;
+            continue;
+        }
         let file = plugins
             .iter()
             .find(|(id, _)| id == package.id)

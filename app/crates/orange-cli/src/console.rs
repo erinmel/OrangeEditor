@@ -6,11 +6,15 @@ pub(crate) fn print(event: &HostEvent, names: &Names) {
     match &event.kind {
         FlowEvent::State(state) => println!("[{flow}] state {state:?}"),
         FlowEvent::Node(step) => match &step.fault {
-            None => println!("[{flow}] {}: {:?}", names.node(&step.node), step.outcome),
-            Some(fault) => println!(
-                "[{flow}] {}: {:?}, fault {} from {}",
+            None => println!(
+                "[{flow}] {}: {}",
                 names.node(&step.node),
-                step.outcome,
+                said(step.outcome)
+            ),
+            Some(fault) => println!(
+                "[{flow}] {}: {}, fault {} from {}",
+                names.node(&step.node),
+                said(step.outcome),
                 fault.fault.code,
                 names.node(&fault.source)
             ),
