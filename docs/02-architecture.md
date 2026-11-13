@@ -88,6 +88,19 @@ entry fires as for a graph write, and a paused run takes the value without firin
 no flow runs. Not stored: node state, local variables, and anything of a flow that
 ends between two turns' writes and the save that follows them.
 
+Binding hand-written documents (2026-11-13): `Host::bind(json)` completes a document
+whose package nodes carry only `definition_id`, `definition_version`, `config`,
+`inputs` and `type_pins`. Each root node without a `signature` whose definition is
+outside the core language is placed through the same path an editor uses
+(`new_node_edit`), which records the host's provider for it, the package lock entry
+and the signature snapshot; an entry node without an `activation` gets a queue of
+sixteen that faults when full; other fields the author wrote are kept. Bound nodes and
+the rest of the document are untouched, so binding twice gives the same text. Nodes
+inside function bodies are not bound. `orange bind` saves the result over the file,
+keeping the previous version as `.bak`, and prints the remaining diagnostics.
+`orange run --watch` observes each flow and prints `FlowEvent::Variables` and
+`FlowEvent::Ports`.
+
 Documents and reuse (2026-11-12): `save_document` refuses text that is not a
 document, keeps the replaced file as `<file>.bak`, writes through a temporary file and
 removes the autosave; `autosave_document` writes `<file>.autosave` only;

@@ -1,5 +1,41 @@
 # Tooling, environment and research register
 
+## Real use from the terminal — 2026-11-13
+
+Aim: use the product as a person without the editor would, on the merged `dev`
+(release build, Windows 11), with graphs written as JSON by hand.
+
+Finding: a hand-written graph with any package node was refused (`SignatureMissing`),
+because the provider, package lock and signature snapshot can only come from the
+registry. There was no way to produce them except from Rust. `Host::bind` and
+`orange bind` were added; the runs below use graphs written unbound and then bound.
+A second finding: a terminal run showed node steps but no values; `--watch` was added.
+
+| Scenario | What ran | Result |
+|---|---|---|
+| Files | Manual trigger, then `write-text` into a declared folder | The file was written with the given text |
+| Automation on files | `on-change` on one folder, `read-text` of the changed path, `write-text` into another folder; a file was dropped into the first folder by the shell while the graph ran | The copy appeared in the second folder with the same content |
+| Timer | `on-timer` every 300 ms, `append-text` | 6 lines in 2 s |
+| Request to a real host | `http-request` GET `https://example.com/`, response written to a file | Status route taken; the 577-byte page with its title was saved |
+| Audio on the real device | `play` of a generated 0.4 s WAV at gain 0.15 on the default output (the machine's headphones), then a marker file | The node continued after the sound and the marker was written; the same with the MP3 fixture. Whether it was audible was not observed |
+| WebSocket to a real host | `ws-message` appended to a file and `ws-send` on a trigger, against `wss://echo.websocket.org` | The server's greeting and the echo of the sent text were both appended |
+| Watching values | `run --watch` on the request graph and the example graph | The response on the wire and the variable's values were printed |
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,799 passed, 0 failed, 20 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+What using it showed that is still rough: nodes and variables are named by 36-character
+IDs in every command and every line of output, with no names; a manual trigger needs
+the entry's full ID; a run prints steps as `node <id> Then` rather than what happened;
+durations such as a timer's interval are written in nanoseconds as text; a float input
+is written as 16 hexadecimal digits; an error in a hand-written graph is reported as a
+debug dump of the diagnostic. These are terminal and format ergonomics, not failures
+of the runtime.
+
 ## Performance check and duplication removal — 2026-11-13
 
 Performance. `orange-measure` (release, budget 64, warm-up 3, 15 runs) was built at
