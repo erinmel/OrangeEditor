@@ -20,7 +20,7 @@ const policy = {
   // Tests compose guest kernels with the bundled resolver and run guest effects in a run.
   'orange-guest': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-packages', 'orange-sandbox'], dev: ['orange-bundled', 'orange-compiler', 'orange-runtime']},
   // Session host: composes every layer into running flows. Front ends depend on it alone.
-  'orange-host': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-compiler', 'orange-runtime', 'orange-bundled', 'orange-packages', 'orange-guest', 'orange-sdk']},
+  'orange-host': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-compiler', 'orange-runtime', 'orange-bundled', 'orange-packages', 'orange-guest', 'orange-sdk'], dev: ['orange-testkit']},
   // Plugin SDK: the traits and types a native plugin crate implements. No package
   // store, guest engine or front end.
   'orange-sdk': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-runtime']},
@@ -29,20 +29,22 @@ const policy = {
   'orange-cli': {core: false, normal: ['orange-host', 'orange-net', 'orange-audio', 'orange-native', 'orange-vault', 'orange-files']},
   // Base network service package: the only crate with a network client. It is built on
   // the plugin SDK alone; its tests run it in a host.
-  'orange-net': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
+  'orange-net': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
   // Loads native plugin libraries into service packages; the only crate with unsafe code.
-  'orange-native': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
+  'orange-native': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
+  // Test support for integration tests; only ever a development dependency.
+  'orange-testkit': {core: false, normal: ['orange-model']},
   // File access confined to one directory; no first-party or third-party dependency.
   'orange-sandbox': {core: false, normal: []},
   // Base file service package, built on the plugin SDK alone; its tests run it in a host.
-  'orange-files': {core: false, normal: ['orange-sdk', 'orange-sandbox'], dev: ['orange-host', 'orange-model']},
+  'orange-files': {core: false, normal: ['orange-sdk', 'orange-sandbox'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
   // Credential stores behind the SDK's SecretStore; the only crate with an OS keyring library.
   'orange-vault': {core: false, normal: ['orange-sdk']},
   // Example native plugin library, loaded by orange-native's tests.
   'orange-plugin-example': {core: false, normal: ['orange-sdk']},
   // Base audio service package: the only crate with an audio device library. Built on
   // the plugin SDK alone; its tests run it in a host.
-  'orange-audio': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
+  'orange-audio': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model', 'orange-testkit']},
 };
 // UI, window, renderer and engine frameworks that graph-core crates must never depend on
 // (ADR-01, ADR-02, ADR-21). Host applications may use them.

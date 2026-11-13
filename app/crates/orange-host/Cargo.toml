@@ -19,5 +19,8 @@ serde_json.workspace = true
 sha2.workspace = true
 thiserror.workspace = true
 
+[dev-dependencies]
+orange-testkit = { path = "../orange-testkit", version = "=0.0.0" }
+
 [lints]
 workspace = true
