@@ -43,7 +43,7 @@ pub(crate) fn print(event: &HostEvent, names: &Names) {
 /// Applies an edited graph file to its running flow.
 pub(crate) fn reload(host: &mut Host, opened: &mut Opened) -> Result<(), String> {
     let (flow, path) = (opened.flow, opened.path.as_str());
-    let text = String::from_utf8(read(path)?).map_err(|_| format!("{path}: not UTF-8 text"))?;
+    let text = text(path)?;
     let names = Names::of(host, &text);
     match host.update(flow, &text) {
         Ok(updated) if !updated.changed => println!("[{flow}] nothing to apply"),

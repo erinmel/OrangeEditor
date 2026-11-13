@@ -2,11 +2,13 @@
 //!
 //! This is the smallest front end of `orange-host`. It exists so a graph can be run and
 //! controlled without an editor, and as the reference for how any front end attaches.
+mod commands;
 mod console;
 mod credentials;
 mod names;
 mod updates;
 
+use commands::*;
 use console::*;
 use credentials::*;
 use names::*;
@@ -133,23 +135,23 @@ only if its manifest asks for it (`permissions`), and an install says what a pac
 asked for and was not given. A grant is given to the
 packages installed by that command and is kept with them in the store. `--for` stops after a time.";
 
-struct Arguments {
-    command: String,
-    graphs: Vec<String>,
-    packages: Vec<String>,
-    shared: Vec<[String; 3]>,
-    grants: Grants,
-    duration: Option<Duration>,
-    store: Option<String>,
-    base_nodes: bool,
-    network: bool,
-    audio: bool,
-    files: bool,
-    apply: bool,
-    plugins: Vec<String>,
-    plugin_data: Option<String>,
-    watch: bool,
-    state: Option<String>,
+pub(crate) struct Arguments {
+    pub command: String,
+    pub graphs: Vec<String>,
+    pub packages: Vec<String>,
+    pub shared: Vec<[String; 3]>,
+    pub grants: Grants,
+    pub duration: Option<Duration>,
+    pub store: Option<String>,
+    pub base_nodes: bool,
+    pub network: bool,
+    pub audio: bool,
+    pub files: bool,
+    pub apply: bool,
+    pub plugins: Vec<String>,
+    pub plugin_data: Option<String>,
+    pub watch: bool,
+    pub state: Option<String>,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -222,13 +224,6 @@ fn read(path: &str) -> Result<Vec<u8>, String> {
     std::fs::read(path).map_err(|error| format!("{path}: {error}"))
 }
 
-fn share(host: &mut Host, id: &str, adapter: &str, settings: &[u8]) -> Result<(), String> {
-    let id = id.parse().map_err(|_| "not a connection id".to_owned())?;
-    let settings = orange_host::settings_from_json(settings).map_err(|error| error.to_string())?;
-    host.share_connection(id, adapter, settings)
-        .map_err(|error| error.to_string())
-}
-
 fn report(path: &str, error: &HostError, names: &Names) {
     eprintln!("{path}: {error}");
     if let HostError::Invalid(diagnostics) = error {
@@ -238,582 +233,59 @@ fn report(path: &str, error: &HostError, names: &Names) {
     }
 }
 
-fn collect(root: &Path, at: &Path, files: &mut Vec<(String, Vec<u8>)>) -> Result<(), String> {
-    let failed = |error: std::io::Error| format!("{}: {error}", at.display());
-    for entry in std::fs::read_dir(at).map_err(failed)? {
-        let path = entry.map_err(failed)?.path();
-        if path.is_dir() {
-            collect(root, &path, files)?;
-            continue;
-        }
-        let relative = path.strip_prefix(root).map_err(|error| error.to_string())?;
-        let name: Vec<_> = relative
-            .components()
-            .map(|part| part.as_os_str().to_string_lossy())
-            .collect();
-        let name = name.join("/");
-        if name != "manifest.json" {
-            files.push((name, read(&path.to_string_lossy())?));
-        }
+fn command(words: &[String]) -> Result<ExitCode, Stop> {
+    let (name, rest) = match words {
+        [name, rest @ ..] => (name.as_str(), rest),
+        [] => return Err(Stop::Usage("missing command".into())),
+    };
+    // Commands that need no host.
+    match name {
+        "publish" => return publish(rest).map(|()| ExitCode::SUCCESS),
+        "oauth" => return oauth(rest).map(|()| ExitCode::SUCCESS),
+        "pack" => return pack(rest).map(|()| ExitCode::SUCCESS),
+        "devices" => return devices().map(|()| ExitCode::SUCCESS),
+        "feed" => return Ok(feed_command(rest)),
+        "secret" => return Ok(secret(rest)),
+        "check" | "run" | "nodes" | "packages" | "remove" | "updates" | "enable" | "disable"
+        | "bind" | "export" | "import" => {}
+        _ => return Err(Stop::Usage(format!("unknown command `{name}`"))),
     }
-    Ok(())
-}
-
-fn pack(directory: &str, output: &str) -> Result<usize, String> {
-    let root = Path::new(directory);
-    let manifest = read(&root.join("manifest.json").to_string_lossy())?;
-    let mut files = Vec::new();
-    collect(root, root, &mut files)?;
-    let archive = orange_host::pack(&manifest, &files).map_err(|error| error.to_string())?;
-    std::fs::write(output, &archive).map_err(|error| format!("{output}: {error}"))?;
-    Ok(files.len())
-}
-
-/// The network client of installed packages that hold the `http` grant.
-#[derive(Debug)]
-struct PluginHttp;
-impl orange_host::HttpClient for PluginHttp {
-    fn send(
-        &self,
-        request: &orange_host::HttpRequest,
-    ) -> Result<orange_host::HttpResponse, String> {
-        let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
-        orange_net::fetch(
-            &request.method,
-            &request.url,
-            &request.headers,
-            &request.body,
-            limit,
-        )
-        .map(|(status, body)| orange_host::HttpResponse { status, body })
+    let arguments = arguments().map_err(Stop::Usage)?;
+    let mut started = start(&arguments)?;
+    let host = &mut started.host;
+    match name {
+        "packages" => packages(host),
+        "nodes" => nodes(host),
+        "bind" => bind(host, &arguments.graphs)?,
+        "export" => export(host, &arguments.graphs)?,
+        "import" => import(host, &arguments)?,
+        "enable" | "disable" => switch(host, &arguments)?,
+        "remove" => remove(host, &arguments.graphs)?,
+        "updates" => {
+            return Ok(updates(
+                host,
+                arguments.apply,
+                arguments.grants,
+                &started.plugin_files,
+            ));
+        }
+        _ => graphs(&mut started, &arguments)?,
     }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn main() -> ExitCode {
     let words: Vec<String> = std::env::args().skip(1).collect();
-    if words.first().map(String::as_str) == Some("publish") {
-        let [_, graph, function, package, version, node, output] = &words[..] else {
-            eprintln!(
-                "publish needs a graph file, a function, a package ID, a version, a node name and an output file\n{USAGE}"
-            );
-            return ExitCode::from(2);
-        };
-        let publish = orange_host::Publish {
-            package,
-            version,
-            node,
-            label: None,
-        };
-        let published = read(graph)
-            .and_then(|bytes| String::from_utf8(bytes).map_err(|_| format!("{graph}: not text")))
-            .and_then(|text| {
-                orange_host::publish_function(&text, function, &publish)
-                    .map_err(|error| format!("{graph}: {error}"))
-            })
-            .and_then(|archive| {
-                std::fs::write(output, archive).map_err(|error| format!("{output}: {error}"))
-            });
-        return match published {
-            Ok(()) => {
-                println!("{output}: node {package}/{node} {version}");
-                ExitCode::SUCCESS
-            }
-            Err(message) => {
-                eprintln!("{message}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if words.first().map(String::as_str) == Some("oauth") {
-        let [action, settings, name] = &words[1..] else {
-            eprintln!("oauth needs `login <settings.json> <name>`\n{USAGE}");
-            return ExitCode::from(2);
-        };
-        if action != "login" {
-            eprintln!("unknown oauth action `{action}`\n{USAGE}");
-            return ExitCode::from(2);
-        }
-        return match oauth_login(settings, name) {
-            Ok(()) => ExitCode::SUCCESS,
-            Err(message) => {
-                eprintln!("{message}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if words.first().map(String::as_str) == Some("feed") {
-        return feed_command(&words[1..]);
-    }
-    if words.first().map(String::as_str) == Some("secret") {
-        return secret(&words[1..]);
-    }
-    if words.first().map(String::as_str) == Some("pack") {
-        let [_, directory, output] = &words[..] else {
-            eprintln!(
-                "pack needs a directory and an output file
-{USAGE}"
-            );
-            return ExitCode::from(2);
-        };
-        return match pack(directory, output) {
-            Ok(files) => {
-                println!("{output}: manifest and {files} files");
-                ExitCode::SUCCESS
-            }
-            Err(message) => {
-                eprintln!("{message}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    if words.first().map(String::as_str) == Some("devices") {
-        return match orange_audio::devices() {
-            Ok(devices) => {
-                for name in devices.outputs {
-                    println!("output  {name}");
-                }
-                for name in devices.inputs {
-                    println!("input   {name}");
-                }
-                ExitCode::SUCCESS
-            }
-            Err(message) => {
-                eprintln!("{message}");
-                ExitCode::FAILURE
-            }
-        };
-    }
-    let arguments = match arguments() {
-        Ok(arguments)
-            if matches!(
-                arguments.command.as_str(),
-                "check"
-                    | "run"
-                    | "nodes"
-                    | "packages"
-                    | "remove"
-                    | "updates"
-                    | "enable"
-                    | "disable"
-                    | "bind"
-                    | "export"
-                    | "import"
-            ) =>
-        {
-            arguments
-        }
-        Ok(arguments) => {
-            eprintln!("unknown command `{}`\n{USAGE}", arguments.command);
-            return ExitCode::from(2);
-        }
-        Err(message) => {
+    match command(&words) {
+        Ok(code) => code,
+        Err(Stop::Usage(message)) => {
             eprintln!("{message}\n{USAGE}");
-            return ExitCode::from(2);
+            ExitCode::from(2)
         }
-    };
-    let mut services = Vec::new();
-    let mut plugin_files = Vec::new();
-    if arguments.network {
-        services.push(orange_net::package());
+        Err(Stop::Failed(message)) => {
+            eprintln!("{message}");
+            ExitCode::FAILURE
+        }
+        Err(Stop::Reported) => ExitCode::FAILURE,
     }
-    if arguments.files {
-        services.push(orange_files::package());
-    }
-    if arguments.audio {
-        services.push(orange_audio::package());
-    }
-    for directory in &arguments.plugins {
-        let loaded = match orange_native::load_directory(Path::new(directory)) {
-            Ok(loaded) => loaded,
-            Err(error) => {
-                eprintln!("{directory}: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-        for (path, package) in loaded {
-            match package {
-                Ok(package) => {
-                    println!("loaded plugin {} {}", package.id(), package.version());
-                    plugin_files.push((package.id().to_owned(), path));
-                    services.push(package);
-                }
-                // One bad library does not stop the others or the program.
-                Err(error) => eprintln!("{}: {error}", path.display()),
-            }
-        }
-    }
-    let options = HostOptions {
-        package_dir: arguments.store.as_ref().map(Into::into),
-        base_nodes: arguments.base_nodes,
-        // Without `--plugin-data`, package data lives beside the stored packages.
-        plugin_data_dir: arguments
-            .plugin_data
-            .as_ref()
-            .map(PathBuf::from)
-            .or_else(|| {
-                arguments
-                    .store
-                    .as_ref()
-                    .map(|store| Path::new(store).join("data"))
-            }),
-        // Without `--state`, persistent variables live beside the stored packages.
-        state_dir: arguments.state.as_ref().map(PathBuf::from).or_else(|| {
-            arguments
-                .store
-                .as_ref()
-                .map(|store| Path::new(store).join("state"))
-        }),
-        plugin_http: Some(std::sync::Arc::new(PluginHttp)),
-        secrets: Some(std::sync::Arc::new(orange_vault::OsVault::new(
-            VAULT_SERVICE,
-        ))),
-        ..HostOptions::default()
-    };
-    let (mut host, events) = match Host::with_services(options, services) {
-        Ok(started) => started,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
-    for (file, error) in host.not_restored() {
-        eprintln!("stored package {file} was not installed: {error}");
-    }
-    for path in &arguments.packages {
-        let installed = read(path).and_then(|bytes| {
-            // A package gets the grants it asks for that this command also gives.
-            let asks = host
-                .permissions(&bytes)
-                .map_err(|error| format!("{path}: {error}"))?;
-            let given = Grants {
-                log: asks.log && arguments.grants.log,
-                files: asks.files && arguments.grants.files,
-                http: asks.http && arguments.grants.http,
-            };
-            for (name, asked, granted) in [
-                ("log", asks.log, given.log),
-                ("files", asks.files, given.files),
-                ("http", asks.http, given.http),
-            ] {
-                if asked && !granted {
-                    println!("{path}: asks for `{name}`, not granted (--grant-{name})");
-                }
-            }
-            host.install(&bytes, given)
-                .map_err(|error| format!("{path}: {error}"))
-        });
-        match installed {
-            Ok(key) => println!("installed {} {}", key.id.as_str(), key.version.as_str()),
-            Err(message) => {
-                eprintln!("{message}");
-                return ExitCode::FAILURE;
-            }
-        }
-    }
-    match arguments.command.as_str() {
-        "packages" => {
-            for package in host.packages() {
-                println!(
-                    "{}	{}	{}	{}	{}",
-                    package.id,
-                    package.version,
-                    match package.kind {
-                        orange_host::PackageKind::Base => "base",
-                        orange_host::PackageKind::Native => "native",
-                        _ => "installed",
-                    },
-                    match (package.active, package.enabled) {
-                        (true, true) => "on",
-                        (false, false) => "disabled",
-                        (true, false) => "on, disabled from the next start",
-                        (false, true) => "off",
-                    },
-                    package.name().unwrap_or("-"),
-                );
-            }
-            return ExitCode::SUCCESS;
-        }
-        "bind" => {
-            let mut failed = false;
-            for path in &arguments.graphs {
-                let bound = read(path)
-                    .and_then(|bytes| {
-                        String::from_utf8(bytes).map_err(|_| format!("{path}: not text"))
-                    })
-                    .and_then(|text| host.bind(&text).map_err(|error| format!("{path}: {error}")))
-                    // A file a person edits is kept readable: one field per line.
-                    .and_then(|text| {
-                        serde_json::from_str::<serde_json::Value>(&text)
-                            .and_then(|graph| serde_json::to_string_pretty(&graph))
-                            .map_err(|error| format!("{path}: {error}"))
-                    })
-                    .and_then(|text| {
-                        orange_host::save_document(Path::new(path), &text)
-                            .map_err(|error| format!("{path}: {error}"))?;
-                        Ok(text)
-                    });
-                match bound.and_then(|text| {
-                    host.check(&text)
-                        .map_err(|error| format!("{path}: {error}"))
-                }) {
-                    Ok(diagnostics) if diagnostics.is_empty() => println!("{path}: bound, ok"),
-                    Ok(diagnostics) => {
-                        println!("{path}: bound, {} diagnostics", diagnostics.len());
-                        let text = read(path)
-                            .ok()
-                            .and_then(|bytes| String::from_utf8(bytes).ok())
-                            .unwrap_or_default();
-                        let names = Names::of(&host, &text);
-                        for diagnostic in diagnostics {
-                            println!("  {}", describe(&diagnostic, &names));
-                        }
-                        failed = true;
-                    }
-                    Err(message) => {
-                        eprintln!("{message}");
-                        failed = true;
-                    }
-                }
-            }
-            return if failed {
-                ExitCode::FAILURE
-            } else {
-                ExitCode::SUCCESS
-            };
-        }
-        "export" => {
-            let [graph, output] = &arguments.graphs[..] else {
-                eprintln!("export needs a graph file and an output file\n{USAGE}");
-                return ExitCode::from(2);
-            };
-            let exported = read(graph)
-                .and_then(|bytes| {
-                    String::from_utf8(bytes).map_err(|_| format!("{graph}: not text"))
-                })
-                .and_then(|text| {
-                    host.export(&text)
-                        .map_err(|error| format!("{graph}: {error}"))
-                })
-                .and_then(|(bundle, missing)| {
-                    std::fs::write(output, bundle.to_bytes())
-                        .map_err(|error| format!("{output}: {error}"))?;
-                    Ok((bundle.packages.len(), missing))
-                });
-            return match exported {
-                Ok((packages, missing)) => {
-                    println!("{output}: the graph and {packages} packages");
-                    for requirement in missing {
-                        println!(
-                            "not included: {} {} (not in the store)",
-                            requirement.package, requirement.version
-                        );
-                    }
-                    ExitCode::SUCCESS
-                }
-                Err(message) => {
-                    eprintln!("{message}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        "import" => {
-            let [bundle, output] = &arguments.graphs[..] else {
-                eprintln!("import needs a bundle file and an output graph file\n{USAGE}");
-                return ExitCode::from(2);
-            };
-            let imported = read(bundle).and_then(|bytes| {
-                orange_host::Bundle::from_bytes(&bytes)
-                    .map_err(|error| format!("{bundle}: {error}"))
-            });
-            let imported = match imported {
-                Ok(imported) => imported,
-                Err(message) => {
-                    eprintln!("{message}");
-                    return ExitCode::FAILURE;
-                }
-            };
-            // Packages are installed only on request: importing runs and grants nothing.
-            if arguments.apply {
-                for archive in &imported.packages {
-                    match host.install(archive, arguments.grants) {
-                        Ok(key) => {
-                            println!("installed {} {}", key.id.as_str(), key.version.as_str());
-                        }
-                        Err(error) => eprintln!("a package was not installed: {error}"),
-                    }
-                }
-            }
-            for requirement in host.requirements(&imported.document).unwrap_or_default() {
-                println!(
-                    "{} {}\t{}",
-                    requirement.package,
-                    requirement.version,
-                    if requirement.available {
-                        "available"
-                    } else {
-                        "missing"
-                    }
-                );
-            }
-            return match orange_host::save_document(Path::new(output), &imported.document) {
-                Ok(()) => {
-                    println!(
-                        "{output}: saved ({} packages in the bundle)",
-                        imported.packages.len()
-                    );
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("{output}: {error}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        "enable" | "disable" => {
-            let enable = arguments.command == "enable";
-            let [id] = &arguments.graphs[..] else {
-                eprintln!("{} needs a package ID\n{USAGE}", arguments.command);
-                return ExitCode::from(2);
-            };
-            if arguments.store.is_none() {
-                eprintln!(
-                    "{} needs --store, where the choice is kept",
-                    arguments.command
-                );
-                return ExitCode::from(2);
-            }
-            if !host.packages().any(|package| package.id == id) {
-                eprintln!("no package {id}");
-                return ExitCode::FAILURE;
-            }
-            return match host.set_enabled(id, enable) {
-                Ok(()) => {
-                    println!("{} {id}", if enable { "enabled" } else { "disabled" });
-                    ExitCode::SUCCESS
-                }
-                Err(error) => {
-                    eprintln!("{error}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        "remove" => {
-            let [id, version] = &arguments.graphs[..] else {
-                eprintln!(
-                    "remove needs a package ID and a version
-{USAGE}"
-                );
-                return ExitCode::from(2);
-            };
-            let found = host
-                .packages()
-                .any(|package| {
-                    package.kind == orange_host::PackageKind::Installed
-                        && package.id == id
-                        && package.version == version
-                })
-                .then(|| {
-                    Some(orange_host::PackageKey {
-                        id: id.parse().ok()?,
-                        version: version.parse().ok()?,
-                    })
-                })
-                .flatten();
-            let removed = found
-                .ok_or_else(|| format!("{id} {version} is not installed"))
-                .and_then(|key| host.uninstall(&key).map_err(|error| error.to_string()));
-            return match removed {
-                Ok(()) => {
-                    println!("removed {id} {version}");
-                    ExitCode::SUCCESS
-                }
-                Err(message) => {
-                    eprintln!("{message}");
-                    ExitCode::FAILURE
-                }
-            };
-        }
-        "updates" => return updates(&mut host, arguments.apply, arguments.grants, &plugin_files),
-        _ => {}
-    }
-    if arguments.command == "nodes" {
-        for info in host.nodes() {
-            let definition = &info.definition.definition;
-            println!(
-                "{}@{}	{}	{}	{}",
-                definition.id.as_str(),
-                definition.version,
-                info.label(),
-                info.category(),
-                info.provider
-                    .map_or("-", |provider| provider.package.as_str()),
-            );
-        }
-        return ExitCode::SUCCESS;
-    }
-    for [id, adapter, path] in &arguments.shared {
-        let shared = read(path).and_then(|bytes| share(&mut host, id, adapter, &bytes));
-        if let Err(message) = shared {
-            eprintln!("--share {id}: {message}");
-            return ExitCode::FAILURE;
-        }
-    }
-    let mut failed = false;
-    let mut flows = Vec::new();
-    for path in &arguments.graphs {
-        let text = match read(path).map(String::from_utf8) {
-            Ok(Ok(text)) => text,
-            Ok(Err(_)) => {
-                eprintln!("{path}: not UTF-8 text");
-                failed = true;
-                continue;
-            }
-            Err(message) => {
-                eprintln!("{message}");
-                failed = true;
-                continue;
-            }
-        };
-        let names = Names::of(&host, &text);
-        if arguments.command == "check" {
-            match host.check(&text) {
-                Ok(diagnostics) if diagnostics.is_empty() => println!("{path}: ok"),
-                Ok(diagnostics) => {
-                    report(path, &HostError::Invalid(diagnostics), &names);
-                    failed = true;
-                }
-                Err(error) => {
-                    report(path, &error, &names);
-                    failed = true;
-                }
-            }
-        } else {
-            match host.open(&text) {
-                Ok(flow) => {
-                    if arguments.watch {
-                        let _ = host.observe(flow, true);
-                    }
-                    println!("[{flow}] opened {path}");
-                    flows.push(Opened {
-                        flow,
-                        path: path.clone(),
-                        names,
-                    });
-                }
-                Err(error) => {
-                    report(path, &error, &names);
-                    failed = true;
-                }
-            }
-        }
-    }
-    if failed {
-        // Nothing runs unless everything asked for can; flows already opened are
-        // stopped when the host is dropped.
-        return ExitCode::FAILURE;
-    }
-    if arguments.command == "run" {
-        run(&mut host, &events, &mut flows, arguments.duration);
-    }
-    ExitCode::SUCCESS
 }

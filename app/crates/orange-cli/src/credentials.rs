@@ -87,7 +87,7 @@ pub(crate) fn oauth_login(settings: &str, name: &str) -> Result<(), String> {
         return Err(format!("{name}: the credential name is not valid"));
     }
     let vault = orange_vault::OsVault::new(VAULT_SERVICE);
-    let file = String::from_utf8(read(settings)?).map_err(|_| format!("{settings}: not text"))?;
+    let file = text(settings)?;
     let file: serde_json::Value =
         serde_json::from_str(&file).map_err(|_| format!("{settings}: not JSON"))?;
     // A value is text, or a number such as the port.
