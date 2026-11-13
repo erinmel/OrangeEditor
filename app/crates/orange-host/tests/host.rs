@@ -1470,3 +1470,97 @@ fn a_bundle_carries_a_document_with_its_packages_and_an_import_previews_what_is_
     }
     let _ = std::fs::remove_dir_all(&directory);
 }
+
+#[test]
+fn a_function_of_a_document_is_published_as_a_node_other_documents_use() {
+    // A document in which the author built "double and remember" as a function.
+    let port = |name: &str, direction: &str| json!({"port_id": name, "direction": direction, "kind": "data", "type": I64});
+    let mut keep = core(203, "set-variable");
+    keep["config"] = json!({"variable": id(210)});
+    let mut read = core(204, "get-variable");
+    read["config"] = json!({"variable": id(210)});
+    let function = json!({"id": id(200), "name": "Keep value", "kind": "action",
+    "inputs": [port("value", "input")],
+    "outputs": [port("result", "output")],
+    "nodes": [core(201, "function-entry"), keep, read, core(205, "return")],
+    "edges": [
+        edge(201, 201, "then", 203, "in"),
+        edge(202, 201, "value", 203, "value"),
+        edge(203, 203, "then", 205, "in"),
+        edge(204, 204, "value", 205, "result"),
+    ]});
+    let mut authored: Json = serde_json::from_str(&to_json(&empty(7)).unwrap()).unwrap();
+    authored["functions"] = json!([function]);
+    authored["variables"] = json!([
+        {"id": id(210), "name": "kept", "type": I64, "scope": "local",
+            "init": {"type": I64, "value": "0"}},
+        {"id": id(TOTAL), "name": "total", "type": I64, "scope": "run"}
+    ]);
+    let authored = to_json(&from_json(&authored.to_string()).unwrap()).unwrap();
+
+    let publish = orange_host::Publish {
+        package: "org.example.made",
+        version: "0.1.0",
+        node: "keep-value",
+        label: None,
+    };
+    let archive = orange_host::publish_function(&authored, "Keep value", &publish).unwrap();
+    // By ID too; a function that does not exist, or a bad node name, is refused.
+    assert!(orange_host::publish_function(&authored, &id(200), &publish).is_ok());
+    assert!(orange_host::publish_function(&authored, "nothing", &publish).is_err());
+    let bad = orange_host::Publish {
+        node: "Keep Value",
+        ..publish
+    };
+    assert!(orange_host::publish_function(&authored, "Keep value", &bad).is_err());
+    // A function that reaches a variable of the document itself cannot stand alone.
+    let reaching = authored.replace(
+        &format!(r#""name":"kept","type":"{I64}","scope":"local""#),
+        &format!(r#""name":"kept","type":"{I64}","scope":"run""#),
+    );
+    assert_ne!(reaching, authored);
+    assert!(orange_host::publish_function(&reaching, "Keep value", &publish).is_err());
+
+    // Someone else installs the package and uses the node with no trace of the graph.
+    let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+    let key = host.install(&archive, Grants::default()).unwrap();
+    assert_eq!(
+        (key.id.as_str(), key.version.as_str()),
+        ("org.example.made", "0.1.0")
+    );
+    const MADE: &str = "org.example.made/keep-value";
+    let listed = host
+        .nodes()
+        .find(|info| info.definition.definition.id.as_str() == MADE)
+        .unwrap();
+    assert_eq!(listed.label(), "Keep value");
+    let mut document = empty(8);
+    let mut call = NewNode::new(
+        node(3),
+        DefinitionRef {
+            id: MADE.parse().unwrap(),
+            version: 1,
+        },
+    );
+    call.inputs = serde_json::from_value(json!({"value": {"type": I64, "value": "21"}})).unwrap();
+    let edit = new_node_edit(&document, host.registry(), call).unwrap();
+    let _ = document.apply(edit.commands).unwrap();
+    let saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    let mut set = core(4, "set-variable");
+    set["config"] = json!({"variable": id(TOTAL)});
+    let text = with_total(
+        saved,
+        vec![core(1, "on-manual"), set],
+        json!([
+            edge(1, 1, "then", 3, "in"),
+            edge(2, 3, "then", 4, "in"),
+            edge(3, 3, "result", 4, "value"),
+        ]),
+    );
+    assert!(host.check(&text).unwrap().is_empty());
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the published node's result", || {
+        read_total(&host, flow) == Some(Value::I64(21))
+    });
+}

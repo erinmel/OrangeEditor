@@ -22,6 +22,7 @@ usage:
   orange disable <package-id> --store <dir>
   orange remove <package-id> <version> --store <dir>
   orange updates [--apply] [--grant-log] --store <dir>
+  orange publish <graph.json> <function> <package-id> <version> <node-name> <out.orangeplug>
   orange export <graph.json> <out.orangegraph> --store <dir>
   orange import <in.orangegraph> <graph.json> [--apply] [--store <dir>]
   orange devices
@@ -74,6 +75,9 @@ A native plugin runs with all of this program's rights; load only what you trust
 The base file package is built in: a connection with adapter `org.orange.files/folder`
 and a `path` setting names a directory, and the file nodes read, write, list and watch
 files inside it and nowhere else.
+
+`publish` turns a function of a graph (named by its name or ID) into a package with
+one node made of it, which any graph can then use after `--package`.
 
 `export` writes a graph together with the stored packages it uses as one file.
 `import` saves the graph from such a file and lists the packages it needs and whether
@@ -559,6 +563,39 @@ impl orange_host::HttpClient for PluginHttp {
 
 fn main() -> ExitCode {
     let words: Vec<String> = std::env::args().skip(1).collect();
+    if words.first().map(String::as_str) == Some("publish") {
+        let [_, graph, function, package, version, node, output] = &words[..] else {
+            eprintln!(
+                "publish needs a graph file, a function, a package ID, a version, a node name and an output file\n{USAGE}"
+            );
+            return ExitCode::from(2);
+        };
+        let publish = orange_host::Publish {
+            package,
+            version,
+            node,
+            label: None,
+        };
+        let published = read(graph)
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|_| format!("{graph}: not text")))
+            .and_then(|text| {
+                orange_host::publish_function(&text, function, &publish)
+                    .map_err(|error| format!("{graph}: {error}"))
+            })
+            .and_then(|archive| {
+                std::fs::write(output, archive).map_err(|error| format!("{output}: {error}"))
+            });
+        return match published {
+            Ok(()) => {
+                println!("{output}: node {package}/{node} {version}");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     if words.first().map(String::as_str) == Some("secret") {
         return secret(&words[1..]);
     }

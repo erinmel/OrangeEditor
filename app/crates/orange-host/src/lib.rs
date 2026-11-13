@@ -54,8 +54,8 @@ use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 pub use documents::{
-    Bundle, MAX_DOCUMENT_BYTES, Recovery, Requirement, autosave_document, discard_autosave,
-    recover_document, save_document,
+    Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,
+    discard_autosave, publish_function, recover_document, save_document,
 };
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};

@@ -188,3 +188,165 @@ impl Bundle {
         Ok(Self { document, packages })
     }
 }
+
+/// How a function of a document is published as a package node.
+#[derive(Debug, Clone, Copy)]
+pub struct Publish<'a> {
+    /// ID of the package to make, such as `org.example.tools`.
+    pub package: &'a str,
+    /// Version of the package.
+    pub version: &'a str,
+    /// Local name of the node, lowercase with hyphens: the node's ID is
+    /// `<package>/<node>`.
+    pub node: &'a str,
+    /// The node's display name; the function's own name when `None`.
+    pub label: Option<&'a str>,
+}
+
+/// Turns a function of a document into a package holding one node made of that
+/// function: logic built once in a graph becomes a typed node that any document can
+/// use, locked and versioned like a coded one. `function` is the function's ID or its
+/// name. The result is a `.orangeplug` archive; installing it checks the body.
+///
+/// The function must be an action or async function without type parameters. Its
+/// body may use only its own local variables, and at most one connection, which each
+/// use of the node then names. Package nodes inside the body keep their exact
+/// providers, so whoever installs the result needs those packages too.
+pub fn publish_function(
+    json: &str,
+    function: &str,
+    publish: &Publish<'_>,
+) -> Result<Vec<u8>, HostError> {
+    use serde_json::{Value as Json, json};
+    let refused = |reason: &str| HostError::Document(reason.to_owned());
+    if !is_document(json) {
+        return Err(refused("the text is not a document"));
+    }
+    let document: Json = serde_json::from_str(json).map_err(|_| refused("not JSON"))?;
+    let list = |value: &Json| value.as_array().cloned().unwrap_or_default();
+    let found = list(&document["functions"])
+        .into_iter()
+        .find(|candidate| candidate["id"] == function || candidate["name"] == function)
+        .ok_or_else(|| refused("the document has no such function"))?;
+    let kind = found["kind"].as_str().unwrap_or_default().to_owned();
+    let suspends = match kind.as_str() {
+        "action" => "never",
+        "async" => "maybe",
+        _ => return Err(refused("only an action or async function can be published")),
+    };
+    if !list(&found["type_params"]).is_empty() {
+        return Err(refused(
+            "a function with type parameters cannot be published",
+        ));
+    }
+    let slug = !publish.node.is_empty()
+        && publish.node.split('-').all(|part| {
+            !part.is_empty()
+                && part
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        });
+    if !slug {
+        return Err(refused(
+            "the node name must be lowercase words joined by hyphens",
+        ));
+    }
+
+    // What the body reaches outside itself: variables, a connection, package nodes.
+    let nodes = list(&found["nodes"]);
+    let mut variables = Vec::new();
+    let mut connection: Option<String> = None;
+    let (mut locks, mut signatures) = (Vec::new(), serde_json::Map::new());
+    for node in &nodes {
+        if let Some(id) = node["config"]["variable"].as_str() {
+            let declared = list(&document["variables"])
+                .into_iter()
+                .find(|variable| variable["id"] == id)
+                .filter(|variable| variable["scope"] == "local")
+                .ok_or_else(|| {
+                    refused("the function uses a variable that is not one of its local variables")
+                })?;
+            if !variables.contains(&declared) {
+                variables.push(declared);
+            }
+        }
+        if let Some(id) = node["config"]["connection"].as_str() {
+            if connection.as_deref().is_some_and(|other| other != id) {
+                return Err(refused("the function uses more than one connection"));
+            }
+            connection = Some(id.to_owned());
+        }
+        if let Some(provider) = node.get("provider") {
+            let lock = list(&document["package_lock"]).into_iter().find(|entry| {
+                entry["id"] == provider["package"] && entry["version"] == provider["version"]
+            });
+            if let Some(lock) = lock
+                && !locks.contains(&lock)
+            {
+                locks.push(lock);
+            }
+        }
+        if let Some(signature) = node["signature"].as_str()
+            && let Some(snapshot) = document["signatures"].get(signature)
+        {
+            let _ = signatures.insert(signature.to_owned(), snapshot.clone());
+        }
+    }
+
+    let id = format!("{}/{}", publish.package, publish.node);
+    let label = publish
+        .label
+        .or_else(|| found["name"].as_str())
+        .unwrap_or(publish.node);
+    let mut ports = list(&found["inputs"]);
+    for mut output in list(&found["outputs"]) {
+        if output["kind"] == "data" {
+            output["source"] = json!("execution");
+            output["available_on"] = json!(["then"]);
+        }
+        ports.push(output);
+    }
+    let mut definition = json!({
+        "definition_id": id,
+        "label": {"key": format!("{id}-label"), "fallback": label},
+        "definition_version": 1, "config_version": 1,
+        "kind": kind, "suspends": suspends, "determinism": "external",
+        "ports": ports
+    });
+    let mut graph = json!({
+        "format": crate::GRAPH_NODE_FORMAT, "format_version": 1,
+        "function": found, "variables": variables,
+        "signatures": signatures, "package_lock": locks
+    });
+    if let Some(connection) = connection {
+        definition["connection"] = json!(true);
+        graph["connection"] = json!(connection);
+    }
+    let publisher: Vec<&str> = publish.package.split('.').take(2).collect();
+    let manifest = json!({
+        "format": "orange.plugin", "format_version": 1,
+        "id": publish.package, "version": publish.version,
+        "publisher": publisher.join("."),
+        "about": {"name": label},
+        "host_api": {"major": 1, "min_minor": 0, "max_minor": 0},
+        "dependencies": [],
+        "contributions": {
+            "nodes": [id],
+            "providers": [{"slot": format!("node:{id}@1"), "id": crate::GRAPH_PROVIDER}]
+        },
+        "permissions": []
+    });
+    crate::pack(
+        manifest.to_string().as_bytes(),
+        &[
+            (
+                format!("nodes/{}.json", publish.node),
+                definition.to_string().into_bytes(),
+            ),
+            (
+                format!("graphs/{}.json", publish.node),
+                graph.to_string().into_bytes(),
+            ),
+        ],
+    )
+}
