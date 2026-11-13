@@ -20,6 +20,7 @@ mod flows;
 mod graphs;
 mod packages;
 mod persist;
+mod preview;
 mod services;
 mod state;
 mod variables;
@@ -83,6 +84,7 @@ pub use orange_sdk::{
     ServiceSource, Session, TARGET,
 };
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
+pub use preview::Previewed;
 pub use state::StoredVariable;
 
 /// Identifies one flow for the life of its host. Never reused.
@@ -621,6 +623,8 @@ pub struct Host {
     clock: Instant,
     flows: BTreeMap<FlowId, Flow>,
     next_flow: u64,
+    /// Made at the first preview.
+    preview: Option<preview::Engine>,
 }
 
 /// A stable identity for code compiled into this host, in the form package digests use.
@@ -781,6 +785,7 @@ impl Host {
             clock: Instant::now(),
             flows: BTreeMap::new(),
             next_flow: 1,
+            preview: None,
             options,
         };
         let mut host = host;

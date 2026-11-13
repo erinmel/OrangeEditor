@@ -27,6 +27,7 @@ usage:
   orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>]
   orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>] [--watch]
   orange bind  <graph.json>... [--package <file.orangeplug>]... [--store <dir>]
+  orange preview <graph.json> [<node> <port>]... [--package <file.orangeplug>]... [--store <dir>]
   orange pack  <package-dir> <out.orangeplug>
   orange nodes [--package <file.orangeplug>]... [--store <dir>]
   orange packages [--store <dir>]
@@ -41,6 +42,9 @@ usage:
   orange secret set <name> | remove <name> | check <name>
   orange feed key <name> | sign <feed.json> <name>
   orange oauth login <settings.json> <name>
+
+`preview` prints the values of outputs that follow from constants and pure nodes,
+without running anything: the outputs named, or those the document exports.
 
 Nodes and variables are shown and accepted by name. A node is called by its `name`
 field if the graph gives it one, otherwise by what its kind is called; a variable by
@@ -251,7 +255,7 @@ fn command(words: &[String]) -> Result<ExitCode, Stop> {
         "feed" => return Ok(feed_command(rest)),
         "secret" => return Ok(secret(rest)),
         "check" | "run" | "nodes" | "packages" | "remove" | "updates" | "enable" | "disable"
-        | "bind" | "export" | "import" => {}
+        | "bind" | "export" | "import" | "preview" => {}
         _ => return Err(Stop::Usage(format!("unknown command `{name}`"))),
     }
     let arguments = arguments().map_err(Stop::Usage)?;
@@ -261,6 +265,7 @@ fn command(words: &[String]) -> Result<ExitCode, Stop> {
         "packages" => packages(host),
         "nodes" => nodes(host),
         "bind" => bind(host, &arguments.graphs)?,
+        "preview" => preview(host, &arguments.graphs)?,
         "export" => export(host, &arguments.graphs)?,
         "import" => import(host, &arguments)?,
         "enable" | "disable" => switch(host, &arguments)?,
