@@ -4,8 +4,8 @@ use crate::{
     MAX_STREAM_LINE_BYTES, auth_headers, fault, oauth,
 };
 use orange_sdk::{
-    Call, ConnectionAdapter, Definition, EmitError, Emitter, KernelFault, Listeners, ServiceNode,
-    ServiceSource, Session, Value,
+    Call, ConnectionAdapter, Definition, EmitError, Emitter, KernelFault, Listeners, Renew,
+    ServiceNode, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -164,6 +164,13 @@ impl Session for HttpSession {
 pub(crate) struct HttpAdapter;
 impl ConnectionAdapter for HttpAdapter {
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String> {
+        self.open_renewing(settings, Renew::none())
+    }
+    fn open_renewing(
+        &self,
+        settings: &Map<String, Json>,
+        renew: Renew,
+    ) -> Result<Arc<dyn Session>, String> {
         let base_url = settings
             .get("base_url")
             .and_then(Json::as_str)
@@ -210,7 +217,7 @@ impl ConnectionAdapter for HttpAdapter {
             {
                 return Err("give `oauth` or another authorization, not both".into());
             }
-            Some(setting) => Some(oauth::OAuth::from_setting(setting)?),
+            Some(setting) => Some(oauth::OAuth::from_setting(setting, renew)?),
         };
         Ok(Arc::new(HttpSession {
             agent,

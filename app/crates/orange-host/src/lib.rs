@@ -82,7 +82,7 @@ pub use orange_sdk::{
     Call, ConnectionAdapter, EmitError, Emitter, SERVICE_PROVIDER, ServiceNode, ServicePackage,
     ServiceSource, Session, TARGET,
 };
-pub use orange_sdk::{SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
+pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use state::StoredVariable;
 
 /// Identifies one flow for the life of its host. Never reused.
@@ -347,39 +347,69 @@ pub struct Updated {
 fn with_secrets(
     secrets: Option<&Arc<dyn SecretStore>>,
     settings: &serde_json::Map<String, serde_json::Value>,
-) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+) -> Result<(serde_json::Map<String, serde_json::Value>, Renew), String> {
+    use serde_json::Value as Json;
+    // Each setting that named a credential, as a JSON pointer, with the name.
     fn resolve(
-        value: &mut serde_json::Value,
-        secrets: Option<&Arc<dyn SecretStore>>,
+        value: &mut Json,
+        at: &mut String,
+        store: Option<&Arc<dyn SecretStore>>,
+        named: &mut Vec<(String, String)>,
     ) -> Result<(), String> {
+        let mut inside = |part: &str, value: &mut Json, at: &mut String| {
+            let length = at.len();
+            at.push('/');
+            at.push_str(&part.replace('~', "~0").replace('/', "~1"));
+            let done = resolve(value, at, store, named);
+            at.truncate(length);
+            done
+        };
         match value {
-            serde_json::Value::String(text) => {
+            Json::String(text) => {
                 if let Some(name) = text.strip_prefix(SECRET_PREFIX) {
-                    let store = secrets.ok_or_else(|| {
+                    let store = store.ok_or_else(|| {
                         format!(
                             "it names credential `{name}` and the application has no credential store"
                         )
                     })?;
-                    *text = store
+                    let secret = store
                         .get(name)
                         .map_err(|error| format!("credential `{name}`: {error}"))?;
+                    named.push((at.clone(), name.to_owned()));
+                    *text = secret;
                 }
                 Ok(())
             }
-            serde_json::Value::Array(items) => {
-                items.iter_mut().try_for_each(|item| resolve(item, secrets))
-            }
-            serde_json::Value::Object(fields) => fields
-                .values_mut()
-                .try_for_each(|field| resolve(field, secrets)),
+            Json::Array(items) => items
+                .iter_mut()
+                .enumerate()
+                .try_for_each(|(index, item)| inside(&index.to_string(), item, at)),
+            Json::Object(fields) => fields
+                .iter_mut()
+                .try_for_each(|(name, field)| inside(name, field, at)),
             _ => Ok(()),
         }
     }
-    let mut resolved = settings.clone();
-    resolved
-        .values_mut()
-        .try_for_each(|value| resolve(value, secrets))?;
-    Ok(resolved)
+    let mut resolved = Json::Object(settings.clone());
+    let mut named = Vec::new();
+    resolve(&mut resolved, &mut String::new(), secrets, &mut named)?;
+    let Json::Object(resolved) = resolved else {
+        unreachable!("resolving keeps an object an object")
+    };
+    let renew = match secrets {
+        Some(store) if !named.is_empty() => {
+            let store = Arc::clone(store);
+            Renew::new(move |setting, secret| {
+                if let Some((_, name)) = named.iter().find(|(at, _)| at == setting) {
+                    // A store that refuses leaves the old secret: the connection keeps
+                    // working and the next start asks for a new sign-in.
+                    let _ = store.replace(name, secret);
+                }
+            })
+        }
+        _ => Renew::none(),
+    };
+    Ok((resolved, renew))
 }
 
 /// The grants a manifest's `permissions` section asks for: a list of `"log"`,
@@ -817,9 +847,10 @@ impl Host {
                 ConnectionScope::Graph => match previous.and_then(|opened| opened.get(&decl.id)) {
                     Some((before, session)) if before == decl => Arc::clone(session),
                     _ => {
-                        let settings = with_secrets(self.options.secrets.as_ref(), &decl.settings)
-                            .map_err(refused)?;
-                        adapter.open(&settings).map_err(refused)?
+                        let (settings, renew) =
+                            with_secrets(self.options.secrets.as_ref(), &decl.settings)
+                                .map_err(refused)?;
+                        adapter.open_renewing(&settings, renew).map_err(refused)?
                     }
                 },
                 ConnectionScope::Shared => {
@@ -835,10 +866,11 @@ impl Host {
                     match &shared.session {
                         Some(session) => Arc::clone(session),
                         None => {
-                            let settings =
+                            let (settings, renew) =
                                 with_secrets(self.options.secrets.as_ref(), &shared.settings)
                                     .map_err(refused)?;
-                            let session = adapter.open(&settings).map_err(refused)?;
+                            let session =
+                                adapter.open_renewing(&settings, renew).map_err(refused)?;
                             shared.session = Some(Arc::clone(&session));
                             session
                         }
