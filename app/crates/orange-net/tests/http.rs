@@ -528,6 +528,8 @@ fn a_binary_request_carries_the_connections_credential_and_returns_bytes() {
             "method": {"type": STRING, "value": "POST"},
             "path": {"type": STRING, "value": "/rpc"},
             "content_type": {"type": STRING, "value": "application/grpc-web+proto"},
+            "headers": {"type": "core/list@1<core/string@1>",
+                "value": ["X-Trace: abc-123", "Accept: application/x-protobuf"]},
             "content": {"type": "core/bytes@1", "value": "AP8BgA=="}
         }))
         .unwrap();
@@ -577,6 +579,7 @@ fn a_binary_request_carries_the_connections_credential_and_returns_bytes() {
         "{head}"
     );
     assert!(head.contains("x-client: orange"));
+    assert!(head.contains("x-trace: abc-123") && head.contains("accept: application/x-protobuf"));
     assert!(head.contains("content-type: application/grpc-web+proto"));
     assert_eq!(body, [0, 255, 1, 128]);
     assert_eq!(read(&host, flow, 100), Some(Value::I64(200)));

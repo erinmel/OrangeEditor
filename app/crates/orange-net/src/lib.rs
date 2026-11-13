@@ -42,7 +42,8 @@ pub const HTTP_REQUEST: &str = "org.orange.net/http-request";
 
 /// Sends one request with a binary body on an HTTP connection and returns the response
 /// as bytes, whatever it holds: protobuf, an encrypted payload, an image. Inputs
-/// `method`, `path`, `content_type` (empty for none) and `content`; outputs `status`,
+/// `method`, `path`, `content_type` (empty for none), `headers` (a list of `Name: value`
+/// lines sent with this request only) and `content`; outputs `status`,
 /// `response_type` (the response's content type) and `response`.
 pub const HTTP_REQUEST_BYTES: &str = "org.orange.net/http-request-bytes";
 /// Queues one binary message on a WebSocket connection. Input `data`.
@@ -216,14 +217,19 @@ impl std::fmt::Debug for HttpSession {
     }
 }
 impl HttpSession {
-    /// Sends one request with the connection's headers.
+    /// Sends one request with the connection's headers, then `extra`, each a
+    /// `Name: value` line.
     fn send(
         &self,
         method: &str,
         path: &str,
         content_type: &str,
+        extra: &[Arc<String>],
         body: Vec<u8>,
     ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
+        if extra.len() > MAX_HEADERS {
+            return Err(BAD_REQUEST);
+        }
         let method = Method::from_bytes(method.as_bytes()).map_err(|_| BAD_REQUEST)?;
         if !path.is_empty() && !path.starts_with('/') {
             return Err(BAD_REQUEST);
@@ -236,6 +242,19 @@ impl HttpSession {
         }
         if !content_type.is_empty() {
             request = request.header("Content-Type", content_type);
+        }
+        for line in extra {
+            let (name, value) = line.split_once(':').ok_or(BAD_REQUEST)?;
+            let (name, value) = (name.trim(), value.trim());
+            let valid = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'))
+                && !value.chars().any(char::is_control);
+            if !valid {
+                return Err(BAD_REQUEST);
+            }
+            request = request.header(name, value);
         }
         let request = request.body(body).map_err(|_| BAD_REQUEST)?;
         self.agent.run(request).map_err(|_| TRANSPORT)
@@ -290,7 +309,7 @@ impl ServiceNode for HttpRequest {
         let [Value::Str(method), Value::Str(path), Value::Str(body)] = call.inputs else {
             return Err(BAD_REQUEST);
         };
-        let mut response = session.send(method, path, "", body.as_bytes().to_vec())?;
+        let mut response = session.send(method, path, "", &[], body.as_bytes().to_vec())?;
         let status = i64::from(response.status().as_u16());
         let text = response
             .body_mut()
@@ -314,15 +333,20 @@ impl ServiceNode for HttpRequestBytes {
             Value::Str(method),
             Value::Str(path),
             Value::Str(content_type),
+            Value::List(headers),
             Value::Bytes(body),
         ] = call.inputs
         else {
             return Err(BAD_REQUEST);
         };
+        let orange_sdk::ListRepr::Str(headers) = headers.as_ref() else {
+            return Err(BAD_REQUEST);
+        };
         if content_type.chars().any(char::is_control) {
             return Err(BAD_REQUEST);
         }
-        let mut response = session.send(method, path, content_type, body.as_ref().clone())?;
+        let mut response =
+            session.send(method, path, content_type, headers, body.as_ref().clone())?;
         let status = i64::from(response.status().as_u16());
         let kind = response
             .headers()
@@ -361,6 +385,8 @@ const HTTP_REQUEST_BYTES_DEFINITION: &str = r#"{
     {"port_id": "method", "direction": "input", "kind": "data", "type": "core/string@1"},
     {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
     {"port_id": "content_type", "direction": "input", "kind": "data", "type": "core/string@1"},
+    {"port_id": "headers", "direction": "input", "kind": "data",
+      "type": "core/list@1<core/string@1>"},
     {"port_id": "content", "direction": "input", "kind": "data", "type": "core/bytes@1"},
     {"port_id": "status", "direction": "output", "kind": "data", "type": "core/i64@1",
       "source": "execution", "available_on": ["then"]},

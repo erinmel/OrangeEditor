@@ -10,7 +10,8 @@
 //! A whole file is read or written at once, up to [`MAX_FILE_BYTES`]. Writing replaces
 //! a file atomically: the content goes to a temporary file in the same directory, which
 //! is then renamed over the target, so a reader or a crash sees the old file or the new
-//! one. Streams for larger files are not provided.
+//! one. Files move, copy and get directories inside the folder. Streams for larger
+//! files are not provided.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -52,6 +53,16 @@ pub const LIST: &str = "org.orange.files/list";
 pub const EXISTS: &str = "org.orange.files/exists";
 /// Deletes a file. Input `path`.
 pub const DELETE: &str = "org.orange.files/delete";
+/// Moves or renames a file inside the folder. Inputs `path` and `to`; a file already
+/// at `to` is replaced.
+pub const MOVE: &str = "org.orange.files/move";
+/// Copies a file inside the folder. Inputs `path` and `to`; a file already at `to` is
+/// replaced.
+pub const COPY: &str = "org.orange.files/copy";
+/// Creates a directory and the directories on its path. Input `path`.
+pub const MAKE_DIRECTORY: &str = "org.orange.files/make-directory";
+/// Removes an empty directory. Input `path`.
+pub const REMOVE_DIRECTORY: &str = "org.orange.files/remove-directory";
 /// Entry fired when a file in the folder is created, changed or deleted, with its
 /// path as `payload`. Changes are found by comparing sizes and modification times
 /// every `poll_ms`, so several changes to one file within that time fire once.
@@ -282,6 +293,53 @@ impl Folder {
         std::fs::remove_file(&full).map_err(|e| io(&e))
     }
 
+    /// An existing file inside the folder, for reading.
+    fn source(&self, path: &str) -> Result<PathBuf, KernelFault> {
+        let full = inside(&self.root, path, false)?;
+        if !full.is_file() {
+            return Err(NOT_FOUND);
+        }
+        self.contained(&full)?;
+        Ok(full)
+    }
+
+    fn rename(&self, path: &str, to: &str) -> Result<(), KernelFault> {
+        let from = self.source(path)?;
+        let (target, _) = self.target(to, 0)?;
+        std::fs::rename(&from, &target).map_err(|e| io(&e))
+    }
+
+    fn copy(&self, path: &str, to: &str) -> Result<(), KernelFault> {
+        let from = self.source(path)?;
+        let size = std::fs::metadata(&from).map_err(|e| io(&e))?.len();
+        let (target, _) = self.target(to, usize::try_from(size).unwrap_or(usize::MAX))?;
+        std::fs::copy(&from, &target)
+            .map(|_| ())
+            .map_err(|e| io(&e))
+    }
+
+    fn make_directory(&self, path: &str) -> Result<(), KernelFault> {
+        if self.read_only {
+            return Err(READ_ONLY);
+        }
+        let full = inside(&self.root, path, false)?;
+        std::fs::create_dir_all(&full).map_err(|_| FAILED)?;
+        self.contained(&full)
+    }
+
+    fn remove_directory(&self, path: &str) -> Result<(), KernelFault> {
+        if self.read_only {
+            return Err(READ_ONLY);
+        }
+        let full = inside(&self.root, path, false)?;
+        if !full.is_dir() {
+            return Err(NOT_FOUND);
+        }
+        self.contained(&full)?;
+        // Only an empty directory is removed; anything else is the caller's mistake.
+        std::fs::remove_dir(&full).map_err(|_| FAILED)
+    }
+
     /// Every file under the folder with its size and modification time, by relative
     /// path. Links are not followed. `None` when the folder holds too many entries.
     fn snapshot(&self) -> Option<BTreeMap<String, (u64, Option<SystemTime>)>> {
@@ -371,6 +429,10 @@ enum Operation {
     List,
     Exists,
     Delete,
+    Move,
+    Copy,
+    MakeDirectory,
+    RemoveDirectory,
 }
 impl ServiceNode for Operation {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
@@ -400,6 +462,18 @@ impl ServiceNode for Operation {
             }
             (Self::Exists, [Value::Str(path)]) => Ok(vec![Value::Bool(folder.exists(path)?)]),
             (Self::Delete, [Value::Str(path)]) => folder.delete(path).map(|()| Vec::new()),
+            (Self::Move, [Value::Str(path), Value::Str(to)]) => {
+                folder.rename(path, to).map(|()| Vec::new())
+            }
+            (Self::Copy, [Value::Str(path), Value::Str(to)]) => {
+                folder.copy(path, to).map(|()| Vec::new())
+            }
+            (Self::MakeDirectory, [Value::Str(path)]) => {
+                folder.make_directory(path).map(|()| Vec::new())
+            }
+            (Self::RemoveDirectory, [Value::Str(path)]) => {
+                folder.remove_directory(path).map(|()| Vec::new())
+            }
             _ => Err(BAD_INPUT),
         }
     }
@@ -507,7 +581,35 @@ const BYTES: &str = "core/bytes@1";
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let path = || input("path", STRING);
-    let nodes: [(&str, &str, &str, Operation, Vec<String>); 8] = [
+    let nodes: [(&str, &str, &str, Operation, Vec<String>); 12] = [
+        (
+            "move",
+            "Move file",
+            "Moves or renames a file inside a folder.",
+            Operation::Move,
+            vec![path(), input("to", STRING)],
+        ),
+        (
+            "copy",
+            "Copy file",
+            "Copies a file inside a folder.",
+            Operation::Copy,
+            vec![path(), input("to", STRING)],
+        ),
+        (
+            "make-directory",
+            "Make directory",
+            "Creates a directory inside a folder.",
+            Operation::MakeDirectory,
+            vec![path()],
+        ),
+        (
+            "remove-directory",
+            "Remove directory",
+            "Removes an empty directory from a folder.",
+            Operation::RemoveDirectory,
+            vec![path()],
+        ),
         (
             "read-text",
             "Read text file",
@@ -620,7 +722,7 @@ mod tests {
     fn the_package_builds_with_its_nodes() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 8);
+        assert_eq!(package.nodes().len(), 12);
         assert_eq!(package.sources().len(), 1);
         assert_eq!(package.adapters().len(), 1);
     }
@@ -652,6 +754,23 @@ mod tests {
         folder.delete("notes/a.txt").unwrap();
         assert_eq!(folder.delete("notes/a.txt"), Err(NOT_FOUND));
         assert_eq!(folder.read("notes/a.txt"), Err(NOT_FOUND));
+
+        // Moving, copying and directories stay inside the folder too.
+        folder.write("a.txt", b"moved").unwrap();
+        folder.rename("a.txt", "sub/b.txt").unwrap();
+        folder.copy("sub/b.txt", "c.txt").unwrap();
+        assert_eq!(folder.exists("a.txt"), Ok(false));
+        assert_eq!(folder.read("sub/b.txt").unwrap(), b"moved");
+        assert_eq!(folder.read("c.txt").unwrap(), b"moved");
+        assert_eq!(folder.rename("missing.txt", "d.txt"), Err(NOT_FOUND));
+        assert_eq!(folder.copy("c.txt", "../d.txt"), Err(BAD_PATH));
+        assert_eq!(folder.rename("../c.txt", "d.txt"), Err(BAD_PATH));
+        folder.make_directory("deep/er").unwrap();
+        assert_eq!(folder.remove_directory("deep"), Err(FAILED));
+        folder.remove_directory("deep/er").unwrap();
+        folder.remove_directory("deep").unwrap();
+        assert_eq!(folder.remove_directory("deep"), Err(NOT_FOUND));
+        assert_eq!(folder.make_directory("../out"), Err(BAD_PATH));
 
         for escape in ["../x", "/x", "notes/../../x", "C:/x", "a\\b", "nul", ""] {
             assert_eq!(folder.write(escape, b"x"), Err(BAD_PATH), "{escape:?}");
