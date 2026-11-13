@@ -19,7 +19,7 @@ Run from the terminal with `orange preview` on hand-written, bound graphs:
 
 | Command | Result |
 |---|---|
-| `cargo test --workspace --locked` | 1,810 passed, 0 failed |
+| `cargo test --workspace --locked` | 1,814 passed, 0 failed |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
 | `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
 | `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
@@ -28,9 +28,12 @@ Not exercised: the plugin limits with a real installed component and a real serv
 (the test uses the access layer with a stand-in client); preview of a graph that uses
 an installed package's pure node.
 
-Left open in the core after this: streams produced by packages (the runtime can open
-a stream for an effect; the host and SDK do not offer it), types from installed
-packages, MQTT 5, HTTP/2 and gRPC, client certificates, audio streaming from disk and
+Added the same day (FR-97, FR-98): types from installed packages and streams from
+native plugins; tests in `orange-host/tests/types.rs` and `streams.rs`. Writing the
+stream test showed that `collect` fails a stream longer than its limit, as 11 states;
+the test follows that rule.
+
+Left open in the core after this: streams from installed components, MQTT 5, HTTP/2 and gRPC, client certificates, audio streaming from disk and
 device hotplug, feed key rotation, document format migration. Panels, inspectors,
 settings pages and extracting a selection into a function need the editor.
 
