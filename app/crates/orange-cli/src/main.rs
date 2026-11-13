@@ -6,7 +6,7 @@ use orange_host::{
     FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, NodeId, StopMode,
 };
 use std::io::BufRead;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, channel};
 use std::time::{Duration, Instant};
@@ -18,9 +18,17 @@ usage:
   orange pack  <package-dir> <out.orangeplug>
   orange nodes [--package <file.orangeplug>]... [--store <dir>]
   orange packages [--store <dir>]
+  orange enable <package-id> --store <dir>
+  orange disable <package-id> --store <dir>
   orange remove <package-id> <version> --store <dir>
   orange updates [--apply] [--grant-log] --store <dir>
+  orange publish <graph.json> <function> <package-id> <version> <node-name> <out.orangeplug>
+  orange export <graph.json> <out.orangegraph> --store <dir>
+  orange import <in.orangegraph> <graph.json> [--apply] [--store <dir>]
   orange devices
+  orange secret set <name> | remove <name> | check <name>
+  orange feed key <name> | sign <feed.json> <name>
+  orange oauth login <settings.json> <name>
 
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
 what they do. While it runs, type commands on standard input:
@@ -29,6 +37,7 @@ what they do. While it runs, type commands on standard input:
   stop <flow>  | kill <flow>        stop gracefully, or at once
   trigger <flow> <node-id>          fire a manual entry
   reload <flow>                     read the flow's file again and apply the edit live
+  set <flow> <variable-id> <literal>  set a run variable to a JSON literal with `type` and `value`
   quit                              stop everything and exit
 
 `pack` builds a package from a directory holding `manifest.json` and the package's
@@ -36,16 +45,21 @@ files (`nodes/<name>.json`, `graphs/<name>.json`, a component), filling in its d
 
 `--share <id> <adapter> <settings.json>` gives every graph that declares connection
 `<id>` as shared the same session, with settings read from the file. The base network
-package is built in: adapters `org.orange.net/http` and `org.orange.net/websocket`.
+package is built in: adapters `org.orange.net/http`, `org.orange.net/websocket` and
+`org.orange.net/mqtt`.
 
 `--store <dir>` keeps installed packages in a directory: packages given with
 `--package` are saved there, and later commands with the same `--store` have them
 without `--package`.
 
-`packages` lists the built-in and the stored packages. `remove` takes one out of the
-store. `updates` reads the update feed each stored package names and lists newer
-releases; with `--apply` it downloads each, checks its digest against the feed and
-installs it. Packages are installed at your own risk: their code is not reviewed.
+`packages` lists the base, native and stored packages and whether each is in use.
+`disable <id>` leaves a package out from the next command on and `enable <id>` brings
+it back; both need `--store`, where the choice is kept. `remove` takes one out of the
+store. `updates` reads the update feed each package names and lists newer releases;
+with `--apply` it downloads each, checks its digest against the feed and installs it.
+A package that names a signing key is updated only from a feed that key signed. A
+newer native plugin library built for this program replaces the loaded one in its
+`--plugins` directory and loads at the next start. Packages are installed at your own risk: their code is not reviewed.
 
 `nodes` lists every node a graph can use: its ID and version, its name, its category
 and the package that implements it. `devices` lists the audio devices an audio
@@ -59,9 +73,44 @@ The base audio package is built in too: adapters `org.orange.audio/output` and
 A native plugin runs with all of this program's rights; load only what you trust.
 
 `--no-base` leaves out the bundled base nodes, `--no-net` the network package and
-`--no-audio` the audio package.
+`--no-audio` the audio package and `--no-files` the file package.
 
-`--grant-log` lets installed package code write log lines. `--for` stops after a time.";
+The base file package is built in: a connection with adapter `org.orange.files/folder`
+and a `path` setting names a directory, and the file nodes read, write, list and watch
+files inside it and nowhere else.
+
+`publish` turns a function of a graph (named by its name or ID) into a package with
+one node made of it, which any graph can then use after `--package`.
+
+`export` writes a graph together with the stored packages it uses as one file.
+`import` saves the graph from such a file and lists the packages it needs and whether
+each is available; with `--apply` it first installs the packages the file carries.
+
+`--state <dir>` (or `state` in the store) keeps the variables a graph declares
+`persistent`: they are saved as they change and a later run starts with them. The
+files there are JSON and can be edited while nothing runs.
+
+`secret set <name>` reads a credential from standard input and keeps it in the
+operating system's credential store; a connection's settings name it as
+`credential://<name>` (for example a `bearer` setting of `credential://api/token`), so graph files
+hold no secrets. `secret check` says whether one is stored without showing it.
+
+`oauth login <settings.json> <name>` signs you in to a service in a browser
+(authorization code with PKCE) and keeps the refresh token in the credential store; an
+HTTP connection then uses it as `oauth.refresh_token`. The settings file holds
+`authorize_url`, `token_url`, `client_id` and optionally `scope`, `client_secret` and
+`redirect_port`.
+
+`feed key <name>` makes a key for signing update feeds, keeps its private half in the
+credential store and prints the `update.key` to put in a package's manifest; `feed sign
+<feed.json> <name>` writes the signature to serve beside the feed as `<feed.json>.sig`.
+
+`--grant-log` lets installed package code write log lines, `--grant-files` lets it
+read and write files in its own data directory (`--plugin-data <dir>`, or `data` in the
+store), and `--grant-http` lets it send HTTPS requests. A package receives a grant
+only if its manifest asks for it (`permissions`), and an install says what a package
+asked for and was not given. A grant is given to the
+packages installed by that command and is kept with them in the store. `--for` stops after a time.";
 
 struct Arguments {
     command: String,
@@ -74,8 +123,11 @@ struct Arguments {
     base_nodes: bool,
     network: bool,
     audio: bool,
+    files: bool,
     apply: bool,
     plugins: Vec<String>,
+    plugin_data: Option<String>,
+    state: Option<String>,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -92,8 +144,11 @@ fn arguments() -> Result<Arguments, String> {
         base_nodes: true,
         network: true,
         audio: true,
+        files: true,
         apply: false,
         plugins: Vec::new(),
+        plugin_data: None,
+        state: None,
     };
     while let Some(word) = words.next() {
         match word.as_str() {
@@ -109,9 +164,16 @@ fn arguments() -> Result<Arguments, String> {
                 parsed.shared.push([next()?, next()?, next()?]);
             }
             "--grant-log" => parsed.grants.log = true,
+            "--grant-files" => parsed.grants.files = true,
+            "--grant-http" => parsed.grants.http = true,
+            "--state" => parsed.state = Some(words.next().ok_or("--state needs a directory")?),
+            "--plugin-data" => {
+                parsed.plugin_data = Some(words.next().ok_or("--plugin-data needs a directory")?);
+            }
             "--no-base" => parsed.base_nodes = false,
             "--no-net" => parsed.network = false,
             "--no-audio" => parsed.audio = false,
+            "--no-files" => parsed.files = false,
             "--apply" => parsed.apply = true,
             "--plugins" => parsed
                 .plugins
@@ -219,6 +281,21 @@ fn command(host: &mut Host, flows: &[(FlowId, String)], line: &str) -> bool {
                 .ok_or("expected a node id")?;
             done(host.trigger(flow, node, None))
         }),
+        Some("set") => flow(1).and_then(|(flow, _)| {
+            let variable = words
+                .get(2)
+                .and_then(|word| word.parse().ok())
+                .ok_or("expected a variable id")?;
+            // The literal is the rest of the line, spaces included.
+            let literal = line
+                .splitn(4, char::is_whitespace)
+                .nth(3)
+                .ok_or(r#"expected a literal such as {"type":"core/i64@1","value":"5"}"#)?;
+            let value = host
+                .value_from_json(literal.trim())
+                .map_err(|error| error.to_string())?;
+            done(host.set_variable(flow, variable, value))
+        }),
         Some(other) => Err(format!("unknown command `{other}`")),
     };
     if let Err(message) = outcome {
@@ -308,35 +385,83 @@ fn pack(directory: &str, output: &str) -> Result<usize, String> {
 /// Largest release archive `updates --apply` downloads.
 const MAX_RELEASE_BYTES: u64 = 256 * 1024 * 1024;
 
-/// Reads the feed of every installed package that names one and reports, or installs,
-/// the newer releases.
-fn updates(host: &mut Host, apply: bool, grants: Grants) -> ExitCode {
-    let mut found = Vec::new();
+/// Downloads a package's update feed. When the package names a signing key, the feed's
+/// signature is downloaded too and the feed is refused unless the key signed it.
+fn feed(source: &orange_host::UpdateSource) -> Result<orange_host::UpdateFeed, String> {
+    let bytes = orange_net::download(source.feed(), 1024 * 1024)?;
+    if let Some(key) = source.key() {
+        let signature = orange_net::download(&format!("{}.sig", source.feed()), 1024)
+            .map_err(|error| format!("the feed's signature: {error}"))?;
+        orange_net::verify_feed(&bytes, &signature, key)?;
+    }
+    orange_host::UpdateFeed::from_json(&bytes).map_err(|error| error.to_string())
+}
+
+/// Reads the feed of every package that names one and reports, or installs, the newer
+/// releases: archives for installed packages, libraries built for this program's
+/// target for native plugins. `plugins` maps a loaded plugin's ID to its file.
+fn updates(
+    host: &mut Host,
+    apply: bool,
+    grants: Grants,
+    plugins: &[(String, PathBuf)],
+) -> ExitCode {
+    // (release, the plugin file it replaces)
+    let mut found: Vec<(orange_host::Release, Option<PathBuf>)> = Vec::new();
     let mut failed = false;
     for package in host.packages() {
-        let Some(manifest) = package.manifest else {
+        let Some(source) = package.update() else {
             continue;
         };
-        let Some(source) = manifest.update() else {
-            continue;
+        let file = plugins
+            .iter()
+            .find(|(id, _)| id == package.id)
+            .map(|(_, path)| path.clone());
+        let native = package.kind == orange_host::PackageKind::Native;
+        let release = feed(source).and_then(|feed| match package.manifest {
+            Some(manifest) => Ok(feed.update_for(manifest).cloned()),
+            None => {
+                let current = orange_host::PackageKey {
+                    id: package
+                        .id
+                        .parse()
+                        .map_err(|_| "the package ID is not valid")?,
+                    version: package
+                        .version
+                        .parse()
+                        .map_err(|_| "the package version is not valid")?,
+                };
+                let target = native.then_some(orange_host::TARGET);
+                Ok(feed.newer(&current, source.channel(), target).cloned())
+            }
+        });
+        let signed = if source.key().is_some() {
+            "signed feed"
+        } else {
+            "unsigned feed"
         };
-        let release = orange_net::download(source.feed(), 1024 * 1024)
-            .and_then(|bytes| {
-                orange_host::UpdateFeed::from_json(&bytes).map_err(|error| error.to_string())
-            })
-            .map(|feed| feed.update_for(manifest).cloned());
         match release {
             Ok(Some(release)) => {
                 println!(
-                    "{} {} -> {} ({})",
+                    "{} {} -> {} ({}, {signed})",
                     package.id,
                     package.version,
                     release.key().version.as_str(),
                     release.archive()
                 );
-                found.push(release);
+                if native && file.is_none() {
+                    println!(
+                        "  {} is built into this program and is not replaced",
+                        package.id
+                    );
+                } else if package.active {
+                    found.push((release, file));
+                }
             }
-            Ok(None) => println!("{} {} is up to date", package.id, package.version),
+            Ok(None) => println!(
+                "{} {} is up to date ({signed})",
+                package.id, package.version
+            ),
             Err(message) => {
                 eprintln!("{} {}: {message}", package.id, package.version);
                 failed = true;
@@ -344,14 +469,33 @@ fn updates(host: &mut Host, apply: bool, grants: Grants) -> ExitCode {
         }
     }
     if apply {
-        for release in found {
-            let installed =
-                orange_net::download(release.archive(), MAX_RELEASE_BYTES).and_then(|archive| {
+        for (release, file) in found {
+            let downloaded = orange_net::download(release.archive(), MAX_RELEASE_BYTES);
+            let installed = match file {
+                None => downloaded.and_then(|archive| {
                     host.install_release(&archive, grants, release.content_digest())
+                        .map(|key| {
+                            format!("installed {} {}", key.id.as_str(), key.version.as_str())
+                        })
                         .map_err(|error| error.to_string())
-                });
+                }),
+                Some(current) => downloaded.and_then(|library| {
+                    if orange_net::sha256(&library) != release.content_digest() {
+                        return Err("its content digest is not the announced one".to_owned());
+                    }
+                    let key = release.key();
+                    orange_native::replace(
+                        &current,
+                        key.id.as_str(),
+                        key.version.as_str(),
+                        &library,
+                    )
+                    .map(|path| format!("saved {}; it loads at the next start", path.display()))
+                    .map_err(|error| error.to_string())
+                }),
+            };
             match installed {
-                Ok(key) => println!("installed {} {}", key.id.as_str(), key.version.as_str()),
+                Ok(message) => println!("{message}"),
                 Err(message) => {
                     eprintln!("{}: {message}", release.archive());
                     failed = true;
@@ -366,8 +510,371 @@ fn updates(host: &mut Host, apply: bool, grants: Grants) -> ExitCode {
     }
 }
 
+/// Name under which the operating system's credential store lists this program's
+/// secrets.
+const VAULT_SERVICE: &str = "OrangeEditor";
+
+/// `secret set|remove|check <name>`: manages one credential in the operating system's
+/// store. The secret itself is read from standard input, never from the command line,
+/// where the shell's history and the process list would keep it.
+fn secret(words: &[String]) -> ExitCode {
+    use orange_host::SecretStore;
+    let [action, name] = words else {
+        eprintln!("secret needs `set`, `remove` or `check` and a name\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let vault = orange_vault::OsVault::new(VAULT_SERVICE);
+    let done = match action.as_str() {
+        "set" => {
+            let mut line = String::new();
+            match std::io::stdin().lock().read_line(&mut line) {
+                Ok(_) => vault
+                    .set(name, line.trim_end_matches(['\r', '\n']))
+                    .map(|()| format!("stored {name}")),
+                Err(_) => {
+                    eprintln!("the secret could not be read from standard input");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        "remove" => vault.remove(name).map(|()| format!("removed {name}")),
+        "check" => vault.get(name).map(|_| format!("{name} is stored")),
+        _ => {
+            eprintln!("unknown secret action `{action}`\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match done {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{name}: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let (mut out, mut at) = (Vec::with_capacity(bytes.len()), 0);
+    while let Some(&byte) = bytes.get(at) {
+        let escaped = (byte == b'%')
+            .then(|| text.get(at + 1..at + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(value) => {
+                out.push(value);
+                at += 3;
+            }
+            None => {
+                out.push(if byte == b'+' { b' ' } else { byte });
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// How long `oauth login` waits for the browser to come back.
+const LOGIN_WAIT: Duration = Duration::from_secs(300);
+
+/// `oauth login <settings.json> <name>`: signs a person in with the authorization-code
+/// flow and PKCE and keeps the refresh token in the credential store under `<name>`,
+/// for a connection's `oauth.refresh_token`. The settings file holds `authorize_url`,
+/// `token_url`, `client_id` and optionally `scope`, `client_secret` (text or a
+/// `credential://` reference) and `redirect_port` (default 8765). The browser returns
+/// to this program on `127.0.0.1`; no token is printed or written to a file.
+fn oauth_login(settings: &str, name: &str) -> Result<(), String> {
+    use orange_host::SecretStore;
+    use orange_net::oauth;
+    use std::io::{Read, Write};
+    if !orange_host::is_secret_name(name) {
+        return Err(format!("{name}: the credential name is not valid"));
+    }
+    let vault = orange_vault::OsVault::new(VAULT_SERVICE);
+    let file = String::from_utf8(read(settings)?).map_err(|_| format!("{settings}: not text"))?;
+    let field = |key: &str| -> Result<Option<String>, String> { Ok(json_text_field(&file, key)) };
+    let required =
+        |key: &str| field(key)?.ok_or_else(|| format!("{settings}: `{key}` is required"));
+    let (authorize_url, token_url, client_id) = (
+        required("authorize_url")?,
+        required("token_url")?,
+        required("client_id")?,
+    );
+    if !oauth::is_endpoint(&authorize_url) || !oauth::is_endpoint(&token_url) {
+        return Err("the URLs must be https://, or http:// on this machine".into());
+    }
+    let client_secret = match field("client_secret")? {
+        Some(secret) => Some(match secret.strip_prefix(orange_host::SECRET_PREFIX) {
+            Some(stored) => vault
+                .get(stored)
+                .map_err(|error| format!("{stored}: {error}"))?,
+            None => secret,
+        }),
+        None => None,
+    };
+    let port: u16 = match field("redirect_port")? {
+        Some(port) => port.parse().map_err(|_| "`redirect_port` is not a port")?,
+        None => 8765,
+    };
+
+    let (verifier, state) = (oauth::random_token()?, oauth::random_token()?);
+    let redirect = format!("http://127.0.0.1:{port}/callback");
+    let challenge = oauth::pkce_challenge(&verifier);
+    let mut parameters = vec![
+        ("response_type", "code"),
+        ("client_id", client_id.as_str()),
+        ("redirect_uri", redirect.as_str()),
+        ("state", state.as_str()),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+    ];
+    let scope = field("scope")?;
+    if let Some(scope) = &scope {
+        parameters.push(("scope", scope));
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|error| format!("port {port} cannot be listened on: {:?}", error.kind()))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    println!(
+        "Open this address in a browser and sign in:\n{}",
+        oauth::authorization_url(&authorize_url, &parameters)
+    );
+
+    let started = Instant::now();
+    let code = loop {
+        if started.elapsed() > LOGIN_WAIT {
+            return Err("nobody signed in within five minutes".into());
+        }
+        let Ok((mut stream, _)) = listener.accept() else {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        };
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut buffer = [0u8; 8192];
+        let count = stream.read(&mut buffer).unwrap_or(0);
+        let request = String::from_utf8_lossy(buffer.get(..count).unwrap_or_default()).into_owned();
+        let query = request
+            .strip_prefix("GET /callback?")
+            .and_then(|rest| rest.split([' ', '\r', '\n']).next())
+            .unwrap_or_default();
+        let value = |key: &str| {
+            query
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| percent_decode(value))
+        };
+        // Anything that is not this sign-in's own return is answered and ignored.
+        let outcome = match (value("state"), value("code"), value("error")) {
+            (Some(returned), Some(code), _) if returned == state => Some(Ok(code)),
+            (Some(returned), _, Some(_)) if returned == state => {
+                Some(Err("the sign-in was refused".to_owned()))
+            }
+            _ => None,
+        };
+        let page = match &outcome {
+            Some(Ok(_)) => "Signed in. You can close this page.",
+            Some(Err(_)) => "The sign-in was refused. You can close this page.",
+            None => "This address is not expecting you.",
+        };
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        if let Some(outcome) = outcome {
+            break outcome?;
+        }
+    };
+
+    let mut form = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", redirect.as_str()),
+        ("client_id", client_id.as_str()),
+        ("code_verifier", verifier.as_str()),
+    ];
+    if let Some(secret) = &client_secret {
+        form.push(("client_secret", secret));
+    }
+    let answer = oauth::token_request(&token_url, &form, None)?;
+    let refresh = answer
+        .refresh_token
+        .ok_or("the server issued no refresh token; ask it for offline access")?;
+    vault
+        .set(name, &refresh)
+        .map_err(|error| format!("{name}: {error}"))?;
+    println!(
+        "stored the refresh token as {name}\nuse it in a connection's settings as: \"oauth\": {{\"token_url\": \"{token_url}\", \"client_id\": \"{client_id}\", \"refresh_token\": \"credential://{name}\"}}"
+    );
+    Ok(())
+}
+
+/// The text (or number, as text) value of `key` in a flat JSON object.
+fn json_text_field(json: &str, key: &str) -> Option<String> {
+    let at = json.find(&format!("\"{key}\""))?;
+    let rest = json
+        .get(at + key.len() + 2..)?
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start();
+    if let Some(text) = rest.strip_prefix('"') {
+        let mut value = String::new();
+        let mut characters = text.chars();
+        while let Some(character) = characters.next() {
+            match character {
+                '"' => return Some(value),
+                '\\' => value.push(characters.next()?),
+                other => value.push(other),
+            }
+        }
+        None
+    } else {
+        let end = rest.find([',', '}', '\n', ' ']).unwrap_or(rest.len());
+        Some(rest.get(..end)?.to_owned()).filter(|value| !value.is_empty())
+    }
+}
+
+/// `feed key <name>` makes a signing key and keeps its private half in the credential
+/// store under `<name>`; `feed sign <feed.json> <name>` writes `<feed.json>.sig`. Both
+/// print the public key a manifest's `update.key` takes. The private key is never
+/// printed or written to a file.
+fn feed_command(words: &[String]) -> ExitCode {
+    use orange_host::SecretStore;
+    let vault = orange_vault::OsVault::new(VAULT_SERVICE);
+    let done = match &words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["key", name] => {
+            // An existing key is never replaced: feeds signed with it would stop verifying.
+            match vault.get(name) {
+                Ok(_) => Err(format!("{name} already holds a key; choose another name")),
+                Err(orange_host::SecretError::NotFound) => {
+                    orange_net::new_feed_key().and_then(|(private, public)| {
+                        vault
+                            .set(name, &private)
+                            .map(|()| {
+                                format!("stored the private key as {name}\nupdate.key: {public}")
+                            })
+                            .map_err(|error| error.to_string())
+                    })
+                }
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        ["sign", feed, name] => vault
+            .get(name)
+            .map_err(|error| format!("{name}: {error}"))
+            .and_then(|private| {
+                let bytes = read(feed)?;
+                orange_host::UpdateFeed::from_json(&bytes)
+                    .map_err(|error| format!("{feed}: {error}"))?;
+                let (signature, public) = orange_net::sign_feed(&bytes, &private)?;
+                let output = format!("{feed}.sig");
+                std::fs::write(&output, &signature)
+                    .map_err(|error| format!("{output}: {error}"))?;
+                Ok(format!("{output}: signed\nupdate.key: {public}"))
+            }),
+        _ => {
+            eprintln!("feed needs `key <name>` or `sign <feed.json> <name>`\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match done {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("{message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
+/// The network client of installed packages that hold the `http` grant.
+#[derive(Debug)]
+struct PluginHttp;
+impl orange_host::HttpClient for PluginHttp {
+    fn send(
+        &self,
+        request: &orange_host::HttpRequest,
+    ) -> Result<orange_host::HttpResponse, String> {
+        let limit = u64::try_from(request.max_response_bytes).unwrap_or(u64::MAX);
+        orange_net::fetch(
+            &request.method,
+            &request.url,
+            &request.headers,
+            &request.body,
+            limit,
+        )
+        .map(|(status, body)| orange_host::HttpResponse { status, body })
+    }
+}
+
 fn main() -> ExitCode {
     let words: Vec<String> = std::env::args().skip(1).collect();
+    if words.first().map(String::as_str) == Some("publish") {
+        let [_, graph, function, package, version, node, output] = &words[..] else {
+            eprintln!(
+                "publish needs a graph file, a function, a package ID, a version, a node name and an output file\n{USAGE}"
+            );
+            return ExitCode::from(2);
+        };
+        let publish = orange_host::Publish {
+            package,
+            version,
+            node,
+            label: None,
+        };
+        let published = read(graph)
+            .and_then(|bytes| String::from_utf8(bytes).map_err(|_| format!("{graph}: not text")))
+            .and_then(|text| {
+                orange_host::publish_function(&text, function, &publish)
+                    .map_err(|error| format!("{graph}: {error}"))
+            })
+            .and_then(|archive| {
+                std::fs::write(output, archive).map_err(|error| format!("{output}: {error}"))
+            });
+        return match published {
+            Ok(()) => {
+                println!("{output}: node {package}/{node} {version}");
+                ExitCode::SUCCESS
+            }
+            Err(message) => {
+                eprintln!("{message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if words.first().map(String::as_str) == Some("oauth") {
+        let [action, settings, name] = &words[1..] else {
+            eprintln!("oauth needs `login <settings.json> <name>`\n{USAGE}");
+            return ExitCode::from(2);
+        };
+        if action != "login" {
+            eprintln!("unknown oauth action `{action}`\n{USAGE}");
+            return ExitCode::from(2);
+        }
+        return match oauth_login(settings, name) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(message) => {
+                eprintln!("{message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if words.first().map(String::as_str) == Some("feed") {
+        return feed_command(&words[1..]);
+    }
+    if words.first().map(String::as_str) == Some("secret") {
+        return secret(&words[1..]);
+    }
     if words.first().map(String::as_str) == Some("pack") {
         let [_, directory, output] = &words[..] else {
             eprintln!(
@@ -408,7 +915,16 @@ fn main() -> ExitCode {
         Ok(arguments)
             if matches!(
                 arguments.command.as_str(),
-                "check" | "run" | "nodes" | "packages" | "remove" | "updates"
+                "check"
+                    | "run"
+                    | "nodes"
+                    | "packages"
+                    | "remove"
+                    | "updates"
+                    | "enable"
+                    | "disable"
+                    | "export"
+                    | "import"
             ) =>
         {
             arguments
@@ -423,8 +939,12 @@ fn main() -> ExitCode {
         }
     };
     let mut services = Vec::new();
+    let mut plugin_files = Vec::new();
     if arguments.network {
         services.push(orange_net::package());
+    }
+    if arguments.files {
+        services.push(orange_files::package());
     }
     if arguments.audio {
         services.push(orange_audio::package());
@@ -441,6 +961,7 @@ fn main() -> ExitCode {
             match package {
                 Ok(package) => {
                     println!("loaded plugin {} {}", package.id(), package.version());
+                    plugin_files.push((package.id().to_owned(), path));
                     services.push(package);
                 }
                 // One bad library does not stop the others or the program.
@@ -451,6 +972,28 @@ fn main() -> ExitCode {
     let options = HostOptions {
         package_dir: arguments.store.as_ref().map(Into::into),
         base_nodes: arguments.base_nodes,
+        // Without `--plugin-data`, package data lives beside the stored packages.
+        plugin_data_dir: arguments
+            .plugin_data
+            .as_ref()
+            .map(PathBuf::from)
+            .or_else(|| {
+                arguments
+                    .store
+                    .as_ref()
+                    .map(|store| Path::new(store).join("data"))
+            }),
+        // Without `--state`, persistent variables live beside the stored packages.
+        state_dir: arguments.state.as_ref().map(PathBuf::from).or_else(|| {
+            arguments
+                .store
+                .as_ref()
+                .map(|store| Path::new(store).join("state"))
+        }),
+        plugin_http: Some(std::sync::Arc::new(PluginHttp)),
+        secrets: Some(std::sync::Arc::new(orange_vault::OsVault::new(
+            VAULT_SERVICE,
+        ))),
         ..HostOptions::default()
     };
     let (mut host, events) = match Host::with_services(options, services) {
@@ -465,7 +1008,25 @@ fn main() -> ExitCode {
     }
     for path in &arguments.packages {
         let installed = read(path).and_then(|bytes| {
-            host.install(&bytes, arguments.grants)
+            // A package gets the grants it asks for that this command also gives.
+            let asks = host
+                .permissions(&bytes)
+                .map_err(|error| format!("{path}: {error}"))?;
+            let given = Grants {
+                log: asks.log && arguments.grants.log,
+                files: asks.files && arguments.grants.files,
+                http: asks.http && arguments.grants.http,
+            };
+            for (name, asked, granted) in [
+                ("log", asks.log, given.log),
+                ("files", asks.files, given.files),
+                ("http", asks.http, given.http),
+            ] {
+                if asked && !granted {
+                    println!("{path}: asks for `{name}`, not granted (--grant-{name})");
+                }
+            }
+            host.install(&bytes, given)
                 .map_err(|error| format!("{path}: {error}"))
         });
         match installed {
@@ -479,20 +1040,141 @@ fn main() -> ExitCode {
     match arguments.command.as_str() {
         "packages" => {
             for package in host.packages() {
-                let about = package.manifest.map(orange_host::PackageManifest::about);
                 println!(
-                    "{}	{}	{}	{}",
+                    "{}	{}	{}	{}	{}",
                     package.id,
                     package.version,
-                    if package.manifest.is_some() {
-                        "installed"
-                    } else {
-                        "native"
+                    match package.kind {
+                        orange_host::PackageKind::Base => "base",
+                        orange_host::PackageKind::Native => "native",
+                        _ => "installed",
                     },
-                    about.and_then(orange_host::About::name).unwrap_or("-"),
+                    match (package.active, package.enabled) {
+                        (true, true) => "on",
+                        (false, false) => "disabled",
+                        (true, false) => "on, disabled from the next start",
+                        (false, true) => "off",
+                    },
+                    package.name().unwrap_or("-"),
                 );
             }
             return ExitCode::SUCCESS;
+        }
+        "export" => {
+            let [graph, output] = &arguments.graphs[..] else {
+                eprintln!("export needs a graph file and an output file\n{USAGE}");
+                return ExitCode::from(2);
+            };
+            let exported = read(graph)
+                .and_then(|bytes| {
+                    String::from_utf8(bytes).map_err(|_| format!("{graph}: not text"))
+                })
+                .and_then(|text| {
+                    host.export(&text)
+                        .map_err(|error| format!("{graph}: {error}"))
+                })
+                .and_then(|(bundle, missing)| {
+                    std::fs::write(output, bundle.to_bytes())
+                        .map_err(|error| format!("{output}: {error}"))?;
+                    Ok((bundle.packages.len(), missing))
+                });
+            return match exported {
+                Ok((packages, missing)) => {
+                    println!("{output}: the graph and {packages} packages");
+                    for requirement in missing {
+                        println!(
+                            "not included: {} {} (not in the store)",
+                            requirement.package, requirement.version
+                        );
+                    }
+                    ExitCode::SUCCESS
+                }
+                Err(message) => {
+                    eprintln!("{message}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        "import" => {
+            let [bundle, output] = &arguments.graphs[..] else {
+                eprintln!("import needs a bundle file and an output graph file\n{USAGE}");
+                return ExitCode::from(2);
+            };
+            let imported = read(bundle).and_then(|bytes| {
+                orange_host::Bundle::from_bytes(&bytes)
+                    .map_err(|error| format!("{bundle}: {error}"))
+            });
+            let imported = match imported {
+                Ok(imported) => imported,
+                Err(message) => {
+                    eprintln!("{message}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            // Packages are installed only on request: importing runs and grants nothing.
+            if arguments.apply {
+                for archive in &imported.packages {
+                    match host.install(archive, arguments.grants) {
+                        Ok(key) => {
+                            println!("installed {} {}", key.id.as_str(), key.version.as_str());
+                        }
+                        Err(error) => eprintln!("a package was not installed: {error}"),
+                    }
+                }
+            }
+            for requirement in host.requirements(&imported.document).unwrap_or_default() {
+                println!(
+                    "{} {}\t{}",
+                    requirement.package,
+                    requirement.version,
+                    if requirement.available {
+                        "available"
+                    } else {
+                        "missing"
+                    }
+                );
+            }
+            return match orange_host::save_document(Path::new(output), &imported.document) {
+                Ok(()) => {
+                    println!(
+                        "{output}: saved ({} packages in the bundle)",
+                        imported.packages.len()
+                    );
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{output}: {error}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        "enable" | "disable" => {
+            let enable = arguments.command == "enable";
+            let [id] = &arguments.graphs[..] else {
+                eprintln!("{} needs a package ID\n{USAGE}", arguments.command);
+                return ExitCode::from(2);
+            };
+            if arguments.store.is_none() {
+                eprintln!(
+                    "{} needs --store, where the choice is kept",
+                    arguments.command
+                );
+                return ExitCode::from(2);
+            }
+            if !host.packages().any(|package| package.id == id) {
+                eprintln!("no package {id}");
+                return ExitCode::FAILURE;
+            }
+            return match host.set_enabled(id, enable) {
+                Ok(()) => {
+                    println!("{} {id}", if enable { "enabled" } else { "disabled" });
+                    ExitCode::SUCCESS
+                }
+                Err(error) => {
+                    eprintln!("{error}");
+                    ExitCode::FAILURE
+                }
+            };
         }
         "remove" => {
             let [id, version] = &arguments.graphs[..] else {
@@ -504,10 +1186,18 @@ fn main() -> ExitCode {
             };
             let found = host
                 .packages()
-                .filter_map(|package| package.manifest)
-                .map(orange_host::PackageManifest::key)
-                .find(|key| key.id.as_str() == id && key.version.as_str() == version)
-                .cloned();
+                .any(|package| {
+                    package.kind == orange_host::PackageKind::Installed
+                        && package.id == id
+                        && package.version == version
+                })
+                .then(|| {
+                    Some(orange_host::PackageKey {
+                        id: id.parse().ok()?,
+                        version: version.parse().ok()?,
+                    })
+                })
+                .flatten();
             let removed = found
                 .ok_or_else(|| format!("{id} {version} is not installed"))
                 .and_then(|key| host.uninstall(&key).map_err(|error| error.to_string()));
@@ -522,7 +1212,7 @@ fn main() -> ExitCode {
                 }
             };
         }
-        "updates" => return updates(&mut host, arguments.apply, arguments.grants),
+        "updates" => return updates(&mut host, arguments.apply, arguments.grants, &plugin_files),
         _ => {}
     }
     if arguments.command == "nodes" {

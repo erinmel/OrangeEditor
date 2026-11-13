@@ -18,8 +18,9 @@ wasmtime::component::bindgen!({
     world: "plugin",
 });
 
+use crate::access::{GuestAccess, HttpRequest};
 use orange::expansion::types::Value as Wire;
-use orange::expansion::{host, log};
+use orange::expansion::{files, host, http, log};
 use orange_model::value::ListRepr;
 use std::sync::Arc;
 
@@ -35,11 +36,54 @@ pub const MAX_LOG_BYTES: usize = 1024;
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct Grants {
     pub log: bool,
+    /// Read and write files in the package's own data directory.
+    pub files: bool,
+    /// Send HTTPS requests through the application's network client.
+    pub http: bool,
 }
 
 struct PluginState {
     limits: InstanceLimits,
     log: Vec<String>,
+    access: GuestAccess,
+    /// Largest content one import call hands to the guest.
+    transfer_bytes: usize,
+}
+
+impl files::Host for PluginState {
+    fn read(&mut self, path: String) -> Result<Vec<u8>, String> {
+        self.access
+            .read(&path, self.transfer_bytes)
+            .map_err(str::to_owned)
+    }
+    fn write(&mut self, path: String, data: Vec<u8>) -> Result<(), String> {
+        self.access.write(&path, &data).map_err(str::to_owned)
+    }
+    fn list(&mut self, path: String) -> Result<Vec<String>, String> {
+        self.access.list(&path).map_err(str::to_owned)
+    }
+    fn remove(&mut self, path: String) -> Result<(), String> {
+        self.access.remove(&path).map_err(str::to_owned)
+    }
+}
+
+impl http::Host for PluginState {
+    fn send(&mut self, request: http::Request) -> Result<http::Response, String> {
+        let request = HttpRequest {
+            method: request.method,
+            url: request.url,
+            headers: request.headers,
+            body: request.body,
+            max_response_bytes: self.transfer_bytes,
+        };
+        self.access
+            .send(&request)
+            .map(|response| http::Response {
+                status: response.status,
+                body: response.body,
+            })
+            .map_err(str::to_owned)
+    }
 }
 
 impl host::Host for PluginState {
@@ -174,8 +218,19 @@ fn from_wire(
 }
 
 impl GuestPlugin {
-    /// Instantiates `component` as an `orange:expansion/plugin` with exactly `grants`.
+    /// Instantiates `component` as an `orange:expansion/plugin` with exactly `grants`
+    /// and nothing to reach: a granted `files` or `http` import answers `unavailable`.
     pub fn new(component: &GuestComponent, grants: Grants) -> Result<Self, GuestError> {
+        Self::with_access(component, grants, GuestAccess::default())
+    }
+
+    /// Like [`new`](Self::new), with the data directory and network client its granted
+    /// `files` and `http` imports use.
+    pub fn with_access(
+        component: &GuestComponent,
+        grants: Grants,
+        access: GuestAccess,
+    ) -> Result<Self, GuestError> {
         let engine = &component.engine;
         let limits = engine.limits;
         let mut store = Store::new(
@@ -183,6 +238,8 @@ impl GuestPlugin {
             PluginState {
                 limits: InstanceLimits::new(limits),
                 log: Vec::new(),
+                access,
+                transfer_bytes: limits.transfer_bytes,
             },
         );
         store.limiter(|state| &mut state.limits);
@@ -196,6 +253,14 @@ impl GuestPlugin {
             .map_err(|_| GuestError::Engine)?;
         if grants.log {
             log::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
+                .map_err(|_| GuestError::Engine)?;
+        }
+        if grants.files {
+            files::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
+                .map_err(|_| GuestError::Engine)?;
+        }
+        if grants.http {
+            http::add_to_linker::<_, HasSelf<_>>(&mut linker, |state| state)
                 .map_err(|_| GuestError::Engine)?;
         }
         let bindings =

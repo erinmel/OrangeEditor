@@ -21,7 +21,7 @@ const NULL_CHANNELS: u16 = 2;
 const NULL_BLOCK: Duration = Duration::from_millis(10);
 /// Samples converted per step when a device does not take `f32`.
 const SCRATCH: usize = 16_384;
-/// How long past its length a sound may take before the device counts as stalled.
+/// How long a device may go without asking for samples before it counts as stalled.
 const STALL: Duration = Duration::from_secs(2);
 const POLL: Duration = Duration::from_millis(5);
 
@@ -103,6 +103,8 @@ pub(crate) struct Output {
     ended: Mutex<BTreeSet<u64>>,
     active: Mutex<usize>,
     next: AtomicU64,
+    /// Blocks the device has asked for.
+    blocks: Arc<AtomicU64>,
     driver: Driver,
 }
 impl std::fmt::Debug for Output {
@@ -157,7 +159,7 @@ where
 impl Output {
     /// Opens the default device, the device with this name, or the silent device.
     pub(crate) fn open(device: Option<&str>) -> Result<Self, String> {
-        let (mixer, commands, retired) = mixer::mixer();
+        let (mixer, commands, retired, blocks) = mixer::mixer();
         let (rate, channels, driver) = if device == Some(NULL_DEVICE) {
             (NULL_RATE, NULL_CHANNELS, null_output(mixer)?)
         } else {
@@ -191,6 +193,7 @@ impl Output {
             ended: Mutex::new(BTreeSet::new()),
             active: Mutex::new(0),
             next: AtomicU64::new(0),
+            blocks,
             driver,
         })
     }
@@ -210,8 +213,9 @@ impl Output {
         }
     }
 
-    /// Starts a sound. `None` when [`MAX_VOICES`] are already playing.
-    pub(crate) fn play(&self, sound: Arc<[f32]>, gain: f32) -> Option<u64> {
+    /// Starts a sound, repeating until stopped when `looped`. `None` when
+    /// [`MAX_VOICES`] are already playing.
+    pub(crate) fn play(&self, sound: Arc<[f32]>, gain: f32, looped: bool) -> Option<u64> {
         self.collect();
         let mut playing = self.active.lock().unwrap_or_else(PoisonError::into_inner);
         if *playing >= MAX_VOICES {
@@ -223,19 +227,18 @@ impl Output {
             sound,
             at: 0,
             gain,
+            looped,
         };
         self.commands.try_send(Command::Play(voice)).ok()?;
         *playing += 1;
         Some(id)
     }
 
-    /// Waits until the sound ends. `cancelled` stops it early.
-    pub(crate) fn wait(&self, id: u64, samples: usize, cancelled: impl Fn() -> bool) -> Ended {
-        let frames = samples / usize::from(self.channels.max(1));
-        let length = Duration::from_secs_f64(
-            u32::try_from(frames).map_or(f64::MAX, f64::from) / f64::from(self.rate.max(1)),
-        );
-        let deadline = Instant::now() + length + STALL;
+    /// Waits until the sound ends, however long it is paused or repeats. `cancelled`
+    /// stops it early. A device that stops asking for samples is reported as stalled.
+    pub(crate) fn wait(&self, id: u64, cancelled: impl Fn() -> bool) -> Ended {
+        let mut seen = self.blocks.load(Ordering::Relaxed);
+        let mut deadline = Instant::now() + STALL;
         let mut stopped = false;
         loop {
             self.collect();
@@ -250,11 +253,42 @@ impl Output {
             if !stopped && cancelled() {
                 stopped = self.commands.try_send(Command::Stop(id)).is_ok();
             }
-            if Instant::now() >= deadline {
+            let blocks = self.blocks.load(Ordering::Relaxed);
+            if blocks != seen {
+                seen = blocks;
+                deadline = Instant::now() + STALL;
+            } else if Instant::now() >= deadline {
                 return Ended::Stalled;
             }
             thread::sleep(POLL);
         }
+    }
+
+    /// Holds every sound on this output where it is, or lets them continue.
+    pub(crate) fn pause(&self, paused: bool) -> bool {
+        let command = if paused {
+            Command::Pause
+        } else {
+            Command::Resume
+        };
+        self.commands.try_send(command).is_ok()
+    }
+
+    /// Sets the gain of the whole output.
+    pub(crate) fn volume(&self, gain: f32) -> bool {
+        self.commands.try_send(Command::Volume(gain)).is_ok()
+    }
+
+    /// Moves every sound on this output to `seconds` from its start.
+    pub(crate) fn seek(&self, seconds: f64) -> bool {
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "the caller checked the range; the product saturates"
+        )]
+        let frames = (seconds * f64::from(self.rate)) as usize;
+        let offset = frames.saturating_mul(usize::from(self.channels));
+        self.commands.try_send(Command::Seek(offset)).is_ok()
     }
 
     /// Stops every sound playing on this output.
@@ -396,28 +430,28 @@ mod tests {
         let rate = usize::try_from(output.rate).unwrap() * usize::from(output.channels);
         // 50 ms of sound ends on its own.
         let short: Arc<[f32]> = vec![0.1; rate / 20].into();
-        let id = output.play(Arc::clone(&short), 1.0).unwrap();
+        let id = output.play(Arc::clone(&short), 1.0, false).unwrap();
         let started = Instant::now();
-        assert_eq!(output.wait(id, short.len(), || false), Ended::Done);
+        assert_eq!(output.wait(id, || false), Ended::Done);
         assert!(started.elapsed() >= Duration::from_millis(30));
 
         // 60 s of sound is cut short by cancelling.
         let long: Arc<[f32]> = vec![0.1; rate * 60].into();
-        let id = output.play(Arc::clone(&long), 1.0).unwrap();
+        let id = output.play(Arc::clone(&long), 1.0, false).unwrap();
         let started = Instant::now();
-        assert_eq!(output.wait(id, long.len(), || true), Ended::Done);
+        assert_eq!(output.wait(id, || true), Ended::Done);
         assert!(started.elapsed() < Duration::from_secs(10));
 
         // The voice limit refuses, and stopping all frees every voice again.
         let ids: Vec<u64> = (0..MAX_VOICES)
-            .map(|_| output.play(Arc::clone(&long), 1.0).unwrap())
+            .map(|_| output.play(Arc::clone(&long), 1.0, false).unwrap())
             .collect();
-        assert_eq!(output.play(Arc::clone(&long), 1.0), None);
+        assert_eq!(output.play(Arc::clone(&long), 1.0, false), None);
         assert!(output.stop_all());
         for id in ids {
-            assert_eq!(output.wait(id, long.len(), || false), Ended::Done);
+            assert_eq!(output.wait(id, || false), Ended::Done);
         }
-        assert!(output.play(short, 1.0).is_some());
+        assert!(output.play(short, 1.0, false).is_some());
     }
 
     #[test]

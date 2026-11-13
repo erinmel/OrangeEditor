@@ -5,6 +5,7 @@
 //! wait on each other.
 use crate::effects::Pool;
 use crate::services::ServiceEffect;
+use crate::state::{self, Kept, StoredVariable};
 use crate::{FlowEvent, FlowId, HostEvent};
 use orange_compiler::ControlPlan;
 use orange_guest::{GuestCancellation, guest_effect};
@@ -21,6 +22,7 @@ use orange_runtime::{
 use orange_runtime::{PortValues, Workspace, WorkspaceSnapshot};
 use orange_sdk::{Call, Session};
 use std::collections::{BTreeMap, VecDeque};
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::mpsc::{Sender, SyncSender};
 use std::sync::{Arc, Mutex, PoisonError};
@@ -35,7 +37,7 @@ const WATCH: Duration = Duration::from_millis(5);
 /// Wall time a closing flow gets to finish its stop before its thread leaves anyway.
 const CLOSE_GRACE: Duration = Duration::from_secs(2);
 
-pub(crate) type Query = Box<dyn FnOnce(&Run) + Send>;
+pub(crate) type Query = Box<dyn FnOnce(&mut Run) + Send>;
 
 /// State a flow's thread shares with the host handle.
 pub(crate) struct Shared {
@@ -62,6 +64,8 @@ impl std::fmt::Debug for Shared {
 /// at its next turn.
 #[derive(Default)]
 pub(crate) struct Space {
+    /// Where the persistent shared variables are stored, and which they are.
+    pub keep: Mutex<Option<Keep>>,
     /// `None` until the application declares the shared variables.
     pub workspace: Mutex<Option<Workspace>>,
     /// Counts committed writes, so a flow can tell it is behind without the lock.
@@ -83,6 +87,24 @@ impl Space {
             .unwrap_or_else(PoisonError::into_inner)
             .as_ref()
             .map(Workspace::snapshot)
+    }
+    /// Stores the persistent shared variables as they are now.
+    pub fn store(&self) -> Result<(), String> {
+        let keep = self.keep.lock().unwrap_or_else(PoisonError::into_inner);
+        let (Some(keep), Some(snapshot)) = (keep.as_ref(), self.snapshot()) else {
+            return Ok(());
+        };
+        let now = state::snapshot(&keep.variables, keep.registry.types(), |id| {
+            snapshot.get(id).ok().flatten().cloned()
+        });
+        state::save(&keep.directory, &keep.name, &now)
+    }
+    /// Wakes every flow, after a write the host itself made.
+    pub fn wake_all(&self) {
+        let flows = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
+        for thread in flows.values() {
+            thread.unpark();
+        }
     }
     fn wake_others(&self, me: FlowId) {
         let flows = self.flows.lock().unwrap_or_else(PoisonError::into_inner);
@@ -109,6 +131,7 @@ pub(crate) struct Swap {
     pub options: RunOptions,
     pub inbox_capacity: usize,
     pub sessions: BTreeMap<ConnectionId, Arc<dyn Session>>,
+    pub keep: Option<Keep>,
     pub reply: Sender<Result<Swapped, RunError>>,
 }
 
@@ -218,6 +241,7 @@ fn replace(driver: &mut RunDriver, cx: &mut Context, swap: Swap) -> Result<Swapp
     cx.inbox = inbox.clone();
     cx.sessions = swap.sessions;
     cx.plan = swap.plan;
+    cx.keep = swap.keep;
     Ok(Swapped {
         inbox,
         sources,
@@ -241,7 +265,18 @@ impl Sink {
     }
 }
 
+/// The run variables a flow stores as they change, and where.
+#[derive(Debug, Clone)]
+pub(crate) struct Keep {
+    pub directory: PathBuf,
+    /// The file name: the graph's ID.
+    pub name: String,
+    pub variables: Vec<Kept>,
+    pub registry: Arc<RegistrySnapshot>,
+}
+
 pub(crate) struct Context {
+    pub keep: Option<Keep>,
     pub id: FlowId,
     pub shared: Arc<Shared>,
     pub sink: Sink,
@@ -302,6 +337,11 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let mut space_seen = cx.space.version.load(Ordering::Acquire);
     // The value of each variable as last reported to the observer.
     let mut reported: BTreeMap<VariableId, Option<Value>> = BTreeMap::new();
+    // The persistent variables as last stored. `None` until the first comparison, so
+    // the values a flow starts with are stored once.
+    let mut stored: Option<Vec<StoredVariable>> = None;
+    // Whether this flow wrote a shared variable since the shared ones were stored.
+    let mut shared_dirty = false;
     // The value of each output port as last reported to the observer.
     let mut ports: PortValues = PortValues::new();
     loop {
@@ -373,6 +413,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                     let committed = receipt.commit().is_ok();
                     let _ = driver.run_mut().complete_shared(receipt);
                     if committed {
+                        shared_dirty = true;
                         let _ = cx.space.version.fetch_add(1, Ordering::AcqRel);
                         drop(workspace);
                         cx.space.wake_others(cx.id);
@@ -487,7 +528,22 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
             .as_mut()
             .map(std::mem::take);
         for query in queries.into_iter().flatten() {
-            query(run);
+            query(driver.run_mut());
+        }
+        let run = driver.run();
+        if let Some(keep) = &cx.keep {
+            let now = state::snapshot(&keep.variables, keep.registry.types(), |id| {
+                run.variable(id).cloned()
+            });
+            if stored.as_ref() != Some(&now) {
+                // A failed write is tried again at the next change.
+                if state::save(&keep.directory, &keep.name, &now).is_ok() {
+                    stored = Some(now);
+                }
+            }
+        }
+        if shared_dirty {
+            shared_dirty = cx.space.store().is_err();
         }
 
         let state = run.state();

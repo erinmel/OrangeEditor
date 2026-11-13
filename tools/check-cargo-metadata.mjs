@@ -26,12 +26,16 @@ const policy = {
   'orange-sdk': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-runtime']},
   // Terminal front end; reaches the product only through the host and the service
   // packages it builds in.
-  'orange-cli': {core: false, normal: ['orange-host', 'orange-net', 'orange-audio', 'orange-native']},
+  'orange-cli': {core: false, normal: ['orange-host', 'orange-net', 'orange-audio', 'orange-native', 'orange-vault', 'orange-files']},
   // Base network service package: the only crate with a network client. It is built on
   // the plugin SDK alone; its tests run it in a host.
   'orange-net': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
   // Loads native plugin libraries into service packages; the only crate with unsafe code.
   'orange-native': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
+  // Base file service package, built on the plugin SDK alone; its tests run it in a host.
+  'orange-files': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
+  // Credential stores behind the SDK's SecretStore; the only crate with an OS keyring library.
+  'orange-vault': {core: false, normal: ['orange-sdk']},
   // Example native plugin library, loaded by orange-native's tests.
   'orange-plugin-example': {core: false, normal: ['orange-sdk']},
   // Base audio service package: the only crate with an audio device library. Built on

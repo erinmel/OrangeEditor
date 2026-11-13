@@ -24,6 +24,92 @@ Graph **directory bundle** saves use immutable generation directories plus a sma
 
 ## Connection manager
 
+Credentials, authorization and binary payloads (2026-11-12; `orange-sdk`,
+`orange-vault`, `orange-host`, `orange-net`). A setting value that is exactly
+`credential://<name>` (name: 1 to 128 of `a-z 0-9 . _ - /`) is a reference. When the
+host opens a connection it replaces each reference, at any depth of the settings, with
+the secret from `HostOptions::secrets` (`SecretStore`) and hands the result to the
+adapter only; the document, the shared-connection table, events and errors keep the
+reference. A missing secret, or a reference with no store configured, refuses the
+connection by name. `orange-vault` provides `OsVault` (keyring 3.6.3: Windows
+Credential Manager, macOS Keychain and, on Linux, the desktop's Secret Service over
+D-Bus, which keeps secrets across restarts; a machine without a Secret Service reports
+the store as unavailable rather than keeping secrets somewhere weaker)
+and `MemoryVault`; the `orange secret set|remove|check` commands manage `OsVault`
+entries and read the secret from standard input. HTTP and WebSocket connections take
+`bearer` (a token), `basic` (`{user, password}`) and `headers` (an object); the HTTP
+adapter adds them to every request and the WebSocket adapter to its opening handshake.
+`org.orange.net/http-request-bytes` sends a `core/bytes@1` body with a content type
+and a `headers` list of `Name: value` lines for that request, and returns status,
+response content type and response bytes;
+`org.orange.net/ws-send-bytes` and the entry `org.orange.net/ws-binary` carry binary
+WebSocket messages. A graph can therefore exchange protobuf, gRPC-Web frames or a
+payload it encrypted itself. Not provided: HTTP/2, so native gRPC is not reachable;
+streaming of request bodies; client certificates; secret rotation notices to open
+connections (a changed secret is used by connections opened afterwards).
+
+OAuth and streamed responses (2026-11-12; `orange-net`). An HTTP connection's `oauth`
+setting is `{token_url, client_id, client_secret}` for the client-credentials grant
+or `{token_url, client_id, refresh_token}` (with an optional `client_secret`) for the
+refresh grant, plus optional `scope` and `client_auth` (`body`, the default, or
+`basic`). The token endpoint must be `https://`, or `http://` on this machine only.
+Nothing is requested when the connection opens. The first request fetches an access
+token; it is reused until 30 seconds before `expires_in` runs out; a request answered
+with 401 fetches a new token and is sent once more. A connection set up with a refresh
+token follows the server's rotation of it in memory; a connection using client
+credentials never changes grant. A token endpoint that refuses takes the node's failed
+route with `org.orange.net/Authorization`; errors repeat the status and the
+standard's error code, never a secret or token. `orange oauth login <settings.json>
+<name>` runs the authorization-code flow with PKCE (S256): it listens on
+`127.0.0.1:<redirect_port>`, prints the address to open, accepts only the return that
+carries its own `state`, exchanges the code and stores the refresh token in the
+credential store under `<name>`. `org.orange.net/http-stream` sends a request like
+the binary node and reads the response as it arrives: each non-empty line (at most
+1 MiB) fires the connection's `http-stream-line` entries, and the node continues at
+the end with `status` and `lines`. A flow that is behind slows the reading rather
+than losing lines. `stream_timeout_ms` (default 600,000) bounds one response. Not
+provided: writing a rotated refresh token back to the credential store (after a
+restart the stored one is used again, which fails with servers that invalidate it);
+OAuth for WebSocket and MQTT connections; the device-code and password grants;
+OpenID Connect discovery; cancelling a stream that sends nothing (it ends at the next
+line or at the timeout); streaming of request bodies.
+
+MQTT (2026-11-12; `orange-net`, FR-25 qualified for 3.1.1). Adapter
+`org.orange.net/mqtt` with settings `url` (`mqtt://host[:port]`, default port 1883, or
+`mqtts://` for TLS on 8883 with the bundled roots), `username`, `password`,
+`client_id` (generated when absent), `topics` (up to 64 filters, `+` and `#`
+allowed), `qos` (0 or 1, default 0), `keep_alive_s` (5 to 3,600, default 30) and
+`ca_file` (a PEM file of certificate authorities, which then replace the bundled ones:
+for a broker with a private authority).
+Nodes `mqtt-publish` (`topic`, `text`, `retain`) and `mqtt-publish-bytes` (`topic`,
+`data`, `retain`) queue a message, at most 256 waiting; entries `mqtt-message`
+(payload `[topic, text]`, fired for UTF-8 payloads) and `mqtt-binary` (payload bytes,
+fired for every message). The client is this crate's own: one thread per connection
+that connects when a flow has attached its triggers, subscribes, pings at half the
+keep-alive, treats twice the keep-alive without a packet as a lost connection,
+reconnects with backoff from 250 ms to 5 s and subscribes again. With `qos` 1 a
+published message is kept until the broker acknowledges it and is sent again with the
+duplicate flag after a reconnect, so a subscriber can receive it twice; received
+messages are acknowledged after they are handed to the entries. Every connection is a
+clean session. Not provided: MQTT 5, quality of service 2, wills, persistent sessions,
+client certificates, WebSocket transport, a per-node topic filter (subscriptions belong
+to the connection), and messages over 8 MiB.
+
+Files (2026-11-12; `orange-files`, package `org.orange.files`). A
+`org.orange.files/folder` connection has settings `path` (an existing directory),
+`read_only` and `poll_ms` (50 to 60,000, default 500). Nodes: `read-text`,
+`write-text`, `append-text`, `read-bytes`, `write-bytes`, `list`, `exists`, `delete`,
+`move`, `copy`, `make-directory`, `remove-directory` (empty directories only)
+and the entry `on-change` (payload: the changed file's path). Paths are relative to
+the folder with `/` between plain names; `..`, absolute and drive forms, device names
+and links leading out of the folder are refused. A write goes to a temporary file in
+the same directory, is flushed and renamed over the target. Reads and writes are whole
+files up to 64 MiB; a listing or a watched folder holds at most 10,000 entries.
+`on-change` compares sizes and modification times every `poll_ms`, so several changes
+to one file within that time fire once and a change that restores both is not seen.
+Not provided: streams for larger files, operating-system change notifications, text encodings other than
+UTF-8.
+
 Implemented subset (2026-11-10; `orange-host`, `orange-net`): connection declarations
 (11 §16.1), graph and shared scope, and adapter-owned sessions (02).
 The `org.orange.net/http` adapter takes settings `base_url` (required) and `timeout_ms` (whole
@@ -116,10 +202,21 @@ back on a second bounded channel so their memory is freed on a control thread. I
 not allocate, lock, log or read files. The capture callback only sums squares and
 steps the threshold; a session thread turns crossings into entry firings.
 
-Not implemented from the design below: `AudioAsset` handles, pause, seek, loop,
-playlists and seeded random selection, per-sound routing, formats other than WAV,
-resampling better than linear interpolation, hotplug and device-change handling,
-hold time on the threshold, and multi-device synchronization. Crossings closer than
+Playback controls and formats (2026-11-12): `play` and `loop` read WAV, FLAC, MP3 and
+Ogg Vorbis files, told apart by content (MP3 and Ogg through symphonia 0.5.5); `loop` starts the sound again each time it ends and continues
+only when stopped. `pause`, `resume`, `seek` (input `seconds`, 0 to 600) and
+`set-volume` (input `gain`, 0 to 8) act on every sound of their output connection;
+sounds that need separate control play on separate connections. A paused output is
+silent and holds each sound's position; a seek past a sound's end ends it and wraps a
+repeating one; the volume multiplies each sound's own gain. A playing node waits
+however long its sound is paused or repeats, and reports a stalled device when the
+device has asked for no samples for two seconds. The callback rules are unchanged.
+
+Not implemented from the design below: `AudioAsset` handles, per-sound control and
+routing, streaming from disk (a sound is decoded whole, up to 64 MiB and 600 s),
+playlists and seeded random selection, Opus and AAC, resampling better than linear interpolation,
+hotplug and device-change handling, hold time on the threshold, and multi-device
+synchronization. Crossings closer than
 10 ms are reported as one.
 
 

@@ -109,6 +109,42 @@ pub fn load(path: &Path) -> Result<ServicePackage, LoadError> {
     Ok(package)
 }
 
+/// Puts a newer build of a plugin library beside the one in use, to be loaded at the
+/// next start: writes `library` as `<id>-<version>` with the platform's library
+/// extension in the directory of `current`, and renames `current` by appending
+/// `.replaced` so [`load_directory`] no longer picks it up. A library in use can be
+/// renamed but not overwritten, which is why the new build gets its own name. The
+/// caller has already checked that `library` is the announced file.
+pub fn replace(
+    current: &Path,
+    id: &str,
+    version: &str,
+    library: &[u8],
+) -> Result<PathBuf, LoadError> {
+    let failed = |error: std::io::Error| LoadError::Directory(format!("{:?}", error.kind()));
+    let plain = |text: &str| {
+        !text.is_empty()
+            && text
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_' | b'+'))
+    };
+    let directory = current
+        .parent()
+        .filter(|_| plain(id) && plain(version))
+        .ok_or_else(|| LoadError::Directory("InvalidInput".into()))?;
+    let name = format!("{id}-{version}.{}", std::env::consts::DLL_EXTENSION);
+    let new = directory.join(&name);
+    let temporary = directory.join(format!("{name}.tmp"));
+    std::fs::write(&temporary, library).map_err(failed)?;
+    if new != current {
+        let mut retired = current.as_os_str().to_owned();
+        retired.push(".replaced");
+        std::fs::rename(current, PathBuf::from(retired)).map_err(failed)?;
+    }
+    std::fs::rename(&temporary, &new).map_err(failed)?;
+    Ok(new)
+}
+
 /// One library of a directory and what loading it gave.
 pub type Loaded = (PathBuf, Result<ServicePackage, LoadError>);
 

@@ -48,7 +48,9 @@ that declares a subset with the same IDs and types reads them with
 The host holds one runtime `Workspace` behind a lock; each flow applies its shared
 writes on its own thread under that lock, so writes from different flows are applied
 one at a time and none is lost, and every other flow is woken and takes the new
-snapshot before its next turn. `Host::shared_variable` reads the current value. A
+snapshot before its next turn. `Host::shared_variable` reads the current value, `Host::shared_variables` all of them
+as one state, and `Host::shared_writes` counts writes so a front end reads again only
+after a change. A
 document that uses shared variables does not open before they are declared. The
 declaration cannot be extended or replaced afterwards, the values are not stored
 between sessions, workspace-scope events are not wired, and an observed flow does not
@@ -71,6 +73,48 @@ from the node's ID (`core/set-variable` is "Set variable" in "Core"). The exampl
 Base packages (2026-11-11): `HostOptions::base_nodes = false` leaves the bundled base
 nodes unregistered, and an application chooses its service packages (the `orange`
 command: `--no-base`, `--no-net`, `--no-audio`). Core language nodes are always present.
+Persistent and editable variables (2026-11-12): with `HostOptions::state_dir`, the
+run variables a document declares `persistent` are written to
+`<graph ID>.variables.json` after each turn in which one changed, and a flow opened on
+that graph starts with the stored values that still have the same ID and type;
+persistent shared variables use `shared.variables.json`. The file is
+`{"format": "orange.variables", "format_version": 1, "variables": [{"id", "name",
+"literal"}]}`, written to a temporary name and renamed. `Host::set_variable(flow, id,
+value)` writes a run variable from outside the graph on the flow's own thread
+(`Run::set_variable`): the value must have the declared type, an On Variable Changed
+entry fires as for a graph write, and a paused run takes the value without firing.
+`Host::set_shared_variable` does the same for a shared variable.
+`Host::stored_variables` and `Host::store_variable` read and edit stored values while
+no flow runs. Not stored: node state, local variables, and anything of a flow that
+ends between two turns' writes and the save that follows them.
+
+Documents and reuse (2026-11-12): `save_document` refuses text that is not a
+document, keeps the replaced file as `<file>.bak`, writes through a temporary file and
+removes the autosave; `autosave_document` writes `<file>.autosave` only;
+`recover_document` returns the saved file, an autosave that is a document and differs
+from it, and the backup when the saved file is missing or damaged.
+`Host::requirements` lists the packages a document is locked to and whether this host
+has exactly each one, without opening it. `Host::export` builds a `Bundle` (the
+document and the stored archives it needs; requirements without a stored archive are
+returned separately) and `Bundle::from_bytes` reads one without installing or running
+anything. `publish_function` turns a document function into a package with one
+graph-made node: the function must be an action or async function without type
+parameters, using only its local variables and at most one connection. Not provided:
+selecting nodes of a graph and extracting them into a function, which is an editor
+operation on the model and is not built; migration of older document formats;
+remapping of IDs on import.
+
+Package switches (2026-11-12): `Host::packages` lists the base nodes (ID
+`org.orange.base`), each native service package and each installed package with its
+kind, whether it is in use (`active`) and whether the next start uses it (`enabled`).
+`Host::set_enabled(id, bool)` changes the second only: a host leaves out the IDs in
+`HostOptions::disabled_packages` and in `disabled.json` of its package directory
+(`{"format": "orange.disabled-packages", "format_version": 1, "packages": [ids]}`)
+when it starts, so a switch takes effect at the next start and running flows are never
+disturbed. A left-out service package is not registered, a left-out stored archive is
+not read, and a document that uses their nodes does not open. Installing a package
+enables it. A native package names itself for the list with
+`ServicePackage::about(name, description)`.
 Stored packages (2026-11-11): with `HostOptions::package_dir` the host saves every
 installed archive in that directory under the name of its SHA-256, and an index,
 `installed.json`, lists them in installation order with the granted capabilities. A

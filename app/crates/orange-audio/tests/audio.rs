@@ -97,8 +97,10 @@ fn hound_spec() -> Vec<u8> {
 }
 
 /// A manual entry plays `path` on the silent device, then stores 1; `failed` stores -1.
-/// A second manual entry stops the device's sounds.
-fn document(host: &Host, path: &Path, device: &str) -> String {
+/// A second manual entry stops the device's sounds. `play` is the playing node. Manual
+/// entries 20, 22, 24 and 26 pause, resume, seek to 0.95 s and set the volume, which
+/// then stores 5.
+fn document(host: &Host, path: &Path, device: &str, play: &str) -> String {
     let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
     let output = json!({"id": OUTPUT, "name": "speakers",
         "adapter": orange_audio::OUTPUT_ADAPTER, "scope": "graph",
@@ -129,12 +131,29 @@ fn document(host: &Host, path: &Path, device: &str) -> String {
     place(
         &mut document,
         3,
-        orange_audio::PLAY,
+        play,
         OUTPUT,
         json!({"path": {"type": STRING, "value": path.to_str().unwrap()},
             "gain": {"type": F64, "bits": format!("{:016x}", 1.0f64.to_bits())}}),
     );
     place(&mut document, 8, orange_audio::STOP, OUTPUT, json!({}));
+    let number = |name: &str, value: f64| json!({name: {"type": F64, "bits": format!("{:016x}", value.to_bits())}});
+    place(&mut document, 21, orange_audio::PAUSE, OUTPUT, json!({}));
+    place(&mut document, 23, orange_audio::RESUME, OUTPUT, json!({}));
+    place(
+        &mut document,
+        25,
+        orange_audio::SEEK,
+        OUTPUT,
+        number("seconds", 0.95),
+    );
+    place(
+        &mut document,
+        27,
+        orange_audio::SET_VOLUME,
+        OUTPUT,
+        number("gain", 0.5),
+    );
     place(
         &mut document,
         10,
@@ -160,6 +179,11 @@ fn document(host: &Host, path: &Path, device: &str) -> String {
         core(7, "on-manual"),
         core(9, "on-manual"),
         level,
+        core(20, "on-manual"),
+        core(22, "on-manual"),
+        core(24, "on-manual"),
+        core(26, "on-manual"),
+        set(28, 102, 5),
     ]);
     saved["edges"] = json!([
         edge(1, 1, "then", 3, "in"),
@@ -169,10 +193,16 @@ fn document(host: &Host, path: &Path, device: &str) -> String {
         edge(5, 9, "then", 10, "in"),
         edge(6, 10, "then", 11, "in"),
         edge(7, 10, "level", 11, "value"),
+        edge(8, 20, "then", 21, "in"),
+        edge(9, 22, "then", 23, "in"),
+        edge(10, 24, "then", 25, "in"),
+        edge(11, 26, "then", 27, "in"),
+        edge(12, 27, "then", 28, "in"),
     ]);
     saved["variables"] = json!([
         {"id": id(100), "name": "played", "type": I64, "scope": "run"},
-        {"id": id(101), "name": "level", "type": F64, "scope": "run"}
+        {"id": id(101), "name": "level", "type": F64, "scope": "run"},
+        {"id": id(102), "name": "volume set", "type": I64, "scope": "run"}
     ]);
     to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
 }
@@ -181,7 +211,7 @@ fn document(host: &Host, path: &Path, device: &str) -> String {
 fn a_graph_plays_a_file_and_continues_when_it_has_ended() {
     let mut host = host();
     let path = tone("short.wav", 60);
-    let text = document(&host, &path, orange_audio::NULL_DEVICE);
+    let text = document(&host, &path, orange_audio::NULL_DEVICE, orange_audio::PLAY);
     assert!(host.check(&text).unwrap().is_empty());
     let flow = host.open(&text).unwrap();
     let started = Instant::now();
@@ -196,7 +226,7 @@ fn a_graph_plays_a_file_and_continues_when_it_has_ended() {
 fn a_stop_node_ends_a_long_sound_early() {
     let mut host = host();
     let path = tone("long.wav", 30_000);
-    let text = document(&host, &path, orange_audio::NULL_DEVICE);
+    let text = document(&host, &path, orange_audio::NULL_DEVICE, orange_audio::PLAY);
     let flow = host.open(&text).unwrap();
     let started = Instant::now();
     host.trigger(flow, node(1), None).unwrap();
@@ -217,10 +247,69 @@ fn a_stop_node_ends_a_long_sound_early() {
 }
 
 #[test]
+fn a_looped_sound_plays_until_it_is_stopped() {
+    let mut host = host();
+    let path = tone("loop.wav", 50);
+    let text = document(&host, &path, orange_audio::NULL_DEVICE, orange_audio::LOOP);
+    assert!(host.check(&text).unwrap().is_empty());
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    // Many times the sound's length later the node is still playing.
+    std::thread::sleep(Duration::from_millis(600));
+    assert_eq!(read(&host, flow, 100), None);
+    let mut last = Instant::now() - Duration::from_secs(1);
+    until("the loop to stop", || {
+        if last.elapsed() >= Duration::from_millis(100) {
+            last = Instant::now();
+            host.trigger(flow, node(7), None).unwrap();
+        }
+        read(&host, flow, 100).is_some()
+    });
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(1)));
+}
+
+#[test]
+fn sounds_pause_resume_and_seek_and_the_volume_is_set() {
+    let mut host = host();
+    let path = tone("second.wav", 1_000);
+    let text = document(&host, &path, orange_audio::NULL_DEVICE, orange_audio::PLAY);
+    assert!(host.check(&text).unwrap().is_empty());
+    let flow = host.open(&text).unwrap();
+    // Setting the volume before anything plays opens the device.
+    host.trigger(flow, node(26), None).unwrap();
+    until("the volume", || {
+        read(&host, flow, 102) == Some(Value::I64(5))
+    });
+
+    host.trigger(flow, node(1), None).unwrap();
+    // A pause before the sound has started holds nothing, so pause for a while.
+    for _ in 0..8 {
+        std::thread::sleep(Duration::from_millis(50));
+        host.trigger(flow, node(20), None).unwrap();
+    }
+    // Paused, the one-second sound is still there long after it would have ended.
+    std::thread::sleep(Duration::from_millis(1_500));
+    assert_eq!(read(&host, flow, 100), None);
+
+    // Resumed and moved near its end, it ends at once and the graph continues.
+    host.trigger(flow, node(22), None).unwrap();
+    host.trigger(flow, node(24), None).unwrap();
+    let moved = Instant::now();
+    until("the sound to end", || read(&host, flow, 100).is_some());
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(1)));
+    assert!(moved.elapsed() < Duration::from_millis(500));
+}
+
+#[test]
 fn a_missing_file_or_device_takes_the_failed_route() {
     let mut host = host();
     let missing = std::env::temp_dir().join("orange-audio-no-such-file.wav");
-    let text = document(&host, &missing, orange_audio::NULL_DEVICE);
+    let text = document(
+        &host,
+        &missing,
+        orange_audio::NULL_DEVICE,
+        orange_audio::PLAY,
+    );
     let flow = host.open(&text).unwrap();
     host.trigger(flow, node(1), None).unwrap();
     until("the failure", || read(&host, flow, 100).is_some());
@@ -228,7 +317,7 @@ fn a_missing_file_or_device_takes_the_failed_route() {
 
     // The document opens although the device does not exist; playing is what fails.
     let path = tone("unused.wav", 20);
-    let text = document(&host, &path, "no such device 7f3a");
+    let text = document(&host, &path, "no such device 7f3a", orange_audio::PLAY);
     let flow = host.open(&text).unwrap();
     host.trigger(flow, node(1), None).unwrap();
     until("the failure", || read(&host, flow, 100).is_some());
@@ -239,7 +328,7 @@ fn a_missing_file_or_device_takes_the_failed_route() {
 fn the_silent_input_reports_silence_and_never_fires() {
     let mut host = host();
     let path = tone("idle.wav", 20);
-    let text = document(&host, &path, orange_audio::NULL_DEVICE);
+    let text = document(&host, &path, orange_audio::NULL_DEVICE, orange_audio::PLAY);
     let flow = host.open(&text).unwrap();
     host.trigger(flow, node(9), None).unwrap();
     until("the level", || read(&host, flow, 101).is_some());
@@ -278,8 +367,13 @@ fn the_audio_nodes_are_listed_with_their_text() {
 fn a_tone_plays_on_the_default_device() {
     let mut host = host();
     let path = tone("beep.wav", 300);
-    let mut saved: Json =
-        serde_json::from_str(&document(&host, &path, orange_audio::NULL_DEVICE)).unwrap();
+    let mut saved: Json = serde_json::from_str(&document(
+        &host,
+        &path,
+        orange_audio::NULL_DEVICE,
+        orange_audio::PLAY,
+    ))
+    .unwrap();
     let _ = saved["connections"][0]["settings"]
         .as_object_mut()
         .unwrap()

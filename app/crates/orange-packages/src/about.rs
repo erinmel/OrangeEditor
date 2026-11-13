@@ -59,16 +59,35 @@ impl About {
 
 /// Where the publisher announces versions of this package.
 ///
-/// The feed is an `https://` URL. Its format and how a host verifies it are not part of
-/// the manifest; the manifest only says where to look and which channel this build
-/// belongs to.
+/// The feed is an `https://` URL. The manifest says where to look, which channel this
+/// build belongs to and, with `key`, which publisher key must have signed the feed.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UpdateSource {
     feed: String,
     channel: String,
+    key: Option<String>,
 }
 
 impl UpdateSource {
+    /// An update source outside a manifest, under the manifest's rules: an `https://`
+    /// feed URL, a channel (`stable` when `None`) and an optional signing key.
+    pub fn new(
+        feed: &str,
+        channel: Option<&str>,
+        key: Option<&str>,
+    ) -> Result<Self, ManifestError> {
+        update(WireUpdate {
+            feed: feed.to_owned(),
+            channel: channel.map(str::to_owned),
+            key: key.map(str::to_owned),
+        })
+    }
+    /// The publisher's feed-signing key, `ed25519:<64 hex>`: the Ed25519 public key
+    /// that must have signed the feed. `None` when the package accepts an unsigned
+    /// feed, trusting its `https://` origin alone.
+    pub fn key(&self) -> Option<&str> {
+        self.key.as_deref()
+    }
     /// The feed URL.
     pub fn feed(&self) -> &str {
         &self.feed
@@ -102,6 +121,18 @@ pub(crate) struct WireUpdate {
     feed: String,
     #[serde(default)]
     channel: Option<String>,
+    #[serde(default)]
+    key: Option<String>,
+}
+
+/// `ed25519:` and 64 lowercase hexadecimal digits.
+pub(crate) fn is_signing_key(value: &str) -> bool {
+    value.strip_prefix("ed25519:").is_some_and(|hex| {
+        hex.len() == 64
+            && hex
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    })
 }
 
 fn refused(field: &'static str) -> ManifestError {
@@ -196,8 +227,12 @@ pub(crate) fn update(wire: WireUpdate) -> Result<UpdateSource, ManifestError> {
     if !slug(&channel) || channel.starts_with(|c: char| c.is_ascii_digit()) {
         return Err(refused("update.channel"));
     }
+    if wire.key.as_deref().is_some_and(|key| !is_signing_key(key)) {
+        return Err(refused("update.key"));
+    }
     Ok(UpdateSource {
         feed: wire.feed,
         channel,
+        key: wire.key,
     })
 }

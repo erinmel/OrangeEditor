@@ -1,5 +1,200 @@
 # Tooling, environment and research register
 
+## OAuth and streamed responses — 2026-11-12
+
+Sources: RFC 6749 (client-credentials and refresh-token grants, token response),
+RFC 7636 (PKCE; the appendix B example is a unit test). `ureq` 3.5.1
+`timeout_connect`, `timeout_recv_response`, `timeout_recv_body` and
+`Body::as_reader` for streamed responses. No dependency was added.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,796 passed, 0 failed, 20 ignored |
+| `cargo test -p orange-net`, three runs | Pass each time |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Sign-in run by hand: `orange oauth login` against a stand-in identity provider
+written for the run in Node.js, which recomputes the PKCE challenge with its own
+SHA-256. A return with a wrong `state` was answered and ignored; the real return was
+accepted; the provider confirmed that the verifier matched the challenge; the refresh
+token was stored under a generated name, was not present in the command's output, and
+was then removed.
+
+Not run: any real identity provider or OAuth-protected API; a real server-sent-events
+service; a stream that stalls until `stream_timeout_ms`.
+
+## Verification in containers; MP3 and Ogg; permissions; feed signing — 2026-11-12
+
+Docker 29.6.1 on Windows; images `eclipse-mosquitto:2` (Mosquitto 2.1.2) and
+`rust:bookworm` (Debian 12, toolchain 1.99.1 installed by rustup from the project's
+toolchain file).
+
+Linux credentials. `keyring` 3.6.3 with `sync-secret-service`, `crypto-rust`,
+`vendored`. In the container, with `gnome-keyring` unlocked inside
+`dbus-run-session`, the `orange-vault` example stored a generated value and read it
+back; the keyring wrote `login.keyring`; a second, separate D-Bus session with a new
+daemon read the same value, removed it and then reported it as not stored. Without any
+Secret Service the example reported the store as unavailable and exited with an error.
+The earlier kernel-keyring backend, which lost secrets at logout, is no longer used.
+
+MQTT over TLS. A certificate authority and a server certificate for `localhost` were
+generated with OpenSSL in the Mosquitto image; the broker required TLS and a password
+(`allow_anonymous false`, a `mosquitto_passwd` file). The ignored real-broker test,
+with `ORANGE_MQTT_BROKER=mqtts://localhost:18884`:
+
+| Configuration | Result |
+|---|---|
+| `ca_file` = the broker's authority, right password | Pass: the graph received the message it published |
+| Same, wrong password (`ORANGE_MQTT_WRONG_PASSWORD`) | Pass: nothing was delivered |
+| `ca_file` = an authority that did not sign the broker | Fails to connect, as it must; the broker logged `unknown ca` |
+| No `ca_file` (bundled public roots) | Fails to connect, as it must |
+
+MP3 and Ogg. `symphonia` 0.5.5 (`get_probe().format`, `get_codecs().make`,
+`SampleBuffer::copy_interleaved_ref`); 0.6.1 exists and was not taken because its API
+was not read. Fixtures: 0.25 s of a 440 Hz tone at 22,050 Hz mono, encoded by ffmpeg
+5.1.9 (libmp3lame 32 kbit/s, libvorbis) in the container. The test checks duration,
+the tone's frequency by zero crossings, the level, and conversion to stereo 44,100 Hz.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1791 passed, 0 failed, 20 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange feed key`, `feed key` again, `feed sign`, `secret remove` with a generated name | Key stored and public key printed; the second call refused; a 128-character signature written; the key removed |
+
+Still not verified: the credential store on macOS; KWallet (only GNOME Keyring was
+run); MQTT reconnection, retained and binary messages against Mosquitto; MP3 and Ogg
+files from other encoders or with variable bit rate; `orange updates` against a real
+server; audio on hardware beyond one manual tone.
+
+Core gaps that remain open after this unit, by decision of scope rather than
+verification: HTTP/2 and native gRPC, streaming request and response bodies, OAuth
+flows, client certificates, MQTT 5 and quality of service 2, streams for files over
+64 MiB and operating-system change notifications, per-sound audio control and
+playlists, custom types and codecs and panels from plugins, host allow-lists and
+quotas for component access, key rotation for feeds, document format migration and ID
+remapping on import, the remaining trigger kinds, live preview and stream bridges of
+the language, and persistence of node state.
+
+## MQTT — 2026-11-12
+
+Source: MQTT 3.1.1 (OASIS standard) packet layouts for CONNECT, CONNACK, PUBLISH,
+PUBACK, SUBSCRIBE, SUBACK, PINGREQ, PINGRESP and DISCONNECT. The client is written in
+`orange-net`; `rumqttc` was not adopted because it brings an async runtime into a
+crate whose other clients are blocking. TLS uses `rustls` 0.23.46
+(`ClientConfig::builder_with_provider`, `StreamOwned`) with `webpki-roots` 1.0.11.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,788 passed, 0 failed, 20 ignored |
+| `cargo test -p orange-net --test mqtt`, three runs | Pass each time |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Real broker: Eclipse Mosquitto 2.1.2 (`eclipse-mosquitto:2` in Docker 29.6.1, bound
+to 127.0.0.1, anonymous access allowed).
+`ORANGE_MQTT_BROKER=mqtt://127.0.0.1:18883 cargo test -p orange-net --locked --test mqtt -- --ignored`
+passed three times: the broker logged the client as protocol 4, clean session,
+keep-alive 30 with its user name, and the graph received the message it published at
+quality of service 1 through its `orange/#` subscription.
+
+Still not exercised against a real broker: `mqtts://`, a broker that requires the
+password, reconnecting and the repeated message, retained messages, binary payloads,
+keep-alive over a long idle time, and a clean DISCONNECT (the test process ends first,
+so the broker logged the connection as closed by the client). Those are covered only
+by the broker in the test file, which is written from the same reading of the
+standard as the client.
+
+## Files, credentials, network payloads, persistent variables, documents and reuse — 2026-11-12
+
+Versions and sources: `keyring` 3.6.3 (`Entry::new`, `set_password`, `get_password`,
+`delete_credential`, `Error::{NoEntry, NoStorageAccess}`, read from the 3.6.3 crate
+source). 4.2.0 needs Rust 1.88 and splits the stores into separate crates; 3.6.3 was
+taken as the last release with built-in native stores. `tungstenite` 0.30.0
+`IntoClientRequest` for handshake headers and `Message::binary`.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,783 passed, 0 failed, 19 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+| `cargo test -p orange-vault -- --ignored` (Windows Credential Manager) | Pass: a generated value is stored, read and removed |
+| `orange secret set`, `check`, `remove`, `check` with a generated name and value | Stored, found, removed, then reported as not stored |
+| `orange pack`, `export`, `import`, `import --apply`, `check` with the example graph package | The bundle holds the graph and one package; the import lists it as missing, then as available after `--apply`, and the imported graph checks |
+
+Not run: the operating-system store on macOS and Linux (the Linux backend is the
+kernel keyring, which is not persistent across logins); HTTP and WebSocket
+authorization against a real service; the file watcher on network or very large
+folders; links leading out of a folder (creating one on Windows needs privileges);
+`cargo deny` locally for the keyring dependency tree.
+
+Known limits recorded with the contracts: no HTTP/2 and so no native gRPC, no MQTT,
+no streaming bodies, no OAuth flows; no extraction of a node selection into a function;
+persistence covers declared variables only.
+
+## Signed feeds, native plugin updates, audio controls and component access — 2026-11-12
+
+Versions and sources: `ring` 0.17.14 (`signature::UnparsedPublicKey::verify` with
+`ED25519`, `digest::digest` with `SHA256`; already locked as the rustls provider);
+`claxon` 0.4.3 (`FlacReader::open`, `streaminfo`, `samples`, read from the 0.4.3 crate
+source; Apache-2.0). `ureq` 3.5.1 `max_redirects(0)` for the plugin HTTPS client.
+MP3 and Ogg decoders were not adopted: the candidates are MPL-2.0 or bind C code,
+outside `deny.toml`.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,770 passed, 0 failed, 18 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+| `node tools/build-guest-fixtures.mjs`, then `ORANGE_GUEST_PROBE=<out> cargo test -p orange-guest --locked` | Pass: the probe guest rebuilt against the extended interface imports neither new interface and its tests pass |
+| `cargo test -p orange-audio`, three runs | Pass each time (timing-based pause and loop tests) |
+
+How each part was checked: the feed signature with a key pair generated in the test;
+FLAC with a stream the test writes itself (one uncompressed frame with both
+checksums), since no encoder is available here; the audio controls in the mixer
+directly and through a graph on the silent device; component access with a component
+written in the text format that calls the file and HTTPS imports and a recording
+client.
+
+Not run: `orange updates` against a real server, for archives, signatures or
+libraries; a FLAC file from a real encoder (compressed subframes are claxon's code,
+not exercised here); the audio controls on hardware; a package installed in a host
+using its data directory end to end (the host passes the directory and client to the
+guest layer, which is where the tests are); link refusal on Windows needs privileges
+to create a link and is not tested.
+
+## Package switches and shared-variable listing — 2026-11-12
+
+PR 173 (audio, native plugin libraries, package management) merged with every hosted
+check passing on Linux, Windows and macOS, including the loader test that builds and
+loads the example plugin library.
+
+This unit adds `Host::set_enabled`, `HostOptions::disabled_packages`, `PackageKind`,
+`PackageInfo::{kind, active, enabled, name, description}`, the base nodes as a listed
+package, `ServicePackage::about`, `Host::shared_variables`, `Host::shared_writes` and
+the `orange enable` / `disable` commands. No dependency changed.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,756 passed, 0 failed, 18 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check` | Pass |
+| `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange disable org.orange.audio --store <dir>`, then `orange packages --store <dir>` and `orange enable` | Audio and base nodes listed as disabled and their nodes gone from `orange nodes`; both back after `enable`; an unknown ID and a missing `--store` are refused |
+
+Limits: a switch never changes a running host, so a front end shows "from the next
+start"; a disabled stored package is listed by ID and version only, because its archive
+is not read; native plugin libraries have no update source.
+
 ## Native plugin libraries and the audio stop test — 2026-11-11
 
 Hosted run 43142118022 failed `a_stop_node_ends_a_long_sound_early` on Linux, Windows

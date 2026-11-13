@@ -110,9 +110,18 @@ fn looping_run(kind: &str, effect: &str) -> Run {
     let engine = GuestEngine::new(GuestLimits::default()).unwrap();
     // The probe component imports `log`, so its instances need that grant.
     let (verified, files) = crate::archive_nodes::archive(manifest());
-    let guest =
-        GuestPackage::from_archive(&engine, &verified, &files, "guest", Grants { log: true })
-            .unwrap();
+    let guest = GuestPackage::from_archive(
+        &engine,
+        &verified,
+        &files,
+        "guest",
+        Grants {
+            log: true,
+            files: false,
+            http: false,
+        },
+    )
+    .unwrap();
     let mut store = PackageStore::new(base, HOST_API_VERSION, MemoryJournal::new());
     let _ = store
         .install(verified.into_contents(vec![

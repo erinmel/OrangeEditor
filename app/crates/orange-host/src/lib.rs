@@ -12,24 +12,26 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+mod documents;
 mod effects;
 mod flow;
 mod graphs;
 mod persist;
 mod services;
+mod state;
 
 use effects::Pool;
-use flow::{Context, Query, Shared, Sink};
+use flow::{Context, Keep, Query, Shared, Sink};
 use graphs::{GraphNode, Graphs};
 use orange_bundled::MathPackage;
 use orange_compiler::{CompileError, CompileOptions, compile_control_with_effects};
-use orange_guest::{GuestEngine, GuestLoadError, GuestPackage, WithGuests};
+use orange_guest::{GuestAccess, GuestEngine, GuestLoadError, GuestPackage, WithGuests};
 use orange_kernel::{
     BindingRequest, EffectBinding, EffectResolver, EntropyBinding, EntropyKernelResolver,
     KernelBinding, PureKernelResolver, ResolveError,
 };
 use orange_model::catalog::{ProviderDescriptor, RegistryBuilder, RegistrySnapshot};
-use orange_model::document::{ConnectionDecl, ConnectionScope};
+use orange_model::document::{ConnectionDecl, ConnectionScope, VarScope};
 use orange_model::validation::{Diagnostic, HostOrigin};
 use orange_model::validation::{LeafEffects, ValidationAnalysis};
 use orange_model::{GraphDocument, analyze_with_effects, from_json, to_json};
@@ -51,12 +53,17 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+pub use documents::{
+    Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,
+    discard_autosave, publish_function, recover_document, save_document,
+};
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
-pub use orange_guest::{Grants, GuestLimits};
+pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
+pub use orange_model::document::literal::Literal;
 pub use orange_model::id::{ConnectionId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
 pub use orange_packages::{
@@ -68,8 +75,10 @@ pub use orange_runtime::{
 };
 pub use orange_sdk::{
     Call, ConnectionAdapter, EmitError, Emitter, SERVICE_PROVIDER, ServiceNode, ServicePackage,
-    ServiceSource, Session,
+    ServiceSource, Session, TARGET,
 };
+pub use orange_sdk::{SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
+pub use state::StoredVariable;
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -142,6 +151,25 @@ pub struct HostOptions {
     /// operations) are registered. Without them a document can use only the core
     /// language and what the application and installed packages provide.
     pub base_nodes: bool,
+    /// IDs of packages this host leaves out when it starts, in addition to the ones
+    /// [`Host::set_enabled`] saved in [`package_dir`](Self::package_dir): the base
+    /// nodes ([`BASE_PACKAGE`]), service packages and installed packages alike.
+    pub disabled_packages: BTreeSet<String>,
+    /// Where packages holding the `files` grant keep their data: each gets the
+    /// directory `<plugin_data_dir>/<package ID>` and can name nothing outside it.
+    /// `None` leaves that grant with nothing to reach.
+    pub plugin_data_dir: Option<PathBuf>,
+    /// The network client for packages holding the `http` grant. `None` leaves that
+    /// grant with nothing to reach.
+    pub plugin_http: Option<Arc<dyn HttpClient>>,
+    /// Where connection settings' `credential://<name>` references are read from.
+    /// `None` refuses a connection that names a credential.
+    pub secrets: Option<Arc<dyn SecretStore>>,
+    /// Where variables declared `persistent` are stored. With a directory, a flow's
+    /// persistent run variables are saved as they change and a flow opened later on
+    /// the same graph starts with them; persistent shared variables likewise. `None`
+    /// keeps values for the life of each flow only.
+    pub state_dir: Option<PathBuf>,
 }
 impl Default for HostOptions {
     fn default() -> Self {
@@ -155,6 +183,11 @@ impl Default for HostOptions {
             guest: GuestLimits::default(),
             package_dir: None,
             base_nodes: true,
+            disabled_packages: BTreeSet::new(),
+            plugin_data_dir: None,
+            plugin_http: None,
+            secrets: None,
+            state_dir: None,
         }
     }
 }
@@ -166,6 +199,10 @@ pub enum HostError {
     Start(String),
     #[error("shared variables: {0}")]
     Workspace(String),
+    #[error("the variable could not be set: {0}")]
+    Variable(String),
+    #[error("stored variables: {0}")]
+    State(String),
     #[error("installed packages could not be stored: {0}")]
     Storage(String),
     #[error("the package archive was refused: {0}")]
@@ -299,6 +336,68 @@ pub struct Updated {
     pub reset_variables: usize,
 }
 
+/// The settings an adapter receives: every string that is exactly
+/// `credential://<name>`, at any depth, replaced by that secret. The result is handed
+/// to the adapter and never stored, logged or compared.
+fn with_secrets(
+    secrets: Option<&Arc<dyn SecretStore>>,
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    fn resolve(
+        value: &mut serde_json::Value,
+        secrets: Option<&Arc<dyn SecretStore>>,
+    ) -> Result<(), String> {
+        match value {
+            serde_json::Value::String(text) => {
+                if let Some(name) = text.strip_prefix(SECRET_PREFIX) {
+                    let store = secrets.ok_or_else(|| {
+                        format!(
+                            "it names credential `{name}` and the application has no credential store"
+                        )
+                    })?;
+                    *text = store
+                        .get(name)
+                        .map_err(|error| format!("credential `{name}`: {error}"))?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Array(items) => {
+                items.iter_mut().try_for_each(|item| resolve(item, secrets))
+            }
+            serde_json::Value::Object(fields) => fields
+                .values_mut()
+                .try_for_each(|field| resolve(field, secrets)),
+            _ => Ok(()),
+        }
+    }
+    let mut resolved = settings.clone();
+    resolved
+        .values_mut()
+        .try_for_each(|value| resolve(value, secrets))?;
+    Ok(resolved)
+}
+
+/// The grants a manifest's `permissions` section asks for: a list of `"log"`,
+/// `"files"` and `"http"`. No section asks for nothing.
+fn asked(manifest: &PackageManifest) -> Result<Grants, HostError> {
+    let refused = || {
+        HostError::Install("`permissions` must be a list of `log`, `files` and `http`".to_owned())
+    };
+    let mut grants = Grants::default();
+    let Some(section) = manifest.permissions() else {
+        return Ok(grants);
+    };
+    for permission in section.as_array().ok_or_else(refused)? {
+        match permission.as_str() {
+            Some("log") => grants.log = true,
+            Some("files") => grants.files = true,
+            Some("http") => grants.http = true,
+            _ => return Err(refused()),
+        }
+    }
+    Ok(grants)
+}
+
 /// A connection the host holds for every document that declares its ID as shared.
 struct SharedConnection {
     adapter: String,
@@ -382,16 +481,73 @@ impl NodeInfo<'_> {
         }
     }
 }
+/// ID under which [`Host::packages`] lists the bundled base nodes (arithmetic,
+/// comparison, text, collection and JSON operations) and [`Host::set_enabled`]
+/// switches them.
+pub const BASE_PACKAGE: &str = "org.orange.base";
+
+/// Where a package of a host comes from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum PackageKind {
+    /// The bundled base nodes.
+    Base,
+    /// A native service package: compiled into the application or loaded from a
+    /// plugin library when it started.
+    Native,
+    /// A package installed from an archive.
+    Installed,
+}
+
 /// One package of a host, as [`Host::packages`] lists it.
 #[derive(Debug, Clone, Copy)]
 pub struct PackageInfo<'a> {
     pub id: &'a str,
     pub version: &'a str,
-    /// The manifest of an installed package: its `about` text, its `update` source, its
-    /// nodes and its digest. `None` for a native service package, compiled into the
-    /// application or loaded from a plugin library when it started, which
-    /// cannot be removed while it runs.
+    pub kind: PackageKind,
+    /// Whether the package is in use now: its nodes are registered.
+    pub active: bool,
+    /// Whether a host started with the same options and directory uses the package.
+    /// It differs from `active` after [`Host::set_enabled`] until the next start.
+    pub enabled: bool,
+    /// The manifest of an active installed package: its `about` text, its `update`
+    /// source, its nodes and its digest. `None` for other kinds, and for an installed
+    /// package that is not active, whose archive this host did not read.
     pub manifest: Option<&'a PackageManifest>,
+    name: Option<&'a str>,
+    description: Option<&'a str>,
+    update: Option<&'a UpdateSource>,
+}
+impl<'a> PackageInfo<'a> {
+    /// Where newer versions of the package are announced, when it says so.
+    pub fn update(&self) -> Option<&'a UpdateSource> {
+        self.update
+            .or_else(|| self.manifest.and_then(PackageManifest::update))
+    }
+    /// A display name, when the package gives one.
+    pub fn name(&self) -> Option<&'a str> {
+        self.name
+            .or_else(|| self.manifest.and_then(|manifest| manifest.about().name()))
+    }
+    /// One paragraph on what the package adds, when it says so.
+    pub fn description(&self) -> Option<&'a str> {
+        self.description.or_else(|| {
+            self.manifest
+                .and_then(|manifest| manifest.about().description())
+        })
+    }
+}
+
+/// A base or native package of this host.
+#[derive(Debug)]
+struct BuiltIn {
+    id: String,
+    version: String,
+    kind: PackageKind,
+    active: bool,
+    name: Option<String>,
+    description: Option<String>,
+    update: Option<UpdateSource>,
 }
 
 /// `set-variable` as "Set variable".
@@ -416,8 +572,14 @@ pub struct Host {
     store: PackageStore<MemoryJournal>,
     presentations: BTreeMap<DefinitionRef, Presentation>,
     not_restored: Vec<(String, HostError)>,
-    /// ID and version of each service package the application was built with.
-    built_in: Vec<(String, String)>,
+    /// The base nodes and each service package the application was started with.
+    built_in: Vec<BuiltIn>,
+    /// IDs of the packages a host started like this one leaves out.
+    disabled: BTreeSet<String>,
+    /// Saved installed packages left out at start because they were disabled.
+    inactive: Vec<(String, String)>,
+    /// The shared variables, in declaration order.
+    shared_variables: Vec<VariableId>,
     space: Arc<flow::Space>,
     pool: Pool,
     sink: Sink,
@@ -451,7 +613,9 @@ impl Host {
 
     /// Like [`Host::new`], with native service packages built into the application:
     /// their nodes are registered beside the bundled ones and their connection
-    /// adapters become available to documents.
+    /// adapters become available to documents. A package whose ID is disabled
+    /// ([`HostOptions::disabled_packages`], [`Host::set_enabled`]) is listed by
+    /// [`Host::packages`] and otherwise left out.
     pub fn with_services(
         options: HostOptions,
         packages: Vec<ServicePackage>,
@@ -460,18 +624,51 @@ impl Host {
         let math = MathPackage::new(built_in_digest("orange-bundled")).map_err(|e| start(&e))?;
         let origin = HostOrigin::new(env!("CARGO_PKG_VERSION"), built_in_digest("orange-host"))
             .map_err(|e| start(&e))?;
+        let saved = match &options.package_dir {
+            Some(directory) => persist::load(directory).map_err(HostError::Storage)?,
+            None => Vec::new(),
+        };
+        let mut disabled = options.disabled_packages.clone();
+        if let Some(directory) = &options.package_dir {
+            disabled.extend(persist::disabled(directory).map_err(HostError::Storage)?);
+        }
         let mut builder = RegistryBuilder::core(origin);
-        if options.base_nodes {
+        let base_nodes = options.base_nodes && !disabled.contains(BASE_PACKAGE);
+        if base_nodes {
             builder = math.register(builder).map_err(|e| start(&e))?;
         }
         let mut services = Services::default();
-        let built_in = packages
-            .iter()
-            .map(|package| (package.id().to_owned(), package.version().to_owned()))
-            .collect();
+        let mut built_in = vec![BuiltIn {
+            id: BASE_PACKAGE.to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            kind: PackageKind::Base,
+            active: base_nodes,
+            name: Some("Base nodes".to_owned()),
+            description: Some(
+                "Arithmetic, comparison, text, collection and JSON operations.".to_owned(),
+            ),
+            update: None,
+        }];
+        built_in.extend(packages.iter().map(|package| {
+            BuiltIn {
+                id: package.id().to_owned(),
+                version: package.version().to_owned(),
+                kind: PackageKind::Native,
+                active: !disabled.contains(package.id()),
+                name: package.name().map(str::to_owned),
+                description: package.description().map(str::to_owned),
+                // A source that breaks the manifest rules is not offered.
+                update: package
+                    .update_source()
+                    .and_then(|(feed, key)| UpdateSource::new(feed, None, key).ok()),
+            }
+        }));
         let mut adapters = BTreeMap::new();
         let mut presentations = BTreeMap::new();
         for package in &packages {
+            if disabled.contains(package.id()) {
+                continue;
+            }
             presentations.extend(package.presentations().iter().cloned());
             let key = ProviderKey {
                 package: package.id().to_owned(),
@@ -536,6 +733,9 @@ impl Host {
             presentations,
             not_restored: Vec::new(),
             built_in,
+            disabled,
+            inactive: Vec::new(),
+            shared_variables: Vec::new(),
             space: Arc::default(),
             pool,
             sink: Sink {
@@ -548,16 +748,19 @@ impl Host {
             options,
         };
         let mut host = host;
-        if let Some(directory) = host.options.package_dir.clone() {
-            let saved = persist::load(&directory).map_err(HostError::Storage)?;
-            for package in saved {
-                let installed = package
-                    .archive
-                    .map_err(HostError::Storage)
-                    .and_then(|archive| host.install_archive(&archive, package.grants, None));
-                if let Err(error) = installed {
-                    host.not_restored.push((package.file, error));
-                }
+        for package in saved {
+            if let Some((id, version)) = &package.key
+                && host.disabled.contains(id)
+            {
+                host.inactive.push((id.clone(), version.clone()));
+                continue;
+            }
+            let installed = package
+                .archive
+                .map_err(HostError::Storage)
+                .and_then(|archive| host.install_archive(&archive, package.grants, None));
+            if let Err(error) = installed {
+                host.not_restored.push((package.file, error));
             }
         }
         Ok((host, observer))
@@ -607,7 +810,11 @@ impl Host {
             let session = match decl.scope {
                 ConnectionScope::Graph => match previous.and_then(|opened| opened.get(&decl.id)) {
                     Some((before, session)) if before == decl => Arc::clone(session),
-                    _ => adapter.open(&decl.settings).map_err(refused)?,
+                    _ => {
+                        let settings = with_secrets(self.options.secrets.as_ref(), &decl.settings)
+                            .map_err(refused)?;
+                        adapter.open(&settings).map_err(refused)?
+                    }
                 },
                 ConnectionScope::Shared => {
                     let shared = self.shared.get_mut(&decl.id).ok_or_else(|| {
@@ -622,7 +829,10 @@ impl Host {
                     match &shared.session {
                         Some(session) => Arc::clone(session),
                         None => {
-                            let session = adapter.open(&shared.settings).map_err(refused)?;
+                            let settings =
+                                with_secrets(self.options.secrets.as_ref(), &shared.settings)
+                                    .map_err(refused)?;
+                            let session = adapter.open(&settings).map_err(refused)?;
                             shared.session = Some(Arc::clone(&session));
                             session
                         }
@@ -658,6 +868,17 @@ impl Host {
         self.install_expected(archive, grants, None)
     }
 
+    /// What a package asks to be granted, read from the `permissions` section of its
+    /// manifest without installing anything: what an install dialog shows the user.
+    /// [`install`](Self::install) refuses a grant the package did not ask for, so a
+    /// package never holds more than it declared and the user approved.
+    pub fn permissions(&self, archive: &[u8]) -> Result<Grants, HostError> {
+        let mut files = MemorySink::new();
+        let verified = read_archive(archive, &ArchiveLimits::default(), &mut files)
+            .map_err(|error| HostError::Archive(error.to_string()))?;
+        asked(verified.manifest())
+    }
+
     /// Installs a package like [`install`](Self::install), but only if its content
     /// digest is `content_digest` (`sha256:<64 hex>`): the check that a downloaded
     /// archive is the one an update feed announced.
@@ -680,16 +901,54 @@ impl Host {
         if let Some(directory) = &self.options.package_dir {
             persist::save(directory, archive, grants, &key).map_err(HostError::Storage)?;
         }
+        // Installing a package is asking for it: it is enabled again.
+        self.set_enabled(key.id.as_str(), true)?;
         Ok(key)
     }
 
-    /// The packages of this host: those compiled into the application, then every
-    /// installed package. This is the data of a package manager view.
+    /// Chooses whether hosts started from now on use package `id`: the base nodes
+    /// ([`BASE_PACKAGE`]), a native service package or an installed package. Nothing
+    /// changes in this host; [`PackageInfo::enabled`] shows the choice and
+    /// [`PackageInfo::active`] what is in use. With [`HostOptions::package_dir`] the
+    /// choice is saved there; without one it lasts as long as this host and has no
+    /// effect. A document that uses nodes of a package that is left out does not open.
+    pub fn set_enabled(&mut self, id: &str, enabled: bool) -> Result<(), HostError> {
+        let changed = if enabled {
+            self.disabled.remove(id)
+        } else {
+            self.disabled.insert(id.to_owned())
+        };
+        if changed && let Some(directory) = &self.options.package_dir {
+            persist::set_disabled(directory, &self.disabled).map_err(HostError::Storage)?;
+        }
+        Ok(())
+    }
+
+    /// The packages of this host: the base nodes, the native service packages it was
+    /// started with, then every installed package, including those left out because
+    /// they are disabled. This is the data of a package manager view.
     pub fn packages(&self) -> impl Iterator<Item = PackageInfo<'_>> {
-        let built_in = self.built_in.iter().map(|(id, version)| PackageInfo {
+        let built_in = self.built_in.iter().map(|package| PackageInfo {
+            id: &package.id,
+            version: &package.version,
+            kind: package.kind,
+            active: package.active,
+            enabled: !self.disabled.contains(&package.id),
+            manifest: None,
+            name: package.name.as_deref(),
+            description: package.description.as_deref(),
+            update: package.update.as_ref(),
+        });
+        let inactive = self.inactive.iter().map(|(id, version)| PackageInfo {
             id,
             version,
+            kind: PackageKind::Installed,
+            active: false,
+            enabled: !self.disabled.contains(id),
             manifest: None,
+            name: None,
+            description: None,
+            update: None,
         });
         let installed = self
             .store
@@ -700,22 +959,37 @@ impl Host {
                 PackageInfo {
                     id: manifest.key().id.as_str(),
                     version: manifest.key().version.as_str(),
+                    kind: PackageKind::Installed,
+                    active: true,
+                    enabled: !self.disabled.contains(manifest.key().id.as_str()),
                     manifest: Some(manifest),
+                    name: None,
+                    description: None,
+                    update: None,
                 }
             });
-        built_in.chain(installed)
+        built_in.chain(installed).chain(inactive)
     }
 
     /// Removes an installed package. Its nodes can no longer be placed, and a document
     /// that uses them no longer opens; flows already running keep the code they
     /// started with. A package another installed package depends on is refused. With
     /// [`HostOptions::package_dir`] it is also removed from the directory, so it stays
-    /// removed when the host next starts.
+    /// removed when the host next starts. A saved package that was left out because it
+    /// is disabled is removed from the directory.
     pub fn uninstall(&mut self, key: &PackageKey) -> Result<(), HostError> {
-        let _ = self
-            .store
-            .remove(key)
-            .map_err(|error| HostError::Uninstall(error.to_string()))?;
+        let left_out = self
+            .inactive
+            .iter()
+            .position(|(id, version)| id == key.id.as_str() && version == key.version.as_str());
+        if let Some(index) = left_out {
+            let _ = self.inactive.remove(index);
+        } else {
+            let _ = self
+                .store
+                .remove(key)
+                .map_err(|error| HostError::Uninstall(error.to_string()))?;
+        }
         if let Some(directory) = &self.options.package_dir {
             persist::forget(directory, key).map_err(HostError::Storage)?;
         }
@@ -739,6 +1013,18 @@ impl Host {
             .map_err(|error| HostError::Archive(error.to_string()))?;
         let manifest = verified.manifest().clone();
         let key = manifest.key().clone();
+        let asked = asked(&manifest)?;
+        for (name, given, wanted) in [
+            ("log", grants.log, asked.log),
+            ("files", grants.files, asked.files),
+            ("http", grants.http, asked.http),
+        ] {
+            if given && !wanted {
+                return Err(HostError::Install(format!(
+                    "the package does not ask for the `{name}` grant"
+                )));
+            }
+        }
 
         let content_digest = verified.content_digest().to_owned();
         if expected.is_some_and(|expected| {
@@ -816,13 +1102,24 @@ impl Host {
                     .iter()
                     .all(|guest| guest.provider().id != provider.id)
             {
-                guests.push(GuestPackage::from_archive(
-                    &self.engine,
-                    &verified,
-                    &files,
-                    &provider.id,
-                    grants,
-                )?);
+                let access = GuestAccess {
+                    data_dir: self
+                        .options
+                        .plugin_data_dir
+                        .as_ref()
+                        .map(|root| root.join(key.id.as_str())),
+                    http: self.options.plugin_http.clone(),
+                };
+                guests.push(
+                    GuestPackage::from_archive(
+                        &self.engine,
+                        &verified,
+                        &files,
+                        &provider.id,
+                        grants,
+                    )?
+                    .with_access(access),
+                );
             }
         }
 
@@ -943,6 +1240,59 @@ impl Host {
         from_json(&saved.to_string()).map_err(|e| document(&e))
     }
 
+    /// The packages a document is locked to and whether this host has each one: what an
+    /// import shows before anything is opened. A document with a requirement that is
+    /// not available still loads and saves; it does not open as a flow until the
+    /// package is installed.
+    pub fn requirements(&self, json: &str) -> Result<Vec<Requirement>, HostError> {
+        let document = from_json(json).map_err(|error| HostError::Document(error.to_string()))?;
+        let registry = self.store.current();
+        Ok(document
+            .package_lock()
+            .iter()
+            .map(|entry| Requirement {
+                package: entry.id.clone(),
+                version: entry.version.clone(),
+                content_digest: entry.content_digest.clone(),
+                available: registry.providers().any(|provider| {
+                    provider.key.package == entry.id
+                        && provider.key.version == entry.version
+                        && provider.key.content_digest == entry.content_digest
+                }),
+            })
+            .collect())
+    }
+
+    /// Builds a bundle of a document and the stored archives of the packages it is
+    /// locked to, to hand to someone else. The second value lists the requirements
+    /// whose archive this host does not hold (a native package, or a package installed
+    /// without [`HostOptions::package_dir`]); the receiver needs those separately.
+    pub fn export(&self, json: &str) -> Result<(Bundle, Vec<Requirement>), HostError> {
+        let requirements = self.requirements(json)?;
+        let saved = match &self.options.package_dir {
+            Some(directory) => persist::load(directory).map_err(HostError::Storage)?,
+            None => Vec::new(),
+        };
+        let (mut packages, mut missing) = (Vec::new(), Vec::new());
+        for requirement in requirements {
+            let archive = saved.iter().find_map(|package| {
+                let (id, version) = package.key.as_ref()?;
+                (*id == requirement.package && *version == requirement.version)
+                    .then(|| package.archive.as_ref().ok().cloned())
+                    .flatten()
+            });
+            match archive {
+                Some(archive) => packages.push(archive),
+                None => missing.push(requirement),
+            }
+        }
+        let bundle = Bundle {
+            document: json.to_owned(),
+            packages,
+        };
+        Ok((bundle, missing))
+    }
+
     /// Checks a document against the current registry without running it. An empty
     /// list means [`Host::open`] would accept it as far as validation goes.
     pub fn check(&self, json: &str) -> Result<Vec<Diagnostic>, HostError> {
@@ -1061,30 +1411,174 @@ impl Host {
         Ok(())
     }
 
+    /// The persistent run variables of `document` and where this host stores them.
+    fn keep(&self, document: &GraphDocument, registry: &Arc<RegistrySnapshot>) -> Option<Keep> {
+        let variables = state::kept(document, VarScope::Run);
+        let directory = self.options.state_dir.clone()?;
+        (!variables.is_empty()).then(|| Keep {
+            directory,
+            name: document.graph_id().to_string(),
+            variables,
+            registry: Arc::clone(registry),
+        })
+    }
+
+    /// Sets a run variable of a flow from outside its graph, as an editor does when
+    /// the user changes a value. The value must have the variable's declared type.
+    /// The graph sees it at its next read, a trigger on the variable fires as for a
+    /// write the graph made, and a persistent variable is stored. It waits for the
+    /// flow's thread to apply the write, between two turns.
+    pub fn set_variable(
+        &self,
+        flow: FlowId,
+        id: VariableId,
+        value: Value,
+    ) -> Result<(), HostError> {
+        let flow = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
+        let (answer, result) = channel();
+        let query: Query = Box::new(move |run| {
+            let _ = answer.send(run.set_variable(id, value));
+        });
+        flow.shared
+            .queries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .ok_or(HostError::FlowEnded)?
+            .push_back(query);
+        flow.wake();
+        result
+            .recv()
+            .map_err(|_| HostError::FlowEnded)?
+            .map_err(|_| {
+                HostError::Variable(
+                    "the flow has no such run variable, the value is not of its type, or the flow has ended"
+                        .into(),
+                )
+            })
+    }
+
+    /// The value a document literal denotes, such as one a person typed or a stored
+    /// variable holds: what [`set_variable`](Self::set_variable) takes.
+    pub fn value_of(&self, literal: &Literal) -> Result<Value, HostError> {
+        orange_model::value::literal_codec::decode(literal, self.store.current().types().as_ref())
+            .map_err(|error| HostError::Variable(error.to_string()))
+    }
+
+    /// [`value_of`](Self::value_of) for a literal written as JSON text, such as
+    /// `{"type": "core/i64@1", "value": "5"}`.
+    pub fn value_from_json(&self, json: &str) -> Result<Value, HostError> {
+        let literal: Literal = serde_json::from_str(json)
+            .map_err(|_| HostError::Variable("the text is not a literal".into()))?;
+        self.value_of(&literal)
+    }
+
+    /// Sets a shared variable from outside any graph. Every flow sees the value at its
+    /// next turn, and a persistent one is stored.
+    pub fn set_shared_variable(&self, id: VariableId, value: &Value) -> Result<(), HostError> {
+        {
+            let mut workspace = self
+                .space
+                .workspace
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let shared = workspace
+                .as_mut()
+                .ok_or_else(|| HostError::Variable("no shared variables are declared".into()))?;
+            let _ = shared
+                .set(id, value)
+                .map_err(|error| HostError::Variable(error.to_string()))?;
+            let _ = self.space.version.fetch_add(1, Ordering::AcqRel);
+        }
+        self.space.wake_all();
+        self.space.store().map_err(HostError::State)
+    }
+
+    /// The variables stored for graph `graph`, or with `None` the stored shared
+    /// variables: what a flow opened now would start with, whether or not one is
+    /// running. Empty without [`HostOptions::state_dir`].
+    pub fn stored_variables(
+        &self,
+        graph: Option<GraphId>,
+    ) -> Result<Vec<StoredVariable>, HostError> {
+        let Some(directory) = &self.options.state_dir else {
+            return Ok(Vec::new());
+        };
+        let name = graph.map_or_else(|| state::SHARED.to_owned(), |graph| graph.to_string());
+        state::load(directory, &name).map_err(HostError::State)
+    }
+
+    /// Changes one stored variable of graph `graph` (or, with `None`, a stored shared
+    /// variable) while nothing uses it: the value a flow opened later starts with.
+    /// `value` must be a literal of the type the variable was stored with. For a
+    /// running flow use [`set_variable`](Self::set_variable), which also stores it.
+    pub fn store_variable(
+        &self,
+        graph: Option<GraphId>,
+        id: VariableId,
+        value: Literal,
+    ) -> Result<(), HostError> {
+        let directory = self
+            .options
+            .state_dir
+            .as_ref()
+            .ok_or_else(|| HostError::State("the host has no state directory".into()))?;
+        let name = graph.map_or_else(|| state::SHARED.to_owned(), |graph| graph.to_string());
+        let mut stored = state::load(directory, &name).map_err(HostError::State)?;
+        let entry = stored
+            .iter_mut()
+            .find(|variable| variable.id == id)
+            .ok_or_else(|| HostError::State("no such variable is stored".into()))?;
+        if entry.literal.ty != value.ty
+            || orange_model::value::literal_codec::decode(
+                &value,
+                self.store.current().types().as_ref(),
+            )
+            .is_err()
+        {
+            return Err(HostError::State(
+                "the value is not a literal of the stored type".into(),
+            ));
+        }
+        entry.literal = value;
+        state::save(directory, &name, &stored).map_err(HostError::State)
+    }
+
     /// Validates, compiles and starts a document as a new flow on its own thread.
     pub fn open(&mut self, json: &str) -> Result<FlowId, HostError> {
         let prepared = self.prepare(json, None)?;
+        let keep = self.keep(&prepared.document, &prepared.registry);
+        // Stored values that no longer fit the document are left out; a file that
+        // cannot be read refuses the flow rather than silently starting it empty.
+        let mut values = BTreeMap::new();
+        if let Some(keep) = &keep {
+            let stored = state::load(&keep.directory, &keep.name).map_err(HostError::State)?;
+            let restored = state::restore(&stored, &keep.variables, keep.registry.types());
+            values.extend(restored.into_iter().map(|(id, value)| (id, Some(value))));
+        }
         let run = if flow::uses_space(&prepared.plan) {
             let snapshot = self.space.snapshot().ok_or_else(|| {
                 HostError::Workspace(
                     "the document uses shared variables and none are declared".into(),
                 )
             })?;
-            Run::start_in_workspace(
+            Run::start_in_workspace_with_variables(
                 Arc::clone(&prepared.plan),
                 &prepared.document,
                 &prepared.registry,
                 0,
                 self.options.run.clone(),
                 &snapshot,
+                &values,
             )?
         } else {
-            Run::start(
+            Run::start_with_variables(
                 Arc::clone(&prepared.plan),
                 &prepared.document,
                 &prepared.registry,
                 0,
                 self.options.run.clone(),
+                &values,
             )?
         };
 
@@ -1107,6 +1601,7 @@ impl Host {
             swap: Mutex::new(None),
         });
         let context = Context {
+            keep,
             id,
             shared: Arc::clone(&shared),
             sink: self.sink.clone(),
@@ -1179,8 +1674,10 @@ impl Host {
                 "the edit belongs to another graph".into(),
             ));
         }
+        let keep = self.keep(&prepared.document, &prepared.registry);
         let (reply, answer) = channel();
         let swap = flow::Swap {
+            keep,
             plan: prepared.plan,
             document: prepared.document,
             registry: prepared.registry,
@@ -1327,8 +1824,56 @@ impl Host {
             WorkspaceLimits::default(),
         )
         .map_err(|error| HostError::Workspace(error.to_string()))?;
+        let mut created = created;
+        // Persistent shared variables take their stored values, where those still fit.
+        let kept = state::kept(&document, VarScope::Workspace);
+        if let Some(directory) = self.options.state_dir.clone()
+            && !kept.is_empty()
+        {
+            let registry = Arc::clone(self.store.current());
+            let stored = state::load(&directory, state::SHARED).map_err(HostError::State)?;
+            for (id, value) in state::restore(&stored, &kept, registry.types()) {
+                let _ = created
+                    .set(id, &value)
+                    .map_err(|error| HostError::Workspace(error.to_string()))?;
+            }
+            *self
+                .space
+                .keep
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(Keep {
+                directory,
+                name: state::SHARED.to_owned(),
+                variables: kept,
+                registry,
+            });
+        }
         *workspace = Some(created);
+        self.shared_variables = document
+            .variables()
+            .values()
+            .filter(|variable| variable.scope == VarScope::Workspace)
+            .map(|variable| variable.id)
+            .collect();
         Ok(())
+    }
+
+    /// Every shared variable with its value now (`None` while unset), in declaration
+    /// order: one consistent state, taken between two writes.
+    pub fn shared_variables(&self) -> Vec<(VariableId, Option<Value>)> {
+        let Some(snapshot) = self.space.snapshot() else {
+            return Vec::new();
+        };
+        self.shared_variables
+            .iter()
+            .map(|id| (*id, snapshot.get(*id).ok().flatten().cloned()))
+            .collect()
+    }
+
+    /// Counts the writes flows have made to shared variables. A front end reads
+    /// [`shared_variables`](Self::shared_variables) again when this has changed.
+    pub fn shared_writes(&self) -> u64 {
+        self.space.version.load(Ordering::Relaxed)
     }
 
     /// The current value of a shared variable; `None` while unset or undeclared.
@@ -1371,7 +1916,7 @@ impl Host {
         let flow = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
         let (answer, result) = channel();
         let query: Query = Box::new(move |run| {
-            let _ = answer.send(read(run));
+            let _ = answer.send(read(&*run));
         });
         flow.shared
             .queries

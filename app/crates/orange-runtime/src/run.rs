@@ -21,6 +21,7 @@ use thiserror::Error;
 mod cells;
 mod changes;
 mod function;
+mod host_write;
 mod iteration;
 mod loops;
 mod watch;

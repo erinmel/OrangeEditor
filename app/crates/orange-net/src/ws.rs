@@ -40,7 +40,7 @@ const NO_SESSION: KernelFault = fault(
 const BAD_MESSAGE: KernelFault = fault(
     "org.orange.net/Request",
     "org.orange.net/message-invalid",
-    "The message must be text.",
+    "The message must be text for a text send and bytes for a binary send.",
 );
 const QUEUE_FULL: KernelFault = fault(
     "org.orange.net/Busy",
@@ -48,15 +48,32 @@ const QUEUE_FULL: KernelFault = fault(
     "The connection has too many messages waiting to be sent.",
 );
 
-#[derive(Debug)]
+/// One message waiting to be sent.
+#[derive(Debug, Clone)]
+enum Outgoing {
+    Text(String),
+    Binary(Vec<u8>),
+}
+
 struct Shared {
     url: String,
-    outgoing: Mutex<VecDeque<String>>,
-    listeners: Mutex<Vec<(u64, Emitter)>>,
+    /// Headers of the opening handshake; they can be credentials.
+    headers: Vec<(String, String)>,
+    outgoing: Mutex<VecDeque<Outgoing>>,
+    /// Each listener with whether it takes binary messages instead of text ones.
+    listeners: Mutex<Vec<(u64, bool, Emitter)>>,
     next_listener: AtomicU64,
     /// Set once a flow has attached its triggers; the socket is not opened before.
     started: AtomicBool,
     stop: AtomicBool,
+}
+impl std::fmt::Debug for Shared {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Shared")
+            .field("url", &self.url)
+            .field("headers", &self.headers.len())
+            .finish_non_exhaustive()
+    }
 }
 impl Shared {
     fn stopped(&self) -> bool {
@@ -64,12 +81,14 @@ impl Shared {
     }
     /// Fires every listening entry. A flow that has ended is forgotten; one whose
     /// mailbox is full misses this message, as its bounded mailbox requires.
-    fn deliver(&self, text: &str) {
-        let payload = Value::Str(Arc::new(text.to_owned()));
+    fn deliver(&self, binary: bool, payload: &Value) {
         self.listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(_, emitter)| emitter.emit(Some(payload.clone())) != Err(EmitError::Closed));
+            .retain(|(_, takes_binary, emitter)| {
+                *takes_binary != binary
+                    || emitter.emit(Some(payload.clone())) != Err(EmitError::Closed)
+            });
     }
 }
 
@@ -115,7 +134,11 @@ fn serve(shared: &Shared, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
                 .unwrap_or_else(PoisonError::into_inner)
                 .pop_front();
             let Some(text) = next else { break };
-            if let Err(error) = socket.send(Message::text(text.clone())) {
+            let message = match text.clone() {
+                Outgoing::Text(text) => Message::text(text),
+                Outgoing::Binary(data) => Message::binary(data),
+            };
+            if let Err(error) = socket.send(message) {
                 // Not written: keep it for the next socket, in order.
                 if !matches!(error, Error::Io(ref io) if io.kind() == ErrorKind::WouldBlock) {
                     shared
@@ -128,7 +151,12 @@ fn serve(shared: &Shared, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
             }
         }
         match socket.read() {
-            Ok(Message::Text(text)) => shared.deliver(text.as_str()),
+            Ok(Message::Text(text)) => {
+                shared.deliver(false, &Value::Str(Arc::new(text.as_str().to_owned())));
+            }
+            Ok(Message::Binary(data)) => {
+                shared.deliver(true, &Value::Bytes(Arc::new(data.to_vec())));
+            }
             Ok(Message::Close(_)) => return,
             Ok(_) => {}
             Err(Error::Io(error))
@@ -136,6 +164,21 @@ fn serve(shared: &Shared, socket: &mut WebSocket<MaybeTlsStream<TcpStream>>) {
             Err(_) => return,
         }
     }
+}
+
+/// The opening request with the connection's headers. `None` when a header cannot be
+/// sent, which the adapter already refused.
+fn handshake(shared: &Shared) -> Option<tungstenite::handshake::client::Request> {
+    use tungstenite::client::IntoClientRequest;
+    use tungstenite::http::{HeaderName, HeaderValue};
+    let mut request = shared.url.as_str().into_client_request().ok()?;
+    for (name, value) in &shared.headers {
+        let name = HeaderName::from_bytes(name.as_bytes()).ok()?;
+        let mut value = HeaderValue::from_str(value).ok()?;
+        value.set_sensitive(true);
+        let _ = request.headers_mut().insert(name, value);
+    }
+    Some(request)
 }
 
 fn run(shared: &Shared) {
@@ -146,7 +189,9 @@ fn run(shared: &Shared) {
     }
     let mut retry = FIRST_RETRY;
     while !shared.stopped() {
-        if let Ok((mut socket, _)) = tungstenite::connect(shared.url.as_str()) {
+        if let Some(request) = handshake(shared)
+            && let Ok((mut socket, _)) = tungstenite::connect(request)
+        {
             retry = FIRST_RETRY;
             serve(shared, &mut socket);
         }
@@ -173,6 +218,7 @@ impl ConnectionAdapter for WsAdapter {
         }
         let shared = Arc::new(Shared {
             url: url.to_owned(),
+            headers: crate::auth_headers(settings)?,
             outgoing: Mutex::new(VecDeque::new()),
             listeners: Mutex::new(Vec::new()),
             next_listener: AtomicU64::new(0),
@@ -196,15 +242,19 @@ fn session(session: Option<&dyn Session>) -> Option<&Arc<Shared>> {
         .map(|session| &session.0)
 }
 
-/// Queues one text message. `then` means queued, not delivered: the socket may be
-/// reconnecting, and a WebSocket gives no delivery receipt either way.
+/// Queues one text or binary message. `then` means queued, not delivered: the socket
+/// may be reconnecting, and a WebSocket gives no delivery receipt either way.
 #[derive(Debug)]
-pub(crate) struct WsSend;
+pub(crate) struct WsSend {
+    pub binary: bool,
+}
 impl ServiceNode for WsSend {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         let shared = session(call.session).ok_or(NO_SESSION)?;
-        let [Value::Str(text)] = call.inputs else {
-            return Err(BAD_MESSAGE);
+        let message = match (self.binary, call.inputs) {
+            (false, [Value::Str(text)]) => Outgoing::Text(text.as_str().to_owned()),
+            (true, [Value::Bytes(data)]) => Outgoing::Binary(data.as_ref().clone()),
+            _ => return Err(BAD_MESSAGE),
         };
         let mut outgoing = shared
             .outgoing
@@ -213,7 +263,7 @@ impl ServiceNode for WsSend {
         if outgoing.len() >= MAX_QUEUED_MESSAGES {
             return Err(QUEUE_FULL);
         }
-        outgoing.push_back(text.as_str().to_owned());
+        outgoing.push_back(message);
         Ok(Vec::new())
     }
 }
@@ -226,13 +276,16 @@ impl Drop for Listening {
             .listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(id, _)| *id != self.1);
+            .retain(|(id, ..)| *id != self.1);
     }
 }
 
-/// Fires its entry once per text message received on the connection.
+/// Fires its entry once per text message received on the connection, or once per
+/// binary message.
 #[derive(Debug)]
-pub(crate) struct WsMessage;
+pub(crate) struct WsMessage {
+    pub binary: bool,
+}
 impl ServiceSource for WsMessage {
     fn start(
         &self,
@@ -246,7 +299,7 @@ impl ServiceSource for WsMessage {
             .listeners
             .lock()
             .unwrap_or_else(PoisonError::into_inner)
-            .push((id, emitter));
+            .push((id, self.binary, emitter));
         Ok(Box::new(Listening(Arc::clone(shared), id)))
     }
 }
@@ -279,6 +332,38 @@ pub(crate) const WS_MESSAGE_DEFINITION: &str = r#"{
   "connection": true,
   "ports": [
     {"port_id": "payload", "direction": "output", "kind": "data", "type": "core/string@1",
+      "source": "payload"}
+  ]
+}"#;
+
+pub(crate) const WS_SEND_BYTES_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.net/ws-send-bytes",
+  "label": {"key": "org.orange.net/ws-send-bytes-label", "fallback": "Send WebSocket binary message"},
+  "editor": {"category_id": "org.orange.net/category-network",
+    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "async",
+  "suspends": "always",
+  "determinism": "external",
+  "connection": true,
+  "ports": [
+    {"port_id": "data", "direction": "input", "kind": "data", "type": "core/bytes@1"}
+  ]
+}"#;
+
+pub(crate) const WS_BINARY_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.net/ws-binary",
+  "label": {"key": "org.orange.net/ws-binary-label", "fallback": "On WebSocket binary message"},
+  "editor": {"category_id": "org.orange.net/category-network",
+    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "entry",
+  "determinism": "external",
+  "connection": true,
+  "ports": [
+    {"port_id": "payload", "direction": "output", "kind": "data", "type": "core/bytes@1",
       "source": "payload"}
   ]
 }"#;

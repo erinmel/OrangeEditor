@@ -5,10 +5,12 @@
 //! the user granted. Starting a host installs the listed archives again, in order,
 //! through the same checks as a first installation. Both kinds of file are written to
 //! a temporary name and renamed, so a crash leaves the previous index or the new one.
+//! `disabled.json` lists the IDs of packages a host started on the directory leaves out.
 use orange_guest::Grants;
 use orange_packages::PackageKey;
 use serde_json::{Value as Json, json};
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::fs;
 use std::path::Path;
 
@@ -19,6 +21,8 @@ const FORMAT: &str = "orange.installed-packages";
 pub(crate) struct Saved {
     pub file: String,
     pub grants: Grants,
+    /// The package ID and version the index recorded for the archive.
+    pub key: Option<(String, String)>,
     /// The archive bytes, or why they could not be read.
     pub archive: Result<Vec<u8>, String>,
 }
@@ -66,11 +70,50 @@ pub(crate) fn load(directory: &Path) -> Result<Vec<Saved>, String> {
             file,
             grants: Grants {
                 log: entry["log"] == true,
+                files: entry["files"] == true,
+                http: entry["http"] == true,
             },
+            key: entry["id"]
+                .as_str()
+                .zip(entry["version"].as_str())
+                .map(|(id, version)| (id.to_owned(), version.to_owned())),
             archive,
         });
     }
     Ok(saved)
+}
+
+const DISABLED: &str = "disabled.json";
+const DISABLED_FORMAT: &str = "orange.disabled-packages";
+
+/// The package IDs the directory says to leave out; none when it says nothing.
+pub(crate) fn disabled(directory: &Path) -> Result<BTreeSet<String>, String> {
+    let text = match fs::read_to_string(directory.join(DISABLED)) {
+        Ok(text) => text,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(BTreeSet::new());
+        }
+        Err(error) => return Err(io("read the disabled packages", &error)),
+    };
+    let list: Json = serde_json::from_str(&text)
+        .map_err(|_| "the disabled package list is not JSON".to_owned())?;
+    if list["format"] != DISABLED_FORMAT || list["format_version"] != 1 {
+        return Err(format!("expected a `{DISABLED_FORMAT}` version 1 list"));
+    }
+    let ids = list["packages"]
+        .as_array()
+        .ok_or("the disabled package list has no `packages`")?;
+    Ok(ids
+        .iter()
+        .filter_map(|id| id.as_str().map(str::to_owned))
+        .collect())
+}
+
+/// Replaces the list of package IDs to leave out.
+pub(crate) fn set_disabled(directory: &Path, ids: &BTreeSet<String>) -> Result<(), String> {
+    fs::create_dir_all(directory).map_err(|error| io("create the package directory", &error))?;
+    let list = json!({"format": DISABLED_FORMAT, "format_version": 1, "packages": ids});
+    write(directory, DISABLED, list.to_string().as_bytes())
 }
 
 fn write(directory: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
@@ -95,6 +138,7 @@ pub(crate) fn save(
     let mut packages = entries(directory)?;
     packages.retain(|entry| entry["archive"] != name.as_str());
     packages.push(json!({"archive": name, "log": grants.log,
+        "files": grants.files, "http": grants.http,
         "id": key.id.as_str(), "version": key.version.as_str()}));
     write(directory, &name, archive)?;
     let index = json!({"format": FORMAT, "format_version": 1, "packages": packages});

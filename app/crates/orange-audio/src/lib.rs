@@ -6,10 +6,13 @@
 //! `org.orange.audio/input` connections and use the nodes below. An application that
 //! does not want audio leaves the package out.
 //!
-//! Playback reads WAV files (integer or float PCM), converts them to the device's rate
-//! and channels, and mixes up to [`MAX_VOICES`] sounds per output. The device callback
-//! only mixes prepared samples. Other file formats, seeking,
-//! looping and per-sound routing are not provided.
+//! Playback reads WAV (integer or float PCM), FLAC, MP3 and Ogg Vorbis files, converts them to the
+//! device's rate and channels, and mixes up to [`MAX_VOICES`] sounds per output. A
+//! sound plays once or repeats until stopped; an output's sounds can be paused,
+//! resumed, moved to a position and scaled by one volume. The device callback only
+//! mixes prepared samples. These controls act on every sound of an output connection:
+//! sounds that need separate control play on separate connections. Streaming from disk
+//! and playlists are not provided.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -48,11 +51,24 @@ pub const OUTPUT_ADAPTER: &str = "org.orange.audio/output";
 /// threshold) for [`ON_LEVEL`]; `window_ms` (5 to 1,000, default 50), the length of
 /// each measurement.
 pub const INPUT_ADAPTER: &str = "org.orange.audio/input";
-/// Plays a WAV file on an output connection and continues when it has ended. Inputs
+/// Plays a WAV, FLAC, MP3 or Ogg Vorbis file on an output connection and continues when it has ended. Inputs
 /// `path` and `gain` (0 to 8; 1 is unchanged).
 pub const PLAY: &str = "org.orange.audio/play";
 /// Stops every sound playing on an output connection.
 pub const STOP: &str = "org.orange.audio/stop";
+/// Plays a file like [`PLAY`], starting again each time it ends, and continues only
+/// when it is stopped.
+pub const LOOP: &str = "org.orange.audio/loop";
+/// Holds every sound on an output connection where it is.
+pub const PAUSE: &str = "org.orange.audio/pause";
+/// Lets the paused sounds of an output connection continue.
+pub const RESUME: &str = "org.orange.audio/resume";
+/// Moves every sound on an output connection to `seconds` from its start (0 to
+/// [`MAX_SECONDS`]). A sound shorter than that ends; a repeating one wraps around.
+pub const SEEK: &str = "org.orange.audio/seek";
+/// Sets the volume of an output connection: `gain` (0 to 8; 1 is unchanged) scales
+/// everything it plays, on top of each sound's own gain.
+pub const SET_VOLUME: &str = "org.orange.audio/set-volume";
 /// Reads the latest measured level of an input connection in dBFS as `level`.
 pub const INPUT_LEVEL: &str = "org.orange.audio/input-level";
 /// Entry fired when an input connection's level reaches its threshold, with the level
@@ -84,12 +100,12 @@ const DEVICE: KernelFault = fault(
 const BAD_INPUT: KernelFault = fault(
     "org.orange.audio/Input",
     "org.orange.audio/input-invalid",
-    "The path or gain is not valid.",
+    "The path, gain or position is not valid.",
 );
 const FILE: KernelFault = fault(
     "org.orange.audio/File",
     "org.orange.audio/file-unreadable",
-    "The sound file is missing or is not a supported WAV file.",
+    "The sound file is missing or is not a supported WAV, FLAC, MP3 or Ogg Vorbis file.",
 );
 const TOO_LARGE: KernelFault = fault(
     "org.orange.audio/TooLarge",
@@ -148,8 +164,11 @@ fn output<'a>(call: &Call<'a>) -> Result<&'a OutputSession, KernelFault> {
         .ok_or(NO_SESSION)
 }
 
+/// Plays a file once, or again and again until it is stopped.
 #[derive(Debug)]
-struct Play;
+struct Play {
+    looped: bool,
+}
 impl ServiceNode for Play {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
         let session = output(call)?;
@@ -167,10 +186,9 @@ impl ServiceNode for Play {
                     wav::WavError::TooLarge => TOO_LARGE,
                 }
             })?;
-        let samples = sound.len();
         #[expect(clippy::cast_possible_truncation, reason = "gain is within 0..=8")]
-        let id = output.play(sound, *gain as f32).ok_or(BUSY)?;
-        match output.wait(id, samples, || call.lease.is_cancelled()) {
+        let id = output.play(sound, *gain as f32, self.looped).ok_or(BUSY)?;
+        match output.wait(id, || call.lease.is_cancelled()) {
             Ended::Done => Ok(Vec::new()),
             Ended::Stalled => Err(DEVICE),
         }
@@ -186,6 +204,46 @@ impl ServiceNode for Stop {
             Some(Ok(output)) if !output.stop_all() => Err(DEVICE),
             _ => Ok(Vec::new()),
         }
+    }
+}
+
+/// What a control node does to the sounds of its output connection.
+#[derive(Debug, Clone, Copy)]
+enum Control {
+    Pause,
+    Resume,
+    Seek,
+    Volume,
+}
+impl ServiceNode for Control {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let session = output(call)?;
+        let number = |range: std::ops::RangeInclusive<f64>| match call.inputs {
+            [Value::F64(number)] if range.contains(number) => Ok(*number),
+            _ => Err(BAD_INPUT),
+        };
+        #[expect(clippy::cast_precision_loss, reason = "a limit of 600 is exact")]
+        let position = 0.0..=MAX_SECONDS as f64;
+        // A volume is set before anything plays, so it opens the device; the others
+        // have nothing to act on while the device is closed.
+        let sent = match (self, session.output.get()) {
+            (Self::Volume, _) => {
+                #[expect(clippy::cast_possible_truncation, reason = "gain is within 0..=8")]
+                let gain = number(0.0..=8.0)? as f32;
+                session.output()?.volume(gain)
+            }
+            (Self::Seek, opened) => {
+                let seconds = number(position)?;
+                match opened {
+                    Some(Ok(output)) => output.seek(seconds),
+                    _ => true,
+                }
+            }
+            (Self::Pause, Some(Ok(output))) => output.pause(true),
+            (Self::Resume, Some(Ok(output))) => output.pause(false),
+            (Self::Pause | Self::Resume, _) => true,
+        };
+        if sent { Ok(Vec::new()) } else { Err(DEVICE) }
     }
 }
 
@@ -370,7 +428,7 @@ const PLAY_DEFINITION: &str = r#"{
   "definition_id": "org.orange.audio/play",
   "label": {"key": "org.orange.audio/play-label", "fallback": "Play sound"},
   "description": {"key": "org.orange.audio/play-description",
-    "fallback": "Plays a WAV file on an output device and continues when it has ended."},
+    "fallback": "Plays a sound file on an output device and continues when it has ended."},
   "editor": {"category_id": "org.orange.audio/category-audio",
     "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
   "definition_version": 1,
@@ -381,6 +439,93 @@ const PLAY_DEFINITION: &str = r#"{
   "connection": true,
   "ports": [
     {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
+    {"port_id": "gain", "direction": "input", "kind": "data", "type": "core/f64@1"}
+  ]
+}"#;
+
+const LOOP_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.audio/loop",
+  "label": {"key": "org.orange.audio/loop-label", "fallback": "Loop sound"},
+  "description": {"key": "org.orange.audio/loop-description",
+    "fallback": "Plays a sound file again and again on an output device until it is stopped."},
+  "editor": {"category_id": "org.orange.audio/category-audio",
+    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "async",
+  "suspends": "always",
+  "determinism": "external",
+  "connection": true,
+  "ports": [
+    {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
+    {"port_id": "gain", "direction": "input", "kind": "data", "type": "core/f64@1"}
+  ]
+}"#;
+
+const PAUSE_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.audio/pause",
+  "label": {"key": "org.orange.audio/pause-label", "fallback": "Pause sounds"},
+  "description": {"key": "org.orange.audio/pause-description",
+    "fallback": "Holds every sound playing on an output device where it is."},
+  "editor": {"category_id": "org.orange.audio/category-audio",
+    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "async",
+  "suspends": "always",
+  "determinism": "external",
+  "connection": true,
+  "ports": []
+}"#;
+
+const RESUME_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.audio/resume",
+  "label": {"key": "org.orange.audio/resume-label", "fallback": "Resume sounds"},
+  "description": {"key": "org.orange.audio/resume-description",
+    "fallback": "Lets the paused sounds of an output device continue."},
+  "editor": {"category_id": "org.orange.audio/category-audio",
+    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "async",
+  "suspends": "always",
+  "determinism": "external",
+  "connection": true,
+  "ports": []
+}"#;
+
+const SEEK_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.audio/seek",
+  "label": {"key": "org.orange.audio/seek-label", "fallback": "Seek sounds"},
+  "description": {"key": "org.orange.audio/seek-description",
+    "fallback": "Moves every sound playing on an output device to a position in seconds."},
+  "editor": {"category_id": "org.orange.audio/category-audio",
+    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "async",
+  "suspends": "always",
+  "determinism": "external",
+  "connection": true,
+  "ports": [
+    {"port_id": "seconds", "direction": "input", "kind": "data", "type": "core/f64@1"}
+  ]
+}"#;
+
+const SET_VOLUME_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.audio/set-volume",
+  "label": {"key": "org.orange.audio/set-volume-label", "fallback": "Set volume"},
+  "description": {"key": "org.orange.audio/set-volume-description",
+    "fallback": "Sets the volume of everything an output device plays."},
+  "editor": {"category_id": "org.orange.audio/category-audio",
+    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "async",
+  "suspends": "always",
+  "determinism": "external",
+  "connection": true,
+  "ports": [
     {"port_id": "gain", "direction": "input", "kind": "data", "type": "core/f64@1"}
   ]
 }"#;
@@ -441,10 +586,19 @@ const ON_LEVEL_DEFINITION: &str = r#"{
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
+        .about(
+            "Audio",
+            "Plays sound files on an output device and reads the level of an input device.",
+        )
         .adapter(OUTPUT_ADAPTER, OutputAdapter)
         .adapter(INPUT_ADAPTER, InputAdapter)
-        .node(PLAY_DEFINITION, Play)
+        .node(PLAY_DEFINITION, Play { looped: false })
+        .and_then(|package| package.node(LOOP_DEFINITION, Play { looped: true }))
         .and_then(|package| package.node(STOP_DEFINITION, Stop))
+        .and_then(|package| package.node(PAUSE_DEFINITION, Control::Pause))
+        .and_then(|package| package.node(RESUME_DEFINITION, Control::Resume))
+        .and_then(|package| package.node(SEEK_DEFINITION, Control::Seek))
+        .and_then(|package| package.node(SET_VOLUME_DEFINITION, Control::Volume))
         .and_then(|package| package.node(INPUT_LEVEL_DEFINITION, InputLevel))
         .and_then(|package| package.source(ON_LEVEL_DEFINITION, OnLevel));
     match package {
@@ -463,10 +617,10 @@ mod tests {
     }
 
     #[test]
-    fn the_package_builds_with_four_nodes_and_two_connection_kinds() {
+    fn the_package_builds_with_its_nodes_and_two_connection_kinds() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 3);
+        assert_eq!(package.nodes().len(), 8);
         assert_eq!(package.sources().len(), 1);
         assert_eq!(package.adapters().len(), 2);
     }

@@ -11,8 +11,12 @@ orange-sdk = { path = "../orange-sdk", version = "=0.0.0" }
 serde_json.workspace = true
 # Device input and output. Linux builds need the ALSA development headers.
 cpal.workspace = true
+# FLAC decoding.
+claxon.workspace = true
 # WAV decoding.
 hound.workspace = true
+# MP3 and Ogg Vorbis decoding.
+symphonia.workspace = true
 
 [dev-dependencies]
 orange-host = { path = "../orange-host", version = "=0.0.0" }

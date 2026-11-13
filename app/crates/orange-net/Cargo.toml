@@ -12,6 +12,11 @@ serde_json.workspace = true
 # Blocking HTTP/1.1 client with rustls (ring provider, bundled Mozilla roots). The other
 # default feature, gzip, stays off.
 # Blocking WebSocket client sharing the same rustls stack.
+# Ed25519 verification of signed update feeds; already the TLS stack's crypto provider.
+ring.workspace = true
+# TLS for MQTT connections: the stack the HTTP and WebSocket clients already use.
+rustls.workspace = true
+webpki-roots.workspace = true
 tungstenite.workspace = true
 ureq.workspace = true
 

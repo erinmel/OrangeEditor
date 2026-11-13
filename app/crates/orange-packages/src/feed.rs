@@ -8,11 +8,18 @@
 //!    "content_digest": "sha256:<64 hex>"}]}
 //! ```
 //!
+//! A release may carry `"target"`, a compiler target such as
+//! `x86_64-pc-windows-msvc`: it then announces a native plugin library for that target
+//! instead of an archive, and `content_digest` is the SHA-256 of the library file.
+//!
 //! This module only reads a feed a host has already fetched and answers which release,
-//! if any, is newer than an installed package. It contacts nothing. A feed is not
-//! signed: what makes a downloaded archive the announced one is its content digest,
-//! which the host compares before installing, and what makes the announcement
-//! trustworthy is only the `https://` origin the installed package itself named.
+//! if any, is newer than a package. It contacts nothing and checks no signature. What
+//! makes a downloaded file the announced one is its content digest, which the host
+//! compares before installing. What makes the announcement trustworthy is the
+//! `https://` origin the package itself named and, when the package names a signing
+//! key (`update.key`), an Ed25519 signature over the exact feed bytes, served as 128
+//! hexadecimal digits at the feed URL followed by `.sig`; the application verifies it
+//! before it reads the feed.
 
 use std::cmp::Ordering;
 
@@ -58,8 +65,13 @@ pub struct Release {
     channel: String,
     archive: String,
     content_digest: String,
+    target: Option<String>,
 }
 impl Release {
+    /// The compiler target of a native plugin library release; `None` for an archive.
+    pub fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
     /// The package and version announced.
     pub fn key(&self) -> &PackageKey {
         &self.key
@@ -94,6 +106,16 @@ struct WireRelease {
     channel: Option<String>,
     archive: String,
     content_digest: String,
+    #[serde(default)]
+    target: Option<String>,
+}
+
+fn is_target(text: &str) -> bool {
+    !text.is_empty()
+        && text.len() <= 64
+        && text.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'-' | b'_' | b'.')
+        })
 }
 
 fn is_channel(text: &str) -> bool {
@@ -148,11 +170,19 @@ impl UpdateFeed {
             if !is_digest(&release.content_digest) {
                 return Err(bad("content_digest"));
             }
+            if release
+                .target
+                .as_deref()
+                .is_some_and(|target| !is_target(target))
+            {
+                return Err(bad("target"));
+            }
             releases.push(Release {
                 key,
                 channel,
                 archive: release.archive,
                 content_digest: release.content_digest,
+                target: release.target,
             });
         }
         Ok(Self { releases })
@@ -167,14 +197,31 @@ impl UpdateFeed {
     /// it, or `None` when it is up to date. A package without an `update` section is on
     /// `stable`.
     pub fn update_for(&self, installed: &PackageManifest) -> Option<&Release> {
-        let key = installed.key();
         let channel = installed
             .update()
             .map_or("stable", |update| update.channel());
+        self.newer(installed.key(), channel, None)
+    }
+
+    /// The newest release of `channel` that is newer than package `current` and is for
+    /// `target`: `None` selects archives, a compiler target selects native plugin
+    /// libraries built for it.
+    pub fn newer(
+        &self,
+        current: &PackageKey,
+        channel: &str,
+        target: Option<&str>,
+    ) -> Option<&Release> {
         self.releases
             .iter()
-            .filter(|release| release.key.id == key.id && release.channel == channel)
-            .filter(|release| precedence(&release.key.version, &key.version) == Ordering::Greater)
+            .filter(|release| {
+                release.key.id == current.id
+                    && release.channel == channel
+                    && release.target.as_deref() == target
+            })
+            .filter(|release| {
+                precedence(&release.key.version, &current.version) == Ordering::Greater
+            })
             .max_by(|a, b| precedence(&a.key.version, &b.key.version))
     }
 }
@@ -353,5 +400,70 @@ mod tests {
             UpdateFeed::from_json(&vec![b' '; MAX_FEED_BYTES + 1]),
             Err(FeedError::TooLarge)
         );
+    }
+
+    #[test]
+    fn a_library_release_is_offered_only_for_its_target() {
+        let digest = format!("sha256:{HEX}");
+        let release = |version: &str, target: Option<&str>| {
+            let mut release = json!({"id": "org.example.device", "version": version,
+                "archive": "https://example.org/device", "content_digest": digest});
+            if let Some(target) = target {
+                release["target"] = json!(target);
+            }
+            release
+        };
+        let document = |releases: Json| {
+            json!({"format": FEED_FORMAT, "format_version": 1, "releases": releases}).to_string()
+        };
+        let feed = UpdateFeed::from_json(
+            document(json!([
+                release("0.3.0", None),
+                release("0.4.0", Some("x86_64-pc-windows-msvc")),
+                release("0.5.0", Some("aarch64-apple-darwin")),
+            ]))
+            .as_bytes(),
+        )
+        .unwrap();
+        let current = manifest("0.2.0", None);
+        let newest = |target| {
+            feed.newer(current.key(), "stable", target)
+                .map(|release| release.key().version.as_str())
+        };
+        // An installed archive is never offered a library, and the reverse.
+        assert_eq!(feed.update_for(&current).unwrap().target(), None);
+        assert_eq!(newest(None), Some("0.3.0"));
+        assert_eq!(newest(Some("x86_64-pc-windows-msvc")), Some("0.4.0"));
+        assert_eq!(newest(Some("aarch64-apple-darwin")), Some("0.5.0"));
+        assert_eq!(newest(Some("x86_64-unknown-linux-gnu")), None);
+        assert_eq!(
+            UpdateFeed::from_json(
+                document(json!([release("0.3.0", Some("Not A Target"))])).as_bytes()
+            ),
+            Err(FeedError::Release {
+                index: 0,
+                field: "target"
+            })
+        );
+    }
+
+    #[test]
+    fn an_update_source_names_an_optional_signing_key() {
+        use crate::UpdateSource;
+        let key = format!("ed25519:{HEX}");
+        let feed = "https://example.org/feed.json";
+        let source = UpdateSource::new(feed, None, Some(&key)).unwrap();
+        assert_eq!(
+            (source.feed(), source.channel(), source.key()),
+            (feed, "stable", Some(key.as_str()))
+        );
+        assert_eq!(
+            UpdateSource::new(feed, Some("beta"), None).unwrap().key(),
+            None
+        );
+        for bad in ["ed25519:abc", HEX, "rsa:00", &key.to_uppercase()] {
+            assert!(UpdateSource::new(feed, None, Some(bad)).is_err(), "{bad}");
+        }
+        assert!(UpdateSource::new("http://example.org/feed.json", None, None).is_err());
     }
 }

@@ -91,6 +91,56 @@ package directory keeps each installed archive and the capabilities granted to i
 installs them again when it next starts (02). The `orange` command takes the directory
 as `--store <dir>`.
 
+Declared permissions (2026-11-12): a manifest's `permissions` section is a list of
+`"log"`, `"files"` and `"http"`: the grants the package asks for. `Host::permissions`
+reads them from an archive without installing it, for an install dialog, and
+`Host::install` refuses a grant the package did not ask for, so a package never holds
+more than it declared and the user approved. A section with anything else is refused;
+no section asks for nothing. The `orange` command gives a package the grants it asks
+for that the command line also gives, and says which it asked for and did not get.
+
+Signing a feed (2026-11-12): `orange feed key <name>` generates an Ed25519 key, keeps
+the private half in the credential store under `<name>` and prints the `update.key`
+value; it never replaces an existing key. `orange feed sign <feed.json> <name>` checks
+that the file is a feed and writes `<feed.json>.sig`. The private key is never printed
+or written to a file by these commands.
+
+Signed update feeds (2026-11-12): a manifest's `update.key`, `ed25519:<64 hex>`, is the
+publisher's Ed25519 public key. The signature is over the exact feed bytes and is
+served as 128 hexadecimal digits at the feed URL followed by `.sig`. An application
+verifies it before it reads the feed (`orange_net::verify_feed`) and refuses the feed
+when the signature is missing or wrong; without a key the feed is trusted on its
+`https://` origin alone. The key travels in the installed package, so the first
+installation is the trust decision and every later feed must match it; changing the
+key needs a release signed with the old one. Archives are not signed separately: the
+signed feed carries each release's content digest.
+
+Granted access for components (2026-11-12; `orange-guest`, `sdk/wit`): the plugin
+world imports two more interfaces, each linked only with its grant, so a component
+that imports one without the grant is not instantiated. `files` (`Grants::files`)
+gives `read`, `write`, `list` and `remove` inside the package's own data directory,
+`<HostOptions::plugin_data_dir>/<package ID>`; a path is relative with `/` between
+plain names, and `..`, absolute and drive forms, device names and links leading out
+of the directory are refused. `http` (`Grants::http`) gives `send(request)` for an
+`https://` URL with the methods GET, HEAD, POST, PUT, PATCH and DELETE, carried out by
+the application's `HostOptions::plugin_http` client (`HttpClient`); the `orange`
+command's client follows no redirects. A read file and a response body are limited to
+the instance's transfer limit. Errors reach the guest as fixed words (`not-found`,
+`invalid-path`, `too-large`, `unavailable`, `invalid-request`, `failed`), never as
+operating-system or network text. Grants are given at installation
+(`--grant-files`, `--grant-http`) and stored with the package. Limits: the `http`
+grant is not restricted to named hosts; the data directory has no size quota; a
+request blocks its node and cannot be interrupted by cancellation, only by the
+client's timeout; there are no sockets, clocks, random numbers, environment or
+processes for components.
+
+Enabling and disabling (2026-11-12; `orange-host`): every package of a host, whatever
+its tier, can be switched off by ID and on again without removing it; the switch is
+saved beside the stored archives and applies from the next start (02, "Package
+switches"). The plugin interface revision in `orange_sdk::ABI` is 2 since
+`ServicePackage` carries a display name and description, and 3 since it carries an
+update source.
+
 Update feeds and removal (2026-11-11; `orange-packages`, `orange-host`): the document
 at a manifest's `update.feed` URL is
 `{"format": "orange.update-feed", "format_version": 1, "releases": [{"id", "version",
@@ -131,8 +181,19 @@ connection kinds behave exactly like built-in ones and are listed by `Host::node
 text cannot detect different dependency versions or features, so a plugin must be
 built with the application's lockfile; a panic in a plugin aborts the process; a
 library is never unloaded, is not loaded while the application runs, and cannot be
-removed with `Host::uninstall`; there is no manifest, update source or grant for this
-tier.
+removed with `Host::uninstall`; there is no manifest or grant for this tier.
+
+Updates for native plugin libraries (2026-11-12): `ServicePackage::update(feed, key)`
+names an update feed and an optional signing key. A feed release with `"target"` (a
+compiler target such as `x86_64-pc-windows-msvc`) announces a library for that target;
+its `content_digest` is the SHA-256 of the library file. `UpdateFeed::newer(current,
+channel, target)` selects such releases for `orange_sdk::TARGET` and never offers a
+library to an installed archive or the reverse. `orange updates --apply` downloads the
+library, compares the digest and calls `orange_native::replace`, which writes it as
+`<id>-<version>` with the library extension beside the loaded file and renames the
+loaded file by appending `.replaced`; the new library loads at the next start, where
+the ABI check applies as for any library. A package compiled into the application is
+reported, not replaced.
 
 Native plugins in Rust (2026-11-11; `orange-sdk`): a plugin crate depends on
 `orange-sdk` and returns a `ServicePackage` holding its definition files, a
