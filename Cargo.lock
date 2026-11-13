@@ -1715,6 +1715,7 @@ version = "0.0.0"
 dependencies = [
  "orange-host",
  "orange-model",
+ "orange-sandbox",
  "orange-sdk",
  "serde_json",
 ]
@@ -1729,6 +1730,7 @@ dependencies = [
  "orange-model",
  "orange-packages",
  "orange-runtime",
+ "orange-sandbox",
  "serde_json",
  "thiserror 2.0.21",
  "wasmtime",
@@ -1839,6 +1841,10 @@ dependencies = [
  "sha2 0.11.1",
  "thiserror 2.0.21",
 ]
+
+[[package]]
+name = "orange-sandbox"
+version = "0.0.0"
 
 [[package]]
 name = "orange-sdk"

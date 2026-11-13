@@ -18,7 +18,7 @@ const policy = {
   'orange-measure': {core: false, normal: ['orange-model', 'orange-compiler', 'orange-runtime', 'orange-bundled']},
   // Host-side Wasm component execution (ADR-03); graph core never depends on it.
   // Tests compose guest kernels with the bundled resolver and run guest effects in a run.
-  'orange-guest': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-packages'], dev: ['orange-bundled', 'orange-compiler', 'orange-runtime']},
+  'orange-guest': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-packages', 'orange-sandbox'], dev: ['orange-bundled', 'orange-compiler', 'orange-runtime']},
   // Session host: composes every layer into running flows. Front ends depend on it alone.
   'orange-host': {core: false, normal: ['orange-model', 'orange-kernel', 'orange-compiler', 'orange-runtime', 'orange-bundled', 'orange-packages', 'orange-guest', 'orange-sdk']},
   // Plugin SDK: the traits and types a native plugin crate implements. No package
@@ -32,8 +32,10 @@ const policy = {
   'orange-net': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
   // Loads native plugin libraries into service packages; the only crate with unsafe code.
   'orange-native': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
+  // File access confined to one directory; no first-party or third-party dependency.
+  'orange-sandbox': {core: false, normal: []},
   // Base file service package, built on the plugin SDK alone; its tests run it in a host.
-  'orange-files': {core: false, normal: ['orange-sdk'], dev: ['orange-host', 'orange-model']},
+  'orange-files': {core: false, normal: ['orange-sdk', 'orange-sandbox'], dev: ['orange-host', 'orange-model']},
   // Credential stores behind the SDK's SecretStore; the only crate with an OS keyring library.
   'orange-vault': {core: false, normal: ['orange-sdk']},
   // Example native plugin library, loaded by orange-native's tests.
