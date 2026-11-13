@@ -412,8 +412,26 @@ fn an_unacknowledged_message_is_sent_again_after_reconnecting() {
 fn a_real_broker_delivers_what_the_graph_publishes() {
     let url = std::env::var("ORANGE_MQTT_BROKER").expect("ORANGE_MQTT_BROKER is set");
     let mut host = host();
-    let text = document(&host, &url).replace("orange-test", "orange-real-broker-test");
+    let mut saved: Json = serde_json::from_str(&document(&host, &url)).unwrap();
+    let settings = &mut saved["connections"][0]["settings"];
+    settings["client_id"] = json!("orange-real-broker-test");
+    // ORANGE_MQTT_CA names the broker's certificate authority for an mqtts:// URL.
+    if let Ok(ca) = std::env::var("ORANGE_MQTT_CA") {
+        settings["ca_file"] = json!(ca);
+    }
+    // ORANGE_MQTT_WRONG_PASSWORD makes the login fail: nothing must be delivered.
+    let wrong = std::env::var("ORANGE_MQTT_WRONG_PASSWORD").is_ok();
+    if wrong {
+        settings["password"] = json!("not-the-password");
+    }
+    let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
     let flow = host.open(&text).unwrap();
+    if wrong {
+        host.trigger(flow, node(2), None).unwrap();
+        std::thread::sleep(Duration::from_secs(4));
+        assert_eq!(text_pair(&host, flow), None);
+        return;
+    }
     // Publishing waits in the queue until the session is connected and subscribed.
     std::thread::sleep(Duration::from_secs(2));
     host.trigger(flow, node(2), None).unwrap();

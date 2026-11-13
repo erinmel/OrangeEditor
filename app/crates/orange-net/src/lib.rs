@@ -65,7 +65,9 @@ pub const WS_MESSAGE: &str = "org.orange.net/ws-message";
 /// or `mqtts://host` for TLS, with an optional `:port`), `username` and `password`
 /// (each can be a `credential://<name>` reference), `client_id` (generated when
 /// absent), `topics` (the topic filters to subscribe to), `qos` (0 or 1, default 0,
-/// for subscriptions and publishing) and `keep_alive_s` (5 to 3,600, default 30).
+/// for subscriptions and publishing), `keep_alive_s` (5 to 3,600, default 30) and, for
+/// a broker with a private certificate authority, `ca_file` (a PEM file whose
+/// authorities are then the only ones trusted).
 pub const MQTT_ADAPTER: &str = "org.orange.net/mqtt";
 /// Queues one text message for a topic on an MQTT connection. Inputs `topic`, `text`
 /// and `retain`.

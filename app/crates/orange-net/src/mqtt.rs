@@ -220,7 +220,17 @@ fn open(settings: &Settings) -> Option<Stream> {
     if !settings.tls {
         return Some(Stream::Plain(tcp));
     }
-    let roots = rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+    let roots = match &settings.authorities {
+        // A private broker is trusted through its own authority only.
+        Some(authorities) => {
+            let mut roots = rustls::RootCertStore::empty();
+            for authority in authorities {
+                roots.add(authority.clone()).ok()?;
+            }
+            roots
+        }
+        None => rustls::RootCertStore::from_iter(webpki_roots::TLS_SERVER_ROOTS.iter().cloned()),
+    };
     let provider = Arc::new(rustls::crypto::ring::default_provider());
     let config = rustls::ClientConfig::builder_with_provider(provider)
         .with_safe_default_protocol_versions()
@@ -246,6 +256,8 @@ struct Settings {
     host: String,
     port: u16,
     tls: bool,
+    /// The certificate authorities of `ca_file`, replacing the bundled ones.
+    authorities: Option<Vec<rustls::pki_types::CertificateDer<'static>>>,
     client_id: String,
     username: Option<String>,
     password: Option<String>,
@@ -574,11 +586,27 @@ impl ConnectionAdapter for MqttAdapter {
                 .collect::<Result<_, _>>()?,
             Some(_) => return Err("`topics` must be a list of topic filters".into()),
         };
+        let authorities = match short("ca_file")? {
+            None => None,
+            Some(_) if !tls => return Err("`ca_file` needs an mqtts:// URL".into()),
+            Some(path) => {
+                use rustls::pki_types::pem::PemObject;
+                let pem = std::fs::read(&path).map_err(|_| "`ca_file` could not be read")?;
+                let found: Vec<_> = rustls::pki_types::CertificateDer::pem_slice_iter(&pem)
+                    .collect::<Result<_, _>>()
+                    .map_err(|_| "`ca_file` is not a PEM certificate file")?;
+                if found.is_empty() {
+                    return Err("`ca_file` holds no certificate".into());
+                }
+                Some(found)
+            }
+        };
         let shared = Arc::new(Shared {
             settings: Settings {
                 host: host.to_owned(),
                 port,
                 tls,
+                authorities,
                 client_id,
                 username,
                 password,
@@ -756,6 +784,7 @@ mod tests {
             host: "localhost".into(),
             port: 1883,
             tls: false,
+            authorities: None,
             client_id: "c".into(),
             username: Some("u".into()),
             password: Some("p".into()),
@@ -843,6 +872,8 @@ mod tests {
             r#"{"url": "mqtt://host", "topics": [""]}"#,
             r#"{"url": "mqtt://host", "topics": "a"}"#,
             r#"{"url": "mqtt://host", "keep_alive_s": 1}"#,
+            r#"{"url": "mqtt://host", "ca_file": "ca.pem"}"#,
+            r#"{"url": "mqtts://host", "ca_file": "no-such-file.pem"}"#,
         ] {
             assert!(open(json(bad)).is_err(), "{bad}");
         }

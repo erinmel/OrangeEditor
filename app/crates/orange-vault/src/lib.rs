@@ -4,11 +4,13 @@
 //! A document never holds a secret. It names one as `credential://<name>` in a
 //! connection's settings, and the host replaces that reference with the secret from the
 //! application's [`SecretStore`] when it opens the connection. [`OsVault`] keeps secrets
-//! in Windows Credential Manager, the macOS Keychain or the Linux kernel keyring, so
-//! they are protected by the user's login and never written by this project to a file.
+//! in Windows Credential Manager, the macOS Keychain or, on Linux, the desktop's Secret
+//! Service (GNOME Keyring, KWallet), so they are kept across restarts, protected by the
+//! user's login and never written by this project to a file.
 //!
-//! On Linux the kernel keyring holds a secret until the user logs out or the machine
-//! restarts; it is not the desktop's persistent secret service.
+//! On Linux the Secret Service is reached over D-Bus. A machine without one, such as
+//! a server with no desktop session, reports the store as unavailable instead of
+//! keeping secrets somewhere weaker.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
