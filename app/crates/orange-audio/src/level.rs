@@ -24,30 +24,49 @@ pub(crate) fn level_db(sum_of_squares: f64, samples: usize) -> f64 {
 }
 
 /// Fires once when the level reaches `threshold`, and again only after it has fallen
-/// to `release` or below.
+/// to `release` or below. With a hold, the level must first stay at the threshold or
+/// above for that many further windows in a row.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Gate {
     pub threshold: f64,
     pub release: f64,
+    hold: u32,
+    held: u32,
     armed: bool,
 }
 impl Gate {
+    #[cfg(test)]
     pub(crate) const fn new(threshold: f64, release: f64) -> Self {
+        Self::held(threshold, release, 0)
+    }
+    /// A gate that fires only after `hold` windows beyond the first stayed loud.
+    pub(crate) const fn held(threshold: f64, release: f64, hold: u32) -> Self {
         Self {
             threshold,
             release,
+            hold,
+            held: 0,
             armed: true,
         }
     }
     pub(crate) fn step(&mut self, level: f64) -> bool {
-        if self.armed && level >= self.threshold {
-            self.armed = false;
-            return true;
+        if level < self.threshold {
+            self.held = 0;
+            if level <= self.release {
+                self.armed = true;
+            }
+            return false;
         }
-        if level <= self.release {
-            self.armed = true;
+        if !self.armed {
+            return false;
         }
-        false
+        if self.held < self.hold {
+            self.held += 1;
+            return false;
+        }
+        self.armed = false;
+        self.held = 0;
+        true
     }
 }
 
@@ -104,6 +123,23 @@ mod tests {
             .collect();
         // -25 is between the two limits, so -15 does not fire again; -31 rearms.
         assert_eq!(fired, [false, true, false, false, false, false, true]);
+    }
+
+    #[test]
+    fn a_held_gate_fires_only_after_the_level_stayed_loud() {
+        let mut gate = Gate::held(-20.0, -30.0, 2);
+        let fired: Vec<bool> = [
+            -10.0, -10.0, -25.0, -10.0, -10.0, -10.0, -10.0, -40.0, -10.0,
+        ]
+        .into_iter()
+        .map(|level| gate.step(level))
+        .collect();
+        // The dip to -25 starts the count again; the third loud window in a row fires,
+        // once, and a single loud window after the release does not.
+        assert_eq!(
+            fired,
+            [false, false, false, false, false, true, false, false, false]
+        );
     }
 
     #[test]

@@ -49,7 +49,8 @@ pub const OUTPUT_ADAPTER: &str = "org.orange.audio/output";
 /// Adapter kind of an input device whose level is measured. Settings: `device` as for
 /// an output; `threshold_db` (default -30) and `release_db` (default 6 below the
 /// threshold) for [`ON_LEVEL`]; `window_ms` (5 to 1,000, default 50), the length of
-/// each measurement.
+/// each measurement; `hold_ms` (0 to 60,000, default 0), how long the level must stay at
+/// the threshold or above before the entry fires, counted in whole measurements.
 pub const INPUT_ADAPTER: &str = "org.orange.audio/input";
 /// Plays a WAV, FLAC, MP3 or Ogg Vorbis file on an output connection and continues when it has ended. Inputs
 /// `path` and `gain` (0 to 8; 1 is unchanged).
@@ -346,10 +347,18 @@ impl ConnectionAdapter for InputAdapter {
                 .filter(|ms| (5..=1_000).contains(ms))
                 .ok_or("`window_ms` must be an integer from 5 to 1000")?,
         };
+        let hold = match settings.get("hold_ms") {
+            None => 0,
+            Some(value) => value
+                .as_u64()
+                .filter(|ms| *ms <= 60_000)
+                .ok_or("`hold_ms` must be an integer from 0 to 60000")?,
+        };
+        let hold = u32::try_from(hold.div_ceil(window)).unwrap_or(u32::MAX);
         let shared = Arc::new(InputShared {
             device: device_setting(settings)?,
             window: Duration::from_millis(window),
-            gate: Gate::new(threshold, release),
+            gate: Gate::held(threshold, release, hold),
             levels: Arc::new(Levels::new()),
             listeners: Listeners::new(),
             started: AtomicBool::new(false),
@@ -539,6 +548,8 @@ mod tests {
             serde_json::json!({"device": NULL_DEVICE, "threshold_db": "loud"}),
             serde_json::json!({"device": NULL_DEVICE, "threshold_db": -40, "release_db": -30}),
             serde_json::json!({"device": NULL_DEVICE, "window_ms": 2}),
+            serde_json::json!({"device": NULL_DEVICE, "hold_ms": -1}),
+            serde_json::json!({"device": NULL_DEVICE, "hold_ms": 60_001}),
         ] {
             assert!(InputAdapter.open(&settings(bad)).is_err());
         }
