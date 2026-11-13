@@ -81,7 +81,7 @@ pub use orange_runtime::{
 };
 pub use orange_sdk::{
     Call, ConnectionAdapter, EmitError, Emitter, SERVICE_PROVIDER, ServiceNode, ServicePackage,
-    ServiceSource, Session, TARGET,
+    ServiceSource, Session, TARGET, TypeDecl,
 };
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use preview::Previewed;
@@ -627,6 +627,75 @@ pub struct Host {
     preview: Option<preview::Engine>,
 }
 
+/// The type registry with the types the active service packages declare; `None` when
+/// they declare none and the core registry serves.
+fn package_types(
+    packages: &[ServicePackage],
+    disabled: &BTreeSet<String>,
+) -> Result<Option<orange_model::types::TypeRegistry>, String> {
+    use orange_model::type_term::TypeTerm;
+    use orange_model::value::literal_codec::{
+        EnumSchema, FieldSchema, RecordSchema, VariantSchema,
+    };
+    let mut types = orange_model::types::TypeRegistryBuilder::core();
+    let mut any = false;
+    for package in packages {
+        if disabled.contains(package.id()) {
+            continue;
+        }
+        let id = package.id();
+        for declaration in package.types() {
+            let (TypeDecl::Record { name, .. } | TypeDecl::Enum { name, .. }) = declaration;
+            let refused = |what: &str| format!("package {id}: type `{name}`: {what}");
+            let term = |ty: &str| {
+                ty.parse()
+                    .ok()
+                    .and_then(|expr| TypeTerm::parse(&expr).ok())
+                    .ok_or_else(|| refused(&format!("`{ty}` is not a type")))
+            };
+            let ty = format!("{id}/{name}@1")
+                .parse()
+                .map_err(|_| refused("the name is not valid"))?;
+            let registered = match declaration {
+                TypeDecl::Record { fields, .. } => {
+                    let fields = fields
+                        .iter()
+                        .map(|(field_id, ty, optional)| {
+                            Ok(FieldSchema {
+                                field_id: field_id.clone(),
+                                ty: term(ty)?,
+                                optional: *optional,
+                            })
+                        })
+                        .collect::<Result<_, String>>()?;
+                    types.register_record(id, &ty, RecordSchema { fields })
+                }
+                TypeDecl::Enum { variants, .. } => {
+                    let variants = variants
+                        .iter()
+                        .map(|(variant_id, payload)| {
+                            Ok(VariantSchema {
+                                variant_id: variant_id.clone(),
+                                payload: payload.as_deref().map(term).transpose()?,
+                            })
+                        })
+                        .collect::<Result<_, String>>()?;
+                    types.register_enum(id, &ty, EnumSchema { variants })
+                }
+            };
+            registered.map_err(|error| refused(&error.to_string()))?;
+            any = true;
+        }
+    }
+    if !any {
+        return Ok(None);
+    }
+    types
+        .build()
+        .map(Some)
+        .map_err(|error| format!("package types: {error}"))
+}
+
 /// A stable identity for code compiled into this host, in the form package digests use.
 fn built_in_digest(what: &str) -> String {
     let hash = Sha256::digest(format!("{what}@{}", env!("CARGO_PKG_VERSION")).as_bytes());
@@ -673,6 +742,9 @@ impl Host {
             disabled.extend(persist::disabled(directory).map_err(HostError::Storage)?);
         }
         let mut builder = RegistryBuilder::core(origin);
+        if let Some(types) = package_types(&packages, &disabled).map_err(HostError::Start)? {
+            builder = builder.types(Arc::new(types));
+        }
         let base_nodes = options.base_nodes && !disabled.contains(BASE_PACKAGE);
         if base_nodes {
             builder = math.register(builder).map_err(|e| start(&e))?;

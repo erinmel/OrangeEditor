@@ -22,7 +22,7 @@ pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::{DefinitionError, NodeDefinition, Presentation, TextRef};
 pub use orange_model::document::DefinitionRef;
-pub use orange_model::value::ListRepr;
+pub use orange_model::value::{ListRepr, RecordRepr};
 pub use orange_runtime::EffectLease;
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -416,6 +416,25 @@ pub struct ServicePackage {
     sources: Vec<(NodeDefinition, Arc<dyn ServiceSource>)>,
     adapters: Vec<(String, Arc<dyn ConnectionAdapter>)>,
     presentations: Vec<(DefinitionRef, Presentation)>,
+    types: Vec<TypeDecl>,
+}
+
+/// A type a package adds: a record with named fields or an enum with variants. Its
+/// full name is `<package id>/<name>@1`; field and payload types are type expressions
+/// such as `core/f64@1` or another type of the package. Values are
+/// [`Value::Record`] with the fields in declared order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum TypeDecl {
+    Record {
+        name: String,
+        /// Each field's ID, its type and whether it may be absent.
+        fields: Vec<(String, String, bool)>,
+    },
+    Enum {
+        name: String,
+        /// Each variant's ID and the type of its payload, if it carries one.
+        variants: Vec<(String, Option<String>)>,
+    },
 }
 impl std::fmt::Debug for ServicePackage {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -441,7 +460,42 @@ impl ServicePackage {
             sources: Vec::new(),
             adapters: Vec::new(),
             presentations: Vec::new(),
+            types: Vec::new(),
         }
+    }
+    /// Adds a record type `<package id>/<name>@1` with required fields, each an ID and
+    /// a type. The host checks the declaration when it starts and refuses to start
+    /// with one that is not valid.
+    pub fn record(mut self, name: &str, fields: &[(&str, &str)]) -> Self {
+        self.types.push(TypeDecl::Record {
+            name: name.to_owned(),
+            fields: fields
+                .iter()
+                .map(|(id, ty)| ((*id).to_owned(), (*ty).to_owned(), false))
+                .collect(),
+        });
+        self
+    }
+    /// Adds an enum type `<package id>/<name>@1`; a variant is an ID and the type of
+    /// its payload, if it carries one.
+    pub fn enumeration(mut self, name: &str, variants: &[(&str, Option<&str>)]) -> Self {
+        self.types.push(TypeDecl::Enum {
+            name: name.to_owned(),
+            variants: variants
+                .iter()
+                .map(|(id, payload)| ((*id).to_owned(), payload.map(str::to_owned)))
+                .collect(),
+        });
+        self
+    }
+    /// Adds a type declared in full, such as a record with optional fields.
+    pub fn declare(mut self, declaration: TypeDecl) -> Self {
+        self.types.push(declaration);
+        self
+    }
+    /// The types this package adds.
+    pub fn types(&self) -> &[TypeDecl] {
+        &self.types
     }
     pub fn id(&self) -> &str {
         &self.id
