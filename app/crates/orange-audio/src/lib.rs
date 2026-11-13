@@ -6,13 +6,13 @@
 //! `org.orange.audio/input` connections and use the nodes below. An application that
 //! does not want audio leaves the package out.
 //!
-//! Playback reads WAV files (integer or float PCM) and FLAC files, converts them to the
+//! Playback reads WAV (integer or float PCM), FLAC, MP3 and Ogg Vorbis files, converts them to the
 //! device's rate and channels, and mixes up to [`MAX_VOICES`] sounds per output. A
 //! sound plays once or repeats until stopped; an output's sounds can be paused,
 //! resumed, moved to a position and scaled by one volume. The device callback only
 //! mixes prepared samples. These controls act on every sound of an output connection:
-//! sounds that need separate control play on separate connections. MP3 and Ogg files,
-//! streaming from disk and playlists are not provided.
+//! sounds that need separate control play on separate connections. Streaming from disk
+//! and playlists are not provided.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -51,7 +51,7 @@ pub const OUTPUT_ADAPTER: &str = "org.orange.audio/output";
 /// threshold) for [`ON_LEVEL`]; `window_ms` (5 to 1,000, default 50), the length of
 /// each measurement.
 pub const INPUT_ADAPTER: &str = "org.orange.audio/input";
-/// Plays a WAV or FLAC file on an output connection and continues when it has ended. Inputs
+/// Plays a WAV, FLAC, MP3 or Ogg Vorbis file on an output connection and continues when it has ended. Inputs
 /// `path` and `gain` (0 to 8; 1 is unchanged).
 pub const PLAY: &str = "org.orange.audio/play";
 /// Stops every sound playing on an output connection.
@@ -105,7 +105,7 @@ const BAD_INPUT: KernelFault = fault(
 const FILE: KernelFault = fault(
     "org.orange.audio/File",
     "org.orange.audio/file-unreadable",
-    "The sound file is missing or is not a supported WAV or FLAC file.",
+    "The sound file is missing or is not a supported WAV, FLAC, MP3 or Ogg Vorbis file.",
 );
 const TOO_LARGE: KernelFault = fault(
     "org.orange.audio/TooLarge",
@@ -428,7 +428,7 @@ const PLAY_DEFINITION: &str = r#"{
   "definition_id": "org.orange.audio/play",
   "label": {"key": "org.orange.audio/play-label", "fallback": "Play sound"},
   "description": {"key": "org.orange.audio/play-description",
-    "fallback": "Plays a WAV or FLAC file on an output device and continues when it has ended."},
+    "fallback": "Plays a sound file on an output device and continues when it has ended."},
   "editor": {"category_id": "org.orange.audio/category-audio",
     "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
   "definition_version": 1,

@@ -8,7 +8,9 @@ yanked = "deny"
 [licenses]
 # ISC (ring, rustls-webpki, untrusted) and CDLA-Permissive-2.0 (webpki-roots, the Mozilla
 # root certificate data) were admitted on 2026-11-10 for HTTPS in orange-net.
-allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "CDLA-Permissive-2.0", "ISC", "MIT", "Unicode-3.0", "Zlib"]
+# MPL-2.0 (symphonia, the MP3 and Ogg decoder of orange-audio) was admitted by the
+# project owner on 2026-11-12: it is used unmodified as a dependency.
+allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "CDLA-Permissive-2.0", "ISC", "MIT", "MPL-2.0", "Unicode-3.0", "Zlib"]
 private = { ignore = true }
 
 [bans]

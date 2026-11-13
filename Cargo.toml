@@ -25,6 +25,8 @@ serde_json = { version = "=1.0.154", features = ["preserve_order"] }
 ring = "=0.17.14"
 rustls = { version = "=0.23.46", default-features = false, features = ["ring", "std", "tls12"] }
 sha2 = "=0.11.1"
+# MP3 and Ogg Vorbis decoding (orange-audio only). MPL-2.0, admitted in deny.toml.
+symphonia = { version = "=0.5.5", default-features = false, features = ["mp3", "ogg", "vorbis"] }
 thiserror = "=2.0.21"
 tungstenite = { version = "=0.30.0", default-features = false, features = ["handshake", "rustls-tls-webpki-roots"] }
 ureq = { version = "=3.5.1", default-features = false, features = ["rustls"] }

@@ -1,5 +1,5 @@
-//! Reads a WAV or FLAC file into samples in an output's rate and channel layout. The
-//! format is told from the file's first bytes, not from its name.
+//! Reads a WAV, FLAC, MP3 or Ogg Vorbis file into samples in an output's rate and
+//! channel layout. The format is told from the file's content, not from its name.
 use hound::{SampleFormat, WavReader};
 use std::io::Read;
 use std::path::Path;
@@ -12,7 +12,7 @@ pub const MAX_SECONDS: u64 = 600;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum WavError {
-    /// The file is missing, unreadable or not a WAV or FLAC file this reader supports.
+    /// The file is missing, unreadable or not in a format this reader supports.
     Unreadable,
     /// The file or the decoded sound is over a limit.
     TooLarge,
@@ -32,6 +32,9 @@ pub(crate) fn load(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, 
         .map_err(|_| WavError::Unreadable)?;
     if &magic == b"fLaC" {
         return flac(path, rate, channels);
+    }
+    if &magic != b"RIFF" {
+        return compressed(path, rate, channels);
     }
     let mut reader = WavReader::open(path).map_err(|_| WavError::Unreadable)?;
     let spec = reader.spec();
@@ -54,6 +57,67 @@ pub(crate) fn load(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, 
     };
     let samples = samples.map_err(|_| WavError::Unreadable)?;
     convert(&samples, spec.channels, spec.sample_rate, channels, rate)
+}
+
+/// MP3 and Ogg Vorbis, by whichever of the two the content turns out to be.
+fn compressed(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, WavError> {
+    use symphonia::core::audio::SampleBuffer;
+    use symphonia::core::errors::Error;
+    use symphonia::core::io::MediaSourceStream;
+    let file = std::fs::File::open(path).map_err(|_| WavError::Unreadable)?;
+    let stream = MediaSourceStream::new(Box::new(file), Default::default());
+    let probed = symphonia::default::get_probe()
+        .format(
+            &Default::default(),
+            stream,
+            &Default::default(),
+            &Default::default(),
+        )
+        .map_err(|_| WavError::Unreadable)?;
+    let mut format = probed.format;
+    let track = format.default_track().ok_or(WavError::Unreadable)?;
+    let track_id = track.id;
+    let mut decoder = symphonia::default::get_codecs()
+        .make(&track.codec_params, &Default::default())
+        .map_err(|_| WavError::Unreadable)?;
+    let mut samples: Vec<f32> = Vec::new();
+    let mut source: Option<(u32, u16)> = None;
+    loop {
+        let packet = match format.next_packet() {
+            Ok(packet) => packet,
+            // The end of the stream is reported as an unexpected end of input.
+            Err(Error::IoError(error)) if error.kind() == std::io::ErrorKind::UnexpectedEof => {
+                break;
+            }
+            Err(_) => return Err(WavError::Unreadable),
+        };
+        if packet.track_id() != track_id {
+            continue;
+        }
+        let decoded = match decoder.decode(&packet) {
+            Ok(decoded) => decoded,
+            // One damaged packet is skipped, as players do; a file with nothing
+            // decodable is refused below.
+            Err(Error::DecodeError(_)) => continue,
+            Err(_) => return Err(WavError::Unreadable),
+        };
+        let spec = *decoded.spec();
+        let count = u16::try_from(spec.channels.count()).map_err(|_| WavError::Unreadable)?;
+        if *source.get_or_insert((spec.rate, count)) != (spec.rate, count) {
+            return Err(WavError::Unreadable);
+        }
+        let mut buffer = SampleBuffer::<f32>::new(decoded.capacity() as u64, spec);
+        buffer.copy_interleaved_ref(decoded);
+        samples.extend_from_slice(buffer.samples());
+        let limit = MAX_SECONDS
+            .saturating_mul(u64::from(spec.rate))
+            .saturating_mul(u64::from(count));
+        if samples.len() as u64 > limit {
+            return Err(WavError::TooLarge);
+        }
+    }
+    let (source_rate, source_channels) = source.ok_or(WavError::Unreadable)?;
+    convert(&samples, source_channels, source_rate, channels, rate)
 }
 
 fn flac(path: &Path, rate: u32, channels: u16) -> Result<Arc<[f32]>, WavError> {
@@ -266,6 +330,48 @@ mod tests {
         damaged[middle] ^= 0xff;
         std::fs::write(&path, damaged).unwrap();
         assert_eq!(load(&path, 8_000, 1), Err(WavError::Unreadable));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The fixtures are a quarter of a second of a 440 Hz tone at 22,050 Hz, mono,
+    /// made with ffmpeg 5.1 (libmp3lame and libvorbis).
+    #[test]
+    fn mp3_and_ogg_files_decode_to_the_tone_they_hold() {
+        for name in ["tone.mp3", "tone.ogg"] {
+            let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("tests")
+                .join("fixtures")
+                .join(name);
+            let decoded = load(&path, 22_050, 1).unwrap();
+            // An encoder pads the start and end, so the length is near, not exact.
+            let seconds = decoded.len() as f64 / 22_050.0;
+            assert!((0.2..0.4).contains(&seconds), "{name}: {seconds} s");
+            // Zero crossings in the middle of the sound give the tone's frequency.
+            let middle = &decoded[1_500..4_500];
+            let crossings = middle
+                .windows(2)
+                .filter(|pair| pair[0] <= 0.0 && pair[1] > 0.0)
+                .count();
+            let frequency = crossings as f64 * 22_050.0 / middle.len() as f64;
+            assert!(
+                (420.0..460.0).contains(&frequency),
+                "{name}: {frequency} Hz"
+            );
+            let peak = middle
+                .iter()
+                .fold(0f32, |peak, sample| peak.max(sample.abs()));
+            assert!((0.3..=1.0).contains(&peak), "{name}: peak {peak}");
+            // Stereo at twice the rate: twice the channels and twice the frames.
+            let stereo = load(&path, 44_100, 2).unwrap();
+            let ratio = stereo.len() as f64 / decoded.len() as f64;
+            assert!((3.9..4.1).contains(&ratio), "{name}: {ratio}");
+        }
+        // Bytes that are none of the formats are refused.
+        let dir = std::env::temp_dir().join(format!("orange-audio-none-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("noise.mp3");
+        std::fs::write(&path, [7u8; 4096]).unwrap();
+        assert_eq!(load(&path, 22_050, 1), Err(WavError::Unreadable));
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
