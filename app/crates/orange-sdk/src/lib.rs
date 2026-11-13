@@ -153,6 +153,80 @@ impl Emitter {
     }
 }
 
+/// The entry nodes listening to one source, such as a connection's incoming messages.
+/// A session keeps one of these; each entry that starts on the session is added with
+/// [`Listeners::listen`], and the source fires them with [`Listeners::emit`]. `T` is
+/// whatever the source needs to tell its listeners apart, such as text or binary.
+pub struct Listeners<T = ()> {
+    entries: std::sync::Mutex<Vec<(u64, T, Emitter)>>,
+    next: std::sync::atomic::AtomicU64,
+}
+impl<T> Default for Listeners<T> {
+    fn default() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(Vec::new()),
+            next: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+impl<T> std::fmt::Debug for Listeners<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listeners").finish_non_exhaustive()
+    }
+}
+impl<T: Send + 'static> Listeners<T> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn entries(&self) -> std::sync::MutexGuard<'_, Vec<(u64, T, Emitter)>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Adds a listener and returns the guard a [`ServiceSource`] hands back: dropping
+    /// it removes the listener. `owner` is what holds these listeners, usually the
+    /// session's shared state, and `of` finds them in it.
+    pub fn listen<S: Send + Sync + 'static>(
+        owner: Arc<S>,
+        of: fn(&S) -> &Self,
+        tag: T,
+        emitter: Emitter,
+    ) -> Box<dyn Send> {
+        struct Guard<S, T: Send + 'static>(Arc<S>, fn(&S) -> &Listeners<T>, u64);
+        impl<S, T: Send + 'static> Drop for Guard<S, T> {
+            fn drop(&mut self) {
+                (self.1)(&self.0).entries().retain(|(id, ..)| *id != self.2);
+            }
+        }
+        let listeners = of(&owner);
+        let id = listeners
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        listeners.entries().push((id, tag, emitter));
+        Box::new(Guard(owner, of, id))
+    }
+
+    /// Fires every listener for which `payload` gives a value. A flow that has ended
+    /// is forgotten; one whose mailbox is full misses this firing, as its bounded
+    /// mailbox requires.
+    pub fn emit(&self, payload: impl Fn(&T) -> Option<Value>) {
+        self.entries().retain(|(_, tag, emitter)| {
+            payload(tag).is_none_or(|value| emitter.emit(Some(value)) != Err(EmitError::Closed))
+        });
+    }
+
+    /// The emitters now listening, for a source that must not lose a firing and so
+    /// handles a full mailbox itself.
+    pub fn emitters(&self) -> Vec<Emitter> {
+        self.entries()
+            .iter()
+            .map(|(_, _, emitter)| emitter.clone())
+            .collect()
+    }
+}
+
 /// The implementation of one entry node: something outside the graph that fires it.
 ///
 /// `start` is called once per entry node when its flow opens and must not block. It

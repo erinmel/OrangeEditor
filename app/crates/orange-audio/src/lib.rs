@@ -30,14 +30,14 @@ pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
 use device::{Ended, Levels, Output};
 use level::Gate;
 use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, FaultText, KernelFault, ServiceNode,
+    Call, ConnectionAdapter, Emitter, FaultText, KernelFault, Listeners, ServiceNode,
     ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock, PoisonError};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, OnceLock};
 use std::thread;
 use std::time::Duration;
 
@@ -252,8 +252,7 @@ struct InputShared {
     window: Duration,
     gate: Gate,
     levels: Arc<Levels>,
-    listeners: Mutex<Vec<(u64, Emitter)>>,
-    next_listener: AtomicU64,
+    listeners: Listeners,
     /// Set once a flow has attached its triggers; the device is not opened before.
     started: AtomicBool,
     stop: AtomicBool,
@@ -314,13 +313,7 @@ fn listen(shared: &InputShared) {
             // Crossings closer together than one poll are reported as one.
             seen = count;
             let payload = Value::F64(level);
-            shared
-                .listeners
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .retain(|(_, emitter)| {
-                    emitter.emit(Some(payload.clone())) != Err(EmitError::Closed)
-                });
+            shared.listeners.emit(|()| Some(payload.clone()));
         }
         thread::sleep(POLL);
     }
@@ -358,8 +351,7 @@ impl ConnectionAdapter for InputAdapter {
             window: Duration::from_millis(window),
             gate: Gate::new(threshold, release),
             levels: Arc::new(Levels::new()),
-            listeners: Mutex::new(Vec::new()),
-            next_listener: AtomicU64::new(0),
+            listeners: Listeners::new(),
             started: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             failed: OnceLock::new(),
@@ -392,18 +384,6 @@ impl ServiceNode for InputLevel {
     }
 }
 
-/// Removes one entry's emitter when its flow lets go of it.
-struct Listening(Arc<InputShared>, u64);
-impl Drop for Listening {
-    fn drop(&mut self) {
-        self.0
-            .listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(id, _)| *id != self.1);
-    }
-}
-
 #[derive(Debug)]
 struct OnLevel;
 impl ServiceSource for OnLevel {
@@ -414,13 +394,12 @@ impl ServiceSource for OnLevel {
     ) -> Result<Box<dyn Send>, String> {
         let shared =
             input(session.as_deref()).ok_or("the entry needs an audio input connection")?;
-        let id = shared.next_listener.fetch_add(1, Ordering::Relaxed);
-        shared
-            .listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((id, emitter));
-        Ok(Box::new(Listening(Arc::clone(shared), id)))
+        Ok(Listeners::listen(
+            Arc::clone(shared),
+            |shared| &shared.listeners,
+            (),
+            emitter,
+        ))
     }
 }
 

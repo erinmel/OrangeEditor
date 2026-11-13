@@ -13,7 +13,7 @@
 //! nothing for it while it is away. MQTT 5, quality of service 2, wills and
 //! persistent sessions are not provided.
 use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, KernelFault, ListRepr, ServiceNode, ServiceSource,
+    Call, ConnectionAdapter, Emitter, KernelFault, ListRepr, Listeners, ServiceNode, ServiceSource,
     Session, Value,
 };
 use serde_json::{Map, Value as Json};
@@ -270,8 +270,7 @@ struct Shared {
     settings: Settings,
     outgoing: Mutex<VecDeque<Outgoing>>,
     /// Each listener with whether it takes payloads as bytes instead of text.
-    listeners: Mutex<Vec<(u64, bool, Emitter)>>,
-    next_listener: AtomicU64,
+    listeners: Listeners<bool>,
     started: AtomicBool,
     stop: AtomicBool,
 }
@@ -297,17 +296,13 @@ impl Shared {
             Value::List(Arc::new(ListRepr::Str(Box::new(pair))))
         });
         let as_bytes = Value::Bytes(Arc::new(payload.to_vec()));
-        self.listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(_, bytes, emitter)| {
-                let value = if *bytes {
-                    Some(as_bytes.clone())
-                } else {
-                    as_text.clone()
-                };
-                value.is_none_or(|value| emitter.emit(Some(value)) != Err(EmitError::Closed))
-            });
+        self.listeners.emit(|bytes| {
+            if *bytes {
+                Some(as_bytes.clone())
+            } else {
+                as_text.clone()
+            }
+        });
     }
 }
 
@@ -615,8 +610,7 @@ impl ConnectionAdapter for MqttAdapter {
                 topics,
             },
             outgoing: Mutex::new(VecDeque::new()),
-            listeners: Mutex::new(Vec::new()),
-            next_listener: AtomicU64::new(0),
+            listeners: Listeners::new(),
             started: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
@@ -672,17 +666,6 @@ impl ServiceNode for MqttPublish {
     }
 }
 
-struct Listening(Arc<Shared>, u64);
-impl Drop for Listening {
-    fn drop(&mut self) {
-        self.0
-            .listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(id, ..)| *id != self.1);
-    }
-}
-
 /// Fires its entry once per message received on the connection's topics.
 #[derive(Debug)]
 pub(crate) struct MqttMessage {
@@ -696,13 +679,12 @@ impl ServiceSource for MqttMessage {
     ) -> Result<Box<dyn Send>, String> {
         let shared =
             crate::mqtt::session(session.as_deref()).ok_or("the entry needs an MQTT connection")?;
-        let id = shared.next_listener.fetch_add(1, Ordering::Relaxed);
-        shared
-            .listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((id, self.binary, emitter));
-        Ok(Box::new(Listening(Arc::clone(shared), id)))
+        Ok(Listeners::listen(
+            Arc::clone(shared),
+            |shared| &shared.listeners,
+            self.binary,
+            emitter,
+        ))
     }
 }
 

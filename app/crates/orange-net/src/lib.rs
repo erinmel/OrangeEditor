@@ -20,15 +20,13 @@ mod ws;
 pub use ws::MAX_QUEUED_MESSAGES;
 
 use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, FaultText, KernelFault, ServiceNode,
+    Call, ConnectionAdapter, EmitError, Emitter, FaultText, KernelFault, Listeners, ServiceNode,
     ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
 use std::io::Read;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, PoisonError};
 use std::time::Duration;
 use ureq::Agent;
 use ureq::http::{Method, Request};
@@ -236,8 +234,7 @@ struct HttpSession {
     headers: Vec<(String, String)>,
     oauth: Option<oauth::OAuth>,
     /// The entries that receive the lines of streamed responses.
-    listeners: Mutex<Vec<(u64, Emitter)>>,
-    next_listener: AtomicU64,
+    listeners: Arc<Listeners>,
 }
 /// Header values are left out: they can be credentials.
 impl std::fmt::Debug for HttpSession {
@@ -405,8 +402,7 @@ impl ConnectionAdapter for HttpAdapter {
             base_url: base_url.trim_end_matches('/').to_owned(),
             headers,
             oauth,
-            listeners: Mutex::new(Vec::new()),
-            next_listener: AtomicU64::new(0),
+            listeners: Arc::new(Listeners::new()),
         }))
     }
 }
@@ -546,13 +542,7 @@ impl ServiceNode for HttpStream {
             }
             lines += 1;
             let payload = Value::Str(Arc::new(text.to_owned()));
-            let listeners: Vec<Emitter> = session
-                .listeners
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .iter()
-                .map(|(_, emitter)| emitter.clone())
-                .collect();
+            let listeners = session.listeners.emitters();
             for emitter in listeners {
                 // A flow that is behind slows the reading down instead of losing a
                 // line; the server then sees a slow reader.
@@ -568,20 +558,6 @@ impl ServiceNode for HttpStream {
     }
 }
 
-/// Removes its listener when the flow that owns the entry closes.
-struct StreamListening(Arc<dyn Session>, u64);
-impl Drop for StreamListening {
-    fn drop(&mut self) {
-        if let Some(session) = self.0.as_any().downcast_ref::<HttpSession>() {
-            session
-                .listeners
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .retain(|(id, _)| *id != self.1);
-        }
-    }
-}
-
 /// Fires its entry once per line of every response streamed on the connection.
 #[derive(Debug)]
 struct HttpStreamLine;
@@ -591,17 +567,16 @@ impl ServiceSource for HttpStreamLine {
         session: Option<Arc<dyn Session>>,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String> {
-        let session = session.ok_or("the entry needs an HTTP connection")?;
         let http = session
-            .as_any()
-            .downcast_ref::<HttpSession>()
+            .as_deref()
+            .and_then(|session| session.as_any().downcast_ref::<HttpSession>())
             .ok_or("the entry needs an HTTP connection")?;
-        let id = http.next_listener.fetch_add(1, Ordering::Relaxed);
-        http.listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((id, emitter));
-        Ok(Box::new(StreamListening(session, id)))
+        Ok(Listeners::listen(
+            Arc::clone(&http.listeners),
+            |listeners| listeners,
+            (),
+            emitter,
+        ))
     }
 }
 
