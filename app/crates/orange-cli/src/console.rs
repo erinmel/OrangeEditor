@@ -1,15 +1,18 @@
 //! The `run` command: printing what flows do and taking commands while they run.
 use crate::*;
 
-pub(crate) fn print(event: &HostEvent) {
+pub(crate) fn print(event: &HostEvent, names: &Names) {
     let flow = event.flow;
     match &event.kind {
         FlowEvent::State(state) => println!("[{flow}] state {state:?}"),
         FlowEvent::Node(step) => match &step.fault {
-            None => println!("[{flow}] node {} {:?}", step.node, step.outcome),
+            None => println!("[{flow}] {}: {:?}", names.node(&step.node), step.outcome),
             Some(fault) => println!(
-                "[{flow}] node {} {:?} fault {} from {}",
-                step.node, step.outcome, fault.fault.code, fault.source
+                "[{flow}] {}: {:?}, fault {} from {}",
+                names.node(&step.node),
+                step.outcome,
+                fault.fault.code,
+                names.node(&fault.source)
             ),
         },
         FlowEvent::TraceLost(count) => println!("[{flow}] {count} steps not shown"),
@@ -18,14 +21,16 @@ pub(crate) fn print(event: &HostEvent) {
         FlowEvent::Variables(changed) => {
             for (variable, value) in changed {
                 match value {
-                    Some(value) => println!("[{flow}] variable {variable} = {value:?}"),
-                    None => println!("[{flow}] variable {variable} is unset"),
+                    Some(value) => {
+                        println!("[{flow}] {} = {}", names.variable(variable), plain(value));
+                    }
+                    None => println!("[{flow}] {} is unset", names.variable(variable)),
                 }
             }
         }
         FlowEvent::Ports(changed) => {
             for (node, port, value) in changed {
-                println!("[{flow}] wire {node} {port} = {value:?}");
+                println!("[{flow}] {} {port} = {}", names.node(node), plain(value));
             }
         }
         FlowEvent::Updated { .. } => println!("[{flow}] graph replaced"),
@@ -36,8 +41,10 @@ pub(crate) fn print(event: &HostEvent) {
 
 /// Applies one line typed by the user. Returns `false` for `quit`.
 /// Applies an edited graph file to its running flow.
-pub(crate) fn reload(host: &mut Host, flow: FlowId, path: &str) -> Result<(), String> {
+pub(crate) fn reload(host: &mut Host, opened: &mut Opened) -> Result<(), String> {
+    let (flow, path) = (opened.flow, opened.path.as_str());
     let text = String::from_utf8(read(path)?).map_err(|_| format!("{path}: not UTF-8 text"))?;
+    let names = Names::of(host, &text);
     match host.update(flow, &text) {
         Ok(updated) if !updated.changed => println!("[{flow}] nothing to apply"),
         Ok(updated) => println!(
@@ -45,56 +52,80 @@ pub(crate) fn reload(host: &mut Host, flow: FlowId, path: &str) -> Result<(), St
             updated.kept_variables, updated.reset_variables
         ),
         Err(error) => {
-            report(path, &error);
+            report(path, &error, &names);
             println!("[{flow}] edit refused; the flow is unchanged");
+            return Ok(());
         }
     }
+    opened.names = names;
     Ok(())
 }
 
-pub(crate) fn command(host: &mut Host, flows: &[(FlowId, String)], line: &str) -> bool {
+/// The rest of a line after its first `skip` words, spaces inside it kept.
+fn rest(line: &str, skip: usize) -> &str {
+    let mut rest = line.trim_start();
+    for _ in 0..skip {
+        rest = rest
+            .split_once(char::is_whitespace)
+            .map_or("", |(_, after)| after.trim_start());
+    }
+    rest.trim_end()
+}
+
+pub(crate) fn command(host: &mut Host, flows: &mut [Opened], line: &str) -> bool {
     let words: Vec<&str> = line.split_whitespace().collect();
-    let flow = |index: usize| -> Result<(FlowId, &str), String> {
-        let number: usize = words
-            .get(index)
-            .and_then(|word| word.parse().ok())
-            .ok_or("expected a flow number")?;
-        number
-            .checked_sub(1)
-            .and_then(|at| flows.get(at))
-            .map(|(flow, path)| (*flow, path.as_str()))
-            .ok_or_else(|| "no such flow".to_owned())
-    };
+    let at = words
+        .get(1)
+        .and_then(|word| word.parse::<usize>().ok())
+        .and_then(|number| number.checked_sub(1))
+        .filter(|at| *at < flows.len());
     let done = |result: Result<(), HostError>| result.map_err(|error| error.to_string());
+    let opened = |at: Option<usize>| at.ok_or_else(|| "expected a flow number".to_owned());
     let outcome = match words.first().copied() {
         None => Ok(()),
         Some("quit") => return false,
-        Some("pause") => flow(1).and_then(|(flow, _)| done(host.pause(flow))),
-        Some("resume") => flow(1).and_then(|(flow, _)| done(host.resume(flow))),
-        Some("reload") => flow(1).and_then(|(flow, path)| reload(host, flow, path)),
-        Some("stop") => flow(1).and_then(|(flow, _)| done(host.stop(flow, StopMode::Graceful))),
-        Some("kill") => flow(1).and_then(|(flow, _)| done(host.stop(flow, StopMode::Immediate))),
-        Some("trigger") => flow(1).and_then(|(flow, _)| {
-            let node: NodeId = words
-                .get(2)
-                .and_then(|word| word.parse().ok())
-                .ok_or("expected a node id")?;
-            done(host.trigger(flow, node, None))
+        Some("pause") => opened(at).and_then(|at| done(host.pause(flows[at].flow))),
+        Some("resume") => opened(at).and_then(|at| done(host.resume(flows[at].flow))),
+        Some("reload") => opened(at).and_then(|at| reload(host, &mut flows[at])),
+        Some("stop") => {
+            opened(at).and_then(|at| done(host.stop(flows[at].flow, StopMode::Graceful)))
+        }
+        Some("kill") => {
+            opened(at).and_then(|at| done(host.stop(flows[at].flow, StopMode::Immediate)))
+        }
+        Some("trigger") => opened(at).and_then(|at| {
+            let flow = &flows[at];
+            // A name may contain spaces: it is the rest of the line.
+            let node = match rest(line, 2) {
+                "" => {
+                    let entries = host
+                        .info(flow.flow)
+                        .map(|info| info.manual_entries.clone())
+                        .unwrap_or_default();
+                    match entries[..] {
+                        [(only, _)] => only,
+                        [] => return Err("the graph has no manual entry".to_owned()),
+                        _ => {
+                            return Err("the graph has several manual entries; name one".to_owned());
+                        }
+                    }
+                }
+                name => flow.names.find_node(name)?,
+            };
+            done(host.trigger(flow.flow, node, None))
         }),
-        Some("set") => flow(1).and_then(|(flow, _)| {
-            let variable = words
-                .get(2)
-                .and_then(|word| word.parse().ok())
-                .ok_or("expected a variable id")?;
-            // The literal is the rest of the line, spaces included.
-            let literal = line
-                .splitn(4, char::is_whitespace)
-                .nth(3)
-                .ok_or(r#"expected a literal such as {"type":"core/i64@1","value":"5"}"#)?;
+        Some("set") => opened(at).and_then(|at| {
+            let flow = &flows[at];
+            let name = words.get(2).ok_or("expected a variable")?;
+            let (variable, ty) = flow.names.find_variable(name)?;
+            let typed = rest(line, 3);
+            if typed.is_empty() {
+                return Err("expected a value".to_owned());
+            }
             let value = host
-                .value_from_json(literal.trim())
+                .value_from_json(&literal(&ty, typed)?)
                 .map_err(|error| error.to_string())?;
-            done(host.set_variable(flow, variable, value))
+            done(host.set_variable(flow.flow, variable, value))
         }),
         Some(other) => Err(format!("unknown command `{other}`")),
     };
@@ -107,7 +138,7 @@ pub(crate) fn command(host: &mut Host, flows: &[(FlowId, String)], line: &str) -
 pub(crate) fn run(
     host: &mut Host,
     events: &Receiver<HostEvent>,
-    flows: &[(FlowId, String)],
+    flows: &mut [Opened],
     duration: Option<Duration>,
 ) {
     let (lines, typed) = channel::<String>();
@@ -125,7 +156,10 @@ pub(crate) fn run(
     while running > 0 {
         match events.recv_timeout(Duration::from_millis(20)) {
             Ok(event) => {
-                print(&event);
+                match flows.iter().find(|opened| opened.flow == event.flow) {
+                    Some(opened) => print(&event, &opened.names),
+                    None => print(&event, &Names::default()),
+                }
                 if matches!(event.kind, FlowEvent::Finished) {
                     running -= 1;
                 }
@@ -139,9 +173,9 @@ pub(crate) fn run(
         }
         if quit && !stopping {
             stopping = true;
-            for (flow, _) in flows {
+            for opened in flows.iter() {
                 // A flow that already ended refuses the stop; that is the goal anyway.
-                let _ = host.stop(*flow, StopMode::Graceful);
+                let _ = host.stop(opened.flow, StopMode::Graceful);
             }
         }
     }

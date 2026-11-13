@@ -48,7 +48,7 @@ impl Host {
             .map_err(|_| HostError::FlowEnded)?
             .map_err(|_| {
                 HostError::Variable(
-                    "the flow has no such run variable, the value is not of its type, or the flow has ended"
+                    "the graph does not use such a run variable, the value is not of its type, or the flow has ended"
                         .into(),
                 )
             })

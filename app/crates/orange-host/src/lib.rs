@@ -35,7 +35,7 @@ use orange_kernel::{
 };
 use orange_model::catalog::{ProviderDescriptor, RegistryBuilder, RegistrySnapshot};
 use orange_model::document::{ConnectionDecl, ConnectionScope, VarScope};
-use orange_model::validation::{Diagnostic, HostOrigin};
+use orange_model::validation::HostOrigin;
 use orange_model::validation::{LeafEffects, ValidationAnalysis};
 use orange_model::{GraphDocument, analyze_with_effects, from_json, to_json};
 use orange_packages::{
@@ -69,6 +69,7 @@ pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::Literal;
 pub use orange_model::id::{ConnectionId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
+pub use orange_model::validation::Diagnostic;
 pub use orange_packages::{
     About, FeedError, PackageKey, PackageManifest, Release, UpdateFeed, UpdateSource,
 };
