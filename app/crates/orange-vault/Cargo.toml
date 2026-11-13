@@ -1,0 +1,15 @@
+[package]
+name = "orange-vault"
+description = "OrangeEditor credential storage: the operating system's store and an in-memory store behind the SDK's SecretStore"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+orange-sdk = { path = "../orange-sdk", version = "=0.0.0" }
+# Windows Credential Manager, macOS Keychain and the Linux kernel keyring.
+keyring.workspace = true
+
+[lints]
+workspace = true

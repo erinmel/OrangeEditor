@@ -23,6 +23,7 @@ usage:
   orange remove <package-id> <version> --store <dir>
   orange updates [--apply] [--grant-log] --store <dir>
   orange devices
+  orange secret set <name> | remove <name> | check <name>
 
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
 what they do. While it runs, type commands on standard input:
@@ -66,6 +67,11 @@ A native plugin runs with all of this program's rights; load only what you trust
 
 `--no-base` leaves out the bundled base nodes, `--no-net` the network package and
 `--no-audio` the audio package.
+
+`secret set <name>` reads a credential from standard input and keeps it in the
+operating system's credential store; a connection's settings name it as
+`credential://<name>` (for example `"bearer": "credential://api/token"`), so graph files
+hold no secrets. `secret check` says whether one is stored without showing it.
 
 `--grant-log` lets installed package code write log lines, `--grant-files` lets it
 read and write files in its own data directory (`--plugin-data <dir>`, or `data` in the
@@ -449,6 +455,52 @@ fn updates(
     }
 }
 
+/// Name under which the operating system's credential store lists this program's
+/// secrets.
+const VAULT_SERVICE: &str = "OrangeEditor";
+
+/// `secret set|remove|check <name>`: manages one credential in the operating system's
+/// store. The secret itself is read from standard input, never from the command line,
+/// where the shell's history and the process list would keep it.
+fn secret(words: &[String]) -> ExitCode {
+    use orange_host::SecretStore;
+    let [action, name] = words else {
+        eprintln!("secret needs `set`, `remove` or `check` and a name\n{USAGE}");
+        return ExitCode::from(2);
+    };
+    let vault = orange_vault::OsVault::new(VAULT_SERVICE);
+    let done = match action.as_str() {
+        "set" => {
+            let mut line = String::new();
+            match std::io::stdin().lock().read_line(&mut line) {
+                Ok(_) => vault
+                    .set(name, line.trim_end_matches(['\r', '\n']))
+                    .map(|()| format!("stored {name}")),
+                Err(_) => {
+                    eprintln!("the secret could not be read from standard input");
+                    return ExitCode::FAILURE;
+                }
+            }
+        }
+        "remove" => vault.remove(name).map(|()| format!("removed {name}")),
+        "check" => vault.get(name).map(|_| format!("{name} is stored")),
+        _ => {
+            eprintln!("unknown secret action `{action}`\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match done {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(error) => {
+            eprintln!("{name}: {error}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The network client of installed packages that hold the `http` grant.
 #[derive(Debug)]
 struct PluginHttp;
@@ -471,6 +523,9 @@ impl orange_host::HttpClient for PluginHttp {
 
 fn main() -> ExitCode {
     let words: Vec<String> = std::env::args().skip(1).collect();
+    if words.first().map(String::as_str) == Some("secret") {
+        return secret(&words[1..]);
+    }
     if words.first().map(String::as_str) == Some("pack") {
         let [_, directory, output] = &words[..] else {
             eprintln!(
@@ -575,6 +630,7 @@ fn main() -> ExitCode {
                     .map(|store| Path::new(store).join("data"))
             }),
         plugin_http: Some(std::sync::Arc::new(PluginHttp)),
+        secrets: Some(std::sync::Arc::new(orange_vault::OsVault::new(VAULT_SERVICE))),
         ..HostOptions::default()
     };
     let (mut host, events) = match Host::with_services(options, services) {

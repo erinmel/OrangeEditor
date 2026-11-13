@@ -30,14 +30,29 @@ use ureq::http::{Method, Request};
 /// Package namespace of the definitions and adapter kinds here.
 pub const PACKAGE: &str = "org.orange.net";
 /// Adapter kind of an HTTP connection. Settings: `base_url` (required, `http://…` or `https://…`),
-/// `timeout_ms` (whole request, default 30,000).
+/// `timeout_ms` (whole request, default 30,000) and the authorization settings
+/// `bearer` (a token, sent as `Authorization: Bearer …`), `basic` (`{"user", "password"}`)
+/// and `headers` (an object of header names and values sent with every request). A
+/// document writes a secret value as `credential://<name>`; the host supplies it.
 pub const HTTP_ADAPTER: &str = "org.orange.net/http";
 /// Sends one request on an HTTP connection. Inputs `method`, `path`, `content` (the request body); outputs
 /// `status` and `response`. Any HTTP status is a result, not a failure.
 pub const HTTP_REQUEST: &str = "org.orange.net/http-request";
 
-/// Adapter kind of a WebSocket connection. Setting: `url` (required, `ws://…` or
-/// `wss://…`). The session connects in the background and reconnects with backoff.
+/// Sends one request with a binary body on an HTTP connection and returns the response
+/// as bytes, whatever it holds: protobuf, an encrypted payload, an image. Inputs
+/// `method`, `path`, `content_type` (empty for none) and `content`; outputs `status`,
+/// `response_type` (the response's content type) and `response`.
+pub const HTTP_REQUEST_BYTES: &str = "org.orange.net/http-request-bytes";
+/// Queues one binary message on a WebSocket connection. Input `data`.
+pub const WS_SEND_BYTES: &str = "org.orange.net/ws-send-bytes";
+/// Entry fired once per binary message received on a WebSocket connection, with the
+/// bytes as `payload`.
+pub const WS_BINARY: &str = "org.orange.net/ws-binary";
+
+/// Adapter kind of a WebSocket connection. Settings: `url` (required, `ws://…` or
+/// `wss://…`) and, for the opening handshake, `bearer`, `basic` and `headers` as for
+/// an HTTP connection. The session connects in the background and reconnects with backoff.
 pub const WS_ADAPTER: &str = "org.orange.net/websocket";
 /// Queues one text message on a WebSocket connection. Input `text`.
 pub const WS_SEND: &str = "org.orange.net/ws-send";
@@ -78,14 +93,131 @@ const TRANSPORT: KernelFault = fault(
 const RESPONSE: KernelFault = fault(
     "org.orange.net/Response",
     "org.orange.net/response-unreadable",
-    "The response body is too large or is not text.",
+    "The response body is too large or, for a text request, is not text.",
 );
 
+/// Most headers one connection adds.
+pub const MAX_HEADERS: usize = 32;
+
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut text = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let group = [
+            chunk[0],
+            chunk.get(1).copied().unwrap_or(0),
+            chunk.get(2).copied().unwrap_or(0),
+        ];
+        let bits = u32::from(group[0]) << 16 | u32::from(group[1]) << 8 | u32::from(group[2]);
+        for (index, shift) in [18u32, 12, 6, 0].into_iter().enumerate() {
+            if index <= chunk.len() {
+                text.push(char::from(ALPHABET[(bits >> shift & 63) as usize]));
+            } else {
+                text.push('=');
+            }
+        }
+    }
+    text
+}
+
+/// The headers a connection's `bearer`, `basic` and `headers` settings add to what it
+/// sends. Error text names the setting, never its value.
+pub(crate) fn auth_headers(settings: &Map<String, Json>) -> Result<Vec<(String, String)>, String> {
+    let value = |text: &str| !text.is_empty() && !text.chars().any(char::is_control);
+    let mut headers = Vec::new();
+    if let Some(extra) = settings.get("headers") {
+        let extra = extra
+            .as_object()
+            .ok_or("`headers` must be an object of header names and values")?;
+        for (name, text) in extra {
+            let named = !name.is_empty()
+                && name
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_'));
+            let text = text.as_str().filter(|text| value(text));
+            match (named, text) {
+                (true, Some(text)) => headers.push((name.clone(), text.to_owned())),
+                _ => return Err("`headers` has a name or value that is not valid".into()),
+            }
+        }
+    }
+    let authorization = match (settings.get("bearer"), settings.get("basic")) {
+        (None, None) => None,
+        (Some(_), Some(_)) => return Err("give `bearer` or `basic`, not both".into()),
+        (Some(token), None) => {
+            let token = token
+                .as_str()
+                .filter(|token| value(token) && !token.contains(' '))
+                .ok_or("`bearer` must be a token")?;
+            Some(format!("Bearer {token}"))
+        }
+        (None, Some(basic)) => {
+            let part = |name: &str| basic.get(name).and_then(Json::as_str).filter(|t| value(t));
+            let (user, password) = part("user")
+                .filter(|user| !user.contains(':'))
+                .zip(part("password"))
+                .ok_or("`basic` must be an object with `user` and `password`")?;
+            Some(format!(
+                "Basic {}",
+                base64(format!("{user}:{password}").as_bytes())
+            ))
+        }
+    };
+    if let Some(authorization) = authorization {
+        if headers
+            .iter()
+            .any(|(name, _)| name.eq_ignore_ascii_case("authorization"))
+        {
+            return Err("`headers` already sets Authorization".into());
+        }
+        headers.push(("Authorization".to_owned(), authorization));
+    }
+    if headers.len() > MAX_HEADERS {
+        return Err(format!("more than {MAX_HEADERS} headers"));
+    }
+    Ok(headers)
+}
+
 /// An HTTP connection: one pooled client bound to a base URL.
-#[derive(Debug)]
 struct HttpSession {
     agent: Agent,
     base_url: String,
+    headers: Vec<(String, String)>,
+}
+/// Header values are left out: they can be credentials.
+impl std::fmt::Debug for HttpSession {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HttpSession")
+            .field("base_url", &self.base_url)
+            .field("headers", &self.headers.len())
+            .finish_non_exhaustive()
+    }
+}
+impl HttpSession {
+    /// Sends one request with the connection's headers.
+    fn send(
+        &self,
+        method: &str,
+        path: &str,
+        content_type: &str,
+        body: Vec<u8>,
+    ) -> Result<ureq::http::Response<ureq::Body>, KernelFault> {
+        let method = Method::from_bytes(method.as_bytes()).map_err(|_| BAD_REQUEST)?;
+        if !path.is_empty() && !path.starts_with('/') {
+            return Err(BAD_REQUEST);
+        }
+        let mut request = Request::builder()
+            .method(method)
+            .uri(format!("{}{path}", self.base_url));
+        for (name, value) in &self.headers {
+            request = request.header(name.as_str(), value.as_str());
+        }
+        if !content_type.is_empty() {
+            request = request.header("Content-Type", content_type);
+        }
+        let request = request.body(body).map_err(|_| BAD_REQUEST)?;
+        self.agent.run(request).map_err(|_| TRANSPORT)
+    }
 }
 impl Session for HttpSession {
     fn as_any(&self) -> &dyn Any {
@@ -120,6 +252,7 @@ impl ConnectionAdapter for HttpAdapter {
         Ok(Arc::new(HttpSession {
             agent,
             base_url: base_url.trim_end_matches('/').to_owned(),
+            headers: auth_headers(settings)?,
         }))
     }
 }
@@ -135,16 +268,7 @@ impl ServiceNode for HttpRequest {
         let [Value::Str(method), Value::Str(path), Value::Str(body)] = call.inputs else {
             return Err(BAD_REQUEST);
         };
-        let method = Method::from_bytes(method.as_bytes()).map_err(|_| BAD_REQUEST)?;
-        if !path.is_empty() && !path.starts_with('/') {
-            return Err(BAD_REQUEST);
-        }
-        let request = Request::builder()
-            .method(method)
-            .uri(format!("{}{path}", session.base_url))
-            .body(body.as_bytes().to_vec())
-            .map_err(|_| BAD_REQUEST)?;
-        let mut response = session.agent.run(request).map_err(|_| TRANSPORT)?;
+        let mut response = session.send(method, path, "", body.as_bytes().to_vec())?;
         let status = i64::from(response.status().as_u16());
         let text = response
             .body_mut()
@@ -155,6 +279,75 @@ impl ServiceNode for HttpRequest {
         Ok(vec![Value::I64(status), Value::Str(Arc::new(text))])
     }
 }
+
+#[derive(Debug)]
+struct HttpRequestBytes;
+impl ServiceNode for HttpRequestBytes {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let session = call
+            .session
+            .and_then(|session| session.as_any().downcast_ref::<HttpSession>())
+            .ok_or(NO_SESSION)?;
+        let [
+            Value::Str(method),
+            Value::Str(path),
+            Value::Str(content_type),
+            Value::Bytes(body),
+        ] = call.inputs
+        else {
+            return Err(BAD_REQUEST);
+        };
+        if content_type.chars().any(char::is_control) {
+            return Err(BAD_REQUEST);
+        }
+        let mut response = session.send(method, path, content_type, body.as_ref().clone())?;
+        let status = i64::from(response.status().as_u16());
+        let kind = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or_default()
+            .to_owned();
+        let bytes = response
+            .body_mut()
+            .with_config()
+            .limit(MAX_RESPONSE_BYTES)
+            .read_to_vec()
+            .map_err(|_| RESPONSE)?;
+        Ok(vec![
+            Value::I64(status),
+            Value::Str(Arc::new(kind)),
+            Value::Bytes(Arc::new(bytes)),
+        ])
+    }
+}
+
+const HTTP_REQUEST_BYTES_DEFINITION: &str = r#"{
+  "definition_id": "org.orange.net/http-request-bytes",
+  "label": {"key": "org.orange.net/http-request-bytes-label", "fallback": "HTTP request (binary)"},
+  "description": {"key": "org.orange.net/http-request-bytes-description",
+    "fallback": "Sends a request with a binary body and returns the response as bytes."},
+  "editor": {"category_id": "org.orange.net/category-network",
+    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
+  "definition_version": 1,
+  "config_version": 1,
+  "kind": "async",
+  "suspends": "always",
+  "determinism": "external",
+  "connection": true,
+  "ports": [
+    {"port_id": "method", "direction": "input", "kind": "data", "type": "core/string@1"},
+    {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
+    {"port_id": "content_type", "direction": "input", "kind": "data", "type": "core/string@1"},
+    {"port_id": "content", "direction": "input", "kind": "data", "type": "core/bytes@1"},
+    {"port_id": "status", "direction": "output", "kind": "data", "type": "core/i64@1",
+      "source": "execution", "available_on": ["then"]},
+    {"port_id": "response_type", "direction": "output", "kind": "data", "type": "core/string@1",
+      "source": "execution", "available_on": ["then"]},
+    {"port_id": "response", "direction": "output", "kind": "data", "type": "core/bytes@1",
+      "source": "execution", "available_on": ["then"]}
+  ]
+}"#;
 
 const HTTP_REQUEST_DEFINITION: &str = r#"{
   "definition_id": "org.orange.net/http-request",
@@ -304,8 +497,15 @@ pub fn package() -> ServicePackage {
         .adapter(HTTP_ADAPTER, HttpAdapter)
         .adapter(WS_ADAPTER, ws::WsAdapter)
         .node(HTTP_REQUEST_DEFINITION, HttpRequest)
-        .and_then(|package| package.node(ws::WS_SEND_DEFINITION, ws::WsSend))
-        .and_then(|package| package.source(ws::WS_MESSAGE_DEFINITION, ws::WsMessage));
+        .and_then(|package| package.node(HTTP_REQUEST_BYTES_DEFINITION, HttpRequestBytes))
+        .and_then(|package| package.node(ws::WS_SEND_DEFINITION, ws::WsSend { binary: false }))
+        .and_then(|package| package.node(ws::WS_SEND_BYTES_DEFINITION, ws::WsSend { binary: true }))
+        .and_then(|package| {
+            package.source(ws::WS_MESSAGE_DEFINITION, ws::WsMessage { binary: false })
+        })
+        .and_then(|package| {
+            package.source(ws::WS_BINARY_DEFINITION, ws::WsMessage { binary: true })
+        });
     match package {
         Ok(package) => package,
         // The definition is a constant of this crate, checked by its tests.

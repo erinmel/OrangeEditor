@@ -448,3 +448,180 @@ fn a_plugin_node_is_listed_with_the_text_its_definition_gives() {
     assert_eq!(shown.category.as_ref().unwrap().fallback, "Network");
     assert_eq!(listed.provider.unwrap().package, orange_net::PACKAGE);
 }
+
+/// A credential store holding one test token.
+#[derive(Debug)]
+struct Secrets;
+impl orange_host::SecretStore for Secrets {
+    fn get(&self, name: &str) -> Result<String, orange_host::SecretError> {
+        if name == "api/token" {
+            Ok("generated-test-token".to_owned())
+        } else {
+            Err(orange_host::SecretError::NotFound)
+        }
+    }
+}
+
+/// Accepts one request, hands its head and body to the test and answers with bytes
+/// that are not text.
+fn binary_server() -> (String, std::sync::mpsc::Receiver<(String, Vec<u8>)>) {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (seen, requests) = std::sync::mpsc::channel();
+    let _ = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        let mut reader = BufReader::new(stream);
+        let (mut head, mut length) = (String::new(), 0);
+        loop {
+            let mut line = String::new();
+            let _ = reader.read_line(&mut line).unwrap();
+            if line.trim().is_empty() {
+                break;
+            }
+            if let Some(value) = line.to_ascii_lowercase().strip_prefix("content-length:") {
+                length = value.trim().parse().unwrap();
+            }
+            head.push_str(&line.to_ascii_lowercase());
+        }
+        let mut body = vec![0; length];
+        reader.read_exact(&mut body).unwrap();
+        seen.send((head, body)).unwrap();
+        let mut stream = reader.into_inner();
+        stream
+            .write_all(
+                b"HTTP/1.1 200 OK\r\nContent-Type: application/x-protobuf\r\nContent-Length: 3\r\nConnection: close\r\n\r\n\x09\x00\xff",
+            )
+            .unwrap();
+    });
+    (format!("http://{address}"), requests)
+}
+
+#[test]
+fn a_binary_request_carries_the_connections_credential_and_returns_bytes() {
+    let (base_url, requests) = binary_server();
+    let options = HostOptions {
+        secrets: Some(std::sync::Arc::new(Secrets)),
+        ..HostOptions::default()
+    };
+    let (mut host, _events) = Host::with_services(options, vec![orange_net::package()]).unwrap();
+    let connection = |token: &str| {
+        json!({"id": CONNECTION, "name": "api", "adapter": orange_net::HTTP_ADAPTER,
+            "scope": "graph", "settings": {"base_url": base_url, "timeout_ms": 5000,
+                "bearer": token, "headers": {"X-Client": "orange"}}})
+    };
+    let build = |host: &Host, token: &str| {
+        let mut document =
+            GraphDocument::new("20000000-0000-4000-8000-000000000001".parse().unwrap());
+        let decl = serde_json::from_value(connection(token)).unwrap();
+        let _ = document
+            .apply([orange_model::DocCommand::UpsertConnection(decl)])
+            .unwrap();
+        let mut request = NewNode::new(
+            node(3),
+            DefinitionRef {
+                id: orange_net::HTTP_REQUEST_BYTES.parse().unwrap(),
+                version: 1,
+            },
+        );
+        request.config = serde_json::from_value(json!({"connection": CONNECTION})).unwrap();
+        request.inputs = serde_json::from_value(json!({
+            "method": {"type": STRING, "value": "POST"},
+            "path": {"type": STRING, "value": "/rpc"},
+            "content_type": {"type": STRING, "value": "application/grpc-web+proto"},
+            "content": {"type": "core/bytes@1", "value": "AP8BgA=="}
+        }))
+        .unwrap();
+        let edit = new_node_edit(&document, host.registry(), request).unwrap();
+        let _ = document.apply(edit.commands).unwrap();
+        let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+        saved["nodes"].as_array_mut().unwrap().extend([
+            core(1, "on-manual"),
+            set(4, 100),
+            set(5, 101),
+            set(6, 102),
+        ]);
+        saved["edges"] = json!([
+            edge(1, 1, "then", 3, "in"),
+            edge(2, 3, "then", 4, "in"),
+            edge(3, 3, "status", 4, "value"),
+            edge(4, 4, "then", 5, "in"),
+            edge(5, 3, "response", 5, "value"),
+            edge(6, 5, "then", 6, "in"),
+            edge(7, 3, "response_type", 6, "value"),
+        ]);
+        saved["variables"] = json!([
+            {"id": id(100), "name": "status", "type": I64, "scope": "run"},
+            {"id": id(101), "name": "reply", "type": "core/bytes@1", "scope": "run"},
+            {"id": id(102), "name": "kind", "type": STRING, "scope": "run"}
+        ]);
+        to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+    };
+
+    // A credential the store does not have refuses the connection, by name only.
+    let missing = build(&host, "credential://api/other");
+    let Err(HostError::Connection(_, reason)) = host.open(&missing) else {
+        panic!("a missing credential is refused");
+    };
+    assert!(reason.contains("api/other"), "{reason}");
+
+    // The document holds the reference; the request carries the secret.
+    let text = build(&host, "credential://api/token");
+    assert!(text.contains("credential://api/token"));
+    assert!(!text.contains("generated-test-token"));
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the reply", || read(&host, flow, 102).is_some());
+    let (head, body) = requests.recv().unwrap();
+    assert!(
+        head.contains("authorization: bearer generated-test-token"),
+        "{head}"
+    );
+    assert!(head.contains("x-client: orange"));
+    assert!(head.contains("content-type: application/grpc-web+proto"));
+    assert_eq!(body, [0, 255, 1, 128]);
+    assert_eq!(read(&host, flow, 100), Some(Value::I64(200)));
+    assert_eq!(
+        read(&host, flow, 101),
+        Some(Value::Bytes(std::sync::Arc::new(vec![9, 0, 255])))
+    );
+    let Some(Value::Str(kind)) = read(&host, flow, 102) else {
+        panic!("the content type is text");
+    };
+    assert_eq!(kind.as_str(), "application/x-protobuf");
+}
+
+#[test]
+fn authorization_settings_are_checked_when_a_document_opens() {
+    let mut host = host();
+    let refused = |host: &mut Host, settings: Json| {
+        let mut connection = graph_connection("http://127.0.0.1:9");
+        for (name, value) in settings.as_object().unwrap() {
+            connection["settings"][name] = value.clone();
+        }
+        let text = document(host, connection);
+        matches!(host.open(&text), Err(HostError::Connection(..)))
+    };
+    assert!(refused(&mut host, json!({"bearer": "a b"})));
+    assert!(refused(
+        &mut host,
+        json!({"bearer": "t", "basic": {"user": "u", "password": "p"}})
+    ));
+    assert!(refused(
+        &mut host,
+        json!({"basic": {"user": "u:x", "password": "p"}})
+    ));
+    assert!(refused(&mut host, json!({"headers": {"Bad Name": "v"}})));
+    assert!(refused(
+        &mut host,
+        json!({"headers": {"Authorization": "x"}, "bearer": "t"})
+    ));
+    // Without a credential store a reference is refused rather than sent as text.
+    assert!(refused(
+        &mut host,
+        json!({"bearer": "credential://api/token"})
+    ));
+    assert!(!refused(
+        &mut host,
+        json!({"basic": {"user": "u", "password": "p"}})
+    ));
+}

@@ -70,6 +70,7 @@ pub use orange_sdk::{
     Call, ConnectionAdapter, EmitError, Emitter, SERVICE_PROVIDER, ServiceNode, ServicePackage,
     ServiceSource, Session, TARGET,
 };
+pub use orange_sdk::{SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -153,6 +154,9 @@ pub struct HostOptions {
     /// The network client for packages holding the `http` grant. `None` leaves that
     /// grant with nothing to reach.
     pub plugin_http: Option<Arc<dyn HttpClient>>,
+    /// Where connection settings' `credential://<name>` references are read from.
+    /// `None` refuses a connection that names a credential.
+    pub secrets: Option<Arc<dyn SecretStore>>,
 }
 impl Default for HostOptions {
     fn default() -> Self {
@@ -169,6 +173,7 @@ impl Default for HostOptions {
             disabled_packages: BTreeSet::new(),
             plugin_data_dir: None,
             plugin_http: None,
+            secrets: None,
         }
     }
 }
@@ -311,6 +316,47 @@ pub struct Updated {
     pub kept_variables: usize,
     /// Run variables that are new or changed type and started from their initial value.
     pub reset_variables: usize,
+}
+
+/// The settings an adapter receives: every string that is exactly
+/// `credential://<name>`, at any depth, replaced by that secret. The result is handed
+/// to the adapter and never stored, logged or compared.
+fn with_secrets(
+    secrets: Option<&Arc<dyn SecretStore>>,
+    settings: &serde_json::Map<String, serde_json::Value>,
+) -> Result<serde_json::Map<String, serde_json::Value>, String> {
+    fn resolve(
+        value: &mut serde_json::Value,
+        secrets: Option<&Arc<dyn SecretStore>>,
+    ) -> Result<(), String> {
+        match value {
+            serde_json::Value::String(text) => {
+                if let Some(name) = text.strip_prefix(SECRET_PREFIX) {
+                    let store = secrets.ok_or_else(|| {
+                        format!(
+                            "it names credential `{name}` and the application has no credential store"
+                        )
+                    })?;
+                    *text = store
+                        .get(name)
+                        .map_err(|error| format!("credential `{name}`: {error}"))?;
+                }
+                Ok(())
+            }
+            serde_json::Value::Array(items) => {
+                items.iter_mut().try_for_each(|item| resolve(item, secrets))
+            }
+            serde_json::Value::Object(fields) => fields
+                .values_mut()
+                .try_for_each(|field| resolve(field, secrets)),
+            _ => Ok(()),
+        }
+    }
+    let mut resolved = settings.clone();
+    resolved
+        .values_mut()
+        .try_for_each(|value| resolve(value, secrets))?;
+    Ok(resolved)
 }
 
 /// A connection the host holds for every document that declares its ID as shared.
@@ -725,7 +771,11 @@ impl Host {
             let session = match decl.scope {
                 ConnectionScope::Graph => match previous.and_then(|opened| opened.get(&decl.id)) {
                     Some((before, session)) if before == decl => Arc::clone(session),
-                    _ => adapter.open(&decl.settings).map_err(refused)?,
+                    _ => {
+                        let settings = with_secrets(self.options.secrets.as_ref(), &decl.settings)
+                            .map_err(refused)?;
+                        adapter.open(&settings).map_err(refused)?
+                    }
                 },
                 ConnectionScope::Shared => {
                     let shared = self.shared.get_mut(&decl.id).ok_or_else(|| {
@@ -740,7 +790,10 @@ impl Host {
                     match &shared.session {
                         Some(session) => Arc::clone(session),
                         None => {
-                            let session = adapter.open(&shared.settings).map_err(refused)?;
+                            let settings =
+                                with_secrets(self.options.secrets.as_ref(), &shared.settings)
+                                    .map_err(refused)?;
+                            let session = adapter.open(&settings).map_err(refused)?;
                             shared.session = Some(Arc::clone(&session));
                             session
                         }

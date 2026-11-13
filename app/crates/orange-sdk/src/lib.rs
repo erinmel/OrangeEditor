@@ -27,6 +27,52 @@ use serde_json::{Map, Value as Json};
 use std::any::Any;
 use std::sync::Arc;
 
+/// Prefix of a credential reference in connection settings: `credential://<name>`.
+pub const SECRET_PREFIX: &str = "credential://";
+
+/// Whether `name` can name a secret: 1 to 128 bytes of `a-z`, `0-9`, `.`, `_`, `-`
+/// and `/`, starting with a letter or digit.
+pub fn is_secret_name(name: &str) -> bool {
+    (1..=128).contains(&name.len())
+        && name.starts_with(|c: char| c.is_ascii_lowercase() || c.is_ascii_digit())
+        && name.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || matches!(b, b'.' | b'_' | b'-' | b'/')
+        })
+}
+
+/// Why a secret was not read or written. No variant carries secret text.
+#[derive(Debug, Clone, PartialEq, Eq)]
+#[non_exhaustive]
+pub enum SecretError {
+    /// No secret is stored under the name.
+    NotFound,
+    /// The name is not one [`is_secret_name`] accepts.
+    InvalidName,
+    /// The secret is empty or too long for the store.
+    InvalidSecret,
+    /// The store is locked, missing or failed; the text says which, without details.
+    Unavailable(&'static str),
+}
+impl std::fmt::Display for SecretError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NotFound => f.write_str("no credential is stored under that name"),
+            Self::InvalidName => f.write_str("the credential name is not valid"),
+            Self::InvalidSecret => f.write_str("the credential is empty or too long"),
+            Self::Unavailable(why) => write!(f, "the credential store is not available: {why}"),
+        }
+    }
+}
+impl std::error::Error for SecretError {}
+
+/// Where an application keeps credentials. The host reads from it when a connection's
+/// settings name a secret as `credential://<name>`; documents, packages and logs hold
+/// only that reference.
+pub trait SecretStore: std::fmt::Debug + Send + Sync + 'static {
+    /// The secret stored under `name`.
+    fn get(&self, name: &str) -> Result<String, SecretError>;
+}
+
 /// Provider ID of every node a service package implements.
 pub const SERVICE_PROVIDER: &str = "native";
 

@@ -403,3 +403,111 @@ fn a_trigger_made_without_code_fires_on_messages_from_the_connection_its_use_nam
         }
     }
 }
+
+#[test]
+fn binary_messages_cross_both_ways_and_the_handshake_is_authorized() {
+    use tungstenite::handshake::server::{Request, Response};
+    const BYTES: &str = "core/bytes@1";
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let address = listener.local_addr().unwrap();
+    let (seen, authorizations) = std::sync::mpsc::channel();
+    let _ = std::thread::spawn(move || {
+        let (stream, _) = listener.accept().unwrap();
+        #[allow(
+            clippy::result_large_err,
+            reason = "the callback type is the library's"
+        )]
+        let callback = |request: &Request, response: Response| {
+            let header = request
+                .headers()
+                .get("authorization")
+                .and_then(|value| value.to_str().ok())
+                .unwrap_or_default()
+                .to_owned();
+            seen.send(header).unwrap();
+            Ok(response)
+        };
+        let mut socket = tungstenite::accept_hdr(stream, callback).unwrap();
+        // Text is ignored by a binary entry; each binary message comes back reversed.
+        socket
+            .send(Message::text("not for the binary entry"))
+            .unwrap();
+        while let Ok(message) = socket.read() {
+            if let Message::Binary(data) = message {
+                let reversed: Vec<u8> = data.iter().rev().copied().collect();
+                if socket.send(Message::binary(reversed)).is_err() {
+                    break;
+                }
+            }
+        }
+    });
+
+    let mut host = host();
+    let mut document = GraphDocument::new("20000000-0000-4000-8000-000000000009".parse().unwrap());
+    // user "orange", password "generated-test-value"
+    let connection = json!({"id": CONNECTION, "name": "feed", "adapter": orange_net::WS_ADAPTER,
+        "scope": "graph", "settings": {"url": format!("ws://{address}"),
+            "basic": {"user": "orange", "password": "generated-test-value"}}});
+    let _ = document
+        .apply([DocCommand::UpsertConnection(
+            serde_json::from_value(connection).unwrap(),
+        )])
+        .unwrap();
+    for (n, definition, inputs) in [
+        (1, orange_net::WS_BINARY, json!({})),
+        (
+            3,
+            orange_net::WS_SEND_BYTES,
+            json!({"data": {"type": BYTES, "value": "AAEC/w=="}}),
+        ),
+    ] {
+        let mut new = NewNode::new(
+            node(n),
+            DefinitionRef {
+                id: definition.parse().unwrap(),
+                version: 1,
+            },
+        );
+        new.config = serde_json::from_value(json!({"connection": CONNECTION})).unwrap();
+        new.inputs = serde_json::from_value(inputs).unwrap();
+        let edit = new_node_edit(&document, host.registry(), new).unwrap();
+        let _ = document.apply(edit.commands).unwrap();
+    }
+    let mut saved: Json = serde_json::from_str(&to_json(&document).unwrap()).unwrap();
+    for entry in saved["nodes"].as_array_mut().unwrap() {
+        if entry["definition_id"] == orange_net::WS_BINARY {
+            entry["activation"] = activation();
+        }
+    }
+    let mut keep = core(4, "set-variable");
+    keep["config"] = json!({"variable": id(100)});
+    saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([core(2, "on-manual"), keep]);
+    saved["edges"] = json!([
+        edge(1, 1, "then", 4, "in"),
+        edge(2, 1, "payload", 4, "value"),
+        edge(3, 2, "then", 3, "in"),
+    ]);
+    saved["variables"] = json!([{"id": id(100), "name": "reply", "type": BYTES, "scope": "run"}]);
+    let text = to_json(&from_json(&saved.to_string()).unwrap()).unwrap();
+    assert!(host.check(&text).unwrap().is_empty());
+
+    let flow = host.open(&text).unwrap();
+    assert_eq!(
+        authorizations.recv_timeout(WAIT).unwrap(),
+        "Basic b3JhbmdlOmdlbmVyYXRlZC10ZXN0LXZhbHVl"
+    );
+    host.trigger(flow, node(2), None).unwrap();
+    let variable: VariableId = id(100).parse().unwrap();
+    let received = || {
+        host.inspect(flow, move |run| run.variable(variable).cloned())
+            .unwrap()
+    };
+    until("the binary reply", || received().is_some());
+    assert_eq!(
+        received(),
+        Some(Value::Bytes(std::sync::Arc::new(vec![255, 2, 1, 0])))
+    );
+}
