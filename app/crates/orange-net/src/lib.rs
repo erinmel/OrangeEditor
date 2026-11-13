@@ -779,7 +779,7 @@ pub fn verify_feed(feed: &[u8], signature: &[u8], key: &str) -> Result<(), Strin
         .map_err(|_| refused())
 }
 
-fn hex(bytes: &[u8]) -> String {
+pub(crate) fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
@@ -816,11 +816,7 @@ pub fn sign_feed(feed: &[u8], private_key: &str) -> Result<(String, String), Str
 /// `content_digest` has for a native plugin library.
 pub fn sha256(bytes: &[u8]) -> String {
     let digest = ring::digest::digest(&ring::digest::SHA256, bytes);
-    let mut text = String::from("sha256:");
-    for byte in digest.as_ref() {
-        text.push_str(&format!("{byte:02x}"));
-    }
-    text
+    format!("sha256:{}", hex(digest.as_ref()))
 }
 
 /// The package to pass to `Host::with_services`.
@@ -875,12 +871,8 @@ pub fn package() -> ServicePackage {
 
 #[cfg(test)]
 mod tests {
-    use super::{sha256, verify_feed};
+    use super::{hex, sha256, verify_feed};
     use ring::signature::{Ed25519KeyPair, KeyPair};
-
-    fn hex(bytes: &[u8]) -> String {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect()
-    }
 
     #[test]
     fn a_feed_is_accepted_only_with_its_publishers_signature() {

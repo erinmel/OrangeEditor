@@ -596,7 +596,17 @@ fn oauth_login(settings: &str, name: &str) -> Result<(), String> {
     }
     let vault = orange_vault::OsVault::new(VAULT_SERVICE);
     let file = String::from_utf8(read(settings)?).map_err(|_| format!("{settings}: not text"))?;
-    let field = |key: &str| -> Result<Option<String>, String> { Ok(json_text_field(&file, key)) };
+    let file: serde_json::Value =
+        serde_json::from_str(&file).map_err(|_| format!("{settings}: not JSON"))?;
+    // A value is text, or a number such as the port.
+    let field = |key: &str| -> Result<Option<String>, String> {
+        match &file[key] {
+            serde_json::Value::Null => Ok(None),
+            serde_json::Value::String(text) => Ok(Some(text.clone())),
+            serde_json::Value::Number(number) => Ok(Some(number.to_string())),
+            _ => Err(format!("{settings}: `{key}` must be text")),
+        }
+    };
     let required =
         |key: &str| field(key)?.ok_or_else(|| format!("{settings}: `{key}` is required"));
     let (authorize_url, token_url, client_id) = (
@@ -715,31 +725,6 @@ fn oauth_login(settings: &str, name: &str) -> Result<(), String> {
         "stored the refresh token as {name}\nuse it in a connection's settings as: \"oauth\": {{\"token_url\": \"{token_url}\", \"client_id\": \"{client_id}\", \"refresh_token\": \"credential://{name}\"}}"
     );
     Ok(())
-}
-
-/// The text (or number, as text) value of `key` in a flat JSON object.
-fn json_text_field(json: &str, key: &str) -> Option<String> {
-    let at = json.find(&format!("\"{key}\""))?;
-    let rest = json
-        .get(at + key.len() + 2..)?
-        .trim_start()
-        .strip_prefix(':')?
-        .trim_start();
-    if let Some(text) = rest.strip_prefix('"') {
-        let mut value = String::new();
-        let mut characters = text.chars();
-        while let Some(character) = characters.next() {
-            match character {
-                '"' => return Some(value),
-                '\\' => value.push(characters.next()?),
-                other => value.push(other),
-            }
-        }
-        None
-    } else {
-        let end = rest.find([',', '}', '\n', ' ']).unwrap_or(rest.len());
-        Some(rest.get(..end)?.to_owned()).filter(|value| !value.is_empty())
-    }
 }
 
 /// `feed key <name>` makes a signing key and keeps its private half in the credential

@@ -282,7 +282,7 @@ pub fn random_token() -> Result<String, String> {
     ring::rand::SystemRandom::new()
         .fill(&mut bytes)
         .map_err(|_| "no random numbers are available".to_owned())?;
-    Ok(bytes.iter().map(|byte| format!("{byte:02x}")).collect())
+    Ok(crate::hex(&bytes))
 }
 
 /// The PKCE `S256` challenge of a verifier: the URL-safe, unpadded base64 of its

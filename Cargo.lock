@@ -1697,6 +1697,7 @@ dependencies = [
  "orange-native",
  "orange-net",
  "orange-vault",
+ "serde_json",
 ]
 
 [[package]]

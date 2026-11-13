@@ -591,11 +591,12 @@ pub struct Host {
 /// A stable identity for code compiled into this host, in the form package digests use.
 fn built_in_digest(what: &str) -> String {
     let hash = Sha256::digest(format!("{what}@{}", env!("CARGO_PKG_VERSION")).as_bytes());
-    let mut text = String::from("sha256:");
-    for byte in hash {
-        text.push_str(&format!("{byte:02x}"));
-    }
-    text
+    format!("sha256:{}", hex(&hash))
+}
+
+/// Lowercase hexadecimal.
+pub(crate) fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 fn wall_ns() -> Option<i64> {
