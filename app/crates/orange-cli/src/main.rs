@@ -28,6 +28,7 @@ usage:
   orange devices
   orange secret set <name> | remove <name> | check <name>
   orange feed key <name> | sign <feed.json> <name>
+  orange oauth login <settings.json> <name>
 
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
 what they do. While it runs, type commands on standard input:
@@ -93,6 +94,12 @@ files there are JSON and can be edited while nothing runs.
 operating system's credential store; a connection's settings name it as
 `credential://<name>` (for example a `bearer` setting of `credential://api/token`), so graph files
 hold no secrets. `secret check` says whether one is stored without showing it.
+
+`oauth login <settings.json> <name>` signs you in to a service in a browser
+(authorization code with PKCE) and keeps the refresh token in the credential store; an
+HTTP connection then uses it as `oauth.refresh_token`. The settings file holds
+`authorize_url`, `token_url`, `client_id` and optionally `scope`, `client_secret` and
+`redirect_port`.
 
 `feed key <name>` makes a key for signing update feeds, keeps its private half in the
 credential store and prints the `update.key` to put in a package's manifest; `feed sign
@@ -549,6 +556,192 @@ fn secret(words: &[String]) -> ExitCode {
     }
 }
 
+fn percent_decode(text: &str) -> String {
+    let bytes = text.as_bytes();
+    let (mut out, mut at) = (Vec::with_capacity(bytes.len()), 0);
+    while let Some(&byte) = bytes.get(at) {
+        let escaped = (byte == b'%')
+            .then(|| text.get(at + 1..at + 3))
+            .flatten()
+            .and_then(|hex| u8::from_str_radix(hex, 16).ok());
+        match escaped {
+            Some(value) => {
+                out.push(value);
+                at += 3;
+            }
+            None => {
+                out.push(if byte == b'+' { b' ' } else { byte });
+                at += 1;
+            }
+        }
+    }
+    String::from_utf8_lossy(&out).into_owned()
+}
+
+/// How long `oauth login` waits for the browser to come back.
+const LOGIN_WAIT: Duration = Duration::from_secs(300);
+
+/// `oauth login <settings.json> <name>`: signs a person in with the authorization-code
+/// flow and PKCE and keeps the refresh token in the credential store under `<name>`,
+/// for a connection's `oauth.refresh_token`. The settings file holds `authorize_url`,
+/// `token_url`, `client_id` and optionally `scope`, `client_secret` (text or a
+/// `credential://` reference) and `redirect_port` (default 8765). The browser returns
+/// to this program on `127.0.0.1`; no token is printed or written to a file.
+fn oauth_login(settings: &str, name: &str) -> Result<(), String> {
+    use orange_host::SecretStore;
+    use orange_net::oauth;
+    use std::io::{Read, Write};
+    if !orange_host::is_secret_name(name) {
+        return Err(format!("{name}: the credential name is not valid"));
+    }
+    let vault = orange_vault::OsVault::new(VAULT_SERVICE);
+    let file = String::from_utf8(read(settings)?).map_err(|_| format!("{settings}: not text"))?;
+    let field = |key: &str| -> Result<Option<String>, String> { Ok(json_text_field(&file, key)) };
+    let required =
+        |key: &str| field(key)?.ok_or_else(|| format!("{settings}: `{key}` is required"));
+    let (authorize_url, token_url, client_id) = (
+        required("authorize_url")?,
+        required("token_url")?,
+        required("client_id")?,
+    );
+    if !oauth::is_endpoint(&authorize_url) || !oauth::is_endpoint(&token_url) {
+        return Err("the URLs must be https://, or http:// on this machine".into());
+    }
+    let client_secret = match field("client_secret")? {
+        Some(secret) => Some(match secret.strip_prefix(orange_host::SECRET_PREFIX) {
+            Some(stored) => vault
+                .get(stored)
+                .map_err(|error| format!("{stored}: {error}"))?,
+            None => secret,
+        }),
+        None => None,
+    };
+    let port: u16 = match field("redirect_port")? {
+        Some(port) => port.parse().map_err(|_| "`redirect_port` is not a port")?,
+        None => 8765,
+    };
+
+    let (verifier, state) = (oauth::random_token()?, oauth::random_token()?);
+    let redirect = format!("http://127.0.0.1:{port}/callback");
+    let challenge = oauth::pkce_challenge(&verifier);
+    let mut parameters = vec![
+        ("response_type", "code"),
+        ("client_id", client_id.as_str()),
+        ("redirect_uri", redirect.as_str()),
+        ("state", state.as_str()),
+        ("code_challenge", challenge.as_str()),
+        ("code_challenge_method", "S256"),
+    ];
+    let scope = field("scope")?;
+    if let Some(scope) = &scope {
+        parameters.push(("scope", scope));
+    }
+    let listener = std::net::TcpListener::bind(("127.0.0.1", port))
+        .map_err(|error| format!("port {port} cannot be listened on: {:?}", error.kind()))?;
+    listener
+        .set_nonblocking(true)
+        .map_err(|error| error.to_string())?;
+    println!(
+        "Open this address in a browser and sign in:\n{}",
+        oauth::authorization_url(&authorize_url, &parameters)
+    );
+
+    let started = Instant::now();
+    let code = loop {
+        if started.elapsed() > LOGIN_WAIT {
+            return Err("nobody signed in within five minutes".into());
+        }
+        let Ok((mut stream, _)) = listener.accept() else {
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        };
+        let _ = stream.set_nonblocking(false);
+        let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+        let mut buffer = [0u8; 8192];
+        let count = stream.read(&mut buffer).unwrap_or(0);
+        let request = String::from_utf8_lossy(buffer.get(..count).unwrap_or_default()).into_owned();
+        let query = request
+            .strip_prefix("GET /callback?")
+            .and_then(|rest| rest.split([' ', '\r', '\n']).next())
+            .unwrap_or_default();
+        let value = |key: &str| {
+            query
+                .split('&')
+                .filter_map(|pair| pair.split_once('='))
+                .find(|(name, _)| *name == key)
+                .map(|(_, value)| percent_decode(value))
+        };
+        // Anything that is not this sign-in's own return is answered and ignored.
+        let outcome = match (value("state"), value("code"), value("error")) {
+            (Some(returned), Some(code), _) if returned == state => Some(Ok(code)),
+            (Some(returned), _, Some(_)) if returned == state => {
+                Some(Err("the sign-in was refused".to_owned()))
+            }
+            _ => None,
+        };
+        let page = match &outcome {
+            Some(Ok(_)) => "Signed in. You can close this page.",
+            Some(Err(_)) => "The sign-in was refused. You can close this page.",
+            None => "This address is not expecting you.",
+        };
+        let _ = write!(
+            stream,
+            "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{page}",
+            page.len()
+        );
+        if let Some(outcome) = outcome {
+            break outcome?;
+        }
+    };
+
+    let mut form = vec![
+        ("grant_type", "authorization_code"),
+        ("code", code.as_str()),
+        ("redirect_uri", redirect.as_str()),
+        ("client_id", client_id.as_str()),
+        ("code_verifier", verifier.as_str()),
+    ];
+    if let Some(secret) = &client_secret {
+        form.push(("client_secret", secret));
+    }
+    let answer = oauth::token_request(&token_url, &form, None)?;
+    let refresh = answer
+        .refresh_token
+        .ok_or("the server issued no refresh token; ask it for offline access")?;
+    vault
+        .set(name, &refresh)
+        .map_err(|error| format!("{name}: {error}"))?;
+    println!(
+        "stored the refresh token as {name}\nuse it in a connection's settings as: \"oauth\": {{\"token_url\": \"{token_url}\", \"client_id\": \"{client_id}\", \"refresh_token\": \"credential://{name}\"}}"
+    );
+    Ok(())
+}
+
+/// The text (or number, as text) value of `key` in a flat JSON object.
+fn json_text_field(json: &str, key: &str) -> Option<String> {
+    let at = json.find(&format!("\"{key}\""))?;
+    let rest = json
+        .get(at + key.len() + 2..)?
+        .trim_start()
+        .strip_prefix(':')?
+        .trim_start();
+    if let Some(text) = rest.strip_prefix('"') {
+        let mut value = String::new();
+        let mut characters = text.chars();
+        while let Some(character) = characters.next() {
+            match character {
+                '"' => return Some(value),
+                '\\' => value.push(characters.next()?),
+                other => value.push(other),
+            }
+        }
+        None
+    } else {
+        let end = rest.find([',', '}', '\n', ' ']).unwrap_or(rest.len());
+        Some(rest.get(..end)?.to_owned()).filter(|value| !value.is_empty())
+    }
+}
+
 /// `feed key <name>` makes a signing key and keeps its private half in the credential
 /// store under `<name>`; `feed sign <feed.json> <name>` writes `<feed.json>.sig`. Both
 /// print the public key a manifest's `update.key` takes. The private key is never
@@ -653,6 +846,23 @@ fn main() -> ExitCode {
                 println!("{output}: node {package}/{node} {version}");
                 ExitCode::SUCCESS
             }
+            Err(message) => {
+                eprintln!("{message}");
+                ExitCode::FAILURE
+            }
+        };
+    }
+    if words.first().map(String::as_str) == Some("oauth") {
+        let [action, settings, name] = &words[1..] else {
+            eprintln!("oauth needs `login <settings.json> <name>`\n{USAGE}");
+            return ExitCode::from(2);
+        };
+        if action != "login" {
+            eprintln!("unknown oauth action `{action}`\n{USAGE}");
+            return ExitCode::from(2);
+        }
+        return match oauth_login(settings, name) {
+            Ok(()) => ExitCode::SUCCESS,
             Err(message) => {
                 eprintln!("{message}");
                 ExitCode::FAILURE
