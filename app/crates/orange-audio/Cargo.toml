@@ -19,6 +19,7 @@ hound.workspace = true
 symphonia.workspace = true
 
 [dev-dependencies]
+orange-testkit = { path = "../orange-testkit", version = "=0.0.0" }
 orange-host = { path = "../orange-host", version = "=0.0.0" }
 orange-model = { path = "../orange-model", version = "=0.0.0" }
 

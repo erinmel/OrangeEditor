@@ -153,6 +153,80 @@ impl Emitter {
     }
 }
 
+/// The entry nodes listening to one source, such as a connection's incoming messages.
+/// A session keeps one of these; each entry that starts on the session is added with
+/// [`Listeners::listen`], and the source fires them with [`Listeners::emit`]. `T` is
+/// whatever the source needs to tell its listeners apart, such as text or binary.
+pub struct Listeners<T = ()> {
+    entries: std::sync::Mutex<Vec<(u64, T, Emitter)>>,
+    next: std::sync::atomic::AtomicU64,
+}
+impl<T> Default for Listeners<T> {
+    fn default() -> Self {
+        Self {
+            entries: std::sync::Mutex::new(Vec::new()),
+            next: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+}
+impl<T> std::fmt::Debug for Listeners<T> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Listeners").finish_non_exhaustive()
+    }
+}
+impl<T: Send + 'static> Listeners<T> {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    fn entries(&self) -> std::sync::MutexGuard<'_, Vec<(u64, T, Emitter)>> {
+        self.entries
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// Adds a listener and returns the guard a [`ServiceSource`] hands back: dropping
+    /// it removes the listener. `owner` is what holds these listeners, usually the
+    /// session's shared state, and `of` finds them in it.
+    pub fn listen<S: Send + Sync + 'static>(
+        owner: Arc<S>,
+        of: fn(&S) -> &Self,
+        tag: T,
+        emitter: Emitter,
+    ) -> Box<dyn Send> {
+        struct Guard<S, T: Send + 'static>(Arc<S>, fn(&S) -> &Listeners<T>, u64);
+        impl<S, T: Send + 'static> Drop for Guard<S, T> {
+            fn drop(&mut self) {
+                (self.1)(&self.0).entries().retain(|(id, ..)| *id != self.2);
+            }
+        }
+        let listeners = of(&owner);
+        let id = listeners
+            .next
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        listeners.entries().push((id, tag, emitter));
+        Box::new(Guard(owner, of, id))
+    }
+
+    /// Fires every listener for which `payload` gives a value. A flow that has ended
+    /// is forgotten; one whose mailbox is full misses this firing, as its bounded
+    /// mailbox requires.
+    pub fn emit(&self, payload: impl Fn(&T) -> Option<Value>) {
+        self.entries().retain(|(_, tag, emitter)| {
+            payload(tag).is_none_or(|value| emitter.emit(Some(value)) != Err(EmitError::Closed))
+        });
+    }
+
+    /// The emitters now listening, for a source that must not lose a firing and so
+    /// handles a full mailbox itself.
+    pub fn emitters(&self) -> Vec<Emitter> {
+        self.entries()
+            .iter()
+            .map(|(_, _, emitter)| emitter.clone())
+            .collect()
+    }
+}
+
 /// The implementation of one entry node: something outside the graph that fires it.
 ///
 /// `start` is called once per entry node when its flow opens and must not block. It
@@ -163,6 +237,119 @@ pub trait ServiceSource: Send + Sync + 'static {
         session: Option<Arc<dyn Session>>,
         emitter: Emitter,
     ) -> Result<Box<dyn Send>, String>;
+}
+
+/// Builds the definition file text of a service node, so a package states what is
+/// particular to each node and nothing else. [`ServicePackage::node`] and
+/// [`ServicePackage::source`] take the result of [`build`](Self::build).
+///
+/// Every definition made here is version 1, takes its label, description and category
+/// keys from its ID, and is marked as reaching outside the graph. A node is
+/// asynchronous; an entry has a `then` outcome and at most one `payload` output.
+#[derive(Debug, Clone)]
+pub struct Definition {
+    package: String,
+    json: Map<String, Json>,
+    ports: Vec<Json>,
+}
+impl Definition {
+    fn new(package: &str, name: &str, label: &str, entry: bool) -> Self {
+        let id = format!("{package}/{name}");
+        let mut json = Map::new();
+        let mut set = |key: &str, value: Json| {
+            let _ = json.insert(key.to_owned(), value);
+        };
+        set(
+            "label",
+            serde_json::json!({"key": format!("{id}-label"), "fallback": label}),
+        );
+        set("definition_id", Json::String(id));
+        set("definition_version", 1.into());
+        set("config_version", 1.into());
+        set("determinism", "external".into());
+        if entry {
+            set("kind", "entry".into());
+        } else {
+            set("kind", "async".into());
+            set("suspends", "always".into());
+        }
+        Self {
+            package: package.to_owned(),
+            json,
+            ports: Vec::new(),
+        }
+    }
+    /// An asynchronous node `<package>/<name>` shown as `label`.
+    pub fn node(package: &str, name: &str, label: &str) -> Self {
+        Self::new(package, name, label, false)
+    }
+    /// An entry node `<package>/<name>` shown as `label`.
+    pub fn entry(package: &str, name: &str, label: &str) -> Self {
+        Self::new(package, name, label, true)
+    }
+    /// One sentence on what the node does.
+    #[must_use]
+    pub fn description(mut self, text: &str) -> Self {
+        let key = format!(
+            "{}-description",
+            self.json["definition_id"].as_str().unwrap_or_default()
+        );
+        let _ = self.json.insert(
+            "description".to_owned(),
+            serde_json::json!({"key": key, "fallback": text}),
+        );
+        self
+    }
+    /// The palette category: `slug` names it within the package and `label` shows it.
+    #[must_use]
+    pub fn category(mut self, slug: &str, label: &str) -> Self {
+        let id = format!("{}/category-{slug}", self.package);
+        let _ = self.json.insert(
+            "editor".to_owned(),
+            serde_json::json!({"category_id": id, "category": {"key": id, "fallback": label}}),
+        );
+        self
+    }
+    /// The node uses the connection its `connection` config field names.
+    #[must_use]
+    pub fn connection(mut self) -> Self {
+        let _ = self.json.insert("connection".to_owned(), true.into());
+        self
+    }
+    /// A data input of type `ty`, such as `core/string@1`. Inputs reach
+    /// [`Call::inputs`] in the order they are added.
+    #[must_use]
+    pub fn input(mut self, name: &str, ty: &str) -> Self {
+        self.ports
+            .push(serde_json::json!({"port_id": name, "direction": "input",
+            "kind": "data", "type": ty}));
+        self
+    }
+    /// A data output of type `ty`, available when the node continues. Outputs are
+    /// returned in the order they are added.
+    #[must_use]
+    pub fn output(mut self, name: &str, ty: &str) -> Self {
+        self.ports
+            .push(serde_json::json!({"port_id": name, "direction": "output",
+            "kind": "data", "type": ty, "source": "execution", "available_on": ["then"]}));
+        self
+    }
+    /// The `payload` output of an entry: the value each firing carries.
+    #[must_use]
+    pub fn payload(mut self, ty: &str) -> Self {
+        self.ports.push(
+            serde_json::json!({"port_id": "payload", "direction": "output",
+            "kind": "data", "type": ty, "source": "payload"}),
+        );
+        self
+    }
+    /// The definition file text.
+    pub fn build(mut self) -> String {
+        let _ = self
+            .json
+            .insert("ports".to_owned(), Json::Array(self.ports));
+        Json::Object(self.json).to_string()
+    }
 }
 
 /// A set of native nodes and connection adapters built into the application.
@@ -344,4 +531,50 @@ macro_rules! export_plugin {
             ::std::boxed::Box::into_raw(::std::boxed::Box::new(package)).cast()
         }
     };
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_built_definition_is_the_file_a_package_would_write_by_hand() {
+        let built = Definition::node("org.example.demo", "fetch", "Fetch")
+            .description("Fetches a thing.")
+            .category("demo", "Demo")
+            .connection()
+            .input("path", "core/string@1")
+            .output("status", "core/i64@1")
+            .build();
+        let by_hand = serde_json::json!({
+            "definition_id": "org.example.demo/fetch",
+            "label": {"key": "org.example.demo/fetch-label", "fallback": "Fetch"},
+            "description": {"key": "org.example.demo/fetch-description",
+                "fallback": "Fetches a thing."},
+            "editor": {"category_id": "org.example.demo/category-demo",
+                "category": {"key": "org.example.demo/category-demo", "fallback": "Demo"}},
+            "definition_version": 1, "config_version": 1,
+            "kind": "async", "suspends": "always", "determinism": "external",
+            "connection": true,
+            "ports": [
+                {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
+                {"port_id": "status", "direction": "output", "kind": "data", "type": "core/i64@1",
+                    "source": "execution", "available_on": ["then"]}
+            ]
+        });
+        assert_eq!(serde_json::from_str::<Json>(&built).unwrap(), by_hand);
+        // The host's own reader accepts it, with its text.
+        let (definition, presentation) = NodeDefinition::described(&built).unwrap();
+        assert_eq!(definition.definition.id.as_str(), "org.example.demo/fetch");
+        let _ = presentation;
+
+        let entry = Definition::entry("org.example.demo", "on-thing", "On thing")
+            .payload("core/string@1")
+            .build();
+        let entry: Json = serde_json::from_str(&entry).unwrap();
+        assert_eq!(entry["kind"], "entry");
+        assert!(entry.get("suspends").is_none());
+        assert_eq!(entry["ports"][0]["source"], "payload");
+        assert!(NodeDefinition::described(&entry.to_string()).is_ok());
+    }
 }

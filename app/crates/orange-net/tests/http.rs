@@ -1,9 +1,9 @@
 //! A graph sends a real HTTP request through a declared connection and reads the reply.
+use orange_testkit::{core, edge, id, node, set, until, variable};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::TcpListener;
-use std::time::{Duration, Instant};
 
-use orange_host::{FlowId, Host, HostError, HostOptions, NodeId, Value, VariableId};
+use orange_host::{FlowId, Host, HostError, HostOptions, Value};
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::document::DefinitionRef;
 use orange_model::{GraphDocument, from_json, to_json};
@@ -12,35 +12,6 @@ use serde_json::{Value as Json, json};
 const I64: &str = "core/i64@1";
 const STRING: &str = "core/string@1";
 const CONNECTION: &str = "40000000-0000-4000-8000-000000000001";
-const WAIT: Duration = Duration::from_secs(20);
-
-fn id(n: u32) -> String {
-    format!("10000000-0000-4000-8000-{n:012x}")
-}
-fn node(n: u32) -> NodeId {
-    id(n).parse().unwrap()
-}
-fn variable(n: u32) -> VariableId {
-    id(n).parse().unwrap()
-}
-fn core(n: u32, name: &str) -> Json {
-    let mut node = json!({"id": id(n), "definition_id": format!("core/{name}"),
-        "definition_version": 1, "config_version": 1, "config": {}});
-    if name.starts_with("on-") {
-        node["activation"] = json!({"mode": "queue", "capacity": 4, "overflow": "fault",
-            "on_fault": "continue", "order": 0});
-    }
-    node
-}
-fn set(n: u32, target: u32) -> Json {
-    let mut node = core(n, "set-variable");
-    node["config"] = json!({"variable": id(target)});
-    node
-}
-fn edge(n: u32, from: u32, out: &str, to: u32, input: &str) -> Json {
-    json!({"id": format!("30000000-0000-4000-8000-{n:012x}"),
-        "from": {"node": id(from), "port": out}, "to": {"node": id(to), "port": input}})
-}
 
 /// Answers each request with status 201 and a body echoing its request line and body.
 fn server(requests: usize) -> String {
@@ -138,13 +109,6 @@ fn document(host: &Host, connection: Json) -> String {
 fn read(host: &Host, flow: FlowId, n: u32) -> Option<Value> {
     host.inspect(flow, move |run| run.variable(variable(n)).cloned())
         .unwrap()
-}
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !done() {
-        assert!(start.elapsed() < WAIT, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(2));
-    }
 }
 fn host() -> Host {
     Host::with_services(HostOptions::default(), vec![orange_net::package()])

@@ -16,17 +16,17 @@
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
+use orange_sandbox::FsError;
 use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, FaultText, KernelFault, ServiceNode,
+    Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, ServiceNode,
     ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
 use std::collections::BTreeMap;
-use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread;
 use std::time::{Duration, SystemTime};
 
@@ -70,8 +70,7 @@ pub const ON_CHANGE: &str = "org.orange.files/on-change";
 
 /// Largest file a node reads or writes.
 pub const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-/// Longest path a node may name, in bytes.
-pub const MAX_PATH_BYTES: usize = 1024;
+pub use orange_sandbox::MAX_PATH_BYTES;
 /// Most entries one listing returns and one watched folder may hold.
 pub const MAX_ENTRIES: usize = 10_000;
 const DEFAULT_POLL_MS: u64 = 500;
@@ -124,54 +123,21 @@ const FAILED: KernelFault = fault(
     "The operating system refused the file operation.",
 );
 
-/// Names Windows gives to devices in every directory.
-fn is_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4
-            && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.ends_with(|c: char| c.is_ascii_digit()))
-}
-
-/// The path inside `root` that `path` names. `""` is the root when `root_allowed`.
-fn inside(root: &Path, path: &str, root_allowed: bool) -> Result<PathBuf, KernelFault> {
-    if path.len() > MAX_PATH_BYTES || (path.is_empty() && !root_allowed) {
-        return Err(BAD_PATH);
-    }
-    let mut full = root.to_path_buf();
-    for name in path.split('/').filter(|_| !path.is_empty()) {
-        let plain = !name.is_empty()
-            && name != "."
-            && name != ".."
-            && !name.ends_with(['.', ' '])
-            && !name
-                .chars()
-                .any(|c| c.is_control() || "\\:*?\"<>|".contains(c))
-            && !is_device_name(name);
-        if !plain {
-            return Err(BAD_PATH);
-        }
-        full.push(name);
-    }
-    Ok(full)
-}
-
-fn io(error: &std::io::Error) -> KernelFault {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        NOT_FOUND
-    } else {
-        FAILED
+fn refused(error: FsError) -> KernelFault {
+    match error {
+        FsError::NotFound => NOT_FOUND,
+        FsError::InvalidPath => BAD_PATH,
+        FsError::TooLarge => TOO_LARGE,
+        FsError::ReadOnly => READ_ONLY,
+        _ => FAILED,
     }
 }
 
-/// A folder connection.
+/// A folder connection: the shared sandbox with this package's limits and faults.
 #[derive(Debug)]
 struct Folder {
-    /// The directory as the operating system resolves it, links followed.
-    root: PathBuf,
-    read_only: bool,
+    files: orange_sandbox::Folder,
     poll: Duration,
-    temporary: AtomicU64,
 }
 impl Session for Folder {
     fn as_any(&self) -> &dyn Any {
@@ -180,171 +146,48 @@ impl Session for Folder {
 }
 
 impl Folder {
-    /// Refuses an existing path that a link inside the folder leads out of it.
-    fn contained(&self, existing: &Path) -> Result<(), KernelFault> {
-        let real = existing.canonicalize().map_err(|e| io(&e))?;
-        if real.starts_with(&self.root) {
-            Ok(())
-        } else {
-            Err(BAD_PATH)
-        }
-    }
-
     fn read(&self, path: &str) -> Result<Vec<u8>, KernelFault> {
-        let full = inside(&self.root, path, false)?;
-        let size = std::fs::metadata(&full).map_err(|e| io(&e))?.len();
-        if size > MAX_FILE_BYTES {
-            return Err(TOO_LARGE);
-        }
-        self.contained(&full)?;
-        std::fs::read(&full).map_err(|e| io(&e))
+        self.files.read(path, MAX_FILE_BYTES).map_err(refused)
     }
-
-    /// The target of a write and its directory, created if needed and checked.
-    fn target(&self, path: &str, size: usize) -> Result<(PathBuf, PathBuf), KernelFault> {
-        if self.read_only {
-            return Err(READ_ONLY);
-        }
-        if u64::try_from(size).map_or(true, |size| size > MAX_FILE_BYTES) {
-            return Err(TOO_LARGE);
-        }
-        let full = inside(&self.root, path, false)?;
-        let parent = full.parent().ok_or(BAD_PATH)?.to_path_buf();
-        std::fs::create_dir_all(&parent).map_err(|_| FAILED)?;
-        self.contained(&parent)?;
-        // A link at the file's own name would be followed by the write.
-        if full.is_symlink() {
-            return Err(BAD_PATH);
-        }
-        Ok((full, parent))
-    }
-
     fn write(&self, path: &str, data: &[u8]) -> Result<(), KernelFault> {
-        let (full, parent) = self.target(path, data.len())?;
-        let name = format!(
-            ".orange-{}-{}.tmp",
-            std::process::id(),
-            self.temporary.fetch_add(1, Ordering::Relaxed)
-        );
-        let temporary = parent.join(name);
-        let written = std::fs::File::create(&temporary)
-            .and_then(|mut file| file.write_all(data).and_then(|()| file.sync_all()))
-            .and_then(|()| std::fs::rename(&temporary, &full));
-        if written.is_err() {
-            let _ = std::fs::remove_file(&temporary);
-            return Err(FAILED);
-        }
-        Ok(())
-    }
-
-    fn append(&self, path: &str, data: &[u8]) -> Result<(), KernelFault> {
-        let (full, _) = self.target(path, data.len())?;
-        let size = std::fs::metadata(&full).map_or(0, |metadata| metadata.len());
-        if size.saturating_add(data.len() as u64) > MAX_FILE_BYTES {
+        if data.len() as u64 > MAX_FILE_BYTES {
             return Err(TOO_LARGE);
         }
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(&full)
-            .and_then(|mut file| file.write_all(data))
-            .map_err(|_| FAILED)
+        self.files.write(path, data).map_err(refused)
     }
-
+    fn append(&self, path: &str, data: &[u8]) -> Result<(), KernelFault> {
+        self.files
+            .append(path, data, MAX_FILE_BYTES)
+            .map_err(refused)
+    }
     fn list(&self, path: &str) -> Result<Vec<Arc<String>>, KernelFault> {
-        let full = inside(&self.root, path, true)?;
-        self.contained(&full)?;
-        let mut names = Vec::new();
-        for entry in std::fs::read_dir(&full).map_err(|e| io(&e))? {
-            let entry = entry.map_err(|_| FAILED)?;
-            let Ok(mut name) = entry.file_name().into_string() else {
-                continue;
-            };
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                name.push('/');
-            }
-            if names.len() >= MAX_ENTRIES {
-                return Err(TOO_LARGE);
-            }
-            names.push(Arc::new(name));
-        }
-        names.sort();
-        Ok(names)
+        let names = self.files.list(path, MAX_ENTRIES).map_err(refused)?;
+        Ok(names.into_iter().map(Arc::new).collect())
     }
-
     fn exists(&self, path: &str) -> Result<bool, KernelFault> {
-        let full = inside(&self.root, path, true)?;
-        if !full.exists() {
-            return Ok(false);
-        }
-        self.contained(&full).map(|()| true)
+        self.files.exists(path).map_err(refused)
     }
-
     fn delete(&self, path: &str) -> Result<(), KernelFault> {
-        if self.read_only {
-            return Err(READ_ONLY);
-        }
-        let full = inside(&self.root, path, false)?;
-        let parent = full.parent().ok_or(BAD_PATH)?;
-        if !parent.exists() {
-            return Err(NOT_FOUND);
-        }
-        self.contained(parent)?;
-        std::fs::remove_file(&full).map_err(|e| io(&e))
+        self.files.remove(path).map_err(refused)
     }
-
-    /// An existing file inside the folder, for reading.
-    fn source(&self, path: &str) -> Result<PathBuf, KernelFault> {
-        let full = inside(&self.root, path, false)?;
-        if !full.is_file() {
-            return Err(NOT_FOUND);
-        }
-        self.contained(&full)?;
-        Ok(full)
-    }
-
     fn rename(&self, path: &str, to: &str) -> Result<(), KernelFault> {
-        let from = self.source(path)?;
-        let (target, _) = self.target(to, 0)?;
-        std::fs::rename(&from, &target).map_err(|e| io(&e))
+        self.files.rename(path, to).map_err(refused)
     }
-
     fn copy(&self, path: &str, to: &str) -> Result<(), KernelFault> {
-        let from = self.source(path)?;
-        let size = std::fs::metadata(&from).map_err(|e| io(&e))?.len();
-        let (target, _) = self.target(to, usize::try_from(size).unwrap_or(usize::MAX))?;
-        std::fs::copy(&from, &target)
-            .map(|_| ())
-            .map_err(|e| io(&e))
+        self.files.copy(path, to, MAX_FILE_BYTES).map_err(refused)
     }
-
     fn make_directory(&self, path: &str) -> Result<(), KernelFault> {
-        if self.read_only {
-            return Err(READ_ONLY);
-        }
-        let full = inside(&self.root, path, false)?;
-        std::fs::create_dir_all(&full).map_err(|_| FAILED)?;
-        self.contained(&full)
+        self.files.make_directory(path).map_err(refused)
     }
-
     fn remove_directory(&self, path: &str) -> Result<(), KernelFault> {
-        if self.read_only {
-            return Err(READ_ONLY);
-        }
-        let full = inside(&self.root, path, false)?;
-        if !full.is_dir() {
-            return Err(NOT_FOUND);
-        }
-        self.contained(&full)?;
-        // Only an empty directory is removed; anything else is the caller's mistake.
-        std::fs::remove_dir(&full).map_err(|_| FAILED)
+        self.files.remove_directory(path).map_err(refused)
     }
 
     /// Every file under the folder with its size and modification time, by relative
     /// path. Links are not followed. `None` when the folder holds too many entries.
     fn snapshot(&self) -> Option<BTreeMap<String, (u64, Option<SystemTime>)>> {
         let mut files = BTreeMap::new();
-        let mut pending = vec![(self.root.clone(), String::new())];
+        let mut pending = vec![(self.files.root().to_path_buf(), String::new())];
         let mut seen = 0usize;
         while let Some((directory, prefix)) = pending.pop() {
             let Ok(entries) = std::fs::read_dir(&directory) else {
@@ -359,7 +202,7 @@ impl Folder {
                     continue;
                 };
                 // The temporary files of this package's own writes are not changes.
-                if name.starts_with(".orange-") && name.ends_with(".tmp") {
+                if orange_sandbox::Folder::is_temporary(&name) {
                     continue;
                 }
                 let Ok(kind) = entry.file_type() else {
@@ -406,10 +249,8 @@ impl ConnectionAdapter for FolderAdapter {
                 .ok_or("`poll_ms` must be an integer from 50 to 60000")?,
         };
         Ok(Arc::new(Folder {
-            root,
-            read_only,
+            files: orange_sandbox::Folder::new(root, read_only),
             poll: Duration::from_millis(poll),
-            temporary: AtomicU64::new(0),
         }))
     }
 }
@@ -541,38 +382,20 @@ impl ServiceSource for OnChange {
     }
 }
 
-/// A node definition of this package. `ports` are its port objects.
-fn definition(name: &str, label: &str, description: &str, entry: bool, ports: &[String]) -> String {
-    let kind = if entry {
-        r#""kind": "entry""#
-    } else {
-        r#""kind": "async", "suspends": "always""#
-    };
-    format!(
-        r#"{{
-  "definition_id": "{PACKAGE}/{name}",
-  "label": {{"key": "{PACKAGE}/{name}-label", "fallback": "{label}"}},
-  "description": {{"key": "{PACKAGE}/{name}-description", "fallback": "{description}"}},
-  "editor": {{"category_id": "{PACKAGE}/category-files",
-    "category": {{"key": "{PACKAGE}/category-files", "fallback": "Files"}}}},
-  "definition_version": 1,
-  "config_version": 1,
-  {kind},
-  "determinism": "external",
-  "connection": true,
-  "ports": [{}]
-}}"#,
-        ports.join(",")
-    )
+/// A data port of a node in the table below: whether it is an output, its name and type.
+type Port = (bool, &'static str, &'static str);
+fn input(name: &'static str, ty: &'static str) -> Port {
+    (false, name, ty)
 }
-fn input(name: &str, ty: &str) -> String {
-    format!(r#"{{"port_id": "{name}", "direction": "input", "kind": "data", "type": "{ty}"}}"#)
+fn output(name: &'static str, ty: &'static str) -> Port {
+    (true, name, ty)
 }
-fn output(name: &str, ty: &str) -> String {
-    format!(
-        r#"{{"port_id": "{name}", "direction": "output", "kind": "data", "type": "{ty}",
-      "source": "execution", "available_on": ["then"]}}"#
-    )
+/// The part every definition of this package shares.
+fn described(definition: Definition, description: &str) -> Definition {
+    definition
+        .description(description)
+        .category("files", "Files")
+        .connection()
 }
 
 const STRING: &str = "core/string@1";
@@ -581,7 +404,7 @@ const BYTES: &str = "core/bytes@1";
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let path = || input("path", STRING);
-    let nodes: [(&str, &str, &str, Operation, Vec<String>); 12] = [
+    let nodes: [(&str, &str, &str, Operation, Vec<Port>); 12] = [
         (
             "move",
             "Move file",
@@ -675,22 +498,23 @@ pub fn package() -> ServicePackage {
         .adapter(FOLDER_ADAPTER, FolderAdapter));
     for (name, label, description, operation, ports) in nodes {
         package = package.and_then(|package| {
-            package.node(
-                &definition(name, label, description, false, &ports),
-                operation,
-            )
+            let mut definition = described(Definition::node(PACKAGE, name, label), description);
+            for (is_output, port, ty) in ports {
+                definition = if is_output {
+                    definition.output(port, ty)
+                } else {
+                    definition.input(port, ty)
+                };
+            }
+            package.node(&definition.build(), operation)
         });
     }
-    let on_change = definition(
-        "on-change",
-        "On file change",
+    let on_change = described(
+        Definition::entry(PACKAGE, "on-change", "On file change"),
         "Fires when a file in a folder is created, changed or deleted.",
-        true,
-        &[format!(
-            r#"{{"port_id": "payload", "direction": "output", "kind": "data", "type": "{STRING}",
-      "source": "payload"}}"#
-        )],
-    );
+    )
+    .payload(STRING)
+    .build();
     match package.and_then(|package| package.source(&on_change, OnChange)) {
         Ok(package) => package,
         // The definitions are built from constants of this crate, checked by its tests.
@@ -708,7 +532,7 @@ mod tests {
         FolderAdapter.open(&settings)
     }
 
-    fn scratch(name: &str) -> PathBuf {
+    fn scratch(name: &str) -> std::path::PathBuf {
         // Nested, so the directory above the folder is this test's own too.
         let root = std::env::temp_dir()
             .join(format!("orange-files-{name}-{}", std::process::id()))

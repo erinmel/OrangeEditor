@@ -130,11 +130,7 @@ pub(crate) fn save(
     grants: Grants,
     key: &PackageKey,
 ) -> Result<(), String> {
-    let mut name = String::new();
-    for byte in Sha256::digest(archive) {
-        name.push_str(&format!("{byte:02x}"));
-    }
-    name.push_str(".orangeplug");
+    let name = format!("{}.orangeplug", crate::hex(&Sha256::digest(archive)));
     let mut packages = entries(directory)?;
     packages.retain(|entry| entry["archive"] != name.as_str());
     packages.push(json!({"archive": name, "log": grants.log,

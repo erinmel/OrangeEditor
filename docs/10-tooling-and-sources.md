@@ -1,5 +1,64 @@
 # Tooling, environment and research register
 
+## Performance check and duplication removal — 2026-11-13
+
+Performance. `orange-measure` (release, budget 64, warm-up 3, 15 runs) was built at
+2ed1649, the commit before the audio, plugin, service and document work, and at this
+branch. The two builds ran alternately, twice each, with nothing else running. All 16
+core workloads have identical allocation counts, allocated bytes and peak live bytes.
+Run time, best of two, is 0.98 of the old build as a geometric mean, against a
+run-to-run difference of about 2 % for the old build alone: no measurable change. A
+first measurement taken while other builds were running was discarded. The workloads
+cover the compiler and runtime core; they do not exercise the host's flow thread, the
+service packages or the plugin engine, for which there is no benchmark.
+
+One cost was found by reading and removed: a flow with persistent variables encoded
+every one of them to a literal after each turn to see whether anything had changed.
+It now compares the values and encodes only when one differs.
+
+Duplication removed, with behavior unchanged:
+
+- The folder rules (plain relative paths, device names, links leading out, atomic
+  writes) existed twice, in the file package and in the plugin engine. They are now
+  `orange-sandbox`; the plugin engine's file writes became atomic as a result.
+- Four sessions each kept their own list of listening entries with their own removal
+  guard. They use `orange_sdk::Listeners`.
+- Hexadecimal encoding was written out in seven places across the host and the
+  network package; each crate now has one helper.
+- The command-line program read one settings file with a hand-written JSON scanner;
+  it uses `serde_json`.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,797 passed, 0 failed, 20 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Second pass (2026-11-13), the three items first left for later:
+
+- `orange_sdk::Definition` builds a node's definition file text. The 22 hand-written
+  definitions of the audio, network and example packages were converted by a script
+  that rebuilt each one from the builder's rules and refused any that did not come out
+  equal to the original; all 22 were equal. The file package's own builder was
+  replaced by the same type.
+- `orange-testkit` holds the IDs, core-node fragments and waiting that seven
+  integration test files each repeated. Entry activations in tests now all use a queue
+  of eight (some used four).
+- `orange-host/src/lib.rs` went from 2,006 to 1,421 lines: package methods are in
+  `packages.rs` and variable methods in `variables.rs`. `orange-cli/src/main.rs` went
+  from 1,290 to 745 lines: `console.rs`, `credentials.rs` and `updates.rs`. Code was
+  moved, not changed; methods that became visible to the parent module are
+  `pub(super)`.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,798 passed, 0 failed, 20 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange packages`, `orange check` on the example graphs, `orange nodes` | Packages listed; the graph that needs no package checks, the one that needs its package reports the missing dependency; 140 package nodes listed |
+
 ## OAuth and streamed responses — 2026-11-12
 
 Sources: RFC 6749 (client-credentials and refresh-token grants, token response),

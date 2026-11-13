@@ -13,8 +13,8 @@
 //! nothing for it while it is away. MQTT 5, quality of service 2, wills and
 //! persistent sessions are not provided.
 use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, KernelFault, ListRepr, ServiceNode, ServiceSource,
-    Session, Value,
+    Call, ConnectionAdapter, Definition, Emitter, KernelFault, ListRepr, Listeners, ServiceNode,
+    ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -270,8 +270,7 @@ struct Shared {
     settings: Settings,
     outgoing: Mutex<VecDeque<Outgoing>>,
     /// Each listener with whether it takes payloads as bytes instead of text.
-    listeners: Mutex<Vec<(u64, bool, Emitter)>>,
-    next_listener: AtomicU64,
+    listeners: Listeners<bool>,
     started: AtomicBool,
     stop: AtomicBool,
 }
@@ -297,17 +296,13 @@ impl Shared {
             Value::List(Arc::new(ListRepr::Str(Box::new(pair))))
         });
         let as_bytes = Value::Bytes(Arc::new(payload.to_vec()));
-        self.listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(_, bytes, emitter)| {
-                let value = if *bytes {
-                    Some(as_bytes.clone())
-                } else {
-                    as_text.clone()
-                };
-                value.is_none_or(|value| emitter.emit(Some(value)) != Err(EmitError::Closed))
-            });
+        self.listeners.emit(|bytes| {
+            if *bytes {
+                Some(as_bytes.clone())
+            } else {
+                as_text.clone()
+            }
+        });
     }
 }
 
@@ -615,8 +610,7 @@ impl ConnectionAdapter for MqttAdapter {
                 topics,
             },
             outgoing: Mutex::new(VecDeque::new()),
-            listeners: Mutex::new(Vec::new()),
-            next_listener: AtomicU64::new(0),
+            listeners: Listeners::new(),
             started: AtomicBool::new(false),
             stop: AtomicBool::new(false),
         });
@@ -672,17 +666,6 @@ impl ServiceNode for MqttPublish {
     }
 }
 
-struct Listening(Arc<Shared>, u64);
-impl Drop for Listening {
-    fn drop(&mut self) {
-        self.0
-            .listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .retain(|(id, ..)| *id != self.1);
-    }
-}
-
 /// Fires its entry once per message received on the connection's topics.
 #[derive(Debug)]
 pub(crate) struct MqttMessage {
@@ -696,84 +679,54 @@ impl ServiceSource for MqttMessage {
     ) -> Result<Box<dyn Send>, String> {
         let shared =
             crate::mqtt::session(session.as_deref()).ok_or("the entry needs an MQTT connection")?;
-        let id = shared.next_listener.fetch_add(1, Ordering::Relaxed);
-        shared
-            .listeners
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .push((id, self.binary, emitter));
-        Ok(Box::new(Listening(Arc::clone(shared), id)))
+        Ok(Listeners::listen(
+            Arc::clone(shared),
+            |shared| &shared.listeners,
+            self.binary,
+            emitter,
+        ))
     }
 }
 
-pub(crate) const PUBLISH_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/mqtt-publish",
-  "label": {"key": "org.orange.net/mqtt-publish-label", "fallback": "Publish MQTT message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "topic", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "text", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "retain", "direction": "input", "kind": "data", "type": "core/bool@1"}
-  ]
-}"#;
+pub(crate) fn publish_definition() -> String {
+    Definition::node(crate::PACKAGE, "mqtt-publish", "Publish MQTT message")
+        .category("network", "Network")
+        .connection()
+        .input("topic", "core/string@1")
+        .input("text", "core/string@1")
+        .input("retain", "core/bool@1")
+        .build()
+}
 
-pub(crate) const PUBLISH_BYTES_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/mqtt-publish-bytes",
-  "label": {"key": "org.orange.net/mqtt-publish-bytes-label",
-    "fallback": "Publish MQTT binary message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "topic", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "data", "direction": "input", "kind": "data", "type": "core/bytes@1"},
-    {"port_id": "retain", "direction": "input", "kind": "data", "type": "core/bool@1"}
-  ]
-}"#;
+pub(crate) fn publish_bytes_definition() -> String {
+    Definition::node(
+        crate::PACKAGE,
+        "mqtt-publish-bytes",
+        "Publish MQTT binary message",
+    )
+    .category("network", "Network")
+    .connection()
+    .input("topic", "core/string@1")
+    .input("data", "core/bytes@1")
+    .input("retain", "core/bool@1")
+    .build()
+}
 
-pub(crate) const MESSAGE_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/mqtt-message",
-  "label": {"key": "org.orange.net/mqtt-message-label", "fallback": "On MQTT message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "entry",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "payload", "direction": "output", "kind": "data",
-      "type": "core/list@1<core/string@1>", "source": "payload"}
-  ]
-}"#;
+pub(crate) fn message_definition() -> String {
+    Definition::entry(crate::PACKAGE, "mqtt-message", "On MQTT message")
+        .category("network", "Network")
+        .connection()
+        .payload("core/list@1<core/string@1>")
+        .build()
+}
 
-pub(crate) const BINARY_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/mqtt-binary",
-  "label": {"key": "org.orange.net/mqtt-binary-label", "fallback": "On MQTT binary message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "entry",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "payload", "direction": "output", "kind": "data", "type": "core/bytes@1",
-      "source": "payload"}
-  ]
-}"#;
+pub(crate) fn binary_definition() -> String {
+    Definition::entry(crate::PACKAGE, "mqtt-binary", "On MQTT binary message")
+        .category("network", "Network")
+        .connection()
+        .payload("core/bytes@1")
+        .build()
+}
 
 #[cfg(test)]
 mod tests {

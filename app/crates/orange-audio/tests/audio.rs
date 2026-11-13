@@ -1,8 +1,9 @@
 //! A graph plays a sound file on a declared output connection and listens to an input.
+use orange_testkit::{core, edge, id, node, until, variable};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use orange_host::{FlowId, Host, HostOptions, NodeId, Value, VariableId};
+use orange_host::{FlowId, Host, HostOptions, Value};
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::document::DefinitionRef;
 use orange_model::{GraphDocument, from_json, to_json};
@@ -13,35 +14,12 @@ const F64: &str = "core/f64@1";
 const STRING: &str = "core/string@1";
 const OUTPUT: &str = "40000000-0000-4000-8000-000000000001";
 const INPUT: &str = "40000000-0000-4000-8000-000000000002";
-const WAIT: Duration = Duration::from_secs(20);
 
-fn id(n: u32) -> String {
-    format!("10000000-0000-4000-8000-{n:012x}")
-}
-fn node(n: u32) -> NodeId {
-    id(n).parse().unwrap()
-}
-fn variable(n: u32) -> VariableId {
-    id(n).parse().unwrap()
-}
-fn core(n: u32, name: &str) -> Json {
-    let mut node = json!({"id": id(n), "definition_id": format!("core/{name}"),
-        "definition_version": 1, "config_version": 1, "config": {}});
-    if name.starts_with("on-") {
-        node["activation"] = json!({"mode": "queue", "capacity": 4, "overflow": "fault",
-            "on_fault": "continue", "order": 0});
-    }
-    node
-}
 fn set(n: u32, target: u32, value: i64) -> Json {
     let mut node = core(n, "set-variable");
     node["config"] = json!({"variable": id(target)});
     node["inputs"] = json!({"value": {"type": I64, "value": value.to_string()}});
     node
-}
-fn edge(n: u32, from: u32, out: &str, to: u32, input: &str) -> Json {
-    json!({"id": format!("30000000-0000-4000-8000-{n:012x}"),
-        "from": {"node": id(from), "port": out}, "to": {"node": id(to), "port": input}})
 }
 fn host() -> Host {
     Host::with_services(HostOptions::default(), vec![orange_audio::package()])
@@ -51,13 +29,6 @@ fn host() -> Host {
 fn read(host: &Host, flow: FlowId, n: u32) -> Option<Value> {
     host.inspect(flow, move |run| run.variable(variable(n)).cloned())
         .unwrap()
-}
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !done() {
-        assert!(start.elapsed() < WAIT, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(2));
-    }
 }
 
 /// Writes a mono 8 kHz tone of `millis` and returns its path.

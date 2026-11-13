@@ -5,7 +5,7 @@
 //! wait on each other.
 use crate::effects::Pool;
 use crate::services::ServiceEffect;
-use crate::state::{self, Kept, StoredVariable};
+use crate::state::{self, Kept};
 use crate::{FlowEvent, FlowId, HostEvent};
 use orange_compiler::ControlPlan;
 use orange_guest::{GuestCancellation, guest_effect};
@@ -339,7 +339,7 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
     let mut reported: BTreeMap<VariableId, Option<Value>> = BTreeMap::new();
     // The persistent variables as last stored. `None` until the first comparison, so
     // the values a flow starts with are stored once.
-    let mut stored: Option<Vec<StoredVariable>> = None;
+    let mut stored: Option<Vec<Option<Value>>> = None;
     // Whether this flow wrote a shared variable since the shared ones were stored.
     let mut shared_dirty = false;
     // The value of each output port as last reported to the observer.
@@ -532,12 +532,20 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
         }
         let run = driver.run();
         if let Some(keep) = &cx.keep {
-            let now = state::snapshot(&keep.variables, keep.registry.types(), |id| {
-                run.variable(id).cloned()
-            });
+            // Values are compared as they are; encoding and writing happen only when
+            // one differs from what was last stored.
+            let now: Vec<Option<Value>> = keep
+                .variables
+                .iter()
+                .map(|kept| run.variable(kept.id).cloned())
+                .collect();
             if stored.as_ref() != Some(&now) {
-                // A failed write is tried again at the next change.
-                if state::save(&keep.directory, &keep.name, &now).is_ok() {
+                let mut values = now.iter();
+                let encoded = state::snapshot(&keep.variables, keep.registry.types(), |_| {
+                    values.next().cloned().flatten()
+                });
+                // A failed write is tried again at the next turn.
+                if state::save(&keep.directory, &keep.name, &encoded).is_ok() {
                     stored = Some(now);
                 }
             }

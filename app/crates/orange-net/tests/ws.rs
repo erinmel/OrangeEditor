@@ -1,8 +1,9 @@
 //! A graph sends on a declared WebSocket connection and is triggered by what arrives.
+use orange_testkit::{WAIT, activation, core, edge, id, node, until};
 use std::net::TcpListener;
 use std::time::{Duration, Instant};
 
-use orange_host::{FlowId, Host, HostOptions, NodeId, RunState, Value, VariableId};
+use orange_host::{FlowId, Host, HostOptions, RunState, Value, VariableId};
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::document::DefinitionRef;
 use orange_model::{DocCommand, GraphDocument, from_json, to_json};
@@ -11,29 +12,6 @@ use tungstenite::Message;
 
 const STRING: &str = "core/string@1";
 const CONNECTION: &str = "40000000-0000-4000-8000-000000000001";
-const WAIT: Duration = Duration::from_secs(20);
-
-fn id(n: u32) -> String {
-    format!("10000000-0000-4000-8000-{n:012x}")
-}
-fn node(n: u32) -> NodeId {
-    id(n).parse().unwrap()
-}
-fn activation() -> Json {
-    json!({"mode": "queue", "capacity": 8, "overflow": "fault", "on_fault": "continue", "order": 0})
-}
-fn core(n: u32, name: &str) -> Json {
-    let mut node = json!({"id": id(n), "definition_id": format!("core/{name}"),
-        "definition_version": 1, "config_version": 1, "config": {}});
-    if name.starts_with("on-") {
-        node["activation"] = activation();
-    }
-    node
-}
-fn edge(n: u32, from: u32, out: &str, to: u32, input: &str) -> Json {
-    json!({"id": format!("30000000-0000-4000-8000-{n:012x}"),
-        "from": {"node": id(from), "port": out}, "to": {"node": id(to), "port": input}})
-}
 
 /// Greets each client with `hello`, then answers every text with `echo:<text>`.
 fn server() -> String {
@@ -122,13 +100,6 @@ fn reply(host: &Host, flow: FlowId) -> Option<String> {
     {
         Some(Value::Str(text)) => Some(text.as_str().to_owned()),
         _ => None,
-    }
-}
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !done() {
-        assert!(start.elapsed() < WAIT, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(2));
     }
 }
 fn host() -> Host {

@@ -1,12 +1,13 @@
 //! The host runs several graphs at once on real time, controls each independently, and
 //! runs an installed package's asynchronous node on a worker thread.
+use orange_testkit::{WAIT, core, edge, id, node, until};
 use std::sync::mpsc::Receiver;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use orange_host::{BASE_PACKAGE, PackageKind};
 use orange_host::{
-    ControlOutcome, FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, NodeId,
-    RunState, StopMode, Value, VariableId,
+    ControlOutcome, FlowEvent, FlowId, Grants, Host, HostError, HostEvent, HostOptions, RunState,
+    StopMode, Value, VariableId,
 };
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::document::DefinitionRef;
@@ -17,29 +18,9 @@ use serde_json::{Value as Json, json};
 const I64: &str = "core/i64@1";
 const ACCUMULATE: &str = "org.example.probe/accumulate";
 const TOTAL: u32 = 100;
-const WAIT: Duration = Duration::from_secs(20);
 
-fn id(n: u32) -> String {
-    format!("10000000-0000-4000-8000-{n:012x}")
-}
-fn node(n: u32) -> NodeId {
-    id(n).parse().unwrap()
-}
 fn total() -> VariableId {
     id(TOTAL).parse().unwrap()
-}
-fn core(n: u32, name: &str) -> Json {
-    let mut node = json!({"id": id(n), "definition_id": format!("core/{name}"),
-        "definition_version": 1, "config_version": 1, "config": {}});
-    if name.starts_with("on-") {
-        node["activation"] = json!({"mode": "queue", "capacity": 4, "overflow": "fault",
-            "on_fault": "continue", "order": 0});
-    }
-    node
-}
-fn edge(n: u32, from: u32, out: &str, to: u32, input: &str) -> Json {
-    json!({"id": format!("30000000-0000-4000-8000-{n:012x}"),
-        "from": {"node": id(from), "port": out}, "to": {"node": id(to), "port": input}})
 }
 fn with_total(mut saved: Json, nodes: Vec<Json>, edges: Json) -> String {
     saved["nodes"].as_array_mut().unwrap().extend(nodes);
@@ -69,13 +50,6 @@ fn manual_graph(graph: u32) -> String {
     )
 }
 
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !done() {
-        assert!(start.elapsed() < WAIT, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(2));
-    }
-}
 fn read_total(host: &Host, flow: FlowId) -> Option<Value> {
     host.inspect(flow, |run| run.variable(total()).cloned())
         .unwrap()

@@ -1669,6 +1669,7 @@ dependencies = [
  "orange-host",
  "orange-model",
  "orange-sdk",
+ "orange-testkit",
  "serde_json",
  "symphonia",
 ]
@@ -1697,6 +1698,7 @@ dependencies = [
  "orange-native",
  "orange-net",
  "orange-vault",
+ "serde_json",
 ]
 
 [[package]]
@@ -1715,7 +1717,9 @@ version = "0.0.0"
 dependencies = [
  "orange-host",
  "orange-model",
+ "orange-sandbox",
  "orange-sdk",
+ "orange-testkit",
  "serde_json",
 ]
 
@@ -1729,6 +1733,7 @@ dependencies = [
  "orange-model",
  "orange-packages",
  "orange-runtime",
+ "orange-sandbox",
  "serde_json",
  "thiserror 2.0.21",
  "wasmtime",
@@ -1746,6 +1751,7 @@ dependencies = [
  "orange-packages",
  "orange-runtime",
  "orange-sdk",
+ "orange-testkit",
  "serde_json",
  "sha2 0.11.1",
  "thiserror 2.0.21",
@@ -1791,6 +1797,7 @@ dependencies = [
  "orange-host",
  "orange-model",
  "orange-sdk",
+ "orange-testkit",
  "serde_json",
  "thiserror 2.0.21",
 ]
@@ -1802,6 +1809,7 @@ dependencies = [
  "orange-host",
  "orange-model",
  "orange-sdk",
+ "orange-testkit",
  "ring",
  "rustls",
  "serde_json",
@@ -1841,12 +1849,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "orange-sandbox"
+version = "0.0.0"
+
+[[package]]
 name = "orange-sdk"
 version = "0.0.0"
 dependencies = [
  "orange-kernel",
  "orange-model",
  "orange-runtime",
+ "serde_json",
+]
+
+[[package]]
+name = "orange-testkit"
+version = "0.0.0"
+dependencies = [
+ "orange-model",
  "serde_json",
 ]
 

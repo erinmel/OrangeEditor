@@ -1,13 +1,14 @@
 //! A graph publishes on a declared MQTT connection and is triggered by the messages of
 //! the topics it subscribes to, against a small broker run by the test.
+use orange_testkit::{WAIT, activation, core, edge, id, node, set, until};
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::mpsc::{Receiver, Sender, channel};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
-use orange_host::{FlowId, Host, HostOptions, NodeId, Value, VariableId};
+use orange_host::{FlowId, Host, HostOptions, Value, VariableId};
 use orange_model::binding::{NewNode, new_node_edit};
 use orange_model::document::DefinitionRef;
 use orange_model::value::ListRepr;
@@ -18,41 +19,6 @@ const STRING: &str = "core/string@1";
 const BYTES: &str = "core/bytes@1";
 const PAIR: &str = "core/list@1<core/string@1>";
 const CONNECTION: &str = "40000000-0000-4000-8000-000000000001";
-const WAIT: Duration = Duration::from_secs(20);
-
-fn id(n: u32) -> String {
-    format!("10000000-0000-4000-8000-{n:012x}")
-}
-fn node(n: u32) -> NodeId {
-    id(n).parse().unwrap()
-}
-fn activation() -> Json {
-    json!({"mode": "queue", "capacity": 8, "overflow": "fault", "on_fault": "continue", "order": 0})
-}
-fn core(n: u32, name: &str) -> Json {
-    let mut node = json!({"id": id(n), "definition_id": format!("core/{name}"),
-        "definition_version": 1, "config_version": 1, "config": {}});
-    if name.starts_with("on-") {
-        node["activation"] = activation();
-    }
-    node
-}
-fn set(n: u32, target: u32) -> Json {
-    let mut node = core(n, "set-variable");
-    node["config"] = json!({"variable": id(target)});
-    node
-}
-fn edge(n: u32, from: u32, out: &str, to: u32, input: &str) -> Json {
-    json!({"id": format!("30000000-0000-4000-8000-{n:012x}"),
-        "from": {"node": id(from), "port": out}, "to": {"node": id(to), "port": input}})
-}
-fn until(what: &str, mut done: impl FnMut() -> bool) {
-    let start = Instant::now();
-    while !done() {
-        assert!(start.elapsed() < WAIT, "timed out waiting for {what}");
-        std::thread::sleep(Duration::from_millis(2));
-    }
-}
 
 // ---- a broker for one test ------------------------------------------------------
 

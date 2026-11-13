@@ -248,6 +248,9 @@ The host owns an input-trigger service and audio capture/playback services. Keyb
 | orange-plugin-example | Example native plugin library with one node | Product functionality |
 | orange-audio | Base audio service package on `orange-sdk`: output and input device connections, play, stop and input-level nodes, and the level entry | Graph semantics; anything the SDK does not expose; DSP |
 | orange-net | Base network service package on `orange-sdk`: HTTP and WebSocket adapters, request and send nodes, and the message entry | Graph semantics; anything the SDK does not expose |
+| orange-sandbox | File access confined to one directory: path rules, link checks and atomic writes, with no dependency | Deciding which directory, limits or faults; that is its users' |
+| orange-files | Base file service package on `orange-sdk` and `orange-sandbox` | Anything outside the folder a connection names |
+| orange-vault | Credential stores behind the SDK's `SecretStore`: the operating system's and one in memory | Deciding which settings are secrets; the host resolves references |
 | orange-guest | Host-side Wasm component engine, per-instance limits, trap isolation and interruption (Wasmtime 48 LTS, K02a); the `orange:expansion` plugin world (K02b); archive loading and guest kernels composed with the host resolver (K02c); guest action kernels and async effect implementations with binary bulk values (2026-11-10) | Core-crate dependency, precompiled native loading, ungranted imports |
 | orange-host | Composition root, dedicated async runtime, policy enforcement, service injection, locale/catalogue service and clean shutdown | Specialized integration request logic |
 | orange-bundled | Standard node definitions plus compiled trusted kernels and service implementations | Private alternative type/graph semantics |

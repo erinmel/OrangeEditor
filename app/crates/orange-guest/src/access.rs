@@ -4,7 +4,8 @@
 //!
 //! Errors go to the guest as one of the fixed words below, never as operating-system
 //! text, so a path or address outside the plugin's reach does not leak through them.
-use std::path::{Path, PathBuf};
+use orange_sandbox::{Folder, FsError};
+use std::path::PathBuf;
 use std::sync::Arc;
 
 /// The file does not exist.
@@ -20,8 +21,9 @@ pub const INVALID_REQUEST: &str = "invalid-request";
 /// Any other failure of the operating system or the network.
 pub const FAILED: &str = "failed";
 
-/// Longest path a plugin may name, in bytes.
-pub const MAX_PATH_BYTES: usize = 512;
+pub use orange_sandbox::MAX_PATH_BYTES;
+/// Most names one listing returns.
+pub const MAX_ENTRIES: usize = 10_000;
 /// Most headers of one request.
 pub const MAX_HEADERS: usize = 64;
 
@@ -63,119 +65,38 @@ pub struct GuestAccess {
     pub http: Option<Arc<dyn HttpClient>>,
 }
 
-/// Names Windows gives to devices in every directory.
-fn is_device_name(name: &str) -> bool {
-    let stem = name.split('.').next().unwrap_or(name).to_ascii_uppercase();
-    matches!(stem.as_str(), "CON" | "PRN" | "AUX" | "NUL")
-        || (stem.len() == 4
-            && (stem.starts_with("COM") || stem.starts_with("LPT"))
-            && stem.ends_with(|c: char| c.is_ascii_digit()))
-}
-
-/// The path inside `root` that `path` names: `/`-separated plain names, no `.` or `..`,
-/// no drive, device or absolute form. `""` is the root itself when `root_allowed`.
-fn inside(root: &Path, path: &str, root_allowed: bool) -> Result<PathBuf, &'static str> {
-    if path.len() > MAX_PATH_BYTES || (path.is_empty() && !root_allowed) {
-        return Err(INVALID_PATH);
-    }
-    let mut full = root.to_path_buf();
-    for name in path.split('/').filter(|_| !path.is_empty()) {
-        let plain = !name.is_empty()
-            && name != "."
-            && name != ".."
-            && !name.ends_with(['.', ' '])
-            && !name
-                .chars()
-                .any(|c| c.is_control() || "\\:*?\"<>|".contains(c))
-            && !is_device_name(name);
-        if !plain {
-            return Err(INVALID_PATH);
-        }
-        full.push(name);
-    }
-    Ok(full)
-}
-
-/// Refuses a path that a link inside the data directory leads out of it.
-fn contained(root: &Path, existing: &Path) -> Result<(), &'static str> {
-    let root = root.canonicalize().map_err(|_| FAILED)?;
-    let real = existing.canonicalize().map_err(|_| FAILED)?;
-    if real.starts_with(root) {
-        Ok(())
-    } else {
-        Err(INVALID_PATH)
-    }
-}
-
-fn io(error: &std::io::Error) -> &'static str {
-    if error.kind() == std::io::ErrorKind::NotFound {
-        NOT_FOUND
-    } else {
-        FAILED
+fn word(error: FsError) -> &'static str {
+    match error {
+        FsError::NotFound => NOT_FOUND,
+        FsError::InvalidPath => INVALID_PATH,
+        FsError::TooLarge => TOO_LARGE,
+        _ => FAILED,
     }
 }
 
 impl GuestAccess {
-    fn root(&self) -> Result<&Path, &'static str> {
-        self.data_dir.as_deref().ok_or(UNAVAILABLE)
+    /// The package's data directory as a sandbox, when the application gave one.
+    fn folder(&self) -> Result<Folder, &'static str> {
+        self.data_dir
+            .as_ref()
+            .map(|root| Folder::new(root, false))
+            .ok_or(UNAVAILABLE)
     }
 
     pub(crate) fn read(&self, path: &str, max_bytes: usize) -> Result<Vec<u8>, &'static str> {
-        let root = self.root()?;
-        let full = inside(root, path, false)?;
-        let size = std::fs::metadata(&full).map_err(|e| io(&e))?.len();
-        if usize::try_from(size).map_or(true, |size| size > max_bytes) {
-            return Err(TOO_LARGE);
-        }
-        contained(root, &full)?;
-        std::fs::read(&full).map_err(|e| io(&e))
+        self.folder()?.read(path, max_bytes as u64).map_err(word)
     }
 
     pub(crate) fn write(&self, path: &str, data: &[u8]) -> Result<(), &'static str> {
-        let root = self.root()?;
-        let full = inside(root, path, false)?;
-        let parent = full.parent().ok_or(INVALID_PATH)?;
-        std::fs::create_dir_all(parent).map_err(|_| FAILED)?;
-        contained(root, parent)?;
-        // A link at the file's own name would be followed by the write.
-        if full.is_symlink() {
-            return Err(INVALID_PATH);
-        }
-        std::fs::write(&full, data).map_err(|_| FAILED)
+        self.folder()?.write(path, data).map_err(word)
     }
 
     pub(crate) fn list(&self, path: &str) -> Result<Vec<String>, &'static str> {
-        let root = self.root()?;
-        let full = inside(root, path, true)?;
-        // Nothing was written yet: the data directory is empty, not missing.
-        if path.is_empty() && !full.exists() {
-            return Ok(Vec::new());
-        }
-        contained(root, &full)?;
-        let mut names = Vec::new();
-        for entry in std::fs::read_dir(&full).map_err(|e| io(&e))? {
-            let entry = entry.map_err(|_| FAILED)?;
-            let Ok(mut name) = entry.file_name().into_string() else {
-                continue;
-            };
-            if entry.file_type().is_ok_and(|kind| kind.is_dir()) {
-                name.push('/');
-            }
-            names.push(name);
-        }
-        names.sort();
-        Ok(names)
+        self.folder()?.list(path, MAX_ENTRIES).map_err(word)
     }
 
     pub(crate) fn remove(&self, path: &str) -> Result<(), &'static str> {
-        let root = self.root()?;
-        let full = inside(root, path, false)?;
-        let parent = full.parent().ok_or(INVALID_PATH)?;
-        if !parent.exists() {
-            return Err(NOT_FOUND);
-        }
-        contained(root, parent)?;
-        std::fs::remove_file(&full).map_err(|e| io(&e))
+        self.folder()?.remove(path).map_err(word)
     }
 
     pub(crate) fn send(&self, request: &HttpRequest) -> Result<HttpResponse, &'static str> {
@@ -210,38 +131,6 @@ impl GuestAccess {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn only_plain_relative_paths_stay_inside_the_directory() {
-        let root = Path::new("data");
-        assert_eq!(
-            inside(root, "a/b.txt", false),
-            Ok(root.join("a").join("b.txt"))
-        );
-        assert_eq!(inside(root, "", true), Ok(root.to_path_buf()));
-        for bad in [
-            "",
-            "..",
-            "a/../b",
-            "./a",
-            "/etc/passwd",
-            "a//b",
-            "a/",
-            "C:/Windows",
-            "a\\b",
-            "nul",
-            "dir/COM1.txt",
-            "trailing.",
-            "space ",
-            "a\0b",
-        ] {
-            assert_eq!(inside(root, bad, false), Err(INVALID_PATH), "{bad:?}");
-        }
-        assert_eq!(
-            inside(root, &"a".repeat(MAX_PATH_BYTES + 1), false),
-            Err(INVALID_PATH)
-        );
-    }
 
     #[test]
     fn files_are_listed_limited_and_removed_inside_the_directory() {
