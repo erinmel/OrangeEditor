@@ -32,25 +32,30 @@ the secret from `HostOptions::secrets` (`SecretStore`) and hands the result to t
 adapter only; the document, the shared-connection table, events and errors keep the
 reference. A missing secret, or a reference with no store configured, refuses the
 connection by name. `orange-vault` provides `OsVault` (keyring 3.6.3: Windows
-Credential Manager, macOS Keychain, Linux kernel keyring, which lasts until logout)
+Credential Manager, macOS Keychain and, on Linux, the desktop's Secret Service over
+D-Bus, which keeps secrets across restarts; a machine without a Secret Service reports
+the store as unavailable rather than keeping secrets somewhere weaker)
 and `MemoryVault`; the `orange secret set|remove|check` commands manage `OsVault`
 entries and read the secret from standard input. HTTP and WebSocket connections take
 `bearer` (a token), `basic` (`{user, password}`) and `headers` (an object); the HTTP
 adapter adds them to every request and the WebSocket adapter to its opening handshake.
 `org.orange.net/http-request-bytes` sends a `core/bytes@1` body with a content type
-and returns status, response content type and response bytes;
+and a `headers` list of `Name: value` lines for that request, and returns status,
+response content type and response bytes;
 `org.orange.net/ws-send-bytes` and the entry `org.orange.net/ws-binary` carry binary
 WebSocket messages. A graph can therefore exchange protobuf, gRPC-Web frames or a
 payload it encrypted itself. Not provided: HTTP/2, so native gRPC is not reachable;
 request or response streaming; client certificates; OAuth flows and token
-refresh; per-request headers from the graph; secret rotation notices to open
+refresh; secret rotation notices to open
 connections (a changed secret is used by connections opened afterwards).
 
 MQTT (2026-11-12; `orange-net`, FR-25 qualified for 3.1.1). Adapter
 `org.orange.net/mqtt` with settings `url` (`mqtt://host[:port]`, default port 1883, or
 `mqtts://` for TLS on 8883 with the bundled roots), `username`, `password`,
 `client_id` (generated when absent), `topics` (up to 64 filters, `+` and `#`
-allowed), `qos` (0 or 1, default 0) and `keep_alive_s` (5 to 3,600, default 30).
+allowed), `qos` (0 or 1, default 0), `keep_alive_s` (5 to 3,600, default 30) and
+`ca_file` (a PEM file of certificate authorities, which then replace the bundled ones:
+for a broker with a private authority).
 Nodes `mqtt-publish` (`topic`, `text`, `retain`) and `mqtt-publish-bytes` (`topic`,
 `data`, `retain`) queue a message, at most 256 waiting; entries `mqtt-message`
 (payload `[topic, text]`, fired for UTF-8 payloads) and `mqtt-binary` (payload bytes,
@@ -68,7 +73,8 @@ to the connection), and messages over 8 MiB.
 Files (2026-11-12; `orange-files`, package `org.orange.files`). A
 `org.orange.files/folder` connection has settings `path` (an existing directory),
 `read_only` and `poll_ms` (50 to 60,000, default 500). Nodes: `read-text`,
-`write-text`, `append-text`, `read-bytes`, `write-bytes`, `list`, `exists`, `delete`
+`write-text`, `append-text`, `read-bytes`, `write-bytes`, `list`, `exists`, `delete`,
+`move`, `copy`, `make-directory`, `remove-directory` (empty directories only)
 and the entry `on-change` (payload: the changed file's path). Paths are relative to
 the folder with `/` between plain names; `..`, absolute and drive forms, device names
 and links leading out of the folder are refused. A write goes to a temporary file in
@@ -76,8 +82,7 @@ the same directory, is flushed and renamed over the target. Reads and writes are
 files up to 64 MiB; a listing or a watched folder holds at most 10,000 entries.
 `on-change` compares sizes and modification times every `poll_ms`, so several changes
 to one file within that time fire once and a change that restores both is not seen.
-Not provided: streams for larger files, directory creation and removal as nodes,
-rename and copy, operating-system change notifications, text encodings other than
+Not provided: streams for larger files, operating-system change notifications, text encodings other than
 UTF-8.
 
 Implemented subset (2026-11-10; `orange-host`, `orange-net`): connection declarations
@@ -172,8 +177,8 @@ back on a second bounded channel so their memory is freed on a control thread. I
 not allocate, lock, log or read files. The capture callback only sums squares and
 steps the threshold; a session thread turns crossings into entry firings.
 
-Playback controls and FLAC (2026-11-12): `play` and `loop` read WAV and FLAC files,
-told apart by content; `loop` starts the sound again each time it ends and continues
+Playback controls and formats (2026-11-12): `play` and `loop` read WAV, FLAC, MP3 and
+Ogg Vorbis files, told apart by content (MP3 and Ogg through symphonia 0.5.5); `loop` starts the sound again each time it ends and continues
 only when stopped. `pause`, `resume`, `seek` (input `seconds`, 0 to 600) and
 `set-volume` (input `gain`, 0 to 8) act on every sound of their output connection;
 sounds that need separate control play on separate connections. A paused output is
@@ -184,8 +189,7 @@ device has asked for no samples for two seconds. The callback rules are unchange
 
 Not implemented from the design below: `AudioAsset` handles, per-sound control and
 routing, streaming from disk (a sound is decoded whole, up to 64 MiB and 600 s),
-playlists and seeded random selection, MP3 and Ogg files (no decoder under the
-project's licence policy was adopted), resampling better than linear interpolation,
+playlists and seeded random selection, Opus and AAC, resampling better than linear interpolation,
 hotplug and device-change handling, hold time on the threshold, and multi-device
 synchronization. Crossings closer than
 10 ms are reported as one.

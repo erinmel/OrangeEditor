@@ -2,7 +2,7 @@
 
 OrangeEditor has a working headless Rust graph core and CLI. The CLI runs multiple
 flows, loads, lists, removes and updates expansion packages, and includes HTTP/HTTPS
-requests, WebSocket text send and receive over WS or WSS, WAV and FLAC playback on a
+requests, WebSocket text send and receive over WS or WSS, WAV, FLAC, MP3 and Ogg playback on a
 chosen audio device with loop, pause, seek and volume, and a trigger on input level. The separate egui desktop editor is planned.
 See [CLI usage](#development), [service behavior and limits](docs/05-services-and-platforms.md#connection-manager)
 and [verification results](docs/10-tooling-and-sources.md).

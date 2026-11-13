@@ -91,6 +91,20 @@ package directory keeps each installed archive and the capabilities granted to i
 installs them again when it next starts (02). The `orange` command takes the directory
 as `--store <dir>`.
 
+Declared permissions (2026-11-12): a manifest's `permissions` section is a list of
+`"log"`, `"files"` and `"http"`: the grants the package asks for. `Host::permissions`
+reads them from an archive without installing it, for an install dialog, and
+`Host::install` refuses a grant the package did not ask for, so a package never holds
+more than it declared and the user approved. A section with anything else is refused;
+no section asks for nothing. The `orange` command gives a package the grants it asks
+for that the command line also gives, and says which it asked for and did not get.
+
+Signing a feed (2026-11-12): `orange feed key <name>` generates an Ed25519 key, keeps
+the private half in the credential store under `<name>` and prints the `update.key`
+value; it never replaces an existing key. `orange feed sign <feed.json> <name>` checks
+that the file is a feed and writes `<feed.json>.sig`. The private key is never printed
+or written to a file by these commands.
+
 Signed update feeds (2026-11-12): a manifest's `update.key`, `ed25519:<64 hex>`, is the
 publisher's Ed25519 public key. The signature is over the exact feed bytes and is
 served as 128 hexadecimal digits at the feed URL followed by `.sig`. An application
@@ -118,7 +132,7 @@ operating-system or network text. Grants are given at installation
 grant is not restricted to named hosts; the data directory has no size quota; a
 request blocks its node and cannot be interrupted by cancellation, only by the
 client's timeout; there are no sockets, clocks, random numbers, environment or
-processes for components, and the manifest's `permissions` section is still not read.
+processes for components.
 
 Enabling and disabling (2026-11-12; `orange-host`): every package of a host, whatever
 its tier, can be switched off by ID and on again without removing it; the switch is

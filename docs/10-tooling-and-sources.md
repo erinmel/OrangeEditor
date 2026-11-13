@@ -1,5 +1,59 @@
 # Tooling, environment and research register
 
+## Verification in containers; MP3 and Ogg; permissions; feed signing — 2026-11-12
+
+Docker 29.6.1 on Windows; images `eclipse-mosquitto:2` (Mosquitto 2.1.2) and
+`rust:bookworm` (Debian 12, toolchain 1.99.1 installed by rustup from the project's
+toolchain file).
+
+Linux credentials. `keyring` 3.6.3 with `sync-secret-service`, `crypto-rust`,
+`vendored`. In the container, with `gnome-keyring` unlocked inside
+`dbus-run-session`, the `orange-vault` example stored a generated value and read it
+back; the keyring wrote `login.keyring`; a second, separate D-Bus session with a new
+daemon read the same value, removed it and then reported it as not stored. Without any
+Secret Service the example reported the store as unavailable and exited with an error.
+The earlier kernel-keyring backend, which lost secrets at logout, is no longer used.
+
+MQTT over TLS. A certificate authority and a server certificate for `localhost` were
+generated with OpenSSL in the Mosquitto image; the broker required TLS and a password
+(`allow_anonymous false`, a `mosquitto_passwd` file). The ignored real-broker test,
+with `ORANGE_MQTT_BROKER=mqtts://localhost:18884`:
+
+| Configuration | Result |
+|---|---|
+| `ca_file` = the broker's authority, right password | Pass: the graph received the message it published |
+| Same, wrong password (`ORANGE_MQTT_WRONG_PASSWORD`) | Pass: nothing was delivered |
+| `ca_file` = an authority that did not sign the broker | Fails to connect, as it must; the broker logged `unknown ca` |
+| No `ca_file` (bundled public roots) | Fails to connect, as it must |
+
+MP3 and Ogg. `symphonia` 0.5.5 (`get_probe().format`, `get_codecs().make`,
+`SampleBuffer::copy_interleaved_ref`); 0.6.1 exists and was not taken because its API
+was not read. Fixtures: 0.25 s of a 440 Hz tone at 22,050 Hz mono, encoded by ffmpeg
+5.1.9 (libmp3lame 32 kbit/s, libvorbis) in the container. The test checks duration,
+the tone's frequency by zero crossings, the level, and conversion to stereo 44,100 Hz.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1791 passed, 0 failed, 20 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange feed key`, `feed key` again, `feed sign`, `secret remove` with a generated name | Key stored and public key printed; the second call refused; a 128-character signature written; the key removed |
+
+Still not verified: the credential store on macOS; KWallet (only GNOME Keyring was
+run); MQTT reconnection, retained and binary messages against Mosquitto; MP3 and Ogg
+files from other encoders or with variable bit rate; `orange updates` against a real
+server; audio on hardware beyond one manual tone.
+
+Core gaps that remain open after this unit, by decision of scope rather than
+verification: HTTP/2 and native gRPC, streaming request and response bodies, OAuth
+flows, client certificates, MQTT 5 and quality of service 2, streams for files over
+64 MiB and operating-system change notifications, per-sound audio control and
+playlists, custom types and codecs and panels from plugins, host allow-lists and
+quotas for component access, key rotation for feeds, document format migration and ID
+remapping on import, the remaining trigger kinds, live preview and stream bridges of
+the language, and persistence of node state.
+
 ## MQTT — 2026-11-12
 
 Source: MQTT 3.1.1 (OASIS standard) packet layouts for CONNECT, CONNACK, PUBLISH,
