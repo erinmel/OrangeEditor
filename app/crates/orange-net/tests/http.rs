@@ -413,6 +413,24 @@ fn a_plugin_node_is_listed_with_the_text_its_definition_gives() {
     assert_eq!(listed.provider.unwrap().package, orange_net::PACKAGE);
 }
 
+/// A credential store holding one refresh token, which a connection may replace.
+#[derive(Debug)]
+struct Kept(std::sync::Mutex<String>);
+impl orange_host::SecretStore for Kept {
+    fn get(&self, name: &str) -> Result<String, orange_host::SecretError> {
+        if name == "api/refresh" {
+            Ok(self.0.lock().unwrap().clone())
+        } else {
+            Err(orange_host::SecretError::NotFound)
+        }
+    }
+    fn replace(&self, name: &str, secret: &str) -> Result<(), orange_host::SecretError> {
+        assert_eq!(name, "api/refresh");
+        *self.0.lock().unwrap() = secret.to_owned();
+        Ok(())
+    }
+}
+
 /// A credential store holding one test token.
 #[derive(Debug)]
 struct Secrets;
@@ -741,6 +759,34 @@ fn a_refresh_token_is_exchanged_and_a_rotated_one_is_used_next() {
         "token grant_type=refresh_token&refresh_token=refresh-1&client_id=app"
     );
     assert!(seen[1].ends_with("accepted") && seen[3].ends_with("accepted"));
+
+    // A refresh token that came from the credential store is replaced there too, so
+    // the sign-in survives a restart; the document still holds only the reference.
+    let (url, log, _reject) = oauth_server(0);
+    let kept = std::sync::Arc::new(Kept(std::sync::Mutex::new("stored-refresh".to_owned())));
+    let options = HostOptions {
+        secrets: Some(kept.clone()),
+        ..HostOptions::default()
+    };
+    let mut host = Host::with_services(options, vec![orange_net::package()])
+        .unwrap()
+        .0;
+    let mut connection = graph_connection(&url);
+    connection["settings"]["oauth"] = json!({"token_url": format!("{url}/token"),
+        "client_id": "app", "refresh_token": "credential://api/refresh"});
+    let text = document(&host, connection);
+    assert!(!text.contains("stored-refresh"));
+    let flow = host.open(&text).unwrap();
+    host.trigger(flow, node(1), None).unwrap();
+    until("the request with the stored token", || {
+        log.lock().unwrap().len() == 2
+    });
+    assert_eq!(
+        log.lock().unwrap()[0],
+        "token grant_type=refresh_token&refresh_token=stored-refresh&client_id=app"
+    );
+    assert_eq!(*kept.0.lock().unwrap(), "refresh-1");
+    let mut host = self::host();
 
     // A token endpoint that refuses takes the node's failed route.
     let (url, _log, _reject) = oauth_server(3600);

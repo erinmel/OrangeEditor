@@ -56,8 +56,13 @@ refresh grant, plus optional `scope` and `client_auth` (`body`, the default, or
 Nothing is requested when the connection opens. The first request fetches an access
 token; it is reused until 30 seconds before `expires_in` runs out; a request answered
 with 401 fetches a new token and is sent once more. A connection set up with a refresh
-token follows the server's rotation of it in memory; a connection using client
-credentials never changes grant. A token endpoint that refuses takes the node's failed
+token follows the server's rotation of it; when the token came from the credential
+store (`"refresh_token": "credential://<name>"`) the replacement is also stored under
+that name, so the sign-in survives a restart. The adapter never sees the store or the
+name: the host gives each connection it opens a `Renew`, the adapter reports the
+setting whose secret changed, and the host writes it through `SecretStore::replace`,
+which a read-only store refuses. A connection using client credentials never changes
+grant. A token endpoint that refuses takes the node's failed
 route with `org.orange.net/Authorization`; errors repeat the status and the
 standard's error code, never a secret or token. `orange oauth login <settings.json>
 <name>` runs the authorization-code flow with PKCE (S256): it listens on
@@ -68,9 +73,7 @@ the binary node and reads the response as it arrives: each non-empty line (at mo
 1 MiB) fires the connection's `http-stream-line` entries, and the node continues at
 the end with `status` and `lines`. A flow that is behind slows the reading rather
 than losing lines. `stream_timeout_ms` (default 600,000) bounds one response. Not
-provided: writing a rotated refresh token back to the credential store (after a
-restart the stored one is used again, which fails with servers that invalidate it);
-OAuth for WebSocket and MQTT connections; the device-code and password grants;
+provided: OAuth for WebSocket and MQTT connections; the device-code and password grants;
 OpenID Connect discovery; cancelling a stream that sends nothing (it ends at the next
 line or at the timeout); streaming of request bodies.
 
@@ -187,7 +190,8 @@ Implemented part (2026-11-11; `orange-audio`, package `org.orange.audio`). Conne
 `org.orange.audio/output` (setting `device`: a device name, `null` for the built-in
 silent device, absent for the system default) and `org.orange.audio/input` (`device`,
 `threshold_db` default -30, `release_db` default 6 dB below it, `window_ms` 5 to 1,000,
-default 50). Nodes: `play` (inputs `path`, `gain` 0 to 8) reads a WAV file with
+default 50, `hold_ms` 0 to 60,000, default 0: how long the level must stay at the
+threshold or above, in whole measurements, before the entry fires). Nodes: `play` (inputs `path`, `gain` 0 to 8) reads a WAV file with
 integer or float PCM, converts it to the device's rate and channels and continues when
 the sound has ended or was stopped; `stop` ends every sound on the connection;
 `input-level` returns the latest RMS level in dBFS (silence is -120);

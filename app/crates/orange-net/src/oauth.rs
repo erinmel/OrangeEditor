@@ -6,6 +6,7 @@
 //! the authorization-code flow with PKCE in a browser). A token endpoint must be
 //! `https://`, except on this machine (`localhost`, `127.0.0.1`), where a local
 //! identity provider or a test may listen without TLS.
+use orange_sdk::Renew;
 use serde_json::{Map, Value as Json};
 use std::sync::{Mutex, PoisonError};
 use std::time::{Duration, Instant};
@@ -159,6 +160,8 @@ pub(crate) struct OAuth {
     /// The refresh token, replaced when the server rotates it. `None` selects the
     /// client-credentials grant.
     refresh: Mutex<Option<String>>,
+    /// Where a replaced refresh token is reported, to be kept for the next start.
+    renew: Renew,
     token: Mutex<Option<(String, Option<Instant>)>>,
 }
 /// Secrets and tokens are left out.
@@ -172,7 +175,7 @@ impl std::fmt::Debug for OAuth {
 
 impl OAuth {
     /// Reads the `oauth` setting. Error text names the field, never its value.
-    pub(crate) fn from_setting(setting: &Json) -> Result<Self, String> {
+    pub(crate) fn from_setting(setting: &Json, renew: Renew) -> Result<Self, String> {
         let fields: &Map<String, Json> = setting.as_object().ok_or("`oauth` must be an object")?;
         for name in fields.keys() {
             if !matches!(
@@ -219,6 +222,7 @@ impl OAuth {
             scope: text("scope")?,
             basic,
             refresh: Mutex::new(refresh),
+            renew,
             token: Mutex::new(None),
         })
     }
@@ -263,7 +267,10 @@ impl OAuth {
         let answer = token_request(&self.token_url, &form, basic)?;
         // Only a connection set up with a refresh token follows its rotation; one
         // using client credentials keeps that grant whatever the server sends.
-        if let Some(rotated) = answer.refresh_token.filter(|_| refresh.is_some()) {
+        if let Some(rotated) = answer.refresh_token.filter(|_| refresh.is_some())
+            && refresh.as_ref() != Some(&rotated)
+        {
+            self.renew.keep("/oauth/refresh_token", &rotated);
             *self.refresh.lock().unwrap_or_else(PoisonError::into_inner) = Some(rotated);
         }
         let expires = answer
@@ -347,7 +354,8 @@ mod tests {
 
     #[test]
     fn the_oauth_setting_is_checked_without_repeating_secrets() {
-        let parse = |text: &str| OAuth::from_setting(&serde_json::from_str(text).unwrap());
+        let parse =
+            |text: &str| OAuth::from_setting(&serde_json::from_str(text).unwrap(), Renew::none());
         assert!(
             parse(
                 r#"{"token_url": "https://id.example/t", "client_id": "app", "client_secret": "s"}"#

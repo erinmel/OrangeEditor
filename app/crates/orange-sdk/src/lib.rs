@@ -72,6 +72,47 @@ impl std::error::Error for SecretError {}
 pub trait SecretStore: std::fmt::Debug + Send + Sync + 'static {
     /// The secret stored under `name`.
     fn get(&self, name: &str) -> Result<String, SecretError>;
+    /// Stores a new value for a secret a connection was opened with, because the
+    /// service replaced it (a rotated refresh token). A store that cannot be written
+    /// refuses, which is the default; the connection then works until the application
+    /// stops and needs a new sign-in afterwards.
+    fn replace(&self, name: &str, secret: &str) -> Result<(), SecretError> {
+        let _ = (name, secret);
+        Err(SecretError::Unavailable("it cannot be written"))
+    }
+}
+
+/// How a session gives back a secret its service replaced. The host makes one for each
+/// connection it opens; the adapter names the setting the secret came in (a JSON
+/// pointer into the settings, such as `/oauth/refresh_token`) and the host stores the
+/// new value under the credential that setting referred to. A setting that held a
+/// plain value, not a reference, is not stored anywhere.
+#[derive(Clone, Default)]
+pub struct Renew(Option<Arc<Keep>>);
+type Keep = dyn Fn(&str, &str) + Send + Sync;
+impl Renew {
+    /// A renewal that stores nothing.
+    pub fn none() -> Self {
+        Self(None)
+    }
+    pub fn new(keep: impl Fn(&str, &str) + Send + Sync + 'static) -> Self {
+        Self(Some(Arc::new(keep)))
+    }
+    /// Reports that the secret given in `setting` is now `secret`.
+    pub fn keep(&self, setting: &str, secret: &str) {
+        if let Some(keep) = &self.0 {
+            keep(setting, secret);
+        }
+    }
+}
+impl std::fmt::Debug for Renew {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(if self.0.is_some() {
+            "Renew(host)"
+        } else {
+            "Renew(none)"
+        })
+    }
 }
 
 /// Provider ID of every node a service package implements.
@@ -94,6 +135,17 @@ pub trait Session: std::fmt::Debug + Send + Sync + 'static {
 /// an adapter that needs a handshake performs it on first use, from a worker.
 pub trait ConnectionAdapter: std::fmt::Debug + Send + Sync + 'static {
     fn open(&self, settings: &Map<String, Json>) -> Result<Arc<dyn Session>, String>;
+    /// [`open`](Self::open) for an adapter whose service can replace a secret it was
+    /// given: it keeps `renew` and reports each replacement. The host calls this one;
+    /// the default ignores `renew`.
+    fn open_renewing(
+        &self,
+        settings: &Map<String, Json>,
+        renew: Renew,
+    ) -> Result<Arc<dyn Session>, String> {
+        let _ = renew;
+        self.open(settings)
+    }
 }
 
 /// One execution of a service node, on a worker thread.

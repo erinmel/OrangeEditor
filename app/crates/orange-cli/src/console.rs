@@ -6,11 +6,15 @@ pub(crate) fn print(event: &HostEvent, names: &Names) {
     match &event.kind {
         FlowEvent::State(state) => println!("[{flow}] state {state:?}"),
         FlowEvent::Node(step) => match &step.fault {
-            None => println!("[{flow}] {}: {:?}", names.node(&step.node), step.outcome),
-            Some(fault) => println!(
-                "[{flow}] {}: {:?}, fault {} from {}",
+            None => println!(
+                "[{flow}] {}: {}",
                 names.node(&step.node),
-                step.outcome,
+                said(step.outcome)
+            ),
+            Some(fault) => println!(
+                "[{flow}] {}: {}, fault {} from {}",
+                names.node(&step.node),
+                said(step.outcome),
                 fault.fault.code,
                 names.node(&fault.source)
             ),
@@ -43,7 +47,7 @@ pub(crate) fn print(event: &HostEvent, names: &Names) {
 /// Applies an edited graph file to its running flow.
 pub(crate) fn reload(host: &mut Host, opened: &mut Opened) -> Result<(), String> {
     let (flow, path) = (opened.flow, opened.path.as_str());
-    let text = String::from_utf8(read(path)?).map_err(|_| format!("{path}: not UTF-8 text"))?;
+    let text = text(path)?;
     let names = Names::of(host, &text);
     match host.update(flow, &text) {
         Ok(updated) if !updated.changed => println!("[{flow}] nothing to apply"),

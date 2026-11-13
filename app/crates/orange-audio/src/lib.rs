@@ -49,11 +49,19 @@ pub const OUTPUT_ADAPTER: &str = "org.orange.audio/output";
 /// Adapter kind of an input device whose level is measured. Settings: `device` as for
 /// an output; `threshold_db` (default -30) and `release_db` (default 6 below the
 /// threshold) for [`ON_LEVEL`]; `window_ms` (5 to 1,000, default 50), the length of
-/// each measurement.
+/// each measurement; `hold_ms` (0 to 60,000, default 0), how long the level must stay at
+/// the threshold or above before the entry fires, counted in whole measurements.
 pub const INPUT_ADAPTER: &str = "org.orange.audio/input";
 /// Plays a WAV, FLAC, MP3 or Ogg Vorbis file on an output connection and continues when it has ended. Inputs
 /// `path` and `gain` (0 to 8; 1 is unchanged).
 pub const PLAY: &str = "org.orange.audio/play";
+/// Plays one of the sound files of a folder and continues when it has ended. Inputs
+/// `folder`, `pick` and `gain`; output `file`, the name of the file played. The
+/// folder's sound files are taken in name order and `pick` chooses among them,
+/// starting again from the first when it is past the last: a counter makes a playlist
+/// and a seeded random number a repeatable shuffle. A folder without sound files is
+/// the fault `org.orange.audio/Empty`.
+pub const PLAY_FROM: &str = "org.orange.audio/play-from";
 /// Stops every sound playing on an output connection.
 pub const STOP: &str = "org.orange.audio/stop";
 /// Plays a file like [`PLAY`], starting again each time it ends, and continues only
@@ -111,6 +119,11 @@ const TOO_LARGE: KernelFault = fault(
     "org.orange.audio/TooLarge",
     "org.orange.audio/file-too-large",
     "The sound file is too large or too long.",
+);
+const EMPTY: KernelFault = fault(
+    "org.orange.audio/Empty",
+    "org.orange.audio/folder-empty",
+    "The folder has no sound files.",
 );
 const BUSY: KernelFault = fault(
     "org.orange.audio/Busy",
@@ -171,27 +184,82 @@ struct Play {
 }
 impl ServiceNode for Play {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
-        let session = output(call)?;
         let [Value::Str(path), Value::F64(gain)] = call.inputs else {
             return Err(BAD_INPUT);
         };
-        if path.is_empty() || !(0.0..=8.0).contains(gain) {
+        play(call, Path::new(path.as_str()), *gain, self.looped)?;
+        Ok(Vec::new())
+    }
+}
+
+/// Plays a file on the call's output connection and waits for it to end.
+fn play(call: &Call<'_>, path: &Path, gain: f64, looped: bool) -> Result<(), KernelFault> {
+    let session = output(call)?;
+    if path.as_os_str().is_empty() || !(0.0..=8.0).contains(&gain) {
+        return Err(BAD_INPUT);
+    }
+    let output = session.output()?;
+    let sound = wav::load(path, output.rate, output.channels).map_err(|error| match error {
+        wav::WavError::Unreadable => FILE,
+        wav::WavError::TooLarge => TOO_LARGE,
+    })?;
+    #[expect(clippy::cast_possible_truncation, reason = "gain is within 0..=8")]
+    let id = output.play(sound, gain as f32, looped).ok_or(BUSY)?;
+    match output.wait(id, || call.lease.is_cancelled()) {
+        Ended::Done => Ok(()),
+        Ended::Stalled => Err(DEVICE),
+    }
+}
+
+/// Most files of a folder considered by [`PLAY_FROM`].
+pub const MAX_FOLDER_SOUNDS: usize = 10_000;
+
+/// The sound file `pick` chooses in a folder: its files with a supported extension in
+/// name order, counted round and round.
+fn choose(folder: &Path, pick: u64) -> Result<std::path::PathBuf, KernelFault> {
+    let mut sounds: Vec<_> = std::fs::read_dir(folder)
+        .map_err(|_| FILE)?
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .filter(|path| {
+            path.is_file()
+                && path
+                    .extension()
+                    .and_then(|extension| extension.to_str())
+                    .is_some_and(|extension| {
+                        ["wav", "flac", "mp3", "ogg"]
+                            .iter()
+                            .any(|known| extension.eq_ignore_ascii_case(known))
+                    })
+        })
+        .take(MAX_FOLDER_SOUNDS)
+        .collect();
+    sounds.sort();
+    let count = u64::try_from(sounds.len()).unwrap_or(u64::MAX);
+    let at = pick.checked_rem(count).ok_or(EMPTY)?;
+    Ok(sounds.swap_remove(usize::try_from(at).unwrap_or(0)))
+}
+
+/// Plays the file of a folder that a number chooses.
+#[derive(Debug)]
+struct PlayFrom;
+impl ServiceNode for PlayFrom {
+    fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
+        let [Value::Str(folder), Value::U64(pick), Value::F64(gain)] = call.inputs else {
+            return Err(BAD_INPUT);
+        };
+        if folder.is_empty() {
             return Err(BAD_INPUT);
         }
-        let output = session.output()?;
-        let sound =
-            wav::load(Path::new(path.as_str()), output.rate, output.channels).map_err(|error| {
-                match error {
-                    wav::WavError::Unreadable => FILE,
-                    wav::WavError::TooLarge => TOO_LARGE,
-                }
-            })?;
-        #[expect(clippy::cast_possible_truncation, reason = "gain is within 0..=8")]
-        let id = output.play(sound, *gain as f32, self.looped).ok_or(BUSY)?;
-        match output.wait(id, || call.lease.is_cancelled()) {
-            Ended::Done => Ok(Vec::new()),
-            Ended::Stalled => Err(DEVICE),
-        }
+        // The session is checked before the folder is read.
+        let _ = output(call)?;
+        let path = choose(Path::new(folder.as_str()), *pick)?;
+        play(call, &path, *gain, false)?;
+        let name = path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_default();
+        Ok(vec![Value::Str(Arc::new(name))])
     }
 }
 
@@ -346,10 +414,18 @@ impl ConnectionAdapter for InputAdapter {
                 .filter(|ms| (5..=1_000).contains(ms))
                 .ok_or("`window_ms` must be an integer from 5 to 1000")?,
         };
+        let hold = match settings.get("hold_ms") {
+            None => 0,
+            Some(value) => value
+                .as_u64()
+                .filter(|ms| *ms <= 60_000)
+                .ok_or("`hold_ms` must be an integer from 0 to 60000")?,
+        };
+        let hold = u32::try_from(hold.div_ceil(window)).unwrap_or(u32::MAX);
         let shared = Arc::new(InputShared {
             device: device_setting(settings)?,
             window: Duration::from_millis(window),
-            gate: Gate::new(threshold, release),
+            gate: Gate::held(threshold, release, hold),
             levels: Arc::new(Levels::new()),
             listeners: Listeners::new(),
             started: AtomicBool::new(false),
@@ -410,6 +486,20 @@ fn play_definition() -> String {
         .connection()
         .input("path", "core/string@1")
         .input("gain", "core/f64@1")
+        .build()
+}
+
+fn play_from_definition() -> String {
+    Definition::node(crate::PACKAGE, "play-from", "Play sound from folder")
+        .description(
+            "Plays the sound file of a folder that a number chooses, in name order: a counter makes a playlist, a random number a shuffle.",
+        )
+        .category("audio", "Audio")
+        .connection()
+        .input("folder", "core/string@1")
+        .input("pick", "core/u64@1")
+        .input("gain", "core/f64@1")
+        .output("file", "core/string@1")
         .build()
 }
 
@@ -494,6 +584,7 @@ pub fn package() -> ServicePackage {
         .adapter(INPUT_ADAPTER, InputAdapter)
         .node(&play_definition(), Play { looped: false })
         .and_then(|package| package.node(&loop_definition(), Play { looped: true }))
+        .and_then(|package| package.node(&play_from_definition(), PlayFrom))
         .and_then(|package| package.node(&stop_definition(), Stop))
         .and_then(|package| package.node(&pause_definition(), Control::Pause))
         .and_then(|package| package.node(&resume_definition(), Control::Resume))
@@ -512,6 +603,28 @@ pub fn package() -> ServicePackage {
 mod tests {
     use super::*;
 
+    #[test]
+    fn a_number_chooses_among_a_folders_sound_files_in_name_order() {
+        let folder = std::env::temp_dir().join(format!("orange-audio-pick-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&folder);
+        std::fs::create_dir_all(folder.join("sub.wav")).unwrap();
+        assert_eq!(choose(&folder, 0), Err(EMPTY));
+        for name in ["b.WAV", "a.ogg", "notes.txt", "c.mp3"] {
+            std::fs::write(folder.join(name), b"").unwrap();
+        }
+        let chosen = |pick| {
+            let path = choose(&folder, pick).unwrap();
+            path.file_name().unwrap().to_string_lossy().into_owned()
+        };
+        // Text files and folders are not sounds; the count goes round.
+        assert_eq!(
+            [chosen(0), chosen(1), chosen(2), chosen(3), chosen(u64::MAX)],
+            ["a.ogg", "b.WAV", "c.mp3", "a.ogg", "a.ogg"]
+        );
+        assert_eq!(choose(&folder.join("missing"), 0), Err(FILE));
+        std::fs::remove_dir_all(&folder).unwrap();
+    }
+
     fn settings(json: Json) -> Map<String, Json> {
         json.as_object().unwrap().clone()
     }
@@ -520,7 +633,7 @@ mod tests {
     fn the_package_builds_with_its_nodes_and_two_connection_kinds() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 8);
+        assert_eq!(package.nodes().len(), 9);
         assert_eq!(package.sources().len(), 1);
         assert_eq!(package.adapters().len(), 2);
     }
@@ -539,6 +652,8 @@ mod tests {
             serde_json::json!({"device": NULL_DEVICE, "threshold_db": "loud"}),
             serde_json::json!({"device": NULL_DEVICE, "threshold_db": -40, "release_db": -30}),
             serde_json::json!({"device": NULL_DEVICE, "window_ms": 2}),
+            serde_json::json!({"device": NULL_DEVICE, "hold_ms": -1}),
+            serde_json::json!({"device": NULL_DEVICE, "hold_ms": 60_001}),
         ] {
             assert!(InputAdapter.open(&settings(bad)).is_err());
         }

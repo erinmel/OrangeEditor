@@ -86,6 +86,9 @@ impl SecretStore for OsVault {
             .get_password()
             .map_err(|error| failure(&error))
     }
+    fn replace(&self, name: &str, secret: &str) -> Result<(), SecretError> {
+        self.set(name, secret)
+    }
 }
 
 /// Secrets held in memory for the life of the value: for tests, and for an application
@@ -148,6 +151,9 @@ impl SecretStore for MemoryVault {
             .get(name)
             .cloned()
             .ok_or(SecretError::NotFound)
+    }
+    fn replace(&self, name: &str, secret: &str) -> Result<(), SecretError> {
+        self.set(name, secret)
     }
 }
 

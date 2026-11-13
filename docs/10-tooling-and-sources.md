@@ -1,5 +1,32 @@
 # Tooling, environment and research register
 
+## Maintenance and small core gaps — 2026-11-12
+
+Maintenance, behaviour unchanged: `orange-net` keeps its package list in `lib.rs` and
+has `http.rs` (connection and request nodes) and `feed.rs` (downloads, feed signing and
+checking); the `orange` command's 500-line `main` became `commands.rs`, one function
+per command returning why it stopped, behind a dispatcher that owns what is printed and
+the exit code; the host's flow lifecycle (prepare, open, update, control, close) moved
+to `flows.rs`. The commands were run again after the change: `check`, `run --watch`
+with `trigger` and `set` by name, `packages`, `nodes`, an unknown command and a
+missing file gave the same results as before.
+
+Added: a replaced OAuth refresh token is written back to the credential store
+(FR-87); `hold_ms` on the audio input connection (FR-88); `orange updates
+--signed-only` (FR-89); a step in a terminal run is printed in plain words
+(`save greeting: done`, `Write text file: waiting`).
+
+Not exercised: `--signed-only` against a real feed server; the hold time on a real
+microphone; token replacement against a real identity provider or the operating
+system's store (the test uses a store in memory).
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,803 passed, 0 failed, 20 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
 ## Real use from the terminal — 2026-11-13
 
 Aim: use the product as a person without the editor would, on the merged `dev`
@@ -44,8 +71,7 @@ the output read `[1] save greeting: Then`, `[1] greeting = "hello there"`; the f
 held `hello there`; `set 1 volume loud` and `trigger 1 nobody` were refused with a
 sentence each.
 
-Still rough: a step is printed as `<name>: Then` or `Suspended`, the runtime's words
-rather than a person's; setting a variable the graph declares but never uses is
+Still rough (the step words were replaced on 2026-11-12, above): setting a variable the graph declares but never uses is
 refused, because the compiled graph does not hold it; names are not checked for
 uniqueness when a graph is written, only told apart when shown.
 

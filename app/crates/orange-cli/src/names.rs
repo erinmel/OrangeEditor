@@ -143,6 +143,35 @@ impl Names {
     }
 }
 
+/// What a node did in one step, in plain words.
+pub(crate) fn said(outcome: orange_host::ControlOutcome) -> String {
+    use orange_host::ControlOutcome as O;
+    let words = match outcome {
+        O::Then | O::Completed => "done",
+        O::Suspended => "waiting",
+        O::Yielded => "paused for others",
+        O::True => "true",
+        O::False => "false",
+        O::Failed => "failed",
+        O::Cancelled => "cancelled",
+        O::TimedOut => "timed out",
+        O::Suppressed => "skipped",
+        O::StateChanged => "changed state",
+        O::Forked => "started its branches",
+        O::Body => "runs its body",
+        O::Break => "left the loop",
+        O::Continue => "next round",
+        O::Default => "took the default case",
+        O::MatchedOk => "took the ok path",
+        O::MatchedErr => "took the error path",
+        O::FlipA => "took A",
+        O::FlipB => "took B",
+        O::Case(case) => return format!("took case {}", u32::from(case) + 1),
+        O::Step(step) => return format!("step {}", step + 1),
+    };
+    words.to_owned()
+}
+
 /// A value as a person reads it: `7`, `"text"`, `true`, `<12 bytes>`. Long text is cut.
 pub(crate) fn plain(value: &Value) -> String {
     match value {
@@ -290,6 +319,8 @@ mod tests {
             .unwrap(),
             r#"{"type":"core/bytes@1","value":"AA=="}"#
         );
+        assert_eq!(said(orange_host::ControlOutcome::Then), "done");
+        assert_eq!(said(orange_host::ControlOutcome::Case(0)), "took case 1");
         assert_eq!(plain(&Value::I64(7)), "7");
         assert_eq!(
             plain(&Value::Str(std::sync::Arc::new("hi".into()))),

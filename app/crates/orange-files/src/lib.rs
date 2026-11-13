@@ -7,6 +7,10 @@
 //! and links that lead out of the folder are refused. An application that does not
 //! want file access leaves the package out.
 //!
+//! A file larger than that is handled in pieces: `size`, `read-range` and
+//! `append-bytes` let a graph walk through it with bounded memory, and `copy` and
+//! `move` have no size limit because they never hold the content.
+//!
 //! A whole file is read or written at once, up to [`MAX_FILE_BYTES`]. Writing replaces
 //! a file atomically: the content goes to a temporary file in the same directory, which
 //! is then renamed over the target, so a reader or a crash sees the old file or the new
@@ -160,6 +164,21 @@ impl Folder {
             .append(path, data, MAX_FILE_BYTES)
             .map_err(refused)
     }
+    fn size(&self, path: &str) -> Result<u64, KernelFault> {
+        self.files.size(path).map_err(refused)
+    }
+    fn read_range(&self, path: &str, offset: u64, length: u64) -> Result<Vec<u8>, KernelFault> {
+        self.files
+            .read_range(path, offset, length, MAX_FILE_BYTES)
+            .map_err(refused)
+    }
+    /// Adds one piece of at most [`MAX_FILE_BYTES`] to a file of any size.
+    fn append_piece(&self, path: &str, data: &[u8]) -> Result<(), KernelFault> {
+        if data.len() as u64 > MAX_FILE_BYTES {
+            return Err(TOO_LARGE);
+        }
+        self.files.append(path, data, u64::MAX).map_err(refused)
+    }
     fn list(&self, path: &str) -> Result<Vec<Arc<String>>, KernelFault> {
         let names = self.files.list(path, MAX_ENTRIES).map_err(refused)?;
         Ok(names.into_iter().map(Arc::new).collect())
@@ -174,7 +193,7 @@ impl Folder {
         self.files.rename(path, to).map_err(refused)
     }
     fn copy(&self, path: &str, to: &str) -> Result<(), KernelFault> {
-        self.files.copy(path, to, MAX_FILE_BYTES).map_err(refused)
+        self.files.copy(path, to, u64::MAX).map_err(refused)
     }
     fn make_directory(&self, path: &str) -> Result<(), KernelFault> {
         self.files.make_directory(path).map_err(refused)
@@ -274,6 +293,9 @@ enum Operation {
     Copy,
     MakeDirectory,
     RemoveDirectory,
+    Size,
+    ReadRange,
+    AppendBytes,
 }
 impl ServiceNode for Operation {
     fn run(&self, call: &Call<'_>) -> Result<Vec<Value>, KernelFault> {
@@ -314,6 +336,14 @@ impl ServiceNode for Operation {
             }
             (Self::RemoveDirectory, [Value::Str(path)]) => {
                 folder.remove_directory(path).map(|()| Vec::new())
+            }
+            (Self::Size, [Value::Str(path)]) => Ok(vec![Value::U64(folder.size(path)?)]),
+            (Self::ReadRange, [Value::Str(path), Value::U64(offset), Value::U64(length)]) => {
+                let data = folder.read_range(path, *offset, *length)?;
+                Ok(vec![Value::Bytes(Arc::new(data))])
+            }
+            (Self::AppendBytes, [Value::Str(path), Value::Bytes(data)]) => {
+                folder.append_piece(path, data).map(|()| Vec::new())
             }
             _ => Err(BAD_INPUT),
         }
@@ -404,7 +434,33 @@ const BYTES: &str = "core/bytes@1";
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let path = || input("path", STRING);
-    let nodes: [(&str, &str, &str, Operation, Vec<Port>); 12] = [
+    let nodes: [(&str, &str, &str, Operation, Vec<Port>); 15] = [
+        (
+            "size",
+            "File size",
+            "Gives the size of a file in a folder, in bytes.",
+            Operation::Size,
+            vec![path(), output("bytes", "core/u64@1")],
+        ),
+        (
+            "read-range",
+            "Read part of file",
+            "Reads up to a number of bytes of a file from a position: fewer at its end.",
+            Operation::ReadRange,
+            vec![
+                path(),
+                input("offset", "core/u64@1"),
+                input("length", "core/u64@1"),
+                output("data", BYTES),
+            ],
+        ),
+        (
+            "append-bytes",
+            "Append to file",
+            "Adds bytes to the end of a file in a folder.",
+            Operation::AppendBytes,
+            vec![path(), input("data", BYTES)],
+        ),
         (
             "move",
             "Move file",
@@ -546,7 +602,7 @@ mod tests {
     fn the_package_builds_with_its_nodes() {
         let package = package();
         assert_eq!(package.id(), PACKAGE);
-        assert_eq!(package.nodes().len(), 12);
+        assert_eq!(package.nodes().len(), 15);
         assert_eq!(package.sources().len(), 1);
         assert_eq!(package.adapters().len(), 1);
     }
@@ -601,6 +657,38 @@ mod tests {
             assert_eq!(folder.read(escape), Err(BAD_PATH), "{escape:?}");
         }
         assert!(!root.parent().unwrap().join("x").exists());
+        let _ = std::fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_is_walked_in_pieces_and_grown_piece_by_piece() {
+        let root = scratch("pieces");
+        let session = open(&root, serde_json::json!({})).unwrap();
+        let folder = folder(Some(session.as_ref())).unwrap();
+        folder.write("big.bin", b"0123456789").unwrap();
+        assert_eq!(folder.size("big.bin"), Ok(10));
+        assert_eq!(folder.read_range("big.bin", 0, 4).unwrap(), b"0123");
+        assert_eq!(folder.read_range("big.bin", 8, 4).unwrap(), b"89");
+        // Past the end there is nothing to read, which is not a failure.
+        assert_eq!(folder.read_range("big.bin", 10, 4).unwrap(), b"");
+        assert_eq!(folder.read_range("big.bin", 99, 4).unwrap(), b"");
+        assert_eq!(
+            folder.read_range("big.bin", 0, MAX_FILE_BYTES + 1),
+            Err(TOO_LARGE)
+        );
+        assert_eq!(folder.size("missing.bin"), Err(NOT_FOUND));
+        assert_eq!(folder.read_range("../big.bin", 0, 1), Err(BAD_PATH));
+        // A copy made piece by piece equals the original.
+        let mut offset = 0;
+        loop {
+            let piece = folder.read_range("big.bin", offset, 3).unwrap();
+            if piece.is_empty() {
+                break;
+            }
+            folder.append_piece("copy.bin", &piece).unwrap();
+            offset += piece.len() as u64;
+        }
+        assert_eq!(folder.read("copy.bin").unwrap(), b"0123456789");
         let _ = std::fs::remove_dir_all(&root);
     }
 

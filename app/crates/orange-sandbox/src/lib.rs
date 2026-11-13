@@ -160,6 +160,36 @@ impl Folder {
         std::fs::read(&full).map_err(|e| io(&e))
     }
 
+    /// The size of a file in bytes.
+    pub fn size(&self, path: &str) -> Result<u64, FsError> {
+        let full = self.source(path)?;
+        Ok(std::fs::metadata(&full).map_err(|e| io(&e))?.len())
+    }
+
+    /// Reads up to `length` bytes of a file starting at `offset`: fewer at the end of
+    /// the file, none past it. `length` may be at most `max_bytes`.
+    pub fn read_range(
+        &self,
+        path: &str,
+        offset: u64,
+        length: u64,
+        max_bytes: u64,
+    ) -> Result<Vec<u8>, FsError> {
+        use std::io::{Read, Seek, SeekFrom};
+        if length > max_bytes {
+            return Err(FsError::TooLarge);
+        }
+        let full = self.source(path)?;
+        let mut file = std::fs::File::open(&full).map_err(|e| io(&e))?;
+        let _ = file.seek(SeekFrom::Start(offset)).map_err(|e| io(&e))?;
+        let mut data = Vec::new();
+        let _ = file
+            .take(length)
+            .read_to_end(&mut data)
+            .map_err(|e| io(&e))?;
+        Ok(data)
+    }
+
     /// Creates or replaces a file atomically, creating the directories on its path.
     pub fn write(&self, path: &str, data: &[u8]) -> Result<(), FsError> {
         let full = self.target(path)?;
