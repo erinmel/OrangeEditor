@@ -60,6 +60,8 @@ Audio formats and Linux credentials (2026-11-12): orange-audio adds `symphonia` 
 
 MQTT (2026-11-12): orange-net depends directly on `rustls` 0.23.46 (features `ring`, `std`, `tls12`) and `webpki-roots` 1.0.11, both already in the tree for HTTPS and WSS; the MQTT client itself is first-party code with no MQTT library.
 
+Shared sandbox (2026-11-13): app/crates/orange-sandbox has no dependency and is used by orange-files and orange-guest, which each had their own copy of the folder rules. orange-sdk gains `Listeners`, the registry of entry nodes listening to a source, used by the WebSocket, MQTT, HTTP stream and audio input sessions. orange-cli depends on `serde_json` directly.
+
 Files and vault (2026-11-12) add app/crates/orange-files (service package on orange-sdk, no third-party dependency beyond serde_json) and app/crates/orange-vault (orange-sdk and `keyring` 3.6.3, MIT OR Apache-2.0, features `apple-native`, `windows-native`, `linux-native`; no D-Bus or OpenSSL). orange-cli depends on both. orange-sdk gains `SecretStore`.
 
 Signed feeds, FLAC and component access (2026-11-12): orange-net depends directly on `ring` 0.17.14 (already in the tree as the TLS provider) for Ed25519 verification and SHA-256; orange-audio adds `claxon` 0.4.3 (Apache-2.0, no dependencies) for FLAC. orange-guest gains no dependency: file access uses the standard library and HTTPS goes through a client the application supplies.

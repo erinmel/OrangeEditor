@@ -1,5 +1,47 @@
 # Tooling, environment and research register
 
+## Performance check and duplication removal — 2026-11-13
+
+Performance. `orange-measure` (release, budget 64, warm-up 3, 15 runs) was built at
+2ed1649, the commit before the audio, plugin, service and document work, and at this
+branch. The two builds ran alternately, twice each, with nothing else running. All 16
+core workloads have identical allocation counts, allocated bytes and peak live bytes.
+Run time, best of two, is 0.98 of the old build as a geometric mean, against a
+run-to-run difference of about 2 % for the old build alone: no measurable change. A
+first measurement taken while other builds were running was discarded. The workloads
+cover the compiler and runtime core; they do not exercise the host's flow thread, the
+service packages or the plugin engine, for which there is no benchmark.
+
+One cost was found by reading and removed: a flow with persistent variables encoded
+every one of them to a literal after each turn to see whether anything had changed.
+It now compares the values and encodes only when one differs.
+
+Duplication removed, with behavior unchanged:
+
+- The folder rules (plain relative paths, device names, links leading out, atomic
+  writes) existed twice, in the file package and in the plugin engine. They are now
+  `orange-sandbox`; the plugin engine's file writes became atomic as a result.
+- Four sessions each kept their own list of listening entries with their own removal
+  guard. They use `orange_sdk::Listeners`.
+- Hexadecimal encoding was written out in seven places across the host and the
+  network package; each crate now has one helper.
+- The command-line program read one settings file with a hand-written JSON scanner;
+  it uses `serde_json`.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,797 passed, 0 failed, 20 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Left as it is, with the reason: node definitions are repeated JSON text in the audio
+and network packages (a builder exists only in the file package; converting the rest
+changes every definition at once and is its own unit); the test files of each crate
+repeat the same few graph-building helpers (sharing them needs a test-support crate);
+`orange-host/src/lib.rs` and `orange-cli/src/main.rs` are 2,000 and 1,300 lines and
+would read better split by concern.
+
 ## OAuth and streamed responses — 2026-11-12
 
 Sources: RFC 6749 (client-credentials and refresh-token grants, token response),
