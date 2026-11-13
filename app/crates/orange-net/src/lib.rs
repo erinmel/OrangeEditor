@@ -498,6 +498,39 @@ pub fn verify_feed(feed: &[u8], signature: &[u8], key: &str) -> Result<(), Strin
         .map_err(|_| refused())
 }
 
+fn hex(bytes: &[u8]) -> String {
+    bytes.iter().map(|byte| format!("{byte:02x}")).collect()
+}
+
+/// Makes a new feed-signing key. The first value is the private key, as text to keep
+/// in a credential store and nowhere else; the second is the public key in the form a
+/// manifest's `update.key` takes, `ed25519:<64 hex>`.
+pub fn new_feed_key() -> Result<(String, String), String> {
+    use ring::signature::KeyPair;
+    let failed = || "the key could not be generated".to_owned();
+    let private = ring::signature::Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+        .map_err(|_| failed())?;
+    let pair =
+        ring::signature::Ed25519KeyPair::from_pkcs8(private.as_ref()).map_err(|_| failed())?;
+    Ok((
+        hex(private.as_ref()),
+        format!("ed25519:{}", hex(pair.public_key().as_ref())),
+    ))
+}
+
+/// Signs the exact bytes of a feed with a private key from [`new_feed_key`]. Returns
+/// the content of the feed's `.sig` document and the public key that verifies it.
+pub fn sign_feed(feed: &[u8], private_key: &str) -> Result<(String, String), String> {
+    use ring::signature::KeyPair;
+    let pair = unhex(private_key.trim())
+        .and_then(|bytes| ring::signature::Ed25519KeyPair::from_pkcs8(&bytes).ok())
+        .ok_or("the private key is not a feed-signing key")?;
+    Ok((
+        hex(pair.sign(feed).as_ref()),
+        format!("ed25519:{}", hex(pair.public_key().as_ref())),
+    ))
+}
+
 /// The lowercase hexadecimal SHA-256 of `bytes` as `sha256:<64 hex>`: the form a feed's
 /// `content_digest` has for a native plugin library.
 pub fn sha256(bytes: &[u8]) -> String {
@@ -582,6 +615,24 @@ mod tests {
         assert!(verify_feed(feed, b"00", &key).is_err());
         assert!(verify_feed(feed, b"not hex", &key).is_err());
         assert!(verify_feed(feed, signature.as_bytes(), "ed25519:00").is_err());
+    }
+
+    #[test]
+    fn a_generated_key_signs_a_feed_that_its_public_key_verifies() {
+        let (private, public) = super::new_feed_key().unwrap();
+        let (other_private, other_public) = super::new_feed_key().unwrap();
+        assert_ne!(public, other_public);
+        let feed = br#"{"format": "orange.update-feed", "format_version": 1, "releases": []}"#;
+        let (signature, signer) = super::sign_feed(feed, &private).unwrap();
+        assert_eq!(signer, public);
+        assert_eq!(signature.len(), 128);
+        assert_eq!(verify_feed(feed, signature.as_bytes(), &public), Ok(()));
+        assert!(verify_feed(feed, signature.as_bytes(), &other_public).is_err());
+        let (forged, _) = super::sign_feed(feed, &other_private).unwrap();
+        assert!(verify_feed(feed, forged.as_bytes(), &public).is_err());
+        // The public key is not a private key, and neither is arbitrary text.
+        assert!(super::sign_feed(feed, &public).is_err());
+        assert!(super::sign_feed(feed, "00ff").is_err());
     }
 
     #[test]

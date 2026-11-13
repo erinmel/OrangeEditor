@@ -27,6 +27,7 @@ usage:
   orange import <in.orangegraph> <graph.json> [--apply] [--store <dir>]
   orange devices
   orange secret set <name> | remove <name> | check <name>
+  orange feed key <name> | sign <feed.json> <name>
 
 `run` starts every graph as its own flow, numbered from 1 in argument order, and prints
 what they do. While it runs, type commands on standard input:
@@ -92,6 +93,10 @@ files there are JSON and can be edited while nothing runs.
 operating system's credential store; a connection's settings name it as
 `credential://<name>` (for example a `bearer` setting of `credential://api/token`), so graph files
 hold no secrets. `secret check` says whether one is stored without showing it.
+
+`feed key <name>` makes a key for signing update feeds, keeps its private half in the
+credential store and prints the `update.key` to put in a package's manifest; `feed sign
+<feed.json> <name>` writes the signature to serve beside the feed as `<feed.json>.sig`.
 
 `--grant-log` lets installed package code write log lines, `--grant-files` lets it
 read and write files in its own data directory (`--plugin-data <dir>`, or `data` in the
@@ -544,6 +549,61 @@ fn secret(words: &[String]) -> ExitCode {
     }
 }
 
+/// `feed key <name>` makes a signing key and keeps its private half in the credential
+/// store under `<name>`; `feed sign <feed.json> <name>` writes `<feed.json>.sig`. Both
+/// print the public key a manifest's `update.key` takes. The private key is never
+/// printed or written to a file.
+fn feed_command(words: &[String]) -> ExitCode {
+    use orange_host::SecretStore;
+    let vault = orange_vault::OsVault::new(VAULT_SERVICE);
+    let done = match &words.iter().map(String::as_str).collect::<Vec<_>>()[..] {
+        ["key", name] => {
+            // An existing key is never replaced: feeds signed with it would stop verifying.
+            match vault.get(name) {
+                Ok(_) => Err(format!("{name} already holds a key; choose another name")),
+                Err(orange_host::SecretError::NotFound) => {
+                    orange_net::new_feed_key().and_then(|(private, public)| {
+                        vault
+                            .set(name, &private)
+                            .map(|()| {
+                                format!("stored the private key as {name}\nupdate.key: {public}")
+                            })
+                            .map_err(|error| error.to_string())
+                    })
+                }
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        ["sign", feed, name] => vault
+            .get(name)
+            .map_err(|error| format!("{name}: {error}"))
+            .and_then(|private| {
+                let bytes = read(feed)?;
+                orange_host::UpdateFeed::from_json(&bytes)
+                    .map_err(|error| format!("{feed}: {error}"))?;
+                let (signature, public) = orange_net::sign_feed(&bytes, &private)?;
+                let output = format!("{feed}.sig");
+                std::fs::write(&output, &signature)
+                    .map_err(|error| format!("{output}: {error}"))?;
+                Ok(format!("{output}: signed\nupdate.key: {public}"))
+            }),
+        _ => {
+            eprintln!("feed needs `key <name>` or `sign <feed.json> <name>`\n{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match done {
+        Ok(message) => {
+            println!("{message}");
+            ExitCode::SUCCESS
+        }
+        Err(message) => {
+            eprintln!("{message}");
+            ExitCode::FAILURE
+        }
+    }
+}
+
 /// The network client of installed packages that hold the `http` grant.
 #[derive(Debug)]
 struct PluginHttp;
@@ -598,6 +658,9 @@ fn main() -> ExitCode {
                 ExitCode::FAILURE
             }
         };
+    }
+    if words.first().map(String::as_str) == Some("feed") {
+        return feed_command(&words[1..]);
     }
     if words.first().map(String::as_str) == Some("secret") {
         return secret(&words[1..]);
