@@ -70,7 +70,7 @@ A native plugin runs with all of this program's rights; load only what you trust
 
 `secret set <name>` reads a credential from standard input and keeps it in the
 operating system's credential store; a connection's settings name it as
-`credential://<name>` (for example `"bearer": "credential://api/token"`), so graph files
+`credential://<name>` (for example a `bearer` setting of `credential://api/token`), so graph files
 hold no secrets. `secret check` says whether one is stored without showing it.
 
 `--grant-log` lets installed package code write log lines, `--grant-files` lets it
@@ -630,7 +630,9 @@ fn main() -> ExitCode {
                     .map(|store| Path::new(store).join("data"))
             }),
         plugin_http: Some(std::sync::Arc::new(PluginHttp)),
-        secrets: Some(std::sync::Arc::new(orange_vault::OsVault::new(VAULT_SERVICE))),
+        secrets: Some(std::sync::Arc::new(orange_vault::OsVault::new(
+            VAULT_SERVICE,
+        ))),
         ..HostOptions::default()
     };
     let (mut host, events) = match Host::with_services(options, services) {
