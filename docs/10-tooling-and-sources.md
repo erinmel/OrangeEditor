@@ -35,12 +35,29 @@ Duplication removed, with behavior unchanged:
 | `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
 | `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
 
-Left as it is, with the reason: node definitions are repeated JSON text in the audio
-and network packages (a builder exists only in the file package; converting the rest
-changes every definition at once and is its own unit); the test files of each crate
-repeat the same few graph-building helpers (sharing them needs a test-support crate);
-`orange-host/src/lib.rs` and `orange-cli/src/main.rs` are 2,000 and 1,300 lines and
-would read better split by concern.
+Second pass (2026-11-13), the three items first left for later:
+
+- `orange_sdk::Definition` builds a node's definition file text. The 22 hand-written
+  definitions of the audio, network and example packages were converted by a script
+  that rebuilt each one from the builder's rules and refused any that did not come out
+  equal to the original; all 22 were equal. The file package's own builder was
+  replaced by the same type.
+- `orange-testkit` holds the IDs, core-node fragments and waiting that seven
+  integration test files each repeated. Entry activations in tests now all use a queue
+  of eight (some used four).
+- `orange-host/src/lib.rs` went from 2,006 to 1,421 lines: package methods are in
+  `packages.rs` and variable methods in `variables.rs`. `orange-cli/src/main.rs` went
+  from 1,290 to 745 lines: `console.rs`, `credentials.rs` and `updates.rs`. Code was
+  moved, not changed; methods that became visible to the parent module are
+  `pub(super)`.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,798 passed, 0 failed, 20 ignored |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+| `orange packages`, `orange check` on the example graphs, `orange nodes` | Packages listed; the graph that needs no package checks, the one that needs its package reports the missing dependency; 140 package nodes listed |
 
 ## OAuth and streamed responses — 2026-11-12
 

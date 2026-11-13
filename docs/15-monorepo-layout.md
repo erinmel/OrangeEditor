@@ -60,6 +60,8 @@ Audio formats and Linux credentials (2026-11-12): orange-audio adds `symphonia` 
 
 MQTT (2026-11-12): orange-net depends directly on `rustls` 0.23.46 (features `ring`, `std`, `tls12`) and `webpki-roots` 1.0.11, both already in the tree for HTTPS and WSS; the MQTT client itself is first-party code with no MQTT library.
 
+Test support (2026-11-13): app/crates/orange-testkit (orange-model and serde_json) is a development dependency of orange-host, orange-net, orange-audio, orange-files and orange-native, and of nothing in a normal build.
+
 Shared sandbox (2026-11-13): app/crates/orange-sandbox has no dependency and is used by orange-files and orange-guest, which each had their own copy of the folder rules. orange-sdk gains `Listeners`, the registry of entry nodes listening to a source, used by the WebSocket, MQTT, HTTP stream and audio input sessions. orange-cli depends on `serde_json` directly.
 
 Files and vault (2026-11-12) add app/crates/orange-files (service package on orange-sdk, no third-party dependency beyond serde_json) and app/crates/orange-vault (orange-sdk and `keyring` 3.6.3, MIT OR Apache-2.0, features `apple-native`, `windows-native`, `linux-native`; no D-Bus or OpenSSL). orange-cli depends on both. orange-sdk gains `SecretStore`.
