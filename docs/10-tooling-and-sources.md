@@ -1,5 +1,25 @@
 # Tooling, environment and research register
 
+## MQTT, folder playback and large files — 2026-11-13
+
+Run against Mosquitto 2 (`eclipse-mosquitto:2` in Docker, anonymous listener):
+
+| Check | Result |
+|---|---|
+| `a_real_broker_delivers_what_the_graph_publishes` with `ORANGE_MQTT_QOS=2` and `=1` | Passed both |
+| Persistent session: a graph with `persistent`, `client_id`, `qos` 1 ran and quit; `mosquitto_pub -q 1` published while it was away; it ran again | The message was written to the graph's file on the second run |
+| Will after a killed process | The subscriber received the will |
+| Will after a normal exit | First run: the will was published, because the process ended before the session's thread sent its disconnect. Fixed (a closing session waits for it); second run: nothing published |
+
+Run from the terminal: `play-from` on the silent device with a folder holding the MP3
+and Ogg fixtures; `trigger`, then `set 1 pick 1` and `trigger`: the node continued each
+time and the second run wrote `tone.ogg`, the second file in name order. The first
+attempt showed that `bind` gave only package triggers a default activation (FR-93).
+
+Not exercised: quality of service 2 across a lost connection against a real broker
+(the packet-ID and duplicate handling is covered by unit tests of the packets only);
+a file over 64 MiB on disk; `play-from` on a real output device.
+
 ## Maintenance and small core gaps — 2026-11-12
 
 Maintenance, behaviour unchanged: `orange-net` keeps its package list in `lib.rs` and
