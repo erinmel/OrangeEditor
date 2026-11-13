@@ -126,10 +126,17 @@ of the directory are refused. `http` (`Grants::http`) gives `send(request)` for 
 the application's `HostOptions::plugin_http` client (`HttpClient`); the `orange`
 command's client follows no redirects. A read file and a response body are limited to
 the instance's transfer limit. Errors reach the guest as fixed words (`not-found`,
-`invalid-path`, `too-large`, `unavailable`, `invalid-request`, `failed`), never as
+`invalid-path`, `too-large`, `quota-exceeded`, `unavailable`, `invalid-request`,
+`not-allowed`, `failed`), never as
 operating-system or network text. Grants are given at installation
-(`--grant-files`, `--grant-http`) and stored with the package. Limits: the `http`
-grant is not restricted to named hosts; the data directory has no size quota; a
+(`--grant-files`, `--grant-http`) and stored with the package. An application can
+bound both (2026-11-13): `HostOptions::plugin_data_quota` is the most bytes each
+package's data directory may hold (a write that would pass it is `quota-exceeded`; a
+replaced file gives its bytes back) and `HostOptions::plugin_http_hosts` lists the
+hosts requests may go to, where `.example.org` allows every host under that domain
+(anything else is `not-allowed`); `orange` takes `--plugin-quota-mb` and
+`--plugin-host`. Without them there is no limit. Limits: the quota counts at most
+10,000 files; a
 request blocks its node and cannot be interrupted by cancellation, only by the
 client's timeout; there are no sockets, clocks, random numbers, environment or
 processes for components.
@@ -182,6 +189,16 @@ text cannot detect different dependency versions or features, so a plugin must b
 built with the application's lockfile; a panic in a plugin aborts the process; a
 library is never unloaded, is not loaded while the application runs, and cannot be
 removed with `Host::uninstall`; there is no manifest or grant for this tier.
+
+Types from a native plugin (2026-11-13, FR-09 first part): `ServicePackage::record(name,
+fields)` and `enumeration(name, variants)` declare `<package id>/<name>@1`; `declare`
+takes a `TypeDecl` in full, for optional fields. The host registers the types of the
+active packages when it starts and refuses to start with a declaration that is not
+valid (an unknown field type, a name that is not valid, the same name twice). Ports of
+the package's nodes can then use the type, values travel as `Value::Record` with the
+fields in declared order, and the base record and enum nodes work on them. Not
+provided: types from an installed `.orangeplug` package, codecs other than the
+structural one, schema versions beyond `@1`, and an editor description of a type.
 
 Updates for native plugin libraries (2026-11-12): `ServicePackage::update(feed, key)`
 names an update feed and an optional signing key. A feed release with `"target"` (a

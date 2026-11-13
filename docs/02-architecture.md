@@ -98,6 +98,13 @@ sixteen that faults when full; other fields the author wrote are kept. Bound nod
 the rest of the document are untouched, so binding twice gives the same text. Nodes
 inside function bodies are not bound. `orange bind` saves the result over the file,
 keeping the previous version as `.bak`, and prints the remaining diagnostics.
+Live preview (2026-11-13): `Host::preview(json, ports)` returns the values of pure
+outputs without running anything, through the compiler's `PurePreview`. The outputs
+are the ones named, or the document's `exports` when none is. An output that follows
+from constants and pure nodes has a value or the fault computing it gives, with the
+node that fails; one that depends on a variable, a trigger or an effect cannot be
+previewed and refuses the call. The host keeps one engine per registry generation, so
+results an edit did not change are reused. `orange preview` prints them.
 `orange run --watch` observes each flow and prints `FlowEvent::Variables` and
 `FlowEvent::Ports`. `bind` also rewrites the plain forms a person writes into the
 stored ones: a float literal given as a JSON number becomes its `bits`, and a duration

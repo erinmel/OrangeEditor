@@ -1,5 +1,39 @@
 # Tooling, environment and research register
 
+## Preview, plugin types and plugin limits — 2026-11-13
+
+Survey before the work: the compiler already had stream `tee`, `collect`, `next-item`
+and `for-each-item`, and a pure preview engine; every trigger family in FR-48 runs.
+What was missing was the host side of preview, types from plugins, and limits on
+granted access.
+
+Run from the terminal with `orange preview` on hand-written, bound graphs:
+
+| Graph | Asked for | Result |
+|---|---|---|
+| `add(40, 2)` feeding `multiply(_, 10)` and `divide(_, 0)` | `total sum`, `scaled product` | `42` and `420` |
+| Same | `broken quotient`, `total sum` | `fault core/DivideByZero at broken` and `42` (first attempt refused both; fixed so a fault is one output's result) |
+| Same | a port that does not exist | `ExportTarget` diagnostic naming the node and port |
+| A graph with a timer, file writes and a variable, plus a pure `add` | the `add` output | `42`; nothing ran |
+| Same | the output of `get-variable` | Refused: not a pure output |
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,810 passed, 0 failed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not exercised: the plugin limits with a real installed component and a real server
+(the test uses the access layer with a stand-in client); preview of a graph that uses
+an installed package's pure node.
+
+Left open in the core after this: streams produced by packages (the runtime can open
+a stream for an effect; the host and SDK do not offer it), types from installed
+packages, MQTT 5, HTTP/2 and gRPC, client certificates, audio streaming from disk and
+device hotplug, feed key rotation, document format migration. Panels, inspectors,
+settings pages and extracting a selection into a function need the editor.
+
 ## MQTT, folder playback and large files — 2026-11-13
 
 Run against Mosquitto 2 (`eclipse-mosquitto:2` in Docker, anonymous listener):
