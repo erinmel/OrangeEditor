@@ -32,6 +32,7 @@ what they do. While it runs, type commands on standard input:
   stop <flow>  | kill <flow>        stop gracefully, or at once
   trigger <flow> <node-id>          fire a manual entry
   reload <flow>                     read the flow's file again and apply the edit live
+  set <flow> <variable-id> <literal>  set a run variable to a JSON literal with `type` and `value`
   quit                              stop everything and exit
 
 `pack` builds a package from a directory holding `manifest.json` and the package's
@@ -72,6 +73,10 @@ The base file package is built in: a connection with adapter `org.orange.files/f
 and a `path` setting names a directory, and the file nodes read, write, list and watch
 files inside it and nowhere else.
 
+`--state <dir>` (or `state` in the store) keeps the variables a graph declares
+`persistent`: they are saved as they change and a later run starts with them. The
+files there are JSON and can be edited while nothing runs.
+
 `secret set <name>` reads a credential from standard input and keeps it in the
 operating system's credential store; a connection's settings name it as
 `credential://<name>` (for example a `bearer` setting of `credential://api/token`), so graph files
@@ -97,6 +102,7 @@ struct Arguments {
     apply: bool,
     plugins: Vec<String>,
     plugin_data: Option<String>,
+    state: Option<String>,
 }
 
 fn arguments() -> Result<Arguments, String> {
@@ -117,6 +123,7 @@ fn arguments() -> Result<Arguments, String> {
         apply: false,
         plugins: Vec::new(),
         plugin_data: None,
+        state: None,
     };
     while let Some(word) = words.next() {
         match word.as_str() {
@@ -134,6 +141,7 @@ fn arguments() -> Result<Arguments, String> {
             "--grant-log" => parsed.grants.log = true,
             "--grant-files" => parsed.grants.files = true,
             "--grant-http" => parsed.grants.http = true,
+            "--state" => parsed.state = Some(words.next().ok_or("--state needs a directory")?),
             "--plugin-data" => {
                 parsed.plugin_data = Some(words.next().ok_or("--plugin-data needs a directory")?);
             }
@@ -247,6 +255,21 @@ fn command(host: &mut Host, flows: &[(FlowId, String)], line: &str) -> bool {
                 .and_then(|word| word.parse().ok())
                 .ok_or("expected a node id")?;
             done(host.trigger(flow, node, None))
+        }),
+        Some("set") => flow(1).and_then(|(flow, _)| {
+            let variable = words
+                .get(2)
+                .and_then(|word| word.parse().ok())
+                .ok_or("expected a variable id")?;
+            // The literal is the rest of the line, spaces included.
+            let literal = line
+                .splitn(4, char::is_whitespace)
+                .nth(3)
+                .ok_or(r#"expected a literal such as {"type":"core/i64@1","value":"5"}"#)?;
+            let value = host
+                .value_from_json(literal.trim())
+                .map_err(|error| error.to_string())?;
+            done(host.set_variable(flow, variable, value))
         }),
         Some(other) => Err(format!("unknown command `{other}`")),
     };
@@ -639,6 +662,13 @@ fn main() -> ExitCode {
                     .as_ref()
                     .map(|store| Path::new(store).join("data"))
             }),
+        // Without `--state`, persistent variables live beside the stored packages.
+        state_dir: arguments.state.as_ref().map(PathBuf::from).or_else(|| {
+            arguments
+                .store
+                .as_ref()
+                .map(|store| Path::new(store).join("state"))
+        }),
         plugin_http: Some(std::sync::Arc::new(PluginHttp)),
         secrets: Some(std::sync::Arc::new(orange_vault::OsVault::new(
             VAULT_SERVICE,

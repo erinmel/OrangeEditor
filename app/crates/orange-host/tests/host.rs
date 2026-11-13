@@ -1169,3 +1169,184 @@ fn installed(host: &Host) -> impl Iterator<Item = orange_host::PackageInfo<'_>> 
     host.packages()
         .filter(|package| package.kind == orange_host::PackageKind::Installed)
 }
+
+/// `manual_graph` with `total` persistent and starting at 0, and an entry that copies
+/// each new value of `total` into `seen`.
+fn persistent_graph(graph: u32) -> String {
+    let mut saved: Json = serde_json::from_str(&manual_graph(graph)).unwrap();
+    let zero = json!({"type": I64, "value": "0"});
+    saved["variables"] = json!([
+        {"id": id(TOTAL), "name": "total", "type": I64, "scope": "run", "persistent": true,
+            "init": zero},
+        {"id": id(TOTAL + 1), "name": "seen", "type": I64, "scope": "run"}
+    ]);
+    let mut changed = core(10, "on-variable-changed");
+    changed["config"] = json!({"variable": id(TOTAL)});
+    let mut copy = core(11, "set-variable");
+    copy["config"] = json!({"variable": id(TOTAL + 1)});
+    saved["nodes"]
+        .as_array_mut()
+        .unwrap()
+        .extend([changed, copy]);
+    saved["edges"].as_array_mut().unwrap().extend([
+        edge(10, 10, "then", 11, "in"),
+        edge(11, 10, "value", 11, "value"),
+    ]);
+    to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+}
+
+#[test]
+fn persistent_variables_survive_a_restart_and_can_be_edited() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-state-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let start = || {
+        let options = HostOptions {
+            state_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        };
+        Host::new(options).unwrap().0
+    };
+    let text = persistent_graph(1);
+    let graph = empty(1).graph_id();
+    let seen: VariableId = id(TOTAL + 1).parse().unwrap();
+    let stored = |host: &Host| -> Vec<(VariableId, String)> {
+        host.stored_variables(Some(graph))
+            .unwrap()
+            .into_iter()
+            .map(|variable| {
+                (
+                    variable.id,
+                    serde_json::to_string(&variable.literal).unwrap(),
+                )
+            })
+            .collect()
+    };
+    let literal = |value: i64| -> orange_host::Literal {
+        serde_json::from_value(json!({"type": I64, "value": value.to_string()})).unwrap()
+    };
+    let as_stored = |value: i64| vec![(total(), serde_json::to_string(&literal(value)).unwrap())];
+
+    {
+        let mut host = start();
+        assert!(host.check(&text).unwrap().is_empty());
+        assert!(stored(&host).is_empty());
+        let flow = host.open(&text).unwrap();
+        host.trigger(flow, node(1), None).unwrap();
+        until("the graph's write", || {
+            read_total(&host, flow) == Some(Value::I64(7))
+        });
+        // Only the persistent variable is stored, although `seen` changed too.
+        until("the value to be stored", || stored(&host) == as_stored(7));
+    }
+    {
+        let mut host = start();
+        let flow = host.open(&text).unwrap();
+        // The flow starts with the stored value; nothing triggered it.
+        assert_eq!(read_total(&host, flow), Some(Value::I64(7)));
+
+        // An edit from outside is seen by the graph, fires its trigger and is stored.
+        host.set_variable(flow, total(), Value::I64(40)).unwrap();
+        assert_eq!(read_total(&host, flow), Some(Value::I64(40)));
+        until("the change trigger", || {
+            host.inspect(flow, move |run| run.variable(seen).cloned())
+                .unwrap()
+                == Some(Value::I64(40))
+        });
+        until("the edit to be stored", || stored(&host) == as_stored(40));
+        // A value of another type, or an unknown variable, changes nothing.
+        assert!(matches!(
+            host.set_variable(flow, total(), Value::Bool(true)),
+            Err(HostError::Variable(_))
+        ));
+        assert!(matches!(
+            host.set_variable(flow, id(999).parse().unwrap(), Value::I64(1)),
+            Err(HostError::Variable(_))
+        ));
+        assert_eq!(read_total(&host, flow), Some(Value::I64(40)));
+        host.close(flow).unwrap();
+
+        // With no flow running, the stored value itself is edited.
+        host.store_variable(Some(graph), total(), literal(99))
+            .unwrap();
+        let text_literal: orange_host::Literal =
+            serde_json::from_value(json!({"type": "core/string@1", "value": "x"})).unwrap();
+        assert!(matches!(
+            host.store_variable(Some(graph), total(), text_literal),
+            Err(HostError::State(_))
+        ));
+        let flow = host.open(&text).unwrap();
+        assert_eq!(read_total(&host, flow), Some(Value::I64(99)));
+    }
+    // A variable that changed type starts from its initial value again.
+    let mut host = start();
+    let retyped = text.replace(
+        &format!(r#""name":"total","type":"{I64}""#),
+        r#""name":"total","type":"core/u64@1""#,
+    );
+    if retyped != text {
+        // The set node no longer type-checks; the host refuses, and nothing is lost.
+        assert!(host.open(&retyped).is_err());
+        assert_eq!(stored(&host), as_stored(99));
+    }
+    // A host without a state directory keeps nothing.
+    let (mut plain, _events) = Host::new(HostOptions::default()).unwrap();
+    let flow = plain.open(&text).unwrap();
+    assert_eq!(read_total(&plain, flow), Some(Value::I64(0)));
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}
+
+#[test]
+fn persistent_shared_variables_are_stored_and_edited_through_the_host() {
+    let directory = std::env::temp_dir().join(format!(
+        "orange-host-shared-state-{}-{:?}",
+        std::process::id(),
+        std::thread::current().id()
+    ));
+    let _ = std::fs::remove_dir_all(&directory);
+    let counter: VariableId = id(900).parse().unwrap();
+    let declaration = |persistent: bool| {
+        let mut saved: Json = serde_json::from_str(&counting_graph(9)).unwrap();
+        saved["variables"][1]["persistent"] = json!(persistent);
+        to_json(&from_json(&saved.to_string()).unwrap()).unwrap()
+    };
+    let start = || {
+        let options = HostOptions {
+            state_dir: Some(directory.clone()),
+            ..HostOptions::default()
+        };
+        let mut host = Host::new(options).unwrap().0;
+        host.share_variables(&declaration(true)).unwrap();
+        host
+    };
+    {
+        let mut host = start();
+        assert_eq!(host.shared_variable(counter), Some(Value::I64(0)));
+        let flow = host.open(&counting_graph(1)).unwrap();
+        host.trigger(flow, node(1), Some(Value::I64(5))).unwrap();
+        until("the flow's write", || {
+            host.shared_variable(counter) == Some(Value::I64(5))
+        });
+        until("the write to be stored", || {
+            host.stored_variables(None).unwrap().len() == 1
+        });
+        // An edit from outside reaches the running flow.
+        host.set_shared_variable(counter, &Value::I64(100)).unwrap();
+        host.trigger(flow, node(3), None).unwrap();
+        until("the flow to read the edit", || {
+            read_total(&host, flow) == Some(Value::I64(100))
+        });
+        assert!(matches!(
+            host.set_shared_variable(counter, &Value::Bool(false)),
+            Err(HostError::Variable(_))
+        ));
+    }
+    let host = start();
+    assert_eq!(host.shared_variable(counter), Some(Value::I64(100)));
+    drop(host);
+    let _ = std::fs::remove_dir_all(&directory);
+}

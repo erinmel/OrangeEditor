@@ -17,9 +17,10 @@ mod flow;
 mod graphs;
 mod persist;
 mod services;
+mod state;
 
 use effects::Pool;
-use flow::{Context, Query, Shared, Sink};
+use flow::{Context, Keep, Query, Shared, Sink};
 use graphs::{GraphNode, Graphs};
 use orange_bundled::MathPackage;
 use orange_compiler::{CompileError, CompileOptions, compile_control_with_effects};
@@ -57,6 +58,7 @@ pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
 pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
+pub use orange_model::document::literal::Literal;
 pub use orange_model::id::{ConnectionId, PortKey};
 pub use orange_model::id::{EventDeclId, GraphId, NodeId, VariableId};
 pub use orange_packages::{
@@ -71,6 +73,7 @@ pub use orange_sdk::{
     ServiceSource, Session, TARGET,
 };
 pub use orange_sdk::{SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
+pub use state::StoredVariable;
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -157,6 +160,11 @@ pub struct HostOptions {
     /// Where connection settings' `credential://<name>` references are read from.
     /// `None` refuses a connection that names a credential.
     pub secrets: Option<Arc<dyn SecretStore>>,
+    /// Where variables declared `persistent` are stored. With a directory, a flow's
+    /// persistent run variables are saved as they change and a flow opened later on
+    /// the same graph starts with them; persistent shared variables likewise. `None`
+    /// keeps values for the life of each flow only.
+    pub state_dir: Option<PathBuf>,
 }
 impl Default for HostOptions {
     fn default() -> Self {
@@ -174,6 +182,7 @@ impl Default for HostOptions {
             plugin_data_dir: None,
             plugin_http: None,
             secrets: None,
+            state_dir: None,
         }
     }
 }
@@ -185,6 +194,10 @@ pub enum HostError {
     Start(String),
     #[error("shared variables: {0}")]
     Workspace(String),
+    #[error("the variable could not be set: {0}")]
+    Variable(String),
+    #[error("stored variables: {0}")]
+    State(String),
     #[error("installed packages could not be stored: {0}")]
     Storage(String),
     #[error("the package archive was refused: {0}")]
@@ -1296,30 +1309,174 @@ impl Host {
         Ok(())
     }
 
+    /// The persistent run variables of `document` and where this host stores them.
+    fn keep(&self, document: &GraphDocument, registry: &Arc<RegistrySnapshot>) -> Option<Keep> {
+        let variables = state::kept(document, VarScope::Run);
+        let directory = self.options.state_dir.clone()?;
+        (!variables.is_empty()).then(|| Keep {
+            directory,
+            name: document.graph_id().to_string(),
+            variables,
+            registry: Arc::clone(registry),
+        })
+    }
+
+    /// Sets a run variable of a flow from outside its graph, as an editor does when
+    /// the user changes a value. The value must have the variable's declared type.
+    /// The graph sees it at its next read, a trigger on the variable fires as for a
+    /// write the graph made, and a persistent variable is stored. It waits for the
+    /// flow's thread to apply the write, between two turns.
+    pub fn set_variable(
+        &self,
+        flow: FlowId,
+        id: VariableId,
+        value: Value,
+    ) -> Result<(), HostError> {
+        let flow = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
+        let (answer, result) = channel();
+        let query: Query = Box::new(move |run| {
+            let _ = answer.send(run.set_variable(id, value));
+        });
+        flow.shared
+            .queries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .as_mut()
+            .ok_or(HostError::FlowEnded)?
+            .push_back(query);
+        flow.wake();
+        result
+            .recv()
+            .map_err(|_| HostError::FlowEnded)?
+            .map_err(|_| {
+                HostError::Variable(
+                    "the flow has no such run variable, the value is not of its type, or the flow has ended"
+                        .into(),
+                )
+            })
+    }
+
+    /// The value a document literal denotes, such as one a person typed or a stored
+    /// variable holds: what [`set_variable`](Self::set_variable) takes.
+    pub fn value_of(&self, literal: &Literal) -> Result<Value, HostError> {
+        orange_model::value::literal_codec::decode(literal, self.store.current().types().as_ref())
+            .map_err(|error| HostError::Variable(error.to_string()))
+    }
+
+    /// [`value_of`](Self::value_of) for a literal written as JSON text, such as
+    /// `{"type": "core/i64@1", "value": "5"}`.
+    pub fn value_from_json(&self, json: &str) -> Result<Value, HostError> {
+        let literal: Literal = serde_json::from_str(json)
+            .map_err(|_| HostError::Variable("the text is not a literal".into()))?;
+        self.value_of(&literal)
+    }
+
+    /// Sets a shared variable from outside any graph. Every flow sees the value at its
+    /// next turn, and a persistent one is stored.
+    pub fn set_shared_variable(&self, id: VariableId, value: &Value) -> Result<(), HostError> {
+        {
+            let mut workspace = self
+                .space
+                .workspace
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner);
+            let shared = workspace
+                .as_mut()
+                .ok_or_else(|| HostError::Variable("no shared variables are declared".into()))?;
+            let _ = shared
+                .set(id, value)
+                .map_err(|error| HostError::Variable(error.to_string()))?;
+            let _ = self.space.version.fetch_add(1, Ordering::AcqRel);
+        }
+        self.space.wake_all();
+        self.space.store().map_err(HostError::State)
+    }
+
+    /// The variables stored for graph `graph`, or with `None` the stored shared
+    /// variables: what a flow opened now would start with, whether or not one is
+    /// running. Empty without [`HostOptions::state_dir`].
+    pub fn stored_variables(
+        &self,
+        graph: Option<GraphId>,
+    ) -> Result<Vec<StoredVariable>, HostError> {
+        let Some(directory) = &self.options.state_dir else {
+            return Ok(Vec::new());
+        };
+        let name = graph.map_or_else(|| state::SHARED.to_owned(), |graph| graph.to_string());
+        state::load(directory, &name).map_err(HostError::State)
+    }
+
+    /// Changes one stored variable of graph `graph` (or, with `None`, a stored shared
+    /// variable) while nothing uses it: the value a flow opened later starts with.
+    /// `value` must be a literal of the type the variable was stored with. For a
+    /// running flow use [`set_variable`](Self::set_variable), which also stores it.
+    pub fn store_variable(
+        &self,
+        graph: Option<GraphId>,
+        id: VariableId,
+        value: Literal,
+    ) -> Result<(), HostError> {
+        let directory = self
+            .options
+            .state_dir
+            .as_ref()
+            .ok_or_else(|| HostError::State("the host has no state directory".into()))?;
+        let name = graph.map_or_else(|| state::SHARED.to_owned(), |graph| graph.to_string());
+        let mut stored = state::load(directory, &name).map_err(HostError::State)?;
+        let entry = stored
+            .iter_mut()
+            .find(|variable| variable.id == id)
+            .ok_or_else(|| HostError::State("no such variable is stored".into()))?;
+        if entry.literal.ty != value.ty
+            || orange_model::value::literal_codec::decode(
+                &value,
+                self.store.current().types().as_ref(),
+            )
+            .is_err()
+        {
+            return Err(HostError::State(
+                "the value is not a literal of the stored type".into(),
+            ));
+        }
+        entry.literal = value;
+        state::save(directory, &name, &stored).map_err(HostError::State)
+    }
+
     /// Validates, compiles and starts a document as a new flow on its own thread.
     pub fn open(&mut self, json: &str) -> Result<FlowId, HostError> {
         let prepared = self.prepare(json, None)?;
+        let keep = self.keep(&prepared.document, &prepared.registry);
+        // Stored values that no longer fit the document are left out; a file that
+        // cannot be read refuses the flow rather than silently starting it empty.
+        let mut values = BTreeMap::new();
+        if let Some(keep) = &keep {
+            let stored = state::load(&keep.directory, &keep.name).map_err(HostError::State)?;
+            let restored = state::restore(&stored, &keep.variables, keep.registry.types());
+            values.extend(restored.into_iter().map(|(id, value)| (id, Some(value))));
+        }
         let run = if flow::uses_space(&prepared.plan) {
             let snapshot = self.space.snapshot().ok_or_else(|| {
                 HostError::Workspace(
                     "the document uses shared variables and none are declared".into(),
                 )
             })?;
-            Run::start_in_workspace(
+            Run::start_in_workspace_with_variables(
                 Arc::clone(&prepared.plan),
                 &prepared.document,
                 &prepared.registry,
                 0,
                 self.options.run.clone(),
                 &snapshot,
+                &values,
             )?
         } else {
-            Run::start(
+            Run::start_with_variables(
                 Arc::clone(&prepared.plan),
                 &prepared.document,
                 &prepared.registry,
                 0,
                 self.options.run.clone(),
+                &values,
             )?
         };
 
@@ -1342,6 +1499,7 @@ impl Host {
             swap: Mutex::new(None),
         });
         let context = Context {
+            keep,
             id,
             shared: Arc::clone(&shared),
             sink: self.sink.clone(),
@@ -1414,8 +1572,10 @@ impl Host {
                 "the edit belongs to another graph".into(),
             ));
         }
+        let keep = self.keep(&prepared.document, &prepared.registry);
         let (reply, answer) = channel();
         let swap = flow::Swap {
+            keep,
             plan: prepared.plan,
             document: prepared.document,
             registry: prepared.registry,
@@ -1562,6 +1722,30 @@ impl Host {
             WorkspaceLimits::default(),
         )
         .map_err(|error| HostError::Workspace(error.to_string()))?;
+        let mut created = created;
+        // Persistent shared variables take their stored values, where those still fit.
+        let kept = state::kept(&document, VarScope::Workspace);
+        if let Some(directory) = self.options.state_dir.clone()
+            && !kept.is_empty()
+        {
+            let registry = Arc::clone(self.store.current());
+            let stored = state::load(&directory, state::SHARED).map_err(HostError::State)?;
+            for (id, value) in state::restore(&stored, &kept, registry.types()) {
+                let _ = created
+                    .set(id, &value)
+                    .map_err(|error| HostError::Workspace(error.to_string()))?;
+            }
+            *self
+                .space
+                .keep
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner) = Some(Keep {
+                directory,
+                name: state::SHARED.to_owned(),
+                variables: kept,
+                registry,
+            });
+        }
         *workspace = Some(created);
         self.shared_variables = document
             .variables()
@@ -1630,7 +1814,7 @@ impl Host {
         let flow = self.flows.get(&flow).ok_or(HostError::UnknownFlow)?;
         let (answer, result) = channel();
         let query: Query = Box::new(move |run| {
-            let _ = answer.send(read(run));
+            let _ = answer.send(read(&*run));
         });
         flow.shared
             .queries
