@@ -6,12 +6,15 @@
 //! keeps the connection alive, reconnects with backoff and subscribes again. Nodes
 //! never touch the socket: publishing queues a message and returns.
 //!
-//! Quality of service 0 and 1 are supported. With 1, a message stays queued until the
-//! broker acknowledges it and is sent again, marked as a duplicate, after a reconnect;
-//! messages received with 1 are acknowledged once they have been handed to the
-//! listening entries. Each connection starts a clean session, so a broker keeps
-//! nothing for it while it is away. MQTT 5, quality of service 2, wills and
-//! persistent sessions are not provided.
+//! Quality of service 0, 1 and 2 are supported. With 1 or 2, a message stays held until
+//! the broker has finished its exchange and is sent again, marked as a duplicate and
+//! with the same packet ID, after a reconnect; messages received with 1 are
+//! acknowledged once they have been handed to the listening entries, and one received
+//! with 2 is handed over once however often the broker repeats it. A connection starts
+//! a clean session unless it is `persistent`, in which case the broker keeps its
+//! subscriptions and the messages it missed while away. A `will` is a message the
+//! broker publishes if the connection is lost without saying goodbye. MQTT 5 is not
+//! provided.
 use orange_sdk::{
     Call, ConnectionAdapter, Definition, Emitter, KernelFault, ListRepr, Listeners, ServiceNode,
     ServiceSource, Session, Value,
@@ -39,6 +42,8 @@ const POLL: Duration = Duration::from_millis(10);
 const FIRST_RETRY: Duration = Duration::from_millis(250);
 const MAX_RETRY: Duration = Duration::from_secs(5);
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Longest a closing session waits for its disconnect to be sent.
+const GOODBYE: Duration = Duration::from_millis(500);
 
 const NO_SESSION: KernelFault = fault(
     "org.orange.net/Connection",
@@ -88,7 +93,10 @@ fn connect_packet(settings: &Settings) -> Vec<u8> {
     let mut body = Vec::new();
     text(&mut body, b"MQTT");
     body.push(4);
-    let mut flags = 0x02;
+    let mut flags = if settings.persistent { 0 } else { 0x02 };
+    if let Some(will) = &settings.will {
+        flags |= 0x04 | (settings.qos << 3) | (u8::from(will.retain) << 5);
+    }
     if settings.username.is_some() {
         flags |= 0x80;
     }
@@ -98,6 +106,10 @@ fn connect_packet(settings: &Settings) -> Vec<u8> {
     body.push(flags);
     body.extend_from_slice(&settings.keep_alive.to_be_bytes());
     text(&mut body, settings.client_id.as_bytes());
+    if let Some(will) = &settings.will {
+        text(&mut body, will.topic.as_bytes());
+        text(&mut body, &will.payload);
+    }
     if let Some(username) = &settings.username {
         text(&mut body, username.as_bytes());
     }
@@ -161,20 +173,29 @@ fn parse(buffer: &[u8]) -> Result<Option<Packet<'_>>, ()> {
     }
 }
 
-/// A received PUBLISH: topic, payload, and the packet ID to acknowledge.
-fn parse_publish(first: u8, body: &[u8]) -> Option<(&str, &[u8], Option<u16>)> {
+/// A received PUBLISH: topic, payload, and with quality of service 1 or 2 the packet
+/// ID to answer, with that quality.
+type Publish<'a> = (&'a str, &'a [u8], Option<(u16, u8)>);
+
+fn parse_publish(first: u8, body: &[u8]) -> Option<Publish<'_>> {
     let qos = (first >> 1) & 3;
     let length = usize::from(u16::from_be_bytes([*body.first()?, *body.get(1)?]));
     let topic = std::str::from_utf8(body.get(2..2 + length)?).ok()?;
     let rest = body.get(2 + length..)?;
     match qos {
         0 => Some((topic, rest, None)),
-        1 => {
+        1 | 2 => {
             let id = u16::from_be_bytes([*rest.first()?, *rest.get(1)?]);
-            Some((topic, rest.get(2..)?, Some(id)))
+            Some((topic, rest.get(2..)?, Some((id, qos))))
         }
         _ => None,
     }
+}
+
+/// A packet that carries only a packet ID: PUBACK, PUBREC, PUBREL and PUBCOMP.
+fn answer(first: u8, id: u16) -> [u8; 4] {
+    let [high, low] = id.to_be_bytes();
+    [first, 2, high, low]
 }
 
 // ---- connection ----------------------------------------------------------------
@@ -264,7 +285,36 @@ struct Settings {
     keep_alive: u16,
     qos: u8,
     topics: Vec<String>,
+    /// The broker keeps the session between connections.
+    persistent: bool,
+    /// Published by the broker if the connection is lost.
+    will: Option<Outgoing>,
 }
+
+/// What a session and its broker still owe each other, kept across reconnects.
+#[derive(Default)]
+struct Flight {
+    /// Published with quality of service 1 or 2 and not finished: the packet ID, the
+    /// message, and whether the broker has confirmed receiving it (only with 2, where
+    /// the release is then still to be completed).
+    sent: VecDeque<(u16, Outgoing, bool)>,
+    /// Packet IDs of messages received with quality of service 2 and already handed
+    /// to the entries, until the broker releases them.
+    received: VecDeque<u16>,
+    last_id: u16,
+}
+impl Flight {
+    fn new_id(&mut self) -> u16 {
+        loop {
+            self.last_id = self.last_id.checked_add(1).unwrap_or(1);
+            if !self.sent.iter().any(|(used, ..)| *used == self.last_id) {
+                break self.last_id;
+            }
+        }
+    }
+}
+/// Most received packet IDs remembered; a broker sends far fewer at once.
+const MAX_RECEIVED: usize = 1024;
 
 struct Shared {
     settings: Settings,
@@ -273,6 +323,8 @@ struct Shared {
     listeners: Listeners<bool>,
     started: AtomicBool,
     stop: AtomicBool,
+    /// Set when the I/O thread has ended.
+    ended: AtomicBool,
 }
 /// The user name and password are left out.
 impl std::fmt::Debug for Shared {
@@ -313,10 +365,9 @@ fn send(stream: &mut Stream, bytes: &[u8]) -> bool {
         .is_ok()
 }
 
-/// Serves one established connection until it fails or the session ends. Messages
-/// published with quality of service 1 and not yet acknowledged are put back at the
-/// front of the queue, to be sent again as duplicates.
-fn serve(shared: &Shared, stream: &mut Stream, resend: &mut VecDeque<Outgoing>) {
+/// Serves one established connection until it fails or the session ends. What is
+/// not finished stays in `flight` for the next connection.
+fn serve(shared: &Shared, stream: &mut Stream, flight: &mut Flight) {
     let settings = &shared.settings;
     if !send(stream, &connect_packet(settings)) {
         return;
@@ -324,51 +375,30 @@ fn serve(shared: &Shared, stream: &mut Stream, resend: &mut VecDeque<Outgoing>) 
     let mut buffer: Vec<u8> = Vec::new();
     let mut chunk = vec![0u8; 16 * 1024];
     let mut connected = false;
-    let mut next_id: u16 = 1;
-    // Sent with quality of service 1 and waiting for the broker's acknowledgement.
-    let mut inflight: VecDeque<(u16, Outgoing)> = VecDeque::new();
     let opened = Instant::now();
     let mut last_sent = Instant::now();
     let mut last_heard = Instant::now();
     let keep_alive = Duration::from_secs(u64::from(settings.keep_alive.max(1)));
-    let mut new_id = |inflight: &VecDeque<(u16, Outgoing)>| loop {
-        let id = next_id;
-        next_id = next_id.checked_add(1).unwrap_or(1);
-        if !inflight.iter().any(|(used, _)| *used == id) {
-            break id;
-        }
-    };
     let mut ok = true;
     while ok && !shared.stopped() {
         if connected {
-            // Unacknowledged messages of the previous connection go first.
-            while inflight.len() < 16 {
-                let (message, duplicate) = match resend.pop_front() {
-                    Some(message) => (message, true),
-                    None => {
-                        let next = shared
-                            .outgoing
-                            .lock()
-                            .unwrap_or_else(PoisonError::into_inner)
-                            .pop_front();
-                        match next {
-                            Some(message) => (message, false),
-                            None => break,
-                        }
-                    }
+            while flight.sent.len() < 16 {
+                let mut outgoing = shared
+                    .outgoing
+                    .lock()
+                    .unwrap_or_else(PoisonError::into_inner);
+                let Some(message) = outgoing.pop_front() else {
+                    break;
                 };
-                let id = new_id(&inflight);
-                if !send(
-                    stream,
-                    &publish_packet(&message, settings.qos, id, duplicate),
-                ) {
-                    resend.push_front(message);
+                let id = flight.new_id();
+                if !send(stream, &publish_packet(&message, settings.qos, id, false)) {
+                    outgoing.push_front(message);
                     ok = false;
                     break;
                 }
                 last_sent = Instant::now();
                 if settings.qos > 0 {
-                    inflight.push_back((id, message));
+                    flight.sent.push_back((id, message, false));
                 }
             }
             if ok && last_sent.elapsed() >= keep_alive / 2 {
@@ -399,40 +429,80 @@ fn serve(shared: &Shared, stream: &mut Stream, resend: &mut VecDeque<Outgoing>) 
                 }
             };
             last_heard = Instant::now();
-            match first >> 4 {
+            let id = match body {
+                [high, low] => Some(u16::from_be_bytes([*high, *low])),
+                _ => None,
+            };
+            match (first >> 4, id) {
                 // CONNACK: a return code other than 0 is a refusal.
-                2 => {
+                (2, _) => {
                     if body.get(1) != Some(&0) {
                         ok = false;
                     } else {
                         connected = true;
+                        if body.first().is_none_or(|flags| flags & 1 == 0) {
+                            // The broker holds nothing of an earlier connection: an
+                            // exchange it had confirmed cannot be completed any more.
+                            flight.received.clear();
+                            flight.sent.retain(|(_, _, confirmed)| !confirmed);
+                        }
+                        // Subscribing comes first, so a message that returns to
+                        // this connection finds its subscription.
                         if !settings.topics.is_empty() {
-                            let id = new_id(&inflight);
+                            let id = flight.new_id();
                             ok = send(
                                 stream,
                                 &subscribe_packet(id, &settings.topics, settings.qos),
                             );
-                            last_sent = Instant::now();
                         }
+                        // Then what the last connection left unfinished.
+                        for (id, message, confirmed) in &flight.sent {
+                            ok = ok
+                                && if *confirmed {
+                                    send(stream, &answer(0x62, *id))
+                                } else {
+                                    send(stream, &publish_packet(message, settings.qos, *id, true))
+                                };
+                        }
+                        last_sent = Instant::now();
                     }
                 }
-                3 => match parse_publish(first, body) {
-                    Some((topic, payload, id)) => {
+                (3, _) => match parse_publish(first, body) {
+                    Some((topic, payload, None)) => shared.deliver(topic, payload),
+                    Some((topic, payload, Some((id, 1)))) => {
                         shared.deliver(topic, payload);
-                        if let Some(id) = id {
-                            let [high, low] = id.to_be_bytes();
-                            ok = send(stream, &[0x40, 2, high, low]);
-                            last_sent = Instant::now();
+                        ok = send(stream, &answer(0x40, id));
+                        last_sent = Instant::now();
+                    }
+                    Some((topic, payload, Some((id, _)))) => {
+                        // A repeat of a message already handed over is only confirmed.
+                        if !flight.received.contains(&id) {
+                            shared.deliver(topic, payload);
+                            if flight.received.len() >= MAX_RECEIVED {
+                                let _ = flight.received.pop_front();
+                            }
+                            flight.received.push_back(id);
                         }
+                        ok = send(stream, &answer(0x50, id));
+                        last_sent = Instant::now();
                     }
                     None => ok = false,
                 },
-                // PUBACK
-                4 => {
-                    if let [high, low] = body {
-                        let id = u16::from_be_bytes([*high, *low]);
-                        inflight.retain(|(sent, _)| *sent != id);
+                // PUBACK and PUBCOMP finish a message this side published.
+                (4 | 7, Some(id)) => flight.sent.retain(|(sent, ..)| *sent != id),
+                // PUBREC: the broker has the message; release it.
+                (5, Some(id)) => {
+                    if let Some(entry) = flight.sent.iter_mut().find(|(sent, ..)| *sent == id) {
+                        entry.2 = true;
                     }
+                    ok = send(stream, &answer(0x62, id));
+                    last_sent = Instant::now();
+                }
+                // PUBREL: the broker will not repeat the message again.
+                (6, Some(id)) => {
+                    flight.received.retain(|received| *received != id);
+                    ok = send(stream, &answer(0x70, id));
+                    last_sent = Instant::now();
                 }
                 // SUBACK, PINGRESP and anything else need no answer.
                 _ => {}
@@ -446,22 +516,22 @@ fn serve(shared: &Shared, stream: &mut Stream, resend: &mut VecDeque<Outgoing>) 
     if shared.stopped() {
         let _ = send(stream, &[0xe0, 0]);
     }
-    // Oldest first, ahead of anything already waiting to be sent again.
-    for (_, message) in inflight.into_iter().rev() {
-        resend.push_front(message);
-    }
 }
 
 fn run(shared: &Shared) {
     while !shared.started.load(Ordering::Acquire) && !shared.stopped() {
         thread::sleep(POLL);
     }
+    if shared.stopped() {
+        shared.ended.store(true, Ordering::Release);
+        return;
+    }
     let mut retry = FIRST_RETRY;
-    let mut resend = VecDeque::new();
+    let mut flight = Flight::default();
     while !shared.stopped() {
         if let Some(mut stream) = open(&shared.settings) {
             let before = Instant::now();
-            serve(shared, &mut stream, &mut resend);
+            serve(shared, &mut stream, &mut flight);
             // A connection that lasted is not a failing one.
             if before.elapsed() > MAX_RETRY {
                 retry = FIRST_RETRY;
@@ -474,6 +544,7 @@ fn run(shared: &Shared) {
         }
         retry = (retry * 2).min(MAX_RETRY);
     }
+    shared.ended.store(true, Ordering::Release);
 }
 
 /// An MQTT connection. Dropping the last reference disconnects.
@@ -490,6 +561,12 @@ impl Session for MqttSession {
 impl Drop for MqttSession {
     fn drop(&mut self) {
         self.0.stop.store(true, Ordering::Relaxed);
+        // Give the I/O thread a moment to say goodbye: a broker that only sees the
+        // connection close publishes the will, as if the client had been lost.
+        let asked = Instant::now();
+        while !self.0.ended.load(Ordering::Acquire) && asked.elapsed() < GOODBYE {
+            thread::sleep(POLL);
+        }
     }
 }
 
@@ -543,7 +620,39 @@ impl ConnectionAdapter for MqttAdapter {
         if password.is_some() && username.is_none() {
             return Err("`password` needs `username`".into());
         }
-        let client_id = match short("client_id")? {
+        let given_id = short("client_id")?;
+        let flag = |name: &str, from: &Map<String, Json>| match from.get(name) {
+            None => Ok(false),
+            Some(Json::Bool(value)) => Ok(*value),
+            Some(_) => Err(format!("`{name}` must be true or false")),
+        };
+        let persistent = flag("persistent", settings)?;
+        if persistent && given_id.is_none() {
+            // A broker finds a kept session by the client's ID.
+            return Err("`persistent` needs `client_id`".into());
+        }
+        let will = match settings.get("will") {
+            None => None,
+            Some(Json::Object(will)) => {
+                let topic = will
+                    .get("topic")
+                    .and_then(Json::as_str)
+                    .filter(|topic| is_topic(topic, false))
+                    .ok_or("`will.topic` must be a topic")?;
+                let message = match will.get("message") {
+                    None => "",
+                    Some(Json::String(text)) if text.len() <= usize::from(u16::MAX) => text,
+                    Some(_) => return Err("`will.message` must be text".into()),
+                };
+                Some(Outgoing {
+                    topic: topic.to_owned(),
+                    payload: message.as_bytes().to_vec(),
+                    retain: flag("retain", will)?,
+                })
+            }
+            Some(_) => return Err("`will` must be an object with `topic` and `message`".into()),
+        };
+        let client_id = match given_id {
             Some(id) => id,
             None => format!(
                 "orange-{}-{}",
@@ -567,7 +676,7 @@ impl ConnectionAdapter for MqttAdapter {
                 }),
         };
         let keep_alive = number("keep_alive_s", 30, 5..=3600)?;
-        let qos = number("qos", 0, 0..=1)?;
+        let qos = number("qos", 0, 0..=2)?;
         let topics = match settings.get("topics") {
             None => Vec::new(),
             Some(Json::Array(items)) if items.len() <= MAX_TOPICS => items
@@ -608,11 +717,14 @@ impl ConnectionAdapter for MqttAdapter {
                 keep_alive: u16::try_from(keep_alive).unwrap_or(30),
                 qos: u8::try_from(qos).unwrap_or(0),
                 topics,
+                persistent,
+                will,
             },
             outgoing: Mutex::new(VecDeque::new()),
             listeners: Listeners::new(),
             started: AtomicBool::new(false),
             stop: AtomicBool::new(false),
+            ended: AtomicBool::new(false),
         });
         let io = Arc::clone(&shared);
         thread::Builder::new()
@@ -744,6 +856,8 @@ mod tests {
             keep_alive: 60,
             qos: 1,
             topics: vec!["a/b".into()],
+            persistent: false,
+            will: None,
         }
     }
 
@@ -758,6 +872,25 @@ mod tests {
                 1, b'p'
             ]
         );
+        // A kept session with a retained will: no clean-session flag, the will flag
+        // with its quality of service and retain, and the will after the client ID.
+        let with_will = Settings {
+            persistent: true,
+            will: Some(Outgoing {
+                topic: "w".into(),
+                payload: b"x".to_vec(),
+                retain: true,
+            }),
+            ..settings()
+        };
+        assert_eq!(
+            connect_packet(&with_will),
+            [
+                0x10, 25, 0, 4, b'M', b'Q', b'T', b'T', 4, 0xec, 0, 60, 0, 1, b'c', 0, 1, b'w', 0,
+                1, b'x', 0, 1, b'u', 0, 1, b'p'
+            ]
+        );
+        assert_eq!(answer(0x62, 513), [0x62, 2, 2, 1]);
         assert_eq!(
             subscribe_packet(10, &["a/b".into()], 1),
             [0x82, 8, 0, 10, 0, 3, b'a', b'/', b'b', 1]
@@ -796,10 +929,15 @@ mod tests {
         assert_eq!(length, bytes.len());
         assert_eq!(
             parse_publish(first, body),
-            Some(("t", &[9u8; 300][..], Some(513)))
+            Some(("t", &[9u8; 300][..], Some((513, 1))))
         );
-        // Quality of service 2 and an oversized or malformed length are refused.
-        assert_eq!(parse_publish(0x34, body), None);
+        assert_eq!(
+            parse_publish(0x34, body),
+            Some(("t", &[9u8; 300][..], Some((513, 2))))
+        );
+        // A quality of service that does not exist and an oversized or malformed
+        // length are refused.
+        assert_eq!(parse_publish(0x36, body), None);
         assert_eq!(parse(&[0x30, 0xff, 0xff, 0xff, 0xff, 0x01]), Err(()));
         assert_eq!(parse(&[0x30, 0x80, 0x80, 0x80, 0x08]), Err(()));
     }
@@ -815,12 +953,24 @@ mod tests {
             .is_ok()
         );
         assert!(open(json(r#"{"url": "mqtts://broker.example"}"#)).is_ok());
+        assert!(
+            open(json(
+                r#"{"url": "mqtt://127.0.0.1:9", "qos": 2, "persistent": true, "client_id": "c",
+                    "will": {"topic": "state/c", "message": "gone", "retain": true}}"#
+            ))
+            .is_ok()
+        );
         for bad in [
             r#"{}"#,
             r#"{"url": "http://broker"}"#,
             r#"{"url": "mqtt://"}"#,
             r#"{"url": "mqtt://host:notaport"}"#,
-            r#"{"url": "mqtt://host", "qos": 2}"#,
+            r#"{"url": "mqtt://host", "qos": 3}"#,
+            r#"{"url": "mqtt://host", "persistent": true}"#,
+            r#"{"url": "mqtt://host", "persistent": "yes", "client_id": "c"}"#,
+            r#"{"url": "mqtt://host", "will": "gone"}"#,
+            r#"{"url": "mqtt://host", "will": {"topic": "a/#"}}"#,
+            r#"{"url": "mqtt://host", "will": {"topic": "a", "message": 1}}"#,
             r#"{"url": "mqtt://host", "password": "p"}"#,
             r#"{"url": "mqtt://host", "topics": [""]}"#,
             r#"{"url": "mqtt://host", "topics": "a"}"#,

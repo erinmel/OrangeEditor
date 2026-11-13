@@ -381,6 +381,13 @@ fn a_real_broker_delivers_what_the_graph_publishes() {
     let mut saved: Json = serde_json::from_str(&document(&host, &url)).unwrap();
     let settings = &mut saved["connections"][0]["settings"];
     settings["client_id"] = json!("orange-real-broker-test");
+    // ORANGE_MQTT_QOS chooses the quality of service; the document's is 1.
+    if let Some(qos) = std::env::var("ORANGE_MQTT_QOS")
+        .ok()
+        .and_then(|text| text.parse::<u8>().ok())
+    {
+        settings["qos"] = json!(qos);
+    }
     // ORANGE_MQTT_CA names the broker's certificate authority for an mqtts:// URL.
     if let Ok(ca) = std::env::var("ORANGE_MQTT_CA") {
         settings["ca_file"] = json!(ca);
