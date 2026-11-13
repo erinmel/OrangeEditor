@@ -7,8 +7,8 @@
 //! listener is fired through its emitter, so a slow or paused flow cannot stall the
 //! socket and the socket cannot stall a flow.
 use orange_sdk::{
-    Call, ConnectionAdapter, Emitter, KernelFault, Listeners, ServiceNode, ServiceSource, Session,
-    Value,
+    Call, ConnectionAdapter, Definition, Emitter, KernelFault, Listeners, ServiceNode,
+    ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -284,66 +284,38 @@ impl ServiceSource for WsMessage {
     }
 }
 
-pub(crate) const WS_SEND_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/ws-send",
-  "label": {"key": "org.orange.net/ws-send-label", "fallback": "Send WebSocket message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "text", "direction": "input", "kind": "data", "type": "core/string@1"}
-  ]
-}"#;
+pub(crate) fn ws_send_definition() -> String {
+    Definition::node(crate::PACKAGE, "ws-send", "Send WebSocket message")
+        .category("network", "Network")
+        .connection()
+        .input("text", "core/string@1")
+        .build()
+}
 
-pub(crate) const WS_MESSAGE_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/ws-message",
-  "label": {"key": "org.orange.net/ws-message-label", "fallback": "On WebSocket message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "entry",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "payload", "direction": "output", "kind": "data", "type": "core/string@1",
-      "source": "payload"}
-  ]
-}"#;
+pub(crate) fn ws_message_definition() -> String {
+    Definition::entry(crate::PACKAGE, "ws-message", "On WebSocket message")
+        .category("network", "Network")
+        .connection()
+        .payload("core/string@1")
+        .build()
+}
 
-pub(crate) const WS_SEND_BYTES_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/ws-send-bytes",
-  "label": {"key": "org.orange.net/ws-send-bytes-label", "fallback": "Send WebSocket binary message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "data", "direction": "input", "kind": "data", "type": "core/bytes@1"}
-  ]
-}"#;
+pub(crate) fn ws_send_bytes_definition() -> String {
+    Definition::node(
+        crate::PACKAGE,
+        "ws-send-bytes",
+        "Send WebSocket binary message",
+    )
+    .category("network", "Network")
+    .connection()
+    .input("data", "core/bytes@1")
+    .build()
+}
 
-pub(crate) const WS_BINARY_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/ws-binary",
-  "label": {"key": "org.orange.net/ws-binary-label", "fallback": "On WebSocket binary message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "entry",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "payload", "direction": "output", "kind": "data", "type": "core/bytes@1",
-      "source": "payload"}
-  ]
-}"#;
+pub(crate) fn ws_binary_definition() -> String {
+    Definition::entry(crate::PACKAGE, "ws-binary", "On WebSocket binary message")
+        .category("network", "Network")
+        .connection()
+        .payload("core/bytes@1")
+        .build()
+}

@@ -30,7 +30,7 @@ pub use wav::{MAX_FILE_BYTES, MAX_SECONDS};
 use device::{Ended, Levels, Output};
 use level::Gate;
 use orange_sdk::{
-    Call, ConnectionAdapter, Emitter, FaultText, KernelFault, Listeners, ServiceNode,
+    Call, ConnectionAdapter, Definition, Emitter, FaultText, KernelFault, Listeners, ServiceNode,
     ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
@@ -403,164 +403,85 @@ impl ServiceSource for OnLevel {
     }
 }
 
-const PLAY_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.audio/play",
-  "label": {"key": "org.orange.audio/play-label", "fallback": "Play sound"},
-  "description": {"key": "org.orange.audio/play-description",
-    "fallback": "Plays a sound file on an output device and continues when it has ended."},
-  "editor": {"category_id": "org.orange.audio/category-audio",
-    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "gain", "direction": "input", "kind": "data", "type": "core/f64@1"}
-  ]
-}"#;
+fn play_definition() -> String {
+    Definition::node(crate::PACKAGE, "play", "Play sound")
+        .description("Plays a sound file on an output device and continues when it has ended.")
+        .category("audio", "Audio")
+        .connection()
+        .input("path", "core/string@1")
+        .input("gain", "core/f64@1")
+        .build()
+}
 
-const LOOP_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.audio/loop",
-  "label": {"key": "org.orange.audio/loop-label", "fallback": "Loop sound"},
-  "description": {"key": "org.orange.audio/loop-description",
-    "fallback": "Plays a sound file again and again on an output device until it is stopped."},
-  "editor": {"category_id": "org.orange.audio/category-audio",
-    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "gain", "direction": "input", "kind": "data", "type": "core/f64@1"}
-  ]
-}"#;
+fn loop_definition() -> String {
+    Definition::node(crate::PACKAGE, "loop", "Loop sound")
+        .description("Plays a sound file again and again on an output device until it is stopped.")
+        .category("audio", "Audio")
+        .connection()
+        .input("path", "core/string@1")
+        .input("gain", "core/f64@1")
+        .build()
+}
 
-const PAUSE_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.audio/pause",
-  "label": {"key": "org.orange.audio/pause-label", "fallback": "Pause sounds"},
-  "description": {"key": "org.orange.audio/pause-description",
-    "fallback": "Holds every sound playing on an output device where it is."},
-  "editor": {"category_id": "org.orange.audio/category-audio",
-    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": []
-}"#;
+fn pause_definition() -> String {
+    Definition::node(crate::PACKAGE, "pause", "Pause sounds")
+        .description("Holds every sound playing on an output device where it is.")
+        .category("audio", "Audio")
+        .connection()
+        .build()
+}
 
-const RESUME_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.audio/resume",
-  "label": {"key": "org.orange.audio/resume-label", "fallback": "Resume sounds"},
-  "description": {"key": "org.orange.audio/resume-description",
-    "fallback": "Lets the paused sounds of an output device continue."},
-  "editor": {"category_id": "org.orange.audio/category-audio",
-    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": []
-}"#;
+fn resume_definition() -> String {
+    Definition::node(crate::PACKAGE, "resume", "Resume sounds")
+        .description("Lets the paused sounds of an output device continue.")
+        .category("audio", "Audio")
+        .connection()
+        .build()
+}
 
-const SEEK_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.audio/seek",
-  "label": {"key": "org.orange.audio/seek-label", "fallback": "Seek sounds"},
-  "description": {"key": "org.orange.audio/seek-description",
-    "fallback": "Moves every sound playing on an output device to a position in seconds."},
-  "editor": {"category_id": "org.orange.audio/category-audio",
-    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "seconds", "direction": "input", "kind": "data", "type": "core/f64@1"}
-  ]
-}"#;
+fn seek_definition() -> String {
+    Definition::node(crate::PACKAGE, "seek", "Seek sounds")
+        .description("Moves every sound playing on an output device to a position in seconds.")
+        .category("audio", "Audio")
+        .connection()
+        .input("seconds", "core/f64@1")
+        .build()
+}
 
-const SET_VOLUME_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.audio/set-volume",
-  "label": {"key": "org.orange.audio/set-volume-label", "fallback": "Set volume"},
-  "description": {"key": "org.orange.audio/set-volume-description",
-    "fallback": "Sets the volume of everything an output device plays."},
-  "editor": {"category_id": "org.orange.audio/category-audio",
-    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "gain", "direction": "input", "kind": "data", "type": "core/f64@1"}
-  ]
-}"#;
+fn set_volume_definition() -> String {
+    Definition::node(crate::PACKAGE, "set-volume", "Set volume")
+        .description("Sets the volume of everything an output device plays.")
+        .category("audio", "Audio")
+        .connection()
+        .input("gain", "core/f64@1")
+        .build()
+}
 
-const STOP_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.audio/stop",
-  "label": {"key": "org.orange.audio/stop-label", "fallback": "Stop sounds"},
-  "description": {"key": "org.orange.audio/stop-description",
-    "fallback": "Stops every sound playing on an output device."},
-  "editor": {"category_id": "org.orange.audio/category-audio",
-    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": []
-}"#;
+fn stop_definition() -> String {
+    Definition::node(crate::PACKAGE, "stop", "Stop sounds")
+        .description("Stops every sound playing on an output device.")
+        .category("audio", "Audio")
+        .connection()
+        .build()
+}
 
-const INPUT_LEVEL_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.audio/input-level",
-  "label": {"key": "org.orange.audio/input-level-label", "fallback": "Input level"},
-  "description": {"key": "org.orange.audio/input-level-description",
-    "fallback": "Reads the latest level of an input device in dBFS."},
-  "editor": {"category_id": "org.orange.audio/category-audio",
-    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "level", "direction": "output", "kind": "data", "type": "core/f64@1",
-      "source": "execution", "available_on": ["then"]}
-  ]
-}"#;
+fn input_level_definition() -> String {
+    Definition::node(crate::PACKAGE, "input-level", "Input level")
+        .description("Reads the latest level of an input device in dBFS.")
+        .category("audio", "Audio")
+        .connection()
+        .output("level", "core/f64@1")
+        .build()
+}
 
-const ON_LEVEL_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.audio/on-level",
-  "label": {"key": "org.orange.audio/on-level-label", "fallback": "On input level"},
-  "description": {"key": "org.orange.audio/on-level-description",
-    "fallback": "Fires when an input device's level reaches the connection's threshold."},
-  "editor": {"category_id": "org.orange.audio/category-audio",
-    "category": {"key": "org.orange.audio/category-audio", "fallback": "Audio"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "entry",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "payload", "direction": "output", "kind": "data", "type": "core/f64@1",
-      "source": "payload"}
-  ]
-}"#;
+fn on_level_definition() -> String {
+    Definition::entry(crate::PACKAGE, "on-level", "On input level")
+        .description("Fires when an input device's level reaches the connection's threshold.")
+        .category("audio", "Audio")
+        .connection()
+        .payload("core/f64@1")
+        .build()
+}
 
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
@@ -571,15 +492,15 @@ pub fn package() -> ServicePackage {
         )
         .adapter(OUTPUT_ADAPTER, OutputAdapter)
         .adapter(INPUT_ADAPTER, InputAdapter)
-        .node(PLAY_DEFINITION, Play { looped: false })
-        .and_then(|package| package.node(LOOP_DEFINITION, Play { looped: true }))
-        .and_then(|package| package.node(STOP_DEFINITION, Stop))
-        .and_then(|package| package.node(PAUSE_DEFINITION, Control::Pause))
-        .and_then(|package| package.node(RESUME_DEFINITION, Control::Resume))
-        .and_then(|package| package.node(SEEK_DEFINITION, Control::Seek))
-        .and_then(|package| package.node(SET_VOLUME_DEFINITION, Control::Volume))
-        .and_then(|package| package.node(INPUT_LEVEL_DEFINITION, InputLevel))
-        .and_then(|package| package.source(ON_LEVEL_DEFINITION, OnLevel));
+        .node(&play_definition(), Play { looped: false })
+        .and_then(|package| package.node(&loop_definition(), Play { looped: true }))
+        .and_then(|package| package.node(&stop_definition(), Stop))
+        .and_then(|package| package.node(&pause_definition(), Control::Pause))
+        .and_then(|package| package.node(&resume_definition(), Control::Resume))
+        .and_then(|package| package.node(&seek_definition(), Control::Seek))
+        .and_then(|package| package.node(&set_volume_definition(), Control::Volume))
+        .and_then(|package| package.node(&input_level_definition(), InputLevel))
+        .and_then(|package| package.source(&on_level_definition(), OnLevel));
     match package {
         Ok(package) => package,
         // The definitions are constants of this crate, checked by its tests.

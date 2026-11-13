@@ -9,7 +9,7 @@
 //! dependency on `orange-sdk`, a function returning a `ServicePackage`, and one
 //! `export_plugin!` line. Build it with the same compiler and lockfile as the
 //! application that loads it.
-use orange_sdk::{Call, FaultText, KernelFault, ServiceNode, ServicePackage, Value};
+use orange_sdk::{Call, Definition, FaultText, KernelFault, ServiceNode, ServicePackage, Value};
 use std::sync::Arc;
 
 /// Package namespace of this plugin.
@@ -35,27 +35,18 @@ impl ServiceNode for Shout {
     }
 }
 
-const SHOUT_DEFINITION: &str = r#"{
-  "definition_id": "org.example.shout/shout",
-  "label": {"key": "org.example.shout/shout-label", "fallback": "Shout"},
-  "editor": {"category_id": "org.example.shout/category-text",
-    "category": {"key": "org.example.shout/category-text", "fallback": "Example"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "ports": [
-    {"port_id": "text", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "loud", "direction": "output", "kind": "data", "type": "core/string@1",
-      "source": "execution", "available_on": ["then"]}
-  ]
-}"#;
+fn shout_definition() -> String {
+    Definition::node(PACKAGE, "shout", "Shout")
+        .category("text", "Example")
+        .input("text", "core/string@1")
+        .output("loud", "core/string@1")
+        .build()
+}
 
 fn package() -> ServicePackage {
     let package = ServicePackage::new(PACKAGE, env!("CARGO_PKG_VERSION"))
         .about("Shout", "An example plugin: one node that shouts its text.")
-        .node(SHOUT_DEFINITION, Shout);
+        .node(&shout_definition(), Shout);
     match package {
         Ok(package) => package,
         // The definition is a constant of this crate, checked by the loader's tests.

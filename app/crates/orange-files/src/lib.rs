@@ -18,7 +18,7 @@
 
 use orange_sandbox::FsError;
 use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, FaultText, KernelFault, ServiceNode,
+    Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, ServiceNode,
     ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
@@ -382,38 +382,20 @@ impl ServiceSource for OnChange {
     }
 }
 
-/// A node definition of this package. `ports` are its port objects.
-fn definition(name: &str, label: &str, description: &str, entry: bool, ports: &[String]) -> String {
-    let kind = if entry {
-        r#""kind": "entry""#
-    } else {
-        r#""kind": "async", "suspends": "always""#
-    };
-    format!(
-        r#"{{
-  "definition_id": "{PACKAGE}/{name}",
-  "label": {{"key": "{PACKAGE}/{name}-label", "fallback": "{label}"}},
-  "description": {{"key": "{PACKAGE}/{name}-description", "fallback": "{description}"}},
-  "editor": {{"category_id": "{PACKAGE}/category-files",
-    "category": {{"key": "{PACKAGE}/category-files", "fallback": "Files"}}}},
-  "definition_version": 1,
-  "config_version": 1,
-  {kind},
-  "determinism": "external",
-  "connection": true,
-  "ports": [{}]
-}}"#,
-        ports.join(",")
-    )
+/// A data port of a node in the table below: whether it is an output, its name and type.
+type Port = (bool, &'static str, &'static str);
+fn input(name: &'static str, ty: &'static str) -> Port {
+    (false, name, ty)
 }
-fn input(name: &str, ty: &str) -> String {
-    format!(r#"{{"port_id": "{name}", "direction": "input", "kind": "data", "type": "{ty}"}}"#)
+fn output(name: &'static str, ty: &'static str) -> Port {
+    (true, name, ty)
 }
-fn output(name: &str, ty: &str) -> String {
-    format!(
-        r#"{{"port_id": "{name}", "direction": "output", "kind": "data", "type": "{ty}",
-      "source": "execution", "available_on": ["then"]}}"#
-    )
+/// The part every definition of this package shares.
+fn described(definition: Definition, description: &str) -> Definition {
+    definition
+        .description(description)
+        .category("files", "Files")
+        .connection()
 }
 
 const STRING: &str = "core/string@1";
@@ -422,7 +404,7 @@ const BYTES: &str = "core/bytes@1";
 /// The package to pass to `Host::with_services`.
 pub fn package() -> ServicePackage {
     let path = || input("path", STRING);
-    let nodes: [(&str, &str, &str, Operation, Vec<String>); 12] = [
+    let nodes: [(&str, &str, &str, Operation, Vec<Port>); 12] = [
         (
             "move",
             "Move file",
@@ -516,22 +498,23 @@ pub fn package() -> ServicePackage {
         .adapter(FOLDER_ADAPTER, FolderAdapter));
     for (name, label, description, operation, ports) in nodes {
         package = package.and_then(|package| {
-            package.node(
-                &definition(name, label, description, false, &ports),
-                operation,
-            )
+            let mut definition = described(Definition::node(PACKAGE, name, label), description);
+            for (is_output, port, ty) in ports {
+                definition = if is_output {
+                    definition.output(port, ty)
+                } else {
+                    definition.input(port, ty)
+                };
+            }
+            package.node(&definition.build(), operation)
         });
     }
-    let on_change = definition(
-        "on-change",
-        "On file change",
+    let on_change = described(
+        Definition::entry(PACKAGE, "on-change", "On file change"),
         "Fires when a file in a folder is created, changed or deleted.",
-        true,
-        &[format!(
-            r#"{{"port_id": "payload", "direction": "output", "kind": "data", "type": "{STRING}",
-      "source": "payload"}}"#
-        )],
-    );
+    )
+    .payload(STRING)
+    .build();
     match package.and_then(|package| package.source(&on_change, OnChange)) {
         Ok(package) => package,
         // The definitions are built from constants of this crate, checked by its tests.

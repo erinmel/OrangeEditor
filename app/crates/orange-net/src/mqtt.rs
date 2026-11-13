@@ -13,8 +13,8 @@
 //! nothing for it while it is away. MQTT 5, quality of service 2, wills and
 //! persistent sessions are not provided.
 use orange_sdk::{
-    Call, ConnectionAdapter, Emitter, KernelFault, ListRepr, Listeners, ServiceNode, ServiceSource,
-    Session, Value,
+    Call, ConnectionAdapter, Definition, Emitter, KernelFault, ListRepr, Listeners, ServiceNode,
+    ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -688,74 +688,45 @@ impl ServiceSource for MqttMessage {
     }
 }
 
-pub(crate) const PUBLISH_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/mqtt-publish",
-  "label": {"key": "org.orange.net/mqtt-publish-label", "fallback": "Publish MQTT message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "topic", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "text", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "retain", "direction": "input", "kind": "data", "type": "core/bool@1"}
-  ]
-}"#;
+pub(crate) fn publish_definition() -> String {
+    Definition::node(crate::PACKAGE, "mqtt-publish", "Publish MQTT message")
+        .category("network", "Network")
+        .connection()
+        .input("topic", "core/string@1")
+        .input("text", "core/string@1")
+        .input("retain", "core/bool@1")
+        .build()
+}
 
-pub(crate) const PUBLISH_BYTES_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/mqtt-publish-bytes",
-  "label": {"key": "org.orange.net/mqtt-publish-bytes-label",
-    "fallback": "Publish MQTT binary message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "topic", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "data", "direction": "input", "kind": "data", "type": "core/bytes@1"},
-    {"port_id": "retain", "direction": "input", "kind": "data", "type": "core/bool@1"}
-  ]
-}"#;
+pub(crate) fn publish_bytes_definition() -> String {
+    Definition::node(
+        crate::PACKAGE,
+        "mqtt-publish-bytes",
+        "Publish MQTT binary message",
+    )
+    .category("network", "Network")
+    .connection()
+    .input("topic", "core/string@1")
+    .input("data", "core/bytes@1")
+    .input("retain", "core/bool@1")
+    .build()
+}
 
-pub(crate) const MESSAGE_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/mqtt-message",
-  "label": {"key": "org.orange.net/mqtt-message-label", "fallback": "On MQTT message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "entry",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "payload", "direction": "output", "kind": "data",
-      "type": "core/list@1<core/string@1>", "source": "payload"}
-  ]
-}"#;
+pub(crate) fn message_definition() -> String {
+    Definition::entry(crate::PACKAGE, "mqtt-message", "On MQTT message")
+        .category("network", "Network")
+        .connection()
+        .payload("core/list@1<core/string@1>")
+        .build()
+}
 
-pub(crate) const BINARY_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/mqtt-binary",
-  "label": {"key": "org.orange.net/mqtt-binary-label", "fallback": "On MQTT binary message"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "entry",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "payload", "direction": "output", "kind": "data", "type": "core/bytes@1",
-      "source": "payload"}
-  ]
-}"#;
+pub(crate) fn binary_definition() -> String {
+    Definition::entry(crate::PACKAGE, "mqtt-binary", "On MQTT binary message")
+        .category("network", "Network")
+        .connection()
+        .payload("core/bytes@1")
+        .build()
+}
 
 #[cfg(test)]
 mod tests {

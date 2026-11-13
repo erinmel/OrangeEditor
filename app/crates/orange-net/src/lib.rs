@@ -20,8 +20,8 @@ mod ws;
 pub use ws::MAX_QUEUED_MESSAGES;
 
 use orange_sdk::{
-    Call, ConnectionAdapter, EmitError, Emitter, FaultText, KernelFault, Listeners, ServiceNode,
-    ServicePackage, ServiceSource, Session, Value,
+    Call, ConnectionAdapter, Definition, EmitError, Emitter, FaultText, KernelFault, Listeners,
+    ServiceNode, ServicePackage, ServiceSource, Session, Value,
 };
 use serde_json::{Map, Value as Json};
 use std::any::Any;
@@ -580,99 +580,60 @@ impl ServiceSource for HttpStreamLine {
     }
 }
 
-const HTTP_STREAM_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/http-stream",
-  "label": {"key": "org.orange.net/http-stream-label", "fallback": "HTTP request (streamed)"},
-  "description": {"key": "org.orange.net/http-stream-description",
-    "fallback": "Sends a request and delivers the response line by line as it arrives."},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "method", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "content_type", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "headers", "direction": "input", "kind": "data",
-      "type": "core/list@1<core/string@1>"},
-    {"port_id": "content", "direction": "input", "kind": "data", "type": "core/bytes@1"},
-    {"port_id": "status", "direction": "output", "kind": "data", "type": "core/i64@1",
-      "source": "execution", "available_on": ["then"]},
-    {"port_id": "lines", "direction": "output", "kind": "data", "type": "core/i64@1",
-      "source": "execution", "available_on": ["then"]}
-  ]
-}"#;
+fn http_stream_definition() -> String {
+    Definition::node(crate::PACKAGE, "http-stream", "HTTP request (streamed)")
+        .description("Sends a request and delivers the response line by line as it arrives.")
+        .category("network", "Network")
+        .connection()
+        .input("method", "core/string@1")
+        .input("path", "core/string@1")
+        .input("content_type", "core/string@1")
+        .input("headers", "core/list@1<core/string@1>")
+        .input("content", "core/bytes@1")
+        .output("status", "core/i64@1")
+        .output("lines", "core/i64@1")
+        .build()
+}
 
-const HTTP_STREAM_LINE_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/http-stream-line",
-  "label": {"key": "org.orange.net/http-stream-line-label", "fallback": "On HTTP stream line"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "entry",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "payload", "direction": "output", "kind": "data", "type": "core/string@1",
-      "source": "payload"}
-  ]
-}"#;
+fn http_stream_line_definition() -> String {
+    Definition::entry(crate::PACKAGE, "http-stream-line", "On HTTP stream line")
+        .category("network", "Network")
+        .connection()
+        .payload("core/string@1")
+        .build()
+}
 
-const HTTP_REQUEST_BYTES_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/http-request-bytes",
-  "label": {"key": "org.orange.net/http-request-bytes-label", "fallback": "HTTP request (binary)"},
-  "description": {"key": "org.orange.net/http-request-bytes-description",
-    "fallback": "Sends a request with a binary body and returns the response as bytes."},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "method", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "content_type", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "headers", "direction": "input", "kind": "data",
-      "type": "core/list@1<core/string@1>"},
-    {"port_id": "content", "direction": "input", "kind": "data", "type": "core/bytes@1"},
-    {"port_id": "status", "direction": "output", "kind": "data", "type": "core/i64@1",
-      "source": "execution", "available_on": ["then"]},
-    {"port_id": "response_type", "direction": "output", "kind": "data", "type": "core/string@1",
-      "source": "execution", "available_on": ["then"]},
-    {"port_id": "response", "direction": "output", "kind": "data", "type": "core/bytes@1",
-      "source": "execution", "available_on": ["then"]}
-  ]
-}"#;
+fn http_request_bytes_definition() -> String {
+    Definition::node(
+        crate::PACKAGE,
+        "http-request-bytes",
+        "HTTP request (binary)",
+    )
+    .description("Sends a request with a binary body and returns the response as bytes.")
+    .category("network", "Network")
+    .connection()
+    .input("method", "core/string@1")
+    .input("path", "core/string@1")
+    .input("content_type", "core/string@1")
+    .input("headers", "core/list@1<core/string@1>")
+    .input("content", "core/bytes@1")
+    .output("status", "core/i64@1")
+    .output("response_type", "core/string@1")
+    .output("response", "core/bytes@1")
+    .build()
+}
 
-const HTTP_REQUEST_DEFINITION: &str = r#"{
-  "definition_id": "org.orange.net/http-request",
-  "label": {"key": "org.orange.net/http-request-label", "fallback": "HTTP request"},
-  "editor": {"category_id": "org.orange.net/category-network",
-    "category": {"key": "org.orange.net/category-network", "fallback": "Network"}},
-  "definition_version": 1,
-  "config_version": 1,
-  "kind": "async",
-  "suspends": "always",
-  "determinism": "external",
-  "connection": true,
-  "ports": [
-    {"port_id": "method", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "path", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "content", "direction": "input", "kind": "data", "type": "core/string@1"},
-    {"port_id": "status", "direction": "output", "kind": "data", "type": "core/i64@1",
-      "source": "execution", "available_on": ["then"]},
-    {"port_id": "response", "direction": "output", "kind": "data", "type": "core/string@1",
-      "source": "execution", "available_on": ["then"]}
-  ]
-}"#;
+fn http_request_definition() -> String {
+    Definition::node(crate::PACKAGE, "http-request", "HTTP request")
+        .category("network", "Network")
+        .connection()
+        .input("method", "core/string@1")
+        .input("path", "core/string@1")
+        .input("content", "core/string@1")
+        .output("status", "core/i64@1")
+        .output("response", "core/string@1")
+        .build()
+}
 
 /// Downloads an `https://` URL, following redirects only to other `https://` URLs: how
 /// an application reads a package's update feed or a release archive. Anything but
@@ -829,38 +790,46 @@ pub fn package() -> ServicePackage {
         .adapter(HTTP_ADAPTER, HttpAdapter)
         .adapter(WS_ADAPTER, ws::WsAdapter)
         .adapter(MQTT_ADAPTER, mqtt::MqttAdapter)
-        .node(HTTP_REQUEST_DEFINITION, HttpRequest)
-        .and_then(|package| package.node(HTTP_REQUEST_BYTES_DEFINITION, HttpRequestBytes))
-        .and_then(|package| package.node(HTTP_STREAM_DEFINITION, HttpStream))
-        .and_then(|package| package.source(HTTP_STREAM_LINE_DEFINITION, HttpStreamLine))
-        .and_then(|package| package.node(ws::WS_SEND_DEFINITION, ws::WsSend { binary: false }))
-        .and_then(|package| package.node(ws::WS_SEND_BYTES_DEFINITION, ws::WsSend { binary: true }))
+        .node(&http_request_definition(), HttpRequest)
+        .and_then(|package| package.node(&http_request_bytes_definition(), HttpRequestBytes))
+        .and_then(|package| package.node(&http_stream_definition(), HttpStream))
+        .and_then(|package| package.source(&http_stream_line_definition(), HttpStreamLine))
+        .and_then(|package| package.node(&ws::ws_send_definition(), ws::WsSend { binary: false }))
         .and_then(|package| {
-            package.source(ws::WS_MESSAGE_DEFINITION, ws::WsMessage { binary: false })
+            package.node(&ws::ws_send_bytes_definition(), ws::WsSend { binary: true })
         })
         .and_then(|package| {
-            package.source(ws::WS_BINARY_DEFINITION, ws::WsMessage { binary: true })
+            package.source(
+                &ws::ws_message_definition(),
+                ws::WsMessage { binary: false },
+            )
+        })
+        .and_then(|package| {
+            package.source(&ws::ws_binary_definition(), ws::WsMessage { binary: true })
         })
         .and_then(|package| {
             package.node(
-                mqtt::PUBLISH_DEFINITION,
+                &mqtt::publish_definition(),
                 mqtt::MqttPublish { binary: false },
             )
         })
         .and_then(|package| {
             package.node(
-                mqtt::PUBLISH_BYTES_DEFINITION,
+                &mqtt::publish_bytes_definition(),
                 mqtt::MqttPublish { binary: true },
             )
         })
         .and_then(|package| {
             package.source(
-                mqtt::MESSAGE_DEFINITION,
+                &mqtt::message_definition(),
                 mqtt::MqttMessage { binary: false },
             )
         })
         .and_then(|package| {
-            package.source(mqtt::BINARY_DEFINITION, mqtt::MqttMessage { binary: true })
+            package.source(
+                &mqtt::binary_definition(),
+                mqtt::MqttMessage { binary: true },
+            )
         });
     match package {
         Ok(package) => package,
