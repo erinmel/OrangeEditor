@@ -66,7 +66,7 @@ pub use documents::{
     Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,
     discard_autosave, publish_function, recover_document, save_document,
 };
-pub use edit::PortEnd;
+pub use edit::{PortEnd, new_document};
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
 pub use names::{Names, describe, lines, literal, plain, said};
 pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};

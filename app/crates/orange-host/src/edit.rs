@@ -50,6 +50,20 @@ fn fresh_id(saved: &Json, what: &str) -> String {
     }
 }
 
+/// The text of a new, empty document with an ID of its own.
+pub fn new_document() -> Result<String, HostError> {
+    // The time and the process tell one new document from another.
+    let moment = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |since| since.as_nanos());
+    let seed = json!({"moment": moment.to_string(), "process": std::process::id()});
+    let id = fresh_id(&seed, "graph");
+    let graph = id
+        .parse()
+        .map_err(|_| refused(&"the new ID is not valid"))?;
+    to_json(&GraphDocument::new(graph)).map_err(|error| refused(&error))
+}
+
 fn port_ref(end: PortEnd<'_>) -> Result<PortRef, HostError> {
     Ok(PortRef {
         node: end.0,
