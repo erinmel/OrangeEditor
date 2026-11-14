@@ -1,0 +1,23 @@
+[package]
+name = "orange-desktop"
+description = "OrangeEditor desktop application: the window that hosts the editor interface"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "orange-editor"
+path = "src/main.rs"
+
+[dependencies]
+eframe.workspace = true
+orange-audio = { path = "../orange-audio", version = "=0.0.0" }
+orange-editor-ui = { path = "../orange-editor-ui", version = "=0.0.0" }
+orange-files = { path = "../orange-files", version = "=0.0.0" }
+orange-host = { path = "../orange-host", version = "=0.0.0" }
+orange-net = { path = "../orange-net", version = "=0.0.0" }
+orange-vault = { path = "../orange-vault", version = "=0.0.0" }
+
+[lints]
+workspace = true
