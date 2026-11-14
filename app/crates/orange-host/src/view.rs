@@ -108,11 +108,18 @@ impl Host {
             // only once something is wired to them, so a card stays short.
             let mut ports = Vec::with_capacity(declared.len() + 2);
             let mut after = Vec::new();
-            if let Some(contract) = &contract {
+            // A node that is not set up yet (a variable node that names no variable)
+            // has no contract; its kind still says which of these it has.
+            let kind = contract.as_ref().map(|contract| contract.kind).or_else(|| {
+                registry
+                    .definition(&node.definition)
+                    .map(|found| found.kind)
+            });
+            if let Some(kind) = kind {
                 let outcomes = declared.iter().any(|port| port.exec && !port.input);
                 for name in orange_model::catalog::implicit_port_names(
                     node.definition.id.as_str(),
-                    contract.kind,
+                    kind,
                     outcomes,
                 ) {
                     let input = name == "in";
@@ -149,9 +156,7 @@ impl Host {
                     .get(&definition)
                     .cloned()
                     .unwrap_or_else(|| definition.clone()),
-                entry: contract
-                    .as_ref()
-                    .is_some_and(|contract| contract.kind == NodeKind::Entry),
+                entry: kind == Some(NodeKind::Entry),
                 definition,
                 ports,
                 position,
