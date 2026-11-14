@@ -296,12 +296,23 @@ impl Editor {
 
     /// Adds a node of kind `definition` in the middle of the canvas and selects it.
     pub fn add_node(&mut self, host: &mut Host, definition: &str) -> Option<NodeId> {
-        let text = self.editing()?;
         let [x, y] = self.canvas.center();
         // Not exactly on top of a node added just before.
         #[expect(clippy::cast_precision_loss, reason = "a document has few nodes")]
         let step = (self.graph().map_or(0, |graph| graph.nodes.len()) % 8) as f32 * 24.0;
         let at = [x - canvas::NODE_WIDTH / 2.0 + step, y - 40.0 + step];
+        self.add_node_at(host, definition, at)
+    }
+
+    /// Adds a node of kind `definition` with its top left corner at `at` (graph units)
+    /// and selects it.
+    pub fn add_node_at(
+        &mut self,
+        host: &mut Host,
+        definition: &str,
+        at: [f32; 2],
+    ) -> Option<NodeId> {
+        let text = self.editing()?;
         match host.add_node(&text, definition, at) {
             Ok((text, node)) => {
                 let _ = self.edited(host, Ok(text));
@@ -317,11 +328,52 @@ impl Editor {
 
     /// Removes a node with its wires.
     pub fn remove_node(&mut self, host: &mut Host, node: NodeId) -> bool {
+        self.remove_nodes(host, &[node])
+    }
+
+    /// Removes nodes with their wires, as one edit.
+    pub fn remove_nodes(&mut self, host: &mut Host, nodes: &[NodeId]) -> bool {
         let Some(text) = self.editing() else {
             return false;
         };
-        let result = host.remove_nodes(&text, &[node]);
+        let result = host.remove_nodes(&text, nodes);
         self.edited(host, result)
+    }
+
+    /// The selected nodes as clipboard text, with the wires between them and the
+    /// declarations they name. `None` when nothing is selected.
+    pub fn copy(&mut self, host: &Host) -> Option<String> {
+        let selection = self.canvas.selection();
+        if selection.is_empty() {
+            return None;
+        }
+        let text = self.editing()?;
+        match host.copy(&text, &selection) {
+            Ok(clip) => Some(clip),
+            Err(error) => {
+                self.say(format!("not copied: {error}"));
+                None
+            }
+        }
+    }
+
+    /// Pastes clipboard text from [`Editor::copy`] with its top left node at `at`, and
+    /// selects what was pasted. Text that is not copied nodes changes nothing.
+    pub fn paste(&mut self, host: &mut Host, clip: &str, at: [f32; 2]) -> Vec<NodeId> {
+        let Some(text) = self.editing() else {
+            return Vec::new();
+        };
+        match host.paste(&text, clip, at) {
+            Ok((text, fresh)) => {
+                let _ = self.edited(host, Ok(text));
+                self.canvas.select_many(&fresh);
+                fresh
+            }
+            Err(error) => {
+                let _ = self.edited(host, Err(error));
+                Vec::new()
+            }
+        }
     }
 
     /// Wires an output to an input. A wire the language does not allow is refused
@@ -674,12 +726,14 @@ impl Editor {
                     .default_open(searching)
                     .show(ui, |ui| {
                         for item in items {
-                            let hint = format!("{}\nClick to add it to the graph.", item.id);
-                            if ui
-                                .selectable_label(false, item.label.as_str())
-                                .on_hover_text(hint)
-                                .clicked()
-                            {
+                            let hint =
+                                format!("{}\nClick to add it, or drag it onto the graph.", item.id);
+                            // Dragged, it carries its kind to where it is let go.
+                            let id = ui.scope_id().with(("orange-kind", item.id.as_str()));
+                            let shown = ui.dnd_drag_source(id, item.id.clone(), |ui| {
+                                ui.selectable_label(false, item.label.as_str())
+                            });
+                            if shown.inner.on_hover_text(hint).clicked() {
                                 add = Some(item.id);
                             }
                         }
@@ -755,8 +809,27 @@ impl Editor {
         if let Some((node, port, input)) = done.disconnect {
             let _ = self.disconnect(host, (node, &port), input);
         }
-        if let Some(node) = done.remove {
-            let _ = self.remove_node(host, node);
+        if !done.remove.is_empty() {
+            let _ = self.remove_nodes(host, &done.remove);
+        }
+        if let Some((node, port, typed)) = done.set_input {
+            let _ = self.set_input(host, (node, &port), Some(&typed));
+        }
+        if (done.copy || done.cut)
+            && let Some(clip) = self.copy(host)
+        {
+            ui.ctx().copy_text(clip);
+            if done.cut {
+                let selection = self.canvas.selection();
+                let _ = self.remove_nodes(host, &selection);
+            }
+        }
+        if let Some(clip) = done.paste {
+            let at = self.canvas.paste_place();
+            let _ = self.paste(host, &clip, at);
+        }
+        if let Some((definition, at)) = done.dropped {
+            let _ = self.add_node_at(host, &definition, at);
         }
     }
 }
@@ -1077,6 +1150,51 @@ mod tests {
         assert!(draw(&mut editor, &mut host) > 0);
         editor.document_tab = true;
         assert!(draw(&mut editor, &mut host) > 0);
+    }
+
+    #[test]
+    fn nodes_are_copied_pasted_dropped_and_removed_together() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        let trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+        let set = editor
+            .add_node_at(&mut host, "core/set-variable", [400.0, 0.0])
+            .unwrap();
+        assert!(editor.connect(&mut host, (trigger, "then"), (set, "in")));
+        assert_eq!(editor.copy(&host), editor.copy(&host));
+        editor.canvas().select_many(&[trigger, set]);
+        let clip = editor.copy(&host).unwrap();
+        let fresh = editor.paste(&mut host, &clip, [0.0, 600.0]);
+        assert_eq!(fresh.len(), 2);
+        let graph = editor.graph().unwrap();
+        assert_eq!((graph.nodes.len(), graph.wires.len()), (4, 2));
+        // What was pasted is selected, and one undo takes the paste back.
+        assert_eq!(editor.canvas().selection().len(), 2);
+        assert!(
+            fresh
+                .iter()
+                .all(|node| editor.canvas().selection().contains(node))
+        );
+        editor.undo(&mut host);
+        assert_eq!(editor.graph().unwrap().nodes.len(), 2);
+        assert!(editor.paste(&mut host, "not nodes", [0.0, 0.0]).is_empty());
+        // Removing several is one edit.
+        assert!(editor.remove_nodes(&mut host, &[trigger, set]));
+        assert!(editor.graph().unwrap().nodes.is_empty());
+        editor.undo(&mut host);
+        assert_eq!(editor.graph().unwrap().nodes.len(), 2);
+        // A node kind dropped on the canvas is added where it was let go.
+        let dropped = editor
+            .add_node_at(&mut host, "core/on-manual", [50.0, 900.0])
+            .unwrap();
+        let placed = editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.id == dropped);
+        assert_eq!(placed.unwrap().position, Some([50.0, 900.0]));
     }
 
     #[test]

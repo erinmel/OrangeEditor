@@ -1,14 +1,15 @@
 //! The graph canvas: nodes as cards with their ports, wires between them, panning,
-//! zooming and moving nodes.
+//! zooming, selecting and moving nodes, and controls on the cards for the values of
+//! inputs.
 //!
 //! It is a widget of its own. An application that has its own lists and panels shows
 //! only this: it asks its host for a [`GraphView`], calls [`Canvas::show`] each frame
 //! and acts on the [`CanvasResponse`]. Nothing here knows about files, flows or the
 //! other panels of the editor.
 use egui::epaint::CubicBezierShape;
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, UiBuilder, Vec2};
 use orange_host::{GraphView, NodeId, NodeView, PortView};
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Width of a node card, in graph units (one unit is one point at zoom 1).
 pub const NODE_WIDTH: f32 = 236.0;
@@ -24,6 +25,34 @@ pub const LAYOUT_GAP: Vec2 = Vec2::new(90.0, 36.0);
 pub const ZOOM_RANGE: std::ops::RangeInclusive<f32> = 0.2..=2.5;
 const GRID: f32 = 24.0;
 const PORT_RADIUS: f32 = 5.0;
+/// Below this zoom, cards show their values without controls.
+const CONTROLS_ZOOM: f32 = 0.75;
+/// Width of the control for an input's value on a card.
+const CONTROL_WIDTH: f32 = 96.0;
+
+/// How a value on an input is changed on its card.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Control {
+    Toggle,
+    Whole,
+    Number,
+    Text,
+}
+
+impl Control {
+    fn of(port: &PortView) -> Option<Self> {
+        if !port.input || port.exec || port.connected {
+            return None;
+        }
+        match port.ty.as_deref()? {
+            "core/bool@1" => Some(Self::Toggle),
+            "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => Some(Self::Whole),
+            "core/f64@1" | "core/f32@1" => Some(Self::Number),
+            "core/string@1" => Some(Self::Text),
+            _ => None,
+        }
+    }
+}
 
 /// The size of a node's card in graph units: a title and one row for each input beside
 /// an output.
@@ -96,12 +125,23 @@ pub struct CanvasResponse {
     pub moved: bool,
     /// The node that was clicked.
     pub selected: Option<NodeId>,
+    /// A value was written on an input with its control on the card, typed as a
+    /// person types it.
+    pub set_input: Option<(NodeId, String, String)>,
+    /// The selected nodes are to be copied, or cut, to the clipboard.
+    pub copy: bool,
+    pub cut: bool,
+    /// Text was pasted on the canvas.
+    pub paste: Option<String>,
+    /// A node kind was dropped on the canvas from a list: the kind and where, in graph
+    /// units.
+    pub dropped: Option<(String, [f32; 2])>,
     /// A wire was drawn from an output to an input: the two ends.
     pub connect: Option<((NodeId, String), (NodeId, String))>,
     /// The wires at a port were taken off: the node, the port and whether it is an input.
     pub disconnect: Option<(NodeId, String, bool)>,
-    /// The selected node was deleted.
-    pub remove: Option<NodeId>,
+    /// The selected nodes were deleted.
+    pub remove: Vec<NodeId>,
 }
 
 /// A wire being drawn from an output, not yet let go.
@@ -119,7 +159,17 @@ pub struct Canvas {
     origin: Pos2,
     zoom: f32,
     places: BTreeMap<NodeId, Pos2>,
+    /// The selected nodes, and the one whose properties are shown when it is the only one.
+    selection: BTreeSet<NodeId>,
     selected: Option<NodeId>,
+    /// Where a box selection started, in graph units.
+    boxing: Option<Pos2>,
+    /// Where the pointer is, in graph units, while it is over the canvas.
+    pointer: Option<Pos2>,
+    /// A number being dragged on a card, shown before it is let go and written.
+    dragging: Option<(NodeId, String, f64)>,
+    /// Text being typed on a card, and whether its field has had the keys yet.
+    typing: Option<(NodeId, String, String, bool)>,
     /// A node was dragged and not yet let go.
     moving: bool,
     /// Show the whole graph at the next frame.
@@ -134,7 +184,12 @@ impl Default for Canvas {
             origin: Pos2::new(-40.0, -40.0),
             zoom: 1.0,
             places: BTreeMap::new(),
+            selection: BTreeSet::new(),
             selected: None,
+            boxing: None,
+            pointer: None,
+            dragging: None,
+            typing: None,
             moving: false,
             fit: true,
             wiring: None,
@@ -223,9 +278,7 @@ impl Canvas {
     /// rest. Call it when a document is opened or replaced.
     pub fn load(&mut self, graph: &GraphView) {
         self.places = auto_layout(graph);
-        if !self.places.keys().any(|id| Some(*id) == self.selected) {
-            self.selected = None;
-        }
+        self.forget_missing();
         self.fit = true;
     }
 
@@ -238,7 +291,14 @@ impl Canvas {
         for (id, place) in fresh {
             let _ = self.places.entry(id).or_insert(place);
         }
-        if !self.places.keys().any(|id| Some(*id) == self.selected) {
+        self.forget_missing();
+    }
+
+    /// Drops from the selection the nodes that are gone.
+    fn forget_missing(&mut self) {
+        let places = &self.places;
+        self.selection.retain(|id| places.contains_key(id));
+        if !self.selected.is_some_and(|id| self.selection.contains(&id)) {
             self.selected = None;
         }
     }
@@ -254,9 +314,57 @@ impl Canvas {
         [center.x, center.y]
     }
 
-    /// Selects a node, as clicking it does.
+    /// Selects a node alone, as clicking it does; `None` selects nothing.
     pub fn select(&mut self, node: Option<NodeId>) {
-        self.selected = node.filter(|id| self.places.contains_key(id));
+        self.select_many(node.as_slice());
+    }
+
+    /// Selects these nodes. With exactly one, it is also the one whose properties show.
+    pub fn select_many(&mut self, nodes: &[NodeId]) {
+        self.selection = nodes
+            .iter()
+            .copied()
+            .filter(|id| self.places.contains_key(id))
+            .collect();
+        self.selected = match self.selection.len() {
+            1 => self.selection.first().copied(),
+            _ => None,
+        };
+    }
+
+    /// Adds a node to the selection or takes it out, as clicking it with Ctrl does.
+    pub fn toggle(&mut self, node: NodeId) {
+        if !self.selection.remove(&node) && self.places.contains_key(&node) {
+            let _ = self.selection.insert(node);
+        }
+        let nodes: Vec<NodeId> = self.selection.iter().copied().collect();
+        self.select_many(&nodes);
+    }
+
+    /// The selected nodes.
+    pub fn selection(&self) -> Vec<NodeId> {
+        self.selection.iter().copied().collect()
+    }
+
+    /// Where pasted nodes go: under the pointer when it is over the canvas, otherwise
+    /// the middle of what is shown.
+    pub fn paste_place(&self) -> [f32; 2] {
+        self.pointer
+            .map_or_else(|| self.center(), |at| [at.x, at.y])
+    }
+
+    /// The nodes whose cards meet `area` (graph units).
+    pub fn nodes_in(&self, graph: &GraphView, area: Rect) -> Vec<NodeId> {
+        graph
+            .nodes
+            .iter()
+            .filter(|node| {
+                self.places.get(&node.id).is_some_and(|place| {
+                    Rect::from_min_size(*place, node_size(node)).intersects(area)
+                })
+            })
+            .map(|node| node.id)
+            .collect()
     }
 
     /// The input a wire let go at `at` (graph units) lands on: the input of the same
@@ -379,11 +487,41 @@ impl Canvas {
 
         // Dragging the background scrolls; the wheel scrolls, and zooms with the
         // zoom gesture or key, about the pointer.
-        if response.dragged() {
+        // Dragging the background with Shift or Ctrl held draws a box that selects.
+        let (shift, command) = ui.input(|input| (input.modifiers.shift, input.modifiers.command));
+        let graph_point = |at: Pos2, origin: Pos2, zoom: f32| origin + (at - area.min) / zoom;
+        if response.drag_started()
+            && (shift || command)
+            && let Some(at) = response.interact_pointer_pos()
+        {
+            self.boxing = Some(graph_point(at, self.origin, self.zoom));
+        }
+        if self.boxing.is_none() && response.dragged() {
             self.origin -= response.drag_delta() / self.zoom;
         }
+        if response.drag_stopped()
+            && let (Some(start), Some(at)) = (self.boxing.take(), response.interact_pointer_pos())
+        {
+            let end = graph_point(at, self.origin, self.zoom);
+            let mut chosen = self.nodes_in(graph, Rect::from_two_pos(start, end));
+            if shift || command {
+                chosen.extend(self.selection.iter().copied());
+            }
+            self.select_many(&chosen);
+        }
         if response.clicked() {
-            self.selected = None;
+            self.select(None);
+        }
+        self.pointer = response
+            .hover_pos()
+            .map(|at| graph_point(at, self.origin, self.zoom));
+        // A node kind dragged from a list and let go here.
+        if let (Some(kind), Some(at)) = (
+            response.dnd_release_payload::<String>(),
+            ui.input(|input| input.pointer.interact_pos()),
+        ) {
+            let at = graph_point(at, self.origin, self.zoom);
+            done.dropped = Some(((*kind).clone(), [at.x, at.y]));
         }
         if let Some(pointer) = response.hover_pos() {
             let (scroll, factor) =
@@ -428,18 +566,28 @@ impl Canvas {
                 continue;
             }
             let touched = ui.interact(rect, response.id.with(node.id), Sense::click_and_drag());
+            if touched.drag_started() && !self.selection.contains(&node.id) {
+                self.select(Some(node.id));
+            }
             if touched.dragged() {
-                self.move_node(node.id, touched.drag_delta() / zoom);
+                // Every selected node moves together.
+                let by = touched.drag_delta() / zoom;
+                for id in self.selection.clone() {
+                    self.move_node(id, by);
+                }
                 self.moving = true;
-                self.selected = Some(node.id);
             }
             if touched.drag_stopped() && self.moving {
                 self.moving = false;
                 done.moved = true;
             }
             if touched.clicked() {
-                self.selected = Some(node.id);
-                done.selected = Some(node.id);
+                if shift || command {
+                    self.toggle(node.id);
+                } else {
+                    self.select(Some(node.id));
+                }
+                done.selected = self.selected;
             }
         }
 
@@ -486,15 +634,32 @@ impl Canvas {
             }
             self.wiring = None;
         }
-        // The delete key removes the selected node, unless a text field has the keys.
-        if let Some(node) = self.selected
-            && !ui.ctx().egui_wants_keyboard_input()
-            && ui.input(|input| {
-                input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace)
-            })
-        {
-            done.remove = Some(node);
-            self.selected = None;
+        // Keys, unless a text field has them: Delete removes the selection, Ctrl+A
+        // selects everything, and copy, cut and paste go through the clipboard.
+        if !ui.ctx().egui_wants_keyboard_input() {
+            let (delete, all, events) = ui.input(|input| {
+                (
+                    input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace),
+                    input.modifiers.command && input.key_pressed(egui::Key::A),
+                    input.events.clone(),
+                )
+            });
+            if delete && !self.selection.is_empty() {
+                done.remove = self.selection();
+                self.select(None);
+            }
+            if all {
+                let every: Vec<NodeId> = graph.nodes.iter().map(|node| node.id).collect();
+                self.select_many(&every);
+            }
+            for event in events {
+                match event {
+                    egui::Event::Copy => done.copy = !self.selection.is_empty(),
+                    egui::Event::Cut => done.cut = !self.selection.is_empty(),
+                    egui::Event::Paste(text) => done.paste = Some(text),
+                    _ => {}
+                }
+            }
         }
 
         let anchor = |node: NodeId, port: &str, input: bool| -> Option<Pos2> {
@@ -573,39 +738,162 @@ impl Canvas {
             if !area.intersects(rect) {
                 continue;
             }
-            let selected = self.selected == Some(node.id);
+            let selected = self.selection.contains(&node.id);
             let fire = triggers.contains(&node.id);
-            if draw_node(
+            let controls = zoom >= CONTROLS_ZOOM;
+            let (pressed, slots) = draw_node(
                 ui,
                 &painter,
                 node,
                 rect,
                 zoom,
                 &colors,
-                selected,
-                fire,
+                (selected, fire, controls),
                 response.id,
-            ) {
+            );
+            if pressed {
                 done.trigger = Some(node.id);
             }
+            for (port, slot) in slots {
+                if area.contains_rect(slot)
+                    && let Some(written) = self.control(ui, node, port, slot, response.id)
+                {
+                    done.set_input = Some(written);
+                }
+            }
+        }
+        // The box being drawn to select.
+        if let (Some(start), Some(at)) = (self.boxing, self.pointer) {
+            let shown = Rect::from_two_pos(to_screen(start), to_screen(at));
+            painter.rect_filled(shown, 2.0, colors.selected.gamma_multiply(0.12));
+            painter.rect_stroke(
+                shown,
+                2.0,
+                Stroke::new(1.0, colors.selected),
+                StrokeKind::Inside,
+            );
+        }
+        // Where a dragged node kind would land.
+        if response.dnd_hover_payload::<String>().is_some() {
+            painter.rect_stroke(
+                area,
+                0.0,
+                Stroke::new(2.0, colors.selected),
+                StrokeKind::Inside,
+            );
         }
         done
+    }
+
+    /// The control for one input's value on a card, in `slot`. Returns the value
+    /// written, as typed.
+    fn control(
+        &mut self,
+        ui: &mut egui::Ui,
+        node: &NodeView,
+        port: &PortView,
+        slot: Rect,
+        canvas: egui::Id,
+    ) -> Option<(NodeId, String, String)> {
+        let control = Control::of(port)?;
+        let id = canvas.with(("control", node.id, port.id.as_str()));
+        let place = |ui: &mut egui::Ui, add: &mut dyn FnMut(&mut egui::Ui) -> egui::Response| {
+            ui.scope_builder(
+                UiBuilder::new().max_rect(slot).id_salt(id).layout(
+                    egui::Layout::centered_and_justified(egui::Direction::LeftToRight),
+                ),
+                |ui| add(ui),
+            )
+            .inner
+        };
+        let written = |text: String| Some((node.id, port.id.clone(), text));
+        match control {
+            Control::Toggle => {
+                let mut on = port.value.as_deref() == Some("true");
+                let changed =
+                    place(ui, &mut |ui| ui.add(egui::Checkbox::without_text(&mut on))).changed();
+                changed.then(|| written(on.to_string())).flatten()
+            }
+            Control::Whole | Control::Number => {
+                let whole = control == Control::Whole;
+                let held = self
+                    .dragging
+                    .as_ref()
+                    .filter(|(at, name, _)| *at == node.id && *name == port.id)
+                    .map(|(_, _, value)| *value);
+                let mut value = held.unwrap_or_else(|| {
+                    port.value
+                        .as_deref()
+                        .and_then(|text| text.parse().ok())
+                        .unwrap_or(0.0)
+                });
+                let touched = place(ui, &mut |ui| {
+                    let drag =
+                        egui::DragValue::new(&mut value).speed(if whole { 0.2 } else { 0.01 });
+                    ui.add(if whole { drag.fixed_decimals(0) } else { drag })
+                });
+                if touched.dragged() {
+                    self.dragging = Some((node.id, port.id.clone(), value));
+                    return None;
+                }
+                if touched.drag_stopped() || touched.changed() {
+                    self.dragging = None;
+                    let text = if whole {
+                        format!("{value:.0}")
+                    } else {
+                        value.to_string()
+                    };
+                    return written(text);
+                }
+                None
+            }
+            Control::Text => {
+                let typing = self
+                    .typing
+                    .as_mut()
+                    .filter(|(at, name, _, _)| *at == node.id && *name == port.id);
+                let Some((_, _, typed, focused)) = typing else {
+                    // The value shows as a pill; a double click types a new one.
+                    let touched = ui.interact(slot, id, Sense::click());
+                    if touched.double_clicked() {
+                        let shown = port.value.clone().unwrap_or_default();
+                        let typed = serde_json::from_str::<String>(&shown).unwrap_or(shown);
+                        self.typing = Some((node.id, port.id.clone(), typed, false));
+                    }
+                    return None;
+                };
+                let field = place(ui, &mut |ui| ui.add(egui::TextEdit::singleline(typed)));
+                if !*focused {
+                    field.request_focus();
+                    *focused = true;
+                }
+                let entered =
+                    field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                if field.lost_focus() {
+                    let text = typed.clone();
+                    self.typing = None;
+                    return entered.then(|| written(text)).flatten();
+                }
+                None
+            }
+        }
     }
 }
 
 /// Draws one card. Returns whether its trigger button was pressed.
+/// `flags` are whether the card is selected, has a trigger button and shows controls
+/// for its values. Also returns where each input's control goes.
 #[expect(clippy::too_many_arguments, reason = "one card's drawing state")]
-fn draw_node(
+fn draw_node<'a>(
     ui: &egui::Ui,
     painter: &egui::Painter,
-    node: &NodeView,
+    node: &'a NodeView,
     rect: Rect,
     zoom: f32,
     colors: &Palette,
-    selected: bool,
-    fire: bool,
+    (selected, fire, controls): (bool, bool, bool),
     canvas: egui::Id,
-) -> bool {
+) -> (bool, Vec<(&'a PortView, Rect)>) {
     let radius = 8.0 * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
@@ -675,6 +963,7 @@ fn draw_node(
     }
 
     let (mut inputs, mut outputs) = (0u16, 0u16);
+    let mut slots = Vec::new();
     for port in &node.ports {
         let row = if port.input {
             &mut inputs
@@ -684,11 +973,29 @@ fn draw_node(
         let y = rect.min.y + (HEADER_HEIGHT + (f32::from(*row) + 0.5) * ROW_HEIGHT) * zoom;
         *row += 1;
         let x = if port.input { rect.min.x } else { rect.max.x };
-        draw_port(painter, port, Pos2::new(x, y), zoom, colors, readable);
+        // Toggles and numbers are drawn by their control instead of a pill.
+        let control = Control::of(port).filter(|_| controls && readable);
+        let pill = !matches!(
+            control,
+            Some(Control::Toggle | Control::Whole | Control::Number)
+        );
+        if let Some(label) = draw_port(painter, port, Pos2::new(x, y), zoom, colors, readable, pill)
+            && control.is_some()
+        {
+            let left = label.max.x + 8.0 * zoom;
+            let height = ROW_HEIGHT * zoom - 6.0;
+            let slot = Rect::from_min_size(
+                Pos2::new(left, y - height / 2.0),
+                Vec2::new(CONTROL_WIDTH * zoom, height),
+            );
+            slots.push((port, slot));
+        }
     }
-    pressed
+    (pressed, slots)
 }
 
+/// Draws a port's dot and name, and the value written on an input as a pill when
+/// `pill` is set. Returns where an input's name is.
 fn draw_port(
     painter: &egui::Painter,
     port: &PortView,
@@ -696,7 +1003,8 @@ fn draw_port(
     zoom: f32,
     colors: &Palette,
     readable: bool,
-) {
+    pill: bool,
+) -> Option<Rect> {
     let radius = PORT_RADIUS * zoom;
     let color = if port.exec {
         colors.exec
@@ -726,7 +1034,7 @@ fn draw_port(
         painter.circle_stroke(at, radius, Stroke::new(1.5, color));
     }
     if !readable {
-        return;
+        return None;
     }
     let font = FontId::proportional(12.5 * zoom);
     let gap = Vec2::new(12.0 * zoom, 0.0);
@@ -739,7 +1047,7 @@ fn draw_port(
             colors.text,
         );
         // The value written on an input that no wire feeds.
-        if let Some(value) = port.value.as_deref().filter(|_| !port.connected) {
+        if let Some(value) = port.value.as_deref().filter(|_| !port.connected && pill) {
             let shown: String = value.chars().take(18).collect();
             let shown = if shown.len() < value.len() {
                 format!("{shown}…")
@@ -755,8 +1063,10 @@ fn draw_port(
             painter.rect_filled(pill, 4.0 * zoom, colors.header);
             painter.galley(pill.min + Vec2::new(5.0, 2.0) * zoom, text, colors.text);
         }
+        Some(label)
     } else {
         let _ = painter.text(at - gap, Align2::RIGHT_CENTER, &port.id, font, colors.text);
+        None
     }
 }
 
@@ -937,6 +1247,116 @@ mod tests {
         // A new node goes to the middle of what is shown.
         let [x, y] = Canvas::new().center();
         assert_eq!([x, y], [-40.0 + 400.0, -40.0 + 300.0]);
+    }
+
+    /// One frame of the canvas with these input events.
+    fn frame(canvas: &mut Canvas, graph: &GraphView, events: Vec<egui::Event>) -> CanvasResponse {
+        let context = egui::Context::default();
+        // Held keys are part of the input, not only of each key event.
+        let modifiers = events
+            .iter()
+            .find_map(|event| match event {
+                egui::Event::Key { modifiers, .. } => Some(*modifiers),
+                _ => None,
+            })
+            .unwrap_or_default();
+        let mut held = vec![egui::Event::ModifiersChanged(modifiers)];
+        held.extend(events);
+        let input = egui::RawInput {
+            events: held,
+            ..egui::RawInput::default()
+        };
+        let mut response = CanvasResponse::default();
+        let output = context.run_ui(input, |ui| response = canvas.show(ui, graph, &[]));
+        output.drop_without_applying_deltas();
+        response
+    }
+
+    fn key(key: egui::Key, modifiers: egui::Modifiers) -> egui::Event {
+        egui::Event::Key {
+            key,
+            physical_key: None,
+            pressed: true,
+            repeat: false,
+            modifiers,
+        }
+    }
+
+    #[test]
+    fn several_nodes_are_selected_by_box_click_and_keys_and_go_together() {
+        let graph = graph();
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        // A box over the first two columns takes nodes 1 and 2, not 3.
+        let first = canvas.places[&id(1)];
+        let second = canvas.places[&id(2)];
+        let area = Rect::from_two_pos(first, second + Vec2::new(10.0, 10.0));
+        assert_eq!(canvas.nodes_in(&graph, area), vec![id(1), id(2)]);
+        canvas.select_many(&[id(1), id(2)]);
+        // Several selected: none is the one whose properties show.
+        assert_eq!(canvas.selected(), None);
+        canvas.toggle(id(2));
+        assert_eq!(
+            (canvas.selection(), canvas.selected()),
+            (vec![id(1)], Some(id(1)))
+        );
+        canvas.toggle(id(3));
+        assert_eq!(canvas.selection(), vec![id(1), id(3)]);
+
+        // Ctrl+A selects all, Delete removes all of them, copy asks for the selection.
+        let all = frame(
+            &mut canvas,
+            &graph,
+            vec![key(egui::Key::A, egui::Modifiers::COMMAND)],
+        );
+        assert!(all.remove.is_empty());
+        assert_eq!(canvas.selection().len(), 3);
+        let copied = frame(&mut canvas, &graph, vec![egui::Event::Copy]);
+        assert!(copied.copy && !copied.cut);
+        let pasted = frame(&mut canvas, &graph, vec![egui::Event::Paste("clip".into())]);
+        assert_eq!(pasted.paste.as_deref(), Some("clip"));
+        let deleted = frame(
+            &mut canvas,
+            &graph,
+            vec![key(egui::Key::Delete, egui::Modifiers::NONE)],
+        );
+        assert_eq!(deleted.remove, vec![id(1), id(2), id(3)]);
+        assert!(canvas.selection().is_empty());
+        // With nothing selected there is nothing to copy.
+        assert!(!frame(&mut canvas, &graph, vec![egui::Event::Copy]).copy);
+        // Paste goes to the middle of the view when the pointer is elsewhere.
+        assert_eq!(canvas.paste_place(), canvas.center());
+    }
+
+    #[test]
+    fn inputs_with_values_get_controls_by_type() {
+        let port = |ty: &str, connected: bool| PortView {
+            id: "v".into(),
+            input: true,
+            exec: false,
+            ty: Some(ty.into()),
+            value: None,
+            connected,
+        };
+        assert_eq!(
+            Control::of(&port("core/bool@1", false)),
+            Some(Control::Toggle)
+        );
+        assert_eq!(
+            Control::of(&port("core/i64@1", false)),
+            Some(Control::Whole)
+        );
+        assert_eq!(
+            Control::of(&port("core/f64@1", false)),
+            Some(Control::Number)
+        );
+        assert_eq!(
+            Control::of(&port("core/string@1", false)),
+            Some(Control::Text)
+        );
+        // A wired input and a type without a control get none.
+        assert_eq!(Control::of(&port("core/i64@1", true)), None);
+        assert_eq!(Control::of(&port("core/list@1<core/i64@1>", false)), None);
     }
 
     #[test]

@@ -223,7 +223,16 @@ impl Editor {
         });
         let Some(node) = selected else {
             self.inspected = None;
-            ui.weak("Select a node to see and change its values.");
+            let many = self.canvas.selection();
+            if many.len() > 1 {
+                ui.label(format!("{} nodes selected", many.len()));
+                ui.weak("Ctrl+C copies them, Ctrl+V pastes where the pointer is.");
+                if ui.button("Delete them").clicked() {
+                    let _ = self.remove_nodes(host, &many);
+                }
+            } else {
+                ui.weak("Select a node to see and change its values. Ctrl+click or Shift+drag selects several.");
+            }
             return;
         };
         self.inspect(&node);
