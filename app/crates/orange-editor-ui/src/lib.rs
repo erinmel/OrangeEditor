@@ -75,6 +75,29 @@ pub fn palette(host: &Host, search: &str) -> Vec<(String, Vec<PaletteItem>)> {
         .collect()
 }
 
+/// A type as a person reads it: `core/string@1` is "text". Other types keep their name
+/// without the version.
+pub fn type_name(ty: &str) -> String {
+    match ty {
+        "core/string@1" => "text".to_owned(),
+        "core/bool@1" => "true or false".to_owned(),
+        "core/i64@1" | "core/u64@1" | "core/i32@1" | "core/u32@1" => "whole number".to_owned(),
+        "core/f64@1" | "core/f32@1" => "number".to_owned(),
+        "core/bytes@1" => "bytes".to_owned(),
+        "core/duration@1" => "length of time".to_owned(),
+        // Core types lose their namespace everywhere in the expression.
+        other => other.replace("core/", "").replace("@1", ""),
+    }
+}
+
+/// The kinds of node that name one of the document's variables in their settings.
+const VARIABLE_NODES: [&str; 4] = [
+    "core/get-variable",
+    "core/set-variable",
+    "core/update-variable",
+    "core/on-variable-changed",
+];
+
 /// The document being edited.
 #[derive(Debug)]
 struct Document {
@@ -89,7 +112,13 @@ struct Document {
     problems: Vec<String>,
     /// The flow running this document, with the entries a person can fire.
     flow: Option<(FlowId, Vec<NodeId>)>,
+    /// The document before each edit, oldest first, and the edits undone since.
+    undo: Vec<String>,
+    redo: Vec<String>,
 }
+
+/// Most edits that can be undone.
+pub const MAX_UNDO: usize = 200;
 
 /// Which panels the editor shows around the canvas. The canvas and the toolbar are
 /// always there.
@@ -101,6 +130,8 @@ pub struct Panels {
     pub packages: bool,
     /// Problems and the log, at the bottom.
     pub log: bool,
+    /// The values of the selected node, on the right.
+    pub properties: bool,
 }
 impl Default for Panels {
     fn default() -> Self {
@@ -108,6 +139,7 @@ impl Default for Panels {
             nodes: true,
             packages: false,
             log: true,
+            properties: true,
         }
     }
 }
@@ -119,6 +151,10 @@ pub struct Editor {
     document: Option<Document>,
     canvas: Canvas,
     log: VecDeque<String>,
+    /// The node whose values the properties panel is editing, and what is typed in
+    /// each of its fields.
+    inspected: Option<NodeId>,
+    typed: std::collections::BTreeMap<String, String>,
     /// The panels shown; a host application may set them, and the toolbar switches them.
     pub panels: Panels,
 }
@@ -142,6 +178,8 @@ impl Editor {
             names,
             graph,
             unsaved: false,
+            undo: Vec::new(),
+            redo: Vec::new(),
             problems: Vec::new(),
             flow: None,
         });
@@ -181,6 +219,207 @@ impl Editor {
         if let Ok(text) = place(&document.text, &self.canvas.places()) {
             document.unsaved |= text != document.text;
             document.text = text;
+        }
+    }
+
+    /// Makes `text` the document: the canvas, the problems and a running flow follow.
+    fn show_text(&mut self, host: &mut Host, text: String) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        document.text = text;
+        document.names = Names::of(host, &document.text);
+        document.graph = host.view(&document.text).unwrap_or_default();
+        document.unsaved = true;
+        self.canvas.update(&document.graph);
+        // The fields of the properties panel are read again from the new document.
+        self.inspected = None;
+        let mut said = None;
+        if let Some((flow, entries)) = &mut document.flow {
+            match host.update(*flow, &document.text) {
+                Ok(_) => {
+                    *entries = host
+                        .info(*flow)
+                        .map(|info| {
+                            info.manual_entries
+                                .iter()
+                                .filter(|(_, payload)| !payload)
+                                .map(|(node, _)| *node)
+                                .collect()
+                        })
+                        .unwrap_or_default();
+                }
+                // The flow keeps running the graph it had.
+                Err(error) => said = Some(format!("[{flow}] the edit is not running yet: {error}")),
+            }
+        }
+        if let Some(line) = said {
+            self.say(line);
+        }
+        self.check(host);
+    }
+
+    /// Applies the result of an edit. A refused edit says why in the log and changes
+    /// nothing. Returns whether the document changed.
+    fn edited(&mut self, host: &mut Host, result: Result<String, HostError>) -> bool {
+        let Some(document) = &mut self.document else {
+            return false;
+        };
+        match result {
+            Ok(text) if text == document.text => false,
+            Ok(text) => {
+                document.undo.push(document.text.clone());
+                if document.undo.len() > MAX_UNDO {
+                    let _ = document.undo.remove(0);
+                }
+                document.redo.clear();
+                self.show_text(host, text);
+                true
+            }
+            Err(error) => {
+                for line in Self::problems_of(&error, &document.names) {
+                    self.say(format!("not done: {line}"));
+                }
+                false
+            }
+        }
+    }
+
+    /// The text an edit starts from: the document with the canvas's layout in it.
+    fn editing(&mut self) -> Option<String> {
+        self.keep_layout();
+        self.text().map(str::to_owned)
+    }
+
+    /// Adds a node of kind `definition` in the middle of the canvas and selects it.
+    pub fn add_node(&mut self, host: &mut Host, definition: &str) -> Option<NodeId> {
+        let text = self.editing()?;
+        let [x, y] = self.canvas.center();
+        // Not exactly on top of a node added just before.
+        #[expect(clippy::cast_precision_loss, reason = "a document has few nodes")]
+        let step = (self.graph().map_or(0, |graph| graph.nodes.len()) % 8) as f32 * 24.0;
+        let at = [x - canvas::NODE_WIDTH / 2.0 + step, y - 40.0 + step];
+        match host.add_node(&text, definition, at) {
+            Ok((text, node)) => {
+                let _ = self.edited(host, Ok(text));
+                self.canvas.select(Some(node));
+                Some(node)
+            }
+            Err(error) => {
+                let _ = self.edited(host, Err(error));
+                None
+            }
+        }
+    }
+
+    /// Removes a node with its wires.
+    pub fn remove_node(&mut self, host: &mut Host, node: NodeId) -> bool {
+        let Some(text) = self.editing() else {
+            return false;
+        };
+        let result = host.remove_nodes(&text, &[node]);
+        self.edited(host, result)
+    }
+
+    /// Wires an output to an input. A wire the language does not allow is refused
+    /// with the reason in the log.
+    pub fn connect(&mut self, host: &mut Host, from: (NodeId, &str), to: (NodeId, &str)) -> bool {
+        let Some(text) = self.editing() else {
+            return false;
+        };
+        let result = host.connect(&text, from, to);
+        self.edited(host, result)
+    }
+
+    /// Takes the wires off one port.
+    pub fn disconnect(&mut self, host: &mut Host, at: (NodeId, &str), input: bool) -> bool {
+        let Some(text) = self.editing() else {
+            return false;
+        };
+        let result = host.disconnect(&text, at, input);
+        self.edited(host, result)
+    }
+
+    /// Writes a value on an input, typed plainly; `None` takes it off.
+    pub fn set_input(&mut self, host: &mut Host, at: (NodeId, &str), typed: Option<&str>) -> bool {
+        let Some(text) = self.editing() else {
+            return false;
+        };
+        let result = host.set_input(&text, at, typed);
+        self.edited(host, result)
+    }
+
+    /// The variables the open document declares, as (ID, name), and the one `node`
+    /// names in its settings.
+    pub fn variables(&self, node: NodeId) -> (Vec<(String, String)>, Option<String>) {
+        let saved: serde_json::Value = self
+            .text()
+            .and_then(|text| serde_json::from_str(text).ok())
+            .unwrap_or_default();
+        let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
+        let declared = saved["variables"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|variable| Some((text(&variable["id"])?, text(&variable["name"])?)))
+            .collect();
+        let id = node.to_string();
+        let named = saved["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|found| found["id"] == id.as_str())
+            .and_then(|found| text(&found["config"]["variable"]));
+        (declared, named)
+    }
+
+    /// Makes a variable node name the variable with ID `variable`, keeping its other
+    /// settings.
+    pub fn set_variable(&mut self, host: &mut Host, node: NodeId, variable: &str) -> bool {
+        let Some(text) = self.editing() else {
+            return false;
+        };
+        let saved: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
+        let id = node.to_string();
+        let mut config = saved["nodes"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .find(|found| found["id"] == id.as_str())
+            .map(|found| found["config"].clone())
+            .filter(serde_json::Value::is_object)
+            .unwrap_or_else(|| serde_json::json!({}));
+        config["variable"] = serde_json::Value::String(variable.to_owned());
+        let result = host.set_config(&text, node, &config);
+        self.edited(host, result)
+    }
+
+    /// Whether there is an edit to undo, and one to do again.
+    pub fn can_undo(&self) -> (bool, bool) {
+        self.document.as_ref().map_or((false, false), |document| {
+            (!document.undo.is_empty(), !document.redo.is_empty())
+        })
+    }
+
+    /// Takes back the last edit.
+    pub fn undo(&mut self, host: &mut Host) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if let Some(before) = document.undo.pop() {
+            document.redo.push(document.text.clone());
+            self.show_text(host, before);
+        }
+    }
+
+    /// Does again the edit last taken back.
+    pub fn redo(&mut self, host: &mut Host) {
+        let Some(document) = &mut self.document else {
+            return;
+        };
+        if let Some(after) = document.redo.pop() {
+            document.undo.push(document.text.clone());
+            self.show_text(host, after);
         }
     }
 
@@ -337,12 +576,35 @@ impl Editor {
 
     /// Draws the editor into `ui` and applies what the person did.
     pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        // Undo and redo by keyboard, unless a text field is being typed in.
+        if !ui.ctx().egui_wants_keyboard_input() {
+            let (undo, redo) = ui.input(|input| {
+                let command = input.modifiers.command;
+                let z = input.key_pressed(egui::Key::Z);
+                (
+                    command && z && !input.modifiers.shift,
+                    command && (input.key_pressed(egui::Key::Y) || (z && input.modifiers.shift)),
+                )
+            });
+            if undo {
+                self.undo(host);
+            }
+            if redo {
+                self.redo(host);
+            }
+        }
         self.toolbar(ui, host);
         if self.panels.nodes {
             egui::Panel::left("orange-nodes")
                 .resizable(true)
                 .default_size(250.0)
                 .show(ui, |ui| self.nodes_panel(ui, host));
+        }
+        if self.panels.properties {
+            egui::Panel::right("orange-properties")
+                .resizable(true)
+                .default_size(240.0)
+                .show(ui, |ui| self.properties_panel(ui, host));
         }
         if self.panels.packages {
             egui::Panel::right("orange-packages")
@@ -365,6 +627,7 @@ impl Editor {
         egui::Panel::top("orange-toolbar").show(ui, |ui| {
             ui.horizontal(|ui| {
                 let _ = ui.toggle_value(&mut self.panels.nodes, "Nodes");
+                let _ = ui.toggle_value(&mut self.panels.properties, "Properties");
                 let _ = ui.toggle_value(&mut self.panels.packages, "Packages");
                 let _ = ui.toggle_value(&mut self.panels.log, "Log");
                 ui.separator();
@@ -395,6 +658,14 @@ impl Editor {
                     self.run(host);
                 }
                 ui.separator();
+                let (undo, redo) = self.can_undo();
+                if ui.add_enabled(undo, egui::Button::new("Undo")).clicked() {
+                    self.undo(host);
+                }
+                if ui.add_enabled(redo, egui::Button::new("Redo")).clicked() {
+                    self.redo(host);
+                }
+                ui.separator();
                 if ui.button("Fit").clicked() {
                     self.canvas.fit();
                 }
@@ -419,7 +690,8 @@ impl Editor {
         });
     }
 
-    fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &Host) {
+    fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        let mut add = None;
         ui.heading("Nodes");
         let _ = ui.add(
             egui::TextEdit::singleline(&mut self.search)
@@ -434,13 +706,121 @@ impl Editor {
                     .default_open(searching)
                     .show(ui, |ui| {
                         for item in items {
-                            let _ = ui
-                                .label(item.label.as_str())
-                                .on_hover_text(item.id.as_str());
+                            let hint = format!("{}\nClick to add it to the graph.", item.id);
+                            if ui
+                                .selectable_label(false, item.label.as_str())
+                                .on_hover_text(hint)
+                                .clicked()
+                            {
+                                add = Some(item.id);
+                            }
                         }
                     });
             }
         });
+        if let Some(definition) = add {
+            if self.document.is_some() {
+                let _ = self.add_node(host, &definition);
+            } else {
+                self.say("open a graph before adding nodes".to_owned());
+            }
+        }
+    }
+
+    fn properties_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        ui.heading("Properties");
+        let selected = self.canvas.selected().and_then(|id| {
+            self.graph()?
+                .nodes
+                .iter()
+                .find(|node| node.id == id)
+                .cloned()
+        });
+        let Some(node) = selected else {
+            self.inspected = None;
+            ui.weak("Select a node to see and change its values.");
+            return;
+        };
+        if self.inspected != Some(node.id) {
+            self.inspected = Some(node.id);
+            self.typed = node
+                .ports
+                .iter()
+                .filter(|port| port.input && !port.exec)
+                .map(|port| {
+                    let shown = port.value.clone().unwrap_or_default();
+                    // Text is shown in quotes on a card and typed without them.
+                    let typed = serde_json::from_str::<String>(&shown).unwrap_or(shown);
+                    (port.id.clone(), typed)
+                })
+                .collect();
+        }
+        ui.strong(node.name.as_str());
+        ui.weak(node.kind.as_str());
+        ui.weak(node.definition.as_str());
+        ui.separator();
+        if VARIABLE_NODES.contains(&node.definition.as_str()) {
+            let (declared, named) = self.variables(node.id);
+            let shown = named
+                .as_ref()
+                .and_then(|id| declared.iter().find(|(known, _)| known == id))
+                .map_or("choose a variable", |(_, name)| name.as_str())
+                .to_owned();
+            ui.label("variable");
+            let mut chosen = None;
+            let _ = egui::ComboBox::from_id_salt("orange-variable")
+                .selected_text(shown)
+                .show_ui(ui, |ui| {
+                    for (id, name) in &declared {
+                        let current = named.as_deref() == Some(id.as_str());
+                        if ui.selectable_label(current, name.as_str()).clicked() && !current {
+                            chosen = Some(id.clone());
+                        }
+                    }
+                    if declared.is_empty() {
+                        ui.weak("the document declares no variables");
+                    }
+                });
+            if let Some(variable) = chosen {
+                let _ = self.set_variable(host, node.id, &variable);
+            }
+            ui.separator();
+        }
+        // What to do once the fields are drawn: a value to write or take off.
+        let mut write: Option<(String, Option<String>)> = None;
+        egui::ScrollArea::vertical().show(ui, |ui| {
+            for port in node.ports.iter().filter(|port| port.input && !port.exec) {
+                let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
+                ui.label(format!("{} ({ty})", port.id));
+                if port.connected {
+                    ui.weak("comes from a wire");
+                    continue;
+                }
+                let typed = self.typed.entry(port.id.clone()).or_default();
+                ui.horizontal(|ui| {
+                    let field = ui.add(
+                        egui::TextEdit::singleline(typed)
+                            .hint_text("no value")
+                            .desired_width(150.0),
+                    );
+                    let entered =
+                        field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
+                    if entered || ui.small_button("Set").clicked() {
+                        write = Some((port.id.clone(), Some(typed.clone())));
+                    }
+                    if port.value.is_some() && ui.small_button("Clear").clicked() {
+                        write = Some((port.id.clone(), None));
+                    }
+                });
+            }
+            ui.separator();
+            if ui.button("Delete node").clicked() {
+                let _ = self.remove_node(host, node.id);
+            }
+        });
+        if let Some((port, typed)) = write {
+            let _ = self.set_input(host, (node.id, &port), typed.as_deref());
+        }
     }
 
     fn packages_panel(ui: &mut egui::Ui, host: &Host) {
@@ -481,7 +861,7 @@ impl Editor {
             });
     }
 
-    fn canvas_panel(&mut self, ui: &mut egui::Ui, host: &Host) {
+    fn canvas_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
         let Some(document) = &self.document else {
             ui.centered_and_justified(|ui| ui.label("Open a graph file to see it here."));
             return;
@@ -496,6 +876,15 @@ impl Editor {
         }
         if let Some(node) = done.trigger {
             self.trigger(host, node);
+        }
+        if let Some((from, to)) = done.connect {
+            let _ = self.connect(host, (from.0, &from.1), (to.0, &to.1));
+        }
+        if let Some((node, port, input)) = done.disconnect {
+            let _ = self.disconnect(host, (node, &port), input);
+        }
+        if let Some(node) = done.remove {
+            let _ = self.remove_node(host, node);
         }
     }
 }
@@ -657,20 +1046,129 @@ mod tests {
         assert!(again.graph().unwrap().nodes[1].position.is_some());
     }
 
+    /// A document with only the variable `count`.
+    fn blank() -> String {
+        let mut saved: serde_json::Value = serde_json::from_str(&graph()).unwrap();
+        saved["nodes"] = json!([]);
+        saved["edges"] = json!([]);
+        saved.to_string()
+    }
+
+    #[test]
+    fn a_graph_is_built_edited_undone_and_run_from_the_editor() {
+        let (mut host, events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        let trigger = editor.add_node(&mut host, "core/on-manual").unwrap();
+        let join = editor
+            .add_node(&mut host, "org.orange.text/concat")
+            .unwrap();
+        // The new node is selected and sits where the canvas is looking.
+        assert_eq!(editor.canvas().selected(), Some(join));
+        assert_eq!(editor.graph().unwrap().nodes.len(), 2);
+        assert!(editor.is_unsaved());
+        assert!(editor.set_input(&mut host, (join, "a"), Some("hello ")));
+        assert!(editor.set_input(&mut host, (join, "b"), Some("there")));
+        let value = |editor: &Editor, port: &str| {
+            let graph = editor.graph().unwrap();
+            let node = graph.nodes.iter().find(|node| node.id == join).unwrap();
+            node.ports
+                .iter()
+                .find(|found| found.id == port)
+                .unwrap()
+                .value
+                .clone()
+        };
+        assert_eq!(value(&editor, "b").as_deref(), Some("\"there\""));
+
+        // A wire that cannot be is refused: the log says so and nothing changes.
+        let before = editor.text().unwrap().to_owned();
+        assert!(!editor.connect(&mut host, (trigger, "then"), (join, "a")));
+        assert_eq!(editor.text().unwrap(), before);
+        assert!(editor.log().any(|line| line.starts_with("not done:")));
+
+        // Undo takes back one edit at a time; redo does it again.
+        assert_eq!(editor.can_undo(), (true, false));
+        editor.undo(&mut host);
+        assert_eq!(value(&editor, "b"), None);
+        assert_eq!(editor.can_undo(), (true, true));
+        editor.redo(&mut host);
+        assert_eq!(value(&editor, "b").as_deref(), Some("\"there\""));
+        assert!(editor.set_input(&mut host, (join, "b"), None));
+        assert_eq!(value(&editor, "b"), None);
+        // A new edit after an undo leaves nothing to redo.
+        editor.undo(&mut host);
+        assert!(editor.remove_node(&mut host, join));
+        assert!(!editor.can_undo().1);
+        assert_eq!(editor.graph().unwrap().nodes.len(), 1);
+        assert_eq!(editor.canvas().selected(), None);
+        editor.undo(&mut host);
+        assert_eq!(editor.graph().unwrap().nodes.len(), 2);
+
+        // An edit made while the document runs reaches the flow: a second trigger
+        // added while running can be fired.
+        let set = editor.add_node(&mut host, "core/set-variable").unwrap();
+        // A variable node names nothing until one is chosen.
+        let (declared, named) = editor.variables(set);
+        assert_eq!((declared.len(), named), (1, None));
+        assert_eq!(declared[0].1, "count");
+        assert!(!editor.problems().is_empty());
+        assert!(editor.set_variable(&mut host, set, &declared[0].0));
+        assert_eq!(
+            editor.variables(set).1.as_deref(),
+            Some(declared[0].0.as_str())
+        );
+        assert!(editor.set_input(&mut host, (set, "value"), Some("3")));
+        assert!(editor.connect(&mut host, (trigger, "then"), (set, "in")));
+        assert!(editor.problems().is_empty(), "{:?}", editor.problems());
+        editor.run(&mut host);
+        assert!(editor.is_running());
+        assert!(editor.set_input(&mut host, (set, "value"), Some("4")));
+        editor.trigger(&host, trigger);
+        let started = Instant::now();
+        while !editor.log().any(|line| line.ends_with("count = 4")) {
+            assert!(
+                started.elapsed() < Duration::from_secs(20),
+                "the edited value ran"
+            );
+            let _ = editor.take_events(&events);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // The whole editor draws with a node selected and the properties shown.
+        editor.canvas().select(Some(set));
+        assert!(draw(&mut editor, &mut host) > 0);
+        editor.stop(&mut host);
+    }
+
     #[test]
     fn panels_can_be_switched_off_leaving_the_canvas() {
         let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
         let mut editor = Editor::new();
         let bound = host.bind(&graph()).unwrap();
         editor.open(&mut host, "graph.json", bound);
-        let all = draw(&mut editor, &mut host);
+        assert!(draw(&mut editor, &mut host) > 0);
+        let with_panels = editor.canvas().size();
         editor.panels = Panels {
             nodes: false,
             packages: false,
             log: false,
+            properties: false,
         };
-        let bare = draw(&mut editor, &mut host);
-        assert!(bare > 0 && bare < all, "{bare} < {all}");
+        assert!(draw(&mut editor, &mut host) > 0);
+        // The canvas takes the room the panels gave up.
+        let alone = editor.canvas().size();
+        assert!(alone[0] > with_panels[0] && alone[1] > with_panels[1]);
+    }
+
+    #[test]
+    fn types_are_named_for_people() {
+        assert_eq!(type_name("core/string@1"), "text");
+        assert_eq!(type_name("core/i64@1"), "whole number");
+        assert_eq!(type_name("core/list@1<core/i64@1>"), "list<i64>");
+        assert_eq!(
+            type_name("org.example.geo/point@1"),
+            "org.example.geo/point"
+        );
     }
 
     #[test]

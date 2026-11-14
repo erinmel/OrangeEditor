@@ -96,6 +96,19 @@ pub struct CanvasResponse {
     pub moved: bool,
     /// The node that was clicked.
     pub selected: Option<NodeId>,
+    /// A wire was drawn from an output to an input: the two ends.
+    pub connect: Option<((NodeId, String), (NodeId, String))>,
+    /// The wires at a port were taken off: the node, the port and whether it is an input.
+    pub disconnect: Option<(NodeId, String, bool)>,
+    /// The selected node was deleted.
+    pub remove: Option<NodeId>,
+}
+
+/// A wire being drawn from an output, not yet let go.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct Wiring {
+    from: (NodeId, String),
+    exec: bool,
 }
 
 /// The view of one graph: where it is scrolled to, how far it is zoomed and where its
@@ -111,6 +124,9 @@ pub struct Canvas {
     moving: bool,
     /// Show the whole graph at the next frame.
     fit: bool,
+    wiring: Option<Wiring>,
+    /// The size of the canvas when it was last shown, in points.
+    size: Vec2,
 }
 impl Default for Canvas {
     fn default() -> Self {
@@ -121,6 +137,8 @@ impl Default for Canvas {
             selected: None,
             moving: false,
             fit: true,
+            wiring: None,
+            size: Vec2::new(800.0, 600.0),
         }
     }
 }
@@ -211,6 +229,74 @@ impl Canvas {
         self.fit = true;
     }
 
+    /// Follows an edit of the graph: nodes that are new take the place the document
+    /// gives them or an automatic one, nodes that are gone are forgotten, and every
+    /// other node stays where it is. The view is not moved.
+    pub fn update(&mut self, graph: &GraphView) {
+        let fresh = auto_layout(graph);
+        self.places.retain(|id, _| fresh.contains_key(id));
+        for (id, place) in fresh {
+            let _ = self.places.entry(id).or_insert(place);
+        }
+        if !self.places.keys().any(|id| Some(*id) == self.selected) {
+            self.selected = None;
+        }
+    }
+
+    /// The size of the canvas when it was last shown, in points.
+    pub fn size(&self) -> [f32; 2] {
+        [self.size.x, self.size.y]
+    }
+
+    /// The graph point in the middle of the canvas: where a new node goes.
+    pub fn center(&self) -> [f32; 2] {
+        let center = self.origin + self.size / self.zoom / 2.0;
+        [center.x, center.y]
+    }
+
+    /// Selects a node, as clicking it does.
+    pub fn select(&mut self, node: Option<NodeId>) {
+        self.selected = node.filter(|id| self.places.contains_key(id));
+    }
+
+    /// The input a wire let go at `at` (graph units) lands on: the input of the same
+    /// sort (step or value) whose row, on the left of its card, holds the point. A
+    /// wire does not land on the node it started from.
+    pub fn input_at(
+        &self,
+        graph: &GraphView,
+        at: Pos2,
+        exec: bool,
+        from: NodeId,
+    ) -> Option<(NodeId, String)> {
+        for node in graph.nodes.iter().rev() {
+            let Some(place) = self.places.get(&node.id).copied() else {
+                continue;
+            };
+            if node.id == from {
+                continue;
+            }
+            for port in node
+                .ports
+                .iter()
+                .filter(|port| port.input && port.exec == exec)
+            {
+                let Some(offset) = port_offset(node, &port.id, true) else {
+                    continue;
+                };
+                // From a little left of the dot to past the middle of the card.
+                let row = Rect::from_min_max(
+                    place + Vec2::new(-14.0, offset.y - ROW_HEIGHT / 2.0),
+                    place + Vec2::new(NODE_WIDTH * 0.6, offset.y + ROW_HEIGHT / 2.0),
+                );
+                if row.contains(at) {
+                    return Some((node.id, port.id.clone()));
+                }
+            }
+        }
+        None
+    }
+
     /// Where each node is, for saving in the document's layout.
     pub fn places(&self) -> Vec<(NodeId, [f32; 2])> {
         self.places
@@ -282,6 +368,7 @@ impl Canvas {
         let mut done = CanvasResponse::default();
         let (response, painter) = ui.allocate_painter(ui.available_size(), Sense::click_and_drag());
         let area = response.rect;
+        self.size = area.size();
         let colors = Palette::of(ui);
         if self.fit {
             self.fit = false;
@@ -356,6 +443,60 @@ impl Canvas {
             }
         }
 
+        // Ports: dragging from an output draws a wire; the second mouse button on a
+        // wired port takes its wires off.
+        let grab = (PORT_RADIUS + 5.0) * zoom.max(0.6);
+        for node in &graph.nodes {
+            let Some(place) = self.places.get(&node.id).copied() else {
+                continue;
+            };
+            for port in &node.ports {
+                let Some(offset) = port_offset(node, &port.id, port.input) else {
+                    continue;
+                };
+                let at = to_screen(place + offset);
+                if !area.contains(at) {
+                    continue;
+                }
+                let touched = ui.interact(
+                    Rect::from_center_size(at, Vec2::splat(2.0 * grab)),
+                    response.id.with((node.id, port.id.as_str(), port.input)),
+                    Sense::click_and_drag(),
+                );
+                if !port.input && touched.drag_started() {
+                    self.wiring = Some(Wiring {
+                        from: (node.id, port.id.clone()),
+                        exec: port.exec,
+                    });
+                }
+                if touched.secondary_clicked() && port.connected {
+                    done.disconnect = Some((node.id, port.id.clone(), port.input));
+                }
+            }
+        }
+        let pointer = ui.input(|input| input.pointer.interact_pos());
+        if let Some(wiring) = self.wiring.clone()
+            && ui.input(|input| input.pointer.any_released())
+        {
+            if let Some(pointer) = pointer {
+                let at = origin + (pointer - area.min) / zoom;
+                done.connect = self
+                    .input_at(graph, at, wiring.exec, wiring.from.0)
+                    .map(|to| (wiring.from, to));
+            }
+            self.wiring = None;
+        }
+        // The delete key removes the selected node, unless a text field has the keys.
+        if let Some(node) = self.selected
+            && !ui.ctx().egui_wants_keyboard_input()
+            && ui.input(|input| {
+                input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace)
+            })
+        {
+            done.remove = Some(node);
+            self.selected = None;
+        }
+
         let anchor = |node: NodeId, port: &str, input: bool| -> Option<Pos2> {
             let view = graph.nodes.iter().find(|view| view.id == node)?;
             let place = *self.places.get(&node)?;
@@ -397,6 +538,30 @@ impl Canvas {
                 false,
                 Color32::TRANSPARENT,
                 Stroke::new(width, color),
+            ));
+        }
+
+        // The wire being drawn follows the pointer until it is let go.
+        if let (Some(wiring), Some(to)) = (&self.wiring, pointer)
+            && let Some(from) = anchor(wiring.from.0, &wiring.from.1, false)
+        {
+            let reach = ((to.x - from.x).abs() * 0.5).max(40.0 * zoom);
+            let points = [
+                from,
+                from + Vec2::new(reach, 0.0),
+                to - Vec2::new(reach, 0.0),
+                to,
+            ];
+            let color = if wiring.exec {
+                colors.exec
+            } else {
+                colors.selected
+            };
+            painter.add(CubicBezierShape::from_points_stroke(
+                points,
+                false,
+                Color32::TRANSPARENT,
+                Stroke::new(2.0 * zoom.max(0.6), color),
             ));
         }
 
@@ -720,6 +885,54 @@ mod tests {
         let second = places.iter().find(|(node, _)| *node == id(2)).unwrap().1;
         assert_eq!(second, [NODE_WIDTH + LAYOUT_GAP.x + 12.0, -7.0]);
         assert_eq!(places.len(), 3);
+    }
+
+    #[test]
+    fn a_wire_lands_on_the_input_row_of_its_own_sort_and_an_edit_keeps_places() {
+        let graph = graph();
+        let mut canvas = Canvas::new();
+        canvas.load(&graph);
+        let third = canvas.places[&id(3)];
+        let row = |n: f32| third + Vec2::new(20.0, HEADER_HEIGHT + (n + 0.5) * ROW_HEIGHT);
+        // Row 0 is the step way in; rows 1 and 2 are the values a and b.
+        assert_eq!(
+            canvas.input_at(&graph, row(0.0), true, id(1)),
+            Some((id(3), "in".into()))
+        );
+        assert_eq!(canvas.input_at(&graph, row(0.0), false, id(1)), None);
+        assert_eq!(
+            canvas.input_at(&graph, row(2.0), false, id(1)),
+            Some((id(3), "b".into()))
+        );
+        // Not on the node the wire started from, not on the right of the card, not on
+        // empty canvas.
+        assert_eq!(canvas.input_at(&graph, row(0.0), true, id(3)), None);
+        let right = third + Vec2::new(NODE_WIDTH - 10.0, HEADER_HEIGHT + 0.5 * ROW_HEIGHT);
+        assert_eq!(canvas.input_at(&graph, right, true, id(1)), None);
+        assert_eq!(
+            canvas.input_at(&graph, Pos2::new(-500.0, -500.0), true, id(1)),
+            None
+        );
+
+        // After an edit, kept nodes stay where they were put, a new one gets a place
+        // and a removed one is forgotten along with the selection of it.
+        canvas.move_node(id(2), Vec2::new(40.0, 40.0));
+        let moved = canvas.places[&id(2)];
+        canvas.select(Some(id(1)));
+        let mut edited = graph.clone();
+        edited.nodes.remove(0);
+        edited.wires.retain(|wire| wire.from.0 != id(1));
+        let mut added = node(4, vec![]);
+        added.position = Some([900.0, 900.0]);
+        edited.nodes.push(added);
+        canvas.update(&edited);
+        assert_eq!(canvas.places[&id(2)], moved);
+        assert_eq!(canvas.places[&id(4)], Pos2::new(900.0, 900.0));
+        assert!(!canvas.places.contains_key(&id(1)));
+        assert_eq!(canvas.selected(), None);
+        // A new node goes to the middle of what is shown.
+        let [x, y] = Canvas::new().center();
+        assert_eq!([x, y], [-40.0 + 400.0, -40.0 + 300.0]);
     }
 
     #[test]
