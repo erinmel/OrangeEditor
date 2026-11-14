@@ -18,6 +18,7 @@ mod effects;
 mod flow;
 mod flows;
 mod graphs;
+mod names;
 mod packages;
 mod persist;
 mod preview;
@@ -64,6 +65,7 @@ pub use documents::{
     discard_autosave, publish_function, recover_document, save_document,
 };
 pub use graphs::{GRAPH_NODE_FORMAT, GRAPH_PROVIDER};
+pub use names::{Names, describe, lines, literal, plain, said};
 pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
