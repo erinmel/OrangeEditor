@@ -26,6 +26,7 @@ mod services;
 mod state;
 mod streams;
 mod variables;
+mod view;
 
 use effects::Pool;
 use flow::{Context, Keep, Query, Shared, Sink};
@@ -89,6 +90,7 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use preview::Previewed;
 pub use state::StoredVariable;
+pub use view::{GraphView, NodeView, PortView, WireView, place};
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
