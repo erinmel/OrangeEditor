@@ -98,6 +98,16 @@ sixteen that faults when full; other fields the author wrote are kept. Bound nod
 the rest of the document are untouched, so binding twice gives the same text. Nodes
 inside function bodies are not bound. `orange bind` saves the result over the file,
 keeping the previous version as `.bak`, and prints the remaining diagnostics.
+Editor crates (2026-11-13): `orange-editor-ui` is an egui library whose `Editor`
+holds what is shown and draws into any `egui::Ui`; every button calls a public method
+(`open`, `check`, `run`, `stop`, `trigger`, `take_events`), so tests and other hosts
+drive it without a window. It depends on `egui` and `orange-host` only.
+`orange-desktop` (program `orange-editor`) owns the eframe window, the host and the
+built-in service packages. What a graph's nodes and variables are called and how
+values, steps, problems and flow events read as text (`Names`, `plain`, `said`,
+`describe`, `lines`) moved from the terminal into `orange-host`, so both front ends say
+the same things.
+
 Live preview (2026-11-13): `Host::preview(json, ports)` returns the values of pure
 outputs without running anything, through the compiler's `PurePreview`. The outputs
 are the ones named, or the document's `exports` when none is. An output that follows

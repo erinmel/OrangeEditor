@@ -54,6 +54,8 @@ Package lifecycle (2026-11-03) adds app/crates/orange-packages as a core member.
 
 K02b (2026-11-08) adds the `sdk/` workspace: `sdk/wit` (the versioned `orange:expansion` WIT package), `sdk/guests/probe` (a Rust test guest) and `sdk/tools/componentize`. It builds separately with its own toolchain file adding `wasm32-unknown-unknown`; `node tools/build-guest-fixtures.mjs` produces the host test fixture.
 
+Editor crates (2026-11-13) add app/crates/orange-editor-ui (normal edges to orange-host and `egui` 0.37.0) and app/crates/orange-desktop (program `orange-editor`; orange-editor-ui, orange-host, the three service packages, orange-vault and `eframe` 0.37.0). They are the only members that may depend on a UI, window or renderer framework; the policy tool lists both.
+
 Native plugin libraries (2026-11-11) add app/crates/orange-native (normal edge to orange-sdk; `libloading` 0.9.0, ISC) and app/crates/orange-plugin-example, a `cdylib` member depending on orange-sdk only. Both replace the workspace lint table with their own, identical except `unsafe_code = "deny"`. orange-sdk gains a build script that records the compiler and target. orange-cli depends on orange-native.
 
 Audio formats and Linux credentials (2026-11-12): orange-audio adds `symphonia` 0.5.5 (MPL-2.0, features `mp3`, `ogg`, `vorbis`); `deny.toml` admits MPL-2.0 by the owner's decision. `keyring` now uses features `apple-native`, `windows-native`, `sync-secret-service`, `crypto-rust` and `vendored`, so Linux builds compile the D-Bus client library from source and need a C compiler but no system package. orange-audio/tests/fixtures holds two generated tones (1.5 kB and 3.7 kB).

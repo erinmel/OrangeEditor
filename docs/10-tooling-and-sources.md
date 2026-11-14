@@ -1,5 +1,36 @@
 # Tooling, environment and research register
 
+## Probe P-01: editor toolkit pinned — 2026-11-13
+
+| Item | Value |
+|---|---|
+| Toolchain | Rust 1.99.1 (workspace MSRV 1.97.1) |
+| `egui` | `=0.37.0`, `default-features = false`, features `default_fonts` |
+| `eframe` | `=0.37.0`, `default-features = false`, features `accesskit`, `default_fonts`, `wgpu`, `wayland`, `x11` |
+| MSRV of both | 1.95 (`cargo info`), below the workspace's |
+| Licenses | `MIT OR Apache-2.0`; the built-in fonts add `OFL-1.1` and `Ubuntu-font-1.0` (`epaint_default_fonts`), admitted in `deny.toml`. Checked with `cargo tree --target all` against the allow-list; `cargo-deny` itself is not installed on this machine and runs in CI |
+| Left out | `clipboard`, `links`, `system_fonts`, `glow`, `persistence` |
+| Core stays free of UI | `node tools/check-cargo-metadata.mjs` passes with the two new crates in its matrix |
+
+API read from the 0.37.0 sources in the cargo registry, not from memory: an app
+implements `eframe::App::ui(&mut self, ui: &mut egui::Ui, frame)`; panels are
+`egui::Panel::left/right/top/bottom(id).show(ui, …)` and `CentralPanel::default().show(ui, …)`;
+a frame is drawn without a window by `Context::run_ui(RawInput, …)`, whose output a test
+releases with `drop_without_applying_deltas`.
+
+Run: `orange-editor <graph.json>` (debug build, Windows 11) opened a window that was
+still running after 8 seconds with nothing on standard error, and was then ended; a
+path that does not exist printed the operating system's message and exited with 1.
+What the window shows was not looked at by the assistant: no screenshot was taken.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,817 passed, 0 failed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not run: macOS and Linux windows (P-06), a screen reader, high-DPI and IME (P-02).
+
 ## Preview, plugin types and plugin limits — 2026-11-13
 
 Survey before the work: the compiler already had stream `tee`, `collect`, `next-item`

@@ -1,6 +1,6 @@
 # Feasibility probes
 
-Status: **all probes NOT RUN.** These are the minimal experiments that must pass before the matching production work is committed. Record each result in [10](10-tooling-and-sources.md): source versions, exact commands, feature set, OS/hardware, output, pass/fail and any resulting ADR change. The project uses no game engine (ADR-02); the editor UI is egui hosted by eframe, and the core has no UI, window or engine dependency (ADR-01, ADR-21).
+Status: **P-01 run on Windows 11 (2026-11-13, result in 10); the others NOT RUN.** These are the minimal experiments that must pass before the matching production work is committed. Record each result in [10](10-tooling-and-sources.md): source versions, exact commands, feature set, OS/hardware, output, pass/fail and any resulting ADR change. The project uses no game engine (ADR-02); the editor UI is egui hosted by eframe, and the core has no UI, window or engine dependency (ADR-01, ADR-21).
 
 | ID | Minimal experiment | Acceptance / architectural consequence |
 |---|---|---|
