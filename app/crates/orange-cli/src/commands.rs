@@ -183,6 +183,9 @@ pub(crate) fn start(arguments: &Arguments) -> Result<Started, Stop> {
         plugin_data_dir: beside(&arguments.plugin_data, "data"),
         state_dir: beside(&arguments.state, "state"),
         plugin_http: Some(std::sync::Arc::new(PluginHttp)),
+        plugin_data_quota: arguments.plugin_quota,
+        plugin_http_hosts: (!arguments.plugin_hosts.is_empty())
+            .then(|| arguments.plugin_hosts.clone()),
         secrets: Some(std::sync::Arc::new(orange_vault::OsVault::new(
             VAULT_SERVICE,
         ))),
@@ -348,6 +351,51 @@ pub(crate) fn import(host: &mut Host, arguments: &Arguments) -> Done {
         "{output}: saved ({} packages in the bundle)",
         imported.packages.len()
     );
+    Ok(())
+}
+
+/// Prints the values of pure outputs without running the graph: the outputs named as
+/// node and port pairs, or the document's own exports.
+pub(crate) fn preview(host: &mut Host, words: &[String]) -> Done {
+    let [path, pairs @ ..] = words else {
+        return usage("preview needs a graph file");
+    };
+    if pairs.len() % 2 != 0 {
+        return usage("preview takes outputs as pairs: a node, then one of its ports");
+    }
+    let graph = text(path)?;
+    let names = Names::of(host, &graph);
+    let mut ports = Vec::new();
+    for pair in pairs.chunks(2) {
+        let node = names.find_node(&pair[0])?;
+        let port = pair[1]
+            .parse()
+            .map_err(|_| format!("`{}` is not a port name", pair[1]))?;
+        ports.push((node, port));
+    }
+    let previewed = match host.preview(&graph, &ports) {
+        Ok(previewed) => previewed,
+        Err(error) => {
+            report(path, &error, &names);
+            return Err(Stop::Reported);
+        }
+    };
+    if previewed.is_empty() {
+        println!("{path}: no outputs named and the document exports none");
+    }
+    for output in previewed {
+        let (node, port) = (names.node(&output.node), output.port);
+        match output.value {
+            Ok(value) => println!("{node} {port} = {}", plain(&value)),
+            Err((source, fault)) => {
+                println!(
+                    "{node} {port}: fault {} at {}",
+                    fault.code,
+                    names.node(&source)
+                );
+            }
+        }
+    }
     Ok(())
 }
 

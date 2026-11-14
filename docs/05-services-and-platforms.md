@@ -81,9 +81,12 @@ MQTT (2026-11-12; `orange-net`, FR-25 qualified for 3.1.1). Adapter
 `org.orange.net/mqtt` with settings `url` (`mqtt://host[:port]`, default port 1883, or
 `mqtts://` for TLS on 8883 with the bundled roots), `username`, `password`,
 `client_id` (generated when absent), `topics` (up to 64 filters, `+` and `#`
-allowed), `qos` (0 or 1, default 0), `keep_alive_s` (5 to 3,600, default 30) and
+allowed), `qos` (0, 1 or 2, default 0), `keep_alive_s` (5 to 3,600, default 30),
 `ca_file` (a PEM file of certificate authorities, which then replace the bundled ones:
-for a broker with a private authority).
+for a broker with a private authority), `persistent` (the broker keeps the session's
+subscriptions and missed messages between connections; needs `client_id`) and `will`
+(`topic`, `message`, `retain`: published by the broker when the connection is lost
+without a disconnect).
 Nodes `mqtt-publish` (`topic`, `text`, `retain`) and `mqtt-publish-bytes` (`topic`,
 `data`, `retain`) queue a message, at most 256 waiting; entries `mqtt-message`
 (payload `[topic, text]`, fired for UTF-8 payloads) and `mqtt-binary` (payload bytes,
@@ -93,8 +96,13 @@ keep-alive, treats twice the keep-alive without a packet as a lost connection,
 reconnects with backoff from 250 ms to 5 s and subscribes again. With `qos` 1 a
 published message is kept until the broker acknowledges it and is sent again with the
 duplicate flag after a reconnect, so a subscriber can receive it twice; received
-messages are acknowledged after they are handed to the entries. Every connection is a
-clean session. Not provided: MQTT 5, quality of service 2, wills, persistent sessions,
+messages are acknowledged after they are handed to the entries. With `qos` 2 the
+four-step exchange is completed in both directions: an unfinished message keeps its
+packet ID across a reconnect, and a received one is handed to the entries once however
+often the broker repeats it. After a reconnect the session subscribes first and then
+repeats what was unfinished. When the broker reports no kept session, exchanges it had
+already confirmed are dropped. A closing session waits up to 500 ms for its disconnect
+to be sent, so a normal stop does not publish the will. Not provided: MQTT 5,
 client certificates, WebSocket transport, a per-node topic filter (subscriptions belong
 to the connection), and messages over 8 MiB.
 
@@ -102,12 +110,16 @@ Files (2026-11-12; `orange-files`, package `org.orange.files`). A
 `org.orange.files/folder` connection has settings `path` (an existing directory),
 `read_only` and `poll_ms` (50 to 60,000, default 500). Nodes: `read-text`,
 `write-text`, `append-text`, `read-bytes`, `write-bytes`, `list`, `exists`, `delete`,
-`move`, `copy`, `make-directory`, `remove-directory` (empty directories only)
+`move`, `copy`, `make-directory`, `remove-directory` (empty directories only),
+`size` (output `bytes`), `read-range` (`offset`, `length`; fewer bytes at the end of
+the file, none past it), `append-bytes`
 and the entry `on-change` (payload: the changed file's path). Paths are relative to
 the folder with `/` between plain names; `..`, absolute and drive forms, device names
 and links leading out of the folder are refused. A write goes to a temporary file in
-the same directory, is flushed and renamed over the target. Reads and writes are whole
-files up to 64 MiB; a listing or a watched folder holds at most 10,000 entries.
+the same directory, is flushed and renamed over the target. A read or write of a
+whole file, and one piece read or appended, is at most 64 MiB; a larger file is walked
+with `size`, `read-range` and `append-bytes`, and `copy` and `move` have no size limit
+because they never hold the content; a listing or a watched folder holds at most 10,000 entries.
 `on-change` compares sizes and modification times every `poll_ms`, so several changes
 to one file within that time fire once and a change that restores both is not seen.
 Not provided: streams for larger files, operating-system change notifications, text encodings other than
@@ -216,10 +228,17 @@ repeating one; the volume multiplies each sound's own gain. A playing node waits
 however long its sound is paused or repeats, and reports a stalled device when the
 device has asked for no samples for two seconds. The callback rules are unchanged.
 
-Not implemented from the design below: `AudioAsset` handles, per-sound control and
-routing, streaming from disk (a sound is decoded whole, up to 64 MiB and 600 s),
-playlists and seeded random selection, Opus and AAC, resampling better than linear interpolation,
-hotplug and device-change handling, hold time on the threshold, and multi-device
+Folder playback (2026-11-13, FR-31): `play-from` (inputs `folder`, `pick`, `gain`;
+output `file`) plays the sound file a number chooses among the folder's WAV, FLAC, MP3
+and Ogg files in name order, counting round; a counter makes a playlist and a seeded
+random number a repeatable shuffle, so the node itself draws no randomness. A folder
+without sound files is the fault `org.orange.audio/Empty`.
+
+Not implemented from the design below: `AudioAsset` handles, control of one sound
+among several on a connection (separate connections are separate players),
+streaming from disk (a sound is decoded whole, up to 64 MiB and 600 s),
+Opus and AAC, resampling better than linear interpolation,
+hotplug and device-change handling, and multi-device
 synchronization. Crossings closer than
 10 ms are reported as one.
 

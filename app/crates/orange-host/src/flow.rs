@@ -452,13 +452,48 @@ pub(crate) fn drive(mut driver: RunDriver, mut cx: Context) {
                     }
                     Ok(session) => {
                         let (inbox, flow) = (cx.inbox.clone(), me.clone());
+                        let (shared, pool) = (Arc::clone(&cx.shared), cx.pool.clone());
                         cx.pool.submit(move || {
-                            let outcome = service.node.run(&Call {
+                            let call = Call {
                                 inputs: &inputs,
                                 session: session.as_deref(),
                                 lease: &lease,
-                            });
-                            deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
+                            };
+                            let Some(item) = service.stream.clone() else {
+                                let outcome = service.node.run(&call);
+                                deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
+                                return;
+                            };
+                            match service.node.items(&call) {
+                                Some(Ok(items)) => {
+                                    let producer = crate::streams::Pulled::new(
+                                        items,
+                                        pool,
+                                        Arc::clone(&shared),
+                                        flow.clone(),
+                                    );
+                                    crate::streams::ask(&shared, &flow, move |run| {
+                                        if let Err(refused) = run.complete_effect_stream(
+                                            id,
+                                            &item,
+                                            Box::new(producer),
+                                        ) {
+                                            refused
+                                                .producer
+                                                .close(orange_runtime::CloseReason::Closed);
+                                            let _ = run.complete_effect(id, Err(UNAVAILABLE));
+                                        }
+                                    });
+                                }
+                                Some(Err(fault)) => {
+                                    let outcome = Err(fault);
+                                    deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
+                                }
+                                None => {
+                                    let outcome = Err(UNAVAILABLE);
+                                    deliver(&inbox, HostInput::EffectDone { id, outcome }, &flow);
+                                }
+                            }
                         });
                     }
                 }

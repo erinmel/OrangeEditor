@@ -27,6 +27,7 @@ usage:
   orange check <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>]
   orange run   <graph.json>... [--package <file.orangeplug>]... [--grant-log] [--store <dir>] [--for <ms>] [--watch]
   orange bind  <graph.json>... [--package <file.orangeplug>]... [--store <dir>]
+  orange preview <graph.json> [<node> <port>]... [--package <file.orangeplug>]... [--store <dir>]
   orange pack  <package-dir> <out.orangeplug>
   orange nodes [--package <file.orangeplug>]... [--store <dir>]
   orange packages [--store <dir>]
@@ -41,6 +42,9 @@ usage:
   orange secret set <name> | remove <name> | check <name>
   orange feed key <name> | sign <feed.json> <name>
   orange oauth login <settings.json> <name>
+
+`preview` prints the values of outputs that follow from constants and pure nodes,
+without running anything: the outputs named, or those the document exports.
 
 Nodes and variables are shown and accepted by name. A node is called by its `name`
 field if the graph gives it one, otherwise by what its kind is called; a variable by
@@ -134,7 +138,10 @@ read and write files in its own data directory (`--plugin-data <dir>`, or `data`
 store), and `--grant-http` lets it send HTTPS requests. A package receives a grant
 only if its manifest asks for it (`permissions`), and an install says what a package
 asked for and was not given. A grant is given to the
-packages installed by that command and is kept with them in the store. `--for` stops after a time.";
+packages installed by that command and is kept with them in the store.
+`--plugin-quota-mb <n>` limits each package's data directory and `--plugin-host <host>`
+(repeatable; `.example.org` allows every host under that domain) limits where packages
+send requests; without them there is no limit. `--for` stops after a time.";
 
 pub(crate) struct Arguments {
     pub command: String,
@@ -152,6 +159,8 @@ pub(crate) struct Arguments {
     pub signed_only: bool,
     pub plugins: Vec<String>,
     pub plugin_data: Option<String>,
+    pub plugin_quota: Option<u64>,
+    pub plugin_hosts: Vec<String>,
     pub watch: bool,
     pub state: Option<String>,
 }
@@ -175,6 +184,8 @@ fn arguments() -> Result<Arguments, String> {
         signed_only: false,
         plugins: Vec::new(),
         plugin_data: None,
+        plugin_quota: None,
+        plugin_hosts: Vec::new(),
         watch: false,
         state: None,
     };
@@ -198,6 +209,16 @@ fn arguments() -> Result<Arguments, String> {
             "--plugin-data" => {
                 parsed.plugin_data = Some(words.next().ok_or("--plugin-data needs a directory")?);
             }
+            "--plugin-quota-mb" => {
+                let megabytes: u64 = words
+                    .next()
+                    .and_then(|text| text.parse().ok())
+                    .ok_or("--plugin-quota-mb needs a number of megabytes")?;
+                parsed.plugin_quota = Some(megabytes.saturating_mul(1024 * 1024));
+            }
+            "--plugin-host" => parsed
+                .plugin_hosts
+                .push(words.next().ok_or("--plugin-host needs a host name")?),
             "--no-base" => parsed.base_nodes = false,
             "--no-net" => parsed.network = false,
             "--no-audio" => parsed.audio = false,
@@ -251,7 +272,7 @@ fn command(words: &[String]) -> Result<ExitCode, Stop> {
         "feed" => return Ok(feed_command(rest)),
         "secret" => return Ok(secret(rest)),
         "check" | "run" | "nodes" | "packages" | "remove" | "updates" | "enable" | "disable"
-        | "bind" | "export" | "import" => {}
+        | "bind" | "export" | "import" | "preview" => {}
         _ => return Err(Stop::Usage(format!("unknown command `{name}`"))),
     }
     let arguments = arguments().map_err(Stop::Usage)?;
@@ -261,6 +282,7 @@ fn command(words: &[String]) -> Result<ExitCode, Stop> {
         "packages" => packages(host),
         "nodes" => nodes(host),
         "bind" => bind(host, &arguments.graphs)?,
+        "preview" => preview(host, &arguments.graphs)?,
         "export" => export(host, &arguments.graphs)?,
         "import" => import(host, &arguments)?,
         "enable" | "disable" => switch(host, &arguments)?,

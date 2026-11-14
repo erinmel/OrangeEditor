@@ -106,6 +106,46 @@ impl TypeRegistryBuilder {
         self.register(package_namespace, ty, TypeData::Enum(schema))
     }
 
+    /// [`register_record`](Self::register_record), except that a type already
+    /// registered with exactly this schema is left as it is: how a package that is
+    /// installed again, or in a newer version, keeps the types it already published.
+    pub fn ensure_record(
+        &mut self,
+        package_namespace: &str,
+        ty: &TypeExpr,
+        schema: RecordSchema,
+    ) -> Result<(), TypeRegistrationError> {
+        let same = |data: &TypeData| matches!(data, TypeData::Record(known) if *known == schema);
+        if self.registered(ty, same) {
+            return Ok(());
+        }
+        self.register_record(package_namespace, ty, schema)
+    }
+
+    /// [`register_enum`](Self::register_enum) with the rule of
+    /// [`ensure_record`](Self::ensure_record).
+    pub fn ensure_enum(
+        &mut self,
+        package_namespace: &str,
+        ty: &TypeExpr,
+        schema: EnumSchema,
+    ) -> Result<(), TypeRegistrationError> {
+        let same = |data: &TypeData| matches!(data, TypeData::Enum(known) if *known == schema);
+        if self.registered(ty, same) {
+            return Ok(());
+        }
+        self.register_enum(package_namespace, ty, schema)
+    }
+
+    fn registered(&self, ty: &TypeExpr, same: impl Fn(&TypeData) -> bool) -> bool {
+        let Ok(TypeTerm::Named(named)) = TypeTerm::parse(ty) else {
+            return false;
+        };
+        self.definitions
+            .get(&NamedTypeId::from_term(&named))
+            .is_some_and(|known| same(&known.data))
+    }
+
     /// Registers a nominal opaque handle-kind type. It has no literal schema or codec.
     pub fn register_handle_kind(
         &mut self,
@@ -297,6 +337,20 @@ impl Default for TypeRegistry {
 }
 
 impl TypeRegistry {
+    /// A builder holding every type and implementation of this registry, to publish a
+    /// successor with more types. The successor has its own identity: keys resolved
+    /// against this registry stay with it and the snapshots that hold it.
+    pub fn extended(&self) -> TypeRegistryBuilder {
+        TypeRegistryBuilder {
+            owner: Arc::new(RegistryIdentity),
+            definitions: self.definitions.clone(),
+            interned: HashMap::new(),
+            expressions: Vec::new(),
+            implementations: self.implementations.clone(),
+            numeric_implementations: self.numeric_implementations.clone(),
+        }
+    }
+
     /// Codec implemented by the structural value layer for this registered type.
     /// Unknown types have no decoder; installing metadata alone never enables a codec.
     pub fn literal_codec_identity(&self, term: &TypeTerm) -> Option<&'static str> {
