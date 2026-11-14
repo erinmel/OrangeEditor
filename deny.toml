@@ -3,6 +3,10 @@ db-urls = ["https://github.com/RustSec/advisory-db"]
 unmaintained = "all"
 unsound = "all"
 yanked = "deny"
+# The editor reaches Linux screen readers through accesskit, whose D-Bus client uses
+# zbus 5. Its helper crates were merged into zbus 6 and marked unmaintained with no
+# upgrade to move to; there is no known defect. Remove when accesskit moves to zbus 6.
+ignore = ["RUSTSEC-2026-0370", "RUSTSEC-2026-0371", "RUSTSEC-2026-0372"]
 
 # Unpublished workspace members carry no license until a release package declares one.
 [licenses]
@@ -10,7 +14,11 @@ yanked = "deny"
 # root certificate data) were admitted on 2026-11-10 for HTTPS in orange-net.
 # MPL-2.0 (symphonia, the MP3 and Ogg decoder of orange-audio) was admitted by the
 # project owner on 2026-11-12: it is used unmodified as a dependency.
-allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "CDLA-Permissive-2.0", "ISC", "MIT", "MPL-2.0", "Unicode-3.0", "Zlib"]
+# OFL-1.1 and Ubuntu-font-1.0 (epaint_default_fonts: the fonts egui draws with, built
+# into the editor so it needs no system font) were admitted on 2026-11-13 with the editor.
+# BSL-1.0 (clipboard-win and error-code: the Windows clipboard behind eframe's
+# `clipboard` feature) was admitted on 2026-11-14 for copy and paste in the editor.
+allow = ["Apache-2.0", "Apache-2.0 WITH LLVM-exception", "BSD-3-Clause", "BSL-1.0", "CDLA-Permissive-2.0", "ISC", "MIT", "MPL-2.0", "OFL-1.1", "Ubuntu-font-1.0", "Unicode-3.0", "Zlib"]
 private = { ignore = true }
 
 [bans]

@@ -98,6 +98,60 @@ sixteen that faults when full; other fields the author wrote are kept. Bound nod
 the rest of the document are untouched, so binding twice gives the same text. Nodes
 inside function bodies are not bound. `orange bind` saves the result over the file,
 keeping the previous version as `.bak`, and prints the remaining diagnostics.
+Declarations, settings and the clipboard (2026-11-14): `Host::declarations`,
+`declare_variable`, `remove_variable`, `declare_connection`, `remove_connection`
+and `choose_type` work like the other edits, on the text. A connection setting whose
+name says it is a secret (password, token, bearer, key) must be a
+`credential://<name>` reference, or it is refused before the document changes. The
+view tells a front end what a node settles: its settings, the JSON schema its kind
+declares for them (the timers get one from the host, matching their own checks), which
+settings name a declaration, and its type parameters; the editor draws fields from
+that and knows no node kind by name. `Host::copy` gives text holding the source
+document and the copied node IDs; `Host::paste` copies them with the model's
+remapping (12 §2), so a paste works across documents and through the system
+clipboard. The clipboard text holds what a document holds and no secret. File
+dialogs belong to the application: `Editor` asks for New, Open and Save as through
+`take_request`, and `orange-desktop` answers with `rfd`.
+
+Editing (2026-11-13): the host owns every change to a document. `Host::add_node`,
+`remove_nodes`, `connect`, `disconnect`, `set_input` and `set_config` take the
+document's text and return the edited text, each through one transaction of the
+model; `new_document` gives an empty one. A front end therefore keeps only the text,
+and undo is keeping the text before each edit (`Editor` keeps 200). New node and wire
+IDs are derived from the document, so the same edit of the same text gives the same
+document. `connect` replaces the wire already on a value input or a step output,
+refuses a step wired to a value, and refuses a wire that checking finds a problem
+with, giving the reasons. A node that is not set up yet still shows its step ports,
+so it can be wired before its variable is chosen. The canvas reports what the person
+did (`CanvasResponse::connect`, `disconnect`, `remove`) and changes nothing itself;
+`Editor` applies it, refreshes the view and, when the document is running, hands the
+new text to `Host::update`.
+
+Canvas and parts of the editor (2026-11-13): `orange-editor-ui` is made of parts an
+application takes as it needs. `canvas::Canvas` draws one graph and knows nothing of
+files, flows or panels: an application asks its host for `Host::view(json)` (a
+`GraphView`: each top-level node with its name, kind, ports and saved place, and the
+wires), calls `Canvas::show(ui, &graph, triggers)` every frame and acts on the
+`CanvasResponse` (a trigger pressed, nodes moved, a node selected). `Editor` composes
+the canvas with a toolbar and the panels of `Panels`, which the application or the
+toolbar switches off. Places are stored in the document's `editor.nodes` map by
+`orange_host::place`; the compiler never reads that section, so moving a node is not
+an edit of a running flow. A node without a saved place is laid out in columns along
+the wires. The ports a kind has without declaring them come from
+`orange_model::catalog::implicit_port_names`; the routes for failure and cancelling
+are drawn only once something is wired to them. A step port is an arrowhead and a
+value port a circle, filled when wired, so the two are told apart without color.
+
+Editor crates (2026-11-13): `orange-editor-ui` is an egui library whose `Editor`
+holds what is shown and draws into any `egui::Ui`; every button calls a public method
+(`open`, `check`, `run`, `stop`, `trigger`, `take_events`), so tests and other hosts
+drive it without a window. It depends on `egui` and `orange-host` only.
+`orange-desktop` (program `orange-editor`) owns the eframe window, the host and the
+built-in service packages. What a graph's nodes and variables are called and how
+values, steps, problems and flow events read as text (`Names`, `plain`, `said`,
+`describe`, `lines`) moved from the terminal into `orange-host`, so both front ends say
+the same things.
+
 Live preview (2026-11-13): `Host::preview(json, ports)` returns the values of pure
 outputs without running anything, through the compiler's `PurePreview`. The outputs
 are the ones named, or the document's `exports` when none is. An output that follows

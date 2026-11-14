@@ -2,44 +2,8 @@
 use crate::*;
 
 pub(crate) fn print(event: &HostEvent, names: &Names) {
-    let flow = event.flow;
-    match &event.kind {
-        FlowEvent::State(state) => println!("[{flow}] state {state:?}"),
-        FlowEvent::Node(step) => match &step.fault {
-            None => println!(
-                "[{flow}] {}: {}",
-                names.node(&step.node),
-                said(step.outcome)
-            ),
-            Some(fault) => println!(
-                "[{flow}] {}: {}, fault {} from {}",
-                names.node(&step.node),
-                said(step.outcome),
-                fault.fault.code,
-                names.node(&fault.source)
-            ),
-        },
-        FlowEvent::TraceLost(count) => println!("[{flow}] {count} steps not shown"),
-        FlowEvent::Refused(reason) => println!("[{flow}] input refused: {reason:?}"),
-        FlowEvent::Fault(error) => println!("[{flow}] error: {error}"),
-        FlowEvent::Variables(changed) => {
-            for (variable, value) in changed {
-                match value {
-                    Some(value) => {
-                        println!("[{flow}] {} = {}", names.variable(variable), plain(value));
-                    }
-                    None => println!("[{flow}] {} is unset", names.variable(variable)),
-                }
-            }
-        }
-        FlowEvent::Ports(changed) => {
-            for (node, port, value) in changed {
-                println!("[{flow}] {} {port} = {}", names.node(node), plain(value));
-            }
-        }
-        FlowEvent::Updated { .. } => println!("[{flow}] graph replaced"),
-        FlowEvent::Finished => println!("[{flow}] finished"),
-        _ => println!("[{flow}] {:?}", event.kind),
+    for line in orange_host::lines(event, names) {
+        println!("{line}");
     }
 }
 

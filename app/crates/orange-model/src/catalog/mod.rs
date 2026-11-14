@@ -22,6 +22,7 @@ pub use definition::{
     ContractError, Determinism, EventAccess, NodeContract, NodeDefinition, NominalAccess, Ports,
     ReferenceError, ReferenceField, ReferenceKind, TypeArgs, VariableAccess, Volatility,
 };
+pub use language::implicit_port_names;
 pub(crate) use language::{
     implicit_port, implicit_ports, instance_port, intrinsic, is_converter_special_form,
     is_intrinsic,

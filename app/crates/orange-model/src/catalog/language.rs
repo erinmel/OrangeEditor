@@ -43,6 +43,22 @@ pub(crate) fn implicit_ports(kind: NodeKind, has_outcomes: bool) -> Vec<&'static
     ports
 }
 
+/// The ports a node of `definition` has without declaring them, in the order a card
+/// lists them: the kind's (11 §4.1), except that a terminator has no `then` (11 §8.3).
+/// `has_outcomes` says the definition declares execution outputs of its own, which
+/// replace `then`. This is what a front end draws beside the declared ports.
+pub fn implicit_port_names(
+    definition: &str,
+    kind: NodeKind,
+    has_outcomes: bool,
+) -> Vec<&'static str> {
+    let terminator = intrinsic(definition).is_some_and(|rule| rule.terminator);
+    implicit_ports(kind, has_outcomes)
+        .into_iter()
+        .filter(|name| !(terminator && *name == "then"))
+        .collect()
+}
+
 /// The implicit port `id` of a node of `definition` with these ports, if it has one: the
 /// kind's (11 §4.1), except that a terminator has no `then` (11 §8.3).
 pub(crate) fn implicit_port(

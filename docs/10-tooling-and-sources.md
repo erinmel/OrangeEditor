@@ -1,5 +1,131 @@
 # Tooling, environment and research register
 
+## Declarations, settings, clipboard and files in the editor — 2026-11-14
+
+Pictures looked at (`orange-editor <graph> --screenshot …`): Properties of a Set
+variable node shows a `variable` chooser drawn from the node's declared reference
+field, with the document's variable `total` chosen; the `value` input of the card
+is a number field on the card itself; the toolbar has New, Open…, Save and Save as….
+
+Found while building: eframe's `clipboard` feature had been left out (P-01), so
+copy and paste would have stayed inside the window. It is on now; it adds `arboard`
+(MIT OR Apache-2.0), on Windows `clipboard-win` and `error-code` (BSL-1.0, admitted
+in `deny.toml`), and on Linux `smithay-clipboard` and its Wayland crates (MIT).
+
+| Item | Value |
+|---|---|
+| `rfd` | `=0.18.0`, default features (`xdg-portal`, `wayland`); MIT; MSRV 1.92; `orange-desktop` only. Adds `objc2-uniform-type-identifiers` (Zlib OR Apache-2.0 OR MIT) on macOS |
+| `eframe` | features now `accesskit`, `clipboard`, `default_fonts`, `wgpu`, `wayland`, `x11` |
+
+APIs read from the registry sources: `rfd::FileDialog::{add_filter, set_directory,
+set_file_name, set_title, pick_file, save_file}` and `rfd::MessageDialog`; in egui
+0.37 `Ui::dnd_drag_source`, `Response::dnd_release_payload` and
+`dnd_hover_payload`, `Ui::scope_builder` with `UiBuilder::max_rect/id_salt/layout`,
+`Event::{Copy, Cut, Paste}`, `Context::copy_text`, and `Ui::scope_id` (`Ui::id` and
+`Id::new` are deprecated in 0.37). Without the `clipboard` feature egui-winit keeps a
+clipboard inside the app only.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,840 passed, 0 failed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not tried by hand: the file and message dialogs, a real drag from the node list, a
+box drawn with the pointer, dragging a number on a card, pasting into another
+program. Tests send the keyboard and clipboard events and call what the gestures
+call. `cargo-deny` is not installed here; CI runs it.
+
+## Editing on the canvas — 2026-11-13
+
+Picture looked at (`orange-editor graph.json --screenshot …`, a node selected): the
+selected card has a bright outline; the properties panel shows the node's name, kind
+and definition, the `path` input with its value in a field with Set and Clear, and
+`text` as "comes from a wire"; the toolbar has Undo and Redo, greyed out with
+nothing to undo.
+
+Found while testing: a variable node without a variable had no ports at all, so it
+could not be wired before being set up (fixed: its step ports come from its kind);
+taking a value off an input that had none still raised the document's revision
+(fixed: it changes nothing).
+
+Not tried with a real pointer: dragging a wire, the second mouse button on a port,
+the delete key, typing in a field. Tests call the methods those gestures call, and
+the rule that places a dropped wire on an input row.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,829 passed, 0 failed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not built: declaring variables and connections in the editor, settings other than a
+variable node's variable, choosing the type of a generic node, a file dialog (a new
+graph is `untitled.json` where the program runs), copy and paste, selecting several
+nodes, dragging a node kind from the list onto the canvas.
+
+## Canvas — 2026-11-13
+
+`orange-editor` gained `--screenshot <file.png>`, which saves a picture of its own
+window after it has drawn (egui's screenshot request; the PNG is written by the
+program without an image library). The pictures were looked at:
+
+| Run | Seen |
+|---|---|
+| `orange-editor named.json --screenshot …` | Toolbar, node list, and the canvas with five cards: the two triggers with a colored title, step ports as arrowheads and value ports as circles, the values `"greeting.txt"` and `"tick\n"` beside their inputs, step wires in one color and the text wire in another. The first picture showed no grid (its color matched the background); fixed and seen in the next |
+| `orange-editor graph.json …` (folder playback graph) | Three columns laid out along the wires; a long folder path cut with an ellipsis; the file's name in the toolbar instead of its whole path |
+| `… --canvas-only` | The graph alone, filling the window |
+
+Not looked at: dragging, zooming and the trigger button with a real pointer (tests
+call the same methods), a light theme, a graph with hundreds of nodes, other
+operating systems.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,824 passed, 0 failed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+CI on the editor pull request failed its dependency check on three `unmaintained`
+notices (RUSTSEC-2026-0370, -0371, -0372: `zvariant`, `zbus_names`,
+`zvariant_derive`, merged into zbus 6). They come from accesskit's Linux screen-reader
+client, which uses zbus 5 and has no release on zbus 6. They are listed under
+`ignore` in `deny.toml` with the reason; licenses, bans and sources passed.
+
+## Probe P-01: editor toolkit pinned — 2026-11-13
+
+| Item | Value |
+|---|---|
+| Toolchain | Rust 1.99.1 (workspace MSRV 1.97.1) |
+| `egui` | `=0.37.0`, `default-features = false`, features `default_fonts` |
+| `eframe` | `=0.37.0`, `default-features = false`, features `accesskit`, `default_fonts`, `wgpu`, `wayland`, `x11` |
+| MSRV of both | 1.95 (`cargo info`), below the workspace's |
+| Licenses | `MIT OR Apache-2.0`; the built-in fonts add `OFL-1.1` and `Ubuntu-font-1.0` (`epaint_default_fonts`), admitted in `deny.toml`. Checked with `cargo tree --target all` against the allow-list; `cargo-deny` itself is not installed on this machine and runs in CI |
+| Left out | `links`, `system_fonts`, `glow`, `persistence` (`clipboard` was left out too, and turned on 2026-11-14 for copy and paste) |
+| Core stays free of UI | `node tools/check-cargo-metadata.mjs` passes with the two new crates in its matrix |
+
+API read from the 0.37.0 sources in the cargo registry, not from memory: an app
+implements `eframe::App::ui(&mut self, ui: &mut egui::Ui, frame)`; panels are
+`egui::Panel::left/right/top/bottom(id).show(ui, …)` and `CentralPanel::default().show(ui, …)`;
+a frame is drawn without a window by `Context::run_ui(RawInput, …)`, whose output a test
+releases with `drop_without_applying_deltas`.
+
+Run: `orange-editor <graph.json>` (debug build, Windows 11) opened a window that was
+still running after 8 seconds with nothing on standard error, and was then ended; a
+path that does not exist printed the operating system's message and exited with 1.
+What the window shows was not looked at by the assistant: no screenshot was taken.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,817 passed, 0 failed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not run: macOS and Linux windows (P-06), a screen reader, high-DPI and IME (P-02).
+
 ## Preview, plugin types and plugin limits — 2026-11-13
 
 Survey before the work: the compiler already had stream `tee`, `collect`, `next-item`
