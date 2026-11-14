@@ -20,7 +20,7 @@ fn refused(error: &dyn std::fmt::Display) -> HostError {
 /// An ID no node or edge of `saved` has yet, as UUID version 4 text. It is derived
 /// from the document and a counter, so the same edit of the same text gives the same
 /// ID: edits can be repeated in tests and undone and redone to identical documents.
-fn fresh_id(saved: &Json, what: &str) -> String {
+pub(crate) fn fresh_id(saved: &Json, what: &str) -> String {
     let text = saved.to_string();
     let mut attempt = 0u32;
     loop {

@@ -17,6 +17,7 @@ orange-sdk = { path = "../orange-sdk", version = "=0.0.0" }
 orange-runtime = { path = "../orange-runtime", version = "=0.0.0" }
 serde_json.workspace = true
 sha2.workspace = true
+uuid.workspace = true
 thiserror.workspace = true
 
 [dev-dependencies]

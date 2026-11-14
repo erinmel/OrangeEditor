@@ -787,6 +787,10 @@ mod tests {
             entry: n == 1,
             ports,
             position: None,
+            settings: serde_json::json!({}),
+            schema: None,
+            references: Vec::new(),
+            types: Vec::new(),
         }
     }
     fn wire(from: u32, to: u32) -> WireView {

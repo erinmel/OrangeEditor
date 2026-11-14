@@ -13,6 +13,8 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 mod authoring;
+mod clip;
+mod declare;
 mod documents;
 mod edit;
 mod effects;
@@ -40,7 +42,8 @@ use orange_kernel::{
     KernelBinding, PureKernelResolver, ResolveError,
 };
 use orange_model::catalog::{ProviderDescriptor, RegistryBuilder, RegistrySnapshot};
-use orange_model::document::{ConnectionDecl, ConnectionScope, VarScope};
+use orange_model::document::ConnectionDecl;
+pub use orange_model::document::{ConnectionScope, VarScope};
 use orange_model::validation::HostOrigin;
 use orange_model::validation::{LeafEffects, ValidationAnalysis};
 use orange_model::{GraphDocument, analyze_with_effects, from_json, to_json};
@@ -62,6 +65,7 @@ use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::{self, JoinHandle};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
+pub use declare::{Connection, Declarations, Variable};
 pub use documents::{
     Bundle, MAX_DOCUMENT_BYTES, Publish, Recovery, Requirement, autosave_document,
     discard_autosave, publish_function, recover_document, save_document,
@@ -72,6 +76,7 @@ pub use names::{Names, describe, lines, literal, plain, said};
 pub use orange_guest::{Grants, GuestLimits, HttpClient, HttpRequest, HttpResponse};
 pub use orange_kernel::{FaultText, KernelFault};
 pub use orange_model::Value;
+pub use orange_model::catalog::ReferenceKind;
 pub use orange_model::catalog::{NodeDefinition, Presentation, ProviderKey, TextRef};
 pub use orange_model::document::DefinitionRef;
 pub use orange_model::document::literal::Literal;
@@ -92,7 +97,7 @@ pub use orange_sdk::{
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use preview::Previewed;
 pub use state::StoredVariable;
-pub use view::{GraphView, NodeView, PortView, WireView, place};
+pub use view::{GraphView, NodeView, PortView, TypeChoice, WireView, place};
 
 /// Identifies one flow for the life of its host. Never reused.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]

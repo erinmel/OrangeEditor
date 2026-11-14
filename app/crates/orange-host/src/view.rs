@@ -36,6 +36,43 @@ pub struct NodeView {
     pub ports: Vec<PortView>,
     /// Where the document's layout puts it, if it says.
     pub position: Option<[f32; 2]>,
+    /// Its settings (`config`) as the document holds them.
+    pub settings: Json,
+    /// What its settings may hold, as the JSON schema its kind declares; `None` when
+    /// the kind says nothing about them.
+    pub schema: Option<Json>,
+    /// Settings fields that name one of the document's declarations: a JSON pointer
+    /// into the settings, such as `/variable`, and what it names.
+    pub references: Vec<(String, ReferenceKind)>,
+    /// The type parameters of a generic node, in declared order.
+    pub types: Vec<TypeChoice>,
+}
+
+/// One type parameter of a generic node.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TypeChoice {
+    /// Its name, such as `T`.
+    pub name: String,
+    /// The type a person chose for it, if any.
+    pub chosen: Option<String>,
+    /// The type it has now: the chosen one, or the one found from the wires.
+    pub found: Option<String>,
+}
+
+/// The settings schema the timers' own checks follow (11 §10.2), for a front end to
+/// draw fields from. A length of time is written in nanoseconds, as digits.
+fn timer_schema(definition: &str) -> Option<Json> {
+    let time = json!({"type": "string", "format": "duration-ns", "pattern": "^(0|[1-9][0-9]*)$"});
+    match definition {
+        "core/on-timer" => Some(json!({"type": "object", "required": ["interval"],
+            "properties": {"interval": time,
+                "first": {"type": "string", "enum": ["after-interval", "immediate"]},
+                "missed": {"type": "string", "enum": ["coalesce", "skip"]}},
+            "additionalProperties": false})),
+        "core/on-timeout" => Some(json!({"type": "object", "required": ["delay"],
+            "properties": {"delay": time}, "additionalProperties": false})),
+        _ => None,
+    }
 }
 
 /// One wire from an output to an input.
@@ -142,6 +179,16 @@ impl Host {
             ports.extend(declared);
             ports.extend(after);
             let definition = node.definition.id.as_str().to_owned();
+            let known = registry.definition(&node.definition);
+            let types = known
+                .iter()
+                .flat_map(|found| found.type_params.iter())
+                .map(|param| TypeChoice {
+                    name: param.name.to_string(),
+                    chosen: node.type_pins.get(&param.name).map(ToString::to_string),
+                    found: node.type_args.get(&param.name).map(ToString::to_string),
+                })
+                .collect();
             let position = places
                 .and_then(|places| places.get(node.id.to_string()))
                 .and_then(|place| Some([place["x"].as_f64()?, place["y"].as_f64()?]))
@@ -160,6 +207,16 @@ impl Host {
                 definition,
                 ports,
                 position,
+                settings: serde_json::to_value(&node.config).unwrap_or_default(),
+                schema: known
+                    .and_then(|found| found.config_schema.clone())
+                    .or_else(|| timer_schema(node.definition.id.as_str())),
+                references: known
+                    .iter()
+                    .flat_map(|found| found.references.iter())
+                    .map(|field| (field.pointer.clone(), field.kind))
+                    .collect(),
+                types,
             });
         }
         let exec = |from: &(NodeId, String)| {

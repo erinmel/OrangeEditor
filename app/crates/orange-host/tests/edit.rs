@@ -151,3 +151,136 @@ fn wires_that_cannot_be_are_refused_and_wires_and_nodes_are_taken_away() {
             .is_err()
     );
 }
+
+#[test]
+fn variables_and_connections_are_declared_changed_and_removed() {
+    use orange_host::{Connection, ConnectionScope, VarScope, Variable};
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let total = Variable {
+        id: None,
+        name: "total".into(),
+        ty: "core/i64@1".into(),
+        scope: VarScope::Run,
+        persistent: false,
+        initial: Some("3".into()),
+    };
+    let (text, made) = host.declare_variable(&empty(), &total).unwrap();
+    let declared = host.declarations(&text).unwrap();
+    assert_eq!(declared.variables.len(), 2);
+    let found = &declared.variables[1];
+    assert_eq!(
+        (found.id.as_deref(), found.initial.as_deref()),
+        (Some(made.as_str()), Some("3"))
+    );
+    // The same declaration of the same text gives the same ID.
+    assert_eq!(host.declare_variable(&empty(), &total).unwrap().1, made);
+    // Changing it keeps its ID; a value that is not of its type is refused.
+    let renamed = Variable {
+        id: Some(made.clone()),
+        name: "sum".into(),
+        initial: None,
+        ..total.clone()
+    };
+    let text = host.declare_variable(&text, &renamed).unwrap().0;
+    let found = &host.declarations(&text).unwrap().variables[1];
+    assert_eq!((found.name.as_str(), found.initial.as_ref()), ("sum", None));
+    let wrong = Variable {
+        initial: Some("lots".into()),
+        ..renamed
+    };
+    assert!(host.declare_variable(&text, &wrong).is_err());
+    let text = host.remove_variable(&text, &made).unwrap();
+    assert_eq!(host.declarations(&text).unwrap().variables.len(), 1);
+
+    let mut api = Connection {
+        id: None,
+        name: "api".into(),
+        adapter: "org.orange.net/http".into(),
+        scope: ConnectionScope::Graph,
+        settings: json!({"base_url": "https://example.test", "bearer": "plain"}),
+    };
+    // A secret is never written into the document, only a reference to the store.
+    let refused = host.declare_connection(&text, &api).unwrap_err();
+    assert!(refused.to_string().contains("/bearer"), "{refused}");
+    assert!(!text.contains("plain"));
+    api.settings["bearer"] = json!("credential://api/token");
+    let (text, made) = host.declare_connection(&text, &api).unwrap();
+    let found = &host.declarations(&text).unwrap().connections[0];
+    assert_eq!(found.id.as_deref(), Some(made.as_str()));
+    assert_eq!(found.settings["bearer"], "credential://api/token");
+    let text = host.remove_connection(&text, &made).unwrap();
+    assert!(host.declarations(&text).unwrap().connections.is_empty());
+}
+
+#[test]
+fn a_view_says_what_a_node_settles_and_a_generic_type_is_chosen() {
+    use orange_host::ReferenceKind;
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (text, set) = host
+        .add_node(&empty(), "core/set-variable", [0.0, 0.0])
+        .unwrap();
+    let (text, timer) = host.add_node(&text, "core/on-timer", [0.0, 200.0]).unwrap();
+    let (text, collect) = host.add_node(&text, "core/collect", [0.0, 400.0]).unwrap();
+    let view = host.view(&text).unwrap();
+    let node = |id: NodeId| view.nodes.iter().find(|node| node.id == id).unwrap();
+    assert_eq!(
+        node(set).references,
+        [("/variable".to_owned(), ReferenceKind::Variable)]
+    );
+    let schema = node(timer).schema.as_ref().unwrap();
+    assert_eq!(schema["properties"]["interval"]["format"], "duration-ns");
+    assert_eq!(
+        node(collect).schema.as_ref().unwrap()["required"][0],
+        "max_items"
+    );
+    let param = &node(collect).types[0];
+    assert_eq!((param.name.as_str(), param.chosen.as_ref()), ("T", None));
+
+    let text = host
+        .set_config(&text, timer, &json!({"interval": "1000000000"}))
+        .unwrap();
+    assert_eq!(
+        host.view(&text).unwrap().nodes[1].settings["interval"],
+        "1000000000"
+    );
+    let chosen = host
+        .choose_type(&text, collect, "T", Some("core/string@1"))
+        .unwrap();
+    let view = host.view(&chosen).unwrap();
+    let param = &view
+        .nodes
+        .iter()
+        .find(|node| node.id == collect)
+        .unwrap()
+        .types[0];
+    assert_eq!(param.chosen.as_deref(), Some("core/string@1"));
+    let cleared = host.choose_type(&chosen, collect, "T", None).unwrap();
+    assert_eq!(host.view(&cleared).unwrap().nodes[2].types[0].chosen, None);
+}
+
+#[test]
+fn copied_nodes_paste_with_their_wire_under_new_ids_and_keep_their_variable() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (text, trigger, set) = built(&host);
+    let clip = host.copy(&text, &[trigger, set]).unwrap();
+    let (pasted, fresh) = host.paste(&text, &clip, [1000.0, 500.0]).unwrap();
+    assert_eq!(fresh.len(), 2);
+    assert!(!fresh.contains(&trigger) && !fresh.contains(&set));
+    let view = host.view(&pasted).unwrap();
+    assert_eq!((view.nodes.len(), view.wires.len()), (4, 2));
+    let place = |id: NodeId| {
+        view.nodes
+            .iter()
+            .find(|node| node.id == id)
+            .unwrap()
+            .position
+    };
+    // Places keep their distance; the top-left one is where it was pasted.
+    assert_eq!(place(fresh[0]), Some([1000.0, 500.0]));
+    assert_eq!(place(fresh[1]), Some([1320.0, 500.0]));
+    // The pasted variable node names the same variable, and the document is sound.
+    let declared = host.declarations(&pasted).unwrap();
+    assert_eq!(declared.variables.len(), 1);
+    assert_eq!(host.check(&pasted).unwrap(), []);
+    assert!(host.paste(&text, "some text", [0.0, 0.0]).is_err());
+}
