@@ -1,5 +1,34 @@
 # Tooling, environment and research register
 
+## Canvas — 2026-11-13
+
+`orange-editor` gained `--screenshot <file.png>`, which saves a picture of its own
+window after it has drawn (egui's screenshot request; the PNG is written by the
+program without an image library). The pictures were looked at:
+
+| Run | Seen |
+|---|---|
+| `orange-editor named.json --screenshot …` | Toolbar, node list, and the canvas with five cards: the two triggers with a colored title, step ports as arrowheads and value ports as circles, the values `"greeting.txt"` and `"tick\n"` beside their inputs, step wires in one color and the text wire in another. The first picture showed no grid (its color matched the background); fixed and seen in the next |
+| `orange-editor graph.json …` (folder playback graph) | Three columns laid out along the wires; a long folder path cut with an ellipsis; the file's name in the toolbar instead of its whole path |
+| `… --canvas-only` | The graph alone, filling the window |
+
+Not looked at: dragging, zooming and the trigger button with a real pointer (tests
+call the same methods), a light theme, a graph with hundreds of nodes, other
+operating systems.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,824 passed, 0 failed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+CI on the editor pull request failed its dependency check on three `unmaintained`
+notices (RUSTSEC-2026-0370, -0371, -0372: `zvariant`, `zbus_names`,
+`zvariant_derive`, merged into zbus 6). They come from accesskit's Linux screen-reader
+client, which uses zbus 5 and has no release on zbus 6. They are listed under
+`ignore` in `deny.toml` with the reason; licenses, bans and sources passed.
+
 ## Probe P-01: editor toolkit pinned — 2026-11-13
 
 | Item | Value |

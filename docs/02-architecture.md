@@ -98,6 +98,21 @@ sixteen that faults when full; other fields the author wrote are kept. Bound nod
 the rest of the document are untouched, so binding twice gives the same text. Nodes
 inside function bodies are not bound. `orange bind` saves the result over the file,
 keeping the previous version as `.bak`, and prints the remaining diagnostics.
+Canvas and parts of the editor (2026-11-13): `orange-editor-ui` is made of parts an
+application takes as it needs. `canvas::Canvas` draws one graph and knows nothing of
+files, flows or panels: an application asks its host for `Host::view(json)` (a
+`GraphView`: each top-level node with its name, kind, ports and saved place, and the
+wires), calls `Canvas::show(ui, &graph, triggers)` every frame and acts on the
+`CanvasResponse` (a trigger pressed, nodes moved, a node selected). `Editor` composes
+the canvas with a toolbar and the panels of `Panels`, which the application or the
+toolbar switches off. Places are stored in the document's `editor.nodes` map by
+`orange_host::place`; the compiler never reads that section, so moving a node is not
+an edit of a running flow. A node without a saved place is laid out in columns along
+the wires. The ports a kind has without declaring them come from
+`orange_model::catalog::implicit_port_names`; the routes for failure and cancelling
+are drawn only once something is wired to them. A step port is an arrowhead and a
+value port a circle, filled when wired, so the two are told apart without color.
+
 Editor crates (2026-11-13): `orange-editor-ui` is an egui library whose `Editor`
 holds what is shown and draws into any `egui::Ui`; every button calls a public method
 (`open`, `check`, `run`, `stop`, `trigger`, `take_events`), so tests and other hosts
