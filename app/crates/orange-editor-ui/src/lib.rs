@@ -21,11 +21,15 @@
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod canvas;
+mod declarations;
+mod properties;
+
+pub use properties::{COMMON_TYPES, set_at};
 
 use canvas::Canvas;
 use orange_host::{
-    FlowEvent, FlowId, GraphView, Host, HostError, HostEvent, Names, NodeId, PackageKind, StopMode,
-    describe, lines, place,
+    Declarations, FlowEvent, FlowId, GraphView, Host, HostError, HostEvent, Names, NodeId,
+    PackageKind, StopMode, describe, lines, place,
 };
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
@@ -90,14 +94,6 @@ pub fn type_name(ty: &str) -> String {
     }
 }
 
-/// The kinds of node that name one of the document's variables in their settings.
-const VARIABLE_NODES: [&str; 4] = [
-    "core/get-variable",
-    "core/set-variable",
-    "core/update-variable",
-    "core/on-variable-changed",
-];
-
 /// The document being edited.
 #[derive(Debug)]
 struct Document {
@@ -106,6 +102,8 @@ struct Document {
     names: Names,
     /// What the canvas draws.
     graph: GraphView,
+    /// Its variables and connections.
+    declared: Declarations,
     /// The layout changed since the document was opened or saved.
     unsaved: bool,
     /// What checking found, one line each; empty when the document is valid.
@@ -155,6 +153,9 @@ pub struct Editor {
     /// each of its fields.
     inspected: Option<NodeId>,
     typed: std::collections::BTreeMap<String, String>,
+    /// The left panel shows the document's declarations instead of the node kinds.
+    document_tab: bool,
+    forms: declarations::Forms,
     /// The panels shown; a host application may set them, and the toolbar switches them.
     pub panels: Panels,
 }
@@ -174,6 +175,7 @@ impl Editor {
         self.canvas.load(&graph);
         self.document = Some(Document {
             path: path.into(),
+            declared: host.declarations(&text).unwrap_or_default(),
             text,
             names,
             graph,
@@ -230,6 +232,7 @@ impl Editor {
         document.text = text;
         document.names = Names::of(host, &document.text);
         document.graph = host.view(&document.text).unwrap_or_default();
+        document.declared = host.declarations(&document.text).unwrap_or_default();
         document.unsaved = true;
         self.canvas.update(&document.graph);
         // The fields of the properties panel are read again from the new document.
@@ -346,51 +349,6 @@ impl Editor {
             return false;
         };
         let result = host.set_input(&text, at, typed);
-        self.edited(host, result)
-    }
-
-    /// The variables the open document declares, as (ID, name), and the one `node`
-    /// names in its settings.
-    pub fn variables(&self, node: NodeId) -> (Vec<(String, String)>, Option<String>) {
-        let saved: serde_json::Value = self
-            .text()
-            .and_then(|text| serde_json::from_str(text).ok())
-            .unwrap_or_default();
-        let text = |value: &serde_json::Value| value.as_str().map(str::to_owned);
-        let declared = saved["variables"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .filter_map(|variable| Some((text(&variable["id"])?, text(&variable["name"])?)))
-            .collect();
-        let id = node.to_string();
-        let named = saved["nodes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|found| found["id"] == id.as_str())
-            .and_then(|found| text(&found["config"]["variable"]));
-        (declared, named)
-    }
-
-    /// Makes a variable node name the variable with ID `variable`, keeping its other
-    /// settings.
-    pub fn set_variable(&mut self, host: &mut Host, node: NodeId, variable: &str) -> bool {
-        let Some(text) = self.editing() else {
-            return false;
-        };
-        let saved: serde_json::Value = serde_json::from_str(&text).unwrap_or_default();
-        let id = node.to_string();
-        let mut config = saved["nodes"]
-            .as_array()
-            .into_iter()
-            .flatten()
-            .find(|found| found["id"] == id.as_str())
-            .map(|found| found["config"].clone())
-            .filter(serde_json::Value::is_object)
-            .unwrap_or_else(|| serde_json::json!({}));
-        config["variable"] = serde_json::Value::String(variable.to_owned());
-        let result = host.set_config(&text, node, &config);
         self.edited(host, result)
     }
 
@@ -691,8 +649,18 @@ impl Editor {
     }
 
     fn nodes_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
+        ui.horizontal(|ui| {
+            let _ = ui.selectable_value(&mut self.document_tab, false, "Nodes");
+            let _ = ui
+                .selectable_value(&mut self.document_tab, true, "Document")
+                .on_hover_text("The variables and connections of this graph.");
+        });
+        ui.separator();
+        if self.document_tab {
+            self.document_tab(ui, host);
+            return;
+        }
         let mut add = None;
-        ui.heading("Nodes");
         let _ = ui.add(
             egui::TextEdit::singleline(&mut self.search)
                 .hint_text("Search nodes")
@@ -724,102 +692,6 @@ impl Editor {
             } else {
                 self.say("open a graph before adding nodes".to_owned());
             }
-        }
-    }
-
-    fn properties_panel(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        ui.heading("Properties");
-        let selected = self.canvas.selected().and_then(|id| {
-            self.graph()?
-                .nodes
-                .iter()
-                .find(|node| node.id == id)
-                .cloned()
-        });
-        let Some(node) = selected else {
-            self.inspected = None;
-            ui.weak("Select a node to see and change its values.");
-            return;
-        };
-        if self.inspected != Some(node.id) {
-            self.inspected = Some(node.id);
-            self.typed = node
-                .ports
-                .iter()
-                .filter(|port| port.input && !port.exec)
-                .map(|port| {
-                    let shown = port.value.clone().unwrap_or_default();
-                    // Text is shown in quotes on a card and typed without them.
-                    let typed = serde_json::from_str::<String>(&shown).unwrap_or(shown);
-                    (port.id.clone(), typed)
-                })
-                .collect();
-        }
-        ui.strong(node.name.as_str());
-        ui.weak(node.kind.as_str());
-        ui.weak(node.definition.as_str());
-        ui.separator();
-        if VARIABLE_NODES.contains(&node.definition.as_str()) {
-            let (declared, named) = self.variables(node.id);
-            let shown = named
-                .as_ref()
-                .and_then(|id| declared.iter().find(|(known, _)| known == id))
-                .map_or("choose a variable", |(_, name)| name.as_str())
-                .to_owned();
-            ui.label("variable");
-            let mut chosen = None;
-            let _ = egui::ComboBox::from_id_salt("orange-variable")
-                .selected_text(shown)
-                .show_ui(ui, |ui| {
-                    for (id, name) in &declared {
-                        let current = named.as_deref() == Some(id.as_str());
-                        if ui.selectable_label(current, name.as_str()).clicked() && !current {
-                            chosen = Some(id.clone());
-                        }
-                    }
-                    if declared.is_empty() {
-                        ui.weak("the document declares no variables");
-                    }
-                });
-            if let Some(variable) = chosen {
-                let _ = self.set_variable(host, node.id, &variable);
-            }
-            ui.separator();
-        }
-        // What to do once the fields are drawn: a value to write or take off.
-        let mut write: Option<(String, Option<String>)> = None;
-        egui::ScrollArea::vertical().show(ui, |ui| {
-            for port in node.ports.iter().filter(|port| port.input && !port.exec) {
-                let ty = port.ty.as_deref().map_or("value".to_owned(), type_name);
-                ui.label(format!("{} ({ty})", port.id));
-                if port.connected {
-                    ui.weak("comes from a wire");
-                    continue;
-                }
-                let typed = self.typed.entry(port.id.clone()).or_default();
-                ui.horizontal(|ui| {
-                    let field = ui.add(
-                        egui::TextEdit::singleline(typed)
-                            .hint_text("no value")
-                            .desired_width(150.0),
-                    );
-                    let entered =
-                        field.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter));
-                    if entered || ui.small_button("Set").clicked() {
-                        write = Some((port.id.clone(), Some(typed.clone())));
-                    }
-                    if port.value.is_some() && ui.small_button("Clear").clicked() {
-                        write = Some((port.id.clone(), None));
-                    }
-                });
-            }
-            ui.separator();
-            if ui.button("Delete node").clicked() {
-                let _ = self.remove_node(host, node.id);
-            }
-        });
-        if let Some((port, typed)) = write {
-            let _ = self.set_input(host, (node.id, &port), typed.as_deref());
         }
     }
 
@@ -1109,15 +981,20 @@ mod tests {
         // added while running can be fired.
         let set = editor.add_node(&mut host, "core/set-variable").unwrap();
         // A variable node names nothing until one is chosen.
-        let (declared, named) = editor.variables(set);
-        assert_eq!((declared.len(), named), (1, None));
-        assert_eq!(declared[0].1, "count");
+        let declared = editor.declarations().unwrap().variables.clone();
+        assert_eq!(declared.len(), 1);
+        assert_eq!(declared[0].name, "count");
         assert!(!editor.problems().is_empty());
-        assert!(editor.set_variable(&mut host, set, &declared[0].0));
-        assert_eq!(
-            editor.variables(set).1.as_deref(),
-            Some(declared[0].0.as_str())
-        );
+        let count = declared[0].id.clone().unwrap();
+        assert!(editor.set_setting(&mut host, set, "/variable", Some(json!(count))));
+        let node = editor
+            .graph()
+            .unwrap()
+            .nodes
+            .iter()
+            .find(|node| node.id == set)
+            .cloned();
+        assert_eq!(node.unwrap().settings["variable"], json!(count));
         assert!(editor.set_input(&mut host, (set, "value"), Some("3")));
         assert!(editor.connect(&mut host, (trigger, "then"), (set, "in")));
         assert!(editor.problems().is_empty(), "{:?}", editor.problems());
@@ -1138,6 +1015,68 @@ mod tests {
         editor.canvas().select(Some(set));
         assert!(draw(&mut editor, &mut host) > 0);
         editor.stop(&mut host);
+    }
+
+    #[test]
+    fn declarations_settings_and_types_are_changed_from_the_editor() {
+        use orange_host::{Connection, ConnectionScope, VarScope, Variable};
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        let total = Variable {
+            id: None,
+            name: "total".into(),
+            ty: "core/f64@1".into(),
+            scope: VarScope::Workspace,
+            persistent: true,
+            initial: Some("0.5".into()),
+        };
+        let made = editor.declare_variable(&mut host, &total).unwrap();
+        assert_eq!(editor.declarations().unwrap().variables.len(), 2);
+        editor.undo(&mut host);
+        assert_eq!(editor.declarations().unwrap().variables.len(), 1);
+        editor.redo(&mut host);
+        assert!(editor.remove_variable(&mut host, &made));
+
+        // A secret typed into a connection is refused and never reaches the document.
+        let mut api = Connection {
+            id: None,
+            name: "api".into(),
+            adapter: "org.orange.net/http".into(),
+            scope: ConnectionScope::Graph,
+            settings: json!({"password": "hunter2"}),
+        };
+        assert!(editor.declare_connection(&mut host, &api).is_none());
+        assert!(!editor.text().unwrap().contains("hunter2"));
+        assert!(editor.log().any(|line| line.contains("credential://")));
+        api.settings = json!({"password": "credential://api"});
+        assert!(editor.declare_connection(&mut host, &api).is_some());
+
+        // A timer's interval is a setting; a generic node's type is chosen.
+        let timer = editor.add_node(&mut host, "core/on-timer").unwrap();
+        assert!(editor.set_setting(&mut host, timer, "/interval", Some(json!("1000000"))));
+        let collect = editor.add_node(&mut host, "core/collect").unwrap();
+        assert!(editor.choose_type(&mut host, collect, "T", Some("core/i64@1")));
+        let node = |editor: &Editor, id| {
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|node| node.id == id)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(node(&editor, timer).settings["interval"], "1000000");
+        assert_eq!(
+            node(&editor, collect).types[0].chosen.as_deref(),
+            Some("core/i64@1")
+        );
+        // The panels draw the settings, the types and the Document tab.
+        editor.canvas().select(Some(collect));
+        assert!(draw(&mut editor, &mut host) > 0);
+        editor.document_tab = true;
+        assert!(draw(&mut editor, &mut host) > 0);
     }
 
     #[test]
