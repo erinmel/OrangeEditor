@@ -98,6 +98,21 @@ sixteen that faults when full; other fields the author wrote are kept. Bound nod
 the rest of the document are untouched, so binding twice gives the same text. Nodes
 inside function bodies are not bound. `orange bind` saves the result over the file,
 keeping the previous version as `.bak`, and prints the remaining diagnostics.
+Declarations, settings and the clipboard (2026-11-14): `Host::declarations`,
+`declare_variable`, `remove_variable`, `declare_connection`, `remove_connection`
+and `choose_type` work like the other edits, on the text. A connection setting whose
+name says it is a secret (password, token, bearer, key) must be a
+`credential://<name>` reference, or it is refused before the document changes. The
+view tells a front end what a node settles: its settings, the JSON schema its kind
+declares for them (the timers get one from the host, matching their own checks), which
+settings name a declaration, and its type parameters; the editor draws fields from
+that and knows no node kind by name. `Host::copy` gives text holding the source
+document and the copied node IDs; `Host::paste` copies them with the model's
+remapping (12 §2), so a paste works across documents and through the system
+clipboard. The clipboard text holds what a document holds and no secret. File
+dialogs belong to the application: `Editor` asks for New, Open and Save as through
+`take_request`, and `orange-desktop` answers with `rfd`.
+
 Editing (2026-11-13): the host owns every change to a document. `Host::add_node`,
 `remove_nodes`, `connect`, `disconnect`, `set_input` and `set_config` take the
 document's text and return the edited text, each through one transaction of the
