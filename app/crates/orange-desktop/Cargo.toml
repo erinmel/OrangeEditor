@@ -12,6 +12,7 @@ path = "src/main.rs"
 
 [dependencies]
 eframe.workspace = true
+rfd.workspace = true
 orange-audio = { path = "../orange-audio", version = "=0.0.0" }
 orange-editor-ui = { path = "../orange-editor-ui", version = "=0.0.0" }
 orange-files = { path = "../orange-files", version = "=0.0.0" }

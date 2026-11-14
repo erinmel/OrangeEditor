@@ -2,13 +2,14 @@
 //!
 //! It owns the window and the host, and shows the editor interface of
 //! `orange-editor-ui` in it. Everything the editor does goes through the host; this
-//! file adds only what a desktop program has: a window, a file named on the command
-//! line and the built-in service packages.
+//! file adds only what a desktop program has: a window, files named on the command
+//! line or chosen in the system's file dialogs, and the built-in service packages.
 mod picture;
 
-use orange_editor_ui::Editor;
 use orange_editor_ui::canvas::Canvas;
+use orange_editor_ui::{Editor, FileRequest};
 use orange_host::{GraphView, Host, HostEvent, HostOptions};
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -48,6 +49,9 @@ struct Desktop {
 impl eframe::App for Desktop {
     fn ui(&mut self, ui: &mut eframe::egui::Ui, _frame: &mut eframe::Frame) {
         let _ = self.editor.take_events(&self.events);
+        if let Some(request) = self.editor.take_request() {
+            self.carry_out(request);
+        }
         match &mut self.bare {
             // All an embedding application does: show the canvas where it wants it.
             Some((graph, canvas)) => {
@@ -91,6 +95,76 @@ impl eframe::App for Desktop {
     }
 }
 
+/// Tells the person something went wrong, in a dialog of the system.
+fn trouble(title: &str, message: &str) {
+    let _ = rfd::MessageDialog::new()
+        .set_level(rfd::MessageLevel::Error)
+        .set_title(title)
+        .set_description(message)
+        .set_buttons(rfd::MessageButtons::Ok)
+        .show();
+}
+
+impl Desktop {
+    /// Carries out a file action of the editor with the system's dialogs. The dialogs
+    /// wait for the person, as a desktop program's dialogs do.
+    fn carry_out(&mut self, request: FileRequest) {
+        // Edits that are not saved are not dropped without asking.
+        if matches!(request, FileRequest::New | FileRequest::Open) && self.editor.is_unsaved() {
+            let answer = rfd::MessageDialog::new()
+                .set_level(rfd::MessageLevel::Warning)
+                .set_title("Changes not saved")
+                .set_description("The graph has changes that are not saved. Leave them?")
+                .set_buttons(rfd::MessageButtons::YesNo)
+                .show();
+            if answer != rfd::MessageDialogResult::Yes {
+                return;
+            }
+        }
+        let current = self.editor.path().map(Path::new);
+        let folder = current
+            .and_then(Path::parent)
+            .filter(|folder| !folder.as_os_str().is_empty())
+            .map(Path::to_path_buf);
+        let mut dialog = rfd::FileDialog::new().add_filter("OrangeEditor graph", &["json"]);
+        if let Some(folder) = folder {
+            dialog = dialog.set_directory(folder);
+        }
+        match request {
+            FileRequest::New => match orange_host::new_document() {
+                Ok(text) => self.editor.open_untitled(&mut self.host, text),
+                Err(error) => trouble("No new graph", &error.to_string()),
+            },
+            FileRequest::Open => {
+                let Some(path) = dialog.set_title("Open a graph").pick_file() else {
+                    return;
+                };
+                match std::fs::read_to_string(&path) {
+                    Ok(text) => self
+                        .editor
+                        .open(&mut self.host, path.display().to_string(), text),
+                    Err(error) => trouble("Not opened", &format!("{}: {error}", path.display())),
+                }
+            }
+            FileRequest::SaveAs => {
+                let name = current
+                    .and_then(Path::file_name)
+                    .map_or_else(|| "graph.json".into(), |name| name.to_string_lossy());
+                let Some(path) = dialog
+                    .set_title("Save the graph as")
+                    .set_file_name(name)
+                    .save_file()
+                else {
+                    return;
+                };
+                if let Err(message) = self.editor.save_as(path.display().to_string()) {
+                    trouble("Not saved", &message);
+                }
+            }
+        }
+    }
+}
+
 fn start(
     path: Option<String>,
     canvas_only: bool,
@@ -108,6 +182,7 @@ fn start(
     let (mut host, events) =
         Host::with_services(options, services).map_err(|error| error.to_string())?;
     let mut editor = Editor::new();
+    editor.file_dialogs = true;
     let mut bare = None;
     if let Some(path) = path {
         let text = std::fs::read_to_string(&path).map_err(|error| format!("{path}: {error}"))?;
@@ -122,9 +197,9 @@ fn start(
             editor.open(&mut host, path, text);
         }
     } else {
-        // Nothing named: a new graph, saved as `untitled.json` where the program runs.
+        // Nothing named: a new graph, which asks where to go when it is first saved.
         let text = orange_host::new_document().map_err(|error| error.to_string())?;
-        editor.open(&mut host, "untitled.json", text);
+        editor.open_untitled(&mut host, text);
     }
     // A picture shows more with a node selected.
     if screenshot.is_some() {

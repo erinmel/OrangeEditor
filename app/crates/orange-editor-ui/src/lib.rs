@@ -98,6 +98,8 @@ pub fn type_name(ty: &str) -> String {
 #[derive(Debug)]
 struct Document {
     path: String,
+    /// A new graph that has no file yet: saving it asks where.
+    untitled: bool,
     text: String,
     names: Names,
     /// What the canvas draws.
@@ -142,6 +144,18 @@ impl Default for Panels {
     }
 }
 
+/// A file action the editor leaves to the application, which owns its file dialogs
+/// (or has none: an application that keeps graphs elsewhere opens them itself).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FileRequest {
+    /// Start a new graph.
+    New,
+    /// Choose a graph file to open.
+    Open,
+    /// Choose where to save the open graph.
+    SaveAs,
+}
+
 /// The state of the editor between frames.
 #[derive(Debug, Default)]
 pub struct Editor {
@@ -158,6 +172,10 @@ pub struct Editor {
     forms: declarations::Forms,
     /// The panels shown; a host application may set them, and the toolbar switches them.
     pub panels: Panels,
+    /// Whether the application shows file dialogs: the toolbar then has New, Open and
+    /// Save as, which it hands over through [`Editor::take_request`].
+    pub file_dialogs: bool,
+    request: Option<FileRequest>,
 }
 
 impl Editor {
@@ -175,6 +193,7 @@ impl Editor {
         self.canvas.load(&graph);
         self.document = Some(Document {
             path: path.into(),
+            untitled: false,
             declared: host.declarations(&text).unwrap_or_default(),
             text,
             names,
@@ -433,9 +452,29 @@ impl Editor {
         }
     }
 
+    /// Shows a new graph that has no file yet, as `untitled.json`. With file dialogs,
+    /// saving it asks where.
+    pub fn open_untitled(&mut self, host: &mut Host, text: String) {
+        self.open(host, "untitled.json", text);
+        if let Some(document) = &mut self.document {
+            document.untitled = true;
+        }
+    }
+
     /// Saves the open document to its path, keeping the previous version beside it.
+    /// A new graph with no file yet asks where instead, when the application has file
+    /// dialogs.
     pub fn save(&mut self) -> Result<(), String> {
         self.keep_layout();
+        if self.file_dialogs
+            && self
+                .document
+                .as_ref()
+                .is_some_and(|document| document.untitled)
+        {
+            self.ask(FileRequest::SaveAs);
+            return Ok(());
+        }
         let Some(document) = &mut self.document else {
             return Ok(());
         };
@@ -445,6 +484,41 @@ impl Editor {
         let line = format!("saved {}", document.path);
         self.say(line);
         Ok(())
+    }
+
+    /// Saves the open document to `path` and keeps it as the document's path from then on.
+    pub fn save_as(&mut self, path: impl Into<String>) -> Result<(), String> {
+        let Some(document) = &mut self.document else {
+            return Ok(());
+        };
+        let before = std::mem::replace(&mut document.path, path.into());
+        let untitled = std::mem::replace(&mut document.untitled, false);
+        let saved = self.save();
+        if saved.is_err()
+            && let Some(document) = &mut self.document
+        {
+            document.path = before;
+            document.untitled = untitled;
+        }
+        saved
+    }
+
+    /// Where the open document is saved.
+    pub fn path(&self) -> Option<&str> {
+        self.document
+            .as_ref()
+            .map(|document| document.path.as_str())
+    }
+
+    /// Asks the application for a file action, as the toolbar does.
+    pub fn ask(&mut self, request: FileRequest) {
+        self.request = Some(request);
+    }
+
+    /// The file action asked for since the last call, for the application to carry out
+    /// with its dialogs: [`Editor::open`] with what was chosen, or [`Editor::save_as`].
+    pub fn take_request(&mut self) -> Option<FileRequest> {
+        self.request.take()
     }
 
     /// What the last check found; empty when the document is valid or none is open.
@@ -586,14 +660,20 @@ impl Editor {
 
     /// Draws the editor into `ui` and applies what the person did.
     pub fn ui(&mut self, ui: &mut egui::Ui, host: &mut Host) {
-        // Undo and redo by keyboard, unless a text field is being typed in.
+        // Undo, redo and the file keys, unless a text field is being typed in.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (undo, redo) = ui.input(|input| {
+            let (undo, redo, save, save_as, open, new) = ui.input(|input| {
                 let command = input.modifiers.command;
+                let shift = input.modifiers.shift;
                 let z = input.key_pressed(egui::Key::Z);
+                let key = |key| command && input.key_pressed(key);
                 (
-                    command && z && !input.modifiers.shift,
-                    command && (input.key_pressed(egui::Key::Y) || (z && input.modifiers.shift)),
+                    command && z && !shift,
+                    command && (input.key_pressed(egui::Key::Y) || (z && shift)),
+                    key(egui::Key::S) && !shift,
+                    key(egui::Key::S) && shift,
+                    key(egui::Key::O),
+                    key(egui::Key::N),
                 )
             });
             if undo {
@@ -601,6 +681,19 @@ impl Editor {
             }
             if redo {
                 self.redo(host);
+            }
+            if save && let Err(message) = self.save() {
+                self.say(message);
+            }
+            if self.file_dialogs {
+                let asked = [
+                    (save_as, FileRequest::SaveAs),
+                    (open, FileRequest::Open),
+                    (new, FileRequest::New),
+                ];
+                if let Some((_, request)) = asked.into_iter().find(|(pressed, _)| *pressed) {
+                    self.ask(request);
+                }
             }
         }
         self.toolbar(ui, host);
@@ -641,21 +734,37 @@ impl Editor {
                 let _ = ui.toggle_value(&mut self.panels.packages, "Packages");
                 let _ = ui.toggle_value(&mut self.panels.log, "Log");
                 ui.separator();
+                if self.file_dialogs {
+                    if ui.button("New").on_hover_text("Ctrl+N").clicked() {
+                        self.ask(FileRequest::New);
+                    }
+                    if ui.button("Open…").on_hover_text("Ctrl+O").clicked() {
+                        self.ask(FileRequest::Open);
+                    }
+                }
                 let Some(document) = &self.document else {
                     ui.label("No document is open.");
                     return;
                 };
                 let (running, valid) = (document.flow.is_some(), document.problems.is_empty());
                 let title = if document.unsaved {
-                    format!("{} (layout not saved)", document.path)
+                    format!("{} (not saved)", document.path)
                 } else {
                     document.path.clone()
                 };
                 let path = document.path.clone();
-                if ui.button("Save").clicked()
+                if ui.button("Save").on_hover_text("Ctrl+S").clicked()
                     && let Err(message) = self.save()
                 {
                     self.say(message);
+                }
+                if self.file_dialogs
+                    && ui
+                        .button("Save as…")
+                        .on_hover_text("Ctrl+Shift+S")
+                        .clicked()
+                {
+                    self.ask(FileRequest::SaveAs);
                 }
                 if ui.button("Check").clicked() {
                     self.check(host);
@@ -1195,6 +1304,44 @@ mod tests {
             .iter()
             .find(|node| node.id == dropped);
         assert_eq!(placed.unwrap().position, Some([50.0, 900.0]));
+    }
+
+    #[test]
+    fn save_as_moves_the_document_and_file_actions_go_to_the_application() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        let folder = std::env::temp_dir().join(format!("orange-save-as-{}", std::process::id()));
+        std::fs::create_dir_all(&folder).unwrap();
+        let path = folder.join("moved.json").to_string_lossy().into_owned();
+        assert!(editor.add_node(&mut host, "core/on-manual").is_some());
+        editor.save_as(path.clone()).unwrap();
+        assert_eq!(editor.path(), Some(path.as_str()));
+        assert!(!editor.is_unsaved());
+        let saved = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(host.view(&saved).unwrap().nodes.len(), 1);
+        // A path that cannot be written keeps the one the document had.
+        let nowhere = folder
+            .join("missing")
+            .join("x.json")
+            .to_string_lossy()
+            .into_owned();
+        assert!(editor.save_as(nowhere).is_err());
+        assert_eq!(editor.path(), Some(path.as_str()));
+        std::fs::remove_dir_all(&folder).unwrap();
+
+        // The toolbar and keys ask; the application takes the request once.
+        assert_eq!(editor.take_request(), None);
+        editor.ask(FileRequest::Open);
+        assert_eq!(editor.take_request(), Some(FileRequest::Open));
+        assert_eq!(editor.take_request(), None);
+        editor.file_dialogs = true;
+        assert!(draw(&mut editor, &mut host) > 0);
+        // A new graph asks where to be saved the first time.
+        editor.open_untitled(&mut host, blank());
+        editor.save().unwrap();
+        assert_eq!(editor.take_request(), Some(FileRequest::SaveAs));
+        assert!(!std::path::Path::new("untitled.json").exists());
     }
 
     #[test]
