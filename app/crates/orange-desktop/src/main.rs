@@ -121,6 +121,17 @@ fn start(
         } else {
             editor.open(&mut host, path, text);
         }
+    } else {
+        // Nothing named: a new graph, saved as `untitled.json` where the program runs.
+        let text = orange_host::new_document().map_err(|error| error.to_string())?;
+        editor.open(&mut host, "untitled.json", text);
+    }
+    // A picture shows more with a node selected.
+    if screenshot.is_some() {
+        let first = editor
+            .graph()
+            .and_then(|graph| graph.nodes.last().map(|node| node.id));
+        editor.canvas().select(first);
     }
     Ok(Desktop {
         host,
