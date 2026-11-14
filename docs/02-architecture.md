@@ -98,6 +98,20 @@ sixteen that faults when full; other fields the author wrote are kept. Bound nod
 the rest of the document are untouched, so binding twice gives the same text. Nodes
 inside function bodies are not bound. `orange bind` saves the result over the file,
 keeping the previous version as `.bak`, and prints the remaining diagnostics.
+Editing (2026-11-13): the host owns every change to a document. `Host::add_node`,
+`remove_nodes`, `connect`, `disconnect`, `set_input` and `set_config` take the
+document's text and return the edited text, each through one transaction of the
+model; `new_document` gives an empty one. A front end therefore keeps only the text,
+and undo is keeping the text before each edit (`Editor` keeps 200). New node and wire
+IDs are derived from the document, so the same edit of the same text gives the same
+document. `connect` replaces the wire already on a value input or a step output,
+refuses a step wired to a value, and refuses a wire that checking finds a problem
+with, giving the reasons. A node that is not set up yet still shows its step ports,
+so it can be wired before its variable is chosen. The canvas reports what the person
+did (`CanvasResponse::connect`, `disconnect`, `remove`) and changes nothing itself;
+`Editor` applies it, refreshes the view and, when the document is running, hands the
+new text to `Host::update`.
+
 Canvas and parts of the editor (2026-11-13): `orange-editor-ui` is made of parts an
 application takes as it needs. `canvas::Canvas` draws one graph and knows nothing of
 files, flows or panels: an application asks its host for `Host::view(json)` (a

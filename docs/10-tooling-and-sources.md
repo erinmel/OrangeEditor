@@ -1,5 +1,34 @@
 # Tooling, environment and research register
 
+## Editing on the canvas — 2026-11-13
+
+Picture looked at (`orange-editor graph.json --screenshot …`, a node selected): the
+selected card has a bright outline; the properties panel shows the node's name, kind
+and definition, the `path` input with its value in a field with Set and Clear, and
+`text` as "comes from a wire"; the toolbar has Undo and Redo, greyed out with
+nothing to undo.
+
+Found while testing: a variable node without a variable had no ports at all, so it
+could not be wired before being set up (fixed: its step ports come from its kind);
+taking a value off an input that had none still raised the document's revision
+(fixed: it changes nothing).
+
+Not tried with a real pointer: dragging a wire, the second mouse button on a port,
+the delete key, typing in a field. Tests call the methods those gestures call, and
+the rule that places a dropped wire on an input row.
+
+| Command | Result |
+|---|---|
+| `cargo test --workspace --locked` | 1,829 passed, 0 failed |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | Pass |
+| `cargo doc --workspace --no-deps --all-features --locked`, `RUSTDOCFLAGS=-D warnings` | Pass |
+| `cargo fmt --all --check`, `node tools/check-cargo-metadata.mjs` | Pass |
+
+Not built: declaring variables and connections in the editor, settings other than a
+variable node's variable, choosing the type of a generic node, a file dialog (a new
+graph is `untitled.json` where the program runs), copy and paste, selecting several
+nodes, dragging a node kind from the list onto the canvas.
+
 ## Canvas — 2026-11-13
 
 `orange-editor` gained `--screenshot <file.png>`, which saves a picture of its own
