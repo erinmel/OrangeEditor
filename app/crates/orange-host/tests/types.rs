@@ -291,3 +291,46 @@ fn an_installed_package_brings_its_types_and_a_refused_one_leaves_none() {
     drop(host);
     let _ = std::fs::remove_dir_all(&store);
 }
+
+#[test]
+fn record_and_enum_nodes_start_with_a_registered_type_or_say_none_is_declared() {
+    let blank = json!({"format": "orange.graph", "format_version": 1,
+        "graph_id": "20000000-0000-4000-8000-0000000000a8", "revision": 1,
+        "package_lock": [], "type_lock": [], "events": [], "connections": [],
+        "signatures": {}, "functions": [], "exports": [], "editor": {},
+        "variables": [], "nodes": [], "edges": []})
+    .to_string();
+    // Without a package that declares one, there is no type to name.
+    let (bare, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = bare.draft(&blank).unwrap();
+    let refused = bare.add_node(&mut draft, "org.orange.collections/make-record", [0.0, 0.0]);
+    assert!(
+        matches!(&refused, Err(HostError::Document(why)) if why.contains("no active package declares")),
+        "{refused:?}"
+    );
+    assert!(!draft.can_undo().0);
+
+    let (host, _events) = Host::with_services(HostOptions::default(), vec![package()]).unwrap();
+    let mut draft = host.draft(&blank).unwrap();
+    let get = host
+        .add_node(&mut draft, "org.orange.collections/get-field", [0.0, 0.0])
+        .unwrap();
+    let payload = host
+        .add_node(
+            &mut draft,
+            "org.orange.collections/enum-payload",
+            [0.0, 200.0],
+        )
+        .unwrap();
+    let view = host.draft_view(&draft).unwrap();
+    let node = |id| view.nodes.iter().find(|node| node.id == id).unwrap();
+    assert_eq!(node(get).settings, json!({"type": POINT, "field": "x"}));
+    assert_eq!(node(get).detail.as_deref(), Some("point.x"));
+    // Only a variant with a payload can be projected.
+    assert_eq!(node(payload).settings["variant"], "at");
+    // The settings offer the registered types and the members of the chosen one.
+    let schema = node(get).schema.clone().unwrap();
+    assert_eq!(schema["properties"]["type"]["enum"], json!([POINT]));
+    assert_eq!(schema["properties"]["field"]["enum"], json!(["x", "y"]));
+    assert!(node(get).ports.iter().any(|port| !port.input && !port.exec));
+}

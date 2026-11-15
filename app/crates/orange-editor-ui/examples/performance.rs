@@ -14,6 +14,7 @@ fn graph(count: u32) -> GraphView {
             name: format!("Node {n}"),
             kind: "Step".into(),
             definition: "core/sequence".into(),
+            detail: None,
             entry: false,
             ports: [true, false]
                 .into_iter()
@@ -31,6 +32,7 @@ fn graph(count: u32) -> GraphView {
             schema: None,
             references: Vec::new(),
             types: Vec::new(),
+            variadic: Vec::new(),
         })
         .collect();
     // Reverse edge order is a valid document order and stresses repeated relaxation.

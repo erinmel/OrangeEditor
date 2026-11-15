@@ -31,6 +31,19 @@ impl TypeData {
     }
 }
 
+/// A registered record or enum type, as [`TypeRegistry::nominal_types`] lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct NominalType {
+    /// Its canonical name, such as `org.example.geo/point@1`.
+    pub name: String,
+    /// A record; otherwise an enum.
+    pub record: bool,
+    /// The field IDs of a record or the variant IDs of an enum, in declared order.
+    pub members: Vec<String>,
+    /// The variants of an enum that carry a payload.
+    pub with_payload: Vec<String>,
+}
+
 #[derive(Debug, Clone)]
 pub(super) struct RegisteredType {
     pub(super) owner: TypeOwner,
@@ -461,6 +474,49 @@ impl TypeRegistry {
         self.definition(named)
             .map(|definition| definition.data.kind())
             .ok_or_else(|| unknown_type(named))
+    }
+
+    /// The registered record and enum types without type parameters, which record and
+    /// enum nodes can name (11 §5.9), ordered by name.
+    pub fn nominal_types(&self) -> Vec<NominalType> {
+        let mut found: Vec<NominalType> = self
+            .definitions
+            .iter()
+            .filter(|(_, registered)| registered.arity == 0)
+            .filter_map(|(id, registered)| {
+                let name = format!("{}/{}@{}", id.namespace, id.name, id.major);
+                match &registered.data {
+                    TypeData::Record(schema) => Some(NominalType {
+                        name,
+                        record: true,
+                        members: schema
+                            .fields
+                            .iter()
+                            .map(|field| field.field_id.clone())
+                            .collect(),
+                        with_payload: Vec::new(),
+                    }),
+                    TypeData::Enum(schema) => Some(NominalType {
+                        name,
+                        record: false,
+                        members: schema
+                            .variants
+                            .iter()
+                            .map(|variant| variant.variant_id.clone())
+                            .collect(),
+                        with_payload: schema
+                            .variants
+                            .iter()
+                            .filter(|variant| variant.payload.is_some())
+                            .map(|variant| variant.variant_id.clone())
+                            .collect(),
+                    }),
+                    TypeData::Core | TypeData::HandleKind => None,
+                }
+            })
+            .collect();
+        found.sort_by(|a, b| a.name.cmp(&b.name));
+        found
     }
 
     fn definition(&self, named: &NamedTerm) -> Option<&RegisteredType> {

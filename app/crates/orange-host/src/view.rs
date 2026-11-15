@@ -1,7 +1,8 @@
 //! A document as a canvas draws it: each node with its name, ports and place, and the
 //! wires between them. A front end needs nothing else of the model to show a graph.
 use super::*;
-use orange_model::document::{NodeInstance, NodeKind, PortDirection, PortKind};
+use orange_model::catalog::{NominalAccess, Ports};
+use orange_model::document::{ConfigValue, NodeInstance, NodeKind, PortDirection, PortKind};
 use serde_json::{Value as Json, json};
 
 /// One port of a node.
@@ -29,6 +30,9 @@ pub struct NodeView {
     pub kind: String,
     /// The definition, such as `org.orange.files/write-text`.
     pub definition: String,
+    /// What the node is set to, in a word, when its settings name something: the
+    /// variable a variable node reads or writes, or a record node's type.
+    pub detail: Option<String>,
     /// Whether it starts work: a trigger.
     pub entry: bool,
     /// Inputs and outputs in declared order. Empty when this host does not have the
@@ -46,6 +50,21 @@ pub struct NodeView {
     pub references: Vec<(String, ReferenceKind)>,
     /// The type parameters of a generic node, in declared order.
     pub types: Vec<TypeChoice>,
+    /// The ports of which the node has as many as it is given ([`Host::add_port`]).
+    pub variadic: Vec<VariadicView>,
+}
+
+/// A variadic port of a node, such as the branches of a fork: its instances are
+/// in [`NodeView::ports`] as `branch#0`, `branch#1`, ….
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VariadicView {
+    /// The port, such as `branch`.
+    pub port: String,
+    pub input: bool,
+    /// How many instances the node has now, and how many it may have.
+    pub count: usize,
+    pub min: usize,
+    pub max: Option<usize>,
 }
 
 /// One type parameter of a generic node.
@@ -59,11 +78,16 @@ pub struct TypeChoice {
     pub found: Option<String>,
 }
 
-/// The settings schema the timers' own checks follow (11 §10.2), for a front end to
-/// draw fields from. A length of time is written in nanoseconds, as digits.
-fn timer_schema(definition: &str) -> Option<Json> {
+/// The settings schema that the language's own checks of a core node follow, for a
+/// front end to draw fields from: timers (11 §10.2, a length of time is written in
+/// nanoseconds, as digits), the bound of a while loop and the mode of a for-each.
+fn core_schema(definition: &str) -> Option<Json> {
     let time = json!({"type": "string", "format": "duration-ns", "pattern": "^(0|[1-9][0-9]*)$"});
     match definition {
+        "core/while" => Some(json!({"type": "object", "required": ["max_iterations"],
+            "properties": {"max_iterations": {"type": "integer", "minimum": 1}}})),
+        "core/for-each" => Some(json!({"type": "object",
+            "properties": {"mode": {"type": "string", "enum": ["list", "map"]}}})),
         "core/on-timer" => Some(json!({"type": "object", "required": ["interval"],
             "properties": {"interval": time,
                 "first": {"type": "string", "enum": ["after-interval", "immediate"]},
@@ -73,6 +97,71 @@ fn timer_schema(definition: &str) -> Option<Json> {
             "properties": {"delay": time}, "additionalProperties": false})),
         _ => None,
     }
+}
+
+/// The member a record or enum node names besides its type: `field` or `variant`.
+pub(crate) fn nominal_member(access: NominalAccess) -> Option<&'static str> {
+    match access {
+        NominalAccess::MakeRecord => None,
+        NominalAccess::GetField | NominalAccess::SetField => Some("field"),
+        NominalAccess::MakeEnum | NominalAccess::EnumPayload => Some("variant"),
+    }
+}
+
+/// The record or enum types a node of `access` can name, with the members it can
+/// address in each, from this host's registered types.
+pub(crate) fn nominal_choices(
+    access: NominalAccess,
+    registry: &RegistrySnapshot,
+) -> Vec<(String, Vec<String>)> {
+    let record = matches!(
+        access,
+        NominalAccess::MakeRecord | NominalAccess::GetField | NominalAccess::SetField
+    );
+    registry
+        .types()
+        .nominal_types()
+        .into_iter()
+        .filter(|ty| ty.record == record)
+        .map(|ty| {
+            let members = if access == NominalAccess::EnumPayload {
+                ty.with_payload
+            } else {
+                ty.members
+            };
+            (ty.name, members)
+        })
+        // A projection needs a member to address.
+        .filter(|(_, members)| nominal_member(access).is_none() || !members.is_empty())
+        .collect()
+}
+
+/// The settings of a record or enum node: the type it names, chosen among the
+/// registered ones, and the member of that type it addresses.
+fn nominal_schema(
+    access: NominalAccess,
+    config: &ConfigValue,
+    registry: &RegistrySnapshot,
+) -> Json {
+    let choices = nominal_choices(access, registry);
+    let current = config.get("type").and_then(Json::as_str);
+    let mut properties = serde_json::Map::new();
+    let _ = properties.insert(
+        "type".to_owned(),
+        json!({"type": "string", "enum": choices.iter().map(|(name, _)| name).collect::<Vec<_>>()}),
+    );
+    if let Some(member) = nominal_member(access) {
+        let members = choices
+            .iter()
+            .find(|(name, _)| Some(name.as_str()) == current)
+            .map(|(_, members)| members.clone())
+            .unwrap_or_default();
+        let _ = properties.insert(
+            member.to_owned(),
+            json!({"type": "string", "enum": members}),
+        );
+    }
+    json!({"type": "object", "required": ["type"], "properties": properties})
 }
 
 /// One wire from an output to an input.
@@ -214,18 +303,38 @@ impl Host {
             args.extend(node.type_pins.clone());
             args
         });
-        let declared: Vec<PortView> = contract
-            .iter()
-            .flat_map(|contract| contract.ports.iter())
-            .map(|port| {
-                let id = port.port_id.to_string();
-                let input = port.direction == PortDirection::Input;
+        let mut variadic = Vec::new();
+        let mut declared: Vec<PortView> = Vec::new();
+        for port in contract.iter().flat_map(|contract| contract.ports.iter()) {
+            let input = port.direction == PortDirection::Input;
+            // A variadic port is shown as its instances, `branch#0`, `branch#1`, … in
+            // the node's order (11 §4.5).
+            let instances: Vec<Option<u16>> = match port.variadic {
+                Some(bounds) => {
+                    let order = node
+                        .variadic
+                        .get(&port.port_id)
+                        .map_or(&[][..], |state| state.order.as_slice());
+                    variadic.push(VariadicView {
+                        port: port.port_id.to_string(),
+                        input,
+                        count: order.len(),
+                        min: usize::from(bounds.min),
+                        max: bounds.max.map(usize::from),
+                    });
+                    order.iter().copied().map(Some).collect()
+                }
+                None => vec![None],
+            };
+            for instance in instances {
+                let key = PortKey::new(port.port_id.clone(), instance);
+                let id = key.to_string();
                 let value = node
                     .inputs
-                    .get(&PortKey::new(port.port_id.clone(), None))
+                    .get(&key)
                     .and_then(|literal| self.value_of(literal).ok())
                     .map(|value| plain(&value));
-                PortView {
+                declared.push(PortView {
                     connected: wired(node.id, &id, input),
                     input,
                     exec: port.kind != PortKind::Data,
@@ -237,9 +346,19 @@ impl Host {
                     }),
                     value: value.filter(|_| input),
                     id,
-                }
-            })
-            .collect();
+                });
+            }
+        }
+        // Names the contract declares itself, so an implicit port is not shown twice.
+        let declares = |name: &str, input: bool| {
+            contract
+                .iter()
+                .flat_map(|contract| contract.ports.iter())
+                .any(|port| {
+                    port.port_id.as_str() == name
+                        && (port.direction == PortDirection::Input) == input
+                })
+        };
         // The ports a kind has without declaring them (11 §4.1): the way in and
         // the way on come first; the routes for failure and cancelling are shown
         // only once something is wired to them, so a card stays short.
@@ -260,6 +379,9 @@ impl Host {
                 outcomes,
             ) {
                 let input = name == "in";
+                if declares(name, input) {
+                    continue;
+                }
                 let port = PortView {
                     id: name.to_owned(),
                     input,
@@ -296,8 +418,37 @@ impl Host {
                 #[expect(clippy::cast_possible_truncation, reason = "screen coordinates")]
                 [x as f32, y as f32]
             });
+        // What the node is set to, in a word: the variable it names, or the record or
+        // enum type it makes or reads.
+        let config = |key: &str| node.config.get(key).and_then(Json::as_str);
+        let detail = known
+            .iter()
+            .flat_map(|found| found.references.iter())
+            .filter(|field| field.kind == ReferenceKind::Variable)
+            .find_map(|field| {
+                let id: VariableId = node
+                    .config
+                    .get(field.pointer.trim_start_matches('/'))?
+                    .as_str()?
+                    .parse()
+                    .ok()?;
+                let name = names.variable(&id);
+                (name != id.to_string()).then_some(name)
+            })
+            .or_else(|| {
+                let ty = config("type").filter(|_| {
+                    known.is_some_and(|found| matches!(found.ports, Ports::Nominal(_)))
+                })?;
+                let short = ty.rsplit('/').next().unwrap_or(ty);
+                let short = short.split('@').next().unwrap_or(short);
+                Some(match config("field").or_else(|| config("variant")) {
+                    Some(member) => format!("{short}.{member}"),
+                    None => short.to_owned(),
+                })
+            });
         NodeView {
             id: node.id,
+            detail,
             name: names.node(&node.id),
             kind: labels
                 .get(&definition)
@@ -308,9 +459,16 @@ impl Host {
             ports,
             position,
             settings: serde_json::to_value(&node.config).unwrap_or_default(),
+            // A record or enum node's choices come from the registered types, which
+            // its definition's own schema cannot list.
             schema: known
-                .and_then(|found| found.config_schema.clone())
-                .or_else(|| timer_schema(node.definition.id.as_str())),
+                .and_then(|found| match found.ports {
+                    Ports::Nominal(access) => Some(nominal_schema(access, &node.config, registry)),
+                    _ => None,
+                })
+                .or_else(|| known.and_then(|found| found.config_schema.clone()))
+                .or_else(|| core_schema(node.definition.id.as_str())),
+            variadic,
             references: known
                 .iter()
                 .flat_map(|found| found.references.iter())

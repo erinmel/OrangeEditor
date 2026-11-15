@@ -125,6 +125,29 @@ clipboard. The clipboard text holds what a document holds and no secret. File
 dialogs belong to the application: `Editor` asks for New, Open and Save as through
 `take_request`, and `orange-desktop` answers with `rfd`.
 
+Node set-up (2026-11-15): a port a kind both implies and declares (`in`, `body`,
+`completed` of loops and forks) is shown once. A variadic port is shown as its
+instances (`branch#0`, `branch#1`, 11 §4.5), with its bounds in `NodeView::variadic`;
+`Host::add_port` and `remove_port` add and take off one instance (with its wires) as
+one edit, keeping at least the minimum. `add_node` starts a node valid where a default
+exists: variadic ports get their minimum instances, a while loop the bound
+`NEW_WHILE_BOUND`, and a record or enum node the first registered type (and member)
+it can name, from `TypeRegistry::nominal_types`; with none registered, adding it is
+refused with that reason. The view gives `core/while` and `core/for-each` settings
+schemas matching their checks, record and enum nodes a schema listing the registered
+types and the chosen type's members, and `NodeView::detail` (the variable a variable
+node names, a record node's type and member) for a card to show. In the editor,
+variables are declared where they are needed: the toolbar's New variable… and the
+Variables list atop the Nodes tab (with Get and Set buttons that add a node already
+naming the variable) open the Document form, and a variable chooser in the properties
+panel has New variable…, a short form whose declaration the node then names
+(`Editor::declare_variable_for`). The properties panel lays fields out as label and
+field rows in one label column that narrows with the panel, writes a field when typing
+ends, and adds or takes off variadic instances. Cards tint their header with the node family's color, show the
+detail beside the title, every port as a dot on the edge (a step port is green, with an arrow beside its name; the way in is a tinted row inside the card; `in` and `then` read "Enter" and "Exit", their IDs unchanged), port names with variadic instances counted from one, short
+type hints on unfed value ports, and a hint on a node with no ports yet. Editor text
+is still fallback English without a catalogue (13, L-01 open).
+
 Editing (2026-11-13): the host owns every change to a document. `Host::add_node`,
 `remove_nodes`, `connect`, `disconnect`, `set_input` and `set_config` take the
 document's text and return the edited text, each through one transaction of the

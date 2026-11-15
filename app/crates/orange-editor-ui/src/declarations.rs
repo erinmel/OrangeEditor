@@ -58,6 +58,19 @@ impl Default for ConnectionForm {
 pub(crate) struct Forms {
     variable: VariableForm,
     connection: ConnectionForm,
+    /// Open the new-variable or new-connection form at the next frame, as asked from
+    /// the toolbar or the properties panel.
+    open_variable: bool,
+    open_connection: bool,
+}
+
+impl Forms {
+    pub(crate) fn reveal_variable(&mut self) {
+        self.open_variable = true;
+    }
+    pub(crate) fn reveal_connection(&mut self) {
+        self.open_connection = true;
+    }
 }
 
 fn scope_name(scope: VarScope) -> &'static str {
@@ -87,6 +100,26 @@ impl Editor {
                 None
             }
         }
+    }
+
+    /// Declares a variable and makes `node` name it at the setting `pointer` (such as
+    /// `/variable`), keeping the node selected. Returns the variable's ID.
+    pub fn declare_variable_for(
+        &mut self,
+        host: &mut Host,
+        node: NodeId,
+        pointer: &str,
+        variable: &Variable,
+    ) -> Option<String> {
+        let id = self.declare_variable(host, variable)?;
+        let _ = self.set_setting(
+            host,
+            node,
+            pointer,
+            Some(serde_json::Value::from(id.as_str())),
+        );
+        self.canvas.select(Some(node));
+        Some(id)
     }
 
     /// Removes a variable; nodes that name it show as problems.
@@ -181,10 +214,12 @@ impl Editor {
         };
         let mut declare = false;
         let mut cancel = false;
+        let reveal = std::mem::take(&mut self.forms.open_variable);
+        let form = &mut self.forms.variable;
         egui::CollapsingHeader::new(title)
             .id_salt("orange-variable-form")
             .default_open(false)
-            .open(form.changing.is_some().then_some(true))
+            .open((form.changing.is_some() || reveal).then_some(true))
             .show(ui, |ui| {
                 let _ = ui.add(egui::TextEdit::singleline(&mut form.name).hint_text("name"));
                 let _ = egui::ComboBox::from_id_salt("orange-variable-type")
@@ -278,10 +313,12 @@ impl Editor {
         };
         let mut declare = false;
         let mut cancel = false;
+        let reveal = std::mem::take(&mut self.forms.open_connection);
+        let form = &mut self.forms.connection;
         egui::CollapsingHeader::new(title)
             .id_salt("orange-connection-form")
             .default_open(false)
-            .open(form.changing.is_some().then_some(true))
+            .open((form.changing.is_some() || reveal).then_some(true))
             .show(ui, |ui| {
                 let _ = ui.add(egui::TextEdit::singleline(&mut form.name).hint_text("name"));
                 let _ = egui::ComboBox::from_id_salt("orange-connection-adapter")

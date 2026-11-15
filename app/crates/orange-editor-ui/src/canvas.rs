@@ -15,6 +15,8 @@ use std::collections::{BTreeMap, BTreeSet};
 pub const NODE_WIDTH: f32 = 236.0;
 /// Height of a card's title.
 pub const HEADER_HEIGHT: f32 = 34.0;
+/// Where the first row of ports starts: under the title, with a little room.
+pub const BODY_TOP: f32 = HEADER_HEIGHT + 6.0;
 /// Height of one row of ports.
 pub const ROW_HEIGHT: f32 = 26.0;
 /// Space under the last row.
@@ -27,6 +29,10 @@ const GRID: f32 = 24.0;
 const PORT_RADIUS: f32 = 5.0;
 /// Below this zoom, cards show their values without controls.
 const CONTROLS_ZOOM: f32 = 0.75;
+/// Space between a card's edge and what is inside it.
+const CARD_PADDING: f32 = 12.0;
+/// Height of a field or control in a row of a card.
+const FIELD_HEIGHT: f32 = 20.0;
 /// Width of the control for an input's value on a card.
 const CONTROL_WIDTH: f32 = 96.0;
 
@@ -55,16 +61,13 @@ impl Control {
 }
 
 /// The size of a node's card in graph units: a title and one row for each input beside
-/// an output.
+/// an output. A node with no ports yet keeps one row, which says to set it up.
 pub fn node_size(node: &NodeView) -> Vec2 {
     let inputs = node.ports.iter().filter(|port| port.input).count();
     let outputs = node.ports.len() - inputs;
     #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-    let rows = inputs.max(outputs) as f32;
-    Vec2::new(
-        NODE_WIDTH,
-        HEADER_HEIGHT + rows * ROW_HEIGHT + FOOTER_HEIGHT,
-    )
+    let rows = inputs.max(outputs).max(1) as f32;
+    Vec2::new(NODE_WIDTH, BODY_TOP + rows * ROW_HEIGHT + FOOTER_HEIGHT)
 }
 
 /// Where a port's dot is, relative to the top left corner of its node's card.
@@ -75,7 +78,7 @@ pub fn port_offset(node: &NodeView, port: &str, input: bool) -> Option<Vec2> {
         .filter(|candidate| candidate.input == input)
         .position(|candidate| candidate.id == port)?;
     #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
-    let y = HEADER_HEIGHT + (row as f32 + 0.5) * ROW_HEIGHT;
+    let y = BODY_TOP + (row as f32 + 0.5) * ROW_HEIGHT;
     Some(Vec2::new(if input { 0.0 } else { NODE_WIDTH }, y))
 }
 
@@ -813,10 +816,18 @@ impl Canvas {
                         .and_then(|text| text.parse().ok())
                         .unwrap_or(0.0)
                 });
+                // An input with no value says so, rather than showing a 0 it does not have.
+                let unset = held.is_none() && port.value.is_none();
                 let touched = place(ui, &mut |ui| {
                     let drag =
                         egui::DragValue::new(&mut value).speed(if whole { 0.2 } else { 0.01 });
-                    ui.add(if whole { drag.fixed_decimals(0) } else { drag })
+                    let drag = if whole { drag.fixed_decimals(0) } else { drag };
+                    let drag = if unset {
+                        drag.custom_formatter(|_, _| "—".to_owned())
+                    } else {
+                        drag
+                    };
+                    ui.add(drag)
                 });
                 if touched.dragged() {
                     self.dragging = Some((node.id, port.id.clone(), value));
@@ -883,10 +894,13 @@ fn draw_node<'a>(
     let radius = 8.0 * zoom;
     let header = Rect::from_min_size(rect.min, Vec2::new(rect.width(), HEADER_HEIGHT * zoom));
     painter.rect_filled(rect, radius, colors.card);
+    // The header carries the node family's color: a tint, and a line along its foot,
+    // so nodes of one package are told apart at a glance, even zoomed out.
+    let family = family_color(&node.definition);
     let header_color = if node.entry {
         colors.entry_header
     } else {
-        colors.header
+        mix(colors.header, family, 0.18)
     };
     painter.rect_filled(
         header,
@@ -897,6 +911,13 @@ fn draw_node<'a>(
             se: 0,
         },
         header_color,
+    );
+    painter.line_segment(
+        [
+            header.left_bottom() + Vec2::new(1.0, 0.0),
+            header.right_bottom() - Vec2::new(1.0, 0.0),
+        ],
+        Stroke::new(2.0 * zoom, family),
     );
     let outline = if selected {
         Stroke::new(2.0, colors.selected)
@@ -909,17 +930,43 @@ fn draw_node<'a>(
     let readable = zoom >= 0.45;
     let mut pressed = false;
     if readable {
-        let title = FontId::proportional(14.0 * zoom);
+        let title = FontId::proportional(14.5 * zoom);
         let small = FontId::proportional(11.5 * zoom);
-        let left = header.left_center() + Vec2::new(12.0 * zoom, 0.0);
-        let _ = painter.text(left, Align2::LEFT_CENTER, &node.name, title, colors.text);
-        // What kind of node it is, when its name says something else.
-        if node.name != node.kind && !fire {
-            let right = header.right_center() - Vec2::new(10.0 * zoom, 0.0);
+        // Long titles stay inside the header, clear of the trigger button.
+        let reserved = if fire { 80.0 * zoom } else { 8.0 * zoom };
+        let clip = Rect::from_min_max(header.min, header.max - Vec2::new(reserved, 0.0));
+        let header_painter = painter.with_clip_rect(clip.intersect(painter.clip_rect()));
+        let left = header.left_center() + Vec2::new(CARD_PADDING * zoom, 0.0);
+        let named = header_painter.text(left, Align2::LEFT_CENTER, &node.name, title, colors.text);
+        // What the node is set to (its variable), else what kind of node it is when its
+        // name says something else.
+        let aside = node
+            .detail
+            .as_deref()
+            .or_else(|| (node.name != node.kind).then_some(node.kind.as_str()));
+        if let Some(aside) = aside {
+            // What it is set to reads as text; what kind it is, quieter.
+            let color = if node.detail.is_some() {
+                colors.text.gamma_multiply(0.8)
+            } else {
+                colors.weak
+            };
+            let _ = header_painter.text(
+                Pos2::new(named.max.x + 8.0 * zoom, header.center().y),
+                Align2::LEFT_CENTER,
+                aside,
+                small.clone(),
+                color,
+            );
+        }
+        if node.ports.is_empty() {
             let _ = painter.text(
-                right,
-                Align2::RIGHT_CENTER,
-                &node.kind,
+                Pos2::new(
+                    rect.center().x,
+                    rect.min.y + (BODY_TOP + ROW_HEIGHT / 2.0) * zoom,
+                ),
+                Align2::CENTER_CENTER,
+                "Set it up in Properties",
                 small.clone(),
                 colors.weak,
             );
@@ -948,7 +995,26 @@ fn draw_node<'a>(
         }
     }
 
-    let (mut inputs, mut outputs) = (0u16, 0u16);
+    // Where an input's value may reach: the middle of the card when an output shares
+    // its row, else the card's inner right edge.
+    let shared_rows = node.ports.iter().filter(|port| !port.input).count();
+    // The values of a card's inputs start in one column, after its longest input name,
+    // but never past the middle of the card.
+    let names = FontId::proportional(12.5 * zoom);
+    let longest = node
+        .ports
+        .iter()
+        .filter(|port| port.input && !port.exec && readable)
+        .map(|port| {
+            painter
+                .layout_no_wrap(crate::port_label(&port.id), names.clone(), colors.text)
+                .size()
+                .x
+        })
+        .fold(0.0, f32::max);
+    let value_start =
+        (rect.min.x + (CARD_PADDING + 10.0) * zoom + longest).min(rect.center().x - 10.0 * zoom);
+    let (mut inputs, mut outputs) = (0usize, 0usize);
     let mut slots = Vec::new();
     for port in &node.ports {
         let row = if port.input {
@@ -956,40 +1022,72 @@ fn draw_node<'a>(
         } else {
             &mut outputs
         };
-        let y = rect.min.y + (HEADER_HEIGHT + (f32::from(*row) + 0.5) * ROW_HEIGHT) * zoom;
+        let index = *row;
         *row += 1;
+        #[expect(clippy::cast_precision_loss, reason = "a node has few ports")]
+        let y = rect.min.y + (BODY_TOP + (index as f32 + 0.5) * ROW_HEIGHT) * zoom;
         let x = if port.input { rect.min.x } else { rect.max.x };
-        // Toggles and numbers are drawn by their control instead of a pill.
+        let value_end = if index < shared_rows {
+            rect.center().x + 6.0 * zoom
+        } else {
+            rect.max.x - CARD_PADDING * zoom
+        };
+        // Toggles and numbers are drawn by their control instead of a field.
         let control = Control::of(port).filter(|_| controls && readable);
-        let pill = !matches!(
-            control,
-            Some(Control::Toggle | Control::Whole | Control::Number)
-        );
-        if let Some(label) = draw_port(painter, port, Pos2::new(x, y), zoom, colors, readable, pill)
-            && control.is_some()
+        let style = PortStyle {
+            readable,
+            field: !matches!(
+                control,
+                Some(Control::Toggle | Control::Whole | Control::Number)
+            ),
+            hinted: control.is_none(),
+            value_start,
+            value_end,
+        };
+        if let Some(label) = draw_port(painter, port, Pos2::new(x, y), zoom, colors, style)
+            && let Some(control) = control
         {
-            let left = label.max.x + 8.0 * zoom;
-            let height = ROW_HEIGHT * zoom - 6.0;
-            let slot = Rect::from_min_size(
-                Pos2::new(left, y - height / 2.0),
-                Vec2::new(CONTROL_WIDTH * zoom, height),
-            );
+            let height = FIELD_HEIGHT * zoom;
+            let left = (label.max.x + 8.0 * zoom).max(value_start);
+            let width = match control {
+                Control::Toggle => height,
+                Control::Whole | Control::Number => {
+                    (value_end - left).clamp(36.0 * zoom, CONTROL_WIDTH * zoom)
+                }
+                Control::Text => (value_end - left).max(36.0 * zoom),
+            };
+            let slot =
+                Rect::from_min_size(Pos2::new(left, y - height / 2.0), Vec2::new(width, height));
             slots.push((port, slot));
         }
     }
     (pressed, slots)
 }
 
-/// Draws a port's dot and name, and the value written on an input as a pill when
-/// `pill` is set. Returns where an input's name is.
+/// How one port of a card is drawn.
+#[derive(Debug, Clone, Copy)]
+struct PortStyle {
+    /// Big enough to read: names and values are drawn.
+    readable: bool,
+    /// An input's value is drawn as a field (no control draws it).
+    field: bool,
+    /// A short type is shown beside a value port nothing feeds.
+    hinted: bool,
+    /// Where an input's value starts, unless its name is longer.
+    value_start: f32,
+    /// The farthest right an input's value reaches.
+    value_end: f32,
+}
+
+/// Draws a port's dot and name, an input's value as a field, and a short type
+/// beside a value port nothing feeds. Returns where an input's name is.
 fn draw_port(
     painter: &egui::Painter,
     port: &PortView,
     at: Pos2,
     zoom: f32,
     colors: &Palette,
-    readable: bool,
-    pill: bool,
+    style: PortStyle,
 ) -> Option<Rect> {
     let radius = PORT_RADIUS * zoom;
     let color = if port.exec {
@@ -997,63 +1095,208 @@ fn draw_port(
     } else {
         type_color(port.ty.as_deref())
     };
-    if port.exec {
-        // A step is an arrowhead pointing along the flow.
-        let tip = at + Vec2::new(radius * 1.2, 0.0);
-        let back = at - Vec2::new(radius * 0.9, 0.0);
-        let points = vec![
-            back + Vec2::new(0.0, -radius),
-            tip,
-            back + Vec2::new(0.0, radius),
-        ];
-        let fill = if port.connected { color } else { colors.card };
-        painter.add(egui::Shape::convex_polygon(
-            points,
-            fill,
-            Stroke::new(1.5, color),
-        ));
-    } else if port.connected {
+    // Every port is a dot on the card's edge: filled once wired, a ring before. A step
+    // is told from a value by its color and by the arrow beside its name.
+    if port.connected {
         painter.circle_filled(at, radius, color);
     } else {
-        // A value port nothing is wired to is a ring.
         painter.circle_filled(at, radius, colors.card);
         painter.circle_stroke(at, radius, Stroke::new(1.5, color));
     }
-    if !readable {
+    if !style.readable {
         return None;
     }
     let font = FontId::proportional(12.5 * zoom);
-    let gap = Vec2::new(12.0 * zoom, 0.0);
-    if port.input {
-        let label = painter.text(
-            at + gap,
-            Align2::LEFT_CENTER,
-            &port.id,
-            font.clone(),
+    let hint = FontId::proportional(10.5 * zoom);
+    let gap = CARD_PADDING * zoom;
+    let name = step_label(port).unwrap_or_else(|| crate::port_label(&port.id));
+    if port.exec {
+        // Steps read as on a flow chart: the way in is a tinted row inside the card,
+        // the ways on are named with an arrow toward their dot.
+        let arrow = 11.0 * zoom;
+        if port.input {
+            let text = painter.layout_no_wrap(name, font, colors.text);
+            let height = FIELD_HEIGHT * zoom;
+            let row = Rect::from_min_size(
+                Pos2::new(at.x + gap - 4.0 * zoom, at.y - height / 2.0),
+                Vec2::new(text.size().x + arrow + 20.0 * zoom, height),
+            );
+            painter.rect_filled(row, 5.0 * zoom, color.gamma_multiply(0.16));
+            draw_arrow(
+                painter,
+                Pos2::new(row.min.x + 7.0 * zoom, at.y),
+                arrow,
+                color,
+                zoom,
+            );
+            let place = Pos2::new(row.min.x + 13.0 * zoom + arrow, at.y - text.size().y / 2.0);
+            painter.galley(place, text, colors.text);
+            return Some(row);
+        }
+        let start = at.x - gap - arrow;
+        draw_arrow(painter, Pos2::new(start, at.y), arrow, color, zoom);
+        let _ = painter.text(
+            Pos2::new(start - 6.0 * zoom, at.y),
+            Align2::RIGHT_CENTER,
+            &name,
+            font,
             colors.text,
         );
-        // The value written on an input that no wire feeds.
-        if let Some(value) = port.value.as_deref().filter(|_| !port.connected && pill) {
-            let shown: String = value.chars().take(18).collect();
-            let shown = if shown.len() < value.len() {
-                format!("{shown}…")
-            } else {
-                shown
-            };
-            let from = Pos2::new(label.max.x + 8.0 * zoom, at.y);
-            let text = painter.layout_no_wrap(shown, font, colors.text);
-            let pill = Rect::from_min_size(
-                from - Vec2::new(0.0, text.size().y / 2.0 + 2.0 * zoom),
-                text.size() + Vec2::new(10.0, 4.0) * zoom,
-            );
-            painter.rect_filled(pill, 4.0 * zoom, colors.header);
-            painter.galley(pill.min + Vec2::new(5.0, 2.0) * zoom, text, colors.text);
-        }
-        Some(label)
-    } else {
-        let _ = painter.text(at - gap, Align2::RIGHT_CENTER, &port.id, font, colors.text);
-        None
+        return None;
     }
+    // What a value port takes or gives, when nothing on the card says it already.
+    let type_hint = (style.hinted && !port.connected && !(port.input && port.value.is_some()))
+        .then(|| port.ty.as_deref().map(short_type))
+        .flatten();
+    if !port.input {
+        let label = painter.text(
+            at - Vec2::new(gap, 0.0),
+            Align2::RIGHT_CENTER,
+            &name,
+            font,
+            colors.text,
+        );
+        if let Some(ty) = type_hint {
+            let _ = painter.text(
+                Pos2::new(label.min.x - 6.0 * zoom, at.y),
+                Align2::RIGHT_CENTER,
+                ty,
+                hint,
+                colors.weak,
+            );
+        }
+        return None;
+    }
+    let label = painter.text(
+        at + Vec2::new(gap, 0.0),
+        Align2::LEFT_CENTER,
+        &name,
+        font.clone(),
+        colors.text,
+    );
+    if let Some(ty) = type_hint.filter(|_| style.field) {
+        let _ = painter.text(
+            Pos2::new(label.max.x + 6.0 * zoom, at.y),
+            Align2::LEFT_CENTER,
+            ty,
+            hint,
+            colors.weak,
+        );
+    }
+    // The value written on an input that no wire feeds, in a field that ends where
+    // the row's value may reach, shortened with an ellipsis when it is longer.
+    // An input that can be typed into and has no value shows an empty field.
+    let shown = match port.value.as_deref() {
+        Some(value) => Some((field_text(value), colors.text)),
+        None if !style.hinted => Some(("—".to_owned(), colors.weak)),
+        None => None,
+    };
+    if let Some((value, ink)) = shown.filter(|_| !port.connected && style.field) {
+        let left = (label.max.x + 8.0 * zoom).max(style.value_start);
+        let room = style.value_end - left;
+        let pad = 6.0 * zoom;
+        if room > 3.0 * pad {
+            let mut job = egui::text::LayoutJob::simple_singleline(value, font, ink);
+            job.wrap = egui::text::TextWrapping {
+                max_width: room - 2.0 * pad,
+                max_rows: 1,
+                break_anywhere: true,
+                overflow_character: Some('…'),
+            };
+            let text = painter.layout_job(job);
+            let height = FIELD_HEIGHT * zoom;
+            let field = Rect::from_min_size(
+                Pos2::new(left, at.y - height / 2.0),
+                Vec2::new(text.size().x + 2.0 * pad, height),
+            );
+            painter.rect_filled(field, 4.0 * zoom, colors.background);
+            painter.rect_stroke(
+                field,
+                4.0 * zoom,
+                Stroke::new(1.0, colors.outline),
+                StrokeKind::Inside,
+            );
+            let place = Pos2::new(field.min.x + pad, at.y - text.size().y / 2.0);
+            painter.galley(place, text, ink);
+        }
+    }
+    Some(label)
+}
+
+/// A value as its field on a card shows it: text without its quotes, others as
+/// written.
+fn field_text(value: &str) -> String {
+    serde_json::from_str::<String>(value).unwrap_or_else(|_| value.to_owned())
+}
+
+/// What a card calls the way into a node and the way on from it: "Enter" and "Exit".
+/// Only the words shown change; the ports keep their IDs `in` and `then`.
+fn step_label(port: &PortView) -> Option<String> {
+    match (port.exec, port.input, port.id.as_str()) {
+        (true, true, "in") => Some("Enter".to_owned()),
+        (true, false, "then") => Some("Exit".to_owned()),
+        _ => None,
+    }
+}
+
+/// An arrow pointing right, `width` long, from `from` (its tail, at mid height).
+fn draw_arrow(painter: &egui::Painter, from: Pos2, width: f32, color: Color32, zoom: f32) {
+    let stroke = Stroke::new(1.6 * zoom, color);
+    let tip = from + Vec2::new(width, 0.0);
+    let head = width * 0.4;
+    painter.line_segment([from, tip], stroke);
+    painter.line_segment([tip, tip + Vec2::new(-head, -head)], stroke);
+    painter.line_segment([tip, tip + Vec2::new(-head, head)], stroke);
+}
+
+/// `base` moved toward `tint` by `amount` (0 keeps `base`, 1 is `tint`).
+fn mix(base: Color32, tint: Color32, amount: f32) -> Color32 {
+    let channel = |a: u8, b: u8| {
+        let value = f32::from(a) + (f32::from(b) - f32::from(a)) * amount;
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "a blend of two bytes stays a byte"
+        )]
+        let byte = value.round().clamp(0.0, 255.0) as u8;
+        byte
+    };
+    Color32::from_rgb(
+        channel(base.r(), tint.r()),
+        channel(base.g(), tint.g()),
+        channel(base.b(), tint.b()),
+    )
+}
+
+/// A type in a few letters for a card: "text", "number", "list<…>"; a type not found
+/// yet (`$T`) is "any".
+fn short_type(ty: &str) -> String {
+    if ty.starts_with('$') {
+        return "any".to_owned();
+    }
+    let name = crate::type_name(ty);
+    let mut short: String = name.chars().take(14).collect();
+    if short.len() < name.len() {
+        short.push('…');
+    }
+    short
+}
+
+/// The color of a node's family: the namespace of its kind (`core`, `org.orange.math`),
+/// so every node of one package shares it.
+fn family_color(definition: &str) -> Color32 {
+    let family = definition.split('/').next().unwrap_or(definition);
+    if family == "core" {
+        return Color32::from_rgb(232, 140, 48);
+    }
+    // FNV-1a: stable across runs and platforms, unlike the standard hasher.
+    let hash = family.bytes().fold(0x811c_9dc5_u32, |hash, byte| {
+        (hash ^ u32::from(byte)).wrapping_mul(0x0100_0193)
+    });
+    let [a, b, c, _] = hash.to_le_bytes();
+    // Mid-tone channels read on both light and dark cards.
+    let tone = |byte: u8| 70 + byte % 140;
+    Color32::from_rgb(tone(a), tone(b), tone(c))
 }
 
 #[cfg(test)]
@@ -1080,6 +1323,7 @@ mod tests {
             name: format!("node {n}"),
             kind: "Kind".into(),
             definition: "org.example/kind".into(),
+            detail: None,
             entry: n == 1,
             ports,
             position: None,
@@ -1087,6 +1331,7 @@ mod tests {
             schema: None,
             references: Vec::new(),
             types: Vec::new(),
+            variadic: Vec::new(),
         }
     }
     fn wire(from: u32, to: u32) -> WireView {
@@ -1121,20 +1366,20 @@ mod tests {
         let graph = graph();
         assert_eq!(
             node_size(&graph.nodes[0]).y,
-            HEADER_HEIGHT + ROW_HEIGHT + FOOTER_HEIGHT
+            BODY_TOP + ROW_HEIGHT + FOOTER_HEIGHT
         );
         assert_eq!(
             node_size(&graph.nodes[2]).y,
-            HEADER_HEIGHT + 3.0 * ROW_HEIGHT + FOOTER_HEIGHT
+            BODY_TOP + 3.0 * ROW_HEIGHT + FOOTER_HEIGHT
         );
         let third = &graph.nodes[2];
         assert_eq!(
             port_offset(third, "b", true),
-            Some(Vec2::new(0.0, HEADER_HEIGHT + 2.5 * ROW_HEIGHT))
+            Some(Vec2::new(0.0, BODY_TOP + 2.5 * ROW_HEIGHT))
         );
         assert_eq!(
             port_offset(&graph.nodes[1], "then", false),
-            Some(Vec2::new(NODE_WIDTH, HEADER_HEIGHT + 0.5 * ROW_HEIGHT))
+            Some(Vec2::new(NODE_WIDTH, BODY_TOP + 0.5 * ROW_HEIGHT))
         );
         // A port is looked for on its own side only.
         assert_eq!(port_offset(third, "b", false), None);
@@ -1269,7 +1514,7 @@ mod tests {
         let mut canvas = Canvas::new();
         canvas.load(&graph);
         let third = canvas.places[&id(3)];
-        let row = |n: f32| third + Vec2::new(20.0, HEADER_HEIGHT + (n + 0.5) * ROW_HEIGHT);
+        let row = |n: f32| third + Vec2::new(20.0, BODY_TOP + (n + 0.5) * ROW_HEIGHT);
         // Row 0 is the step way in; rows 1 and 2 are the values a and b.
         assert_eq!(
             canvas.input_at(&graph, row(0.0), true, id(1)),
@@ -1283,7 +1528,7 @@ mod tests {
         // Not on the node the wire started from, not on the right of the card, not on
         // empty canvas.
         assert_eq!(canvas.input_at(&graph, row(0.0), true, id(3)), None);
-        let right = third + Vec2::new(NODE_WIDTH - 10.0, HEADER_HEIGHT + 0.5 * ROW_HEIGHT);
+        let right = third + Vec2::new(NODE_WIDTH - 10.0, BODY_TOP + 0.5 * ROW_HEIGHT);
         assert_eq!(canvas.input_at(&graph, right, true, id(1)), None);
         assert_eq!(
             canvas.input_at(&graph, Pos2::new(-500.0, -500.0), true, id(1)),
@@ -1419,6 +1664,37 @@ mod tests {
         // A wired input and a type without a control get none.
         assert_eq!(Control::of(&port("core/i64@1", true)), None);
         assert_eq!(Control::of(&port("core/list@1<core/i64@1>", false)), None);
+    }
+
+    #[test]
+    fn cards_name_types_shortly_and_color_families_alike() {
+        assert_eq!(short_type("core/string@1"), "text");
+        assert_eq!(short_type("$T"), "any");
+        // The way in and the way on read as Enter and Exit; other ports keep their names.
+        assert_eq!(
+            step_label(&port("in", true, true)).as_deref(),
+            Some("Enter")
+        );
+        assert_eq!(
+            step_label(&port("then", false, true)).as_deref(),
+            Some("Exit")
+        );
+        assert_eq!(step_label(&port("in", true, false)), None);
+        assert_eq!(step_label(&port("completed", false, true)), None);
+        assert_eq!(short_type("core/list@1<core/string@1>"), "list<string>");
+        assert_eq!(short_type("org.example.geo/point@1"), "org.example.ge…");
+        // Every node of one package shares a color; core has its own.
+        assert_eq!(
+            family_color("org.orange.math/add"),
+            family_color("org.orange.math/sub")
+        );
+        assert_ne!(
+            family_color("org.orange.math/add"),
+            family_color("core/fork")
+        );
+        // A node with no ports yet keeps a row for its hint.
+        let empty = node(9, Vec::new());
+        assert_eq!(node_size(&empty).y, BODY_TOP + ROW_HEIGHT + FOOTER_HEIGHT);
     }
 
     #[test]

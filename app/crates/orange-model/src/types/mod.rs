@@ -19,4 +19,4 @@ pub use constraints::{
 pub use errors::{TypeRegistrationError, TypeResolveError};
 pub use identity::{TypeKey, TypeKind, TypeOwner};
 pub use implementations::{ConstraintId, ConstraintImplementationRef, PackageConstraintId};
-pub use registry::{TypeRegistry, TypeRegistryBuilder};
+pub use registry::{NominalType, TypeRegistry, TypeRegistryBuilder};

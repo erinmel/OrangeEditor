@@ -26,7 +26,7 @@ pub mod canvas;
 mod declarations;
 mod properties;
 
-pub use properties::{COMMON_TYPES, set_at};
+pub use properties::{COMMON_TYPES, port_label, set_at};
 
 use canvas::Canvas;
 use orange_host::{
@@ -35,6 +35,10 @@ use orange_host::{
 };
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
+
+/// The nodes the Variables list adds for a variable: the button and the kind.
+const VARIABLE_NODES: [(&str, &str); 2] =
+    [("Get", "core/get-variable"), ("Set", "core/set-variable")];
 
 /// Most lines the log keeps; older ones are dropped.
 pub const MAX_LOG_LINES: usize = 500;
@@ -132,6 +136,8 @@ pub struct Editor {
     /// each of its fields.
     inspected: Option<NodeId>,
     typed: std::collections::BTreeMap<String, String>,
+    /// A variable being declared from the properties of the node that will name it.
+    quick_variable: Option<properties::QuickVariable>,
     /// The left panel shows the document's declarations instead of the node kinds.
     document_tab: bool,
     forms: declarations::Forms,
@@ -391,6 +397,57 @@ impl Editor {
         };
         let result = host.set_input(draft, at, typed);
         self.edited(host, result)
+    }
+
+    /// Adds an instance of a variadic port, such as another branch of a fork.
+    /// Returns its name, such as `branch#1`.
+    pub fn add_port(&mut self, host: &mut Host, node: NodeId, port: &str) -> Option<String> {
+        let draft = self.editing()?;
+        match host.add_port(draft, node, port) {
+            Ok(added) => {
+                let _ = self.edited(host, Ok(true));
+                Some(added)
+            }
+            Err(error) => {
+                let _ = self.edited(host, Err(error));
+                None
+            }
+        }
+    }
+
+    /// Takes off one instance of a variadic port, with its wires.
+    pub fn remove_port(&mut self, host: &mut Host, at: (NodeId, &str)) -> bool {
+        let Some(draft) = self.editing() else {
+            return false;
+        };
+        let result = host.remove_port(draft, at);
+        self.edited(host, result)
+    }
+
+    /// Adds a node of kind `definition` that names the variable `variable`, such as a
+    /// Get variable node for `count`, and selects it.
+    pub fn add_variable_node(
+        &mut self,
+        host: &mut Host,
+        definition: &str,
+        variable: &str,
+    ) -> Option<NodeId> {
+        let node = self.add_node(host, definition)?;
+        let _ = self.set_setting(
+            host,
+            node,
+            "/variable",
+            Some(serde_json::Value::from(variable)),
+        );
+        self.canvas.select(Some(node));
+        Some(node)
+    }
+
+    /// Shows the Document tab with the form for a new variable open.
+    pub fn new_variable_form(&mut self) {
+        self.panels.nodes = true;
+        self.document_tab = true;
+        self.forms.reveal_variable();
     }
 
     /// Whether there is an edit to undo, and one to do again.
@@ -751,6 +808,13 @@ impl Editor {
                 if ui.button("Check").clicked() {
                     self.check(host);
                 }
+                if ui
+                    .button("New variable…")
+                    .on_hover_text("Declare a variable of this graph.")
+                    .clicked()
+                {
+                    self.new_variable_form();
+                }
                 if running {
                     if ui.button("Stop").clicked() {
                         self.stop(host);
@@ -804,13 +868,50 @@ impl Editor {
             return;
         }
         let mut add = None;
+        let mut variable_node = None;
+        let mut new_variable = false;
         let _ = ui.add(
             egui::TextEdit::singleline(&mut self.search)
                 .hint_text("Search nodes")
                 .desired_width(f32::INFINITY),
         );
+        let variables = self.variables_to_use();
         egui::ScrollArea::vertical().show(ui, |ui| {
             let searching = !self.search.trim().is_empty();
+            // The graph's own variables first: reading or writing one is the most
+            // common node, and declaring one starts here too.
+            if self.document.is_some() && !searching {
+                egui::CollapsingHeader::new(format!("Variables ({})", variables.len()))
+                    .id_salt("orange-variables")
+                    .default_open(true)
+                    .show(ui, |ui| {
+                        for (id, name, ty) in &variables {
+                            ui.horizontal(|ui| {
+                                let _ = ui
+                                    .add(egui::Label::new(name.as_str()).truncate())
+                                    .on_hover_text(type_name(ty));
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        for (label, definition) in VARIABLE_NODES.iter().rev() {
+                                            if ui
+                                                .small_button(*label)
+                                                .on_hover_text(format!(
+                                                    "Add a {} node for {name}.",
+                                                    label.to_lowercase()
+                                                ))
+                                                .clicked()
+                                            {
+                                                variable_node = Some((*definition, id.clone()));
+                                            }
+                                        }
+                                    },
+                                );
+                            });
+                        }
+                        new_variable = ui.button("New variable…").clicked();
+                    });
+            }
             for (category, items) in self.palette.get(host, &self.search) {
                 egui::CollapsingHeader::new(format!("{category} ({})", items.len()))
                     .id_salt(category.as_str())
@@ -831,6 +932,12 @@ impl Editor {
                     });
             }
         });
+        if new_variable {
+            self.new_variable_form();
+        }
+        if let Some((definition, variable)) = variable_node {
+            let _ = self.add_variable_node(host, definition, &variable);
+        }
         if let Some(definition) = add {
             if self.document.is_some() {
                 let _ = self.add_node(host, &definition);
@@ -838,6 +945,25 @@ impl Editor {
                 self.say("open a graph before adding nodes".to_owned());
             }
         }
+    }
+
+    /// The open document's variables that nodes can name, as (ID, name, type).
+    fn variables_to_use(&self) -> Vec<(String, String, String)> {
+        self.declarations()
+            .map(|declared| {
+                declared
+                    .variables
+                    .iter()
+                    .filter_map(|variable| {
+                        Some((
+                            variable.id.clone()?,
+                            variable.name.clone(),
+                            variable.ty.clone(),
+                        ))
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     }
 
     fn packages_panel(ui: &mut egui::Ui, host: &Host) {
@@ -1436,6 +1562,158 @@ mod tests {
         // The canvas takes the room the panels gave up.
         let alone = editor.canvas().size();
         assert!(alone[0] > with_panels[0] && alone[1] > with_panels[1]);
+    }
+
+    /// Draws one frame in a window `size` points large.
+    fn draw_at(editor: &mut Editor, host: &mut Host, size: [f32; 2]) -> usize {
+        let context = egui::Context::default();
+        let input = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(
+                egui::Pos2::ZERO,
+                egui::vec2(size[0], size[1]),
+            )),
+            ..Default::default()
+        };
+        let output = context.run_ui(input, |ui| editor.ui(ui, host));
+        let shapes = output.shapes.len();
+        output.drop_without_applying_deltas();
+        shapes
+    }
+
+    #[test]
+    fn every_node_kind_of_the_host_is_added_with_ports_or_refused_with_a_reason() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let kinds: Vec<String> = host
+            .nodes()
+            .map(|info| info.definition.definition.id.as_str().to_owned())
+            .collect();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "all.json", blank());
+        for kind in &kinds {
+            let before = editor.log().count();
+            match editor.add_node(&mut host, kind) {
+                Some(node) => {
+                    let graph = editor.graph().unwrap();
+                    let view = graph.nodes.iter().find(|found| found.id == node).unwrap();
+                    // A node shows each port once.
+                    let mut seen = std::collections::BTreeSet::new();
+                    assert!(
+                        view.ports
+                            .iter()
+                            .all(|port| seen.insert((port.input, &port.id))),
+                        "{kind}: {:?}",
+                        view.ports
+                    );
+                    // Only a variable node that names no variable yet has no ports.
+                    assert!(
+                        !view.ports.is_empty() || !view.references.is_empty(),
+                        "{kind} has no ports"
+                    );
+                }
+                // The base host declares no record or enum type; the log says why.
+                None => assert!(
+                    editor
+                        .log()
+                        .skip(before)
+                        .any(|line| line.contains("no active package declares")),
+                    "{kind} was refused without the reason"
+                ),
+            }
+        }
+        // The whole graph of every kind draws, in a small window too.
+        assert!(draw(&mut editor, &mut host) > 0);
+        assert!(draw_at(&mut editor, &mut host, [480.0, 320.0]) > 0);
+    }
+
+    #[test]
+    fn a_variable_is_declared_where_a_node_needs_it_and_used_from_the_list() {
+        use orange_host::{VarScope, Variable};
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        // A node that needs a variable declares one from its properties.
+        let set = editor.add_node(&mut host, "core/set-variable").unwrap();
+        let total = Variable {
+            id: None,
+            name: "total".into(),
+            ty: "core/f64@1".into(),
+            scope: VarScope::Run,
+            persistent: false,
+            initial: None,
+        };
+        let id = editor
+            .declare_variable_for(&mut host, set, "/variable", &total)
+            .unwrap();
+        let node = |editor: &Editor, node| {
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .find(|found| found.id == node)
+                .cloned()
+                .unwrap()
+        };
+        assert_eq!(node(&editor, set).settings["variable"], json!(id));
+        assert_eq!(node(&editor, set).detail.as_deref(), Some("total"));
+        assert_eq!(editor.canvas().selected(), Some(set));
+        assert!(
+            node(&editor, set)
+                .ports
+                .iter()
+                .any(|port| port.id == "value")
+        );
+        // The Variables list adds a node already naming the variable.
+        let get = editor
+            .add_variable_node(&mut host, "core/get-variable", &id)
+            .unwrap();
+        assert_eq!(node(&editor, get).detail.as_deref(), Some("total"));
+        assert!(!node(&editor, get).ports.is_empty());
+        // The toolbar opens the new-variable form under Document.
+        editor.document_tab = false;
+        editor.new_variable_form();
+        assert!(editor.document_tab && editor.panels.nodes);
+        assert!(draw(&mut editor, &mut host) > 0);
+        // The quick form draws in the properties of the node it is for.
+        editor.document_tab = false;
+        editor.canvas().select(Some(set));
+        editor.quick_variable = Some(properties::QuickVariable::for_test(set));
+        assert!(draw_at(&mut editor, &mut host, [520.0, 360.0]) > 0);
+        assert!(editor.quick_variable.is_some());
+    }
+
+    #[test]
+    fn branches_are_added_and_taken_off_from_the_editor() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        editor.open(&mut host, "new.json", blank());
+        let fork = editor.add_node(&mut host, "core/fork").unwrap();
+        let branches = |editor: &Editor| {
+            let graph = editor.graph().unwrap();
+            let node = graph.nodes.iter().find(|found| found.id == fork).unwrap();
+            (node.variadic[0].count, node.ports.len())
+        };
+        assert_eq!(branches(&editor), (1, 3));
+        assert_eq!(
+            editor.add_port(&mut host, fork, "branch").as_deref(),
+            Some("branch#1")
+        );
+        assert_eq!(branches(&editor), (2, 4));
+        assert!(editor.remove_port(&mut host, (fork, "branch#1")));
+        assert_eq!(branches(&editor), (1, 3));
+        // The last one a fork needs stays, and the log says why.
+        assert!(!editor.remove_port(&mut host, (fork, "branch#0")));
+        assert!(editor.log().any(|line| line.contains("at least 1")));
+        editor.canvas().select(Some(fork));
+        assert!(draw(&mut editor, &mut host) > 0);
+    }
+
+    #[test]
+    fn ports_and_settings_are_named_for_people() {
+        assert_eq!(port_label("branch#0"), "branch 1");
+        assert_eq!(port_label("max_items"), "max items");
+        assert_eq!(port_label("odd#x"), "odd#x");
+        assert_eq!(properties::words("max_iterations"), "Max iterations");
     }
 
     #[test]
