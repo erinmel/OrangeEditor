@@ -892,3 +892,23 @@ fn whole_numbers_compared_by_greater_run_into_a_variable() {
     until("the variable", || value(&host).is_some());
     assert_eq!(value(&host), Some(Value::Bool(true)));
 }
+
+#[test]
+fn two_nodes_of_one_kind_are_called_the_same_on_the_canvas() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let mut draft = host.draft(&empty()).unwrap();
+    let a = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 0.0])
+        .unwrap();
+    let b = host
+        .add_node(&mut draft, "core/whole-number", [0.0, 100.0])
+        .unwrap();
+    let view = host.draft_view(&draft).unwrap();
+    let name = |id: NodeId| view.nodes.iter().find(|n| n.id == id).unwrap().name.clone();
+    assert_eq!(name(a), "Whole number");
+    assert_eq!(name(b), "Whole number");
+    // Text that has nothing else to tell them apart by keeps the ID ending.
+    let names = orange_host::Names::of_document(&host, draft.document());
+    assert_ne!(names.node(&a), names.node(&b));
+    assert_eq!(names.without_ids().node(&a), "Whole number");
+}

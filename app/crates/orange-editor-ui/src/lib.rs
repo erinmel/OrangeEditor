@@ -183,7 +183,7 @@ impl Editor {
             path,
             untitled: false,
             declared: host.declarations(&draft),
-            names: Names::of_document(host, draft.document()),
+            names: Names::of_document(host, draft.document()).without_ids(),
             draft,
             graph,
             unsaved: false,
@@ -236,7 +236,7 @@ impl Editor {
         let Some(document) = &mut self.document else {
             return;
         };
-        document.names = Names::of_document(host, document.draft.document());
+        document.names = Names::of_document(host, document.draft.document()).without_ids();
         document.graph = host.draft_view(&document.draft).unwrap_or_default();
         document.declared = host.declarations(&document.draft);
         document.unsaved = true;

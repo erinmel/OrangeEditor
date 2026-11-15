@@ -449,7 +449,7 @@ impl Host {
         NodeView {
             id: node.id,
             detail,
-            name: names.node(&node.id),
+            name: names.called(&node.id),
             kind: labels
                 .get(&definition)
                 .cloned()
