@@ -1,7 +1,7 @@
 //! The properties panel: what the selected node settles (the declarations it names,
 //! its settings, the types of a generic node) and the values on its inputs.
 use super::*;
-use orange_host::{NodeView, ReferenceKind, VarScope, Variable};
+use orange_host::{Connection, NodeView, ReferenceKind, VarScope, Variable};
 use serde_json::{Value as Json, json};
 
 /// Types offered for a value, besides those the document already uses.
@@ -162,7 +162,8 @@ impl Editor {
     }
 
     /// The declarations of one kind a node can name, as (ID, name).
-    fn choices(&self, kind: ReferenceKind) -> Vec<(String, String)> {
+    /// Connections are those of kind `adapter` when the node says which it uses.
+    fn choices(&self, kind: ReferenceKind, adapter: Option<&str>) -> Vec<(String, String)> {
         let Some(declared) = self.declarations() else {
             return Vec::new();
         };
@@ -176,10 +177,25 @@ impl Editor {
             ReferenceKind::Connection => declared
                 .connections
                 .iter()
+                .filter(|connection| adapter.is_none_or(|kind| connection.adapter == kind))
                 .filter_map(|connection| pairs(&connection.id, &connection.name))
                 .collect(),
             _ => Vec::new(),
         }
+    }
+
+    /// The declared connection `node` names, if it names one.
+    fn named_connection(&self, node: &NodeView) -> Option<Connection> {
+        let id = node
+            .references
+            .iter()
+            .filter(|(_, kind)| *kind == ReferenceKind::Connection)
+            .find_map(|(pointer, _)| node.settings.pointer(pointer)?.as_str())?;
+        self.declarations()?
+            .connections
+            .iter()
+            .find(|connection| connection.id.as_deref() == Some(id))
+            .cloned()
     }
 
     /// Reads the fields of `node` again when another node is selected.
@@ -267,6 +283,18 @@ impl Editor {
         ui.separator();
         // What to do once the fields are drawn: one change a frame.
         let mut change = None;
+        // The kind of connection the node uses, and the one it names with its choices.
+        let adapter = host
+            .nodes()
+            .find(|info| info.definition.definition.id.as_str() == node.definition)
+            .and_then(|info| info.presentation?.connection_adapter.clone());
+        let connection = self.named_connection(&node);
+        let choices = connection
+            .as_ref()
+            .map(|connection| self.adapter_choices(host, &connection.adapter, false))
+            .unwrap_or_default();
+        let mut refresh = false;
+        let mut redeclare: Option<Connection> = None;
         egui::ScrollArea::vertical()
             .auto_shrink([false, false])
             .show(ui, |ui| {
@@ -278,10 +306,40 @@ impl Editor {
                 if setup {
                     section(ui, "Set-up");
                     for (pointer, kind) in &node.references {
-                        if let Some(asked) = self.reference_field(ui, labels, &node, pointer, *kind)
-                        {
+                        if let Some(asked) = self.reference_field(
+                            ui,
+                            labels,
+                            &node,
+                            pointer,
+                            *kind,
+                            adapter.as_deref(),
+                        ) {
                             change = Some(asked);
                         }
+                    }
+                    if let Some(connection) = &connection
+                        && !choices.is_empty()
+                    {
+                        if let Some((name, value)) = declarations::choice_fields(
+                            ui,
+                            "node",
+                            &choices,
+                            &connection.settings,
+                            &mut refresh,
+                        ) {
+                            redeclare = Some(Connection {
+                                settings: declarations::with_setting(
+                                    &connection.settings,
+                                    &name,
+                                    value,
+                                ),
+                                ..connection.clone()
+                            });
+                        }
+                        ui.weak(format!(
+                            "Settings of the connection “{}”, for every node that uses it.",
+                            connection.name
+                        ));
                     }
                     if let Some(asked) = self.settings_fields(ui, labels, &node) {
                         change = Some(asked);
@@ -307,6 +365,12 @@ impl Editor {
                     change = Some(Change::Delete);
                 }
             });
+        if let Some(connection) = redeclare {
+            let _ = self.declare_connection(host, &connection);
+        }
+        if refresh && let Some(connection) = &connection {
+            let _ = self.adapter_choices(host, &connection.adapter, true);
+        }
         let Some(change) = change else {
             return;
         };
@@ -354,13 +418,14 @@ impl Editor {
         node: &NodeView,
         pointer: &str,
         kind: ReferenceKind,
+        adapter: Option<&str>,
     ) -> Option<Change> {
         let named = node
             .settings
             .pointer(pointer)
             .and_then(Json::as_str)
             .map(str::to_owned);
-        let declared = self.choices(kind);
+        let declared = self.choices(kind, adapter);
         let what = match kind {
             ReferenceKind::Variable => "variable",
             ReferenceKind::Connection => "connection",

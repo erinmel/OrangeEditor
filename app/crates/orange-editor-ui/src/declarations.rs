@@ -3,7 +3,8 @@
 //! a setting that holds one is a `credential://<name>` reference to the system's store.
 use super::*;
 use crate::properties::COMMON_TYPES;
-use orange_host::{Connection, ConnectionScope, Declarations, VarScope, Variable};
+use orange_host::{Connection, ConnectionScope, Declarations, SettingChoices, VarScope, Variable};
+use serde_json::Value as Json;
 
 /// What is being typed into the variable form.
 #[derive(Debug, Clone, PartialEq)]
@@ -71,6 +72,71 @@ impl Forms {
     pub(crate) fn reveal_connection(&mut self) {
         self.open_connection = true;
     }
+}
+
+/// Lists to choose connection settings from, such as an audio connection's device,
+/// over `settings`. A refresh button lists the values again. Returns the setting to
+/// change and its new value, `None` to leave it out (the adapter's default).
+pub(crate) fn choice_fields(
+    ui: &mut egui::Ui,
+    salt: &str,
+    choices: &[SettingChoices],
+    settings: &Json,
+    refresh: &mut bool,
+) -> Option<(String, Option<String>)> {
+    let mut chosen = None;
+    for choice in choices {
+        let current = settings.get(&choice.setting).and_then(Json::as_str);
+        ui.horizontal(|ui| {
+            ui.label(choice.setting.as_str());
+            let _ = egui::ComboBox::from_id_salt(("orange-setting-choice", salt, &choice.setting))
+                .selected_text(current.unwrap_or(choice.unset.as_str()))
+                .show_ui(ui, |ui| {
+                    if ui
+                        .selectable_label(current.is_none(), choice.unset.as_str())
+                        .clicked()
+                        && current.is_some()
+                    {
+                        chosen = Some((choice.setting.clone(), None));
+                    }
+                    for value in &choice.values {
+                        let selected = current == Some(value.as_str());
+                        if ui.selectable_label(selected, value.as_str()).clicked() && !selected {
+                            chosen = Some((choice.setting.clone(), Some(value.clone())));
+                        }
+                    }
+                });
+            *refresh |= ui
+                .small_button("↻")
+                .on_hover_text("List them again")
+                .clicked();
+        });
+        if let Some(problem) = &choice.problem {
+            ui.weak(format!("Could not list them: {problem}"));
+        }
+        if let Some(value) = current
+            && !choice.values.iter().any(|known| known == value)
+        {
+            ui.weak(format!("“{value}” is not on this machine now."));
+        }
+    }
+    chosen
+}
+
+/// `settings` with `setting` set to `value`, or left out for `None`.
+pub(crate) fn with_setting(settings: &Json, setting: &str, value: Option<String>) -> Json {
+    let mut settings = settings.clone();
+    if let Json::Object(fields) = &mut settings {
+        match value {
+            Some(value) => {
+                let _ = fields.insert(setting.to_owned(), Json::String(value));
+            }
+            None => {
+                let _ = fields.remove(setting);
+            }
+        }
+    }
+    settings
 }
 
 fn scope_name(scope: VarScope) -> &'static str {
@@ -149,6 +215,23 @@ impl Editor {
                 None
             }
         }
+    }
+
+    /// The setting choices of `adapter`, listed the first time they are asked for and
+    /// again after `refresh`.
+    pub(crate) fn adapter_choices(
+        &mut self,
+        host: &Host,
+        adapter: &str,
+        refresh: bool,
+    ) -> Vec<SettingChoices> {
+        if refresh {
+            let _ = self.adapter_choices.remove(adapter);
+        }
+        self.adapter_choices
+            .entry(adapter.to_owned())
+            .or_insert_with(|| host.adapter_choices(adapter))
+            .clone()
     }
 
     /// Removes a connection; nodes that use it show as problems.
@@ -300,12 +383,15 @@ impl Editor {
             ui.weak("None yet.");
         }
         let adapters = host.adapters();
-        let form = &mut self.forms.connection;
-        if form.adapter.is_empty()
+        if self.forms.connection.adapter.is_empty()
             && let Some(first) = adapters.first()
         {
-            form.adapter.clone_from(first);
+            self.forms.connection.adapter.clone_from(first);
         }
+        let adapter = self.forms.connection.adapter.clone();
+        let choices = self.adapter_choices(host, &adapter, false);
+        let mut refresh = false;
+        let form = &mut self.forms.connection;
         let title = if form.changing.is_some() {
             "Change connection"
         } else {
@@ -338,6 +424,15 @@ impl Editor {
                         .radio_value(&mut form.scope, ConnectionScope::Shared, "shared")
                         .on_hover_text("The host holds the settings; graphs share one session.");
                 });
+                if !choices.is_empty()
+                    && let Ok(current) = serde_json::from_str::<Json>(&form.settings)
+                    && let Some((setting, value)) =
+                        choice_fields(ui, "form", &choices, &current, &mut refresh)
+                {
+                    form.settings =
+                        serde_json::to_string_pretty(&with_setting(&current, &setting, value))
+                            .unwrap_or_default();
+                }
                 ui.label("settings (JSON)");
                 let _ = ui.add(
                     egui::TextEdit::multiline(&mut form.settings)
@@ -373,6 +468,9 @@ impl Editor {
         }
         if cancel {
             self.forms.connection = ConnectionForm::default();
+        }
+        if refresh {
+            let _ = self.adapter_choices(host, &adapter, true);
         }
         if let Some(id) = remove {
             let _ = self.remove_connection(host, &id);

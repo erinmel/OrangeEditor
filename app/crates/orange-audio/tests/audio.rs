@@ -357,3 +357,127 @@ fn a_tone_plays_on_the_default_device() {
     assert_eq!(read(&host, flow, 100), Some(Value::I64(1)));
     assert!(started.elapsed() >= Duration::from_millis(250));
 }
+
+/// What a person does in the editor: drops nodes, picks the device and types a folder.
+#[test]
+fn a_dropped_play_node_gets_a_connection_and_plays_a_random_file_of_a_folder() {
+    let mut host = host();
+    let mut draft = host.draft(&orange_host::new_document().unwrap()).unwrap();
+    let play = host
+        .add_node(&mut draft, orange_audio::PLAY_FROM, [200.0, 0.0])
+        .unwrap();
+    // Dropping it declared an output on the system default device, in the same edit.
+    let declared = host.declarations(&draft).connections;
+    assert_eq!(declared.len(), 1);
+    assert_eq!(declared[0].adapter, orange_audio::OUTPUT_ADAPTER);
+    assert_eq!(declared[0].settings, json!({}));
+    assert!(draft.undo());
+    assert!(host.declarations(&draft).connections.is_empty());
+    assert!(draft.redo());
+    // Another output node uses the same connection; an input node gets its own kind.
+    let other = host
+        .add_node(&mut draft, orange_audio::STOP, [0.0, 200.0])
+        .unwrap();
+    let level = host
+        .add_node(&mut draft, orange_audio::INPUT_LEVEL, [0.0, 400.0])
+        .unwrap();
+    let kinds: Vec<String> = host
+        .declarations(&draft)
+        .connections
+        .into_iter()
+        .map(|connection| connection.adapter)
+        .collect();
+    assert_eq!(
+        kinds.len(),
+        2,
+        "one output and one input connection: {kinds:?}"
+    );
+    assert!(host.remove_nodes(&mut draft, &[other, level]).unwrap());
+
+    // The device list offers the silent device beside whatever this machine has.
+    let choices = host.adapter_choices(orange_audio::OUTPUT_ADAPTER);
+    assert_eq!(choices[0].setting, "device");
+    assert!(
+        choices[0]
+            .values
+            .iter()
+            .any(|device| device == orange_audio::NULL_DEVICE)
+    );
+    let mut output = host
+        .declarations(&draft)
+        .connections
+        .into_iter()
+        .find(|connection| connection.adapter == orange_audio::OUTPUT_ADAPTER)
+        .unwrap();
+    output.settings = json!({"device": orange_audio::NULL_DEVICE});
+    let _ = host.declare_connection(&mut draft, &output).unwrap();
+
+    let folder = std::env::temp_dir().join(format!("orange-audio-random-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&folder);
+    std::fs::create_dir_all(&folder).unwrap();
+    for name in ["a.wav", "b.wav"] {
+        std::fs::copy(tone(name, 20), folder.join(name)).unwrap();
+    }
+    assert!(
+        host.set_input(&mut draft, (play, "folder"), folder.to_str())
+            .unwrap()
+    );
+    let random = host
+        .add_node(&mut draft, "org.orange.math/random-u64", [0.0, 100.0])
+        .unwrap();
+    assert!(
+        host.connect(&mut draft, (random, "value"), (play, "pick"))
+            .unwrap()
+    );
+    let manual = host
+        .add_node(&mut draft, "core/on-manual", [0.0, 0.0])
+        .unwrap();
+    assert!(
+        host.connect(&mut draft, (manual, "then"), (play, "in"))
+            .unwrap()
+    );
+    let played = host
+        .declare_variable(
+            &mut draft,
+            &orange_host::Variable {
+                id: None,
+                name: "played".into(),
+                ty: STRING.into(),
+                scope: orange_host::VarScope::Run,
+                persistent: false,
+                initial: None,
+            },
+        )
+        .unwrap();
+    let store = host
+        .add_node(&mut draft, "core/set-variable", [400.0, 0.0])
+        .unwrap();
+    assert!(
+        host.set_config(&mut draft, store, &json!({"variable": played}))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut draft, (play, "then"), (store, "in"))
+            .unwrap()
+    );
+    assert!(
+        host.connect(&mut draft, (play, "file"), (store, "value"))
+            .unwrap()
+    );
+    let problems = host.problems(&mut draft).unwrap();
+    assert!(problems.is_empty(), "{problems:?}");
+
+    let flow = host.open(&draft.text().unwrap()).unwrap();
+    let played: orange_host::VariableId = played.parse().unwrap();
+    let file = || {
+        host.inspect(flow, move |run| run.variable(played).cloned())
+            .unwrap()
+    };
+    host.trigger(flow, manual, None).unwrap();
+    until("a file to play", || file().is_some());
+    let Some(Value::Str(name)) = file() else {
+        panic!("not a file name: {:?}", file());
+    };
+    assert!(["a.wav", "b.wav"].contains(&name.as_str()), "{name}");
+    std::fs::remove_dir_all(&folder).unwrap();
+}
