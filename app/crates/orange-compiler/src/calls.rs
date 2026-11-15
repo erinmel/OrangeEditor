@@ -25,7 +25,7 @@ pub(crate) enum CallProfile {
 #[derive(Default)]
 struct PreparedBody<'a> {
     signatures: BTreeMap<NodeId, Cow<'a, SignatureSnapshot>>,
-    lazy: BTreeMap<NodeId, crate::lazy::Lazy>,
+    projections: BTreeMap<NodeId, crate::projection::Projection>,
     entry: Option<NodeId>,
     result: Option<NodeId>,
 }
@@ -259,13 +259,13 @@ impl<'a> Calls<'a> {
                     if !marker && sig.kind != NodeKind::Pure && !seeded && !state && !control {
                         return Err(CompileError::UnsupportedNode { node: node.id });
                     }
-                    let lazy = out.lazy(&BTreeMap::new(), cursor, node.id).is_some();
+                    let projected = out.projection(&BTreeMap::new(), cursor, node.id).is_some();
                     let zone = (profile != CallProfile::Pure)
                         .then(|| crate::zones::marker(analysis, node.id))
                         .flatten();
                     if node.definition.id.is_core()
                         && !marker
-                        && !lazy
+                        && !projected
                         && !state
                         && !control
                         && zone.is_none()
@@ -280,7 +280,7 @@ impl<'a> Calls<'a> {
                             snapshot,
                             node.id,
                             sig,
-                            lazy,
+                            projected,
                             if state {
                                 OutputSource::State
                             } else if zone == Some(false) {
@@ -463,8 +463,8 @@ impl<'a> Calls<'a> {
                                 return Err(CompileError::UnsupportedNode { node: child.id });
                             }
                         }
-                        if let Some(lazy) = crate::lazy::Lazy::resolve(child, &sig)? {
-                            prepared.lazy.insert(child.id, lazy);
+                        if let Some(kind) = crate::projection::Projection::resolve(child, &sig)? {
+                            prepared.projections.insert(child.id, kind);
                         }
                         prepared.signatures.insert(child.id, sig);
                     }
@@ -518,16 +518,21 @@ impl<'a> Calls<'a> {
     pub(crate) fn result(&self, scope: usize) -> Option<NodeId> {
         self.scopes[scope].body.as_ref().and_then(|b| b.result)
     }
-    pub(crate) fn lazy(
+    pub(crate) fn projection(
         &self,
-        root: &BTreeMap<NodeId, crate::lazy::Lazy>,
+        root: &BTreeMap<NodeId, crate::projection::Projection>,
         scope: usize,
         node: NodeId,
-    ) -> Option<crate::lazy::Lazy> {
+    ) -> Option<crate::projection::Projection> {
         if scope == 0 {
             root.get(&node).copied()
         } else {
-            self.scopes[scope].body.as_ref()?.lazy.get(&node).copied()
+            self.scopes[scope]
+                .body
+                .as_ref()?
+                .projections
+                .get(&node)
+                .copied()
         }
     }
     pub(crate) fn signature<'b>(

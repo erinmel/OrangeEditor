@@ -422,7 +422,7 @@ fn compile_pure_inner<'a>(
     };
     let Admission {
         incoming,
-        lazy_nodes,
+        projections,
         ..
     } = admission;
     let calls = Arc::new(if let Some(selected) = &selected {
@@ -446,7 +446,7 @@ fn compile_pure_inner<'a>(
         resolver,
         options,
         &incoming,
-        &lazy_nodes,
+        &projections,
         calls,
     )?;
     folder.preview = preview;
@@ -480,7 +480,7 @@ pub(crate) struct ConstantFolder<'a, R: PureKernelResolver> {
     resolver: &'a R,
     options: CompileOptions<'a>,
     incoming: &'a Incoming<'a>,
-    lazy_nodes: &'a BTreeMap<NodeId, crate::lazy::Lazy>,
+    projections: &'a BTreeMap<NodeId, crate::projection::Projection>,
     plan: PurePlan,
     frames: Vec<FoldFrame>,
     pub(crate) calls: Arc<crate::calls::Calls<'a>>,
@@ -504,7 +504,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
         resolver: &'a R,
         options: CompileOptions<'a>,
         incoming: &'a Incoming<'a>,
-        lazy_nodes: &'a BTreeMap<NodeId, crate::lazy::Lazy>,
+        projections: &'a BTreeMap<NodeId, crate::projection::Projection>,
         calls: Arc<crate::calls::Calls<'a>>,
     ) -> Result<Self, CompileError> {
         let frames = (0..calls.scopes.len())
@@ -540,7 +540,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             resolver,
             options,
             incoming,
-            lazy_nodes,
+            projections,
             plan,
             frames,
             calls,
@@ -602,7 +602,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             resolver,
             options,
             incoming,
-            lazy_nodes,
+            projections,
             plan,
             frames,
             calls,
@@ -671,7 +671,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     if signature.kind != NodeKind::Pure {
                         return Err(CompileError::UnsupportedNode { node });
                     }
-                    if calls.lazy(lazy_nodes, scope, node).is_some() {
+                    if calls.projection(projections, scope, node).is_some() {
                         work.push((scope, Work::Choose(node)));
                         if let Some(edge) = incoming.get(&(node, key(&signature.ports[0]))) {
                             work.push((scope, Work::Enter(edge.from.node)));
@@ -704,7 +704,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                     let selected = match &plan.constants[selector.slot.index()] {
                         FoldedValue::Fault(_) => None,
                         FoldedValue::Value(value) => calls
-                            .lazy(lazy_nodes, scope, node)
+                            .projection(projections, scope, node)
                             .ok_or(CompileError::ValidationIncomplete)?
                             .selected(value)
                             .ok_or(CompileError::KernelContract { node })?,
@@ -803,26 +803,28 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
                 continue;
             }
             let binding = if let Some(choice) = &decision {
-                crate::lazy::binding(
-                    input_ports.iter().map(|p| key(p)).collect(),
-                    output_ports.iter().map(|p| key(p)).collect(),
+                crate::projection::binding(
+                    &input_ports,
+                    &output_ports,
                     matches!(
                         plan.constants[choice.selector.slot.index()],
                         FoldedValue::Fault(_)
                     ),
                     match calls
-                        .lazy(lazy_nodes, scope, node_id)
+                        .projection(projections, scope, node_id)
                         .ok_or(CompileError::ValidationIncomplete)?
                     {
-                        crate::lazy::Lazy::Coalesce if choice.selected.is_none() => {
-                            crate::lazy::ProjectionMode::Option {
+                        crate::projection::Projection::Coalesce if choice.selected.is_none() => {
+                            crate::projection::ProjectionMode::Option {
                                 boxed: port_type(snapshot, node_id, &sig.ports[1])?.unboxed_none(),
                             }
                         }
-                        crate::lazy::Lazy::Try => crate::lazy::ProjectionMode::Result {
-                            boxed: port_type(snapshot, node_id, &sig.ports[0])?.unboxed_error(),
-                        },
-                        _ => crate::lazy::ProjectionMode::Value,
+                        crate::projection::Projection::Try => {
+                            crate::projection::ProjectionMode::Result {
+                                boxed: port_type(snapshot, node_id, &sig.ports[0])?.unboxed_error(),
+                            }
+                        }
+                        _ => crate::projection::ProjectionMode::Value,
                     },
                 )
             } else {
@@ -855,8 +857,8 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
             output_values.resize(output_ports.len(), Value::Unit);
             let fault = if let Some(fault) = inherited {
                 if matches!(
-                    calls.lazy(lazy_nodes, scope, node_id),
-                    Some(crate::lazy::Lazy::Try)
+                    calls.projection(projections, scope, node_id),
+                    Some(crate::projection::Projection::Try)
                 ) {
                     output_values[0] = Value::Err(Arc::new(orange_model::value::NodeError {
                         code: fault.fault.code.to_string(),
@@ -972,7 +974,7 @@ impl<'a, R: PureKernelResolver> ConstantFolder<'a, R> {
 
 pub(crate) struct Admission<'a> {
     pub(crate) incoming: Incoming<'a>,
-    pub(crate) lazy_nodes: BTreeMap<NodeId, crate::lazy::Lazy>,
+    pub(crate) projections: BTreeMap<NodeId, crate::projection::Projection>,
     pub(crate) host_nodes: BTreeSet<(usize, NodeId)>,
 }
 /// Fresh definition metadata says the node reads host-owned state.
@@ -1143,7 +1145,7 @@ pub(crate) fn admit_roots<'a>(
     let body = document.root();
     // Admit all root nodes: no silently omitted side effects or unsupported port semantics.
     let mut ports = 0;
-    let mut lazy_nodes = BTreeMap::new();
+    let mut projections = BTreeMap::new();
     for node in body.nodes.keys() {
         options.checkpoint()?;
         let sig = analysis
@@ -1174,12 +1176,12 @@ pub(crate) fn admit_roots<'a>(
         {
             return Err(CompileError::UnsupportedNode { node: *node });
         }
-        if let Some(kind) = crate::lazy::Lazy::resolve(&body.nodes[node], sig)? {
-            lazy_nodes.insert(*node, kind);
+        if let Some(kind) = crate::projection::Projection::resolve(&body.nodes[node], sig)? {
+            projections.insert(*node, kind);
         }
         if body.nodes[node].definition.id.is_core()
             && body.nodes[node].definition.id.as_str() != ids::CONVERT
-            && !lazy_nodes.contains_key(node)
+            && !projections.contains_key(node)
             && !state_read
             && zone.is_none()
             && !(call
@@ -1199,7 +1201,7 @@ pub(crate) fn admit_roots<'a>(
             snapshot,
             *node,
             sig,
-            lazy_nodes.contains_key(node),
+            projections.contains_key(node),
             output_source,
             options,
         )?;
@@ -1284,7 +1286,7 @@ pub(crate) fn admit_roots<'a>(
     drop(done);
     Ok(Admission {
         incoming,
-        lazy_nodes,
+        projections,
         host_nodes: controls.iter().map(|id| (0, *id)).collect(),
     })
 }
