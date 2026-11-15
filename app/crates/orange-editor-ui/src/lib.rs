@@ -25,8 +25,10 @@
 pub mod canvas;
 mod declarations;
 mod properties;
+mod quick_add;
 
 pub use properties::{COMMON_TYPES, port_label, set_at};
+pub use quick_add::QuickChoice;
 
 use canvas::Canvas;
 use orange_host::{
@@ -152,6 +154,8 @@ pub struct Editor {
     /// Save as, which it hands over through [`Editor::take_request`].
     pub file_dialogs: bool,
     request: Option<FileRequest>,
+    /// The search to add a node at the pointer, while it is open.
+    quick: Option<quick_add::QuickAdd>,
 }
 
 impl Editor {
@@ -1095,6 +1099,13 @@ impl Editor {
         if let Some((definition, at)) = done.dropped {
             let _ = self.add_node_at(host, &definition, at);
         }
+        if let Some((from, at, screen)) = done.loose {
+            self.open_quick_add(Some(from), at, screen);
+        }
+        if let Some((at, screen)) = done.quick_add {
+            self.open_quick_add(None, at, screen);
+        }
+        self.quick_add_popup(ui.ctx(), host);
     }
 }
 
@@ -1110,7 +1121,7 @@ mod tests {
     }
 
     /// A manual entry named `go` that sets the variable `count` to 7.
-    fn graph() -> String {
+    pub(super) fn graph() -> String {
         json!({"format": "orange.graph", "format_version": 1,
             "graph_id": "20000000-0000-4000-8000-0000000000e9", "revision": 1,
             "package_lock": [], "type_lock": [], "events": [], "connections": [],
@@ -1790,5 +1801,67 @@ mod tests {
         }
         assert_eq!(editor.log().count(), MAX_LOG_LINES);
         assert_eq!(editor.log().next(), Some("line 10"));
+    }
+}
+
+#[cfg(test)]
+mod quick_add_tests {
+    use super::*;
+    use orange_host::HostOptions;
+
+    #[test]
+    fn a_wire_let_go_on_the_canvas_offers_the_kinds_that_take_it_and_wires_the_choice() {
+        let (mut host, _events) = Host::new(HostOptions::default()).unwrap();
+        let mut editor = Editor::new();
+        let text = host.bind(&tests::graph()).unwrap();
+        editor.open(&mut host, "graph.json", text);
+        let go = editor.graph().unwrap().nodes[0].id;
+        editor.open_quick_add(Some((go, "then".into())), [600.0, 0.0], egui::Pos2::ZERO);
+        let all = editor.quick_choices(&host, "");
+        assert!(all.iter().all(|choice| choice.input.is_some()));
+        let sequence = editor.quick_choices(&host, "seque");
+        assert_eq!(sequence.len(), 1, "{sequence:?}");
+        let node = editor.pick_quick(&mut host, &sequence[0]).unwrap();
+        assert!(!editor.is_quick_add_open());
+        let graph = editor.graph().unwrap();
+        assert!(
+            graph
+                .wires
+                .iter()
+                .any(|wire| wire.from == (go, "then".to_owned()) && wire.to.0 == node)
+        );
+        assert_eq!(
+            graph
+                .nodes
+                .iter()
+                .find(|found| found.id == node)
+                .unwrap()
+                .position,
+            Some([600.0, 0.0])
+        );
+        // One step back takes the wire off, another the node.
+        editor.undo(&mut host);
+        assert!(
+            editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|found| found.id == node)
+        );
+        editor.undo(&mut host);
+        assert!(
+            !editor
+                .graph()
+                .unwrap()
+                .nodes
+                .iter()
+                .any(|found| found.id == node)
+        );
+
+        // Without a wire, every kind is offered and nothing is wired.
+        editor.open_quick_add(None, [0.0, 300.0], egui::Pos2::ZERO);
+        let every = editor.quick_choices(&host, "");
+        assert!(every.len() > sequence.len() && every.iter().all(|choice| choice.input.is_none()));
     }
 }

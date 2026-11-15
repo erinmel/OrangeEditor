@@ -113,6 +113,12 @@ pub struct CanvasResponse {
     pub disconnect: Option<(NodeId, String, bool)>,
     /// The selected nodes were deleted.
     pub remove: Vec<NodeId>,
+    /// A wire was let go where no input takes it: the output it comes from and where,
+    /// in graph units and on the screen, so a new node can be chosen to take it.
+    pub loose: Option<((NodeId, String), [f32; 2], Pos2)>,
+    /// Tab or Space was pressed over the canvas to add a node at the pointer: where, in
+    /// graph units and on the screen.
+    pub quick_add: Option<([f32; 2], Pos2)>,
 }
 
 /// A problem shown on the canvas, on the node or wire it is about.
@@ -715,20 +721,30 @@ impl Canvas {
                 let at = origin + (pointer - area.min) / zoom;
                 done.connect = self
                     .input_at(graph, at, wiring.exec, wiring.from.0)
-                    .map(|to| (wiring.from, to));
+                    .map(|to| (wiring.from.clone(), to));
+                // Let go on the background, not on a node: ask for a node to take it.
+                let on_node = self.nodes_in(graph, Rect::from_center_size(at, Vec2::splat(1.0)));
+                if done.connect.is_none() && on_node.is_empty() && area.contains(pointer) {
+                    done.loose = Some((wiring.from, [at.x, at.y], pointer));
+                }
             }
             self.wiring = None;
         }
         // Keys, unless a text field has them: Delete removes the selection, Ctrl+A
         // selects everything, and copy, cut and paste go through the clipboard.
         if !ui.ctx().egui_wants_keyboard_input() {
-            let (delete, all, events) = ui.input(|input| {
+            let (delete, all, add, events) = ui.input(|input| {
                 (
                     input.key_pressed(egui::Key::Delete) || input.key_pressed(egui::Key::Backspace),
                     input.modifiers.command && input.key_pressed(egui::Key::A),
+                    input.key_pressed(egui::Key::Tab) || input.key_pressed(egui::Key::Space),
                     input.events.clone(),
                 )
             });
+            if add && let Some(screen) = response.hover_pos() {
+                let at = graph_point(screen, self.origin, self.zoom);
+                done.quick_add = Some(([at.x, at.y], screen));
+            }
             if delete && !self.selection.is_empty() {
                 done.remove = self.selection();
                 self.select(None);

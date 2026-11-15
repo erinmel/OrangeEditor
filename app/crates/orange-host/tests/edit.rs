@@ -794,3 +794,47 @@ fn a_node_that_uses_a_connection_is_bound_to_one_of_its_kind_when_added() {
     assert!(draft.undo() && draft.undo() && draft.undo());
     assert!(host.declarations(&draft).connections.is_empty());
 }
+
+#[test]
+fn every_suggested_kind_takes_the_wire_on_the_input_it_names() {
+    let (host, _events) = Host::new(HostOptions::default()).unwrap();
+    let (draft, trigger, _set) = built(&host);
+    let concat_draft = {
+        let mut draft = host.draft(&empty()).unwrap();
+        let concat = host
+            .add_node(&mut draft, "org.orange.text/concat", [0.0, 0.0])
+            .unwrap();
+        (draft, concat)
+    };
+    let joined = output(&host, &concat_draft.0, concat_draft.1);
+    for (draft, from) in [
+        (&draft, (trigger, "then")),
+        (&concat_draft.0, (concat_draft.1, joined.as_str())),
+    ] {
+        let takers = host.takers(draft, from);
+        assert!(!takers.is_empty());
+        for taker in takers {
+            let mut trial = host.draft(&draft.text().unwrap()).unwrap();
+            let Ok(node) = host.add_node(&mut trial, &taker.definition, [400.0, 0.0]) else {
+                continue;
+            };
+            // The input is there; the language may still refuse the wire with a reason.
+            match host.connect(&mut trial, from, (node, &taker.input)) {
+                Ok(_) | Err(HostError::Invalid(_)) => {}
+                Err(other) => panic!("{} has no input {}: {other}", taker.definition, taker.input),
+            }
+        }
+    }
+    let text = host.takers(&concat_draft.0, (concat_draft.1, &joined));
+    assert!(
+        text.iter()
+            .any(|taker| taker.definition == "org.orange.text/concat")
+    );
+    assert!(text.iter().all(|taker| taker.definition != "core/sequence"));
+    let steps = host.takers(&draft, (trigger, "then"));
+    assert!(
+        steps
+            .iter()
+            .any(|taker| taker.definition == "core/set-variable")
+    );
+}
