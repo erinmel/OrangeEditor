@@ -1,5 +1,26 @@
 # Tooling, environment and research register
 
+## Audio from the editor — 2026-11-15
+
+Reproduced first: on a host with `orange_audio::package()`, `Host::add_node` refused
+every audio node with "the referenced connection is missing or not declared", because
+a node's contract needs the connection its config names to be declared and a new node
+names none; the editor showed the refusal in its log and placed nothing. The same held
+for the HTTP, WebSocket, MQTT and folder nodes. Fixed by naming each node's connection
+kind in its definition and binding or declaring a connection when the node is added
+(05, FR-105).
+
+Device listing, Windows 11 Home 10.0.26300, Rust 1.99.1, cpal through the workspace
+lockfile, WASAPI host: `orange_audio::devices()` returned one input (a USB headset
+microphone) and two outputs (the headset and the onboard digital output). Not run:
+listing on macOS (CoreAudio) or Linux (ALSA), a device plugged in or out while the
+editor shows the list, playback from the desktop window on a real device; the graph
+test plays on the silent device.
+
+Checks: `cargo fmt --all`, `cargo clippy --workspace --all-targets --all-features
+--locked -- -D warnings`, `cargo test --workspace --locked` and
+`node tools/check-cargo-metadata.mjs` passed on Windows.
+
 ## Editor performance evidence — 2026-11-14
 
 PERF-EDITOR: [21](21-editor-performance.md) records the baseline commit, exact
