@@ -811,86 +811,20 @@ impl Run {
         });
         for waiter in waiters {
             match waiter {
-                CancelWait::Stream(mut read) => {
+                CancelWait::Stream(read) => {
                     self.cancel_stream_read(&read)?;
-                    let node = &plan.nodes()[read.owner.index()];
-                    self.record(RunEvent {
-                        activation: read.strand.sequence,
-                        node: node.node(),
-                        outcome: ControlOutcome::Cancelled,
-                        fault: None,
-                    });
-                    if let Some(target) = node.cancelled() {
-                        let strand = &mut read.strand;
-                        strand.region = root;
-                        strand.pc = Some(target);
-                        strand.stack.clear();
-                        strand.pull.reset();
-                        strand.reenter = None;
-                        strand.transfer = Transfer::None;
-                        strand.yielded = false;
-                        strand.cleanup = true;
-                        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
-                        strand.cleanup_deadline =
-                            Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
-                        strand.cleanup_remaining = self.options.max_cleanup_operations;
-                        cleanup.push(read.strand);
-                    }
+                    self.cancel_waiting(&plan, read.owner, read.strand, root, &mut cleanup);
                 }
-                CancelWait::Effect(mut pending) => {
-                    let node = &plan.nodes()[pending.owner.index()];
-                    self.record(RunEvent {
-                        activation: pending.strand.sequence,
-                        node: node.node(),
-                        outcome: ControlOutcome::Cancelled,
-                        fault: None,
-                    });
-                    if let Some(target) = node.cancelled() {
-                        let strand = &mut pending.strand;
-                        strand.region = root;
-                        strand.pc = Some(target);
-                        strand.stack.clear();
-                        strand.pull.reset();
-                        strand.reenter = None;
-                        strand.transfer = Transfer::None;
-                        strand.yielded = false;
-                        strand.cleanup = true;
-                        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
-                        strand.cleanup_deadline =
-                            Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
-                        strand.cleanup_remaining = self.options.max_cleanup_operations;
-                        cleanup.push(pending.strand);
-                    }
+                CancelWait::Effect(pending) => {
+                    self.cancel_waiting(&plan, pending.owner, pending.strand, root, &mut cleanup);
                 }
                 CancelWait::Timer(key) => {
-                    let Some(TimerTarget::Wait(mut timer)) = self.timers.remove(key) else {
+                    let Some(TimerTarget::Wait(timer)) = self.timers.remove(key) else {
                         return Err(RunError::InvalidState);
                     };
-                    let node = &plan.nodes()[timer.owner.index()];
-                    self.record(RunEvent {
-                        activation: timer.activation.sequence,
-                        node: node.node(),
-                        outcome: ControlOutcome::Cancelled,
-                        fault: None,
-                    });
-                    if let Some(target) = node.cancelled() {
-                        let strand = &mut timer.activation;
-                        strand.region = root;
-                        strand.pc = Some(target);
-                        strand.stack.clear();
-                        strand.pull.reset();
-                        strand.reenter = None;
-                        strand.transfer = Transfer::None;
-                        strand.yielded = false;
-                        strand.cleanup = true;
-                        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
-                        strand.cleanup_deadline =
-                            Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
-                        strand.cleanup_remaining = self.options.max_cleanup_operations;
-                        cleanup.push(timer.activation);
-                    }
+                    self.cancel_waiting(&plan, timer.owner, timer.activation, root, &mut cleanup);
                 }
-                CancelWait::Await(mut waiter) => {
+                CancelWait::Await(waiter) => {
                     if let Some(key) = self.timers.detach_await(waiter.token) {
                         if Some(key) != waiter.timer
                             || !matches!(self.timers.remove(key), Some(TimerTarget::Await { .. }))
@@ -900,29 +834,7 @@ impl Run {
                     } else if waiter.timer.is_some() {
                         return Err(RunError::InvalidState);
                     }
-                    let node = &plan.nodes()[waiter.owner.index()];
-                    self.record(RunEvent {
-                        activation: waiter.strand.sequence,
-                        node: node.node(),
-                        outcome: ControlOutcome::Cancelled,
-                        fault: None,
-                    });
-                    if let Some(target) = node.cancelled() {
-                        let strand = &mut waiter.strand;
-                        strand.region = root;
-                        strand.pc = Some(target);
-                        strand.stack.clear();
-                        strand.pull.reset();
-                        strand.reenter = None;
-                        strand.transfer = Transfer::None;
-                        strand.yielded = false;
-                        strand.cleanup = true;
-                        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
-                        strand.cleanup_deadline =
-                            Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
-                        strand.cleanup_remaining = self.options.max_cleanup_operations;
-                        cleanup.push(waiter.strand);
-                    }
+                    self.cancel_waiting(&plan, waiter.owner, waiter.strand, root, &mut cleanup);
                 }
             }
         }
@@ -945,6 +857,39 @@ impl Run {
         }
         // Completion is performed by the caller after its own bookkeeping.
         Ok(())
+    }
+    /// Records a cancelled wait of `owner` and, when it has a `cancelled` handler, moves
+    /// `strand` there to run under the cleanup budget and deadline.
+    fn cancel_waiting(
+        &mut self,
+        plan: &ControlPlan,
+        owner: ControlIx,
+        mut strand: Strand,
+        root: RegionId,
+        cleanup: &mut Vec<Strand>,
+    ) {
+        let node = &plan.nodes()[owner.index()];
+        self.record(RunEvent {
+            activation: strand.sequence,
+            node: node.node(),
+            outcome: ControlOutcome::Cancelled,
+            fault: None,
+        });
+        let Some(target) = node.cancelled() else {
+            return;
+        };
+        strand.region = root;
+        strand.pc = Some(target);
+        strand.stack.clear();
+        strand.pull.reset();
+        strand.reenter = None;
+        strand.transfer = Transfer::None;
+        strand.yielded = false;
+        strand.cleanup = true;
+        let deadline = self.now.saturating_add(self.options.cleanup_timeout_ns);
+        strand.cleanup_deadline = Some(self.deadline.map_or(deadline, |old| old.min(deadline)));
+        strand.cleanup_remaining = self.options.max_cleanup_operations;
+        cleanup.push(strand);
     }
     pub(super) fn unwind_loop(
         &mut self,
