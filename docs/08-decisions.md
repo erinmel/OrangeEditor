@@ -1,5 +1,14 @@
 # Architecture decision records
 
+ADR-21/23 host authoring amendment (2026-11-14; MAINT-CORE): front ends edit a retained
+`orange_host::Draft`, not document text. A draft owns the parsed document, model
+transaction inverses for undo and redo, and the ADR-23 `AnalysisSession`, which
+`Host::problems` feeds every committed change set. Every host editing operation takes
+`&mut Draft` and is one transaction; text is produced only to save, copy or start or
+update a flow. This replaces the text-in/text-out editing API and the editor's
+whole-text undo stack. Graph semantics, the saved format and flow updates are
+unchanged. Measurements: [21](21-editor-performance.md).
+
 ADR-21 public-surface amendment (2026-11-14; MAINT-CORE): the public core API is what
 downstream crates and hosts call. Functions only tests used are removed from it. The
 individual validation passes (`validate_availability`, `validate_regions`, ...),

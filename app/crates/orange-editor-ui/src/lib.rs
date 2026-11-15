@@ -15,8 +15,9 @@
 //! in the document itself, so a layout travels with the file.
 //!
 //! Buttons call the methods below, which also let tests and other hosts drive the
-//! editor without a window. Document edits and validation currently run synchronously;
-//! event polling is nonblocking and consumes a finite batch per call.
+//! editor without a window. The open document is a host [`Draft`]: edits change it in
+//! place, and its problems are checked again only where an edit reached. Event polling
+//! is nonblocking and consumes a finite batch per call.
 // Product code reports failures as typed errors; each remaining panic is a documented
 // internal invariant (10, "Panic policy").
 #![cfg_attr(not(test), warn(clippy::unwrap_used, clippy::expect_used))]
@@ -29,8 +30,8 @@ pub use properties::{COMMON_TYPES, set_at};
 
 use canvas::Canvas;
 use orange_host::{
-    Declarations, FlowEvent, FlowId, GraphView, Host, HostError, HostEvent, Names, NodeId,
-    PackageKind, StopMode, describe, lines, place,
+    Declarations, Draft, FlowEvent, FlowId, GraphView, Host, HostError, HostEvent, Names, NodeId,
+    PackageKind, StopMode, describe, lines,
 };
 use std::collections::VecDeque;
 use std::sync::mpsc::Receiver;
@@ -66,7 +67,8 @@ struct Document {
     path: String,
     /// A new graph that has no file yet: saving it asks where.
     untitled: bool,
-    text: String,
+    /// The document as it is being edited, with its undo history.
+    draft: Draft,
     names: Names,
     /// What the canvas draws.
     graph: GraphView,
@@ -78,13 +80,9 @@ struct Document {
     problems: Vec<String>,
     /// The flow running this document, with the entries a person can fire.
     flow: Option<(FlowId, Vec<NodeId>)>,
-    /// The document before each edit, oldest first, and the edits undone since.
-    undo: Vec<String>,
-    redo: Vec<String>,
 }
 
-/// Most edits that can be undone.
-pub const MAX_UNDO: usize = 200;
+pub use orange_host::MAX_UNDO;
 
 /// Which panels the editor shows around the canvas. The canvas and the toolbar are
 /// always there.
@@ -152,22 +150,28 @@ impl Editor {
 
     /// Shows a document: `text` is the saved graph and `path` what it is called. It is
     /// checked at once; a flow of the previous document is closed.
+    /// A text that is not a document opens nothing, and the log says why.
     pub fn open(&mut self, host: &mut Host, path: impl Into<String>, text: String) {
         self.stop(host);
-        let names = Names::of(host, &text);
-        // A text that is not a document has nothing to draw; checking says why.
-        let graph = host.view(&text).unwrap_or_default();
+        let path = path.into();
+        let draft = match host.draft(&text) {
+            Ok(draft) => draft,
+            Err(error) => {
+                self.document = None;
+                self.say(format!("not opened: {path}: {error}"));
+                return;
+            }
+        };
+        let graph = host.draft_view(&draft).unwrap_or_default();
         self.canvas.load(&graph);
         self.document = Some(Document {
-            path: path.into(),
+            path,
             untitled: false,
-            declared: host.declarations(&text).unwrap_or_default(),
-            text,
-            names,
+            declared: host.declarations(&draft),
+            names: Names::of_document(host, draft.document()),
+            draft,
             graph,
             unsaved: false,
-            undo: Vec::new(),
-            redo: Vec::new(),
             problems: Vec::new(),
             flow: None,
         });
@@ -185,10 +189,11 @@ impl Editor {
     }
 
     /// The text of the open document, with its layout as the canvas has it.
-    pub fn text(&self) -> Option<&str> {
+    pub fn text(&mut self) -> Option<String> {
+        self.keep_layout();
         self.document
             .as_ref()
-            .map(|document| document.text.as_str())
+            .and_then(|document| document.draft.text().ok())
     }
 
     /// Whether the layout changed since the document was opened or saved.
@@ -198,34 +203,37 @@ impl Editor {
             .is_some_and(|document| document.unsaved)
     }
 
-    /// Writes where the canvas has the nodes into the document's layout. Layout is
-    /// not part of what a graph means, so a running flow is not touched.
+    /// Writes where the canvas has the nodes into the document's layout, as one edit
+    /// that can be undone. Layout is not part of what a graph means, so a running flow
+    /// is not touched.
     pub fn keep_layout(&mut self) {
         let Some(document) = &mut self.document else {
             return;
         };
-        if let Ok(text) = place(&document.text, &self.canvas.places()) {
-            document.unsaved |= text != document.text;
-            document.text = text;
+        if document.draft.place(&self.canvas.places()).unwrap_or(false) {
+            document.unsaved = true;
         }
     }
 
-    /// Makes `text` the document: the canvas, the problems and a running flow follow.
-    fn show_text(&mut self, host: &mut Host, text: String) {
+    /// After the draft changed: the canvas, the problems and a running flow follow.
+    fn refresh(&mut self, host: &mut Host) {
         let Some(document) = &mut self.document else {
             return;
         };
-        document.text = text;
-        document.names = Names::of(host, &document.text);
-        document.graph = host.view(&document.text).unwrap_or_default();
-        document.declared = host.declarations(&document.text).unwrap_or_default();
+        document.names = Names::of_document(host, document.draft.document());
+        document.graph = host.draft_view(&document.draft).unwrap_or_default();
+        document.declared = host.declarations(&document.draft);
         document.unsaved = true;
         self.canvas.update(&document.graph);
         // The fields of the properties panel are read again from the new document.
         self.inspected = None;
         let mut said = None;
         if let Some((flow, entries)) = &mut document.flow {
-            match host.update(*flow, &document.text) {
+            match document
+                .draft
+                .text()
+                .and_then(|text| host.update(*flow, &text))
+            {
                 Ok(_) => {
                     *entries = host
                         .info(*flow)
@@ -248,21 +256,16 @@ impl Editor {
         self.check(host);
     }
 
-    /// Applies the result of an edit. A refused edit says why in the log and changes
+    /// Follows up an edit of the draft. A refused edit says why in the log and changed
     /// nothing. Returns whether the document changed.
-    fn edited(&mut self, host: &mut Host, result: Result<String, HostError>) -> bool {
+    fn edited(&mut self, host: &mut Host, result: Result<bool, HostError>) -> bool {
         let Some(document) = &mut self.document else {
             return false;
         };
         match result {
-            Ok(text) if text == document.text => false,
-            Ok(text) => {
-                document.undo.push(document.text.clone());
-                if document.undo.len() > MAX_UNDO {
-                    let _ = document.undo.remove(0);
-                }
-                document.redo.clear();
-                self.show_text(host, text);
+            Ok(false) => false,
+            Ok(true) => {
+                self.refresh(host);
                 true
             }
             Err(error) => {
@@ -274,10 +277,10 @@ impl Editor {
         }
     }
 
-    /// The text an edit starts from: the document with the canvas's layout in it.
-    fn editing(&mut self) -> Option<String> {
+    /// The draft an edit changes, with the canvas's layout written into it first.
+    fn editing(&mut self) -> Option<&mut Draft> {
         self.keep_layout();
-        self.text().map(str::to_owned)
+        self.document.as_mut().map(|document| &mut document.draft)
     }
 
     /// Adds a node of kind `definition` in the middle of the canvas and selects it.
@@ -298,10 +301,10 @@ impl Editor {
         definition: &str,
         at: [f32; 2],
     ) -> Option<NodeId> {
-        let text = self.editing()?;
-        match host.add_node(&text, definition, at) {
-            Ok((text, node)) => {
-                let _ = self.edited(host, Ok(text));
+        let draft = self.editing()?;
+        match host.add_node(draft, definition, at) {
+            Ok(node) => {
+                let _ = self.edited(host, Ok(true));
                 self.canvas.select(Some(node));
                 Some(node)
             }
@@ -319,10 +322,10 @@ impl Editor {
 
     /// Removes nodes with their wires, as one edit.
     pub fn remove_nodes(&mut self, host: &mut Host, nodes: &[NodeId]) -> bool {
-        let Some(text) = self.editing() else {
+        let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.remove_nodes(&text, nodes);
+        let result = host.remove_nodes(draft, nodes);
         self.edited(host, result)
     }
 
@@ -333,8 +336,8 @@ impl Editor {
         if selection.is_empty() {
             return None;
         }
-        let text = self.editing()?;
-        match host.copy(&text, &selection) {
+        let draft = self.editing()?;
+        match host.copy(draft, &selection) {
             Ok(clip) => Some(clip),
             Err(error) => {
                 self.say(format!("not copied: {error}"));
@@ -346,12 +349,12 @@ impl Editor {
     /// Pastes clipboard text from [`Editor::copy`] with its top left node at `at`, and
     /// selects what was pasted. Text that is not copied nodes changes nothing.
     pub fn paste(&mut self, host: &mut Host, clip: &str, at: [f32; 2]) -> Vec<NodeId> {
-        let Some(text) = self.editing() else {
+        let Some(draft) = self.editing() else {
             return Vec::new();
         };
-        match host.paste(&text, clip, at) {
-            Ok((text, fresh)) => {
-                let _ = self.edited(host, Ok(text));
+        match host.paste(draft, clip, at) {
+            Ok(fresh) => {
+                let _ = self.edited(host, Ok(!fresh.is_empty()));
                 self.canvas.select_many(&fresh);
                 fresh
             }
@@ -365,46 +368,45 @@ impl Editor {
     /// Wires an output to an input. A wire the language does not allow is refused
     /// with the reason in the log.
     pub fn connect(&mut self, host: &mut Host, from: (NodeId, &str), to: (NodeId, &str)) -> bool {
-        let Some(text) = self.editing() else {
+        let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.connect(&text, from, to);
+        let result = host.connect(draft, from, to);
         self.edited(host, result)
     }
 
     /// Takes the wires off one port.
     pub fn disconnect(&mut self, host: &mut Host, at: (NodeId, &str), input: bool) -> bool {
-        let Some(text) = self.editing() else {
+        let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.disconnect(&text, at, input);
+        let result = host.disconnect(draft, at, input);
         self.edited(host, result)
     }
 
     /// Writes a value on an input, typed plainly; `None` takes it off.
     pub fn set_input(&mut self, host: &mut Host, at: (NodeId, &str), typed: Option<&str>) -> bool {
-        let Some(text) = self.editing() else {
+        let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.set_input(&text, at, typed);
+        let result = host.set_input(draft, at, typed);
         self.edited(host, result)
     }
 
     /// Whether there is an edit to undo, and one to do again.
     pub fn can_undo(&self) -> (bool, bool) {
-        self.document.as_ref().map_or((false, false), |document| {
-            (!document.undo.is_empty(), !document.redo.is_empty())
-        })
+        self.document
+            .as_ref()
+            .map_or((false, false), |document| document.draft.can_undo())
     }
 
     /// Takes back the last edit.
     pub fn undo(&mut self, host: &mut Host) {
-        let Some(document) = &mut self.document else {
+        let Some(draft) = self.editing() else {
             return;
         };
-        if let Some(before) = document.undo.pop() {
-            document.redo.push(document.text.clone());
-            self.show_text(host, before);
+        if draft.undo() {
+            self.reload(host);
         }
     }
 
@@ -413,9 +415,17 @@ impl Editor {
         let Some(document) = &mut self.document else {
             return;
         };
-        if let Some(after) = document.redo.pop() {
-            document.undo.push(document.text.clone());
-            self.show_text(host, after);
+        if document.draft.redo() {
+            self.reload(host);
+        }
+    }
+
+    /// After undo or redo: a step back may move nodes too, so the canvas takes the
+    /// document's places again.
+    fn reload(&mut self, host: &mut Host) {
+        self.refresh(host);
+        if let Some(document) = &self.document {
+            self.canvas.restore(&document.graph);
         }
     }
 
@@ -446,7 +456,8 @@ impl Editor {
             return Ok(());
         };
         let path = std::path::Path::new(&document.path);
-        orange_host::save_document(path, &document.text).map_err(|error| error.to_string())?;
+        let text = document.draft.text().map_err(|error| error.to_string())?;
+        orange_host::save_document(path, &text).map_err(|error| error.to_string())?;
         document.unsaved = false;
         let line = format!("saved {}", document.path);
         self.say(line);
@@ -529,7 +540,7 @@ impl Editor {
         let Some(document) = &mut self.document else {
             return;
         };
-        document.problems = match host.check(&document.text) {
+        document.problems = match host.problems(&mut document.draft) {
             Ok(diagnostics) => diagnostics
                 .iter()
                 .map(|diagnostic| describe(diagnostic, &document.names))
@@ -547,7 +558,7 @@ impl Editor {
         if document.flow.is_some() {
             return;
         }
-        match host.open(&document.text) {
+        match document.draft.text().and_then(|text| host.open(&text)) {
             Ok(flow) => {
                 let _ = host.observe(flow, true);
                 let entries = host

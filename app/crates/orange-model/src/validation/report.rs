@@ -380,7 +380,7 @@ impl ValidationAnalysis {
 ///
 /// A package leaf that is not pure or volatile has no known effects here, so its
 /// function stays incomplete (`E-FUNCTION-METADATA-UNAVAILABLE`, 11 §14); missing leaf
-/// facts are never treated as "no writes". Use [`validate_with_effects`] to supply them.
+/// facts are never treated as "no writes". Use [`analyze_with_effects`] to supply them.
 pub fn validate(document: &GraphDocument, registry: &RegistrySnapshot) -> ValidationReport {
     analyze(document, registry).into_report()
 }

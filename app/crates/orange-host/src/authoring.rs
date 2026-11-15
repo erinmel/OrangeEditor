@@ -105,12 +105,7 @@ fn exact(value: &mut Json) -> bool {
     changed
 }
 
-/// The activation an entry written without one gets: a queue of sixteen that faults
-/// when full.
-fn default_activation() -> Json {
-    json!({"mode": "queue", "capacity": 16, "overflow": "fault", "on_fault": "continue",
-        "order": 0})
-}
+use super::edit::default_activation;
 
 impl Host {
     /// Binds the package nodes of a document that are not bound yet: each root node

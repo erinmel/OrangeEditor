@@ -277,6 +277,17 @@ impl Canvas {
         self.forget_missing();
     }
 
+    /// Follows an undo or redo: like [`Canvas::update`], but every node the document
+    /// places goes back to that place. The view is not moved.
+    pub fn restore(&mut self, graph: &GraphView) {
+        self.update(graph);
+        for node in &graph.nodes {
+            if let Some([x, y]) = node.position {
+                let _ = self.places.insert(node.id, Pos2::new(x, y));
+            }
+        }
+    }
+
     /// Drops from the selection the nodes that are gone.
     fn forget_missing(&mut self) {
         let places = &self.places;

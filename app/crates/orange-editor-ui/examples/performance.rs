@@ -123,5 +123,36 @@ fn main() {
         measure(&format!("host-view/{count}"), 3, || {
             black_box(host.view(&text).unwrap());
         });
+        // One value edit as the editor makes it, then its problems and view.
+        let first: orange_host::NodeId = view.nodes[0].id;
+        let mut value = 0u32;
+        let mut next = || {
+            value += 1;
+            value.to_string()
+        };
+        // Text in and out: parse, edit, write, check from scratch, view.
+        let mut saved = text.clone();
+        measure(&format!("edit-cycle-text/{count}"), 3, || {
+            let mut parsed = host.draft(&saved).unwrap();
+            let typed = next();
+            let _ = host
+                .set_input(&mut parsed, (first, "value"), Some(&typed))
+                .unwrap();
+            saved = parsed.text().unwrap();
+            black_box(host.check(&saved).unwrap());
+            black_box(host.view(&saved).unwrap());
+        });
+        // A draft: edit in place, problems follow the edit, view.
+        let mut draft = host.draft(&text).unwrap();
+        black_box(host.problems(&mut draft).unwrap());
+        measure(&format!("edit-cycle-draft/{count}"), 3, || {
+            let typed = next();
+            black_box(
+                host.set_input(&mut draft, (first, "value"), Some(&typed))
+                    .unwrap(),
+            );
+            black_box(host.problems(&mut draft).unwrap());
+            black_box(host.draft_view(&draft).unwrap());
+        });
     }
 }

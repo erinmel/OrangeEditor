@@ -131,17 +131,37 @@ polling with a queued Finished event. Self-review checked the index lifetimes,
 deterministic fallback, culling conservatism, public re-exports and unchanged graph
 authority/format. No independent review or passed hosted check is claimed here.
 
+## Editing through a retained draft (2026-11-14; MAINT-CORE)
+
+The editor and the host now edit one retained `orange_host::Draft` instead of passing
+document text through every operation. A draft owns the parsed `GraphDocument`, model
+transaction inverses for undo/redo, and the `AnalysisSession` of [16](16-incremental-validation.md):
+`Host::problems` hands the session every committed change set, including undo and redo,
+so validation follows the edit instead of reparsing and reanalysing the document. Text
+is produced only to save, copy, or hand the graph to a flow. Each host operation is one
+transaction and one undo step; a node move is its own undoable layout edit. A refused
+wire is withdrawn without a history entry (its revision advance stays). When the host
+has graph-implemented nodes installed, the draft is linked and checked in full, as
+before, because the linked form is not an edit of the draft.
+
+`cargo run --release -p orange-editor-ui --example performance` on the local Windows
+machine (Rust 1.99.1), one value edit followed by its problems and view, mean of 3:
+
+| Nodes | Text in/out (parse, edit, write, check, view) | Draft (edit, follow problems, view) |
+|------:|---------------------------:|-----------------:|
+| 100   | 3.27 ms  | 0.41 ms |
+| 1,000 | 31.2 ms  | 3.33 ms |
+| 5,000 | 156 ms   | 20.3 ms |
+
+The draft column still includes a whole-graph view projection (`draft_view`), which is
+now the largest remaining cost of an edit. Host tests check after each edit, undo and
+redo step that the followed problems equal a from-scratch `check` of the draft's text.
+
 ## Remaining costs identified by source inspection
 
-1. `Editor::editing/show_text/check` and host text-edit APIs still parse, serialize,
-   reproject and validate whole documents synchronously. Large edits can block the UI
-   even after view projection improves. A retained model/analysis owner with bounded
-   worker commands is the next architectural step; it must preserve ordered edits,
-   undo, provider freshness and live-run rejection behavior. See [16](16-incremental-validation.md)
-   and the headless authoring example before introducing a second transaction model.
-2. Undo retains up to 200 complete document strings, bounded by count rather than bytes.
-   A byte budget and model transaction history would reduce large-document retention;
-   raising this limit would not improve execution speed.
+1. Each edit still rebuilds the whole `GraphView` and the names of every node. A view
+   that follows the draft's change sets would remove the last whole-graph step of an edit.
+2. Undo keeps up to 200 model inverses, bounded by count rather than bytes.
 3. Canvas index construction and node/wire traversal still scale with the whole graph.
    A retained spatial index and revision-aware geometry cache could reduce pan-only
    work further. The current public mutable `GraphView` has no revision contract, so

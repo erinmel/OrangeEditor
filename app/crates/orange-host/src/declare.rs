@@ -1,15 +1,13 @@
 //! What a document declares besides its nodes: its variables and its connections, and
-//! the types chosen for generic nodes. Like the operations in `edit`, each one takes
-//! the document's text and returns the edited text through one model transaction.
+//! the types chosen for generic nodes. Like the operations in `edit`, each one is one
+//! model transaction on a [`Draft`].
 use super::*;
 use orange_model::DocCommand;
 use orange_model::document::{ConnectionDecl, VariableDecl};
 use orange_model::id::{ConnectionId, TypeExpr, VariableId};
 use serde_json::{Value as Json, json};
 
-fn refused(error: &dyn std::fmt::Display) -> HostError {
-    HostError::Document(error.to_string())
-}
+use draft::refused;
 
 /// One variable of a document. Its `id` is `None` for one not declared yet.
 #[derive(Debug, Clone, PartialEq)]
@@ -72,8 +70,8 @@ fn plain_secret(settings: &Json, path: &str) -> Option<String> {
 
 impl Host {
     /// The variables and connections a document declares.
-    pub fn declarations(&self, json: &str) -> Result<Declarations, HostError> {
-        let document = from_json(json).map_err(|error| refused(&error))?;
+    pub fn declarations(&self, draft: &Draft) -> Declarations {
+        let document = draft.document();
         let variables = document
             .variables()
             .values()
@@ -101,10 +99,10 @@ impl Host {
                 settings: Json::Object(connection.settings.clone()),
             })
             .collect();
-        Ok(Declarations {
+        Declarations {
             variables,
             connections,
-        })
+        }
     }
 
     /// The connection adapters this host has, such as `org.orange.net/http`, sorted.
@@ -113,17 +111,15 @@ impl Host {
     }
 
     /// Declares a variable, or changes the one with `variable.id`, keeping what this
-    /// does not set. Returns the document and the variable's ID.
+    /// does not set. Returns the variable's ID.
     pub fn declare_variable(
         &self,
-        json: &str,
+        draft: &mut Draft,
         variable: &Variable,
-    ) -> Result<(String, String), HostError> {
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
-        let saved: Json = serde_json::from_str(json).map_err(|error| refused(&error))?;
+    ) -> Result<String, HostError> {
         let id = match &variable.id {
             Some(id) => id.clone(),
-            None => edit::fresh_id(&saved, "variable"),
+            None => draft.fresh_id("variable"),
         };
         let parsed: VariableId = id
             .parse()
@@ -139,7 +135,8 @@ impl Host {
             }
         };
         // Start from what is declared, so fields this does not set are kept.
-        let mut decl: Json = document
+        let mut decl: Json = draft
+            .document()
             .variables()
             .get(&parsed)
             .map(serde_json::to_value)
@@ -162,35 +159,28 @@ impl Host {
             }
         }
         let decl: VariableDecl = serde_json::from_value(decl).map_err(|error| refused(&error))?;
-        match document.apply([DocCommand::UpsertVariable(decl)]) {
-            Ok(_) => Ok((to_json(&document).map_err(|error| refused(&error))?, id)),
-            Err(orange_model::TxError::Empty) => Ok((json.to_owned(), id)),
-            Err(error) => Err(refused(&error)),
-        }
+        let _ = draft.commit([DocCommand::UpsertVariable(decl)])?;
+        Ok(id)
     }
 
     /// Removes a variable. Nodes that name it stay and show as problems until they
     /// name another one or are removed.
-    pub fn remove_variable(&self, json: &str, id: &str) -> Result<String, HostError> {
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
+    pub fn remove_variable(&self, draft: &mut Draft, id: &str) -> Result<bool, HostError> {
         let id: VariableId = id
             .parse()
             .map_err(|_| refused(&format!("`{id}` is not a variable ID")))?;
-        let _ = document
-            .apply([DocCommand::RemoveVariable(id)])
-            .map_err(|error| refused(&error))?;
-        to_json(&document).map_err(|error| refused(&error))
+        draft.commit([DocCommand::RemoveVariable(id)])
     }
 
     /// Declares a connection, or changes the one with `connection.id`. A setting whose
     /// name says it is a secret (a password, token, bearer or key) must be a
     /// `credential://<name>` reference: a document never holds the secret itself.
-    /// Returns the document and the connection's ID.
+    /// Returns the connection's ID.
     pub fn declare_connection(
         &self,
-        json: &str,
+        draft: &mut Draft,
         connection: &Connection,
-    ) -> Result<(String, String), HostError> {
+    ) -> Result<String, HostError> {
         if !connection.settings.is_object() {
             return Err(refused(&"a connection's settings are a JSON object"));
         }
@@ -199,16 +189,15 @@ impl Host {
                 "the setting `{at}` holds a secret: write it as credential://<name> and keep the secret in the store"
             )));
         }
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
-        let saved: Json = serde_json::from_str(json).map_err(|error| refused(&error))?;
         let id = match &connection.id {
             Some(id) => id.clone(),
-            None => edit::fresh_id(&saved, "connection"),
+            None => draft.fresh_id("connection"),
         };
         let parsed: ConnectionId = id
             .parse()
             .map_err(|_| refused(&format!("`{id}` is not a connection ID")))?;
-        let mut decl: Json = document
+        let mut decl: Json = draft
+            .document()
             .connections()
             .get(&parsed)
             .map(serde_json::to_value)
@@ -221,36 +210,29 @@ impl Host {
         decl["scope"] = serde_json::to_value(connection.scope).map_err(|error| refused(&error))?;
         decl["settings"] = connection.settings.clone();
         let decl: ConnectionDecl = serde_json::from_value(decl).map_err(|error| refused(&error))?;
-        match document.apply([DocCommand::UpsertConnection(decl)]) {
-            Ok(_) => Ok((to_json(&document).map_err(|error| refused(&error))?, id)),
-            Err(orange_model::TxError::Empty) => Ok((json.to_owned(), id)),
-            Err(error) => Err(refused(&error)),
-        }
+        let _ = draft.commit([DocCommand::UpsertConnection(decl)])?;
+        Ok(id)
     }
 
     /// Removes a connection. Nodes that use it show as problems until they use another.
-    pub fn remove_connection(&self, json: &str, id: &str) -> Result<String, HostError> {
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
+    pub fn remove_connection(&self, draft: &mut Draft, id: &str) -> Result<bool, HostError> {
         let id: ConnectionId = id
             .parse()
             .map_err(|_| refused(&format!("`{id}` is not a connection ID")))?;
-        let _ = document
-            .apply([DocCommand::RemoveConnection(id)])
-            .map_err(|error| refused(&error))?;
-        to_json(&document).map_err(|error| refused(&error))
+        draft.commit([DocCommand::RemoveConnection(id)])
     }
 
     /// Chooses the type of one type parameter of a generic node (a pin, 11 §5.5), such
     /// as `core/i64@1` for `T`; `None` takes the choice off so wires decide again.
     pub fn choose_type(
         &self,
-        json: &str,
+        draft: &mut Draft,
         node: NodeId,
         param: &str,
         ty: Option<&str>,
-    ) -> Result<String, HostError> {
-        let mut document = from_json(json).map_err(|error| refused(&error))?;
-        let mut pins = document
+    ) -> Result<bool, HostError> {
+        let mut pins = draft
+            .document()
             .node(node)
             .map(|found| found.type_pins.clone())
             .ok_or_else(|| refused(&"the document has no such node"))?;
@@ -264,11 +246,7 @@ impl Host {
                 let _ = pins.remove(param);
             }
         }
-        match document.apply([DocCommand::SetTypePins { node, pins }]) {
-            Ok(_) => to_json(&document).map_err(|error| refused(&error)),
-            Err(orange_model::TxError::Empty) => Ok(json.to_owned()),
-            Err(error) => Err(refused(&error)),
-        }
+        draft.commit([DocCommand::SetTypePins { node, pins }])
     }
 }
 

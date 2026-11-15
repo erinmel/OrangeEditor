@@ -23,11 +23,64 @@ fn tail(id: &str) -> &str {
 }
 
 impl Names {
-    /// Reads the names of a graph. Text that is not a graph has none.
+    /// Reads the names of a graph from its text. Text that is not a graph has none.
     pub fn of(host: &Host, json: &str) -> Self {
         let Ok(graph) = serde_json::from_str::<serde_json::Value>(json) else {
             return Self::default();
         };
+        let list = |key: &str| graph[key].as_array().map(Vec::as_slice).unwrap_or(&[]);
+        let nodes = list("nodes").iter().filter_map(|node| {
+            Some((
+                node["id"].as_str()?.to_owned(),
+                node["definition_id"]
+                    .as_str()
+                    .unwrap_or_default()
+                    .to_owned(),
+                node["name"].as_str().map(str::to_owned),
+            ))
+        });
+        let variables = list("variables")
+            .iter()
+            .filter_map(|variable| {
+                let text = |key: &str| variable[key].as_str().map(str::to_owned);
+                Some((text("id")?, (text("name")?, text("type")?)))
+            })
+            .collect();
+        Self::from_parts(host, nodes, variables)
+    }
+
+    /// Reads the names of a parsed graph.
+    pub fn of_document(host: &Host, document: &orange_model::GraphDocument) -> Self {
+        let nodes = document.root().nodes.values().map(|node| {
+            (
+                node.id.to_string(),
+                node.definition.id.as_str().to_owned(),
+                node.extensions
+                    .get("name")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned),
+            )
+        });
+        let variables = document
+            .variables()
+            .values()
+            .map(|variable| {
+                (
+                    variable.id.to_string(),
+                    (variable.name.clone(), variable.ty.to_string()),
+                )
+            })
+            .collect();
+        Self::from_parts(host, nodes, variables)
+    }
+
+    /// Names from each node's ID, kind and own name, and each variable's ID, name and
+    /// declared type.
+    fn from_parts(
+        host: &Host,
+        nodes: impl Iterator<Item = (String, String, Option<String>)>,
+        variables: BTreeMap<String, (String, String)>,
+    ) -> Self {
         let labels: BTreeMap<String, String> = host
             .nodes()
             .map(|info| {
@@ -37,18 +90,10 @@ impl Names {
                 )
             })
             .collect();
-        let list = |key: &str| graph[key].as_array().map(Vec::as_slice).unwrap_or(&[]);
-        let mut nodes: Vec<(String, String)> = list("nodes")
-            .iter()
-            .filter_map(|node| {
-                let id = node["id"].as_str()?.to_owned();
-                let kind = node["definition_id"].as_str().unwrap_or_default();
-                let name = node["name"]
-                    .as_str()
-                    .map(str::to_owned)
-                    .or_else(|| labels.get(kind).cloned())
-                    .unwrap_or_else(|| kind.to_owned());
-                Some((id, name))
+        let mut nodes: Vec<(String, String)> = nodes
+            .map(|(id, kind, name)| {
+                let name = name.or_else(|| labels.get(&kind).cloned()).unwrap_or(kind);
+                (id, name)
             })
             .collect();
         // Nodes that would be called the same are told apart by the end of their ID.
@@ -61,13 +106,6 @@ impl Names {
                 *name = format!("{name} #{}", tail(id));
             }
         }
-        let variables = list("variables")
-            .iter()
-            .filter_map(|variable| {
-                let text = |key: &str| variable[key].as_str().map(str::to_owned);
-                Some((text("id")?, (text("name")?, text("type")?)))
-            })
-            .collect();
         Self {
             nodes: nodes.into_iter().collect(),
             variables,

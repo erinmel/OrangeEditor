@@ -139,10 +139,10 @@ impl Editor {
             .filter(Json::is_object)
             .unwrap_or_else(|| json!({}));
         set_at(&mut settings, pointer, value);
-        let Some(text) = self.editing() else {
+        let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.set_config(&text, node, &settings);
+        let result = host.set_config(draft, node, &settings);
         self.edited(host, result)
     }
 
@@ -154,10 +154,10 @@ impl Editor {
         param: &str,
         ty: Option<&str>,
     ) -> bool {
-        let Some(text) = self.editing() else {
+        let Some(draft) = self.editing() else {
             return false;
         };
-        let result = host.choose_type(&text, node, param, ty);
+        let result = host.choose_type(draft, node, param, ty);
         self.edited(host, result)
     }
 
