@@ -692,3 +692,105 @@ fn loops_and_forks_are_shown_once_and_start_valid_with_ports_added_and_taken_off
     assert_eq!(ports(&draft, fork).len(), 4);
     let _ = same_problems(&host, &mut draft);
 }
+
+#[derive(Debug)]
+struct Thing;
+impl orange_host::Session for Thing {
+    fn as_any(&self) -> &dyn std::any::Any {
+        self
+    }
+}
+#[derive(Debug)]
+struct Things;
+impl orange_host::ConnectionAdapter for Things {
+    fn open(
+        &self,
+        _: &serde_json::Map<String, Json>,
+    ) -> Result<std::sync::Arc<dyn orange_host::Session>, String> {
+        Ok(std::sync::Arc::new(Thing))
+    }
+    fn choices(&self) -> Vec<orange_host::SettingChoices> {
+        vec![orange_host::SettingChoices {
+            setting: "which".into(),
+            unset: "any".into(),
+            values: vec!["red".into(), "blue".into()],
+            problem: None,
+        }]
+    }
+}
+#[derive(Debug)]
+struct Nothing;
+impl orange_host::ServiceNode for Nothing {
+    fn run(&self, _: &orange_host::Call<'_>) -> Result<Vec<Value>, orange_host::KernelFault> {
+        Ok(Vec::new())
+    }
+}
+
+#[test]
+fn a_node_that_uses_a_connection_is_bound_to_one_of_its_kind_when_added() {
+    use orange_sdk::Definition;
+    let uses = Definition::node("acme.kit", "uses", "Uses a thing")
+        .uses("acme.kit/thing")
+        .build();
+    let any = Definition::node("acme.kit", "any", "Uses any connection")
+        .connection()
+        .build();
+    let package = orange_host::ServicePackage::new("acme.kit", "1.0.0")
+        .adapter("acme.kit/thing", Things)
+        .node(&uses, Nothing)
+        .and_then(|package| package.node(&any, Nothing))
+        .unwrap();
+    let host = Host::with_services(HostOptions::default(), vec![package])
+        .unwrap()
+        .0;
+    assert_eq!(
+        host.adapter_choices("acme.kit/thing")[0].values,
+        ["red", "blue"]
+    );
+    assert!(host.adapter_choices("acme.kit/none").is_empty());
+    let mut draft = host.draft(&empty()).unwrap();
+
+    // A node that does not say which kind it uses needs a connection declared first.
+    let refused = host.add_node(&mut draft, "acme.kit/any", [0.0, 0.0]);
+    assert!(
+        matches!(&refused, Err(HostError::Document(text)) if text.contains("declare one")),
+        "{refused:?}"
+    );
+    // One that says is given a new connection of its kind, as one edit with the node.
+    let first = host
+        .add_node(&mut draft, "acme.kit/uses", [0.0, 0.0])
+        .unwrap();
+    let declared = host.declarations(&draft).connections;
+    assert_eq!(declared.len(), 1);
+    assert_eq!(
+        (declared[0].name.as_str(), declared[0].adapter.as_str()),
+        ("thing", "acme.kit/thing")
+    );
+    let named = |draft: &Draft, node: NodeId| {
+        let view = host.draft_view(draft).unwrap();
+        view.nodes
+            .iter()
+            .find(|found| found.id == node)
+            .unwrap()
+            .settings["connection"]
+            .clone()
+    };
+    assert_eq!(named(&draft, first), json!(declared[0].id));
+    assert!(
+        host.problems(&mut draft)
+            .unwrap()
+            .iter()
+            .all(|problem| problem.subject.node != Some(first))
+    );
+    // The next one, and one of any kind, use that connection.
+    let second = host
+        .add_node(&mut draft, "acme.kit/uses", [0.0, 100.0])
+        .unwrap();
+    let third = host
+        .add_node(&mut draft, "acme.kit/any", [0.0, 200.0])
+        .unwrap();
+    assert_eq!(host.declarations(&draft).connections.len(), 1);
+    assert_eq!(named(&draft, second), named(&draft, third));
+    assert!(draft.undo() && draft.undo() && draft.undo());
+    assert!(host.declarations(&draft).connections.is_empty());
+}

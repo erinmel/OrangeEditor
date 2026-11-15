@@ -139,6 +139,23 @@ fn device_setting(settings: &Map<String, Json>) -> Result<Option<String>, String
     }
 }
 
+/// The `device` choices of a connection: the devices of one direction the system lists
+/// now, then [`NULL_DEVICE`]. Listing asks the OS audio host, so it is done only when an
+/// editor asks, never on a flow's or the device's thread.
+fn device_choices(pick: fn(Devices) -> Vec<String>) -> Vec<orange_sdk::SettingChoices> {
+    let (mut values, problem) = match devices() {
+        Ok(found) => (pick(found), None),
+        Err(reason) => (Vec::new(), Some(reason)),
+    };
+    values.push(NULL_DEVICE.to_owned());
+    vec![orange_sdk::SettingChoices {
+        setting: "device".to_owned(),
+        unset: "System default".to_owned(),
+        values,
+        problem,
+    }]
+}
+
 /// An output connection. The device opens when a node first plays on it, so a document
 /// opens on a machine without that device and only the playing node fails.
 #[derive(Debug)]
@@ -168,6 +185,9 @@ impl ConnectionAdapter for OutputAdapter {
             device: device_setting(settings)?,
             output: OnceLock::new(),
         }))
+    }
+    fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
+        device_choices(|found| found.outputs)
     }
 }
 
@@ -439,6 +459,9 @@ impl ConnectionAdapter for InputAdapter {
             .map_err(|error| error.to_string())?;
         Ok(Arc::new(InputSession(shared)))
     }
+    fn choices(&self) -> Vec<orange_sdk::SettingChoices> {
+        device_choices(|found| found.inputs)
+    }
 }
 
 fn input(session: Option<&dyn Session>) -> Option<&Arc<InputShared>> {
@@ -479,26 +502,31 @@ impl ServiceSource for OnLevel {
     }
 }
 
+/// Gain 1, the sound as it is, for a `gain` input left empty.
+fn unit_gain() -> Json {
+    serde_json::json!({"type": "core/f64@1", "bits": format!("{:016x}", 1.0f64.to_bits())})
+}
+
 fn play_definition() -> String {
     Definition::node(crate::PACKAGE, "play", "Play sound")
         .description("Plays a sound file on an output device and continues when it has ended.")
         .category("audio", "Audio")
-        .connection()
+        .uses(OUTPUT_ADAPTER)
         .input("path", "core/string@1")
-        .input("gain", "core/f64@1")
+        .input_default("gain", "core/f64@1", unit_gain())
         .build()
 }
 
 fn play_from_definition() -> String {
     Definition::node(crate::PACKAGE, "play-from", "Play sound from folder")
         .description(
-            "Plays the sound file of a folder that a number chooses, in name order: a counter makes a playlist, a random number a shuffle.",
+            "Plays one sound file of a folder, in name order, that `pick` chooses: a counter makes a playlist, and Random u64 (org.orange.math/random-u64) wired into `pick` plays one at random. Without `pick` it plays the first.",
         )
         .category("audio", "Audio")
-        .connection()
+        .uses(OUTPUT_ADAPTER)
         .input("folder", "core/string@1")
-        .input("pick", "core/u64@1")
-        .input("gain", "core/f64@1")
+        .input_default("pick", "core/u64@1", serde_json::json!({"type": "core/u64@1", "value": "0"}))
+        .input_default("gain", "core/f64@1", unit_gain())
         .output("file", "core/string@1")
         .build()
 }
@@ -507,9 +535,9 @@ fn loop_definition() -> String {
     Definition::node(crate::PACKAGE, "loop", "Loop sound")
         .description("Plays a sound file again and again on an output device until it is stopped.")
         .category("audio", "Audio")
-        .connection()
+        .uses(OUTPUT_ADAPTER)
         .input("path", "core/string@1")
-        .input("gain", "core/f64@1")
+        .input_default("gain", "core/f64@1", unit_gain())
         .build()
 }
 
@@ -517,7 +545,7 @@ fn pause_definition() -> String {
     Definition::node(crate::PACKAGE, "pause", "Pause sounds")
         .description("Holds every sound playing on an output device where it is.")
         .category("audio", "Audio")
-        .connection()
+        .uses(OUTPUT_ADAPTER)
         .build()
 }
 
@@ -525,7 +553,7 @@ fn resume_definition() -> String {
     Definition::node(crate::PACKAGE, "resume", "Resume sounds")
         .description("Lets the paused sounds of an output device continue.")
         .category("audio", "Audio")
-        .connection()
+        .uses(OUTPUT_ADAPTER)
         .build()
 }
 
@@ -533,7 +561,7 @@ fn seek_definition() -> String {
     Definition::node(crate::PACKAGE, "seek", "Seek sounds")
         .description("Moves every sound playing on an output device to a position in seconds.")
         .category("audio", "Audio")
-        .connection()
+        .uses(OUTPUT_ADAPTER)
         .input("seconds", "core/f64@1")
         .build()
 }
@@ -542,7 +570,7 @@ fn set_volume_definition() -> String {
     Definition::node(crate::PACKAGE, "set-volume", "Set volume")
         .description("Sets the volume of everything an output device plays.")
         .category("audio", "Audio")
-        .connection()
+        .uses(OUTPUT_ADAPTER)
         .input("gain", "core/f64@1")
         .build()
 }
@@ -551,7 +579,7 @@ fn stop_definition() -> String {
     Definition::node(crate::PACKAGE, "stop", "Stop sounds")
         .description("Stops every sound playing on an output device.")
         .category("audio", "Audio")
-        .connection()
+        .uses(OUTPUT_ADAPTER)
         .build()
 }
 
@@ -559,7 +587,7 @@ fn input_level_definition() -> String {
     Definition::node(crate::PACKAGE, "input-level", "Input level")
         .description("Reads the latest level of an input device in dBFS.")
         .category("audio", "Audio")
-        .connection()
+        .uses(INPUT_ADAPTER)
         .output("level", "core/f64@1")
         .build()
 }
@@ -568,7 +596,7 @@ fn on_level_definition() -> String {
     Definition::entry(crate::PACKAGE, "on-level", "On input level")
         .description("Fires when an input device's level reaches the connection's threshold.")
         .category("audio", "Audio")
-        .connection()
+        .uses(INPUT_ADAPTER)
         .payload("core/f64@1")
         .build()
 }

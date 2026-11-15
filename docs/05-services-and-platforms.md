@@ -234,6 +234,21 @@ and Ogg files in name order, counting round; a counter makes a playlist and a se
 random number a repeatable shuffle, so the node itself draws no randomness. A folder
 without sound files is the fault `org.orange.audio/Empty`.
 
+From the editor (2026-11-15, FR-105): every audio node's definition names its
+connection kind (`editor.connection_adapter`, 12 §4), so a node dropped onto the canvas
+is bound to the document's first connection of that kind, or to a new graph connection
+of that kind with no settings (the system default device) declared in the same edit.
+Each adapter lists its `device` choices through `ConnectionAdapter::choices`: the
+devices cpal reports for that direction now, then `null`. The list is read when the
+editor first shows it and again on request, on the editor's thread, never on a flow's
+or a device's thread; the properties panel of a node shows the list for the connection
+it names and the Document tab's connection form for the adapter chosen. `gain`
+defaults to 1 on `play`, `loop` and `play-from`, and `pick` to 0. A random file of a
+folder is `play-from` with Random u64 (`org.orange.math/random-u64`, seeded by the
+runtime's entropy rules, 11) wired into `pick`; the audio package draws no randomness
+itself. Device lists were read on Windows 11 (WASAPI) only (10); macOS and Linux
+listing, and devices that appear or disappear while the list is open, are not checked.
+
 Not implemented from the design below: `AudioAsset` handles, control of one sound
 among several on a connection (separate connections are separate players),
 streaming from disk (a sound is decoded whole, up to 64 MiB and 600 s),

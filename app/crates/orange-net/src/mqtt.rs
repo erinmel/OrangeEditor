@@ -803,7 +803,7 @@ impl ServiceSource for MqttMessage {
 pub(crate) fn publish_definition() -> String {
     Definition::node(crate::PACKAGE, "mqtt-publish", "Publish MQTT message")
         .category("network", "Network")
-        .connection()
+        .uses(crate::MQTT_ADAPTER)
         .input("topic", "core/string@1")
         .input("text", "core/string@1")
         .input("retain", "core/bool@1")
@@ -817,7 +817,7 @@ pub(crate) fn publish_bytes_definition() -> String {
         "Publish MQTT binary message",
     )
     .category("network", "Network")
-    .connection()
+    .uses(crate::MQTT_ADAPTER)
     .input("topic", "core/string@1")
     .input("data", "core/bytes@1")
     .input("retain", "core/bool@1")
@@ -827,7 +827,7 @@ pub(crate) fn publish_bytes_definition() -> String {
 pub(crate) fn message_definition() -> String {
     Definition::entry(crate::PACKAGE, "mqtt-message", "On MQTT message")
         .category("network", "Network")
-        .connection()
+        .uses(crate::MQTT_ADAPTER)
         .payload("core/list@1<core/string@1>")
         .build()
 }
@@ -835,7 +835,7 @@ pub(crate) fn message_definition() -> String {
 pub(crate) fn binary_definition() -> String {
     Definition::entry(crate::PACKAGE, "mqtt-binary", "On MQTT binary message")
         .category("network", "Network")
-        .connection()
+        .uses(crate::MQTT_ADAPTER)
         .payload("core/bytes@1")
         .build()
 }

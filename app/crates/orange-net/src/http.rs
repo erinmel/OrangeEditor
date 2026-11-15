@@ -407,7 +407,7 @@ pub(crate) fn http_stream_definition() -> String {
     Definition::node(crate::PACKAGE, "http-stream", "HTTP request (streamed)")
         .description("Sends a request and delivers the response line by line as it arrives.")
         .category("network", "Network")
-        .connection()
+        .uses(crate::HTTP_ADAPTER)
         .input("method", "core/string@1")
         .input("path", "core/string@1")
         .input("content_type", "core/string@1")
@@ -421,7 +421,7 @@ pub(crate) fn http_stream_definition() -> String {
 pub(crate) fn http_stream_line_definition() -> String {
     Definition::entry(crate::PACKAGE, "http-stream-line", "On HTTP stream line")
         .category("network", "Network")
-        .connection()
+        .uses(crate::HTTP_ADAPTER)
         .payload("core/string@1")
         .build()
 }
@@ -434,7 +434,7 @@ pub(crate) fn http_request_bytes_definition() -> String {
     )
     .description("Sends a request with a binary body and returns the response as bytes.")
     .category("network", "Network")
-    .connection()
+    .uses(crate::HTTP_ADAPTER)
     .input("method", "core/string@1")
     .input("path", "core/string@1")
     .input("content_type", "core/string@1")
@@ -449,7 +449,7 @@ pub(crate) fn http_request_bytes_definition() -> String {
 pub(crate) fn http_request_definition() -> String {
     Definition::node(crate::PACKAGE, "http-request", "HTTP request")
         .category("network", "Network")
-        .connection()
+        .uses(crate::HTTP_ADAPTER)
         .input("method", "core/string@1")
         .input("path", "core/string@1")
         .input("content", "core/string@1")

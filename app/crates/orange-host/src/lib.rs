@@ -94,7 +94,7 @@ pub use orange_runtime::{
 };
 pub use orange_sdk::{
     Call, ConnectionAdapter, EmitError, Emitter, Items, SERVICE_PROVIDER, ServiceNode,
-    ServicePackage, ServiceSource, ServiceStream, Session, TARGET, TypeDecl,
+    ServicePackage, ServiceSource, ServiceStream, Session, SettingChoices, TARGET, TypeDecl,
 };
 pub use orange_sdk::{Renew, SECRET_PREFIX, SecretError, SecretStore, is_secret_name};
 pub use preview::Previewed;

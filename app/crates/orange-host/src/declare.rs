@@ -110,6 +110,17 @@ impl Host {
         self.adapters.keys().cloned().collect()
     }
 
+    /// The settings of `adapter` an editor can offer as a list, with the values this
+    /// machine has now (such as its audio devices). Empty for an adapter that offers
+    /// none or that this host does not have. It may ask the operating system, so a front
+    /// end calls it when a person opens the list, not every frame.
+    pub fn adapter_choices(&self, adapter: &str) -> Vec<SettingChoices> {
+        self.adapters
+            .get(adapter)
+            .map(|found| found.choices())
+            .unwrap_or_default()
+    }
+
     /// Declares a variable, or changes the one with `variable.id`, keeping what this
     /// does not set. Returns the variable's ID.
     pub fn declare_variable(
@@ -181,6 +192,18 @@ impl Host {
         draft: &mut Draft,
         connection: &Connection,
     ) -> Result<String, HostError> {
+        let (id, decl) = self.connection_decl(draft, connection)?;
+        let _ = draft.commit([DocCommand::UpsertConnection(decl)])?;
+        Ok(id)
+    }
+
+    /// The declaration [`declare_connection`](Self::declare_connection) writes, with
+    /// its ID, checked but not applied.
+    pub(crate) fn connection_decl(
+        &self,
+        draft: &Draft,
+        connection: &Connection,
+    ) -> Result<(String, ConnectionDecl), HostError> {
         if !connection.settings.is_object() {
             return Err(refused(&"a connection's settings are a JSON object"));
         }
@@ -210,8 +233,7 @@ impl Host {
         decl["scope"] = serde_json::to_value(connection.scope).map_err(|error| refused(&error))?;
         decl["settings"] = connection.settings.clone();
         let decl: ConnectionDecl = serde_json::from_value(decl).map_err(|error| refused(&error))?;
-        let _ = draft.commit([DocCommand::UpsertConnection(decl)])?;
-        Ok(id)
+        Ok((id, decl))
     }
 
     /// Removes a connection. Nodes that use it show as problems until they use another.

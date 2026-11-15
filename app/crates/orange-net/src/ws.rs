@@ -287,7 +287,7 @@ impl ServiceSource for WsMessage {
 pub(crate) fn ws_send_definition() -> String {
     Definition::node(crate::PACKAGE, "ws-send", "Send WebSocket message")
         .category("network", "Network")
-        .connection()
+        .uses(crate::WS_ADAPTER)
         .input("text", "core/string@1")
         .build()
 }
@@ -295,7 +295,7 @@ pub(crate) fn ws_send_definition() -> String {
 pub(crate) fn ws_message_definition() -> String {
     Definition::entry(crate::PACKAGE, "ws-message", "On WebSocket message")
         .category("network", "Network")
-        .connection()
+        .uses(crate::WS_ADAPTER)
         .payload("core/string@1")
         .build()
 }
@@ -307,7 +307,7 @@ pub(crate) fn ws_send_bytes_definition() -> String {
         "Send WebSocket binary message",
     )
     .category("network", "Network")
-    .connection()
+    .uses(crate::WS_ADAPTER)
     .input("data", "core/bytes@1")
     .build()
 }
@@ -315,7 +315,7 @@ pub(crate) fn ws_send_bytes_definition() -> String {
 pub(crate) fn ws_binary_definition() -> String {
     Definition::entry(crate::PACKAGE, "ws-binary", "On WebSocket binary message")
         .category("network", "Network")
-        .connection()
+        .uses(crate::WS_ADAPTER)
         .payload("core/bytes@1")
         .build()
 }

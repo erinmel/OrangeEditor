@@ -141,6 +141,9 @@ pub struct Editor {
     /// The left panel shows the document's declarations instead of the node kinds.
     document_tab: bool,
     forms: declarations::Forms,
+    /// The setting choices of each connection adapter (its devices, say), listed when
+    /// first shown and again when a person asks: listing may ask the operating system.
+    adapter_choices: std::collections::BTreeMap<String, Vec<orange_host::SettingChoices>>,
     /// The panels shown; a host application may set them, and the toolbar switches them.
     pub panels: Panels,
     /// Whether the application shows file dialogs: the toolbar then has New, Open and
