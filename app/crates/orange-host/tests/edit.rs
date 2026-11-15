@@ -484,9 +484,15 @@ fn set_from(host: &Host, definition: &str) -> (Draft, NodeId, NodeId) {
     (draft, trigger, value)
 }
 
-fn run_once(host: &mut Host, draft: &Draft, trigger: NodeId) -> Option<Value> {
+/// Runs the draft, fires `trigger` with `payload` and returns `count` once it is set.
+fn run_once(
+    host: &mut Host,
+    draft: &Draft,
+    trigger: NodeId,
+    payload: Option<Value>,
+) -> Option<Value> {
     let flow = host.open(&draft.text().unwrap()).unwrap();
-    host.trigger(flow, trigger, None).unwrap();
+    host.trigger(flow, trigger, payload).unwrap();
     let count = |host: &Host| {
         host.inspect(flow, |run| run.variable(id(100).parse().unwrap()).cloned())
             .unwrap()
@@ -524,7 +530,10 @@ fn a_typed_whole_number_is_wired_into_a_variable_and_runs() {
     let (mut draft, trigger, value) = set_from(&host, "core/whole-number");
     // Untouched, the node holds zero.
     assert_eq!(same_problems(&host, &mut draft), 0);
-    assert_eq!(run_once(&mut host, &draft, trigger), Some(Value::I64(0)));
+    assert_eq!(
+        run_once(&mut host, &draft, trigger, None),
+        Some(Value::I64(0))
+    );
     assert!(
         host.set_input(&mut draft, (value, "value"), Some("42"))
             .unwrap()
@@ -534,7 +543,10 @@ fn a_typed_whole_number_is_wired_into_a_variable_and_runs() {
     let node = shown.nodes.iter().find(|node| node.id == value).unwrap();
     let port = node.ports.iter().find(|port| port.id == "value").unwrap();
     assert_eq!(port.value.as_deref(), Some("42"));
-    assert_eq!(run_once(&mut host, &draft, trigger), Some(Value::I64(42)));
+    assert_eq!(
+        run_once(&mut host, &draft, trigger, None),
+        Some(Value::I64(42))
+    );
     // A typed value that is not a whole number is refused and changes nothing.
     assert!(
         host.set_input(&mut draft, (value, "value"), Some("4.5"))
@@ -557,7 +569,10 @@ fn a_generic_value_holds_any_type_once_it_is_chosen() {
             .unwrap()
     );
     assert_eq!(same_problems(&host, &mut draft), 0);
-    assert_eq!(run_once(&mut host, &draft, trigger), Some(Value::I64(-3)));
+    assert_eq!(
+        run_once(&mut host, &draft, trigger, None),
+        Some(Value::I64(-3))
+    );
 }
 
 #[test]
@@ -589,12 +604,8 @@ fn a_wired_value_node_passes_on_what_reaches_it() {
             .unwrap()
     );
     assert_eq!(same_problems(&host, &mut draft), 0);
-    let flow = host.open(&draft.text().unwrap()).unwrap();
-    host.trigger(flow, trigger, Some(Value::I64(9))).unwrap();
-    let count = |host: &Host| {
-        host.inspect(flow, |run| run.variable(id(100).parse().unwrap()).cloned())
-            .unwrap()
-    };
-    until("the variable", || count(&host).is_some());
-    assert_eq!(count(&host), Some(Value::I64(9)));
+    assert_eq!(
+        run_once(&mut host, &draft, trigger, Some(Value::I64(9))),
+        Some(Value::I64(9))
+    );
 }

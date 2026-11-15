@@ -161,10 +161,13 @@ pub(crate) fn intrinsic_definitions() -> Vec<NodeDefinition> {
 /// types, published unchanged on `result`. Four name a common type and default to its
 /// zero; `core/value` is generic, for any type with a literal form.
 fn value_definitions() -> Vec<NodeDefinition> {
-    use crate::document::literal::{Literal, LiteralPayload};
-    let value = |id, text: &'static str, default: Option<Literal>| {
+    use crate::value::{Value, literal_codec};
+    let value = |id, text: &'static str, zero: Option<Value>| {
         let mut input = PortDescriptor::data_in("value", ty(text));
-        input.default = default;
+        // A core type's zero always encodes; a failure would leave the port without one.
+        input.default = zero.and_then(|zero| {
+            literal_codec::encode(&ty(text), &zero, &literal_codec::SchemaSet::default()).ok()
+        });
         definition(
             id,
             NodeKind::Pure,
@@ -175,32 +178,15 @@ fn value_definitions() -> Vec<NodeDefinition> {
             ],
         )
     };
-    let zero = |text, json| Some(Literal::value(ty(text), json));
     vec![
-        value(
-            ids::NUMBER,
-            "core/f64@1",
-            Some(Literal {
-                ty: ty("core/f64@1"),
-                payload: LiteralPayload::Bits(format!("{:016x}", 0f64.to_bits())),
-                display: Some("0".to_owned()),
-            }),
-        ),
-        value(
-            ids::WHOLE_NUMBER,
-            "core/i64@1",
-            zero("core/i64@1", serde_json::json!("0")),
-        ),
+        value(ids::NUMBER, "core/f64@1", Some(Value::F64(0.0))),
+        value(ids::WHOLE_NUMBER, "core/i64@1", Some(Value::I64(0))),
         value(
             ids::TEXT,
             "core/string@1",
-            zero("core/string@1", serde_json::json!("")),
+            Some(Value::Str(std::sync::Arc::new(String::new()))),
         ),
-        value(
-            ids::TRUE_OR_FALSE,
-            "core/bool@1",
-            zero("core/bool@1", serde_json::json!(false)),
-        ),
+        value(ids::TRUE_OR_FALSE, "core/bool@1", Some(Value::Bool(false))),
         generic(value(ids::VALUE, "$T", None), "T", &[]),
     ]
 }
